@@ -45,11 +45,11 @@
 //!
 //! ## Cancellation
 //!
-//! [`DocumentHandle::dispatch_with_cancel`] threads a
+//! [`RopeDocumentHandle::dispatch_with_cancel`] threads a
 //! [`lattice_grammar::CancellationToken`] into the grammar
 //! `execute` call. The caller (App) holds a clone and flips it
 //! (e.g. on user Esc) to short-circuit a long-running motion or
-//! operator. The plain [`DocumentHandle::dispatch`] form uses a
+//! operator. The plain [`RopeDocumentHandle::dispatch`] form uses a
 //! no-op token; use it when no cancellation seam is required.
 //!
 //! ## What's NOT here in v1
@@ -75,7 +75,7 @@ pub mod snapshot;
 pub use actor::DocumentActor;
 pub use document::{ActiveDocument, Document};
 pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
-pub use handle::{DocumentHandle, spawn_document};
+pub use handle::{RopeDocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;
 pub use messages::{MessagePushed, MessageRecord, MessagesRing};
 pub use messages_subscriber::{

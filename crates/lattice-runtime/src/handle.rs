@@ -1,4 +1,4 @@
-//! `DocumentHandle` -- the public API for talking to a document
+//! `RopeDocumentHandle` -- the public API for talking to a document
 //! actor. Cheap to clone (an `mpsc::Sender` + an
 //! `Arc<PublishedSnapshot>`); pass to any thread, hold for any
 //! lifetime, give to plugins.
@@ -17,7 +17,7 @@
 //! caller holds it. See `docs/dev/architecture/multibuffer-views
 //! .md` §3.1 "Why no `replace`."
 //!
-//! Read methods ([`DocumentHandle::snapshot`] and the convenience
+//! Read methods ([`RopeDocumentHandle::snapshot`] and the convenience
 //! pass-throughs `text`, `path`, `dirty`, `version`,
 //! `text_version`, `selections`) are wait-free and return immediately
 //! from the published snapshot. They never round-trip the actor.
@@ -52,10 +52,10 @@ use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
 
 /// Cheap-clone handle to one document actor. All callers (App,
 /// renderer, future LSP clients, plugins) talk to the actor through
-/// a `DocumentHandle` -- there is no other way to reach the
+/// a `RopeDocumentHandle` -- there is no other way to reach the
 /// document's writable state.
 #[derive(Clone)]
-pub struct DocumentHandle {
+pub struct RopeDocumentHandle {
     /// See the module-level "Mailbox semantics" doc for the
     /// rationale behind the unbounded channel (audit slice 6 /
     /// H3).
@@ -71,7 +71,7 @@ pub struct DocumentHandle {
 /// Production handles come from
 /// [`spawn_document`]; `Editor::new(...)` overwrites this
 /// slot before any traffic flows.
-impl Default for DocumentHandle {
+impl Default for RopeDocumentHandle {
     fn default() -> Self {
         let (sender, _rx) = mpsc::unbounded_channel();
         Self {
@@ -83,7 +83,7 @@ impl Default for DocumentHandle {
 
 /// Spawn a fresh document actor on the shared runtime and return
 /// the handle. Calling this is the *only* way to obtain a
-/// `DocumentHandle`. Document moves into the actor; once spawned
+/// `RopeDocumentHandle`. Document moves into the actor; once spawned
 /// the document is reachable only through the handle.
 ///
 /// `registry` is shared by `Arc` so the actor can run grammar
@@ -93,20 +93,20 @@ impl Default for DocumentHandle {
 /// The actor task survives until every clone of the returned
 /// handle is dropped; on the last drop the mailbox closes, the
 /// actor's `recv` loop exits, and the task returns.
-pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> DocumentHandle {
+pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> RopeDocumentHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
         &document,
     )));
     let actor = DocumentActor::new(document, registry, rx, snapshot_cell.clone());
     shared_runtime().spawn(actor.run());
-    DocumentHandle {
+    RopeDocumentHandle {
         sender: tx,
         snapshot_cell,
     }
 }
 
-impl DocumentHandle {
+impl RopeDocumentHandle {
     // ---- Reads (wait-free, snapshot-backed) ----
 
     /// Load the current snapshot. The returned `Arc` lives as long
@@ -269,72 +269,72 @@ impl DocumentHandle {
 
 /// M.0 (2026-05-31): handle-layer [`Document`] trait impl.
 /// Delegates every method to the inherent method of the same
-/// name on `DocumentHandle` via fully-qualified syntax — the
+/// name on `RopeDocumentHandle` via fully-qualified syntax — the
 /// trait is a thin abstraction over the existing API surface;
 /// callers gain `Arc<dyn Document>` polymorphism for free.
-impl crate::document::Document for DocumentHandle {
+impl crate::document::Document for RopeDocumentHandle {
     fn snapshot(&self) -> Arc<DocumentSnapshot> {
-        DocumentHandle::snapshot(self)
+        RopeDocumentHandle::snapshot(self)
     }
 
     fn snapshot_cache(&self) -> crate::snapshot::SnapshotCache {
-        DocumentHandle::snapshot_cache(self)
+        RopeDocumentHandle::snapshot_cache(self)
     }
 
     fn id(&self) -> DocumentId {
-        DocumentHandle::id(self)
+        RopeDocumentHandle::id(self)
     }
 
     fn text(&self) -> String {
-        DocumentHandle::text(self)
+        RopeDocumentHandle::text(self)
     }
 
     fn path(&self) -> Option<PathBuf> {
-        DocumentHandle::path(self)
+        RopeDocumentHandle::path(self)
     }
 
     fn dirty(&self) -> bool {
-        DocumentHandle::dirty(self)
+        RopeDocumentHandle::dirty(self)
     }
 
     fn version(&self) -> u64 {
-        DocumentHandle::version(self)
+        RopeDocumentHandle::version(self)
     }
 
     fn text_version(&self) -> u64 {
-        DocumentHandle::text_version(self)
+        RopeDocumentHandle::text_version(self)
     }
 
     fn selections(&self) -> Arc<SelectionSet> {
-        DocumentHandle::selections(self)
+        RopeDocumentHandle::selections(self)
     }
 
     fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
-        DocumentHandle::apply_edit(self, edit)
+        RopeDocumentHandle::apply_edit(self, edit)
     }
 
     fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        DocumentHandle::apply_edit_batch(self, edits)
+        RopeDocumentHandle::apply_edit_batch(self, edits)
     }
 
     fn undo(&self) -> Pending<Vec<AppliedEdit>> {
-        DocumentHandle::undo(self)
+        RopeDocumentHandle::undo(self)
     }
 
     fn redo(&self) -> Pending<Vec<AppliedEdit>> {
-        DocumentHandle::redo(self)
+        RopeDocumentHandle::redo(self)
     }
 
     fn save(&self) -> Pending<PathBuf> {
-        DocumentHandle::save(self)
+        RopeDocumentHandle::save(self)
     }
 
     fn save_as(&self, path: PathBuf) -> Pending<()> {
-        DocumentHandle::save_as(self, path)
+        RopeDocumentHandle::save_as(self, path)
     }
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
-        DocumentHandle::set_selections(self, selections)
+        RopeDocumentHandle::set_selections(self, selections)
     }
 
     fn dispatch_with_cancel(
@@ -343,14 +343,14 @@ impl crate::document::Document for DocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
-        DocumentHandle::dispatch_with_cancel(self, invocation, cursor, cancel)
+        RopeDocumentHandle::dispatch_with_cancel(self, invocation, cursor, cancel)
     }
 }
 
-impl std::fmt::Debug for DocumentHandle {
+impl std::fmt::Debug for RopeDocumentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snap = self.snapshot();
-        f.debug_struct("DocumentHandle")
+        f.debug_struct("RopeDocumentHandle")
             .field("id", &snap.id)
             .field("version", &snap.version)
             .field("text_version", &snap.text_version)
@@ -370,7 +370,7 @@ mod tests {
     }
 
     /// M.0 (2026-05-31): `Arc<dyn Document>` works — the trait
-    /// impl on `DocumentHandle` is dyn-safe and delegates to
+    /// impl on `RopeDocumentHandle` is dyn-safe and delegates to
     /// the inherent methods, so callers holding the trait
     /// object see the same observable behaviour as callers
     /// holding the concrete handle.

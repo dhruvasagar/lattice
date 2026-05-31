@@ -63,7 +63,7 @@ impl BufferStore for NullBufferStore {
     fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
         None
     }
-    fn handle_for(&self, _id: lattice_core::BufferId) -> Option<lattice_runtime::DocumentHandle> {
+    fn handle_for(&self, _id: lattice_core::BufferId) -> Option<lattice_runtime::RopeDocumentHandle> {
         None
     }
 }

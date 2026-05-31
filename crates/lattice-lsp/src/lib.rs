@@ -5,7 +5,7 @@
 //! `tower-lsp` is server-side. `async-lsp` brings tower middleware
 //! that doesn't fit our actor model (every server is one tokio task
 //! with a mailbox + oneshot replies, identical to
-//! `lattice-runtime::DocumentHandle`). The wire protocol is a few
+//! `lattice-runtime::RopeDocumentHandle`). The wire protocol is a few
 //! hundred lines of framing + JSON-RPC; reusing our existing
 //! cancellation primitives (`CancellationToken`) is cleaner than
 //! adapting middleware.
@@ -28,7 +28,7 @@
 //! - **Future modules** (folded in across 4.1.b–4.4):
 //!   - `actor` -- the per-server tokio task (mailbox + dispatch).
 //!   - `client` -- the editor-facing `LspHandle` analog of
-//!     `DocumentHandle`.
+//!     `RopeDocumentHandle`.
 //!   - `sync` -- `AppliedEdit` ↔ `TextDocumentContentChangeEvent`.
 //!   - `position` -- utf-8 ↔ utf-16 column conversion.
 //!   - `capabilities` -- client capability advertisement +

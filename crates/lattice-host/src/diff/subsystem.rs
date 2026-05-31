@@ -236,7 +236,7 @@ pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
 /// D.3.a (2026-05-29): the production [`BufferTextProvider`]
 /// impl. Bridges the trait to the host's [`crate::buffer_registry::BufferRegistry`]:
 /// `buffer_rope(id)` walks `BufferRegistry::document_handle(id)
-/// -> DocumentHandle::snapshot() -> snapshot.buffer.to_rope()`.
+/// -> RopeDocumentHandle::snapshot() -> snapshot.buffer.to_rope()`.
 ///
 /// All operations are RCU-style reads (registry mutex held only
 /// long enough to clone an `Arc<DocumentSnapshot>`; rope clone
@@ -683,7 +683,7 @@ impl DiffGetOutcome {
 ///   to the buffer identified by `target_buffer_id`. The
 ///   target is the destination side; the active buffer is
 ///   the source. Apply via the registry's
-///   `DocumentHandle::apply_edit` and park the cursor at
+///   `RopeDocumentHandle::apply_edit` and park the cursor at
 ///   `post_cursor_row` on the active side.
 /// - [`DiffPutOutcome::NoPeerBuffer`]: inline session
 ///   whose baseline is not a live buffer (file-on-disk

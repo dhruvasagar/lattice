@@ -17,7 +17,7 @@
 //!    buffer from what the user typed. Unbounded eliminates the
 //!    silent-drop class entirely; queue depth bounds itself by
 //!    edit rate × actor-stall-duration (typing is human-paced).
-//! 4. **Graceful shutdown** -- when every [`crate::DocumentHandle`]
+//! 4. **Graceful shutdown** -- when every [`crate::RopeDocumentHandle`]
 //!    is dropped the mailbox closes; the actor's `recv` loop exits
 //!    naturally.
 //!

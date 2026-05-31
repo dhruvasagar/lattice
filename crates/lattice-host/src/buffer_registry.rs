@@ -72,11 +72,11 @@ use lattice_terminal::buffer::TerminalBuffer;
 pub struct DocumentEntry {
     pub id: BufferId,
     /// M.0 (2026-05-31): typed as `Arc<dyn Document>` so the
-    /// registry can hold either a regular `DocumentHandle`
+    /// registry can hold either a regular `RopeDocumentHandle`
     /// (today) or a `MultibufferDocumentHandle` (M.1) without
     /// kind-branching at retrieval. Consumers read through
     /// the `Document` trait directly; concrete-type access
-    /// (e.g., `DocumentHandle::replace`-equivalent operations
+    /// (e.g., `RopeDocumentHandle::replace`-equivalent operations
     /// that don't apply to multibuffer) is gone — slot
     /// replacement / membership APIs handle those cases.
     pub handle: std::sync::Arc<dyn lattice_runtime::Document>,
@@ -384,7 +384,7 @@ impl BufferRegistry {
     /// Kind-specific convenience: clone the `Arc<dyn Document>`
     /// for `id`. The handle is `Send + Sync` and can be held
     /// across thread boundaries. M.0: returns the polymorphic
-    /// shape (was `DocumentHandle` pre-M.0) so the registry
+    /// shape (was `RopeDocumentHandle` pre-M.0) so the registry
     /// serves multibuffer handles (M.1) through the same path.
     pub fn document_handle(
         &self,
@@ -831,7 +831,7 @@ impl BufferRegistry {
 // ---------------------------------------------------------------
 //
 // Wraps a clone of `BufferRegistry` so modes can find synthetic
-// buffers by name and pull `DocumentHandle`s from any tokio task.
+// buffers by name and pull `RopeDocumentHandle`s from any tokio task.
 // Registered into the App's `ServiceRegistry` at boot; modes pull
 // it via `ctx.service::<lattice_mode::BufferStoreHandle>()`.
 //

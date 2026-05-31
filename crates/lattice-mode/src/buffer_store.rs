@@ -33,7 +33,7 @@
 //!
 //! - [`BufferStore::find_by_name`] — read-only registry probe.
 //! - [`BufferStore::ensure_named_document`] — find-or-create. If
-//!   creating, allocates a fresh `DocumentHandle`, registers the
+//!   creating, allocates a fresh `RopeDocumentHandle`, registers the
 //!   buffer with `name = Some(name.into())`, activates `major` as
 //!   the buffer's major mode (which transitively runs the major's
 //!   `on_activate`), and returns the id.

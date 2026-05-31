@@ -114,7 +114,7 @@ fn snapshot_load_cached(c: &mut Criterion) {
 }
 
 /// Snapshot load: the renderer's per-frame read. Wait-free arc-swap
-/// load (`DocumentHandle::snapshot` -> `PublishedSnapshot::load`).
+/// load (`RopeDocumentHandle::snapshot` -> `PublishedSnapshot::load`).
 /// Should be deep in single-digit nanoseconds -- the §5.6.8 `<5ns
 /// p99` target. Independent of buffer size: arc-swap is
 /// pointer-sized.

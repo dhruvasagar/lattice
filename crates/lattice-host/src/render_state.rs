@@ -414,7 +414,7 @@ pub struct ActiveDocumentRenderState {
     /// destructive-preview colour. `Arc` for cheap cloning.
     pub substitute_preview: Option<std::sync::Arc<crate::state::SubstitutePreview>>,
     /// Active document's selection set (multi-cursor / linewise /
-    /// blockwise). Already an `Arc` on `DocumentHandle` so this
+    /// blockwise). Already an `Arc` on `RopeDocumentHandle` so this
     /// is one Arc bump.
     pub selections: std::sync::Arc<lattice_protocol::SelectionSet>,
     /// Hot-path option cache (typed-options resolved values).
@@ -860,7 +860,7 @@ pub struct CellsRenderState {
     /// Active document snapshot. The cell-builder walks this
     /// line-by-line. `None` when no document is active (initial
     /// boot or between buffer switches). Cloned by reference from
-    /// the active `DocumentHandle.snapshot()` at publish time.
+    /// the active `RopeDocumentHandle.snapshot()` at publish time.
     pub snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>>,
 
     /// Active buffer's syntax handle. Consumed by S2.3 cell

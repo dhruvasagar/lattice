@@ -547,7 +547,7 @@ impl Editor {
 
         // Hand the document to the actor (DESIGN.md §5.7).
         // After this call the only way to read or mutate it is
-        // through the returned `DocumentHandle`.
+        // through the returned `RopeDocumentHandle`.
         let handle = spawn_document(document, registry.clone());
         let snapshot_cache = handle.snapshot_cache();
         // M.0: wrap the handle in `ActiveDocument` so the slot

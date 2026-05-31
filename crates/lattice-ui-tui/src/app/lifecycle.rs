@@ -2193,7 +2193,7 @@ mod tests {
         let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
         // Drop the existing entry; replace it with a no-path Document
-        // carrying a synthetic name. Reuse the same DocumentHandle
+        // carrying a synthetic name. Reuse the same RopeDocumentHandle
         // because the test fixture's `app_with` already produces an
         // unsaved buffer (`handle.path()` is None).
         let handle = a.editor.document.as_arc();

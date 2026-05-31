@@ -84,7 +84,7 @@ impl App {
     /// `block_on` parks the thread. The plumbing is in place for a
     /// future runtime that reads input on a separate task and flips
     /// the dispatch token on Esc; see `dispatch_with_cancel` on
-    /// `DocumentHandle`.
+    /// `RopeDocumentHandle`.
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::dispatch_blocking`]. Retained
     /// as a 1-line delegate while App-side helpers

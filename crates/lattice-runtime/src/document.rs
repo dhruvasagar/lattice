@@ -2,7 +2,7 @@
 //! abstraction over a buffer that the rest of the editor talks
 //! to.
 //!
-//! Today's `DocumentHandle` (a rope-backed actor handle) impls
+//! Today's `RopeDocumentHandle` (a rope-backed actor handle) impls
 //! this trait; M.1 lands `MultibufferDocumentHandle` as a sibling
 //! impl composing N source handles. Dispatch / motion / render
 //! code paths hold `Arc<dyn Document>` so they serve both kinds
@@ -48,7 +48,7 @@ use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
 
 use crate::actor::AppliedEdit;
-use crate::handle::DocumentHandle;
+use crate::handle::RopeDocumentHandle;
 use crate::pending::Pending;
 use crate::snapshot::{DocumentSnapshot, SnapshotCache};
 
@@ -140,14 +140,14 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
 /// `Editor.document`. Wraps an `Arc<dyn Document>` so that:
 ///
 /// * The slot can hold either a regular rope-backed handle
-///   (today: `DocumentHandle`, renamed to `RopeDocumentHandle`
+///   (today: `RopeDocumentHandle`, renamed to `RopeDocumentHandle`
 ///   in M.0 Phase E) or a `MultibufferDocumentHandle` (M.1)
 ///   without kind-branching at the use site — dispatch /
 ///   motion / render code paths just call `Document` trait
 ///   methods through `Deref<Target = dyn Document>`.
 ///
 /// * The slot impls `Default` (initialised to a placeholder
-///   rope handle via `DocumentHandle::default()`) so consumers
+///   rope handle via `RopeDocumentHandle::default()`) so consumers
 ///   that `#[derive(Default)]` over a struct containing this
 ///   field work without hand-rolling the impl. The
 ///   placeholder's actor receiver is closed immediately at
@@ -168,7 +168,7 @@ pub struct ActiveDocument(Arc<dyn Document>);
 
 impl ActiveDocument {
     /// Wrap a concrete document handle. The handle must impl
-    /// `Document` (today: `DocumentHandle` / future
+    /// `Document` (today: `RopeDocumentHandle` / future
     /// `RopeDocumentHandle`; M.1: `MultibufferDocumentHandle`).
     pub fn new<D: Document>(handle: D) -> Self {
         Self(Arc::new(handle))
@@ -192,7 +192,7 @@ impl ActiveDocument {
 
 impl Default for ActiveDocument {
     fn default() -> Self {
-        Self(Arc::new(DocumentHandle::default()))
+        Self(Arc::new(RopeDocumentHandle::default()))
     }
 }
 

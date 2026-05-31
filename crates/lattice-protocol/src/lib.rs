@@ -19,7 +19,7 @@
 //! today, the keymap / cmdline / dispatcher use
 //! `lattice_grammar::CommandInvocation` for typed runtime invocation, and
 //! the document actor exposes its own typed mailbox via
-//! `lattice_runtime::DocumentHandle`. The legacy `Command` enum had no
+//! `lattice_runtime::RopeDocumentHandle`. The legacy `Command` enum had no
 //! callers anywhere in the workspace and was retired.
 //! `lattice_grammar::CommandInvocation` is the canonical "runtime
 //! command" type now.

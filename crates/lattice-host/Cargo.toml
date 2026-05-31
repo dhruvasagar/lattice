@@ -78,7 +78,7 @@ tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 # modes.rs references the snippet major-mode id.
 lattice-snippet = { path = "../lattice-snippet" }
-# buffer_registry.rs uses `lattice_runtime::DocumentHandle`.
+# buffer_registry.rs uses `lattice_runtime::RopeDocumentHandle`.
 lattice-runtime = { path = "../lattice-runtime" }
 # Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`
 # receivers (message events; later: LSP request channels).

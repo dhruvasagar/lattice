@@ -14032,7 +14032,7 @@ impl Editor {
     /// (diff-put) chord. Reads the active document's cursor
     /// row, asks the subsystem for a put-plan, then:
     /// - **Two-pane peer:** applies the carried edit to the
-    ///   peer buffer via the registry's `DocumentHandle`,
+    ///   peer buffer via the registry's `RopeDocumentHandle`,
     ///   publishes `DocumentChanged` on the peer's id so its
     ///   diff session recomputes through the standard
     ///   pipeline, and parks the cursor at the hunk start on

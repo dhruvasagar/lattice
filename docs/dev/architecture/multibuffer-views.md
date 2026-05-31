@@ -477,6 +477,154 @@ Per saved feedback *"Modes own their buffers, App is a host"*
 the subsystem follows the same pattern. App does not gain
 `ensure_multibuffer_for` or `drain_multibuffer_events` shims.
 
+### 3.6 Crate layout and major-mode ownership (M.2.b, 2026-05-31)
+
+Decided 2026-05-31 (revising §3.3 / §3.5):
+
+**Dedicated crate.** All multibuffer concerns live in a new
+`lattice-multibuffer` crate. Host has zero multibuffer-
+specific code beyond a one-line `lattice_multibuffer::register
+(mode_registry, grammar)` call at boot. Reasons:
+
+- M.1 carried multibuffer data types in `lattice-runtime`,
+  which conflated "the actor + handle + Document trait
+  substrate" with "one specific kind of document." Pre-v1 is
+  the window to fix that conflation.
+- Plugins that want multibuffer functionality can depend on
+  `lattice-multibuffer` without pulling in the full
+  `lattice-runtime` actor machinery.
+- The crate boundary makes the design self-documenting —
+  everything multibuffer is in one tree; everything else
+  doesn't know multibuffer exists.
+
+**Dependency edges** (one-way; no cycles):
+`lattice-multibuffer` →
+`{lattice-runtime, lattice-mode, lattice-cells,
+lattice-grammar, lattice-core}`.
+`lattice-host` → `lattice-multibuffer` (boot wiring only).
+
+**`BufferKind::Multibuffer`.** New variant in
+`lattice-core::BufferKind`. Multibuffers are first-class
+buffer kinds, not Documents-in-disguise. The kind tag
+informs:
+
+- `:ls` / `:bn` / `:bp` / `:b N` (already kind-uniform; the
+  variant adds itself).
+- Major-mode lookup (see below).
+- Status-line / picker display (`[mb]` tag).
+
+The everything-is-a-buffer principle stays intact:
+dispatch / motion / render still don't branch on `BufferKind`
+for universal operations. The kind tag is metadata; behavior
+that's actually kind-specific dispatches through the major
+mode active on the buffer.
+
+**`MultibufferMode` is the major mode for
+`BufferKind::Multibuffer`.** Activated when a buffer of that
+kind registers in `BufferRegistry`; deactivated when the
+buffer drops. The major mode is the gateway to every kind-
+specific concern:
+
+```rust
+// in lattice-multibuffer::mode
+pub struct MultibufferMode;
+
+pub struct MultibufferModeContext {
+    handle: Arc<MultibufferDocumentHandle>,
+}
+
+impl MajorMode for MultibufferMode {
+    type Context = MultibufferModeContext;
+
+    fn id() -> ModeId { /* "multibuffer" */ }
+    fn kind() -> BufferKind { BufferKind::Multibuffer }
+
+    fn on_activate(&self, ctx: &mut ActivationContext<Self>) {
+        // Register the header provider against the buffer's
+        // virtual_row_providers slot — kind-specific setup
+        // the mode owns instead of host.
+        let provider = MultibufferHeaderProvider::new(
+            ctx.context().handle.clone()
+        );
+        ctx.host_services().register_virtual_row_provider(
+            ctx.buffer_id(),
+            Arc::new(provider),
+        );
+    }
+
+    fn on_deactivate(&self, ctx: &mut ActivationContext<Self>) {
+        // Symmetric tear-down.
+    }
+}
+```
+
+The mode owns:
+- The typed per-buffer context (`MultibufferModeContext`
+  carrying `Arc<MultibufferDocumentHandle>`).
+- The keymap that binds excerpt motions (`]e` / `[e` / `]E` /
+  `[E`) to grammar motion ids.
+- The lifecycle wiring for header / fold providers.
+- Future kind-specific behaviour (M.5 expand-context,
+  M.7 / M.8 fold providers).
+
+**Motions as grammar operations.** `]e` / `[e` / `]E` / `[E`
+register as `lattice-grammar` motions. Operators (`d` / `c`
+/ `y`) compose with them; counts (`3]e`) compose with them;
+visual mode (`v]e`) composes with them — same surface as
+built-in motions, just bound to multibuffer-mode's keymap so
+they activate only when that mode is active.
+
+Motion handlers reach the typed handle via the major mode's
+context:
+
+```rust
+// in lattice-multibuffer::motions
+pub fn next_excerpt_start(
+    cursor: Position,
+    ctx: &MultibufferModeContext,
+) -> Option<Position> {
+    let excerpts = ctx.handle.excerpts();
+    // Walk excerpts in source order; find first whose
+    // first-composed-row > cursor.row; return that row.
+}
+```
+
+Grammar dispatch passes the active mode's context to the
+motion handler — no downcasting, no `Any`, no kind-
+branching at the universal layer.
+
+**Why this is right.** Mode ownership is the existing
+lattice precedent for "everything kind-specific lives in the
+mode" (see `feedback_mode_owns_its_buffers`). Host pollution
+is minimized to a single registration call. Future kind-
+specific features (M.5 / M.7 / M.8) compose into the mode
+without touching host at all. Plugin-defined buffer kinds
+post-v1 follow the same pattern: new crate + new major mode
++ new keymap + one registration line.
+
+**Rejected alternatives** (recorded for future re-review):
+
+- *Sidecar `MultibufferRegistry` keyed by BufferId in
+  lattice-host.* Mirrors `DiffSubsystem`. Works but
+  duplicates storage (multibuffer handles in `BufferRegistry`
+  AND in the sidecar) and puts kind-specific surface in
+  host. Major-mode ownership achieves the same typed-access
+  goal without the storage duplication or host pollution.
+- *`Document` trait gains `excerpts()` accessor (default
+  `None`).* Pollutes the universal trait with one kind's
+  surface. Every future Document impl carries an accessor it
+  doesn't use.
+- *`Any`-based downcasting at the `Arc<dyn Document>`
+  boundary.* Functional but reaches for Rust's escape hatch
+  instead of designing properly. Opens the door for every
+  future feature to do the same.
+- *`MultibufferMode` as a minor mode instead of major.*
+  Diff-mode and similar mode-attaches-to-state minor modes
+  are right for "this buffer has X happening to it." But
+  multibuffer ISN'T a state attached to a regular buffer —
+  it IS the buffer's identity. Major mode captures that
+  correctly.
+
 ## 4. Edit propagation
 
 The mechanism that turns "edit at multibuffer row M" into

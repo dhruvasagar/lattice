@@ -61,8 +61,8 @@ use ropey::Rope;
 use lattice_core::BufferId;
 use lattice_diff::DiffAlgorithm;
 use lattice_host::diff::subsystem::{
-	BufferCurrentSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession,
-	DiffSubsystem, StaticBaseline,
+	BufferSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession,
+	DiffSubsystem, StaticSource,
 };
 
 #[derive(Debug)]
@@ -186,8 +186,8 @@ fn bench_routing_fanout(c: &mut Criterion) {
 		for i in 0..n {
 			let id = BufferId(i + 1);
 			let desc = DiffDescriptor {
-				baseline: Arc::new(StaticBaseline::new(Rope::new())),
-				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
+				baseline: Arc::new(StaticSource::new(Rope::new())),
+				current: Arc::new(BufferSource::new(Arc::clone(&provider), id)),
 				watch: vec![shared],
 				remote: None,
 				participants: vec![],
@@ -225,8 +225,8 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 		// registered noise, not dependents.
 		let session_one = BufferId(1);
 		let desc_one = DiffDescriptor {
-			baseline: Arc::new(StaticBaseline::new(Rope::new())),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), session_one)),
+			baseline: Arc::new(StaticSource::new(Rope::new())),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), session_one)),
 			watch: vec![poked],
 			remote: None,
 			participants: vec![],
@@ -236,8 +236,8 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 			let id = BufferId(i);
 			let sibling = BufferId(i + 100_000);
 			let desc = DiffDescriptor {
-				baseline: Arc::new(StaticBaseline::new(Rope::new())),
-				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
+				baseline: Arc::new(StaticSource::new(Rope::new())),
+				current: Arc::new(BufferSource::new(Arc::clone(&provider), id)),
 				watch: vec![sibling],
 				remote: None,
 				participants: vec![],

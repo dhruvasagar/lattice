@@ -217,8 +217,22 @@ prose stays load-bearing without going stale.
 
 #### 3.4.1 Data model — sessions, descriptors, watchers
 
+> **Note (D.8 in progress, 2026-05-31):** this section
+> documents the D.2-era shape (`BaselineSource` +
+> `CurrentSource` traits, fixed-arity descriptor with
+> `baseline + current + Option<remote>` slots). D.8 (see
+> [`n-way-diff-membership.md`](n-way-diff-membership.md))
+> is mid-flight refactoring it to a single
+> `DiffParticipantSource` trait + arity-agnostic
+> `sources: Vec<Arc<dyn DiffParticipantSource>>`. D.8.a +
+> D.8.b have landed: the engine entry is now
+> `compute_diff(&[Rope], algorithm) -> Result<HunkIndex,
+> DiffEngineError>` and the participant trait is unified;
+> the descriptor shape change is D.8.c (pending). This
+> section will be rewritten when D.8 closes (D.8.f).
+
 A diff session is a derivation: published `HunkIndex` =
-`compute_two_way(baseline_rope, current_rope)`. The session
+`compute_diff([baseline_rope, current_rope])`. The session
 itself is the publish channel (D.2.a / D.2.b — `Arc<DiffSession>`
 in a `BufferId`-keyed registry, `ArcSwap<HunkIndex>` for RCU
 reads, monotonic revision counter, gated publish). The

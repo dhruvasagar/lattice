@@ -13,8 +13,8 @@
 //!   `std::sync::Mutex`. `register` / `lookup` / `drop_session` /
 //!   `iter_sessions`. Per-session `ArcSwap<HunkIndex>` for
 //!   RCU-published reads.
-//! - **D.2.b (2026-05-28)** — compute path. [`BaselineSource`]
-//!   trait (initial impl [`StaticBaseline`]). Monotonic revision
+//! - **D.2.b (2026-05-28)** — compute path. [`DiffParticipantSource`]
+//!   trait (initial impl [`StaticSource`]). Monotonic revision
 //!   allocator on the session; gated publish via
 //!   [`DiffSession::try_publish_if_newer`]. Sync recompute body
 //!   [`DiffSession::recompute_blocking`]; tokio orchestration
@@ -22,8 +22,8 @@
 //!   `spawn_blocking` and returns a join handle.
 //! - **D.2.c (2026-05-29)** — routing + debounce + bus
 //!   subscription. [`BufferTextProvider`] (one host seam),
-//!   [`CurrentSource`] (mirror of `BaselineSource`),
-//!   [`BufferBaseline`] / [`BufferCurrentSource`] live-rope impls,
+//!   [`DiffParticipantSource`] (mirror of `DiffParticipantSource`),
+//!   [`BufferSource`] / [`BufferSource`] live-rope impls,
 //!   [`DiffDescriptor`] (sources + explicit `watch: Vec<BufferId>`).
 //!   Centralized inverse `watchers` index + per-session lazy
 //!   [`Debouncer`]. [`DiffSubsystem::bind`] takes a [`DocumentBufferResolver`]
@@ -77,66 +77,75 @@ use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 
-/// Source of the baseline a [`DiffSession`] diffs against.
+/// One participant in a diff session — produces the rope to
+/// diff for one slot in `Hunk::ranges`.
 ///
-/// D.2.b's only concrete impl is [`StaticBaseline`] (an
-/// in-memory `Rope` snapshot). Future impls follow the same
-/// trait shape:
-/// - **D.4** `BufferBaseline` — snapshots a sibling pane's
-///   document for side-by-side diff.
-/// - **D.7** `GitBaseline` — reads the `HEAD:path` blob through
-///   `gix` for `:Gdiff`.
-/// - **D.6** `MergeBaseSource` — pulls the merge base for the
-///   three-way conflict view.
+/// D.8.b (2026-05-31): collapses the previous
+/// `BaselineSource` + `CurrentSource` two-trait split into a
+/// single trait. The original split was structural sugar
+/// (made `descriptor.baseline.snapshot()` vs
+/// `descriptor.current.snapshot()` visually distinct) and
+/// stopped scaling once participants became an arity-agnostic
+/// `Vec<Arc<dyn DiffParticipantSource>>`. The slot index now
+/// carries the role.
+///
+/// Concrete impls in this module:
+/// - [`StaticSource`] — owned in-memory `Rope`.
+/// - [`OnDiskSource`] — re-reads a file at snapshot time.
+/// - [`BufferSource`] — live rope from a [`BufferTextProvider`]-
+///   backed buffer.
+///
+/// D.7's `GitSource` (post-implementation) will land alongside
+/// these.
 ///
 /// `snapshot` is called from inside the `spawn_blocking` body
 /// of [`DiffSubsystem::schedule_recompute`], so impls may do
-/// cheap blocking I/O (a `git cat-file` for `GitBaseline`) but
+/// cheap blocking I/O (a `git cat-file` for `GitSource`) but
 /// must not hold the host's UI thread. `Send + Sync + 'static`
 /// is required so the trait object can cross the
 /// `spawn_blocking` boundary.
-pub trait BaselineSource: Send + Sync + 'static + std::fmt::Debug {
-	/// Produce the current baseline rope. Called once per
+pub trait DiffParticipantSource: Send + Sync + 'static + std::fmt::Debug {
+	/// Produce this participant's rope. Called once per
 	/// recompute; the implementor decides whether to clone a
 	/// cached rope or rematerialise from a backing store.
 	fn snapshot(&self) -> Rope;
 }
 
-/// In-memory baseline — an owned `Rope` cloned on every
-/// [`Self::snapshot`].
+/// In-memory participant source — an owned `Rope` cloned on
+/// every [`Self::snapshot`].
 ///
 /// Cheap: `Rope::clone` is an `Arc`-share of the underlying
 /// chunks, not a deep copy. Used as the default smoke-test
 /// baseline and as the substrate consumers (e.g. an LSP server
 /// returning `WorkspaceEdit` previews, the AI multi-file
-/// `openDiff` flow) wrap when they already hold the baseline
+/// `openDiff` flow) wrap when they already hold the source
 /// text in memory.
 #[derive(Debug, Clone)]
-pub struct StaticBaseline {
+pub struct StaticSource {
 	rope: Rope,
 }
 
-impl StaticBaseline {
+impl StaticSource {
 	pub fn new(rope: Rope) -> Self {
 		Self { rope }
 	}
 }
 
-impl BaselineSource for StaticBaseline {
+impl DiffParticipantSource for StaticSource {
 	fn snapshot(&self) -> Rope {
 		self.rope.clone()
 	}
 }
 
-/// D.3.a (2026-05-29): on-disk file baseline.
+/// D.3.a (2026-05-29): on-disk file participant source.
 ///
 /// `snapshot` re-reads the file at `path` and parses it into a
 /// fresh `Rope`. Used by `:diff` (no args) — "diff against
 /// the on-disk version of this file." Cheap enough to do
-/// inside `spawn_blocking` per the [`BaselineSource`]
+/// inside `spawn_blocking` per the [`DiffParticipantSource`]
 /// contract; D.3's first consumer is single-file inline
 /// overlay so per-recompute file re-reads are acceptable.
-/// Future D.7 (`:Gdiff`) introduces a separate `GitBaseline`
+/// Future D.7 (`:Gdiff`) introduces a separate `GitSource`
 /// that reads through `gix` against a fixed ref.
 ///
 /// On I/O error (missing path, permissions, mid-read crash)
@@ -149,11 +158,11 @@ impl BaselineSource for StaticBaseline {
 /// `RUST_LOG=lattice_host::diff::subsystem=debug` without
 /// blocking the recompute path.
 #[derive(Clone, Debug)]
-pub struct OnDiskBaseline {
+pub struct OnDiskSource {
 	path: std::path::PathBuf,
 }
 
-impl OnDiskBaseline {
+impl OnDiskSource {
 	pub fn new(path: std::path::PathBuf) -> Self {
 		Self { path }
 	}
@@ -163,7 +172,7 @@ impl OnDiskBaseline {
 	}
 }
 
-impl BaselineSource for OnDiskBaseline {
+impl DiffParticipantSource for OnDiskSource {
 	fn snapshot(&self) -> Rope {
 		match std::fs::read_to_string(&self.path) {
 			Ok(s) => Rope::from(s),
@@ -172,7 +181,7 @@ impl BaselineSource for OnDiskBaseline {
 					target: "lattice_host::diff::subsystem",
 					path = ?self.path,
 					?err,
-					"OnDiskBaseline::snapshot failed; returning empty rope"
+					"OnDiskSource::snapshot failed; returning empty rope"
 				);
 				Rope::new()
 			}
@@ -181,39 +190,25 @@ impl BaselineSource for OnDiskBaseline {
 }
 
 // ──────────────────────────────────────────────────────────────
-// D.2.c: CurrentSource trait + concrete sources
+// D.2.c: BufferTextProvider trait + the production
+// BufferRegistry-backed impl + BufferSource concrete participant
+// (D.8.b unified `BufferBaseline` + `BufferCurrentSource`
+// into one `BufferSource`)
 // ──────────────────────────────────────────────────────────────
 
-/// Source of the "current" side of a diff session — the rope a
-/// session is comparing against its baseline.
-///
-/// Mirror of [`BaselineSource`]. The split is semantic, not
-/// structural: both traits expose the same shape, but the
-/// asymmetry makes the descriptor's intent explicit at the call
-/// site (`descriptor.baseline.snapshot()` vs.
-/// `descriptor.current.snapshot()`). Saves a comment per
-/// recompute closure.
-pub trait CurrentSource: Send + Sync + 'static + std::fmt::Debug {
-	/// Produce the current rope. Called once per recompute from
-	/// inside the `spawn_blocking` body — must not hold the UI
-	/// thread.
-	fn snapshot(&self) -> Rope;
-}
-
 /// One-trait seam between the diff subsystem and the host's
-/// buffer storage. Required for [`BufferBaseline`] /
-/// [`BufferCurrentSource`] to resolve a [`BufferId`] to its live
-/// rope at snapshot time.
+/// buffer storage. Required for [`BufferSource`] to resolve a
+/// [`BufferId`] to its live rope at snapshot time.
 ///
 /// The host supplies a single impl backed by `BufferRegistry`.
 /// Future ephemeral-buffer providers (e.g. plugin-owned virtual
 /// buffers, AI-proposed-edits views) plug into the same trait.
 ///
 /// `buffer_rope(id)` returns `None` when the buffer has been
-/// dropped. Concrete buffer-backed sources treat `None` as an
-/// empty rope so a recompute against a closed buffer still
-/// produces a well-defined `HunkIndex` (all-Add or all-Remove
-/// depending on which side was the dropped buffer) rather than
+/// dropped. [`BufferSource`] treats `None` as an empty rope so
+/// a recompute against a closed buffer still produces a
+/// well-defined `HunkIndex` (all-Add or all-Remove depending
+/// on which slot was the dropped buffer) rather than
 /// panicking. The session's `drop_session` lifecycle will
 /// remove the entry shortly after.
 pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
@@ -230,8 +225,8 @@ pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
 /// is `Arc`-share of chunks). Safe to call from
 /// `spawn_blocking`. Returns `None` for non-document buffers
 /// or for ids the registry has dropped — the diff subsystem's
-/// `BufferBaseline` / `BufferCurrentSource` impls map `None`
-/// to an empty rope per their documented contract.
+/// [`BufferSource`] impl maps `None` to an empty rope per its
+/// documented contract.
 #[derive(Clone, Debug)]
 pub struct BufferRegistryTextProvider {
 	registry: crate::buffer_registry::BufferRegistry,
@@ -273,19 +268,26 @@ impl DocumentBufferResolver for BufferRegistryDocumentResolver {
 	}
 }
 
-/// Live-rope baseline backed by a sibling buffer. The
-/// unsaved-buffer case: when neither side of a diff has a
+/// D.8.b (2026-05-31): live-rope participant backed by a
+/// buffer. Replaces the prior `BufferSource` +
+/// `BufferSource` two-struct split (both had identical
+/// shape — provider + buffer_id — and only differed in which
+/// trait they implemented). The trait collapse to
+/// [`DiffParticipantSource`] makes the split structurally
+/// redundant.
+///
+/// The unsaved-buffer case: when neither side of a diff has a
 /// filesystem path, both sides resolve through
 /// [`BufferTextProvider`] at snapshot time. The session's
 /// descriptor must include this buffer in its `watch` list so
 /// edits to it wake the session.
 #[derive(Clone, Debug)]
-pub struct BufferBaseline {
+pub struct BufferSource {
 	provider: Arc<dyn BufferTextProvider>,
 	buffer_id: BufferId,
 }
 
-impl BufferBaseline {
+impl BufferSource {
 	pub fn new(provider: Arc<dyn BufferTextProvider>, buffer_id: BufferId) -> Self {
 		Self { provider, buffer_id }
 	}
@@ -295,34 +297,7 @@ impl BufferBaseline {
 	}
 }
 
-impl BaselineSource for BufferBaseline {
-	fn snapshot(&self) -> Rope {
-		self.provider.buffer_rope(self.buffer_id).unwrap_or_default()
-	}
-}
-
-/// Live-rope current source backed by a buffer. Sibling of
-/// [`BufferBaseline`]. The session's descriptor must include
-/// this buffer in its `watch` list (which it almost always
-/// already does — the session is registered under
-/// `current.buffer_id`).
-#[derive(Clone, Debug)]
-pub struct BufferCurrentSource {
-	provider: Arc<dyn BufferTextProvider>,
-	buffer_id: BufferId,
-}
-
-impl BufferCurrentSource {
-	pub fn new(provider: Arc<dyn BufferTextProvider>, buffer_id: BufferId) -> Self {
-		Self { provider, buffer_id }
-	}
-
-	pub fn buffer_id(&self) -> BufferId {
-		self.buffer_id
-	}
-}
-
-impl CurrentSource for BufferCurrentSource {
+impl DiffParticipantSource for BufferSource {
 	fn snapshot(&self) -> Rope {
 		self.provider.buffer_rope(self.buffer_id).unwrap_or_default()
 	}
@@ -344,8 +319,8 @@ impl CurrentSource for BufferCurrentSource {
 /// cheap (one Arc bump per source + a small heap allocation).
 #[derive(Clone, Debug)]
 pub struct DiffDescriptor {
-	pub baseline: Arc<dyn BaselineSource>,
-	pub current: Arc<dyn CurrentSource>,
+	pub baseline: Arc<dyn DiffParticipantSource>,
+	pub current: Arc<dyn DiffParticipantSource>,
 	/// D.6.a (2026-05-30): third side of a three-way merge.
 	/// `None` for two-way sessions (the v1.0 default); `Some`
 	/// for three-way merges, where `baseline` plays the role
@@ -360,7 +335,7 @@ pub struct DiffDescriptor {
 	///   [`HunkKind::Conflict`].
 	///
 	/// Cloned via `Arc` so descriptor `Clone` stays cheap.
-	pub remote: Option<Arc<dyn CurrentSource>>,
+	pub remote: Option<Arc<dyn DiffParticipantSource>>,
 	pub watch: Vec<BufferId>,
 	/// D.5.a (2026-05-30): user-visible diff sides that should
 	/// receive `diff-mode` activation while this session is
@@ -1294,7 +1269,7 @@ impl DiffSubsystem {
 	/// returned on re-registration) but **descriptor is
 	/// replaced** on re-registration — the caller may be
 	/// updating sources (e.g. switching baseline from
-	/// `StaticBaseline` to `GitBaseline`). The old watch
+	/// `StaticSource` to `GitBaseline`). The old watch
 	/// entries are scrubbed before the new ones are installed
 	/// so a re-register with a shrunken watch list doesn't
 	/// leave stale routes.
@@ -1460,7 +1435,7 @@ impl DiffSubsystem {
 	/// Reads the baseline through
 	/// [`DiffDescriptor::baseline`]`.snapshot()`. The
 	/// snapshot is potentially expensive (file re-read for
-	/// [`OnDiskBaseline`]); callers invoke once per `do`
+	/// [`OnDiskSource`]); callers invoke once per `do`
 	/// keystroke, never inside a tight loop.
 	/// D.6.d (2026-05-31): compute the edit the diff-mode
 	/// `do` chord or `:diffget [<bufnr>]` ex-command would
@@ -1916,9 +1891,9 @@ impl DiffSubsystem {
 	pub fn schedule_recompute(
 		&self,
 		buffer_id: BufferId,
-		baseline: Arc<dyn BaselineSource>,
+		baseline: Arc<dyn DiffParticipantSource>,
 		current: Rope,
-		remote: Option<Arc<dyn CurrentSource>>,
+		remote: Option<Arc<dyn DiffParticipantSource>>,
 	) -> Option<JoinHandle<Option<Arc<HunkIndex>>>> {
 		let session = self.lookup(buffer_id)?;
 		Some(tokio::task::spawn_blocking(move || {
@@ -1960,7 +1935,7 @@ impl DiffSubsystem {
 	/// Notify the subsystem that `buffer_id` was closed. Drops
 	/// the session for that buffer. If the closed buffer was a
 	/// watched-only dependency of some other session (e.g.
-	/// `BufferBaseline(closed_id)` for session X), session X's
+	/// `BufferSource(closed_id)` for session X), session X's
 	/// watcher entry for `closed_id` is left in place — the
 	/// next snapshot returns an empty rope per the
 	/// [`BufferTextProvider`] contract, and the session will
@@ -2194,12 +2169,12 @@ mod tests {
 	}
 
 	// ──────────────────────────────────────────────────────────
-	// D.2.b: BaselineSource + recompute + schedule
+	// D.2.b: DiffParticipantSource + recompute + schedule
 	// ──────────────────────────────────────────────────────────
 
 	#[test]
 	fn static_baseline_clones_rope_on_snapshot() {
-		let base = StaticBaseline::new(Rope::from("alpha\nbeta\n"));
+		let base = StaticSource::new(Rope::from("alpha\nbeta\n"));
 		let snap = base.snapshot();
 		assert_eq!(snap.to_string(), "alpha\nbeta\n");
 		// Second snapshot is independent.
@@ -2217,7 +2192,7 @@ mod tests {
 			std::process::id()
 		));
 		std::fs::write(&path, "hello\nworld\n").expect("write tempfile");
-		let base = OnDiskBaseline::new(path.clone());
+		let base = OnDiskSource::new(path.clone());
 		let snap = base.snapshot();
 		assert_eq!(snap.to_string(), "hello\nworld\n");
 		let _ = std::fs::remove_file(&path);
@@ -2228,7 +2203,7 @@ mod tests {
 		// Per docs: missing path / I/O error degrades to
 		// empty rope (all-Add presentation) rather than
 		// panicking.
-		let base = OnDiskBaseline::new(std::path::PathBuf::from(
+		let base = OnDiskSource::new(std::path::PathBuf::from(
 			"/nonexistent/path/lattice-diff-test-does-not-exist",
 		));
 		let snap = base.snapshot();
@@ -2349,8 +2324,8 @@ mod tests {
 	#[test]
 	fn schedule_recompute_returns_none_for_unregistered_buffer() {
 		let sub = DiffSubsystem::new();
-		let baseline: Arc<dyn BaselineSource> =
-			Arc::new(StaticBaseline::new(Rope::from("x\n")));
+		let baseline: Arc<dyn DiffParticipantSource> =
+			Arc::new(StaticSource::new(Rope::from("x\n")));
 		let handle = sub.schedule_recompute(bid(999), baseline, Rope::from("y\n"), None);
 		assert!(handle.is_none());
 	}
@@ -2359,8 +2334,8 @@ mod tests {
 	async fn schedule_recompute_runs_on_blocking_pool_and_publishes() {
 		let sub = DiffSubsystem::new();
 		let session = sub.register(bid(1), DiffAlgorithm::Histogram);
-		let baseline: Arc<dyn BaselineSource> =
-			Arc::new(StaticBaseline::new(Rope::from("alpha\nbeta\n")));
+		let baseline: Arc<dyn DiffParticipantSource> =
+			Arc::new(StaticSource::new(Rope::from("alpha\nbeta\n")));
 		let current = Rope::from("alpha\nBETA\n");
 
 		let handle = sub
@@ -2378,8 +2353,8 @@ mod tests {
 	async fn schedule_recompute_serial_pair_revisions_monotonic() {
 		let sub = DiffSubsystem::new();
 		let session = sub.register(bid(1), DiffAlgorithm::Histogram);
-		let baseline: Arc<dyn BaselineSource> =
-			Arc::new(StaticBaseline::new(Rope::from("alpha\n")));
+		let baseline: Arc<dyn DiffParticipantSource> =
+			Arc::new(StaticSource::new(Rope::from("alpha\n")));
 
 		let h1 = sub
 			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("alpha\n"), None)
@@ -2402,8 +2377,8 @@ mod tests {
 	use std::sync::atomic::AtomicU64;
 
 	// Mock impl of BufferTextProvider — stores ropes keyed by
-	// BufferId. The test sets ropes; `BufferBaseline` /
-	// `BufferCurrentSource` read them on snapshot.
+	// BufferId. The test sets ropes; `BufferSource` /
+	// `BufferSource` read them on snapshot.
 	#[derive(Debug, Default)]
 	struct MockProvider {
 		ropes: Mutex<HashMap<BufferId, Rope>>,
@@ -2446,11 +2421,11 @@ mod tests {
 		current_buf: BufferId,
 	) -> DiffDescriptor {
 		DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(
+			baseline: Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				baseline_buf,
 			)),
-			current: Arc::new(BufferCurrentSource::new(
+			current: Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				current_buf,
 			)),
@@ -2475,15 +2450,15 @@ mod tests {
 		remote_buf: BufferId,
 	) -> DiffDescriptor {
 		DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(
+			baseline: Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				base_buf,
 			)),
-			current: Arc::new(BufferCurrentSource::new(
+			current: Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				local_buf,
 			)),
-			remote: Some(Arc::new(BufferCurrentSource::new(
+			remote: Some(Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				remote_buf,
 			))),
@@ -2499,14 +2474,14 @@ mod tests {
 		let provider = Arc::new(MockProvider::default());
 		provider.set(bid(1), Rope::from("hello\n"));
 		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
-		let base = BufferBaseline::new(dyn_provider, bid(1));
+		let base = BufferSource::new(dyn_provider, bid(1));
 		assert_eq!(base.snapshot().to_string(), "hello\n");
 	}
 
 	#[test]
 	fn buffer_baseline_returns_empty_rope_when_provider_lacks_buffer() {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
-		let base = BufferBaseline::new(provider, bid(999));
+		let base = BufferSource::new(provider, bid(999));
 		assert_eq!(base.snapshot().len_chars(), 0);
 	}
 
@@ -2515,7 +2490,7 @@ mod tests {
 		let provider = Arc::new(MockProvider::default());
 		provider.set(bid(1), Rope::from("world\n"));
 		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
-		let cur = BufferCurrentSource::new(dyn_provider, bid(1));
+		let cur = BufferSource::new(dyn_provider, bid(1));
 		assert_eq!(cur.snapshot().to_string(), "world\n");
 	}
 
@@ -2542,15 +2517,15 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
 			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
+			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
 			remote: None,
 			participants: vec![],
@@ -2584,15 +2559,15 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
 			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
+			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
 			remote: None,
 			participants: vec![],
@@ -2611,8 +2586,8 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			baseline: Arc::new(StaticSource::new(Rope::from(""))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
 			remote: None,
 			participants: vec![],
@@ -2621,8 +2596,8 @@ mod tests {
 		assert_eq!(sub.watchers_of(bid(10)), vec![bid(1)]);
 
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			baseline: Arc::new(StaticSource::new(Rope::from(""))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(1)],
 			remote: None,
 			participants: vec![],
@@ -2991,7 +2966,7 @@ mod tests {
 	use lattice_diff::Hunk;
 	use smallvec::smallvec;
 
-	/// Build a session with a [`StaticBaseline`] for testing
+	/// Build a session with a [`StaticSource`] for testing
 	/// `compute_get_edit` without exercising the buffer-backed
 	/// machinery. Returns the subsystem so the caller can
 	/// publish hunks and query.
@@ -3003,8 +2978,8 @@ mod tests {
 		// only. The current source is required for descriptor
 		// construction.
 		let desc = DiffDescriptor {
-			baseline: Arc::new(StaticBaseline::new(Rope::from(baseline))),
-			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			baseline: Arc::new(StaticSource::new(Rope::from(baseline))),
+			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(1)],
 			remote: None,
 			participants: vec![bid(1)],
@@ -3218,11 +3193,11 @@ mod tests {
 		provider.set(current_bid, Rope::from(current_text));
 		let provider_dyn: Arc<dyn BufferTextProvider> = provider;
 		let desc = DiffDescriptor {
-			baseline: Arc::new(BufferBaseline::new(
+			baseline: Arc::new(BufferSource::new(
 				Arc::clone(&provider_dyn),
 				baseline_bid,
 			)),
-			current: Arc::new(BufferCurrentSource::new(
+			current: Arc::new(BufferSource::new(
 				Arc::clone(&provider_dyn),
 				current_bid,
 			)),

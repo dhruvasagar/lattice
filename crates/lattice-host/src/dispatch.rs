@@ -2597,14 +2597,14 @@ impl Editor {
         > = std::sync::Arc::new(
             crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
-        let baseline: std::sync::Arc<dyn crate::diff::subsystem::BaselineSource> =
+        let baseline: std::sync::Arc<dyn crate::diff::subsystem::DiffParticipantSource> =
             std::sync::Arc::new(
-                crate::diff::subsystem::OnDiskBaseline::new(path.clone()),
+                crate::diff::subsystem::OnDiskSource::new(path.clone()),
             );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
             baseline: std::sync::Arc::clone(&baseline),
             current: std::sync::Arc::new(
-                crate::diff::subsystem::BufferCurrentSource::new(
+                crate::diff::subsystem::BufferSource::new(
                     std::sync::Arc::clone(&provider_text),
                     buffer_id,
                 ),
@@ -3405,11 +3405,11 @@ impl Editor {
             crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 baseline.buffer,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
@@ -3481,8 +3481,8 @@ impl Editor {
     /// keyed under the session — typically the user's
     /// current pane), `remote` (the third party).
     ///
-    /// Builds a [`DiffDescriptor`] with `BufferBaseline`
-    /// + `BufferCurrentSource` + `Some(BufferCurrentSource)`
+    /// Builds a [`DiffDescriptor`] with `BufferSource`
+    /// + `BufferSource` + `Some(BufferSource)`
     /// for the three sides, `watch` + `participants` = all
     /// three buffers, primary key = `local.buffer`. Wires
     /// a `PaneGroup` with `HunkRowMapper::three_pane(...)`
@@ -3531,16 +3531,16 @@ impl Editor {
             crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 base.buffer,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
             remote: Some(std::sync::Arc::new(
-                crate::diff::subsystem::BufferCurrentSource::new(
+                crate::diff::subsystem::BufferSource::new(
                     std::sync::Arc::clone(&provider_text),
                     remote.buffer,
                 ),
@@ -24507,11 +24507,11 @@ mod tests {
                 ),
             );
         let desc_a = crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 lattice_core::BufferId(101),
             )),
@@ -24520,11 +24520,11 @@ mod tests {
             participants: vec![shared, lattice_core::BufferId(101)],
         };
         let desc_b = crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 lattice_core::BufferId(102),
             )),
@@ -24583,11 +24583,11 @@ mod tests {
                 ),
             );
         let mk = |peer: lattice_core::BufferId| crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 peer,
             )),
@@ -24717,15 +24717,15 @@ mod tests {
     // ── D.5.b: do_diff_get end-to-end ──────────────────────
 
     /// Boot an editor (with a running document actor) over
-    /// `current_text` and register a `StaticBaseline`-backed
+    /// `current_text` and register a `StaticSource`-backed
     /// session over `baseline_text`. Cursor starts at (0, 0).
     fn boot_editor_with_diff_session(
         current_text: &str,
         baseline_text: &str,
     ) -> Editor {
         use crate::diff::subsystem::{
-            BufferCurrentSource, BufferTextProvider, DiffDescriptor,
-            StaticBaseline,
+            BufferSource, BufferTextProvider, DiffDescriptor,
+            StaticSource,
         };
         use lattice_diff::DiffAlgorithm;
         use ropey::Rope;
@@ -24747,8 +24747,8 @@ mod tests {
         let bid = editor.document_buffer_id;
         let provider: Arc<dyn BufferTextProvider> = Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-            baseline: Arc::new(StaticBaseline::new(Rope::from(baseline_text))),
-            current: Arc::new(BufferCurrentSource::new(provider, bid)),
+            baseline: Arc::new(StaticSource::new(Rope::from(baseline_text))),
+            current: Arc::new(BufferSource::new(provider, bid)),
             watch: vec![bid],
             remote: None,
             participants: vec![bid],
@@ -24894,8 +24894,8 @@ mod tests {
     #[tokio::test]
     async fn do_diff_put_inline_baseline_emits_error_message() {
         use crate::diff::subsystem::{
-            BufferCurrentSource, BufferTextProvider, DiffDescriptor,
-            StaticBaseline,
+            BufferSource, BufferTextProvider, DiffDescriptor,
+            StaticSource,
         };
         use lattice_diff::{
             DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange,
@@ -24920,8 +24920,8 @@ mod tests {
         let provider: std::sync::Arc<dyn BufferTextProvider> =
             std::sync::Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-            baseline: std::sync::Arc::new(StaticBaseline::new(Rope::from("base-a\n"))),
-            current: std::sync::Arc::new(BufferCurrentSource::new(provider, bid)),
+            baseline: std::sync::Arc::new(StaticSource::new(Rope::from("base-a\n"))),
+            current: std::sync::Arc::new(BufferSource::new(provider, bid)),
             watch: vec![bid],
             remote: None,
             participants: vec![bid],
@@ -25715,10 +25715,10 @@ mod tests {
                 editor.buffers.clone(),
             ));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::StaticBaseline::new(
+            baseline: std::sync::Arc::new(crate::diff::subsystem::StaticSource::new(
                 ropey::Rope::new(),
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 provider_text,
                 primary,
             )),
@@ -25834,13 +25834,13 @@ mod tests {
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
                 baseline: std::sync::Arc::new(
-                    crate::diff::subsystem::BufferBaseline::new(
+                    crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
                 current: std::sync::Arc::new(
-                    crate::diff::subsystem::BufferCurrentSource::new(
+                    crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
@@ -25898,13 +25898,13 @@ mod tests {
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
                 baseline: std::sync::Arc::new(
-                    crate::diff::subsystem::BufferBaseline::new(
+                    crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
                 current: std::sync::Arc::new(
-                    crate::diff::subsystem::BufferCurrentSource::new(
+                    crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
@@ -25995,11 +25995,11 @@ mod tests {
             ),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 secondary,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),

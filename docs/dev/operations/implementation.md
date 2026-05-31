@@ -3503,6 +3503,62 @@ shared with multibuffer-views and post-v1 inlay hints.
     subsystem.rs}}, benches/diff_subsystem.rs}`. Arch
     doc: design fragment §4 names `compute_diff` as
     the only public entry; no further doc edit needed.
+  - ✅ **D.8.b** (2026-05-31) — `DiffParticipantSource`
+    trait + concrete source renames. The two-trait
+    split (`BaselineSource` + `CurrentSource`)
+    collapses into a single
+    `pub trait DiffParticipantSource: Send + Sync +
+    'static + Debug` with the same `snapshot() -> Rope`
+    contract. The original split was structural sugar —
+    visual asymmetry at the descriptor's two named
+    fields. With participants becoming an
+    arity-agnostic `Vec<...>` in D.8.c, the slot index
+    will carry the role; the trait split stops earning
+    its weight even before that.
+    Concrete source renames:
+    - `StaticBaseline → StaticSource`
+    - `OnDiskBaseline → OnDiskSource`
+    - `BufferBaseline` + `BufferCurrentSource` →
+      unified `BufferSource` (both had identical
+      shape — `provider + buffer_id` — and differed
+      only in which trait they implemented; the merge
+      falls out of the trait collapse).
+    Pre-v1 clean break — no deprecation aliases. A
+    workspace-wide rename pass (word-boundary regex
+    via Python) ordered carefully to avoid substring
+    collisions (`BufferCurrentSource` renamed before
+    `CurrentSource`). 5 files in `crates/` touched
+    directly by the rename pass; the trait-object
+    type parameter updates in `DiffDescriptor`
+    cascade through ~25 test-fixture + production
+    reference sites.
+    `DiffDescriptor`'s field shape stays at
+    `baseline / current / remote` for D.8.b — the
+    `sources: Vec<...>` shape change is D.8.c's
+    scope. Every reference through the
+    `Arc<dyn DiffParticipantSource>` type now goes
+    through the unified trait.
+    No new tests — D.8.b is a structural rename; the
+    existing 639 lattice-host + 31 lattice-diff +
+    1461 workspace tests pass unchanged. Both
+    benches smoke-pass via `cargo bench
+    --bench {recompute,diff_subsystem} -- --test`.
+    Doc updates: `diff-system.md` §3.4.1 gains a
+    "D.8 in progress" banner pointing at
+    `n-way-diff-membership.md` — the §3.4.1
+    description of the D.2-era two-trait shape stays
+    as historical record; the full §3.4.1 rewrite
+    happens when D.8 closes at D.8.f. Historical
+    references to the old names in doc-comment
+    narrative (e.g., "D.8.b collapses the previous
+    `BaselineSource` + `CurrentSource`") preserved
+    on purpose so future readers can trace the
+    rename.
+    Touched: `crates/lattice-host/src/diff/{subsystem.rs,
+    overlay.rs}`, `crates/lattice-host/src/dispatch.rs`,
+    `crates/lattice-host/benches/diff_subsystem.rs`,
+    `crates/lattice-host/src/diff/mod.rs`,
+    `docs/dev/architecture/diff-system.md`.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

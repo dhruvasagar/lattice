@@ -65,7 +65,7 @@ use lattice_core::BufferId;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::diff::subsystem::{BaselineSource, DiffSession};
+use crate::diff::subsystem::{DiffParticipantSource, DiffSession};
 
 // ──────────────────────────────────────────────────────────────
 // D.3.d.0 (2026-05-29): per-line sign classification.
@@ -287,7 +287,7 @@ impl DiffOverlayVirtualRowProvider {
 	/// monochrome — backward-compatible with D.3.b's behavior.
 	pub fn render_rows(
 		session: &DiffSession,
-		baseline: &dyn BaselineSource,
+		baseline: &dyn DiffParticipantSource,
 		syntax: Option<&SyntaxContext>,
 	) -> (u64, Vec<VirtualRow>) {
 		let hunks = session.current_hunks();
@@ -485,7 +485,7 @@ pub struct DiffOverlayRefreshTask;
 impl DiffOverlayRefreshTask {
 	pub fn spawn(
 		session: Arc<DiffSession>,
-		baseline: Arc<dyn BaselineSource>,
+		baseline: Arc<dyn DiffParticipantSource>,
 		cache: Arc<Mutex<DiffOverlayCache>>,
 		virtual_rows_wake: Arc<tokio::sync::Notify>,
 		syntax: Option<SyntaxContext>,
@@ -504,7 +504,7 @@ impl DiffOverlayRefreshTask {
 
 	fn run_once(
 		session: &DiffSession,
-		baseline: &dyn BaselineSource,
+		baseline: &dyn DiffParticipantSource,
 		cache: &Mutex<DiffOverlayCache>,
 		virtual_rows_wake: &Arc<tokio::sync::Notify>,
 		syntax: Option<&SyntaxContext>,
@@ -598,11 +598,11 @@ mod tests {
 	// The pure render path is `render_rows(session, baseline)`;
 	// tests below exercise it directly so they stay sync.
 
-	use crate::diff::subsystem::StaticBaseline;
+	use crate::diff::subsystem::StaticSource;
 	use ropey::Rope;
 
 	fn render(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
-		let base = StaticBaseline::new(Rope::from(baseline_text));
+		let base = StaticSource::new(Rope::from(baseline_text));
 		DiffOverlayVirtualRowProvider::render_rows(session, &base, None).1
 	}
 
@@ -611,7 +611,7 @@ mod tests {
 	// assert per-cell fg is populated from the one-shot
 	// tree-sitter parse.
 	fn render_with_syntax(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
-		let base = StaticBaseline::new(Rope::from(baseline_text));
+		let base = StaticSource::new(Rope::from(baseline_text));
 		let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
 		let ctx = SyntaxContext {
 			lang: lattice_syntax::Lang::Rust,

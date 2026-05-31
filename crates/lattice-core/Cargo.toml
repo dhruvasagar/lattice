@@ -25,5 +25,14 @@ harness = false
 name = "buffer"
 harness = false
 
+# M.-0 (2026-05-31): Document hot-path baseline ahead of M.0's
+# trait + ArcSwap refactor. Two groups — `document_read_p99_us`
+# (renderer per-frame Document reads) and `document_edit_p99_us`
+# (dispatcher per-keystroke Document writes) — give M.0 a
+# no-regression gate. See `benches/document_hotpath.rs`.
+[[bench]]
+name = "document_hotpath"
+harness = false
+
 [lints]
 workspace = true

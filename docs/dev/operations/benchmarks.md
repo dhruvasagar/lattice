@@ -28,6 +28,56 @@ target rather than just a slower number.
 
 ---
 
+## M.-0 — Document hot-path baseline (2026-05-31)
+
+Pre-M.0 baseline numbers for `lattice-core::Document` before
+the trait + ArcSwap refactor. The two bench groups
+(`document_read_p99_us`, `document_edit_p99_us`) give M.0 a
+no-regression gate per the multibuffer slice plan. M.0's
+PR description quotes the before/after delta against these
+rows.
+
+Bench file: `crates/lattice-core/benches/document_hotpath.rs`.
+Run: `cargo bench -p lattice-core --bench document_hotpath`.
+Numbers below are from `--quick` mode (criterion's fast
+estimate, 100 samples instead of 100k); the merge-gate run
+should use the full criterion mode.
+
+| Bench / size | Median time | Notes |
+|---|---|---|
+| `document_read_p99_us::viewport_walk/10` | 3.2 µs | 10-line doc, viewport is clipped → ~10 line reads + selection / version |
+| `document_read_p99_us::viewport_walk/1000` | 6.8 µs | 50-line viewport walk over a 1k-line doc |
+| `document_read_p99_us::viewport_walk/100000` | 7.1 µs | 50-line viewport over a 100k-line doc — `Buffer::line()` is O(log n); the bench is mostly per-line String allocation |
+| `document_edit_p99_us::insert_at_middle/10` | ~2.2 µs | Insert "x" at midpoint |
+| `document_edit_p99_us::insert_at_middle/1000` | ~1.5 µs | Smaller than `/10` because lines per page bucket differ — rope insert is sub-linear |
+| `document_edit_p99_us::insert_at_middle/100000` | ~76 µs | Rope split / rebalance dominated |
+| `document_edit_p99_us::delete_at_middle/10` | 2.2 µs | Symmetric to insert |
+| `document_edit_p99_us::delete_at_middle/1000` | 1.5 µs | |
+| `document_edit_p99_us::delete_at_middle/100000` | 76 µs | |
+| `document_edit_p99_us::set_selections_motion/10` | 4.1 ns | Replace `SelectionSet` field + version bump (no alloc today) |
+| `document_edit_p99_us::set_selections_motion/1000` | 4.4 ns | |
+| `document_edit_p99_us::set_selections_motion/100000` | 4.2 ns | Size-independent (no rope access) |
+
+**What M.0 should change here:**
+
+- `viewport_walk` — should be **flat or faster**: the trait
+  surfaces `rope_snapshot() -> Arc<Rope>` so callers slice the
+  rope directly instead of `Buffer::line()` cloning a `String`
+  per line. The bench retains `Buffer::line()` for now so the
+  comparison is apples-to-apples on the trait refactor itself;
+  follow-on slices may swap call sites to the Arc<Rope> path.
+- `insert_at_middle` / `delete_at_middle` — should be **flat
+  or slightly slower**: extra `Arc::new(Rope)` allocation on
+  every commit + `ArcSwap::store`. Expected overhead ~200–500
+  ns per write at the small sizes; lost in the noise at 100k.
+- `set_selections_motion` — will go from **~4 ns to ~250–400
+  ns**: today is a field overwrite, M.0 makes it
+  `ArcSwap::store(Arc::new(SelectionSet))`. The absolute cost
+  remains well under the 8 ms / 120 Hz frame budget (250 ns is
+  0.003 % of the budget at one call per frame).
+
+A regression past these envelopes is the M.0 review's blocker.
+
 ## Post-3c.unify (slice 7 + 8, 2026-05-21)
 
 Snapshot after the slice-7 unification arc (7a-7g) closed:

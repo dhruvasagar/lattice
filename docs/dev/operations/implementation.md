@@ -3326,6 +3326,64 @@ shared with multibuffer-views and post-v1 inlay hints.
     dispatch.rs}`. **D.6 closed.** Arch doc: no edit
     needed — §7 budget claims and §11 risk both
     backed by the new artefacts.
+  - ✅ **D.6.i** (2026-05-31) — `VirtualRowKind`
+    discriminator + filler-row backdrop fix. The D.6.f
+    GPUI parity audit surfaced an asymmetry in how
+    diff-backdrop colours flow to the renderer
+    (`diff_deletion_block_bg` as a scalar element
+    field; `diff_tint_per_row` as a per-row Vec). The
+    real bug it was masking: **filler virtual rows
+    (D.4.c / D.6.b side-by-side alignment) painted with
+    the deletion-block red backdrop**, mis-reading
+    visual-padding rows as deleted content.
+    Fix at the data layer:
+    `lattice_cells::VirtualRow` gains a
+    `kind: VirtualRowKind` field with variants
+    `{ Generic, DeletionBlock, Filler }`
+    (`#[derive(Default)]` → `Generic` for back-compat).
+    Producers tag at construction:
+    - `lattice-host::diff::overlay` (deletion blocks)
+      → `Kind::DeletionBlock`
+    - `lattice-host::diff::filler` (alignment padding)
+      → `Kind::Filler`
+    Both renderers updated in lockstep (per the saved
+    feedback-tui-gpui-parity rule):
+    - **GPUI** (`editor_element::push_virtual_row`):
+      backdrop quad emitted only for
+      `DeletionBlock | Generic`; `Filler` gets an
+      empty quads vec.
+    - **TUI** (`render_virtual_row`): `bg` becomes
+      `Option<Color>`; `Filler` gets `None` and the
+      pad-fill span paints with no backdrop.
+    The original architectural framing ("unify diff
+    line-tint propagation") resolved differently than
+    drafted: rather than moving `diff_deletion_block_bg`
+    into the per-row vector or vice versa, the right
+    unification was per-VirtualRow-kind discrimination
+    at the data layer. The element struct keeps both
+    fields because they paint different things
+    (document-row tints vs virtual-row backdrops); the
+    asymmetry is now intentional and documented, not
+    accidental.
+    **2 new tests:**
+    - `filler_rows_carry_filler_kind` (`diff::filler::tests`)
+      — D.6.b's filler-row provider must tag rows so the
+      renderer skips the backdrop.
+    - `deletion_block_rows_carry_deletion_block_kind`
+      (`diff::overlay::tests`) — D.3 deletion-block
+      overlay still emits backdrop-eligible rows.
+    639 lattice-host + workspace tests green. Touched:
+    `crates/lattice-cells/src/{lib.rs, matrix.rs,
+    virtual_rows.rs}`,
+    `crates/lattice-host/src/{diff/filler.rs,
+    diff/overlay.rs, virtual_rows_worker.rs}`,
+    `crates/lattice-ui-tui/src/render.rs`,
+    `crates/lattice-ui-gpui/src/editor_element.rs`.
+    Arch doc: `docs/dev/architecture/virtual-rows.md`
+    doesn't currently document the kind discriminator;
+    one-line note added on next pass (no contract
+    change — `Default` keeps every existing producer
+    valid).
 - 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
 - 🗒 **D.8** — `:diffthis` as buffer-group membership +

@@ -242,6 +242,10 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
                 position,
                 cells: blank_cells.clone(),
                 height: 1,
+                // D.6.i: filler rows paint with no backdrop —
+                // they're visual padding for side-by-side
+                // alignment, not deleted content.
+                kind: lattice_cells::VirtualRowKind::Filler,
             });
         }
     }
@@ -645,6 +649,28 @@ mod tests {
         let bid = BufferId(7);
         let overlay = crate::diff::overlay::diff_overlay_provider_id(bid);
         assert_ne!(diff_filler_provider_id(bid, Side::Remote), overlay);
+    }
+
+    /// D.6.i (2026-05-31): filler-row provider emits
+    /// `VirtualRowKind::Filler` so renderers skip the
+    /// deletion-block backdrop on padding rows.
+    #[test]
+    fn filler_rows_carry_filler_kind() {
+        let i = idx(vec![hunk(
+            HunkKind::Add,
+            LineRange::new(5, 5),
+            LineRange::new(5, 8),
+        )]);
+        let rows = compute_filler_rows(&i, Side::Baseline);
+        assert!(!rows.is_empty());
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                lattice_cells::VirtualRowKind::Filler,
+                "filler rows must be tagged Filler so renderers skip the \
+                 deletion-block backdrop"
+            );
+        }
     }
 
     #[test]

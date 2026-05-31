@@ -56,5 +56,6 @@ pub use matrix::{
 pub use row::{CellRow, InlayOffset};
 pub use version::MatrixVersion;
 pub use virtual_rows::{
-	AnchorPosition, ProviderId, VirtualRow, VirtualRowMatrix, VirtualRowProvider, VirtualRowVersion,
+	AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowMatrix, VirtualRowProvider,
+	VirtualRowVersion,
 };

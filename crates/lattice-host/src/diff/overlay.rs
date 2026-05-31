@@ -347,6 +347,9 @@ impl DiffOverlayVirtualRowProvider {
 					position: AnchorPosition::Above,
 					cells: Arc::from(cells),
 					height: 1,
+					// D.6.i: deletion blocks render with the
+					// diff-deletion-block backdrop.
+					kind: lattice_cells::VirtualRowKind::DeletionBlock,
 				});
 			}
 		}
@@ -720,6 +723,30 @@ mod tests {
 		assert_eq!(rows[1].anchor_line, 20);
 		assert_eq!(rows[0].cells.len(), 5); // "first"
 		assert_eq!(rows[1].cells.len(), 6); // "second"
+	}
+
+	/// D.6.i (2026-05-31): deletion-block overlay rows
+	/// carry `VirtualRowKind::DeletionBlock` so the
+	/// renderer paints them with the deletion-block
+	/// backdrop. Distinct from filler rows
+	/// (`VirtualRowKind::Filler`) which paint with no
+	/// backdrop.
+	#[test]
+	fn deletion_block_rows_carry_deletion_block_kind() {
+		let hunk = Hunk {
+			kind: HunkKind::Remove,
+			ranges: smallvec![LineRange::new(0, 2), LineRange::new(5, 5)],
+		};
+		let s = session_with_hunks(bid(1), vec![hunk]);
+		let rows = render(&s, "removed-1\nremoved-2\n");
+		assert!(!rows.is_empty());
+		for row in &rows {
+			assert_eq!(
+				row.kind,
+				lattice_cells::VirtualRowKind::DeletionBlock,
+				"deletion-block rows must be tagged DeletionBlock"
+			);
+		}
 	}
 
 	#[test]

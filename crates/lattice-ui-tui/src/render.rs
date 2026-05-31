@@ -4382,12 +4382,26 @@ fn render_virtual_row(
     // D.3.b.2 (2026-05-29): emit per-cell spans with run
     // coalescing — adjacent cells sharing the same `fg`
     // merge into a single styled Span so an 80-char
-    // baseline line produces ~5 spans, not 80. Each cell
-    // carries the deletion-block backdrop from the theme
-    // (D.3.b.3 — `theme.diff_deletion_block_bg`).
+    // baseline line produces ~5 spans, not 80.
+    //
+    // D.6.i (2026-05-31): backdrop selection by
+    // `vrow.kind`. Deletion blocks (D.3) + Generic
+    // virtual rows get `theme.diff_deletion_block_bg`
+    // (the historical D.3.b.3 default). Filler rows
+    // (D.4.c / D.6.b) are visual padding for side-by-
+    // side alignment — they paint with no backdrop,
+    // otherwise the deletion-block red would mis-read
+    // them as deleted lines.
+    //
     // `cell.fg = 0` means "use terminal default" (the
     // renderer leaves fg unset).
-    let bg = view.app.theme.diff_deletion_block_bg;
+    let bg = match vrow.kind {
+        lattice_cells::VirtualRowKind::DeletionBlock
+        | lattice_cells::VirtualRowKind::Generic => {
+            Some(view.app.theme.diff_deletion_block_bg)
+        }
+        lattice_cells::VirtualRowKind::Filler => None,
+    };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();
     let mut run_fg: Option<u32> = None;
@@ -4395,7 +4409,10 @@ fn render_virtual_row(
         if text.is_empty() {
             return;
         }
-        let mut style = TuiStyle::default().bg(bg);
+        let mut style = TuiStyle::default();
+        if let Some(c) = bg {
+            style = style.bg(c);
+        }
         if let Some(rgb) = fg {
             if rgb != 0 {
                 let r = ((rgb >> 16) & 0xff) as u8;
@@ -4421,12 +4438,17 @@ fn render_virtual_row(
         run_text.push(ch);
     }
     flush(&mut run_text, run_fg, &mut spans);
-    // Pad the row out to body_width so the backdrop covers
+    // Pad the row out to body_width so the backdrop (when
+    // present — deletion blocks; not filler rows) covers
     // the full body column even for short baseline lines.
     let used: u32 = spans.iter().map(|s| s.content.chars().count() as u32).sum();
     if used < body_width {
         let pad: String = " ".repeat((body_width - used) as usize);
-        spans.push(Span::styled(pad, TuiStyle::default().bg(bg)));
+        let mut pad_style = TuiStyle::default();
+        if let Some(c) = bg {
+            pad_style = pad_style.bg(c);
+        }
+        spans.push(Span::styled(pad, pad_style));
     }
     let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
     out.push(severity_blank);

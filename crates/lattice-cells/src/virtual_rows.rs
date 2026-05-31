@@ -42,6 +42,44 @@ pub enum AnchorPosition {
 	Below,
 }
 
+/// D.6.i (2026-05-31): which kind of virtual row this is,
+/// for renderer-side backdrop / decoration discrimination.
+///
+/// Two production kinds today:
+/// - `DeletionBlock` — a diff deletion-block row (D.3 inline
+///   overlay) carrying baseline content that's gone from
+///   the current side. Painted with the
+///   `host_theme.diff_deletion_block_bg` backdrop (default:
+///   faint dark red) so the user sees "this content
+///   existed in baseline but is gone in current".
+/// - `Filler` — a blank padding row (D.4.c / D.6.b
+///   side-by-side alignment) on the shorter side of a hunk
+///   so parallel rows line up across panes. Should paint
+///   with **no backdrop** (or a neutral one) — fillers are
+///   visual padding, not content; the deletion-block red
+///   would mis-read them as "deleted lines."
+///
+/// `Generic` is the default for any other virtual-row
+/// source (future code-lens, inlay-line, multibuffer
+/// excerpt header). Renderers treat it like a deletion
+/// block for backdrop purposes today; the variant exists
+/// so future kinds can join the discriminator without a
+/// breaking change.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum VirtualRowKind {
+	/// Default — any virtual row not explicitly tagged.
+	/// Painted with the deletion-block backdrop today.
+	#[default]
+	Generic,
+	/// Diff deletion-block row (D.3). Baseline content
+	/// that was removed from the current side; paints
+	/// with the deletion-block backdrop.
+	DeletionBlock,
+	/// Side-by-side alignment filler (D.4.c / D.6.b).
+	/// Blank padding; no backdrop.
+	Filler,
+}
+
 /// One virtual row's anchor + content.
 ///
 /// `anchor_line` is the 0-based source line this row attaches
@@ -55,12 +93,17 @@ pub enum AnchorPosition {
 /// (`1` for the common case; values > 1 reserved for
 /// multi-line code-lens / signature-preview blocks that paint
 /// taller than one cell row).
+///
+/// `kind` (D.6.i) tags the row's provenance so renderers
+/// pick the right backdrop / decoration treatment without
+/// guessing from cell content.
 #[derive(Clone, Debug)]
 pub struct VirtualRow {
 	pub anchor_line: u32,
 	pub position: AnchorPosition,
 	pub cells: Arc<[Cell]>,
 	pub height: u16,
+	pub kind: VirtualRowKind,
 }
 
 /// A monotonically-increasing counter; bumped by the
@@ -257,6 +300,7 @@ mod tests {
 			position: pos,
 			cells: Arc::from([] as [Cell; 0]),
 			height: 1,
+			kind: VirtualRowKind::Generic,
 		}
 	}
 

@@ -1635,17 +1635,31 @@ fn push_virtual_row(
         &[gutter_run],
         None,
     );
-    // Deletion-block backdrop: full-row quad in the body
-    // column. Painted first in `overlay_quads_per_row` so
-    // subsequent paints (none, for virtual rows) layer over.
-    let backdrop_width = content_cols.max(1);
-    let backdrop = (0u32, backdrop_width, backdrop_color);
+    // D.6.i (2026-05-31): per-virtual-row-kind backdrop
+    // selection. Deletion blocks (D.3) paint with the
+    // `diff_deletion_block_bg` quad so the user sees
+    // "this content existed in baseline but is gone."
+    // Filler rows (D.4.c / D.6.b) are visual padding for
+    // side-by-side alignment — they paint with no
+    // backdrop, otherwise the deletion-block red would
+    // mis-read them as deleted lines. Generic (the
+    // default for any other virtual-row source) gets the
+    // deletion-block backdrop for back-compat with
+    // pre-D.6.i providers.
+    let quads = match vrow.kind {
+        lattice_cells::VirtualRowKind::DeletionBlock
+        | lattice_cells::VirtualRowKind::Generic => {
+            let backdrop_width = content_cols.max(1);
+            vec![(0u32, backdrop_width, backdrop_color)]
+        }
+        lattice_cells::VirtualRowKind::Filler => Vec::new(),
+    };
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
     row_meta.push((u32::MAX, String::new()));
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
-    overlay_quads_per_row.push(vec![backdrop]);
+    overlay_quads_per_row.push(quads);
 }
 
 fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {

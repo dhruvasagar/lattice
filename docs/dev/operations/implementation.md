@@ -3745,6 +3745,58 @@ shared with multibuffer-views and post-v1 inlay hints.
     build clean. Touched:
     `crates/lattice-host/src/editor.rs`,
     `crates/lattice-host/src/dispatch.rs`.
+  - ✅ **D.8.f** (2026-05-31) — `:diffoff` per-buffer
+    semantic + pane-group helper collapse + final D.8
+    cleanup. Closes the D.8 series.
+    **Helper collapse.** The D.4.d.3.a
+    `register_two_pane_diff` and D.6.c
+    `register_three_pane_diff` collapse into one
+    `register_pane_group_diff(members:
+    Vec<PaneGroupMember>)`. Validates arity ∈ [2,
+    3] (arity 1 is `:diffthis`'s job; arity 4+ is
+    engine-rejected), pairwise-distinct members,
+    and that no member already participates in a
+    session. Builds the descriptor's `sources` from
+    `BufferSource` per member, walks slot 0..N for
+    filler-provider registration. Member layout
+    convention preserved (`[baseline, current]` at
+    arity 2; `[base, local, remote]` at arity 3),
+    so call-site semantics are unchanged. Both
+    `:diffsplit <file>` and `:diffsplit <base>
+    <remote>` route through the new helper.
+    **`:diffoff` per-buffer.** When the active
+    buffer is in the singleton diffthis group,
+    `do_diff_off(false)` now routes through
+    `diffthis_toggle_off` (D.8.e's membership-API
+    shrink): arity 2 → 1 (dormant; pane group +
+    fillers torn down, session lingers under the
+    surviving primary, `diffthis_group` stays
+    `Some`); arity 3 → 2 (pane group +
+    fillers drop-and-recreate at the smaller
+    arity); arity 1 → 0 auto-drops the session.
+    Vim parity: `:set nodiff` on one window
+    doesn't un-set diff on the others. Non-
+    diffthis sessions (inline `:diff <buf>`,
+    `:diffsplit`) keep the existing full-session
+    collapse for `:diffoff` — those shapes are
+    user-explicit fixed-arity sessions; a uniform
+    per-buffer shrink for them is a future
+    generalization. **`:diffoff!` (force, D.6.g
+    cascade) preserved** — bypasses the diffthis-
+    aware branch and tears down every session the
+    active buffer participates in.
+    **Tests retired** (asserted v1's pre-D.8
+    full-collapse-on-`:diffoff` semantic):
+    `diff_off_from_baseline_pane_tears_down_two_pane_session`,
+    `diff_off_with_force_bang_is_v1_identical_to_no_bang`,
+    `diff_off_clears_diff_mode_on_both_panes`.
+    **Tests added** (D.8.f post-shrink shape):
+    `diffoff_from_diffthis_member_shrinks_to_arity_one_dormant`,
+    `diffoff_bang_from_diffthis_member_full_teardown`,
+    `diffoff_clears_diff_mode_only_on_removed_member`.
+    653 lattice-host (= pre-D.8.f net) + workspace
+    build clean. Touched:
+    `crates/lattice-host/src/dispatch.rs`.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

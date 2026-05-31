@@ -3559,6 +3559,60 @@ shared with multibuffer-views and post-v1 inlay hints.
     `crates/lattice-host/benches/diff_subsystem.rs`,
     `crates/lattice-host/src/diff/mod.rs`,
     `docs/dev/architecture/diff-system.md`.
+  - ✅ **D.8.c** (2026-05-31) — `DiffDescriptor` shape
+    change to arity-agnostic
+    `sources: Vec<Arc<dyn DiffParticipantSource>>`.
+    The D.6.a-era `baseline + current + Option<remote>`
+    named-field triple collapses into a single ordered
+    vector of participant sources. `arity()` accessor
+    replaces `is_three_way()` (call sites switch to
+    `arity() == 3` where they need the three-way
+    discriminator). `DiffSession::recompute_blocking`
+    signature rewritten from
+    `(baseline: &Rope, current: &Rope, remote:
+    Option<&Rope>)` to `(sources: &[Rope])` —
+    `compute_diff` (D.8.a) is the engine entry it
+    already routed to, but now the slice flows
+    through cleanly without the intermediate
+    fixed-arity decode. `schedule_recompute` similarly
+    rewritten from `(baseline, current_rope, remote)`
+    to `(sources: Vec<Arc<...>>)`; snapshots all
+    sources inside the `spawn_blocking` task so the
+    descriptor's mutex isn't held across the snapshot
+    calls. `recompute_from_descriptor` collapses to a
+    one-line `schedule_recompute(session_key,
+    descriptor.sources)` call. `snapshot_for_pane`
+    (the D.6.d helper feeding `compute_get_edit` /
+    `compute_put_plan`) becomes a one-liner over
+    `descriptor.sources.get(pane)`.
+    `TargetResolution::resolve_target_pane` (D.6.d)
+    branches on `descriptor.arity() >= 3` instead of
+    `descriptor.remote.is_some()`. Pre-v1 clean break,
+    no aliases.
+    Descriptor-literal rewrite: 25 sites across
+    `lattice-host/src/diff/subsystem.rs` (10),
+    `lattice-host/src/dispatch.rs` (12), and
+    `lattice-host/benches/diff_subsystem.rs` (3).
+    Done via a balanced-paren Python pass that walks
+    each `DiffDescriptor {` block, parses out the
+    `baseline / current / remote` field assignments
+    (multi-line values supported), and splices in a
+    `sources: vec![...]` line with the source
+    expressions in slot order. Some test fixtures
+    needed manual touch-up after the script (one site
+    referenced a `provider` variable from a different
+    fixture scope; reworked to use `StaticSource`
+    inline). The existing
+    `is_three_way_reflects_remote_presence` test
+    renamed + rewritten as
+    `arity_reflects_participant_count` (assert_eq
+    against the explicit count rather than the
+    boolean).
+    639 lattice-host + 31 lattice-diff + 1461 workspace
+    tests green; both benches smoke-pass. Touched:
+    `crates/lattice-host/src/diff/subsystem.rs`,
+    `crates/lattice-host/src/dispatch.rs`,
+    `crates/lattice-host/benches/diff_subsystem.rs`.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

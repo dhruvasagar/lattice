@@ -2602,18 +2602,24 @@ impl Editor {
                 crate::diff::subsystem::OnDiskSource::new(path.clone()),
             );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::clone(&baseline),
-            current: std::sync::Arc::new(
+
+
+            sources: vec![
+
+            	std::sync::Arc::clone(&baseline),
+
+            	std::sync::Arc::new(
                 crate::diff::subsystem::BufferSource::new(
                     std::sync::Arc::clone(&provider_text),
                     buffer_id,
                 ),
             ),
+
+            ],
             watch: vec![buffer_id],
             // D.5.a (2026-05-30): file-on-disk baseline has
             // no live buffer, so only the current side
             // receives `diff-mode`.
-            remote: None,
             participants: vec![buffer_id],
         };
         let session = self.diff_subsystem.register_with_sources(
@@ -3158,7 +3164,7 @@ impl Editor {
         let descriptor = self.diff_subsystem.lookup_descriptor(primary);
         let is_three_way = descriptor
             .as_ref()
-            .map(|d| d.is_three_way())
+            .map(|d| d.arity() == 3)
             .unwrap_or(false);
         let watch: Vec<lattice_core::BufferId> = descriptor
             .as_ref()
@@ -3405,15 +3411,21 @@ impl Editor {
             crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 baseline.buffer,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
-            remote: None,
+
+            ],
             watch: vec![baseline.buffer, primary],
             // D.5.a (2026-05-30): both sides are live buffers
             // backing the two-pane diff; both receive
@@ -3531,20 +3543,28 @@ impl Editor {
             crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 base.buffer,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
-            remote: Some(std::sync::Arc::new(
+
+            	std::sync::Arc::new(
                 crate::diff::subsystem::BufferSource::new(
                     std::sync::Arc::clone(&provider_text),
                     remote.buffer,
                 ),
-            )),
+            ),
+
+            ],
             watch: vec![base.buffer, primary, remote.buffer],
             // All three live buffers participate; the
             // mode-bridge refcount activates `diff-mode`
@@ -24507,28 +24527,40 @@ mod tests {
                 ),
             );
         let desc_a = crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 lattice_core::BufferId(101),
             )),
-            remote: None,
+
+            ],
             watch: vec![shared, lattice_core::BufferId(101)],
             participants: vec![shared, lattice_core::BufferId(101)],
         };
         let desc_b = crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 lattice_core::BufferId(102),
             )),
-            remote: None,
+
+            ],
             watch: vec![shared, lattice_core::BufferId(102)],
             participants: vec![shared, lattice_core::BufferId(102)],
         };
@@ -24583,15 +24615,21 @@ mod tests {
                 ),
             );
         let mk = |peer: lattice_core::BufferId| crate::diff::subsystem::DiffDescriptor {
-            baseline: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 shared,
             )),
-            current: Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	Arc::new(crate::diff::subsystem::BufferSource::new(
                 Arc::clone(&provider),
                 peer,
             )),
-            remote: None,
+
+            ],
             watch: vec![shared, peer],
             participants: vec![shared, peer],
         };
@@ -24747,10 +24785,16 @@ mod tests {
         let bid = editor.document_buffer_id;
         let provider: Arc<dyn BufferTextProvider> = Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-            baseline: Arc::new(StaticSource::new(Rope::from(baseline_text))),
-            current: Arc::new(BufferSource::new(provider, bid)),
+
+
+            sources: vec![
+
+            	Arc::new(StaticSource::new(Rope::from(baseline_text))),
+
+            	Arc::new(BufferSource::new(provider, bid)),
+
+            ],
             watch: vec![bid],
-            remote: None,
             participants: vec![bid],
         };
         editor.diff_subsystem.register_with_sources(
@@ -24920,10 +24964,16 @@ mod tests {
         let provider: std::sync::Arc<dyn BufferTextProvider> =
             std::sync::Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-            baseline: std::sync::Arc::new(StaticSource::new(Rope::from("base-a\n"))),
-            current: std::sync::Arc::new(BufferSource::new(provider, bid)),
+
+
+            sources: vec![
+
+            	std::sync::Arc::new(StaticSource::new(Rope::from("base-a\n"))),
+
+            	std::sync::Arc::new(BufferSource::new(provider, bid)),
+
+            ],
             watch: vec![bid],
-            remote: None,
             participants: vec![bid],
         };
         let session = editor.diff_subsystem.register_with_sources(
@@ -25715,15 +25765,21 @@ mod tests {
                 editor.buffers.clone(),
             ));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::StaticSource::new(
+
+
+            sources: vec![
+
+            	std::sync::Arc::new(crate::diff::subsystem::StaticSource::new(
                 ropey::Rope::new(),
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 provider_text,
                 primary,
             )),
+
+            ],
             watch: vec![primary],
-            remote: None,
             participants: vec![primary],
         };
         editor.diff_subsystem.register_with_sources(
@@ -25833,19 +25889,25 @@ mod tests {
             ));
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
-                baseline: std::sync::Arc::new(
+
+
+                sources: vec![
+
+                	std::sync::Arc::new(
                     crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
-                current: std::sync::Arc::new(
+
+                	std::sync::Arc::new(
                     crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
                 ),
-                remote: None,
+
+                ],
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
             }
@@ -25897,19 +25959,25 @@ mod tests {
         let peer_b = lattice_core::BufferId(203);
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
-                baseline: std::sync::Arc::new(
+
+
+                sources: vec![
+
+                	std::sync::Arc::new(
                     crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
-                current: std::sync::Arc::new(
+
+                	std::sync::Arc::new(
                     crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
                 ),
-                remote: None,
+
+                ],
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
             }
@@ -25995,16 +26063,22 @@ mod tests {
             ),
         );
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+
+            sources: vec![
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 secondary,
             )),
-            current: std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+
+            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
+
+            ],
             watch: vec![primary, secondary],
-            remote: None,
             participants: vec![primary, secondary],
         };
         sub.register_with_sources(primary, lattice_diff::DiffAlgorithm::Histogram, descriptor);
@@ -26293,7 +26367,7 @@ mod tests {
             .diff_subsystem
             .lookup_descriptor(local_buffer)
             .expect("descriptor present");
-        assert!(descriptor.is_three_way());
+        assert!(descriptor.arity() == 3);
         assert_eq!(descriptor.participants.len(), 3);
         assert_eq!(descriptor.participants[1], local_buffer);
         // Pane group with three members.
@@ -26379,7 +26453,7 @@ mod tests {
             .diff_subsystem
             .lookup_descriptor(local_buffer)
             .expect("descriptor present after :diffsplit base remote");
-        assert!(descriptor.is_three_way());
+        assert!(descriptor.arity() == 3);
         assert_eq!(descriptor.participants.len(), 3);
         assert_eq!(descriptor.participants[1], local_buffer, "local slot");
         let base_buffer = descriptor.participants[0];

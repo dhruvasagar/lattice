@@ -305,37 +305,40 @@ impl DiffParticipantSource for BufferSource {
 
 /// The "what to diff against what" pair for a session.
 ///
-/// `baseline` + `current` are the source sides; `watch` is the
-/// **explicit dependency declaration**: every [`BufferId`] whose
-/// edits should wake this session. The descriptor's author
-/// (a future `:diffsplit` / `:Gdiff` / AI-host call site) knows
-/// which sources are buffer-backed and contributes those
-/// `BufferId`s into `watch`. Static or git-blob sources
-/// contribute nothing.
+/// `sources` is an arity-agnostic vector of N participant
+/// sources, one per slot in `Hunk::ranges`. The engine
+/// (`lattice_diff::compute_diff`) dispatches by
+/// `sources.len()` — N=2 is two-way (slot 0 = baseline /
+/// from, slot 1 = current / to), N=3 is three-way merge
+/// (slot 0 = base, slot 1 = local, slot 2 = remote), N≥4
+/// returns `DiffEngineError::Unsupported` in v1.
+///
+/// `watch` is the **explicit dependency declaration**:
+/// every [`BufferId`] whose edits should wake this session.
+/// The descriptor's author (a future `:diffsplit` /
+/// `:Gdiff` / AI-host call site) knows which sources are
+/// buffer-backed and contributes those `BufferId`s into
+/// `watch`. Static or git-blob sources contribute nothing.
 ///
 /// `Clone` because the runtime sometimes wants a stable
-/// snapshot of the descriptor to feed a debounced recompute —
-/// the inner `Arc<dyn ...>` and `Vec<BufferId>` clones are
-/// cheap (one Arc bump per source + a small heap allocation).
+/// snapshot of the descriptor to feed a debounced
+/// recompute — the inner `Vec<Arc<dyn ...>>` and
+/// `Vec<BufferId>` clones are cheap (one Arc bump per
+/// source + a small heap allocation).
+///
+/// **D.8.c shape (2026-05-31).** Replaces the prior
+/// `baseline + current + Option<remote>` named-field
+/// triple with a single `sources: Vec<...>`; see
+/// [`docs/dev/architecture/n-way-diff-membership.md`]
+/// (`docs/dev/architecture/n-way-diff-membership.md`)
+/// for the rationale.
 #[derive(Clone, Debug)]
 pub struct DiffDescriptor {
-	pub baseline: Arc<dyn DiffParticipantSource>,
-	pub current: Arc<dyn DiffParticipantSource>,
-	/// D.6.a (2026-05-30): third side of a three-way merge.
-	/// `None` for two-way sessions (the v1.0 default); `Some`
-	/// for three-way merges, where `baseline` plays the role
-	/// of the common ancestor (base), `current` plays the
-	/// role of "local" (the side this session is keyed
-	/// under), and `remote` is the third party. The recompute
-	/// path dispatches on this field:
-	/// - `None` → [`compute_two_way(baseline, current)`].
-	/// - `Some(remote)` → [`compute_three_way(baseline,
-	///   current, remote)`]; emitted hunks carry three ranges
-	///   per [`Hunk::ranges`] and may include
-	///   [`HunkKind::Conflict`].
-	///
-	/// Cloned via `Arc` so descriptor `Clone` stays cheap.
-	pub remote: Option<Arc<dyn DiffParticipantSource>>,
+	/// N participant sources in slot order. `sources[i]`
+	/// produces the rope at `Hunk::ranges[i]` after a
+	/// recompute. v1 supports N ∈ {1, 2, 3}; the engine
+	/// returns `DiffEngineError::Unsupported` for N≥4.
+	pub sources: Vec<Arc<dyn DiffParticipantSource>>,
 	pub watch: Vec<BufferId>,
 	/// D.5.a (2026-05-30): user-visible diff sides that should
 	/// receive `diff-mode` activation while this session is
@@ -353,15 +356,11 @@ pub struct DiffDescriptor {
 }
 
 impl DiffDescriptor {
-	/// D.6.a (2026-05-30): `true` if this descriptor carries a
-	/// `remote` source — i.e. the session is a three-way
-	/// merge. Convenience for callers that need to branch on
-	/// session shape (recompute dispatch, the future
-	/// `:diffput <bufnr>` / `:diffget <bufnr>` argument-aware
-	/// operators in D.6.c, and three-way-specific UI surfaces
-	/// in D.6.e).
-	pub fn is_three_way(&self) -> bool {
-		self.remote.is_some()
+	/// D.8.c (2026-05-31): the session's arity — the source
+	/// of truth for how many participants this session has.
+	/// Equivalent to `sources.len()`.
+	pub fn arity(&self) -> usize {
+		self.sources.len()
 	}
 }
 
@@ -763,14 +762,15 @@ fn resolve_target_pane(
 		}
 		return TargetResolution::Pane(pane);
 	}
-	// No explicit target. Total slots in hunk.ranges is
-	// driven by the descriptor's source shape, not the
-	// participants length (inline = 2 slots with one
-	// non-buffer-backed baseline; three-way = 3 slots).
-	if descriptor.remote.is_some() {
+	// No explicit target. Slot count comes from the
+	// descriptor's `sources.len()` — N=1 inline still has
+	// the implicit "other slot" semantic against the (now
+	// absent) peer; N=2 has a unique peer; N≥3 needs the
+	// caller to disambiguate.
+	if descriptor.arity() >= 3 {
 		TargetResolution::Required
 	} else {
-		// Two-way (inline or two-pane): peer is the other slot.
+		// N≤2 (inline or two-pane): peer is the other slot.
 		TargetResolution::Pane(if active_pane == 0 { 1 } else { 0 })
 	}
 }
@@ -787,17 +787,15 @@ fn other_participants(descriptor: &DiffDescriptor, active_pane: usize) -> Vec<Bu
 		.collect()
 }
 
-/// Snapshot the rope for the source corresponding to a
-/// pane slot. Slot 0 = baseline, 1 = current, 2 = remote
-/// (D.6.a). Returns `None` if the slot isn't backed (e.g.
-/// remote on a two-way descriptor).
+/// Snapshot the rope for the source at slot `pane`.
+/// Returns `None` if the slot is out of range for the
+/// descriptor's arity (e.g. slot 2 on a two-way descriptor
+/// with `sources.len() == 2`). D.8.c (2026-05-31): rewritten
+/// to consult `descriptor.sources` directly rather than
+/// branching by slot index against the prior
+/// baseline / current / remote named fields.
 fn snapshot_for_pane(descriptor: &DiffDescriptor, pane: usize) -> Option<Rope> {
-	match pane {
-		0 => Some(descriptor.baseline.snapshot()),
-		1 => Some(descriptor.current.snapshot()),
-		2 => descriptor.remote.as_ref().map(|r| r.snapshot()),
-		_ => None,
-	}
+	descriptor.sources.get(pane).map(|s| s.snapshot())
 }
 
 /// Find the first hunk whose `active_pane`-side range
@@ -1069,52 +1067,41 @@ impl DiffSession {
 		took
 	}
 
-	/// D.2.b / D.6.a: synchronous recompute. Allocates a
-	/// revision, runs the diff engine appropriate to the
-	/// session shape (`compute_two_way` when `remote` is
-	/// `None`; `compute_three_way` when `Some`), builds a
+	/// D.2.b / D.6.a / D.8.c: synchronous recompute.
+	/// Allocates a revision, runs the diff engine via
+	/// [`compute_diff`] over the participant ropes, builds a
 	/// `HunkIndex` stamped with the allocated revision + the
 	/// session's algorithm, and publishes via the
 	/// revision-gated path.
 	///
-	/// In three-way mode `baseline` plays the role of the
-	/// common ancestor (base), `current` is "local", and
-	/// `remote` is the third side. Emitted hunks carry three
-	/// ranges in `[base, local, remote]` order and may include
-	/// `HunkKind::Conflict` per the engine's overlap
-	/// classification (`lattice_diff::compute_three_way`).
+	/// `sources` is an N-slot rope slice in slot order
+	/// (slot i feeds `Hunk::ranges[i]`). The engine picks the
+	/// algorithm by `sources.len()`: N=2 → two-way, N=3 →
+	/// three-way with Conflict semantics, N≥4 →
+	/// `DiffEngineError::Unsupported` (recompute drops with a
+	/// debug log; mirrors the stale-publish drop semantic).
+	///
+	/// D.8.c (2026-05-31): signature rewritten from
+	/// `(baseline: &Rope, current: &Rope, remote:
+	/// Option<&Rope>)` to `(sources: &[Rope])`. Callers
+	/// iterate the descriptor's `sources` and snapshot each
+	/// rope into a Vec passed here.
 	///
 	/// Returns `Some(idx)` on successful publish, `None` if a
 	/// newer revision was already published (stale result
-	/// dropped). This is the body the [`DiffSubsystem::schedule_recompute`]
-	/// `spawn_blocking` closure executes; tests call it directly
-	/// to exercise the compute path without tokio.
+	/// dropped) or the engine rejected the participant set.
+	/// This is the body the
+	/// [`DiffSubsystem::schedule_recompute`]
+	/// `spawn_blocking` closure executes; tests call it
+	/// directly to exercise the compute path without tokio.
 	pub fn recompute_blocking(
 		&self,
-		baseline: &Rope,
-		current: &Rope,
-		remote: Option<&Rope>,
+		sources: &[Rope],
 	) -> Option<Arc<HunkIndex>> {
 		let revision = self.allocate_revision();
-		// D.8.a: dispatch through the unified engine entry.
-		// The arity (2 with no remote, 3 with remote) becomes
-		// the slice length; the engine picks the algorithm.
-		// `compute_diff` returns `Err(Unsupported)` only for
-		// N≥4 — D.6's descriptor shape can't produce that, so
-		// the result is always Ok here. v1 D.8.c switches
-		// `recompute_blocking` to take `&[Rope]` directly,
-		// eliminating this intermediate Vec; D.8.a keeps the
-		// signature unchanged.
-		let sources: Vec<ropey::Rope> = match remote {
-			Some(r) => vec![baseline.clone(), current.clone(), r.clone()],
-			None => vec![baseline.clone(), current.clone()],
-		};
-		let raw = match compute_diff(&sources, self.algorithm) {
+		let raw = match compute_diff(sources, self.algorithm) {
 			Ok(idx) => idx,
 			Err(err) => {
-				// Defensive: shouldn't happen in v1 with the
-				// fixed-arity descriptor; log + return None
-				// (mirrors the stale-publish drop semantic).
 				tracing::debug!(
 					target: "lattice_host::diff::subsystem",
 					?err,
@@ -1891,15 +1878,19 @@ impl DiffSubsystem {
 	pub fn schedule_recompute(
 		&self,
 		buffer_id: BufferId,
-		baseline: Arc<dyn DiffParticipantSource>,
-		current: Rope,
-		remote: Option<Arc<dyn DiffParticipantSource>>,
+		sources: Vec<Arc<dyn DiffParticipantSource>>,
 	) -> Option<JoinHandle<Option<Arc<HunkIndex>>>> {
 		let session = self.lookup(buffer_id)?;
 		Some(tokio::task::spawn_blocking(move || {
-			let base = baseline.snapshot();
-			let remote_rope = remote.as_ref().map(|r| r.snapshot());
-			session.recompute_blocking(&base, &current, remote_rope.as_ref())
+			// D.8.c (2026-05-31): snapshot every source inside
+			// the blocking task — the engine wants `&[Rope]`,
+			// and snapshotting is potentially expensive
+			// (file-on-disk reads, future git-blob reads). The
+			// caller passes owned `Arc<dyn ...>` handles; the
+			// task captures them so the descriptor's mutex
+			// isn't held across the snapshot calls.
+			let ropes: Vec<Rope> = sources.iter().map(|s| s.snapshot()).collect();
+			session.recompute_blocking(&ropes)
 		}))
 	}
 
@@ -1973,24 +1964,19 @@ impl DiffSubsystem {
 		});
 	}
 
-	// Internal: read the session's descriptor, snapshot the
-	// current source, and fire `schedule_recompute`. The
-	// schedule_recompute call spawns the diff on the blocking
-	// pool; we return immediately. Stale or torn-down sessions
-	// return early — the gated publish in D.2.b drops anything
-	// stale that does land.
+	// Internal: read the session's descriptor and fire
+	// `schedule_recompute` with a clone of the source list.
+	// `schedule_recompute` spawns the diff on the blocking
+	// pool and snapshots inside the task; we return
+	// immediately. Stale or torn-down sessions return early
+	// — the gated publish in D.2.b drops anything stale
+	// that does land.
 	fn recompute_from_descriptor(&self, session_key: BufferId) {
 		let descriptor = match self.lookup_descriptor(session_key) {
 			Some(d) => d,
 			None => return,
 		};
-		let current = descriptor.current.snapshot();
-		let _ = self.schedule_recompute(
-			session_key,
-			descriptor.baseline,
-			current,
-			descriptor.remote,
-		);
+		let _ = self.schedule_recompute(session_key, descriptor.sources);
 	}
 
 	/// D.2.c: bind the subsystem to an event bus. Subscribes to
@@ -2225,7 +2211,7 @@ mod tests {
 		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
 		let r = Rope::from("alpha\nbeta\ngamma\n");
 		let published = s
-			.recompute_blocking(&r, &r, None)
+			.recompute_blocking(&[r.clone(), r.clone()])
 			.expect("first publish should always take");
 		assert!(published.is_empty());
 		assert_eq!(published.algorithm, DiffAlgorithm::Histogram);
@@ -2241,7 +2227,7 @@ mod tests {
 		let a = Rope::from("alpha\nbeta\ngamma\n");
 		let b = Rope::from("alpha\nBETA\ngamma\n");
 		let idx = s
-			.recompute_blocking(&a, &b, None)
+			.recompute_blocking(&[a.clone(), b.clone()])
 			.expect("first publish should take");
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Change);
@@ -2253,9 +2239,9 @@ mod tests {
 		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
 		let a = Rope::from("alpha\n");
 		let b = Rope::from("beta\n");
-		let r1 = s.recompute_blocking(&a, &b, None).unwrap();
-		let r2 = s.recompute_blocking(&a, &b, None).unwrap();
-		let r3 = s.recompute_blocking(&a, &b, None).unwrap();
+		let r1 = s.recompute_blocking(&[a.clone(), b.clone()]).unwrap();
+		let r2 = s.recompute_blocking(&[a.clone(), b.clone()]).unwrap();
+		let r3 = s.recompute_blocking(&[a.clone(), b.clone()]).unwrap();
 		assert_eq!(r1.revision, 1);
 		assert_eq!(r2.revision, 2);
 		assert_eq!(r3.revision, 3);
@@ -2316,7 +2302,7 @@ mod tests {
 		});
 		assert!(s.try_publish_if_newer(high));
 		let r = Rope::from("x\n");
-		let result = s.recompute_blocking(&r, &r, None);
+		let result = s.recompute_blocking(&[r.clone(), r.clone()]);
 		assert!(result.is_none(), "stale recompute should not publish");
 		assert_eq!(s.current_hunks().revision, 100);
 	}
@@ -2326,7 +2312,7 @@ mod tests {
 		let sub = DiffSubsystem::new();
 		let baseline: Arc<dyn DiffParticipantSource> =
 			Arc::new(StaticSource::new(Rope::from("x\n")));
-		let handle = sub.schedule_recompute(bid(999), baseline, Rope::from("y\n"), None);
+		let handle = sub.schedule_recompute(bid(999), vec![baseline, Arc::new(StaticSource::new(Rope::from("y\n")))]);
 		assert!(handle.is_none());
 	}
 
@@ -2339,7 +2325,10 @@ mod tests {
 		let current = Rope::from("alpha\nBETA\n");
 
 		let handle = sub
-			.schedule_recompute(bid(1), baseline, current, None)
+			.schedule_recompute(
+				bid(1),
+				vec![baseline, Arc::new(StaticSource::new(Rope::from("alpha\nBETA\n")))],
+			)
 			.expect("registered buffer has a session");
 		let result = handle.await.expect("blocking task didn't panic");
 		let idx = result.expect("first recompute publishes");
@@ -2357,12 +2346,12 @@ mod tests {
 			Arc::new(StaticSource::new(Rope::from("alpha\n")));
 
 		let h1 = sub
-			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("alpha\n"), None)
+			.schedule_recompute(bid(1), vec![Arc::clone(&baseline), Arc::new(StaticSource::new(Rope::from("alpha\n")))])
 			.unwrap();
 		h1.await.unwrap().unwrap();
 
 		let h2 = sub
-			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("beta\n"), None)
+			.schedule_recompute(bid(1), vec![Arc::clone(&baseline), Arc::new(StaticSource::new(Rope::from("beta\n")))])
 			.unwrap();
 		let idx2 = h2.await.unwrap().unwrap();
 
@@ -2421,15 +2410,21 @@ mod tests {
 		current_buf: BufferId,
 	) -> DiffDescriptor {
 		DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				baseline_buf,
 			)),
-			current: Arc::new(BufferSource::new(
+
+				Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				current_buf,
 			)),
-			remote: None,
+
+			],
 			watch: vec![baseline_buf, current_buf],
 			// D.5.a: tests don't exercise the mode bridge,
 			// so participants stays empty by default.
@@ -2450,18 +2445,26 @@ mod tests {
 		remote_buf: BufferId,
 	) -> DiffDescriptor {
 		DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				base_buf,
 			)),
-			current: Arc::new(BufferSource::new(
+
+				Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				local_buf,
 			)),
-			remote: Some(Arc::new(BufferSource::new(
+
+				Arc::new(BufferSource::new(
 				Arc::clone(provider),
 				remote_buf,
-			))),
+			)),
+
+			],
 			watch: vec![base_buf, local_buf, remote_buf],
 			participants: vec![base_buf, local_buf, remote_buf],
 		}
@@ -2517,17 +2520,29 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+			],
 			watch: vec![bid(10), bid(1)],
-			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
+
+			],
 			watch: vec![bid(10), bid(2)],
-			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
@@ -2559,17 +2574,29 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+			],
 			watch: vec![bid(10), bid(1)],
-			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(10))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(2))),
+
+			],
 			watch: vec![bid(10), bid(2)],
-			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
@@ -2586,20 +2613,32 @@ mod tests {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let sub = DiffSubsystem::new();
 		let desc_a = DiffDescriptor {
-			baseline: Arc::new(StaticSource::new(Rope::from(""))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+
+			sources: vec![
+
+				Arc::new(StaticSource::new(Rope::from(""))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+			],
 			watch: vec![bid(10), bid(1)],
-			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
 		assert_eq!(sub.watchers_of(bid(10)), vec![bid(1)]);
 
 		let desc_b = DiffDescriptor {
-			baseline: Arc::new(StaticSource::new(Rope::from(""))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+
+			sources: vec![
+
+				Arc::new(StaticSource::new(Rope::from(""))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+			],
 			watch: vec![bid(1)],
-			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_b);
@@ -2978,10 +3017,16 @@ mod tests {
 		// only. The current source is required for descriptor
 		// construction.
 		let desc = DiffDescriptor {
-			baseline: Arc::new(StaticSource::new(Rope::from(baseline))),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+
+			sources: vec![
+
+				Arc::new(StaticSource::new(Rope::from(baseline))),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), bid(1))),
+
+			],
 			watch: vec![bid(1)],
-			remote: None,
 			participants: vec![bid(1)],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
@@ -3193,16 +3238,22 @@ mod tests {
 		provider.set(current_bid, Rope::from(current_text));
 		let provider_dyn: Arc<dyn BufferTextProvider> = provider;
 		let desc = DiffDescriptor {
-			baseline: Arc::new(BufferSource::new(
+
+
+			sources: vec![
+
+				Arc::new(BufferSource::new(
 				Arc::clone(&provider_dyn),
 				baseline_bid,
 			)),
-			current: Arc::new(BufferSource::new(
+
+				Arc::new(BufferSource::new(
 				Arc::clone(&provider_dyn),
 				current_bid,
 			)),
+
+			],
 			watch: vec![baseline_bid, current_bid],
-			remote: None,
 			participants: vec![baseline_bid, current_bid],
 		};
 		sub.register_with_sources(current_bid, DiffAlgorithm::Histogram, desc);
@@ -3457,7 +3508,7 @@ mod tests {
 		let local = provider.buffer_rope(bid(2)).unwrap();
 		let remote = provider.buffer_rope(bid(3)).unwrap();
 		let idx = session
-			.recompute_blocking(&base, &local, Some(&remote))
+			.recompute_blocking(&[base.clone(), local.clone(), remote.clone()])
 			.expect("three-way recompute publishes");
 
 		assert!(
@@ -3491,7 +3542,7 @@ mod tests {
 		let local = provider.buffer_rope(bid(2)).unwrap();
 		let remote = provider.buffer_rope(bid(3)).unwrap();
 		let idx = session
-			.recompute_blocking(&base, &local, Some(&remote))
+			.recompute_blocking(&[base.clone(), local.clone(), remote.clone()])
 			.expect("three-way recompute publishes");
 
 		assert!(
@@ -3501,16 +3552,17 @@ mod tests {
 		);
 	}
 
-	/// `is_three_way()` discriminates on the `remote` field —
+	/// `arity()` discriminates on the participant count —
 	/// load-bearing for the D.6.c compute_get_plan /
-	/// compute_put_plan dispatch.
+	/// compute_put_plan dispatch (D.8.c rename from
+	/// `is_three_way()`).
 	#[test]
-	fn is_three_way_reflects_remote_presence() {
+	fn arity_reflects_participant_count() {
 		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
 		let two_way = descriptor(&provider, bid(1), bid(2));
-		assert!(!two_way.is_three_way());
+		assert_eq!(two_way.arity(), 2);
 		let three_way = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
-		assert!(three_way.is_three_way());
+		assert_eq!(three_way.arity(), 3);
 	}
 
 	/// `register_with_sources` on a three-source descriptor

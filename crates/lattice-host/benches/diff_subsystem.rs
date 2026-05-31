@@ -120,7 +120,7 @@ fn bench_recompute_blocking(c: &mut Criterion) {
 		group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
 			b.iter(|| {
 				let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
-				session.recompute_blocking(black_box(&baseline), black_box(&current), None);
+				session.recompute_blocking(black_box(&[baseline.clone(), current.clone()]));
 			});
 		});
 	}
@@ -156,11 +156,11 @@ fn bench_recompute_blocking_three_way(c: &mut Criterion) {
 		group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
 			b.iter(|| {
 				let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
-				session.recompute_blocking(
-					black_box(&base),
-					black_box(&local),
-					Some(black_box(&remote)),
-				);
+				session.recompute_blocking(black_box(&[
+					base.clone(),
+					local.clone(),
+					remote.clone(),
+				]));
 			});
 		});
 	}
@@ -186,10 +186,16 @@ fn bench_routing_fanout(c: &mut Criterion) {
 		for i in 0..n {
 			let id = BufferId(i + 1);
 			let desc = DiffDescriptor {
-				baseline: Arc::new(StaticSource::new(Rope::new())),
-				current: Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+
+
+				sources: vec![
+
+					Arc::new(StaticSource::new(Rope::new())),
+
+					Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+
+				],
 				watch: vec![shared],
-				remote: None,
 				participants: vec![],
 			};
 			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
@@ -225,10 +231,16 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 		// registered noise, not dependents.
 		let session_one = BufferId(1);
 		let desc_one = DiffDescriptor {
-			baseline: Arc::new(StaticSource::new(Rope::new())),
-			current: Arc::new(BufferSource::new(Arc::clone(&provider), session_one)),
+
+
+			sources: vec![
+
+				Arc::new(StaticSource::new(Rope::new())),
+
+				Arc::new(BufferSource::new(Arc::clone(&provider), session_one)),
+
+			],
 			watch: vec![poked],
-			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(session_one, DiffAlgorithm::Histogram, desc_one);
@@ -236,10 +248,16 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 			let id = BufferId(i);
 			let sibling = BufferId(i + 100_000);
 			let desc = DiffDescriptor {
-				baseline: Arc::new(StaticSource::new(Rope::new())),
-				current: Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+
+
+				sources: vec![
+
+					Arc::new(StaticSource::new(Rope::new())),
+
+					Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+
+				],
 				watch: vec![sibling],
-				remote: None,
 				participants: vec![],
 			};
 			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);

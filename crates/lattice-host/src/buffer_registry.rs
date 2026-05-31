@@ -122,25 +122,30 @@ impl BufferEntry {
             BufferData::Oil(_) => BufferKind::Oil,
             BufferData::Terminal(_) => BufferKind::Terminal,
             BufferData::Messages(_) => BufferKind::Messages,
+            BufferData::Multibuffer(_) => BufferKind::Multibuffer,
         }
     }
 
-    /// The Document storage for any rope-backed-doc kind.
-    /// Returns `Some` for both [`BufferData::Document`] and
-    /// [`BufferData::Messages`] (their storage is identical;
-    /// only the kind tag differs); `None` for other kinds.
-    /// Code that needs to differentiate Messages from a user
-    /// Document branches on [`Self::kind`].
+    /// The Document storage for any document-shaped kind.
+    /// Returns `Some` for [`BufferData::Document`],
+    /// [`BufferData::Messages`], and [`BufferData::Multibuffer`]
+    /// (their storage is identical — all carry
+    /// `Arc<dyn Document>`); `None` for other kinds. Code that
+    /// needs to distinguish branches on [`Self::kind`].
     pub fn document(&self) -> Option<&DocumentEntry> {
         match &self.data {
-            BufferData::Document(d) | BufferData::Messages(d) => Some(d),
+            BufferData::Document(d) | BufferData::Messages(d) | BufferData::Multibuffer(d) => {
+                Some(d)
+            }
             _ => None,
         }
     }
 
     pub fn document_mut(&mut self) -> Option<&mut DocumentEntry> {
         match &mut self.data {
-            BufferData::Document(d) | BufferData::Messages(d) => Some(d),
+            BufferData::Document(d) | BufferData::Messages(d) | BufferData::Multibuffer(d) => {
+                Some(d)
+            }
             _ => None,
         }
     }
@@ -225,6 +230,16 @@ pub enum BufferData {
     /// apart from a user-edited file. The subsystem owns content;
     /// `messages-mode` contributes `ReadOnly` + `NoFile`.
     Messages(DocumentEntry),
+    /// **H.1 (2026-05-31):** composed multibuffer view buffer
+    /// (`lattice-multibuffer`). Storage is identical to
+    /// [`BufferData::Document`] (the `DocumentEntry`'s
+    /// `handle: Arc<dyn Document>` is a
+    /// `MultibufferDocumentHandle` impl). The discriminator
+    /// exists so `:ls` / picker display / mode lookup can
+    /// distinguish a composed view from a regular Document.
+    /// `MultibufferMode` (M.2.b.2) is the major mode; H.3's
+    /// `Event::BufferOpened` dispatch activates it.
+    Multibuffer(DocumentEntry),
 }
 
 #[derive(Debug, Default)]
@@ -878,6 +893,52 @@ impl lattice_mode::BufferStore for BufferRegistry {
     fn name_for(&self, id: lattice_core::BufferId) -> Option<String> {
         self.name_of(id)
     }
+
+    /// H.1 (2026-05-31): generic Document-shaped buffer
+    /// insertion for extension crates (`lattice-multibuffer`
+    /// today; future plugin-defined Document-shaped kinds).
+    /// Maps `kind` to the appropriate `BufferData` variant;
+    /// other kinds (`FileTree`, `Oil`, `Terminal`, `Help`)
+    /// log + skip — their payload is not a Document.
+    fn insert_document_buffer(
+        &self,
+        id: lattice_core::BufferId,
+        kind: lattice_core::BufferKind,
+        handle: std::sync::Arc<dyn lattice_runtime::Document>,
+        flags: lattice_core::BufferFlags,
+        name: Option<String>,
+    ) {
+        // Idempotent: if already registered, return.
+        if self.contains(id) {
+            return;
+        }
+        let entry = DocumentEntry { id, handle };
+        let data = match kind {
+            lattice_core::BufferKind::Document => BufferData::Document(entry),
+            lattice_core::BufferKind::Messages => BufferData::Messages(entry),
+            lattice_core::BufferKind::Multibuffer => BufferData::Multibuffer(entry),
+            other => {
+                // Non-Document-shaped kinds (FileTree, Oil,
+                // Terminal, Help) carry kind-specific payloads;
+                // they're not reachable through this generic
+                // surface. Caller is using the wrong API.
+                tracing::warn!(
+                    target: "lattice_host::buffer_registry",
+                    ?kind,
+                    ?id,
+                    "BufferStore::insert_document_buffer called for non-Document kind {:?}; ignoring",
+                    other,
+                );
+                return;
+            }
+        };
+        self.insert(BufferEntry {
+            id,
+            flags,
+            data,
+            name,
+        });
+    }
 }
 
 // ---------------------------------------------------------------
@@ -1075,22 +1136,26 @@ mod tests {
         let mb_buffer_id = mb.buffer_id();
         let mb_handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(mb);
 
-        // Register the multibuffer through the same Document
-        // slot regular handles use.
-        r.insert(BufferEntry {
-            id: mb_buffer_id,
-            flags: BufferFlags::default(),
-            data: BufferData::Document(DocumentEntry {
-                id: mb_buffer_id,
-                handle: mb_handle.clone(),
-            }),
-            name: Some("*search-results*".to_string()),
-        });
+        // H.1 (2026-05-31): register through the generic
+        // `BufferStore::insert_document_buffer` trait method —
+        // extension crates' canonical path. Maps
+        // `BufferKind::Multibuffer` to `BufferData::Multibuffer`
+        // internally.
+        use lattice_mode::BufferStore;
+        r.insert_document_buffer(
+            mb_buffer_id,
+            BufferKind::Multibuffer,
+            mb_handle.clone(),
+            BufferFlags::default(),
+            Some("*search-results*".to_string()),
+        );
 
         // The registry exposes the multibuffer through the same
-        // public API as any other document.
+        // public API as any other document. Kind now correctly
+        // returns Multibuffer (was Document before H.1 because
+        // M.2.b.1 had no `BufferData::Multibuffer` variant).
         assert!(r.contains(mb_buffer_id));
-        assert_eq!(r.kind_of(mb_buffer_id), Some(BufferKind::Document));
+        assert_eq!(r.kind_of(mb_buffer_id), Some(BufferKind::Multibuffer));
         assert_eq!(r.name_of(mb_buffer_id), Some("*search-results*".to_string()));
 
         // `document_handle` returns the trait-object handle —
@@ -1104,7 +1169,6 @@ mod tests {
         // `BufferStore::handle_for` returns the same handle —
         // the polymorphic surface that mode-owned tasks
         // (lattice-lsp, future plugin modes) consume.
-        use lattice_mode::BufferStore;
         let store_handle = r
             .handle_for(mb_buffer_id)
             .expect("multibuffer reachable via BufferStore");

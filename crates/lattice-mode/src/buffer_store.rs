@@ -47,7 +47,7 @@
 
 use std::sync::Arc;
 
-use lattice_core::{BufferFlags, BufferId};
+use lattice_core::{BufferFlags, BufferId, BufferKind};
 
 use crate::ModeId;
 
@@ -96,6 +96,42 @@ pub trait BufferStore: Send + Sync {
     /// own identity from the buffer it's attached to without the
     /// host having to seed a buffer-local first.
     fn name_for(&self, id: BufferId) -> Option<String>;
+
+    /// **H.1 (2026-05-31): generic Document-shaped buffer
+    /// insertion.** Used by extension crates (`lattice-multibuffer`
+    /// today; future plugin-defined Document-shaped kinds) to
+    /// push a `BufferEntry` into the registry without host
+    /// knowing the kind exists.
+    ///
+    /// `kind` must be a Document-shaped kind whose payload is an
+    /// `Arc<dyn Document>`: today `BufferKind::Document` /
+    /// `BufferKind::Messages` / `BufferKind::Multibuffer`. For
+    /// other kinds (`FileTree`, `Oil`, `Terminal`, `Help`) the
+    /// payload is structurally different and they keep their
+    /// host-internal insertion paths until the v2 plugin-
+    /// architecture work designs the generic extension point
+    /// (per `docs/dev/architecture/kind-agnostic-buffers.md`
+    /// §8 Q2).
+    ///
+    /// Idempotent: if `id` is already registered the call is a
+    /// no-op (consistent with `ensure_named_document` for the
+    /// named-singleton case). The caller is responsible for
+    /// allocating `id` via `BufferId::next()` before calling.
+    ///
+    /// Errors fold into the impl's logging path (e.g. the
+    /// `lattice-host` impl logs through `tracing` and emits a
+    /// host-side message); the trait surface is infallible
+    /// because every error here is a programmer error (wrong
+    /// kind, duplicate id) and there's no recovery path the
+    /// caller could enact.
+    fn insert_document_buffer(
+        &self,
+        id: BufferId,
+        kind: BufferKind,
+        handle: Arc<dyn lattice_runtime::Document>,
+        flags: BufferFlags,
+        name: Option<String>,
+    );
 }
 
 /// Concrete service-registry-friendly wrapper around
@@ -129,6 +165,20 @@ impl BufferStoreHandle {
 
     pub fn name_for(&self, id: BufferId) -> Option<String> {
         self.inner.name_for(id)
+    }
+
+    /// H.1 pass-through wrapper. See
+    /// [`BufferStore::insert_document_buffer`].
+    pub fn insert_document_buffer(
+        &self,
+        id: BufferId,
+        kind: BufferKind,
+        handle: Arc<dyn lattice_runtime::Document>,
+        flags: BufferFlags,
+        name: Option<String>,
+    ) {
+        self.inner
+            .insert_document_buffer(id, kind, handle, flags, name)
     }
 }
 

@@ -22723,6 +22723,16 @@ pub fn raw_buffer_candidates(
                     format!("msg{active_marker}"),
                 )
             }
+            BufferData::Multibuffer(_) => {
+                let label = entry
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "*multibuffer*".to_string());
+                (
+                    format!("#{:<3} {label}", id.0),
+                    format!("mb{active_marker}"),
+                )
+            }
         };
         rows.push((id, listed, body, kind_label));
     });
@@ -22845,6 +22855,13 @@ pub fn picker_buffer_entry(
         BufferData::Messages(d) => {
             let title = entry.name.clone().unwrap_or_else(|| "*messages*".to_string());
             ("msg".to_string(), None, title, d.handle.dirty())
+        }
+        BufferData::Multibuffer(_) => {
+            let title = entry
+                .name
+                .clone()
+                .unwrap_or_else(|| "*multibuffer*".to_string());
+            ("mb".to_string(), None, title, false)
         }
     };
     lattice_picker::BufferEntry {

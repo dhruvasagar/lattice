@@ -3245,33 +3245,51 @@ impl Editor {
         self.diff_subsystem.drop_session(primary);
     }
 
-    /// D.4.d.3.a (2026-05-30): `:diffthis` — stage the active
-    /// pane for a two-pane diff. First call sets
-    /// [`Editor::pending_diffthis`]; second call in a
-    /// *different* pane completes the session via
-    /// [`Self::register_two_pane_diff`]; second call in the
-    /// *same* pane unstages. Errors:
-    /// - Active pane is not a Document leaf (file tree, help,
-    ///   etc.): "diffthis: active pane is not a document".
-    /// - Active buffer already has an active diff session:
-    ///   "diffthis: buffer N already has an active diff
-    ///   session; use :diffoff first".
-    /// - Pending stage references a pane/buffer that no
-    ///   longer matches the tree (pane closed or buffer
-    ///   swapped): silently clear the stale stage and treat
-    ///   this invocation as the first.
+    /// D.8.e (2026-05-31): `:diffthis` — per-buffer toggle on
+    /// the singleton diffthis group. Replaces the D.4.d.3.a
+    /// "stage first, complete on second" pattern with vim's
+    /// `:set diff` membership semantic.
     ///
-    /// **v1 is two-way only.** Vim's chained-N-buffer
-    /// `:set diff` model lands in D.8, which replaces the
-    /// staging singleton with dynamic group membership and
-    /// generalises the descriptor to N participants. For
-    /// explicit three-way merge in D.6, use `:diffsplit
-    /// base remote` — it goes through
-    /// [`Self::register_three_pane_diff`] directly without
-    /// any staging.
-    pub fn do_diffthis(&mut self) {
-        // Gate on Document kind — `:diffthis` over a file
-        // tree or help leaf is meaningless.
+    /// State transitions (see `n-way-diff-membership.md` §6.2):
+    /// - `diffthis_group == None`: create an N=1 dormant
+    ///   session keyed under the active buffer; set
+    ///   `diffthis_group = Some(active_buf)`.
+    /// - Active buffer is **already in** the diffthis group:
+    ///   remove it via `remove_participant_buffer`. Arity→0
+    ///   auto-drops the session; arity→1 leaves it dormant
+    ///   (no pane group / fillers); arity≥2 shrinks the
+    ///   pane group.
+    /// - Active buffer is **not in** the diffthis group:
+    ///   extend via `add_participant`. Arity 1→2 creates the
+    ///   pane group + filler providers; 2→3 grows it
+    ///   (drop-and-recreate).
+    ///
+    /// Other sessions (`:diffsplit`, AI flows, future magit)
+    /// are entirely independent — `:diffthis` never touches
+    /// them. A buffer can be in `:diffsplit`'s session AND
+    /// the diffthis group simultaneously; the diff-mode
+    /// bridge handles the refcount.
+    ///
+    /// Errors:
+    /// - Active pane is not a Document leaf (file tree,
+    ///   help, etc.): "diffthis: active pane is not a
+    ///   document".
+    /// - Active buffer already in a non-diffthis session
+    ///   (`:diffsplit`, AI, etc.) AND not yet in the
+    ///   diffthis group: rejected. v1 disallows
+    ///   double-participation through `:diffthis` until D.8
+    ///   refines the multi-session UX. The subsystem
+    ///   supports it via the refcounted bridge, but
+    ///   `:diffthis` keeps the convention "one session per
+    ///   buffer at a time" so the operator chord (`do` /
+    ///   `dp`) dispatch stays unambiguous.
+    /// - Engine rejection (4th `:diffthis` would push arity
+    ///   to N=4): surfaces the typed error as a clear user
+    ///   message naming the cap.
+    /// - Stale members (a pane closed) are silently scrubbed
+    ///   from `diffthis_members` at the start of every call.
+    pub fn do_diffthis(self: &mut Self) {
+        // Gate on Document kind.
         let active_leaf = self.pane_tree.active();
         if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
             self.set_message(
@@ -3280,94 +3298,330 @@ impl Editor {
             );
             return;
         }
-        let active_pane = active_leaf.id;
-        let active_buffer = active_leaf.buffer_id;
         let active_member = crate::pane_group::PaneGroupMember {
-            pane: active_pane,
-            buffer: active_buffer,
+            pane: active_leaf.id,
+            buffer: active_leaf.buffer_id,
         };
+        let active_buf = active_member.buffer;
 
-        // Reject if the active buffer already participates in
-        // some other diff session — both an inline session
-        // here and an existing two-pane session block. Vim
-        // would silently re-stage; we'd rather surface a
-        // clear error in v1 so the user disambiguates with
-        // an explicit `:diffoff` first.
-        if self
-            .diff_subsystem
-            .lookup_session_for(active_buffer)
-            .is_some()
+        // Stale-state cleanup: if `diffthis_group` points to
+        // a session that no longer exists (race with an
+        // out-of-band drop), clear it. Stale member entries
+        // (pane closed) are pruned too so subsequent
+        // pane-group reconstruction uses live members only.
+        if let Some(g) = self.diffthis_group {
+            if self.diff_subsystem.lookup(g).is_none() {
+                self.diffthis_group = None;
+                self.diffthis_members.clear();
+            }
+        }
         {
+            let leaves = self.pane_tree.leaves();
+            self.diffthis_members.retain(|m| {
+                leaves
+                    .iter()
+                    .any(|l| l.id == m.pane && l.buffer_id == m.buffer)
+            });
+        }
+
+        // Snapshot the current participant set (if any).
+        let participants: Vec<lattice_core::BufferId> = self
+            .diffthis_group
+            .and_then(|g| self.diff_subsystem.lookup_descriptor(g))
+            .map(|d| d.participants.clone())
+            .unwrap_or_default();
+
+        let active_in_group = participants.contains(&active_buf);
+
+        // Reject if the active buffer is in a NON-diffthis
+        // session (different session key from
+        // diffthis_group). v1 keeps "one session per buffer
+        // at a time" through the `:diffthis` entry point so
+        // the operator chord dispatch stays unambiguous.
+        let active_session = self.diff_subsystem.lookup_session_for(active_buf);
+        let in_other_session = match (active_session, self.diffthis_group) {
+            (Some(s), Some(g)) => s.buffer_id() != g,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if in_other_session && !active_in_group {
             self.set_message(
                 EchoLevel::Error,
                 format!(
                     "diffthis: buffer {} already has an active diff session; \
                      use :diffoff first",
-                    active_buffer.0
+                    active_buf.0
                 ),
             );
             return;
         }
 
-        // Stale-stage cleanup: if the previously-staged
-        // (pane, buffer) no longer matches the live tree
-        // (pane closed, buffer swapped), drop the stage and
-        // treat this call as a fresh stage. Avoids surprising
-        // the user with completion against an unrelated pane.
-        if let Some(staged) = self.pending_diffthis {
-            let stage_valid = self
-                .pane_tree
-                .leaves()
-                .iter()
-                .any(|l| l.id == staged.pane && l.buffer_id == staged.buffer);
-            if !stage_valid {
-                self.pending_diffthis = None;
-            }
+        if active_in_group {
+            self.diffthis_toggle_off(active_buf);
+        } else {
+            self.diffthis_toggle_on(active_member);
         }
+    }
 
-        match self.pending_diffthis {
+    /// D.8.e (2026-05-31): toggle-on branch of `:diffthis`.
+    /// Either creates the diffthis group (N=0 → 1 dormant)
+    /// or extends it (N → N+1) via the membership API.
+    /// Owns the pane-group + filler-provider wiring for the
+    /// arity transitions that cross 2.
+    fn diffthis_toggle_on(&mut self, active: crate::pane_group::PaneGroupMember) {
+        let active_buf = active.buffer;
+        let provider: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(
+                crate::diff::subsystem::BufferRegistryTextProvider::new(
+                    self.buffers.clone(),
+                ),
+            );
+        let source: std::sync::Arc<dyn crate::diff::subsystem::DiffParticipantSource> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+                std::sync::Arc::clone(&provider),
+                active_buf,
+            ));
+
+        match self.diffthis_group {
             None => {
-                // First call: stage the active pane.
-                self.pending_diffthis = Some(active_member);
+                // 0 → 1: register a dormant 1-source session.
+                let desc = crate::diff::subsystem::DiffDescriptor {
+                    sources: vec![source],
+                    watch: vec![active_buf],
+                    participants: vec![active_buf],
+                };
+                self.diff_subsystem.register_with_sources(
+                    active_buf,
+                    lattice_diff::DiffAlgorithm::Histogram,
+                    desc,
+                );
+                self.diffthis_group = Some(active_buf);
+                self.diffthis_members = vec![active];
                 self.set_message(
                     EchoLevel::Info,
                     format!(
-                        "diffthis: staged pane (buffer {}); run :diffthis in \
-                         another pane to complete",
-                        active_buffer.0
+                        "diffthis: staged buffer {} (dormant; run :diffthis \
+                         in another pane to start diffing)",
+                        active_buf.0
                     ),
                 );
             }
-            Some(staged) if staged == active_member => {
-                // Same pane twice: unstage.
-                self.pending_diffthis = None;
-                self.set_message(EchoLevel::Info, "diffthis: unstaged");
-            }
-            Some(staged) => {
-                // Different pane: complete the two-pane
-                // setup. Staged side is the "baseline"
-                // (first to stage); active side is the
-                // "current" (second to stage).
-                self.pending_diffthis = None;
-                match self.register_two_pane_diff(staged, active_member) {
-                    Ok(()) => {
-                        self.set_message(
-                            EchoLevel::Info,
-                            format!(
-                                "diffthis: opened (baseline buffer {} ↔ current buffer {})",
-                                staged.buffer.0, active_buffer.0
-                            ),
-                        );
-                    }
-                    Err(msg) => {
+            Some(group_key) => {
+                // N → N+1: extend via membership API. Reject
+                // engine-cap violations atomically.
+                let new_arity = match std::sync::Arc::clone(&self.diff_subsystem)
+                    .add_participant(group_key, source, Some(active_buf))
+                {
+                    Ok(n) => n,
+                    Err(crate::diff::subsystem::MembershipError::EngineRejected(
+                        lattice_diff::DiffEngineError::Unsupported { n },
+                    )) => {
                         self.set_message(
                             EchoLevel::Error,
-                            format!("diffthis: {msg}"),
+                            format!(
+                                "diffthis: v1 supports up to 3 participants \
+                                 in a diff group; got {n}"
+                            ),
                         );
+                        return;
                     }
-                }
+                    Err(e) => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!("diffthis: {e}"),
+                        );
+                        return;
+                    }
+                };
+                self.diffthis_members.push(active);
+
+                // Pane-group + filler wiring. 1→2 first
+                // creates the group; 2→3 drop-and-recreates.
+                self.rebuild_diffthis_pane_group_and_fillers(group_key);
+
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "diffthis: added buffer {} ({} participants)",
+                        active_buf.0, new_arity
+                    ),
+                );
             }
         }
+    }
+
+    /// D.8.e (2026-05-31): toggle-off branch of `:diffthis`.
+    /// Removes the active buffer from the diffthis group
+    /// via the membership API; auto-handles arity transitions
+    /// (drop pane-group + fillers when arity drops below 2;
+    /// shrink them at higher arities; clear `diffthis_group`
+    /// + members on auto-drop at arity 0).
+    fn diffthis_toggle_off(&mut self, active_buf: lattice_core::BufferId) {
+        let Some(group_key) = self.diffthis_group else {
+            return;
+        };
+        let new_arity = match std::sync::Arc::clone(&self.diff_subsystem)
+            .remove_participant_buffer(group_key, active_buf)
+        {
+            Ok(n) => n,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("diffthis: {e}"),
+                );
+                return;
+            }
+        };
+        // Scrub the corresponding member entry. We
+        // unregister fillers for the removed buffer here —
+        // `rebuild_diffthis_pane_group_and_fillers` iterates
+        // `self.diffthis_members` to know which buffers to
+        // scrub, so by the time it runs the removed buffer is
+        // already gone from the iteration set.
+        self.diffthis_members.retain(|m| m.buffer != active_buf);
+        for side in [
+            crate::diff::filler::Side::Baseline,
+            crate::diff::filler::Side::Current,
+            crate::diff::filler::Side::Remote,
+        ] {
+            self.virtual_row_providers.unregister(
+                active_buf,
+                crate::diff::filler::diff_filler_provider_id(group_key, side),
+            );
+        }
+
+        if new_arity == 0 {
+            // Session auto-dropped by the subsystem; any
+            // pane group / fillers we may have wired up
+            // would have been torn down via the session's
+            // bound `pane_group_id` — but we never bind a
+            // pane group for an N=1 dormant session, so
+            // there's nothing to scrub.
+            self.diffthis_group = None;
+            self.diffthis_members.clear();
+            self.set_message(EchoLevel::Info, "diffthis: closed");
+        } else {
+            // Rebuild pane group + fillers for the
+            // remaining arity. <2 ⇒ tear them down; ≥2 ⇒
+            // recreate with the smaller member set.
+            self.rebuild_diffthis_pane_group_and_fillers(group_key);
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "diffthis: removed buffer {} ({} participants remaining)",
+                    active_buf.0, new_arity
+                ),
+            );
+        }
+    }
+
+    /// D.8.e (2026-05-31): (re)build the pane group +
+    /// filler-provider wiring for the diffthis group's
+    /// current arity. Drop-and-recreate semantics — any
+    /// pane group bound to this session is dropped first
+    /// + all known filler providers are unregistered; then,
+    /// if the new arity is ≥2, a fresh pane group + filler
+    /// providers are installed.
+    ///
+    /// Called at every `:diffthis`-toggled arity change.
+    /// Scroll-bind state resets per transition (acceptable
+    /// for D.8.e; future optimisation could preserve it via
+    /// an `extend_pane_group_member` API).
+    fn rebuild_diffthis_pane_group_and_fillers(
+        &mut self,
+        group_key: lattice_core::BufferId,
+    ) {
+        let Some(session) = self.diff_subsystem.lookup(group_key) else {
+            return;
+        };
+
+        // Tear down whatever pane group + fillers might be
+        // wired to this session today.
+        if let Some(pg_id) = session.pane_group_id() {
+            self.drop_pane_group(pg_id);
+        }
+        // Scrub fillers per known participant. We don't
+        // know in advance which Side a previous wiring
+        // used, so we try every variant; each unregister
+        // is safe-idempotent.
+        for member in &self.diffthis_members {
+            for side in [
+                crate::diff::filler::Side::Baseline,
+                crate::diff::filler::Side::Current,
+                crate::diff::filler::Side::Remote,
+            ] {
+                self.virtual_row_providers.unregister(
+                    member.buffer,
+                    crate::diff::filler::diff_filler_provider_id(group_key, side),
+                );
+            }
+        }
+
+        // Arity < 2 is dormant; no scroll-bind / fillers
+        // needed.
+        let arity = self.diffthis_members.len();
+        if arity < 2 {
+            return;
+        }
+
+        // Build the new pane group. Member layout matches
+        // `diffthis_members` order (slot 0 = first
+        // `:diffthis` call, etc.).
+        let members = self.diffthis_members.clone();
+        let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> = if arity == 2 {
+            std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::new(
+                std::sync::Arc::clone(&session),
+                0,
+                1,
+            ))
+        } else {
+            std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::three_pane(
+                std::sync::Arc::clone(&session),
+                0,
+                1,
+                2,
+            ))
+        };
+        match self.add_pane_group(members, mapper) {
+            Ok(pg_id) => {
+                session.bind_pane_group(pg_id);
+            }
+            Err(err) => {
+                // Pane-group registration failed (e.g.
+                // overlap with another active group). Leave
+                // the diffthis session intact but without
+                // scroll-bind — the hunks still publish;
+                // the user just doesn't get aligned scroll.
+                tracing::debug!(
+                    target: "lattice_host::diff::dispatch",
+                    ?group_key,
+                    ?err,
+                    "diffthis: pane-group registration failed; \
+                     session continues without scroll-bind"
+                );
+                return;
+            }
+        }
+
+        // Re-register fillers per member, slot-indexed.
+        let sides = [
+            crate::diff::filler::Side::Baseline,
+            crate::diff::filler::Side::Current,
+            crate::diff::filler::Side::Remote,
+        ];
+        for (slot, member) in self.diffthis_members.iter().enumerate() {
+            let side = sides[slot.min(2)];
+            let filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
+                std::sync::Arc::new(crate::diff::filler::FillerRowProvider::new(
+                    std::sync::Arc::clone(&session),
+                    side,
+                ));
+            self.virtual_row_providers.register(member.buffer, filler);
+        }
+
+        // Kick a recompute so the new arity publishes
+        // promptly without waiting for the next edit.
+        std::sync::Arc::clone(&self.diff_subsystem).note_buffer_edited(group_key);
     }
 
     /// D.4.d.3.a (2026-05-30): set up a two-pane two-way diff
@@ -25512,75 +25766,122 @@ mod tests {
         (active_pane, active_buffer, other_pane, other_buffer)
     }
 
-    /// First `:diffthis` stages the active pane: sets
-    /// `pending_diffthis` and surfaces a staging message.
+    /// D.8.e: like [`vsplit_two_buffers`] but produces a
+    /// 3-pane layout so the diffthis-group arity-3 path can
+    /// be exercised. Returns `(buf0, buf1, buf2)` paired with
+    /// pane indices that match `pane_tree.leaves()` order.
+    fn vsplit_three_buffers(
+        editor: &mut crate::editor::Editor,
+    ) -> (
+        lattice_core::BufferId,
+        lattice_core::BufferId,
+        lattice_core::BufferId,
+    ) {
+        use lattice_core::ui::pane::SplitOrientation;
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(1);
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        let buf1 = lattice_core::BufferId(99);
+        let buf2 = lattice_core::BufferId(100);
+        editor.pane_tree.leaves_mut()[1].buffer_id = buf1;
+        editor.pane_tree.leaves_mut()[2].buffer_id = buf2;
+        let buf0 = editor.pane_tree.leaves()[0].buffer_id;
+        (buf0, buf1, buf2)
+    }
+
+    /// D.8.e: first `:diffthis` creates an N=1 dormant
+    /// session keyed under the active buffer and sets
+    /// `diffthis_group`. No pane group / fillers yet — the
+    /// session has no peer to diff against until a second
+    /// `:diffthis` extends it.
     #[test]
-    fn diffthis_stages_first_pane() {
+    fn diffthis_first_call_creates_dormant_singleton_session() {
         let mut editor = crate::editor::Editor::default();
         let (active_pane, active_buffer, _, _) = vsplit_two_buffers(&mut editor);
         editor.pane_tree.set_active(0);
 
         editor.do_diffthis();
 
-        let staged = editor.pending_diffthis.expect("staged");
-        assert_eq!(staged.pane, active_pane);
-        assert_eq!(staged.buffer, active_buffer);
-        // Nothing registered yet — completion happens on the
-        // second invocation in a different pane.
-        assert!(editor.diff_subsystem.is_empty());
+        assert_eq!(editor.diffthis_group, Some(active_buffer));
+        assert_eq!(editor.diffthis_members.len(), 1);
+        assert_eq!(editor.diffthis_members[0].pane, active_pane);
+        assert_eq!(editor.diffthis_members[0].buffer, active_buffer);
+        // Dormant session registered (arity 1, no peer).
+        let session = editor
+            .diff_subsystem
+            .lookup(active_buffer)
+            .expect("dormant session keyed under active");
+        assert_eq!(session.buffer_id(), active_buffer);
+        // No pane group + no fillers at arity 1.
         assert!(editor.pane_groups.is_empty());
+        assert_eq!(
+            editor.virtual_row_providers.snapshot(active_buffer).len(),
+            0,
+            "no filler provider registered for an N=1 dormant session"
+        );
     }
 
-    /// Running `:diffthis` twice in the same pane clears the
-    /// pending stage — gives the user a quick way to cancel
-    /// before completing.
+    /// D.8.e: running `:diffthis` twice in the same pane
+    /// removes the buffer from the group, which drops the
+    /// arity from 1 to 0 and auto-drops the session. The
+    /// editor's `diffthis_group` clears back to `None`.
     #[test]
-    fn diffthis_same_pane_twice_unstages() {
+    fn diffthis_same_pane_twice_removes_and_auto_drops() {
         let mut editor = crate::editor::Editor::default();
-        let (_active_pane, _, _, _) = vsplit_two_buffers(&mut editor);
+        let (_active_pane, active_buffer, _, _) = vsplit_two_buffers(&mut editor);
         editor.pane_tree.set_active(0);
 
         editor.do_diffthis();
-        assert!(editor.pending_diffthis.is_some());
+        assert_eq!(editor.diffthis_group, Some(active_buffer));
         editor.do_diffthis();
-        assert!(editor.pending_diffthis.is_none());
+        assert!(editor.diffthis_group.is_none());
+        assert!(editor.diffthis_members.is_empty());
+        assert!(
+            editor.diff_subsystem.lookup(active_buffer).is_none(),
+            "session auto-drops at arity 0"
+        );
     }
 
-    /// First `:diffthis` in pane A then second in pane B
-    /// completes: registers the session under pane B's buffer,
-    /// creates a pane group with two members, binds the group
-    /// id back onto the session, and registers a filler
-    /// provider on each side via the per-`BufferId` registry.
-    ///
-    /// `#[tokio::test]` because completion calls
-    /// `note_buffer_edited` which arms the per-session
-    /// debouncer (a tokio `sleep_until` task).
+    /// D.8.e: first `:diffthis` in pane A creates an N=1
+    /// dormant session; second `:diffthis` in pane B extends
+    /// it to N=2. Session identity preserved (still keyed
+    /// under A's buffer). Pane group + filler providers wire
+    /// in at the arity-2 transition.
     #[tokio::test]
-    async fn diffthis_second_pane_completes() {
+    async fn diffthis_second_pane_extends_to_arity_two() {
         let mut editor = crate::editor::Editor::default();
         let (_, active_buffer, _, other_buffer) = vsplit_two_buffers(&mut editor);
 
-        // First diffthis in pane 0 (baseline side).
+        // First diffthis in pane 0.
         editor.pane_tree.set_active(0);
         editor.do_diffthis();
-        assert!(editor.pending_diffthis.is_some());
+        let primary = editor.diffthis_group.expect("group set");
+        assert_eq!(primary, active_buffer);
 
-        // Second diffthis in pane 1 (current side).
+        // Second diffthis in pane 1.
         editor.pane_tree.set_active(1);
         editor.do_diffthis();
 
-        // Stage cleared, session registered, pane group exists.
-        assert!(editor.pending_diffthis.is_none());
-        let primary = other_buffer; // current side becomes the primary key.
+        // diffthis_group unchanged — D.8.e preserves
+        // session identity across the arity-1→2 transition.
+        assert_eq!(editor.diffthis_group, Some(active_buffer));
+        assert_eq!(editor.diffthis_members.len(), 2);
+
+        // Descriptor now has 2 sources / participants.
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(active_buffer)
+            .expect("descriptor present");
+        assert_eq!(descriptor.arity(), 2);
+        assert!(descriptor.participants.contains(&active_buffer));
+        assert!(descriptor.participants.contains(&other_buffer));
+
+        // Pane group + fillers wire in at arity 2.
         let session = editor
             .diff_subsystem
-            .lookup(primary)
-            .expect("session registered under current side");
-        assert!(
-            session.pane_group_id().is_some(),
-            "session should be bound to its pane group"
-        );
-        let pg_id = session.pane_group_id().unwrap();
+            .lookup(active_buffer)
+            .expect("session alive");
+        let pg_id = session.pane_group_id().expect("pane group bound at arity 2");
         let pg = editor
             .pane_groups
             .iter()
@@ -25588,24 +25889,212 @@ mod tests {
             .expect("pane group present");
         assert_eq!(pg.members.len(), 2);
 
-        // Filler providers registered scoped per-buffer
-        // (D.4.d.2.1.a): baseline side under `active_buffer`,
-        // current side under `other_buffer` (= primary).
+        // Filler providers registered for both sides.
         assert_eq!(
             editor.virtual_row_providers.snapshot(active_buffer).len(),
             1,
-            "baseline-side filler registered under baseline buffer"
+            "slot-0 filler registered under first :diffthis buffer"
         );
         assert_eq!(
             editor.virtual_row_providers.snapshot(other_buffer).len(),
             1,
-            "current-side filler registered under current buffer"
+            "slot-1 filler registered under second :diffthis buffer"
         );
     }
 
-    /// The active buffer already has a session (inline `:diff`
-    /// or another two-pane diff) → `:diffthis` errors.
-    /// Defends users from accidentally double-binding a buffer.
+    /// D.8.e: third `:diffthis` extends the diffthis group to
+    /// arity 3 — the engine's `three_way` path. Pane group is
+    /// drop-and-recreated with a `three_pane` row mapper;
+    /// fillers re-registered for all three members.
+    #[tokio::test]
+    async fn diffthis_third_pane_extends_to_arity_three() {
+        let mut editor = crate::editor::Editor::default();
+        let (buf0, buf1, buf2) = vsplit_three_buffers(&mut editor);
+
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        let pg_before_third = editor
+            .diff_subsystem
+            .lookup(buf0)
+            .and_then(|s| s.pane_group_id())
+            .expect("pane group bound after arity-2");
+
+        editor.pane_tree.set_active(2);
+        editor.do_diffthis();
+
+        assert_eq!(editor.diffthis_group, Some(buf0));
+        assert_eq!(editor.diffthis_members.len(), 3);
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(buf0)
+            .expect("descriptor present");
+        assert_eq!(descriptor.arity(), 3);
+        for b in [buf0, buf1, buf2] {
+            assert!(
+                descriptor.participants.contains(&b),
+                "{:?} should be a participant",
+                b
+            );
+        }
+
+        // Pane group was drop-and-recreated — fresh id.
+        let pg_after_third = editor
+            .diff_subsystem
+            .lookup(buf0)
+            .and_then(|s| s.pane_group_id())
+            .expect("pane group re-bound at arity-3");
+        assert_ne!(
+            pg_before_third, pg_after_third,
+            "arity-3 rebuild should produce a fresh pane group id"
+        );
+        let pg = editor
+            .pane_groups
+            .iter()
+            .find(|g| g.id == pg_after_third)
+            .expect("arity-3 pane group present");
+        assert_eq!(pg.members.len(), 3);
+
+        // Filler providers registered for all three members.
+        for b in [buf0, buf1, buf2] {
+            assert_eq!(
+                editor.virtual_row_providers.snapshot(b).len(),
+                1,
+                "{:?} should have one filler provider",
+                b
+            );
+        }
+    }
+
+    /// D.8.e: arity-4 cap. After the diffthis group reaches
+    /// arity 3, a fourth `:diffthis` is rejected via
+    /// [`MembershipError::EngineRejected`] (engine's
+    /// [`DiffEngineError::Unsupported`]). The session and
+    /// members are left untouched — atomic rejection.
+    #[tokio::test]
+    async fn diffthis_fourth_pane_rejected_at_engine_cap() {
+        let mut editor = crate::editor::Editor::default();
+        // Build a 3-pane layout, fill to arity 3, then split a
+        // fourth pane and try to diffthis it.
+        let (buf0, buf1, buf2) = vsplit_three_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(2);
+        editor.do_diffthis();
+        assert_eq!(editor.diffthis_members.len(), 3);
+        let pg_before_reject = editor
+            .diff_subsystem
+            .lookup(buf0)
+            .and_then(|s| s.pane_group_id())
+            .expect("pane group bound at arity 3");
+
+        // Fourth pane.
+        use lattice_core::ui::pane::SplitOrientation;
+        editor.pane_tree.set_active(2);
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        let buf3 = lattice_core::BufferId(101);
+        let new_leaf_idx = editor.pane_tree.leaves().len() - 1;
+        editor.pane_tree.leaves_mut()[new_leaf_idx].buffer_id = buf3;
+        editor.pane_tree.set_active(new_leaf_idx);
+
+        editor.do_diffthis();
+
+        // Reject message surfaced.
+        let msg = editor.last_message.as_ref().expect("error msg");
+        assert!(
+            msg.text.contains("up to 3 participants"),
+            "expected engine-cap reject, got: {}",
+            msg.text
+        );
+
+        // State unchanged from the arity-3 snapshot.
+        assert_eq!(editor.diffthis_members.len(), 3);
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(buf0)
+            .expect("descriptor still present");
+        assert_eq!(descriptor.arity(), 3);
+        for b in [buf0, buf1, buf2] {
+            assert!(descriptor.participants.contains(&b));
+        }
+        assert!(
+            !descriptor.participants.contains(&buf3),
+            "rejected participant must not appear in descriptor"
+        );
+        let pg_after_reject = editor
+            .diff_subsystem
+            .lookup(buf0)
+            .and_then(|s| s.pane_group_id())
+            .expect("pane group still bound");
+        assert_eq!(
+            pg_before_reject, pg_after_reject,
+            "rejected add must not rebuild the pane group"
+        );
+    }
+
+    /// D.8.e: `:diffthis` on a participant of an arity-3 group
+    /// shrinks the group back to arity 2. The pane group is
+    /// drop-and-recreated with a 2-pane mapper; the removed
+    /// buffer's filler provider is unregistered.
+    #[tokio::test]
+    async fn diffthis_toggle_off_from_arity_three_shrinks_to_two() {
+        let mut editor = crate::editor::Editor::default();
+        let (buf0, buf1, buf2) = vsplit_three_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(2);
+        editor.do_diffthis();
+        assert_eq!(editor.diffthis_members.len(), 3);
+
+        // Toggle off the third pane.
+        editor.pane_tree.set_active(2);
+        editor.do_diffthis();
+
+        assert_eq!(editor.diffthis_group, Some(buf0));
+        assert_eq!(editor.diffthis_members.len(), 2);
+        assert!(
+            editor.diffthis_members.iter().all(|m| m.buffer != buf2),
+            "third member removed"
+        );
+
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(buf0)
+            .expect("descriptor present");
+        assert_eq!(descriptor.arity(), 2);
+        assert!(!descriptor.participants.contains(&buf2));
+
+        // Pane group at arity 2 still bound; arity-2 fillers
+        // for buf0 + buf1 present, buf2's filler gone.
+        let pg_id = editor
+            .diff_subsystem
+            .lookup(buf0)
+            .and_then(|s| s.pane_group_id())
+            .expect("pane group re-bound at arity 2");
+        let pg = editor
+            .pane_groups
+            .iter()
+            .find(|g| g.id == pg_id)
+            .expect("arity-2 pane group present");
+        assert_eq!(pg.members.len(), 2);
+        assert_eq!(editor.virtual_row_providers.snapshot(buf0).len(), 1);
+        assert_eq!(editor.virtual_row_providers.snapshot(buf1).len(), 1);
+        assert_eq!(
+            editor.virtual_row_providers.snapshot(buf2).len(),
+            0,
+            "removed participant's filler unregistered"
+        );
+    }
+
+    /// The active buffer already has a non-diffthis session
+    /// (e.g. inline `:diff` or `:diffsplit`) → `:diffthis`
+    /// errors. Defends users from accidentally double-binding
+    /// a buffer across diff session kinds.
     #[test]
     fn diffthis_rejects_when_active_buffer_has_session() {
         let mut editor = crate::editor::Editor::default();
@@ -25626,16 +26115,17 @@ mod tests {
             "expected reject message, got: {}",
             msg.text
         );
-        assert!(editor.pending_diffthis.is_none());
+        assert!(editor.diffthis_group.is_none());
+        assert!(editor.diffthis_members.is_empty());
     }
 
     /// `:diffthis` on a non-Document active pane (file tree /
-    /// help / etc.) errors without staging.
+    /// help / etc.) errors without touching diffthis state.
     #[test]
     fn diffthis_rejects_non_document_active_pane() {
         let mut editor = crate::editor::Editor::default();
         // Flip the active leaf's kind. Buffer-kind dispatch
-        // happens before the staging logic.
+        // happens before the toggle logic.
         editor.pane_tree.leaves_mut()[0].buffer = lattice_core::BufferKind::FileTree;
 
         editor.do_diffthis();
@@ -25645,13 +26135,19 @@ mod tests {
             "expected reject message, got: {}",
             msg.text
         );
-        assert!(editor.pending_diffthis.is_none());
+        assert!(editor.diffthis_group.is_none());
+        assert!(editor.diffthis_members.is_empty());
     }
 
     /// `:diffoff` from *either* pane of a two-way diff finds
     /// the session via the subsystem's secondary→primary
     /// indirection. After teardown: session gone, pane group
     /// gone, filler providers gone on both sides.
+    ///
+    /// D.8.e: session is keyed under the FIRST `:diffthis`
+    /// buffer (`baseline_buffer`). Tearing down from the
+    /// second-added side (`current_buffer`) exercises the
+    /// secondary→primary lookup path.
     #[tokio::test]
     async fn diff_off_from_baseline_pane_tears_down_two_pane_session() {
         let mut editor = crate::editor::Editor::default();
@@ -25660,14 +26156,17 @@ mod tests {
         editor.do_diffthis();
         editor.pane_tree.set_active(1);
         editor.do_diffthis();
-        assert!(editor.diff_subsystem.lookup(current_buffer).is_some());
+        assert!(
+            editor.diff_subsystem.lookup(baseline_buffer).is_some(),
+            "session keyed under first :diffthis buffer"
+        );
 
-        // Tear down from the baseline pane — the active
-        // buffer is `baseline_buffer`, which is NOT the
+        // Tear down from the second-added pane — the active
+        // buffer is `current_buffer`, which is NOT the
         // session's primary key. `lookup_session_for` must
-        // still resolve via the secondary index.
-        editor.pane_tree.set_active(0);
-        editor.document_buffer_id = baseline_buffer;
+        // resolve via the secondary index.
+        editor.pane_tree.set_active(1);
+        editor.document_buffer_id = current_buffer;
         editor.do_diff_off(false);
 
         assert!(editor.diff_subsystem.is_empty(), "session dropped");
@@ -25850,6 +26349,11 @@ mod tests {
     /// peer. The bridge queue must drain at the next dispatch
     /// tick — simulated by calling
     /// `apply_pending_diff_mode_changes` directly.
+    ///
+    /// D.8.e: closing the **primary** participant
+    /// (`baseline_buffer`, the first `:diffthis`) drops the
+    /// session entirely. Closing a secondary watcher is
+    /// covered by the per-participant tear-down work in D.8.f.
     #[tokio::test]
     async fn doc_close_auto_drop_clears_diff_mode_on_peer() {
         let mut editor = editor_with_diff_mode_registered();
@@ -25862,8 +26366,9 @@ mod tests {
         assert!(diff_mode_active_on(&editor, current_buffer));
 
         // Simulate the bus-driven auto-drop the
-        // `DocumentClosed` event would fire.
-        editor.diff_subsystem.note_buffer_closed(current_buffer);
+        // `DocumentClosed` event would fire — closing the
+        // primary participant drops the whole session.
+        editor.diff_subsystem.note_buffer_closed(baseline_buffer);
         editor.apply_pending_diff_mode_changes();
 
         assert!(

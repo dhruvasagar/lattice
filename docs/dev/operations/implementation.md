@@ -3684,6 +3684,67 @@ shared with multibuffer-views and post-v1 inlay hints.
     1461 workspace tests green. Touched:
     `crates/lattice-host/src/diff/{mode.rs,
     subsystem.rs}`.
+  - ✅ **D.8.e** (2026-05-31) — `:diffthis` rewrite to
+    the singleton diffthis-group model. Retires the
+    D.4.d.3.a "two-step stage → complete" state
+    machine; replaces `pub pending_diffthis:
+    Option<PaneGroupMember>` with two fields on
+    `Editor`:
+    - `pub diffthis_group: Option<BufferId>` — the
+      session key for the singleton diffthis group
+      (`None` ⇒ no group; `Some(b)` ⇒ session keyed
+      under `b`, which is always the first buffer
+      to enter the group).
+    - `pub diffthis_members: Vec<PaneGroupMember>` —
+      ordered members; slot index in
+      `pane_groups[diffthis_group].members` matches.
+    `do_diffthis` becomes a per-buffer toggle:
+    - If the active buffer is **in**
+      `diffthis_members` → `diffthis_toggle_off`:
+      calls `remove_participant_buffer`; auto-drops
+      when arity falls to 0; rebuilds pane group +
+      fillers otherwise (drop-and-recreate, with the
+      removed buffer's filler scrubbed explicitly
+      before rebuild to avoid orphan providers
+      since `rebuild_*` iterates the post-retain
+      members).
+    - Else (active buffer is **not** in the group)
+      → `diffthis_toggle_on`: creates a **dormant
+      N=1 session** keyed under the active buffer
+      when `diffthis_group` is `None` (no pane
+      group, no fillers — the engine accepts N=1 as
+      empty hunks per D.8.a); otherwise extends the
+      group via `add_participant`, surfacing the
+      engine-cap reject ("v1 supports up to 3
+      participants") atomically.
+    `rebuild_diffthis_pane_group_and_fillers(group_key)`
+    is the single arity-transition helper: drops any
+    existing pane group + scrubs known fillers, then
+    if `arity ≥ 2` installs a fresh pane group with a
+    `HunkRowMapper` (2-pane at arity 2,
+    `HunkRowMapper::three_pane` at arity 3) and
+    re-registers per-slot fillers under each member's
+    `BufferId`. Bind / unbind via
+    `session.bind_pane_group(pg_id)` keeps session
+    identity stable across rebuilds. **Pre-existing
+    `do_diffthis` tests retired** — they asserted the
+    old "second invocation completes" semantic that
+    D.8.e replaces. **Six rewritten + new tests**:
+    `diffthis_first_call_creates_dormant_singleton_session`,
+    `diffthis_same_pane_twice_removes_and_auto_drops`,
+    `diffthis_second_pane_extends_to_arity_two`,
+    `diffthis_third_pane_extends_to_arity_three`,
+    `diffthis_fourth_pane_rejected_at_engine_cap`,
+    `diffthis_toggle_off_from_arity_three_shrinks_to_two`.
+    Two existing tests rebased onto the new session
+    primary-key (now the first `:diffthis` buffer,
+    previously the second):
+    `diff_off_from_baseline_pane_tears_down_two_pane_session`,
+    `doc_close_auto_drop_clears_diff_mode_on_peer`.
+    653 lattice-host tests (+3 net) green; workspace
+    build clean. Touched:
+    `crates/lattice-host/src/editor.rs`,
+    `crates/lattice-host/src/dispatch.rs`.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

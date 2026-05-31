@@ -633,33 +633,37 @@ pub struct Editor {
     /// groups around lifecycle. See
     /// `docs/dev/architecture/pane-groups.md`.
     pub pane_groups: Vec<crate::pane_group::PaneGroup>,
-    /// D.4.d.3.a (2026-05-30): pending `:diffthis` staging.
-    /// `None` until the user runs `:diffthis` in the first
-    /// pane; `Some(member)` after that until either the same
-    /// pane runs `:diffthis` again (which unstages, clearing
-    /// back to `None`) or a *different* pane runs `:diffthis`
-    /// (which completes the two-pane setup via
-    /// `register_two_pane_diff` and clears back to `None`).
+    /// D.8.e (2026-05-31): session key of the **singleton**
+    /// `:diffthis` group, if any. `:diffthis` toggles per-buffer
+    /// membership in this one group; other diff sessions
+    /// (`:diffsplit`, AI-driven openDiff flows, future magit)
+    /// run as independent `DiffSession`s and **don't** affect
+    /// this field.
     ///
-    /// **v1 is two-way only.** Vim's actual model — each
-    /// `:diffthis` toggles a per-buffer `:set diff` flag and
-    /// the live set of flagged buffers participates in one
-    /// diff group, with any arity N≥2 — is deferred to D.8.
-    /// That slice replaces this `Option` field with a
-    /// dynamic-membership model, drops the singleton "first
-    /// pane awaiting peer" semantics, and refactors
-    /// `DiffDescriptor` to be arity-agnostic
-    /// (`Vec<Source>` instead of explicit
-    /// `baseline + current + remote`). The "staged"
-    /// terminology is provisional and reflects this v1
-    /// limitation: there's no real two-phase staging in
-    /// diff semantics — D.4.d.3.a's `:diffthis` is just a
-    /// "tentative first pane, waiting for the peer call to
-    /// complete the 2-way session" pattern, picked because
-    /// the explicit 3-way merge UX (D.6) ships through
-    /// `:diffsplit base remote` rather than chained
-    /// `:diffthis`.
-    pub pending_diffthis: Option<crate::pane_group::PaneGroupMember>,
+    /// State transitions (per
+    /// `docs/dev/architecture/n-way-diff-membership.md` §6.2):
+    /// - `None` → user runs `:diffthis` in any pane: create
+    ///   N=1 dormant session keyed under the active buffer;
+    ///   set this to `Some(active_buf)`.
+    /// - `Some(g)` + active buffer not in g: extend the group
+    ///   via `add_participant`; arity grows.
+    /// - `Some(g)` + active buffer in g: shrink the group via
+    ///   `remove_participant_buffer`; if arity drops to 0 the
+    ///   subsystem auto-drops the session and this clears
+    ///   back to `None`.
+    pub diffthis_group: Option<lattice_core::BufferId>,
+    /// D.8.e (2026-05-31): pane members corresponding to each
+    /// participant of the diffthis group, in `:diffthis`-call
+    /// order. The first entry is the pane the FIRST
+    /// `:diffthis` invocation came from; subsequent entries
+    /// are appended as the user invokes `:diffthis` in new
+    /// panes. Used to construct / reshape the pane group when
+    /// arity transitions across 2 (need scroll-bind +
+    /// fillers).
+    ///
+    /// Cleared in lockstep with `diffthis_group` — both reset
+    /// to empty / `None` when the group drops to arity 0.
+    pub diffthis_members: Vec<crate::pane_group::PaneGroupMember>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

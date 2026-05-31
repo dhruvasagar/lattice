@@ -69,6 +69,21 @@ impl<T> Pending<T> {
         Self { id, rx }
     }
 
+    /// M.1 (2026-05-31): build a `Pending<T>` that resolves
+    /// immediately with `result`. Used by read-only impls of
+    /// [`crate::Document`] (`MultibufferDocumentHandle`) to
+    /// reject writes without ever spawning an actor — every
+    /// mutating method returns `Pending::ready(Err(
+    /// RuntimeError::ReadOnly))`.
+    pub fn ready(result: Result<T, RuntimeError>) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(result);
+        Self {
+            id: InvocationId::next(),
+            rx,
+        }
+    }
+
     /// Block the current thread until the actor responds. Used by
     /// the TUI input loop and by tests that don't drive a tokio
     /// reactor explicitly. Panics only if the oneshot's internal
@@ -126,6 +141,15 @@ pub enum RuntimeError {
     /// invocation was invalid.
     #[error(transparent)]
     Grammar(#[from] CommandError),
+
+    /// M.1 (2026-05-31): write attempted against a read-only
+    /// document. Returned by `MultibufferDocumentHandle`'s
+    /// mutating methods until M.3 lands edit propagation.
+    /// Distinguishes "this buffer doesn't accept writes by
+    /// design" from `ActorGone` (transient / recoverable) and
+    /// `Core` / `Grammar` (the write was tried but invalid).
+    #[error("document is read-only")]
+    ReadOnly,
 }
 
 #[cfg(test)]

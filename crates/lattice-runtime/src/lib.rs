@@ -68,6 +68,7 @@ pub mod events;
 pub mod handle;
 pub mod messages;
 pub mod messages_subscriber;
+pub mod multibuffer;
 pub mod pending;
 pub mod runtime;
 pub mod snapshot;
@@ -76,6 +77,9 @@ pub use actor::DocumentActor;
 pub use document::{ActiveDocument, Document};
 pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{RopeDocumentHandle, spawn_document};
+pub use multibuffer::{
+    Excerpt, ExcerptId, MultibufferDocumentHandle, MultibufferError, RowEntry, RowTranslation,
+};
 pub use lattice_grammar::CancellationToken;
 pub use messages::{MessagePushed, MessageRecord, MessagesRing};
 pub use messages_subscriber::{

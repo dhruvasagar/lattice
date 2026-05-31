@@ -85,7 +85,7 @@ impl Buffer {
     /// is `Arc`-share of the underlying chunks (no deep copy), so
     /// the cost is one refcount bump per chunk. Used by the
     /// diff subsystem's `BufferTextProvider` impl to hand a
-    /// snapshot rope to `BufferSource` / `BufferSource`
+    /// snapshot rope to `BufferSource`
     /// from inside the worker's `spawn_blocking` body. Exposes
     /// only `Rope` (not the internal `Rope` field), so the
     /// abstraction barrier the `pub(crate) rope()` method

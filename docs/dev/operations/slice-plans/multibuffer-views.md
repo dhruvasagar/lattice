@@ -14,7 +14,8 @@ modes, graceful error handling.
 
 | Slice   | Title                                       | What lands |
 |---------|---------------------------------------------|------------|
-| **M.0** | Document-as-trait refactor                  | Hoist `Document` to a trait; port today's struct to `RopeDocument`; keep every call site green. The refactor's correctness gate is the existing test suite passing unchanged, plus a bench-no-regression on `editor_render_p99_us` and `edit_dispatch_p99_us` (no new abstraction overhead). No multibuffer code yet. Reviewed independently and merged as its own PR before M.1 starts. |
+| **M.-0** | Bench prep — Document hot-path baselines   | Land `editor_render_p99_us` + `edit_dispatch_p99_us` as a zero-behaviour slice immediately before M.0. The two benches measure the renderer's per-frame Document read cost and the dispatcher's per-edit Document write cost against today's struct, giving M.0 (and every subsequent M-slice) a stable no-regression gate. Heuristic #5 — benches are first-class infrastructure for any non-trivial change. Reviewed and merged as its own PR before M.0 starts. |
+| **M.0** | Document-as-trait refactor                  | Hoist `Document` to a `Send + Sync` trait with **`&self` everywhere** (architectural decision per design fragment §3.1, 2026-05-31). `RopeDocument` is the sole impl: `ArcSwap<Rope>` for the read view (`rope_snapshot(&self) -> Arc<Rope>`, lock-free p99 ≈ p50), `ArcSwap<SelectionSet>` for selections, `Mutex<RopeDocumentInner>` serialising writes (Buffer + undo stack + dirty flag). Mutations against current state use `ArcSwap::rcu`. Every ~54 call sites that touch `Document` migrate atomically in this slice. Correctness gate: existing test suite passes unchanged + bench-no-regression on M.-0's two baselines (no new abstraction overhead, no allocator-pressure regression from the ArcSwap clone-on-write path). No multibuffer code yet. Reviewed independently and merged as its own PR before M.1 starts. |
 | **M.1** | `MultibufferDocument` (read-only)           | New `MultibufferDocument` impl of the `Document` trait. Excerpts as `Vec<Excerpt>` with anchored ranges; composed `rope()` view backed by lazy read-through; row-translation cache built on first access, invalidated on source-edit events. Registered in `BufferRegistry`. **Edits are rejected** (read-only mutability) in this slice. Tests: create multibuffer with 3 excerpts across 2 source buffers; `rope().lines()` returns the expected composed content; source-buffer edits propagate to the composed view; closing a source buffer auto-removes orphaned excerpts (per §8 decision). No rendering yet — assertions are via direct Document reads. |
 | **M.2** | Excerpt rendering                           | Consumes D.0's virtual-row primitive (if D.0 hasn't landed yet, this slice lands it). Excerpt headers + separators render as virtual rows. `]e` / `[e` / `]E` / `[E` motions registered. Tests: open a multibuffer in a pane, render correctly with headers and separators; motions land on expected rows. Bench: `multibuffer_render_p99_us` ≤ 200µs at 50 visible excerpts. |
 | **M.3** | Edit propagation                            | Flip multibuffer to editable. Edit dispatch at multibuffer row → translation lookup → source dispatch → standard pipeline. Boundary clipping per §4. Multi-excerpt selections split into per-excerpt edits in source-ascending order. Undo composes correctly. Tests: edit within an excerpt → source buffer reflects; edit at excerpt boundary clips; multi-excerpt selection delete fires one undo group spanning N source buffers; macros recorded against a multibuffer replay correctly. Bench: `multibuffer_edit_dispatch_p99_us` ≤ 100µs at 1k excerpts. |
@@ -26,8 +27,12 @@ modes, graceful error handling.
 
 Slice sequencing:
 
+- **M.-0 lands first.** Tiny zero-behaviour bench slice that
+  baselines the two Document hot paths today; gives M.0 a
+  measurable no-regression gate.
 - **M.0 is the load-bearing slice** — the trait refactor.
-  Lands green standalone; everything else depends on it.
+  Depends on M.-0 (for the no-regression gate). Lands green
+  standalone; everything else depends on it.
 - **M.1** depends on M.0.
 - **M.2** depends on M.1 + D.0 (consumes the virtual-row
   primitive; lands D.0 if D.0 hasn't already shipped).

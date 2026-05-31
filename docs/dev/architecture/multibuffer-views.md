@@ -116,17 +116,25 @@ multibuffer Document. The shift:
 
 ```rust
 pub trait Document: Send + Sync {
-	fn id(&self) -> BufferId;
-	fn rope(&self) -> &Rope;           // composed view for multibuffer
+	fn id(&self) -> DocumentId;
+	fn rope_snapshot(&self) -> Arc<Rope>;       // lock-free
+	fn selections_snapshot(&self) -> Arc<SelectionSet>;  // lock-free
 	fn revision(&self) -> Revision;
 	fn line_count(&self) -> usize;
 	fn apply_edit(&self, edit: Edit) -> EditResult;
+	fn set_selections(&self, selections: SelectionSet);
 	fn anchor_at(&self, pos: Position) -> Anchor;
 	fn position_at(&self, anchor: &Anchor) -> Position;
 	// ... existing Document API surface, hoisted to the trait
 }
 
-pub struct RopeDocument { /* today's Document */ }
+pub struct RopeDocument {
+	id: DocumentId,
+	rope: ArcSwap<Rope>,
+	selections: ArcSwap<SelectionSet>,
+	inner: Mutex<RopeDocumentInner>,  // Buffer + undo stack + dirty flag
+	// ...
+}
 impl Document for RopeDocument { /* ... */ }
 
 pub struct MultibufferDocument { /* §3.3 */ }
@@ -138,12 +146,84 @@ every call site that touched `Document` today touches the
 trait, with `RopeDocument` as the sole implementation. The
 multibuffer Document arrives in M.1.
 
-`MultibufferDocument`'s `rope()` returns a *composed* rope —
-not a physical copy of the source ropes' bytes, but a lazy
-view that reads through to the source ropes on demand. The
-composition is cached per multibuffer revision; cache
-invalidates when any source revision changes or any excerpt
-range changes.
+#### Interior mutability (decided 2026-05-31)
+
+Every trait method takes `&self`. Mutating methods
+(`apply_edit`, `set_selections`, `undo`, `redo`, `save`)
+serialise internally through `Mutex<RopeDocumentInner>` for
+the write path, then publish the new rope / selection state
+via `ArcSwap::store(Arc::new(new))`. Readers (renderer,
+motion handlers, status line, plugin tasks) call
+`rope_snapshot()` / `selections_snapshot()` and get an
+`Arc<...>` back via `ArcSwap::load_full()` — **lock-free,
+~5–10 ns per call, p99 ≈ p50 under any writer concurrency.**
+
+The pattern matches lattice's existing
+`DiffSession::current_hunks` and the cells-layer ArcSwap
+guards. Trait-level consistency means `MultibufferDocument`'s
+composed rope cache (§3.3) drops in as an `ArcSwap<Rope>`
+without changing the read-path call sites.
+
+**Rejected alternatives:**
+
+- `&mut self` on writes (today's struct shape). Forces every
+  plugin-originated edit (paramount goal #2) through the
+  central editor to acquire exclusive ownership — a
+  serialisation point that collides with the
+  "multi-threaded by construction" mandate (paramount goal
+  #4). Also precludes cross-document edits (M.4 source
+  propagation, future project-wide ops): Rust's borrow
+  checker forbids simultaneous `&mut` on two Documents.
+- Split read / write traits (`Document` for `&self` reads,
+  `DocumentMut` for `&mut self` writes). Cosmetic improvement
+  over `&mut self`; the write path is still a serialisation
+  point and the cross-document edit blocker remains.
+- `parking_lot::RwLock<SelectionSet>` for the selections.
+  Read cost (~15–30 ns) is comparable to `ArcSwap::load_full`
+  (~5–10 ns) at v1's single-writer cadence, **but read
+  latency degrades to the worst concurrent write duration
+  under any future contention** (plugin-task writers,
+  multi-cursor anchor recompute). `ArcSwap` keeps reads at
+  p99 ≈ p50 regardless of writer activity. Per-op cost
+  difference is sub-microsecond — irrelevant against the
+  8 ms / 120 Hz frame budget — but the tail-latency
+  guarantee is what paramount goal #1 actually commits to.
+
+**Cost paid:** every selection / rope mutation allocates a
+new `Arc<...>`. At ~100 Hz typing cadence this is ~8 KB/s
+churn for SelectionSet; at 1 kHz macro replay ~80 KB/s.
+Trivial for any modern allocator. If profiling ever surfaces
+allocator pressure here, the M.-0 benches catch the
+regression and `Arc::make_mut` / a small free-list mitigate
+without changing the trait shape.
+
+Mutations against the current state use `ArcSwap::rcu`:
+
+```rust
+self.selections.rcu(|prev| {
+	let mut next = SelectionSet::clone(prev);
+	next.extend(...);
+	Arc::new(next)
+});
+```
+
+`rcu` is compare-and-swap-correct under future N-writer
+paths and reduces to a single CAS cycle in v1's single-writer
+world.
+
+#### Composed-rope view (M.1)
+
+`MultibufferDocument::rope_snapshot()` returns an `Arc<Rope>`
+backed by an internal `ArcSwap<Rope>` cache. The cache is
+rebuilt off-thread when any source `Document::revision()`
+bumps or any excerpt range mutates; the rebuilt `Arc<Rope>`
+publishes atomically via `ArcSwap::store`. The composition
+is not a byte-for-byte copy of the source ropes — it's a
+freshly-built rope whose lines reference the source excerpt
+ranges' content. Cache invalidates on source-revision change
+or excerpt mutation; readers between invalidation and rebuild
+see the previous snapshot (eventual consistency at the cache
+layer; strict consistency at the source-rope layer).
 
 ### 3.2 `Excerpt`
 

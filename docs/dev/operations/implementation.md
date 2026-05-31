@@ -3933,9 +3933,53 @@ diagnostics-as-buffer with one implementation.
   Touched: `crates/lattice-runtime/src/{multibuffer.rs (new),
   lib.rs, pending.rs}`,
   `crates/lattice-host/src/buffer_registry.rs`.
-- 🗒 **M.2** — Excerpt rendering: consumes D.0 virtual-row
-  primitive (lands D.0 if not yet shipped); headers +
-  separators; `]e` / `[e` / `]E` / `[E` motions.
+- 🚧 **M.2** — Excerpt rendering. Sub-sliced per design §3.6
+  (2026-05-31): multibuffer concerns extract into a dedicated
+  `lattice-multibuffer` crate; `MultibufferMode` becomes the
+  **major mode** for `BufferKind::Multibuffer`; motions
+  register through the mode's keymap with the typed handle
+  reached via the mode's per-buffer context.
+  - ✅ **M.2.a** (commit `7b436e3`) — initial
+    `MultibufferHeaderProvider` in `lattice-host::multibuffer`
+    + `ExcerptHeader` / `ExcerptHeaderStyle` on `Excerpt`.
+    Five tests. To be moved into the dedicated crate in
+    M.2.b.1.
+  - ✅ **M.2.b.0** (2026-05-31) — reconnaissance of
+    `lattice-mode` + `lattice-grammar` APIs. Findings:
+    (a) `Mode` trait already has typed `Guard: Send +
+    'static` — ready for `MultibufferModeGuard`.
+    (b) `BufferKind` → major-mode activation pipeline
+    (`crate::modes::resolve_major_mode`) already in place;
+    `BufferKind::Multibuffer` slots in symmetrically.
+    (c) `MotionContext` was intentionally narrow (no
+    `buffer_id`, no service access) — kind-specific motions
+    couldn't reach mode state. Prerequisite slice M.2.b.0.A
+    extends the grammar API.
+  - ✅ **M.2.b.0.A** (commit `6ec958d`) — grammar API
+    extension. `MotionContext.buffer_id` field; `execute(...)`
+    + `execute_motion_only(...)` gain `buffer_id` parameter;
+    `ActorMsg::Dispatch` carries `buffer_id`;
+    `RopeDocumentHandle` stores its own buffer_id (set at
+    `spawn_document(buffer_id, document, registry)`).
+    Built-in motions ignore the new field; kind-specific
+    handlers use it for service-registry lookup at dispatch
+    time. Grammar stays free of `lattice-mode` coupling.
+    1461 tests pass. 17 files touched.
+  - 🗒 **M.2.b.1** — extract `lattice-multibuffer` crate.
+    Move data types from `lattice-runtime::multibuffer`;
+    move header provider from `lattice-host::multibuffer`;
+    add `BufferKind::Multibuffer` variant in `lattice-core`;
+    expose `register(mode_registry, grammar)` entry point.
+  - 🗒 **M.2.b.2** — `MultibufferMode` as the major mode
+    for `BufferKind::Multibuffer`. Per-buffer Guard carries
+    `Arc<MultibufferDocumentHandle>`. `on_activate` wires
+    the header provider through host services.
+  - 🗒 **M.2.b.3** — `]e` / `[e` / `]E` / `[E` motions
+    registered through grammar; bound in `MultibufferMode`
+    keymap. Handlers look up mode state via the service
+    registry their closures captured at boot.
+  - 🗒 **M.2.c** — `multibuffer_render_p99_us` bench gating
+    ≤ 200µs at 50 visible excerpts.
 - 🗒 **M.3** — Edit propagation: translation-table lookup →
   source dispatch; boundary clipping; multi-excerpt selection
   split; undo grouping across source buffers.

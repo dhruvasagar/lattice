@@ -28,7 +28,6 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
-use lattice_core::Document;
 #[cfg(test)]
 use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
@@ -270,14 +269,6 @@ impl App {
     // [`lattice_host::dispatch::Editor::do_list_registers`] /
     // [`lattice_host::dispatch::Editor::do_list_marks`] alongside
     // the [`Effect::EchoRegisters`] / [`Effect::EchoMarks`] arms.
-
-    /// Replace the actor's document outright. Used by `:edit
-    /// path`. The actor swaps state in place and republishes the
-    /// snapshot.
-    pub(super) fn replace_document_blocking(&self, document: Document) {
-        // 5.8.AA.j: migrated to host.
-        self.read_editor(move |e| e.replace_document_blocking(document));
-    }
 
     pub(super) fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
         // 5.8.AA.j: migrated to host.

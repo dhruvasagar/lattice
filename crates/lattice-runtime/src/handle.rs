@@ -6,10 +6,16 @@
 //! ## Operations
 //!
 //! Mutating methods (`apply_edit`, `undo`, `redo`, `save`,
-//! `save_as`, `set_selections`, `replace`) all return
-//! [`Pending<T>`]. Per DESIGN.md §5.2.1 the dispatcher MUST NOT
-//! block the caller -- so these never `await` on the actor; they
-//! enqueue and return.
+//! `save_as`, `set_selections`) all return [`Pending<T>`]. Per
+//! DESIGN.md §5.2.1 the dispatcher MUST NOT block the caller --
+//! so these never `await` on the actor; they enqueue and return.
+//!
+//! M.0 (2026-05-31): there is no `replace(...)` method. "The
+//! active document changes" is expressed as slot replacement —
+//! assign a fresh handle to the `Editor.document` slot; the old
+//! handle drops and its actor task exits cleanly when no other
+//! caller holds it. See `docs/dev/architecture/multibuffer-views
+//! .md` §3.1 "Why no `replace`."
 //!
 //! Read methods ([`DocumentHandle::snapshot`] and the convenience
 //! pass-throughs `text`, `path`, `dirty`, `version`,
@@ -196,14 +202,6 @@ impl DocumentHandle {
 
     pub fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
         self.send(|reply| ActorMsg::SetSelections { selections, reply })
-    }
-
-    /// Replace the actor's owned document outright. Used by
-    /// `:edit other.txt` -- swaps the buffer in place rather than
-    /// tearing down and respawning. Snapshot republishes
-    /// immediately.
-    pub fn replace(&self, document: Document) -> Pending<()> {
-        self.send(|reply| ActorMsg::Replace { document, reply })
     }
 
     /// Dispatch a [`CommandInvocation`] through
@@ -416,16 +414,6 @@ mod tests {
         // Both handles see the same published snapshot.
         assert_eq!(h1.snapshot().text(), "ab");
         assert_eq!(h2.snapshot().text(), "ab");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn replace_swaps_document_state() {
-        let h = spawn_document(Document::from_text("old"), empty_registry());
-        let v_before = h.snapshot().version;
-        h.replace(Document::from_text("new")).await.unwrap();
-        let after = h.snapshot();
-        assert_eq!(after.text(), "new");
-        assert!(after.version >= v_before);
     }
 
     #[tokio::test(flavor = "multi_thread")]

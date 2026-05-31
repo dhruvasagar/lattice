@@ -84,20 +84,8 @@ pub(crate) enum ActorMsg {
         path: PathBuf,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
-    /// Replace the buffer's content wholesale. Used by `:edit`
-    /// (open file). v1 doesn't have a `Document::reload` so this
-    /// rebuilds via batch edit; future versions of `Document`
-    /// can route directly.
     SetSelections {
         selections: SelectionSet,
-        reply: oneshot::Sender<Result<(), RuntimeError>>,
-    },
-    /// Replace the document outright (e.g. `:edit other.txt`).
-    /// The actor swaps its owned `Document`, publishes the new
-    /// snapshot, and replies. Lighter weight than tearing down
-    /// and respawning the actor.
-    Replace {
-        document: Document,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     /// Run a [`lattice_grammar::execute`] dispatch against the
@@ -206,11 +194,6 @@ impl DocumentActor {
             }
             ActorMsg::SetSelections { selections, reply } => {
                 self.document.set_selections(selections);
-                self.publish();
-                let _ = reply.send(Ok(()));
-            }
-            ActorMsg::Replace { document, reply } => {
-                self.document = document;
                 self.publish();
                 let _ = reply.send(Ok(()));
             }

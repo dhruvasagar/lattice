@@ -7776,53 +7776,14 @@ impl Editor {
                     );
                     return DoEditOutcome::Failed;
                 }
-                let new_doc = match lattice_core::Document::open(&target) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                        return DoEditOutcome::Failed;
-                    }
-                };
-                let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
-                let initial_text = new_doc.text();
-                let initial_text_version = new_doc.text_version();
-                let syntax: Option<lattice_syntax::SyntaxHandle> =
-                    match lattice_syntax::Syntax::for_language_with_registry(
-                        lang,
-                        self.lang_registry.clone(),
-                    ) {
-                        Ok(Some(mut s)) => {
-                            s.parse_at(&initial_text, initial_text_version);
-                            Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                                s,
-                                lattice_runtime::runtime::lsp_runtime().handle(),
-                            ))
-                        }
-                        _ => None,
-                    };
-                self.last_parsed_text_version = initial_text_version;
-                self.syntax = syntax;
-                self.replace_document_blocking(new_doc);
-                self.cursor = lattice_protocol::position::Position::ZERO;
-                self.scroll = 0;
-                self.current_match = None;
-                self.all_matches.clear();
-                self.search_line = None;
-                self.last_search = None;
-                self.last_find = None;
-                self.last_change = None;
-                self.last_visual = None;
-                self.visual_anchor = None;
-                self.replace_history.clear();
-                self.position_history.clear();
-                self.position_history_cursor = 0;
-                self.folds.clear();
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("\"{}\" reloaded", target.display()),
-                );
-                self.push_recent_file(&target);
-                return DoEditOutcome::Reloaded(Vec::new());
+                // M.0 (2026-05-31): slot-replacement model.
+                // The current buffer's content reload becomes
+                // "open a fresh buffer from disk and swap the
+                // active slot to it." The previous buffer
+                // remains in `BufferRegistry` (reachable via
+                // `:bn` / `:b N` / `:ls`); its actor task
+                // terminates when no one holds its handle.
+                return self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload);
             }
             // Already-open different buffer: switch to it.
             let activated_full = self.activate_document(existing_id);
@@ -7839,6 +7800,24 @@ impl Editor {
             return DoEditOutcome::Activated(signals);
         }
         // Brand-new file: open a fresh actor and register it.
+        self.open_fresh_into_active_slot(target, DoEditOpenAction::Open)
+    }
+
+    /// M.0 (2026-05-31): the shared body of `:edit foo.rs`'s
+    /// "open fresh + slot-replace" path. Both the brand-new-file
+    /// case and the reload-current-buffer case route through
+    /// here. Spawns a new document actor, registers the buffer,
+    /// swaps `self.document` to the new handle, and resets the
+    /// per-buffer ephemeral state (cursor, scroll, search,
+    /// folds, position history). The previous slot's handle
+    /// drops at the end of this method — its actor task exits
+    /// cleanly through its mailbox-close branch when no other
+    /// caller holds it.
+    fn open_fresh_into_active_slot(
+        &mut self,
+        target: std::path::PathBuf,
+        action: DoEditOpenAction,
+    ) -> DoEditOutcome {
         let new_doc = match lattice_core::Document::open(&target) {
             Ok(d) => d,
             Err(e) => {
@@ -7905,20 +7884,24 @@ impl Editor {
         tracing::info!(
             path = %target.display(),
             lang = ?lang,
+            action = ?action,
             "do_edit: about to publish DocumentOpened (LSP attach trigger)"
         );
         self.publish_document_opened_for_active();
         tracing::info!(path = %target.display(), "do_edit: DocumentOpened published");
-        self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
+        let (msg, outcome) = match action {
+            DoEditOpenAction::Open => (
+                format!("\"{}\" opened", target.display()),
+                DoEditOutcome::Opened(signals),
+            ),
+            DoEditOpenAction::Reload => (
+                format!("\"{}\" reloaded", target.display()),
+                DoEditOutcome::Reloaded(signals),
+            ),
+        };
+        self.set_message(EchoLevel::Info, msg);
         self.push_recent_file(&target);
-        DoEditOutcome::Opened(signals)
-    }
-
-    /// Replace the actor's document outright. Used by `:edit
-    /// path`. The actor swaps state in place and republishes the
-    /// snapshot. Phase 5.8.AA.j: hoisted from TUI App.
-    pub fn replace_document_blocking(&self, document: lattice_core::Document) {
-        let _ = lattice_runtime::block_on(self.document.replace(document));
+        outcome
     }
 
     /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
@@ -23291,6 +23274,24 @@ pub enum DoEditOutcome {
     Reloaded(Vec<RendererSignal>),
     Activated(Vec<RendererSignal>),
     Opened(Vec<RendererSignal>),
+}
+
+/// M.0 (2026-05-31): which variant of "open fresh + slot-replace"
+/// the caller of [`Editor::open_fresh_into_active_slot`] is
+/// invoking. Both paths execute the same body — the action just
+/// selects the success message ("opened" vs "reloaded") and the
+/// outcome variant the caller observes.
+#[derive(Debug, Copy, Clone)]
+enum DoEditOpenAction {
+    /// Brand-new file: target path is not currently open in any
+    /// buffer.
+    Open,
+    /// Reload of the current buffer's content from disk
+    /// (`:edit` with no path or `:edit current_path`). Under
+    /// the slot-replacement model, the previous buffer remains
+    /// in `BufferRegistry`; the new buffer takes the active
+    /// slot.
+    Reload,
 }
 
 /// Translate a first-party source id into the `PickerSource`

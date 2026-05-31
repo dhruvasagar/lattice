@@ -79,6 +79,53 @@ impl ExcerptId {
     }
 }
 
+/// Header presentation for an excerpt — title + style. M.2
+/// renders this as a virtual row above the excerpt's first
+/// composed line.
+#[derive(Debug, Clone)]
+pub struct ExcerptHeader {
+    /// Human-readable label. Conventionally
+    /// `"<path> : <start_line+1>-<end_line+1>"` for a regular
+    /// file excerpt (1-indexed for display). Empty string =
+    /// no header rendered (the renderer treats empty title
+    /// as a separator-only row).
+    pub title: String,
+    pub style: ExcerptHeaderStyle,
+}
+
+impl ExcerptHeader {
+    /// Convenience constructor for a default-styled header
+    /// with the given title.
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            style: ExcerptHeaderStyle::default(),
+        }
+    }
+}
+
+impl Default for ExcerptHeader {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            style: ExcerptHeaderStyle::default(),
+        }
+    }
+}
+
+/// Style discriminator for excerpt headers. M.2 ships with a
+/// single `Default` variant; future variants distinguish
+/// header presentation (e.g., severity-prefixed headers for
+/// the diagnostics provider, hunk-decorated headers for the
+/// project-diff provider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExcerptHeaderStyle {
+    /// Default header presentation: title centered with box-
+    /// drawing rules on either side. Renderer-side detail.
+    #[default]
+    Default,
+}
+
 /// One excerpt of a source document, identified by its source
 /// `BufferId` and an inclusive line range `[start_line, end_line]`.
 ///
@@ -96,18 +143,33 @@ pub struct Excerpt {
     /// (0-indexed, inclusive). When `start_line == end_line`,
     /// the excerpt is one row tall.
     pub end_line: u32,
+    /// Header presentation. M.2 renders this as a virtual row
+    /// above the excerpt's first composed line via
+    /// `MultibufferHeaderProvider` (lattice-host).
+    pub header: ExcerptHeader,
 }
 
 impl Excerpt {
     /// Build an excerpt covering `[start_line..=end_line]` of
-    /// `source`. Allocates a fresh `ExcerptId`.
+    /// `source`. Allocates a fresh `ExcerptId`. The header is
+    /// empty by default — callers (or providers) set a
+    /// meaningful title via [`Self::with_header`] or by
+    /// mutating the `header` field.
     pub fn new(source: BufferId, start_line: u32, end_line: u32) -> Self {
         Self {
             id: ExcerptId::next(),
             source,
             start_line,
             end_line,
+            header: ExcerptHeader::default(),
         }
+    }
+
+    /// Fluent setter for the header title — useful in test
+    /// fixtures and provider implementations.
+    pub fn with_header(mut self, header: ExcerptHeader) -> Self {
+        self.header = header;
+        self
     }
 
     /// Number of source rows this excerpt covers. Always

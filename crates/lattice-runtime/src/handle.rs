@@ -269,6 +269,86 @@ impl DocumentHandle {
     }
 }
 
+/// M.0 (2026-05-31): handle-layer [`Document`] trait impl.
+/// Delegates every method to the inherent method of the same
+/// name on `DocumentHandle` via fully-qualified syntax — the
+/// trait is a thin abstraction over the existing API surface;
+/// callers gain `Arc<dyn Document>` polymorphism for free.
+impl crate::document::Document for DocumentHandle {
+    fn snapshot(&self) -> Arc<DocumentSnapshot> {
+        DocumentHandle::snapshot(self)
+    }
+
+    fn snapshot_cache(&self) -> crate::snapshot::SnapshotCache {
+        DocumentHandle::snapshot_cache(self)
+    }
+
+    fn id(&self) -> DocumentId {
+        DocumentHandle::id(self)
+    }
+
+    fn text(&self) -> String {
+        DocumentHandle::text(self)
+    }
+
+    fn path(&self) -> Option<PathBuf> {
+        DocumentHandle::path(self)
+    }
+
+    fn dirty(&self) -> bool {
+        DocumentHandle::dirty(self)
+    }
+
+    fn version(&self) -> u64 {
+        DocumentHandle::version(self)
+    }
+
+    fn text_version(&self) -> u64 {
+        DocumentHandle::text_version(self)
+    }
+
+    fn selections(&self) -> Arc<SelectionSet> {
+        DocumentHandle::selections(self)
+    }
+
+    fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
+        DocumentHandle::apply_edit(self, edit)
+    }
+
+    fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
+        DocumentHandle::apply_edit_batch(self, edits)
+    }
+
+    fn undo(&self) -> Pending<Vec<AppliedEdit>> {
+        DocumentHandle::undo(self)
+    }
+
+    fn redo(&self) -> Pending<Vec<AppliedEdit>> {
+        DocumentHandle::redo(self)
+    }
+
+    fn save(&self) -> Pending<PathBuf> {
+        DocumentHandle::save(self)
+    }
+
+    fn save_as(&self, path: PathBuf) -> Pending<()> {
+        DocumentHandle::save_as(self, path)
+    }
+
+    fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
+        DocumentHandle::set_selections(self, selections)
+    }
+
+    fn dispatch_with_cancel(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+    ) -> Pending<Effect> {
+        DocumentHandle::dispatch_with_cancel(self, invocation, cursor, cancel)
+    }
+}
+
 impl std::fmt::Debug for DocumentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snap = self.snapshot();
@@ -289,6 +369,41 @@ mod tests {
 
     fn empty_registry() -> Arc<CommandRegistry> {
         Arc::new(CommandRegistry::new())
+    }
+
+    /// M.0 (2026-05-31): `Arc<dyn Document>` works — the trait
+    /// impl on `DocumentHandle` is dyn-safe and delegates to
+    /// the inherent methods, so callers holding the trait
+    /// object see the same observable behaviour as callers
+    /// holding the concrete handle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_is_usable_as_dyn_document() {
+        // Bring the trait into scope so trait-object method
+        // resolution works on `&dyn Document`. The `Document`
+        // type at module scope is the inner struct
+        // (`lattice_core::Document`); the trait lives at
+        // `crate::document::Document`.
+        use crate::document::Document as DocumentTrait;
+
+        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let dyn_doc: std::sync::Arc<dyn DocumentTrait> =
+            std::sync::Arc::new(handle.clone());
+
+        // Reads go through the trait method (default impl).
+        assert_eq!(dyn_doc.text(), "hello");
+        assert_eq!(dyn_doc.version(), 0);
+        assert!(!dyn_doc.dirty());
+
+        // Writes go through the trait method (delegated to actor).
+        dyn_doc
+            .apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .await
+            .unwrap();
+
+        // Trait-object read sees the new state; concrete handle
+        // sees the same snapshot (same actor underneath).
+        assert_eq!(dyn_doc.text(), "hello!");
+        assert_eq!(handle.text(), "hello!");
     }
 
     #[tokio::test(flavor = "multi_thread")]

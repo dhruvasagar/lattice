@@ -7,7 +7,7 @@
 //! wires in via D.2 when the subsystem owns the bench harness.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use lattice_diff::{compute_three_way, compute_two_way, DiffAlgorithm};
+use lattice_diff::{compute_diff, DiffAlgorithm};
 use ropey::Rope;
 
 /// Synthesise a rope of `n` lines, each `cols` columns wide.
@@ -61,7 +61,13 @@ fn bench_two_way(c: &mut Criterion) {
 			BenchmarkId::new("5k_x_80_1pct_edit", format!("{alg:?}")),
 			&alg,
 			|b, &alg| {
-				b.iter(|| compute_two_way(black_box(&a_5k), black_box(&b_5k), alg));
+				b.iter(|| {
+					compute_diff(
+						black_box(&[a_5k.clone(), b_5k.clone()]),
+						alg,
+					)
+					.expect("two-way is supported")
+				});
 			},
 		);
 	}
@@ -73,7 +79,13 @@ fn bench_two_way(c: &mut Criterion) {
 	group.bench_function(
 		BenchmarkId::new("50k_x_200_0.1pct_edit", "Histogram"),
 		|b| {
-			b.iter(|| compute_two_way(black_box(&a_50k), black_box(&b_50k), DiffAlgorithm::Histogram));
+			b.iter(|| {
+				compute_diff(
+					black_box(&[a_50k.clone(), b_50k.clone()]),
+					DiffAlgorithm::Histogram,
+				)
+				.expect("two-way is supported")
+			});
 		},
 	);
 
@@ -89,12 +101,11 @@ fn bench_three_way(c: &mut Criterion) {
 
 	group.bench_function("5k_x_80_two_sides_edited", |b| {
 		b.iter(|| {
-			compute_three_way(
-				black_box(&base),
-				black_box(&local),
-				black_box(&remote),
+			compute_diff(
+				black_box(&[base.clone(), local.clone(), remote.clone()]),
 				DiffAlgorithm::Histogram,
 			)
+			.expect("three-way is supported")
 		});
 	});
 

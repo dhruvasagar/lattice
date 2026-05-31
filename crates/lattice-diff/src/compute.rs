@@ -1,6 +1,16 @@
-//! Two-way and three-way hunk computation.
+//! Hunk computation: the engine's single public entry point is
+//! [`compute_diff`], which dispatches by participant count to
+//! crate-private [`two_way`] / [`three_way`] helpers. External
+//! consumers (subsystem, benches, integration tests in other
+//! crates) go through `compute_diff` exclusively — no code
+//! outside this crate branches on arity. v1 supports N ∈
+//! {0, 1, 2, 3}; N=0 errors as `Empty`, N=1 returns an empty
+//! `HunkIndex` (dormant session, no peers to diff against), N=2
+//! / N=3 dispatch to the named helpers, N≥4 errors as
+//! `Unsupported`. See `docs/dev/architecture/n-way-diff-membership.md`
+//! (D.8) for the rationale.
 //!
-//! Both entry points materialise the input ropes to strings,
+//! Both helpers materialise the input ropes to strings,
 //! tokenise by line, and run `imara-diff`. The two-way path is
 //! a thin wrapper around the engine; the three-way path
 //! composes two two-way diffs against the base and merges them
@@ -62,7 +72,69 @@ fn classify_two_way(a: LineRange, b: LineRange) -> HunkKind {
 	}
 }
 
+/// D.8.a: the engine's only public dispatch entry. Routes by
+/// `sources.len()` to the appropriate algorithm, returning a
+/// typed error for arities outside the supported range.
+///
+/// - **N=0**: `Err(DiffEngineError::Empty)` — there's nothing to
+///   diff. Callers should never reach this; defensive.
+/// - **N=1**: empty `HunkIndex` — a single participant has no
+///   peers to compare against. The session is "dormant" in the
+///   subsystem's terms (D.8.e); the first `:diffthis` lands
+///   here, before a second `:diffthis` extends it to N=2.
+/// - **N=2**: dispatches to [`two_way`].
+/// - **N=3**: dispatches to [`three_way`].
+/// - **N≥4**: `Err(DiffEngineError::Unsupported { n })`. v1 cap.
+///   The reference table in §12 of
+///   `docs/dev/architecture/n-way-diff-membership.md` surveys
+///   how other editors handle this — Helix/Zed/VSCode also
+///   don't support N≥4; Vim does via pairwise-vs-anchor. The
+///   cap moves when user-feedback signals N>3 is wanted.
+///
+/// `compute_diff` is the **only** public entry — all external
+/// callers go through it. The dispatch decision lives entirely
+/// inside this function so consumers never branch on arity.
+pub fn compute_diff(
+	sources: &[Rope],
+	algorithm: DiffAlgorithm,
+) -> Result<HunkIndex, DiffEngineError> {
+	match sources.len() {
+		0 => Err(DiffEngineError::Empty),
+		1 => Ok(HunkIndex {
+			hunks: Vec::new(),
+			algorithm,
+			revision: 0,
+		}),
+		2 => Ok(two_way(&sources[0], &sources[1], algorithm)),
+		3 => Ok(three_way(
+			&sources[0],
+			&sources[1],
+			&sources[2],
+			algorithm,
+		)),
+		n => Err(DiffEngineError::Unsupported { n }),
+	}
+}
+
+/// D.8.a: errors `compute_diff` returns for unsupported
+/// participant counts. v1's cap (N ≤ 3) is enforced here, not in
+/// the descriptor / subsystem layer — moving the cap means
+/// extending the `Unsupported` arm with new computation.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DiffEngineError {
+	#[error("diff requires at least one participant")]
+	Empty,
+	#[error("v1 supports up to 3 participants; got N = {n}")]
+	Unsupported { n: usize },
+}
+
 /// Compute the two-way hunk list between ropes `a` and `b`.
+///
+/// Crate-private since D.8.a — external consumers call
+/// [`compute_diff`] which dispatches here for `sources.len() ==
+/// 2`. Kept as a named function (rather than inlined) for the
+/// internal tests in this module + the three-way pipeline's
+/// `two_way_str` reuse.
 ///
 /// Each hunk's `ranges` is `[a_range, b_range]`. The
 /// classification (Add / Remove / Change) is relative to `a`
@@ -72,10 +144,10 @@ fn classify_two_way(a: LineRange, b: LineRange) -> HunkKind {
 /// `Rope::to_string()` for the engine's interner. The cost is
 /// O(N + M) bytes for ropes of sizes N and M; bench gated in
 /// `benches/recompute.rs`.
-pub fn compute_two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkIndex {
+pub(crate) fn two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkIndex {
 	let a_str = a.to_string();
 	let b_str = b.to_string();
-	let hunks = compute_two_way_str(&a_str, &b_str, algorithm);
+	let hunks = two_way_str(&a_str, &b_str, algorithm);
 	HunkIndex {
 		hunks,
 		algorithm,
@@ -84,15 +156,14 @@ pub fn compute_two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkInde
 }
 
 /// Internal: two-way diff over `&str` inputs. Used by both
-/// the public `compute_two_way` and by `compute_three_way`
-/// (which materialises ropes once and reuses the strings for
-/// the two base-vs-side diffs).
+/// [`two_way`] and [`three_way`] (which materialises ropes once
+/// and reuses the strings for the two base-vs-side diffs).
 ///
 /// Tokenises with `imara_diff::sources::lines_with_terminator`
 /// so trailing-newline differences are preserved (the default
 /// `&str` tokenisation uses `str::lines()` which strips
 /// terminators and treats `"x"` and `"x\n"` as identical).
-fn compute_two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> {
+fn two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> {
 	let input = InternedInput::new(
 		imara_diff::sources::lines_with_terminator(a),
 		imara_diff::sources::lines_with_terminator(b),
@@ -107,6 +178,10 @@ fn compute_two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> 
 /// Compute a three-way hunk list between `base`, `local`, and
 /// `remote`.
 ///
+/// Crate-private since D.8.a — external consumers call
+/// [`compute_diff`] which dispatches here for `sources.len() ==
+/// 3`. Kept as a named function for internal tests + clarity.
+///
 /// Each hunk's `ranges` is `[base_range, local_range,
 /// remote_range]`. A hunk is `Conflict` iff both `local` and
 /// `remote` independently modified an overlapping base region.
@@ -119,7 +194,7 @@ fn compute_two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> 
 /// different sides are kept separate — they don't conflict.
 /// Strict overlap (`a.start < b.end && b.start < a.end`) is
 /// the conflict predicate.
-pub fn compute_three_way(
+pub(crate) fn three_way(
 	base: &Rope,
 	local: &Rope,
 	remote: &Rope,
@@ -129,8 +204,8 @@ pub fn compute_three_way(
 	let local_str = local.to_string();
 	let remote_str = remote.to_string();
 
-	let local_hunks = compute_two_way_str(&base_str, &local_str, algorithm);
-	let remote_hunks = compute_two_way_str(&base_str, &remote_str, algorithm);
+	let local_hunks = two_way_str(&base_str, &local_str, algorithm);
+	let remote_hunks = two_way_str(&base_str, &remote_str, algorithm);
 
 	let merged = merge_three_way(&local_hunks, &remote_hunks, &local_str, &remote_str);
 
@@ -359,7 +434,7 @@ mod tests {
 	fn empty_inputs_have_no_hunks() {
 		let a = Rope::new();
 		let b = Rope::new();
-		let idx = compute_two_way(&a, &b, DiffAlgorithm::Histogram);
+		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
 		assert!(idx.is_empty());
 	}
 
@@ -367,7 +442,7 @@ mod tests {
 	fn identical_inputs_have_no_hunks() {
 		let a = Rope::from("alpha\nbeta\ngamma\n");
 		let b = Rope::from("alpha\nbeta\ngamma\n");
-		let idx = compute_two_way(&a, &b, DiffAlgorithm::Histogram);
+		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
 		assert!(idx.is_empty());
 	}
 
@@ -375,7 +450,7 @@ mod tests {
 	fn pure_add_classifies_as_add() {
 		let a = Rope::from("alpha\ngamma\n");
 		let b = Rope::from("alpha\nbeta\ngamma\n");
-		let idx = compute_two_way(&a, &b, DiffAlgorithm::Histogram);
+		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Add);
 	}
@@ -384,7 +459,7 @@ mod tests {
 	fn pure_remove_classifies_as_remove() {
 		let a = Rope::from("alpha\nbeta\ngamma\n");
 		let b = Rope::from("alpha\ngamma\n");
-		let idx = compute_two_way(&a, &b, DiffAlgorithm::Histogram);
+		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Remove);
 	}
@@ -393,7 +468,7 @@ mod tests {
 	fn change_classifies_as_change() {
 		let a = Rope::from("alpha\nbeta\ngamma\n");
 		let b = Rope::from("alpha\nBETA\ngamma\n");
-		let idx = compute_two_way(&a, &b, DiffAlgorithm::Histogram);
+		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Change);
 	}
@@ -403,7 +478,7 @@ mod tests {
 		let base = Rope::from("a\nb\nc\nd\ne\nf\n");
 		let local = Rope::from("a\nB\nc\nd\ne\nf\n"); // changed line 1
 		let remote = Rope::from("a\nb\nc\nd\nE\nf\n"); // changed line 4
-		let idx = compute_three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
 		// Two separate non-conflict hunks (one per side).
 		assert_eq!(idx.len(), 2);
 		assert!(idx.hunks.iter().all(|h| h.kind != HunkKind::Conflict));
@@ -414,7 +489,7 @@ mod tests {
 		let base = Rope::from("a\nb\nc\n");
 		let local = Rope::from("a\nLOCAL\nc\n"); // changed line 1
 		let remote = Rope::from("a\nREMOTE\nc\n"); // changed line 1 differently
-		let idx = compute_three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Conflict);
 	}
@@ -424,7 +499,7 @@ mod tests {
 		let base = Rope::from("a\nb\nc\n");
 		let local = base.clone();
 		let remote = base.clone();
-		let idx = compute_three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
 		assert!(idx.is_empty());
 	}
 
@@ -437,10 +512,118 @@ mod tests {
 			DiffAlgorithm::Myers,
 			DiffAlgorithm::MyersMinimal,
 		] {
-			let idx = compute_two_way(&a, &b, alg);
+			let idx = two_way(&a, &b, alg);
 			assert_eq!(idx.len(), 1, "algorithm {alg:?}");
 			assert_eq!(idx.hunks[0].kind, HunkKind::Change, "algorithm {alg:?}");
 			assert_eq!(idx.algorithm, alg);
 		}
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.8.a (2026-05-31): compute_diff dispatch matrix
+	// ──────────────────────────────────────────────────────
+
+	#[test]
+	fn compute_diff_zero_participants_is_empty_error() {
+		let result = compute_diff(&[], DiffAlgorithm::Histogram);
+		assert!(matches!(result, Err(DiffEngineError::Empty)));
+	}
+
+	#[test]
+	fn compute_diff_one_participant_returns_empty_hunk_index() {
+		// N=1 = dormant session. Vim parity: `:set diff` on a
+		// single buffer with no peers is a visual no-op.
+		let rope = Rope::from("alpha\nbeta\n");
+		let idx = compute_diff(&[rope], DiffAlgorithm::Histogram)
+			.expect("N=1 must succeed (dormant)");
+		assert!(idx.is_empty());
+		assert_eq!(idx.algorithm, DiffAlgorithm::Histogram);
+	}
+
+	#[test]
+	fn compute_diff_two_participants_dispatches_to_two_way() {
+		let a = Rope::from("alpha\nbeta\ngamma\n");
+		let b = Rope::from("alpha\nBETA\ngamma\n");
+		let via_dispatch = compute_diff(
+			&[a.clone(), b.clone()],
+			DiffAlgorithm::Histogram,
+		)
+		.expect("N=2 is supported");
+		let direct = two_way(&a, &b, DiffAlgorithm::Histogram);
+		// Same hunks shape (the dispatch is a thin wrapper).
+		assert_eq!(via_dispatch.len(), direct.len());
+		assert_eq!(via_dispatch.hunks.len(), 1);
+		assert_eq!(via_dispatch.hunks[0].kind, HunkKind::Change);
+	}
+
+	#[test]
+	fn compute_diff_three_participants_dispatches_to_three_way() {
+		let base = Rope::from("aaa\nbbb\nccc\n");
+		let local = Rope::from("aaa\nBBB\nccc\n");
+		let remote = Rope::from("aaa\nbbb\nCCC\n");
+		let via_dispatch = compute_diff(
+			&[base.clone(), local.clone(), remote.clone()],
+			DiffAlgorithm::Histogram,
+		)
+		.expect("N=3 is supported");
+		let direct = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+		assert_eq!(via_dispatch.len(), direct.len());
+		// Disjoint edits → no Conflict.
+		assert!(via_dispatch
+			.hunks
+			.iter()
+			.all(|h| !matches!(h.kind, HunkKind::Conflict)));
+		// Every hunk carries 3 ranges per the three-way contract.
+		for h in &via_dispatch.hunks {
+			assert_eq!(h.ranges.len(), 3);
+		}
+	}
+
+	#[test]
+	fn compute_diff_four_participants_errors_unsupported() {
+		let r = Rope::from("x\n");
+		let result = compute_diff(
+			&[r.clone(), r.clone(), r.clone(), r],
+			DiffAlgorithm::Histogram,
+		);
+		assert!(matches!(result, Err(DiffEngineError::Unsupported { n: 4 })));
+	}
+
+	#[test]
+	fn compute_diff_arbitrarily_large_n_errors_unsupported() {
+		let sources: Vec<Rope> = (0..10).map(|i| Rope::from(format!("rope-{i}\n"))).collect();
+		let result = compute_diff(&sources, DiffAlgorithm::Histogram);
+		assert!(matches!(result, Err(DiffEngineError::Unsupported { n: 10 })));
+	}
+
+	#[test]
+	fn diff_engine_error_messages_name_the_cap() {
+		// Surfaces in dispatch.rs error messages; verify they
+		// stay user-readable.
+		let empty = DiffEngineError::Empty;
+		let unsup = DiffEngineError::Unsupported { n: 5 };
+		assert_eq!(
+			format!("{empty}"),
+			"diff requires at least one participant"
+		);
+		assert_eq!(
+			format!("{unsup}"),
+			"v1 supports up to 3 participants; got N = 5"
+		);
+	}
+
+	#[test]
+	fn compute_diff_three_way_overlap_produces_conflict() {
+		// Belt-and-braces: confirm the three-way Conflict path
+		// fires through the dispatch wrapper.
+		let base = Rope::from("aaa\nbbb\nccc\n");
+		let local = Rope::from("aaa\nLOCAL\nccc\n");
+		let remote = Rope::from("aaa\nREMOTE\nccc\n");
+		let idx = compute_diff(
+			&[base, local, remote],
+			DiffAlgorithm::Histogram,
+		)
+		.expect("N=3 supported");
+		assert!(idx.hunks.iter().any(|h| matches!(h.kind, HunkKind::Conflict)));
 	}
 }

@@ -3423,6 +3423,7 @@ dependencies = [
  "proptest",
  "ropey",
  "smallvec",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -18,6 +18,9 @@ license.workspace = true
 imara-diff = { workspace = true }
 ropey = { workspace = true }
 smallvec = { workspace = true }
+# D.8.a: `DiffEngineError` for the `compute_diff` dispatch
+# entry. Derive-only crate, zero runtime impact.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -72,7 +72,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use lattice_core::BufferId;
-use lattice_diff::{compute_three_way, compute_two_way, DiffAlgorithm, HunkIndex, HunkKind, LineRange};
+use lattice_diff::{compute_diff, DiffAlgorithm, HunkIndex, HunkKind, LineRange};
 use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
@@ -1121,9 +1121,32 @@ impl DiffSession {
 		remote: Option<&Rope>,
 	) -> Option<Arc<HunkIndex>> {
 		let revision = self.allocate_revision();
-		let raw = match remote {
-			Some(r) => compute_three_way(baseline, current, r, self.algorithm),
-			None => compute_two_way(baseline, current, self.algorithm),
+		// D.8.a: dispatch through the unified engine entry.
+		// The arity (2 with no remote, 3 with remote) becomes
+		// the slice length; the engine picks the algorithm.
+		// `compute_diff` returns `Err(Unsupported)` only for
+		// N≥4 — D.6's descriptor shape can't produce that, so
+		// the result is always Ok here. v1 D.8.c switches
+		// `recompute_blocking` to take `&[Rope]` directly,
+		// eliminating this intermediate Vec; D.8.a keeps the
+		// signature unchanged.
+		let sources: Vec<ropey::Rope> = match remote {
+			Some(r) => vec![baseline.clone(), current.clone(), r.clone()],
+			None => vec![baseline.clone(), current.clone()],
+		};
+		let raw = match compute_diff(&sources, self.algorithm) {
+			Ok(idx) => idx,
+			Err(err) => {
+				// Defensive: shouldn't happen in v1 with the
+				// fixed-arity descriptor; log + return None
+				// (mirrors the stale-publish drop semantic).
+				tracing::debug!(
+					target: "lattice_host::diff::subsystem",
+					?err,
+					"compute_diff rejected the participant set; recompute dropped"
+				);
+				return None;
+			}
 		};
 		let idx = Arc::new(HunkIndex {
 			hunks: raw.hunks,

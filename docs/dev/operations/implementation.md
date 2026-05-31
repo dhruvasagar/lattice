@@ -3386,15 +3386,18 @@ shared with multibuffer-views and post-v1 inlay hints.
     valid).
 - 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
-- 🗒 **D.8** — `:diffthis` as buffer-group membership +
-  arity-agnostic descriptor refactor. Replaces the
-  D.4.d.3.a `pending_diffthis: Option<PaneGroupMember>`
-  singleton with vim-style per-buffer `:set diff` toggle
-  semantics: each `:diffthis` flips one buffer's
-  membership in the current diff group; the diff session
-  is derived state with N participants (N=1 dormant,
-  N=2 two-way, N=3 three-way, N≥4 returns a clear engine
-  error). Companion refactor:
+- 🚧 **D.8** — `:diffthis` as buffer-group membership +
+  arity-agnostic descriptor refactor. Design fragment:
+  [`../architecture/n-way-diff-membership.md`](../architecture/n-way-diff-membership.md).
+  Replaces the D.4.d.3.a `pending_diffthis:
+  Option<PaneGroupMember>` singleton with vim-style
+  per-buffer `:set diff` toggle semantics on a singleton
+  diffthis group (isolated from other sessions). Each
+  `:diffthis` flips one buffer's membership in the diffthis
+  group; the diff session is derived state with N
+  participants (N=1 dormant, N=2 two-way, N=3 three-way,
+  N≥4 returns a clear engine error). Carved into D.8.a–f
+  during build. Companion refactor:
   - `DiffDescriptor` becomes arity-agnostic — drop the
     explicit `baseline + current + remote` slots, replace
     with `sources: Vec<Arc<dyn DiffParticipantSource>>`.
@@ -3439,6 +3442,67 @@ shared with multibuffer-views and post-v1 inlay hints.
   three-way merge resolution UX, which `:diffsplit base
   remote` (D.6.c) already provides. D.8 generalises the
   model.
+  - ✅ **D.8.a** (2026-05-31) — `compute_diff` engine
+    entry + `DiffEngineError`. `lattice-diff::compute_diff(
+    sources: &[Rope], algorithm) -> Result<HunkIndex,
+    DiffEngineError>` becomes the only public engine
+    entry — all external callers (`lattice-host`
+    subsystem, both benches, lattice-diff's own
+    `tests/round_trip.rs` integration tests) go through
+    this single dispatch point. Existing
+    `compute_two_way` / `compute_three_way` demoted to
+    crate-private `two_way` / `three_way` helpers called
+    only from inside `compute_diff` — no external
+    consumer branches on arity. Internal helper
+    `compute_two_way_str` renamed to `two_way_str` for
+    consistency.
+    `DiffEngineError` (with `thiserror::Error` derive)
+    surfaces the two failure modes: `Empty` (N=0; never
+    expected in production but defensively typed) and
+    `Unsupported { n: usize }` (N≥4; v1's cap lives in
+    the engine, not the API, so moving it later means
+    replacing the `Unsupported` arm with computation —
+    see [n-way-diff-membership.md](../architecture/n-way-diff-membership.md)
+    §12 for the cross-editor reference table that
+    informs the cap-relocation timing).
+    `DiffSession::recompute_blocking` in
+    `lattice-host::diff::subsystem` keeps its existing
+    `(baseline, current, remote)` signature for D.8.a
+    (the signature change is D.8.c's scope); internally
+    it now builds a `Vec<Rope>` from the args and
+    routes through `compute_diff` instead of the
+    fixed-arity helpers. The error path returns
+    `None` (mirroring the existing stale-publish drop
+    semantic) with a debug log — defensive against
+    future N≥4 descriptors that D.6's fixed-arity
+    shape can't produce today.
+    Pre-v1 clean-break (no deprecation aliases): the
+    workspace updates in lockstep — `tests/round_trip.rs`,
+    `benches/recompute.rs` (lattice-diff),
+    `benches/diff_subsystem.rs` (lattice-host), `patch.rs`
+    internal-test module, and the subsystem all switch
+    to the new entry in the same patch. **7 new tests**
+    in `lattice_diff::compute::tests` covering the
+    dispatch matrix: zero-participants → `Empty`,
+    one-participant → empty `HunkIndex` (dormant
+    semantic per D.8.e), two-participants ≡ direct
+    `two_way` output, three-participants ≡ direct
+    `three_way` output (including Conflict on
+    overlap), four-and-larger → `Unsupported`,
+    error-message-text regression guard.
+    `lattice-diff` test count: 24 → 31; lattice-host
+    + workspace: unchanged at 639 + 1461 (D.8.a's
+    surface is engine-internal, no host-level
+    behavioural change). Both benches smoke-pass via
+    `cargo bench --bench {recompute,diff_subsystem}
+    -- --test`. Touched:
+    `crates/lattice-diff/{Cargo.toml, src/{lib.rs,
+    compute.rs, patch.rs}, tests/round_trip.rs,
+    benches/recompute.rs}`,
+    `crates/lattice-host/{src/{lib.rs, diff/{mod.rs,
+    subsystem.rs}}, benches/diff_subsystem.rs}`. Arch
+    doc: design fragment §4 names `compute_diff` as
+    the only public entry; no further doc edit needed.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

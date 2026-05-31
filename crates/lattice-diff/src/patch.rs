@@ -63,13 +63,13 @@ fn line_to_char_clamped(rope: &Rope, line: u32) -> usize {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::compute::compute_two_way;
+	use crate::compute::two_way;
 	use crate::DiffAlgorithm;
 
 	/// Convenience: diff then apply. Reconstructs `b` from
 	/// `a` via the round-trip path.
 	fn round_trip(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> Rope {
-		let hunks = compute_two_way(a, b, algorithm);
+		let hunks = two_way(a, b, algorithm);
 		apply_two_way(a, b, &hunks)
 	}
 

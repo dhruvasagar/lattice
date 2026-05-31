@@ -1,7 +1,7 @@
 //! Host-side diff subsystem and its presentation companions.
 //!
 //! Layering: the pure algorithm (`Hunk`, `HunkIndex`,
-//! `compute_two_way`, `compute_three_way`) lives in the
+//! `compute_diff`) lives in the
 //! `lattice-diff` crate so it stays reusable by non-editor
 //! consumers. Everything in this module is host-attached —
 //! it reaches for [`crate::buffer_registry::BufferRegistry`],

@@ -2,12 +2,12 @@
 //! conflict invariants.
 //!
 //! Drives the design's D.1 invariant: for any two ropes `a`
-//! and `b`, `apply_two_way(a, b, compute_two_way(a, b)) == b`.
+//! and `b`, `apply_two_way(a, b, compute_diff(&[a, b])) == b`.
 //! All three algorithms (Histogram, Myers, Patience) satisfy
 //! it independently.
 
 use lattice_diff::patch::apply_two_way;
-use lattice_diff::{compute_three_way, compute_two_way, DiffAlgorithm, HunkKind};
+use lattice_diff::{compute_diff, DiffAlgorithm, HunkKind};
 use proptest::prelude::*;
 use ropey::Rope;
 
@@ -34,7 +34,8 @@ proptest! {
 	fn two_way_round_trip_histogram(a in arb_lines(), b in arb_lines()) {
 		let a_rope = Rope::from(a.as_str());
 		let b_rope = Rope::from(b.as_str());
-		let hunks = compute_two_way(&a_rope, &b_rope, DiffAlgorithm::Histogram);
+		let hunks = compute_diff(&[a_rope.clone(), b_rope.clone()], DiffAlgorithm::Histogram)
+				.expect("two-way is supported");
 		let reconstructed = apply_two_way(&a_rope, &b_rope, &hunks);
 		prop_assert_eq!(reconstructed.to_string(), b);
 	}
@@ -43,7 +44,8 @@ proptest! {
 	fn two_way_round_trip_myers(a in arb_lines(), b in arb_lines()) {
 		let a_rope = Rope::from(a.as_str());
 		let b_rope = Rope::from(b.as_str());
-		let hunks = compute_two_way(&a_rope, &b_rope, DiffAlgorithm::Myers);
+		let hunks = compute_diff(&[a_rope.clone(), b_rope.clone()], DiffAlgorithm::Myers)
+				.expect("two-way is supported");
 		let reconstructed = apply_two_way(&a_rope, &b_rope, &hunks);
 		prop_assert_eq!(reconstructed.to_string(), b);
 	}
@@ -52,7 +54,8 @@ proptest! {
 	fn two_way_round_trip_myers_minimal(a in arb_lines(), b in arb_lines()) {
 		let a_rope = Rope::from(a.as_str());
 		let b_rope = Rope::from(b.as_str());
-		let hunks = compute_two_way(&a_rope, &b_rope, DiffAlgorithm::MyersMinimal);
+		let hunks = compute_diff(&[a_rope.clone(), b_rope.clone()], DiffAlgorithm::MyersMinimal)
+				.expect("two-way is supported");
 		let reconstructed = apply_two_way(&a_rope, &b_rope, &hunks);
 		prop_assert_eq!(reconstructed.to_string(), b);
 	}
@@ -63,12 +66,11 @@ proptest! {
 		// (both sides made identical changes vs base).
 		let base_rope = Rope::from(base.as_str());
 		let side_rope = Rope::from(side.as_str());
-		let idx = compute_three_way(
-			&base_rope,
-			&side_rope,
-			&side_rope,
+		let idx = compute_diff(
+			&[base_rope, side_rope.clone(), side_rope],
 			DiffAlgorithm::Histogram,
-		);
+		)
+		.expect("three-way is supported");
 		// Conflicts should only arise when the two sides
 		// disagree; we don't bother asserting on hunk counts
 		// (depends on alg) but we do assert no Conflict kind
@@ -91,12 +93,11 @@ proptest! {
 		// attributed to remote (no Conflict).
 		let base_rope = Rope::from(base.as_str());
 		let remote_rope = Rope::from(remote.as_str());
-		let idx = compute_three_way(
-			&base_rope,
-			&base_rope,
-			&remote_rope,
+		let idx = compute_diff(
+			&[base_rope.clone(), base_rope, remote_rope],
 			DiffAlgorithm::Histogram,
-		);
+		)
+		.expect("three-way is supported");
 		for hunk in &idx.hunks {
 			prop_assert_ne!(
 				hunk.kind,

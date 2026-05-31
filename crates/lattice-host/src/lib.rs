@@ -55,7 +55,7 @@ pub mod fold_provider;
 // a submodule group; see `diff/mod.rs` for the per-submodule
 // breakdown and `docs/dev/architecture/diff-system.md` for
 // the design fragment. The pure algorithm layer (`Hunk`,
-// `HunkIndex`, `compute_two_way`, `compute_three_way`) stays
+// `HunkIndex`, `compute_diff`) stays
 // in the `lattice-diff` crate per design §3 so it remains
 // reusable by non-editor consumers.
 pub mod diff;

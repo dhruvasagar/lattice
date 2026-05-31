@@ -3887,9 +3887,52 @@ diagnostics-as-buffer with one implementation.
   benches/mode_activate.rs}`,
   `crates/lattice-protocol/src/lib.rs`,
   `crates/lattice-runtime/benches/actor.rs`.
-- 🗒 **M.1** — `MultibufferDocument` read-only: excerpts,
-  composed `rope()` view, row-translation cache, registered
-  in `BufferRegistry`, edits rejected.
+- ✅ **M.1** (2026-05-31) — `MultibufferDocumentHandle`
+  static read-only. New module
+  `crates/lattice-runtime/src/multibuffer.rs` introduces
+  `ExcerptId`, `Excerpt`, `RowEntry`, `RowTranslation`,
+  `MultibufferDocumentHandle`, and `MultibufferError`.
+  The handle impls `Document` (Path B sibling to
+  `RopeDocumentHandle`) — `snapshot()` returns the composed
+  `DocumentSnapshot` via lock-free `ArcSwap` load; all
+  writes return `Pending::ready(Err(RuntimeError::
+  ReadOnly))` until M.3 lands edit propagation.
+  Composition is eager at construction; `recompose()` is
+  manual (M.4 wires auto-rebuild via
+  `EventKind::DocumentChanged` subscription).
+  Plumbing changes:
+  - `Pending::ready(Result<T, RuntimeError>)` constructor
+    for synthetic immediately-resolving futures (used by
+    read-only impls to reject writes without an actor).
+  - `RuntimeError::ReadOnly` variant distinguishing
+    "buffer doesn't accept writes by design" from
+    `ActorGone` / `Core` / `Grammar`.
+  Sub-slices:
+  - M.1.a (commit `6ce816e`) — module foundation: types
+    + `MultibufferDocumentHandle` + impl Document + 7
+    targeted tests covering composition, write rejection,
+    construction errors, trait-object dispatch, manual
+    recompose.
+  - M.1.b (commit `dba4970`) — registry round-trip test
+    proving `MultibufferDocumentHandle` flows through the
+    existing `BufferData::Document` slot (no new variant
+    needed — M.0 Phase D's `Arc<dyn Document>` typing
+    already accepts it). Reachable via
+    `BufferRegistry::document_handle` and the
+    `BufferStore::handle_for` mode-facing trait.
+  Disambiguation: the slice plan originally listed
+  "source-buffer edits propagate" + "closing a source
+  auto-removes orphaned excerpts" under M.1; both belong
+  architecturally to M.4 (they need the same event-
+  subscription infrastructure as the rest of M.4's
+  live-update story). The slice plan + this ledger now
+  scope them to M.4; M.1 closes on the static-composition
+  + manual-recompose foundation.
+  Workspace build clean. 1461 baseline + 7 multibuffer +
+  1 registry round-trip = 1469 tests passing.
+  Touched: `crates/lattice-runtime/src/{multibuffer.rs (new),
+  lib.rs, pending.rs}`,
+  `crates/lattice-host/src/buffer_registry.rs`.
 - 🗒 **M.2** — Excerpt rendering: consumes D.0 virtual-row
   primitive (lands D.0 if not yet shipped); headers +
   separators; `]e` / `[e` / `]E` / `[E` motions.

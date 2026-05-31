@@ -45,7 +45,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lattice_runtime::DocumentHandle;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
@@ -72,7 +71,15 @@ use lattice_terminal::buffer::TerminalBuffer;
 #[derive(Debug)]
 pub struct DocumentEntry {
     pub id: BufferId,
-    pub handle: DocumentHandle,
+    /// M.0 (2026-05-31): typed as `Arc<dyn Document>` so the
+    /// registry can hold either a regular `DocumentHandle`
+    /// (today) or a `MultibufferDocumentHandle` (M.1) without
+    /// kind-branching at retrieval. Consumers read through
+    /// the `Document` trait directly; concrete-type access
+    /// (e.g., `DocumentHandle::replace`-equivalent operations
+    /// that don't apply to multibuffer) is gone — slot
+    /// replacement / membership APIs handle those cases.
+    pub handle: std::sync::Arc<dyn lattice_runtime::Document>,
     // M.3.2.c.5: `syntax`, `last_parsed_text_version`,
     // `last_synced_syntax_version`, and `folds` retired off the
     // entry. They live in `App.buffer_locals[id]` as
@@ -374,10 +381,15 @@ impl BufferRegistry {
         updated
     }
 
-    /// Kind-specific convenience: clone the `DocumentHandle` for
-    /// `id`. The handle is `Send + Sync` and can be held across
-    /// thread boundaries.
-    pub fn document_handle(&self, id: BufferId) -> Option<DocumentHandle> {
+    /// Kind-specific convenience: clone the `Arc<dyn Document>`
+    /// for `id`. The handle is `Send + Sync` and can be held
+    /// across thread boundaries. M.0: returns the polymorphic
+    /// shape (was `DocumentHandle` pre-M.0) so the registry
+    /// serves multibuffer handles (M.1) through the same path.
+    pub fn document_handle(
+        &self,
+        id: BufferId,
+    ) -> Option<std::sync::Arc<dyn lattice_runtime::Document>> {
         lock_inner(&self.inner)
             .by_id
             .get(&id)
@@ -856,7 +868,10 @@ impl lattice_mode::BufferStore for BufferRegistry {
         }
     }
 
-    fn handle_for(&self, id: lattice_core::BufferId) -> Option<lattice_runtime::DocumentHandle> {
+    fn handle_for(
+        &self,
+        id: lattice_core::BufferId,
+    ) -> Option<std::sync::Arc<dyn lattice_runtime::Document>> {
         self.document_handle(id)
     }
 

@@ -866,7 +866,7 @@ mod tests {
         let active = a.editor.document_buffer_id;
         // Manufacture a second document buffer.
         let other = BufferId::next();
-        let handle = a.editor.document.clone();
+        let handle = a.editor.document.as_arc();
         a.editor.buffers.insert(BufferEntry {
             id: other,
             flags: BufferFlags::default(),

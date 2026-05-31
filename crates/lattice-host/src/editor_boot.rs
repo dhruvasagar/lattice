@@ -548,8 +548,12 @@ impl Editor {
         // Hand the document to the actor (DESIGN.md §5.7).
         // After this call the only way to read or mutate it is
         // through the returned `DocumentHandle`.
-        let document = spawn_document(document, registry.clone());
-        let snapshot_cache = document.snapshot_cache();
+        let handle = spawn_document(document, registry.clone());
+        let snapshot_cache = handle.snapshot_cache();
+        // M.0: wrap the handle in `ActiveDocument` so the slot
+        // can hold either a regular doc or (M.1+) a multibuffer
+        // handle without kind-branching at the use site.
+        let document = lattice_runtime::ActiveDocument::new(handle);
         let document_buffer_id = BufferId::next();
         let initial_pane = PaneState {
             id: PaneId::next(),
@@ -577,7 +581,7 @@ impl Editor {
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry {
                 id: document_buffer_id,
-                handle: document.clone(),
+                handle: document.as_arc(),
             }),
             name: None,
         });

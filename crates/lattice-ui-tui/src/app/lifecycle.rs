@@ -1610,7 +1610,7 @@ mod tests {
         // locals to validate the accessor path. Real `:e <new>`
         // does this through `do_edit`.
         let inactive_id = BufferId::next();
-        let doc_handle = a.editor.document.clone();
+        let doc_handle = a.editor.document.as_arc();
         a.editor.buffers.insert(BufferEntry {
             id: inactive_id,
             flags: BufferFlags::default(),
@@ -2196,7 +2196,7 @@ mod tests {
         // carrying a synthetic name. Reuse the same DocumentHandle
         // because the test fixture's `app_with` already produces an
         // unsaved buffer (`handle.path()` is None).
-        let handle = a.editor.document.clone();
+        let handle = a.editor.document.as_arc();
         a.editor.buffers.remove(active);
         a.editor.buffers.insert(BufferEntry {
             id: active,
@@ -2276,7 +2276,7 @@ mod tests {
         // modeline must suppress the `[+]` marker for these.
         let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
-        let handle = a.editor.document.clone();
+        let handle = a.editor.document.as_arc();
         a.editor.buffers.remove(active);
         a.editor.buffers.insert(BufferEntry {
             id: active,

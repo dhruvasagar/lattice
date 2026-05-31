@@ -73,7 +73,7 @@ pub mod runtime;
 pub mod snapshot;
 
 pub use actor::DocumentActor;
-pub use document::Document;
+pub use document::{ActiveDocument, Document};
 pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{DocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;

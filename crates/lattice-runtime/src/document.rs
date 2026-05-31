@@ -48,11 +48,16 @@ use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
 
 use crate::actor::AppliedEdit;
+use crate::handle::DocumentHandle;
 use crate::pending::Pending;
 use crate::snapshot::{DocumentSnapshot, SnapshotCache};
 
 /// Handle-layer abstraction over a buffer. See module docs.
-pub trait Document: Send + Sync + 'static {
+///
+/// `Debug` is a supertrait so containers holding `dyn Document`
+/// (e.g., `lattice_host::buffer_registry::DocumentEntry`) can
+/// derive `Debug` without hand-rolling per-field formatters.
+pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     // ---- Reads (wait-free, snapshot-backed) ----
 
     /// Load the current snapshot. The returned `Arc` lives as
@@ -128,5 +133,81 @@ pub trait Document: Send + Sync + 'static {
     /// Convenience: dispatch with a never-cancelled token.
     fn dispatch(&self, invocation: CommandInvocation, cursor: Position) -> Pending<Effect> {
         self.dispatch_with_cancel(invocation, cursor, CancellationToken::never())
+    }
+}
+
+/// M.0 (2026-05-31): the active-document slot held by
+/// `Editor.document`. Wraps an `Arc<dyn Document>` so that:
+///
+/// * The slot can hold either a regular rope-backed handle
+///   (today: `DocumentHandle`, renamed to `RopeDocumentHandle`
+///   in M.0 Phase E) or a `MultibufferDocumentHandle` (M.1)
+///   without kind-branching at the use site — dispatch /
+///   motion / render code paths just call `Document` trait
+///   methods through `Deref<Target = dyn Document>`.
+///
+/// * The slot impls `Default` (initialised to a placeholder
+///   rope handle via `DocumentHandle::default()`) so consumers
+///   that `#[derive(Default)]` over a struct containing this
+///   field work without hand-rolling the impl. The
+///   placeholder's actor receiver is closed immediately at
+///   construction, so any traffic sent through the placeholder
+///   reports `RuntimeError::ActorGone` — production code
+///   overwrites the slot before any real traffic flows.
+///
+/// * The newtype is cheap to clone (one atomic refcount bump
+///   on the inner `Arc`).
+///
+/// `Arc<dyn Document>` directly cannot implement `Default`
+/// (orphan rule on `Arc` + `dyn Trait: !Sized`), so this
+/// newtype is the smallest viable wrapper that keeps the
+/// derive ergonomics intact without forcing a manual
+/// `impl Default` over every struct that holds the slot.
+#[derive(Clone)]
+pub struct ActiveDocument(Arc<dyn Document>);
+
+impl ActiveDocument {
+    /// Wrap a concrete document handle. The handle must impl
+    /// `Document` (today: `DocumentHandle` / future
+    /// `RopeDocumentHandle`; M.1: `MultibufferDocumentHandle`).
+    pub fn new<D: Document>(handle: D) -> Self {
+        Self(Arc::new(handle))
+    }
+
+    /// Wrap an already-`Arc`'d handle. Useful when an
+    /// `Arc<dyn Document>` is constructed elsewhere (e.g., by
+    /// the buffer registry) and the slot just takes ownership
+    /// of it.
+    pub fn from_arc(arc: Arc<dyn Document>) -> Self {
+        Self(arc)
+    }
+
+    /// Cheap clone of the inner `Arc`. Use when handing the
+    /// reference off to a long-lived consumer that wants to
+    /// store it independently.
+    pub fn as_arc(&self) -> Arc<dyn Document> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl Default for ActiveDocument {
+    fn default() -> Self {
+        Self(Arc::new(DocumentHandle::default()))
+    }
+}
+
+impl std::ops::Deref for ActiveDocument {
+    type Target = dyn Document;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl std::fmt::Debug for ActiveDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ActiveDocument")
+            .field(&self.0.id())
+            .finish()
     }
 }

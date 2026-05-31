@@ -7844,13 +7844,15 @@ impl Editor {
             };
         let new_handle = lattice_runtime::spawn_document(new_doc, self.registry.clone());
         let new_id = lattice_core::BufferId::next();
+        let new_handle_arc: std::sync::Arc<dyn lattice_runtime::Document> =
+            std::sync::Arc::new(new_handle.clone());
         self.buffers.insert(crate::buffer_registry::BufferEntry {
             id: new_id,
             flags: lattice_core::BufferFlags::default(),
             data: crate::buffer_registry::BufferData::Document(
                 crate::buffer_registry::DocumentEntry {
                     id: new_id,
-                    handle: new_handle.clone(),
+                    handle: std::sync::Arc::clone(&new_handle_arc),
                 },
             ),
             name: None,
@@ -7860,7 +7862,7 @@ impl Editor {
         self.snapshot_active_document();
         self.active_buffer = lattice_core::BufferKind::Document;
         self.document_buffer_id = new_id;
-        self.document = new_handle;
+        self.document = lattice_runtime::ActiveDocument::new(new_handle);
         self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = syntax;
         self.last_parsed_text_version = self.document.text_version();
@@ -19849,7 +19851,7 @@ impl Editor {
         // Stash OLD document's mode state.
         self.snapshot_active_document();
         // Swap to NEW document handle.
-        self.document = handle;
+        self.document = lattice_runtime::ActiveDocument::from_arc(handle);
         self.snapshot_cache = self.document.snapshot_cache();
         self.document_buffer_id = pane.buffer_id;
         let id = pane.buffer_id;
@@ -21735,10 +21737,11 @@ impl Editor {
         self.snapshot_active_document();
         // Load destination — clone the handle out under the
         // registry lock so we don't hold the lock past the borrow.
-        self.document = self
-            .buffers
-            .document_handle(id)
-            .expect("contains_document lookup above succeeded");
+        self.document = lattice_runtime::ActiveDocument::from_arc(
+            self.buffers
+                .document_handle(id)
+                .expect("contains_document lookup above succeeded"),
+        );
         self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = self
             .buffer_locals

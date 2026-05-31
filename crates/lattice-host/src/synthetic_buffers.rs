@@ -225,6 +225,11 @@ impl Editor {
         let id = BufferId::next();
         let document = Document::empty();
         let handle = spawn_document(document, self.registry.clone());
+        // M.0: BufferRegistry stores `Arc<dyn Document>` so the
+        // entry slot accepts either a regular handle (here) or
+        // (M.1+) a multibuffer handle.
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> =
+            std::sync::Arc::new(handle);
         let data = match variant {
             SyntheticDocVariant::Document => {
                 BufferData::Document(DocumentEntry { id, handle })

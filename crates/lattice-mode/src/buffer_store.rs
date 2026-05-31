@@ -48,7 +48,6 @@
 use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId};
-use lattice_runtime::DocumentHandle;
 
 use crate::ModeId;
 
@@ -80,13 +79,16 @@ pub trait BufferStore: Send + Sync {
     /// 4. Return the id.
     fn ensure_named_document(&self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 
-    /// Get a clone of the `DocumentHandle` for `id`, suitable for
-    /// holding across thread boundaries. The handle is the only
+    /// Get a clone of the `Arc<dyn Document>` for `id`,
+    /// suitable for holding across thread boundaries. M.0: the
+    /// return type is the polymorphic shape so the same
+    /// surface serves both regular-document handles and (M.1+)
+    /// multibuffer handles uniformly. The handle is the only
     /// way for a mode-owned background task to write into the
     /// buffer (`handle.apply_edit_batch(...)`).
     ///
     /// `None` when `id` is not a Document in the registry.
-    fn handle_for(&self, id: BufferId) -> Option<DocumentHandle>;
+    fn handle_for(&self, id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>>;
 
     /// Read the buffer's synthetic name. `None` when the buffer is
     /// unnamed (the default for path-less scratch documents) or
@@ -121,7 +123,7 @@ impl BufferStoreHandle {
         self.inner.ensure_named_document(name, major, flags)
     }
 
-    pub fn handle_for(&self, id: BufferId) -> Option<DocumentHandle> {
+    pub fn handle_for(&self, id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>> {
         self.inner.handle_for(id)
     }
 

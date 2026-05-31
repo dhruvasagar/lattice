@@ -60,7 +60,7 @@ use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_protocol::CancellationToken;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
-use lattice_runtime::{DocumentHandle, EventBus, MessagePushed, MessagesRing, SnapshotCache};
+use lattice_runtime::{EventBus, MessagePushed, MessagesRing, SnapshotCache};
 use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::{Action, EchoMessage};
@@ -596,8 +596,16 @@ pub struct Editor {
     /// shows the original buffer afterwards.
     pub pending_picker_preview_origin: Option<lattice_core::BufferId>,
 
-    /// Handle to the per-document actor and its snapshot cache.
-    pub document: DocumentHandle,
+    /// Handle to the per-document actor (or, in M.1+, a
+    /// composing multibuffer handle) and its snapshot cache.
+    /// M.0: typed as the [`ActiveDocument`] newtype around
+    /// `Arc<dyn Document>` so the slot can hold either a
+    /// `RopeDocumentHandle` or a `MultibufferDocumentHandle`
+    /// without kind-branching at the use site. `Default::
+    /// default()` populates this with a placeholder rope
+    /// handle whose actor is already gone — production code
+    /// overwrites the slot before any traffic flows.
+    pub document: lattice_runtime::ActiveDocument,
     pub snapshot_cache: SnapshotCache,
 
     /// Per-frame snapshot of inactive panes' visible-window

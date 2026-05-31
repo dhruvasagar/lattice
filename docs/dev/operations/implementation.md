@@ -3817,10 +3817,76 @@ project-wide diff, AI multi-file `openDiff`,
 search-as-buffer, LSP references-as-buffer, and
 diagnostics-as-buffer with one implementation.
 
-- 🗒 **M.0** — Document-as-trait refactor: hoist `Document` to
-  trait; port today's struct to `RopeDocument`; no behavioural
-  change. **Load-bearing slice** — every Document call site
-  touched.
+- ✅ **M.-0** (2026-05-31) — Document hot-path bench baseline.
+  Two bench groups in
+  `crates/lattice-core/benches/document_hotpath.rs`:
+  `document_read_p99_us::viewport_walk` (per-frame 50-line
+  reads + selections / version) and `document_edit_p99_us`
+  (`insert_at_middle` / `delete_at_middle` /
+  `set_selections_motion`) at the three canonical sizes (10
+  / 1k / 100k lines). Numbers recorded in
+  `docs/dev/operations/benchmarks.md`. Originally framed as
+  the M.0 no-regression gate; after the M.0 design shifted
+  to the handle-layer trait (Path B) the benches remain as
+  general-purpose regression infrastructure for the inner
+  `lattice-core::Document` struct.
+- ✅ **M.0** (2026-05-31) — `Document` trait at the handle
+  layer. Path B per design fragment §3.1 — the trait
+  abstracts over `RopeDocumentHandle` (today, rope-backed
+  actor handle) and a future `MultibufferDocumentHandle`
+  (M.1). Five-phase landing:
+  - Phase A (commit `6d57483`) — define
+    `Document: Send + Sync + 'static + Debug` in
+    `lattice-runtime`. Read methods carry defaults derived
+    from `snapshot()` so impls only provide `snapshot()` /
+    `snapshot_cache()` + writes. Add `impl Document for
+    DocumentHandle` via fully-qualified delegation. No
+    behaviour change.
+  - Phase B+C (commit `7bcd1dc`) — rewrite `do_edit` to use
+    slot replacement only. Reload-same-buffer and brand-new-
+    file paths collapse into one `open_fresh_into_active_slot`
+    helper. Remove `ActorMsg::Replace`, `DocumentHandle::
+    replace`, `Editor::replace_document_blocking`, TUI
+    wrapper, and the `replace_swaps_document_state` test.
+    User-visible semantic change: `:edit current_path.rs` now
+    allocates a fresh `BufferId` instead of swapping content
+    in-place (vim quirk → emacs `find-file` / everything-is-
+    a-buffer alignment).
+  - Phase D (commit `418fd64`) — switch `Editor.document`
+    from concrete `DocumentHandle` to
+    `lattice_runtime::ActiveDocument` (newtype around
+    `Arc<dyn Document>` with `Default` + `Clone` +
+    `Deref<Target = dyn Document>` + `Debug`).
+    `BufferRegistry::DocumentEntry.handle` retyped to
+    `Arc<dyn Document>` for polymorphic storage.
+    `BufferStore::handle_for` trait method (lattice-mode)
+    retyped accordingly. All construction / assignment /
+    consumer sites in host + TUI + lsp bench updated.
+  - Phase E (commit `9eaafd4`) — workspace-wide rename
+    `DocumentHandle` → `RopeDocumentHandle`. 60 substitutions
+    across 17 files. Disambiguates the trait hierarchy ahead
+    of M.1's `MultibufferDocumentHandle` sibling.
+
+  Inner `lattice-core::Document` struct, `DocumentActor`,
+  `PublishedSnapshot`, `DocumentSnapshot`, and the mpsc write
+  path are unchanged — the trait is a thin abstraction over
+  what already existed. Trait dispatch through `Arc<dyn
+  Document>` adds one vtable indirection (~1–3 ns), lost in
+  noise against actor mpsc round-trip (~µs) and per-frame
+  snapshot Arc-load (~17 ns / ~2 ns cached).
+
+  Workspace build clean. 1461 lattice-workspace tests pass.
+  Touched: `crates/lattice-runtime/{src/document.rs,
+  src/handle.rs, src/actor.rs, src/lib.rs}`,
+  `crates/lattice-mode/src/buffer_store.rs`,
+  `crates/lattice-host/src/{editor.rs, editor_boot.rs,
+  buffer_registry.rs, synthetic_buffers.rs, dispatch.rs,
+  render_state.rs, diff/subsystem.rs, Cargo.toml}`,
+  `crates/lattice-ui-tui/src/app/{dispatch.rs, lifecycle.rs,
+  options.rs}`, `crates/lattice-lsp/{src/lib.rs,
+  benches/mode_activate.rs}`,
+  `crates/lattice-protocol/src/lib.rs`,
+  `crates/lattice-runtime/benches/actor.rs`.
 - 🗒 **M.1** — `MultibufferDocument` read-only: excerpts,
   composed `rope()` view, row-translation cache, registered
   in `BufferRegistry`, edits rejected.

@@ -1024,11 +1024,11 @@ mod tests {
 
         // Two source documents.
         let registry = std::sync::Arc::new(lattice_grammar::CommandRegistry::new());
-        let s1 = spawn_document(
+        let s1 = spawn_document(lattice_core::BufferId(0), 
             lattice_core::Document::from_text("alpha\nbeta\ngamma\n"),
             registry.clone(),
         );
-        let s2 = spawn_document(
+        let s2 = spawn_document(lattice_core::BufferId(0), 
             lattice_core::Document::from_text("delta\nepsilon\nzeta\n"),
             registry.clone(),
         );

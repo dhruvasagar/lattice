@@ -545,16 +545,20 @@ impl Editor {
             };
         let last_parsed_text_version = initial_text_version;
 
+        // M.2.b.0.A: allocate BufferId before spawning so the
+        // handle carries its own registry id (used by
+        // `MotionContext::buffer_id` for kind-specific motion
+        // handlers).
+        let document_buffer_id = BufferId::next();
         // Hand the document to the actor (DESIGN.md §5.7).
         // After this call the only way to read or mutate it is
         // through the returned `RopeDocumentHandle`.
-        let handle = spawn_document(document, registry.clone());
+        let handle = spawn_document(document_buffer_id, document, registry.clone());
         let snapshot_cache = handle.snapshot_cache();
         // M.0: wrap the handle in `ActiveDocument` so the slot
         // can hold either a regular doc or (M.1+) a multibuffer
         // handle without kind-branching at the use site.
         let document = lattice_runtime::ActiveDocument::new(handle);
-        let document_buffer_id = BufferId::next();
         let initial_pane = PaneState {
             id: PaneId::next(),
             buffer: BufferKind::Document,

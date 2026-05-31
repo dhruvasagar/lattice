@@ -2142,7 +2142,7 @@ mod tests {
         let inv = CommandInvocation::of(b.word_forward.0);
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = execute(&registry, &mut doc, Position::ZERO, inv, &cancel);
+        let result = execute(&registry, &mut doc, lattice_core::BufferId(0), Position::ZERO, inv, &cancel);
         match result {
             Err(CommandError::Cancelled) => {}
             other => panic!("expected Cancelled, got {other:?}"),
@@ -2158,7 +2158,7 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.word_forward.0);
         let cancel = CancellationToken::new();
-        let result = execute(&registry, &mut doc, Position::ZERO, inv, &cancel);
+        let result = execute(&registry, &mut doc, lattice_core::BufferId(0), Position::ZERO, inv, &cancel);
         assert!(result.is_ok());
     }
 
@@ -2169,7 +2169,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2189,7 +2189,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2211,7 +2211,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2235,7 +2235,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2270,7 +2270,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2296,7 +2296,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            cursor,
+            lattice_core::BufferId(0), cursor,
             inv,
             &CancellationToken::never(),
         )
@@ -2315,7 +2315,7 @@ mod tests {
             execute(
                 &registry,
                 &mut doc,
-                Position::ZERO,
+                lattice_core::BufferId(0), Position::ZERO,
                 inv,
                 &CancellationToken::never()
             ),
@@ -2331,7 +2331,7 @@ mod tests {
             execute(
                 &registry,
                 &mut doc,
-                Position::ZERO,
+                lattice_core::BufferId(0), Position::ZERO,
                 inv,
                 &CancellationToken::never()
             ),
@@ -2346,7 +2346,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2364,7 +2364,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2382,7 +2382,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -2400,7 +2400,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -2418,7 +2418,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2436,7 +2436,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 7),
+            lattice_core::BufferId(0), Position::new(0, 7),
             inv,
             &CancellationToken::never(),
         )
@@ -2454,7 +2454,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2472,7 +2472,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(2, 0),
+            lattice_core::BufferId(0), Position::new(2, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -2490,7 +2490,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2510,7 +2510,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2535,7 +2535,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 8),
+            lattice_core::BufferId(0), Position::new(0, 8),
             inv,
             &CancellationToken::never(),
         )
@@ -2554,7 +2554,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 8),
+            lattice_core::BufferId(0), Position::new(0, 8),
             inv,
             &CancellationToken::never(),
         )
@@ -2572,7 +2572,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2591,7 +2591,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(1, 0),
+            lattice_core::BufferId(0), Position::new(1, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -2610,7 +2610,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 14),
+            lattice_core::BufferId(0), Position::new(0, 14),
             inv,
             &CancellationToken::never(),
         )
@@ -2629,7 +2629,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 7),
+            lattice_core::BufferId(0), Position::new(0, 7),
             inv,
             &CancellationToken::never(),
         )
@@ -2650,7 +2650,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2669,7 +2669,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 4),
+            lattice_core::BufferId(0), Position::new(0, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -2688,7 +2688,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 1),
+            lattice_core::BufferId(0), Position::new(0, 1),
             inv,
             &CancellationToken::never(),
         )
@@ -2707,7 +2707,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -2726,7 +2726,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2746,7 +2746,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2764,7 +2764,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2782,7 +2782,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 3),
+            lattice_core::BufferId(0), Position::new(0, 3),
             inv,
             &CancellationToken::never(),
         )
@@ -2800,7 +2800,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2822,7 +2822,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(1, 4),
+            lattice_core::BufferId(0), Position::new(1, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -2845,7 +2845,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 11),
+            lattice_core::BufferId(0), Position::new(0, 11),
             inv,
             &CancellationToken::never(),
         )
@@ -2863,7 +2863,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2879,7 +2879,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2895,7 +2895,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2912,7 +2912,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2928,7 +2928,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2943,7 +2943,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2958,7 +2958,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2976,7 +2976,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2992,7 +2992,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3007,7 +3007,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3022,7 +3022,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3039,7 +3039,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3065,7 +3065,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -3080,7 +3080,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3096,7 +3096,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3111,7 +3111,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -3128,7 +3128,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 6),
+            lattice_core::BufferId(0), Position::new(0, 6),
             inv,
             &CancellationToken::never(),
         )
@@ -3146,7 +3146,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -3163,7 +3163,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3179,7 +3179,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 0),
+            lattice_core::BufferId(0), Position::new(0, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -3196,7 +3196,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3211,7 +3211,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3227,7 +3227,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 6),
+            lattice_core::BufferId(0), Position::new(0, 6),
             inv,
             &CancellationToken::never(),
         )
@@ -3242,7 +3242,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 6),
+            lattice_core::BufferId(0), Position::new(0, 6),
             inv,
             &CancellationToken::never(),
         )
@@ -3257,7 +3257,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 6),
+            lattice_core::BufferId(0), Position::new(0, 6),
             inv,
             &CancellationToken::never(),
         )
@@ -3273,7 +3273,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 11),
+            lattice_core::BufferId(0), Position::new(0, 11),
             inv,
             &CancellationToken::never(),
         )
@@ -3288,7 +3288,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 11),
+            lattice_core::BufferId(0), Position::new(0, 11),
             inv,
             &CancellationToken::never(),
         )
@@ -3304,7 +3304,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 4),
+            lattice_core::BufferId(0), Position::new(0, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -3319,7 +3319,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 4),
+            lattice_core::BufferId(0), Position::new(0, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -3335,7 +3335,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 12),
+            lattice_core::BufferId(0), Position::new(0, 12),
             inv,
             &CancellationToken::never(),
         )
@@ -3350,7 +3350,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3366,7 +3366,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 2),
+            lattice_core::BufferId(0), Position::new(0, 2),
             inv,
             &CancellationToken::never(),
         )
@@ -3394,7 +3394,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3410,7 +3410,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3426,7 +3426,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 4),
+            lattice_core::BufferId(0), Position::new(0, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -3443,7 +3443,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3465,7 +3465,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 7),
+            lattice_core::BufferId(0), Position::new(0, 7),
             inv,
             &CancellationToken::never(),
         )
@@ -3487,7 +3487,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3505,7 +3505,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3526,7 +3526,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(3, 0),
+            lattice_core::BufferId(0), Position::new(3, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -3544,7 +3544,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3568,7 +3568,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3587,7 +3587,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3606,7 +3606,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3628,7 +3628,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 8),
+            lattice_core::BufferId(0), Position::new(0, 8),
             inv,
             &CancellationToken::never(),
         )
@@ -3646,7 +3646,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3674,7 +3674,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3693,7 +3693,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3711,7 +3711,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3730,7 +3730,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3749,7 +3749,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 8),
+            lattice_core::BufferId(0), Position::new(0, 8),
             inv,
             &CancellationToken::never(),
         )
@@ -3767,7 +3767,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 4),
+            lattice_core::BufferId(0), Position::new(0, 4),
             inv,
             &CancellationToken::never(),
         )
@@ -3786,7 +3786,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3805,7 +3805,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 8),
+            lattice_core::BufferId(0), Position::new(0, 8),
             inv,
             &CancellationToken::never(),
         )
@@ -3824,7 +3824,7 @@ mod tests {
         let err = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3840,7 +3840,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3861,7 +3861,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3890,7 +3890,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            cursor,
+            lattice_core::BufferId(0), cursor,
             inv,
             &CancellationToken::never(),
         )
@@ -3922,7 +3922,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(0, 5),
+            lattice_core::BufferId(0), Position::new(0, 5),
             inv,
             &CancellationToken::never(),
         )
@@ -3951,7 +3951,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -3992,7 +3992,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(1, 0),
+            lattice_core::BufferId(0), Position::new(1, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -4019,7 +4019,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4048,7 +4048,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4063,7 +4063,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4082,7 +4082,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4106,7 +4106,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::new(1, 0),
+            lattice_core::BufferId(0), Position::new(1, 0),
             inv,
             &CancellationToken::never(),
         )
@@ -4129,7 +4129,7 @@ mod tests {
         let effect = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4153,7 +4153,7 @@ mod tests {
         execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -4178,7 +4178,7 @@ mod tests {
         let err = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )

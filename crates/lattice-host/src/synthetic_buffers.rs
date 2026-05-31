@@ -224,7 +224,7 @@ impl Editor {
         }
         let id = BufferId::next();
         let document = Document::empty();
-        let handle = spawn_document(document, self.registry.clone());
+        let handle = spawn_document(id, document, self.registry.clone());
         // M.0: BufferRegistry stores `Arc<dyn Document>` so the
         // entry slot accepts either a regular handle (here) or
         // (M.1+) a multibuffer handle.

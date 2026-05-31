@@ -61,6 +61,18 @@ pub struct RopeDocumentHandle {
     /// H3).
     sender: mpsc::UnboundedSender<ActorMsg>,
     snapshot_cell: Arc<PublishedSnapshot>,
+    /// M.2.b.0.A (2026-05-31): registry-level identity of this
+    /// handle's buffer. Distinct from
+    /// `DocumentSnapshot::id` (the per-actor `DocumentId`);
+    /// `BufferId` is what `BufferRegistry` keys by and what
+    /// `MotionContext::buffer_id` carries to kind-specific motion
+    /// handlers. Stored on the handle so trait-method dispatch
+    /// (`Document::dispatch_with_cancel`) can thread the id
+    /// through `ActorMsg::Dispatch` without the caller needing
+    /// to know it. The placeholder handle (`Default::default()`)
+    /// uses `BufferId(0)` — placeholders never traffic real
+    /// dispatch.
+    buffer_id: lattice_core::BufferId,
 }
 
 /// Placeholder handle for `Editor::default()` headless / test
@@ -77,6 +89,13 @@ impl Default for RopeDocumentHandle {
         Self {
             sender,
             snapshot_cell: Arc::new(PublishedSnapshot::new(DocumentSnapshot::default())),
+            // Placeholder handle: any actual traffic will fail
+            // with `RuntimeError::ActorGone` because the
+            // receiver is already dropped. The buffer_id value
+            // is observable only via `Document::buffer_id` in
+            // tests; production code overwrites the slot before
+            // any traffic flows.
+            buffer_id: lattice_core::BufferId(0),
         }
     }
 }
@@ -93,7 +112,11 @@ impl Default for RopeDocumentHandle {
 /// The actor task survives until every clone of the returned
 /// handle is dropped; on the last drop the mailbox closes, the
 /// actor's `recv` loop exits, and the task returns.
-pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> RopeDocumentHandle {
+pub fn spawn_document(
+    buffer_id: lattice_core::BufferId,
+    document: Document,
+    registry: Arc<CommandRegistry>,
+) -> RopeDocumentHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
         &document,
@@ -103,6 +126,7 @@ pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> Rop
     RopeDocumentHandle {
         sender: tx,
         snapshot_cell,
+        buffer_id,
     }
 }
 
@@ -232,12 +256,20 @@ impl RopeDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
+        let buffer_id = self.buffer_id;
         self.send(|reply| ActorMsg::Dispatch {
+            buffer_id,
             invocation,
             cursor,
             cancel,
             reply,
         })
+    }
+
+    /// M.2.b.0.A (2026-05-31): registry-level identity of this
+    /// handle. Stable for the handle's lifetime.
+    pub fn buffer_id(&self) -> lattice_core::BufferId {
+        self.buffer_id
     }
 
     // ---- internals ----
@@ -383,7 +415,7 @@ mod tests {
         // `crate::document::Document`.
         use crate::document::Document as DocumentTrait;
 
-        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
         let dyn_doc: std::sync::Arc<dyn DocumentTrait> =
             std::sync::Arc::new(handle.clone());
 
@@ -406,7 +438,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn handle_clone_shares_actor() {
-        let h1 = spawn_document(Document::from_text("a"), empty_registry());
+        let h1 = spawn_document(lattice_core::BufferId(0), Document::from_text("a"), empty_registry());
         let h2 = h1.clone();
         h1.apply_edit(Edit::insert(Position::new(0, 1), "b"))
             .await
@@ -420,7 +452,7 @@ mod tests {
     async fn save_as_updates_path_in_snapshot() {
         let dir = std::env::temp_dir();
         let target = dir.join("lattice-handle-save-as.txt");
-        let h = spawn_document(Document::from_text("payload"), empty_registry());
+        let h = spawn_document(lattice_core::BufferId(0), Document::from_text("payload"), empty_registry());
         h.save_as(target.clone()).await.unwrap();
         let snap = h.snapshot();
         assert_eq!(snap.path(), Some(target.as_path()));

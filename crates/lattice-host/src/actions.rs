@@ -1342,6 +1342,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
+            lattice_core::BufferId(0),
             lattice_protocol::position::Position::ZERO,
             inv,
             &CancellationToken::never(),
@@ -1375,6 +1376,7 @@ mod tests {
             execute(
                 registry,
                 doc,
+                lattice_core::BufferId(0),
                 pos,
                 CommandInvocation::of(id).with_args(Args::Char(c)),
                 &cancel,

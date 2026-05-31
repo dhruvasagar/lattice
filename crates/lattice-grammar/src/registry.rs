@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use lattice_core::Buffer;
+use lattice_core::BufferId;
 use lattice_core::Document;
 use lattice_protocol::ids::CommandId;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -50,8 +51,24 @@ pub struct ExCommandId(pub CommandId);
 pub struct RangeId(pub CommandId);
 
 /// Context passed to a motion's evaluator.
+///
+/// **M.2.b.0.A (2026-05-31):** `buffer_id` carries the active
+/// buffer's registry identity through to motion handlers. Built-
+/// in motions (purely content-based: `w` / `e` / `]p` / etc.)
+/// ignore it; kind-specific motions (multibuffer `]e` / `[e` /
+/// `]E` / `[E`, future file-tree / oil structural motions, future
+/// plugin-defined kinds) use it to look up the active major
+/// mode's typed state through a service registry their handler
+/// closure captures at registration time. Adding it here keeps
+/// the grammar layer free of lattice-mode / ServiceRegistry
+/// coupling — the handler decides what to look up.
 pub struct MotionContext<'a> {
     pub buffer: &'a Buffer,
+    /// Registry-level identity of the active buffer this motion
+    /// is firing against. Distinct from `lattice_protocol::ids::
+    /// DocumentId` (per-actor stable id); `BufferId` is the
+    /// registry key that mode-state lookups use.
+    pub buffer_id: BufferId,
     pub from: Position,
     pub count: Count,
     pub args: Args,

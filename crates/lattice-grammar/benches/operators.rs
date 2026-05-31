@@ -39,7 +39,7 @@ fn operator_dw(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::ZERO),
+                        lattice_core::BufferId(0), black_box(Position::ZERO),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -66,7 +66,7 @@ fn operator_dd(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::ZERO),
+                        lattice_core::BufferId(0), black_box(Position::ZERO),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -94,7 +94,7 @@ fn operator_d_whole(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::ZERO),
+                        lattice_core::BufferId(0), black_box(Position::ZERO),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -122,7 +122,7 @@ fn operator_yw(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::ZERO),
+                        lattice_core::BufferId(0), black_box(Position::ZERO),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -150,7 +150,7 @@ fn operator_cw(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::ZERO),
+                        lattice_core::BufferId(0), black_box(Position::ZERO),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -178,7 +178,7 @@ fn operator_diw(c: &mut Criterion) {
                     let _ = execute(
                         &registry,
                         &mut doc,
-                        black_box(Position::new(0, 5)),
+                        lattice_core::BufferId(0), black_box(Position::new(0, 5)),
                         inv,
                         &CancellationToken::never(),
                     )
@@ -212,7 +212,7 @@ fn operator_di_paren(c: &mut Criterion) {
                 let _ = execute(
                     &registry,
                     &mut doc,
-                    black_box(Position::new(0, 5_000)),
+                    lattice_core::BufferId(0), black_box(Position::new(0, 5_000)),
                     inv,
                     &CancellationToken::never(),
                 )

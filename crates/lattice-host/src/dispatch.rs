@@ -7842,8 +7842,11 @@ impl Editor {
                 }
                 _ => None,
             };
-        let new_handle = lattice_runtime::spawn_document(new_doc, self.registry.clone());
+        // M.2.b.0.A: allocate BufferId first so the handle
+        // carries it (used by `MotionContext::buffer_id` for
+        // kind-specific motion handlers).
         let new_id = lattice_core::BufferId::next();
+        let new_handle = lattice_runtime::spawn_document(new_id, new_doc, self.registry.clone());
         let new_handle_arc: std::sync::Arc<dyn lattice_runtime::Document> =
             std::sync::Arc::new(new_handle.clone());
         self.buffers.insert(crate::buffer_registry::BufferEntry {
@@ -23653,6 +23656,7 @@ impl Editor {
         let result = lattice_grammar::execute(
             &self.registry,
             &mut temp_doc,
+            self.document_buffer_id,
             cursor_before,
             inv,
             &lattice_protocol::CancellationToken::never(),
@@ -23796,7 +23800,14 @@ impl Editor {
             // still wants a `&mut Document`, so we feed it a
             // throwaway empty one.
             let mut scratch = lattice_core::Document::empty();
-            match lattice_grammar::execute(&self.registry, &mut scratch, pos, inv, &cancel) {
+            match lattice_grammar::execute(
+                &self.registry,
+                &mut scratch,
+                self.document_buffer_id,
+                pos,
+                inv,
+                &cancel,
+            ) {
                 Ok(effect) => apply_effect_host(self, effect, out),
                 Err(e) => {
                     self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
@@ -23993,6 +24004,7 @@ impl Editor {
                 if let Ok(new_pos) = lattice_grammar::execute_motion_only(
                     &self.registry,
                     &buffer,
+                    self.document_buffer_id,
                     self.cursor,
                     motion_inv,
                     &cancel,
@@ -24148,6 +24160,7 @@ impl Editor {
             match lattice_grammar::execute_motion_only(
                 &self.registry,
                 &buffer,
+                self.document_buffer_id,
                 self.cursor,
                 motion_inv,
                 &cancel,
@@ -24231,6 +24244,7 @@ impl Editor {
         let effect = match lattice_grammar::execute(
             &self.registry,
             &mut doc,
+            self.document_buffer_id,
             cursor,
             inv,
             &cancel,
@@ -24307,6 +24321,7 @@ impl Editor {
         match lattice_grammar::execute_motion_only(
             &self.registry,
             &buffer,
+            self.document_buffer_id,
             self.cursor,
             inv,
             &cancel,

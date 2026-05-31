@@ -193,7 +193,7 @@ mod tests {
         let mut map: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
         let mut ids = Vec::new();
         for text in texts {
-            let handle = spawn_document(
+            let handle = spawn_document(lattice_core::BufferId(0), 
                 lattice_core::Document::from_text(*text),
                 registry.clone(),
             );

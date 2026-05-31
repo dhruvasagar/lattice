@@ -528,7 +528,7 @@ mod tests {
         let mut map: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
         let mut ids = Vec::new();
         for text in texts {
-            let handle = spawn_document(CoreDocument::from_text(*text), empty_registry());
+            let handle = spawn_document(lattice_core::BufferId(0), CoreDocument::from_text(*text), empty_registry());
             let id = BufferId::next();
             map.insert(id, Arc::new(handle));
             ids.push(id);

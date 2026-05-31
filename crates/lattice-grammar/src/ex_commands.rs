@@ -2368,7 +2368,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2386,7 +2386,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2406,7 +2406,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2424,7 +2424,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2442,7 +2442,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2463,7 +2463,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2478,7 +2478,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2493,7 +2493,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2508,7 +2508,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2524,7 +2524,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2545,7 +2545,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2560,7 +2560,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2595,7 +2595,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2616,7 +2616,7 @@ mod tests {
         let err = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2633,7 +2633,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2713,7 +2713,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )

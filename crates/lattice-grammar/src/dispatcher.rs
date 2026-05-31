@@ -27,7 +27,7 @@ use crate::registry::{
     require_text_object,
 };
 use crate::target::Target;
-use lattice_core::{Buffer, Document};
+use lattice_core::{Buffer, BufferId, Document};
 
 /// Execute a `CommandInvocation` against `document`, using `registry` to
 /// resolve motions / text-objects / operators.
@@ -44,6 +44,7 @@ use lattice_core::{Buffer, Document};
 pub fn execute(
     registry: &CommandRegistry,
     document: &mut Document,
+    buffer_id: BufferId,
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
@@ -56,12 +57,12 @@ pub fn execute(
         .ok_or(CommandError::UnknownCommand)?;
 
     match entry.spec.kind {
-        CommandKind::Motion => execute_motion(document, cursor, &invocation, entry, cancel),
+        CommandKind::Motion => execute_motion(document, buffer_id, cursor, &invocation, entry, cancel),
         CommandKind::TextObject => {
             execute_text_object(document, cursor, &invocation, entry, cancel)
         }
         CommandKind::Operator => {
-            execute_operator(registry, document, cursor, &invocation, entry, cancel)
+            execute_operator(registry, document, buffer_id, cursor, &invocation, entry, cancel)
         }
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => execute_action(&invocation, entry, cancel),
@@ -102,6 +103,7 @@ fn execute_action(
 pub fn execute_motion_only(
     registry: &CommandRegistry,
     buffer: &Buffer,
+    buffer_id: BufferId,
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
@@ -118,6 +120,7 @@ pub fn execute_motion_only(
     let motion = require_motion(entry)?;
     let ctx = MotionContext {
         buffer,
+        buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
@@ -146,6 +149,7 @@ fn execute_ex_command(
 
 fn execute_motion(
     document: &Document,
+    buffer_id: BufferId,
     cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
@@ -154,6 +158,7 @@ fn execute_motion(
     let motion = require_motion(entry)?;
     let ctx = MotionContext {
         buffer: document.buffer(),
+        buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
@@ -196,6 +201,7 @@ fn execute_text_object(
 fn execute_operator(
     registry: &CommandRegistry,
     document: &mut Document,
+    buffer_id: BufferId,
     cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
@@ -225,7 +231,7 @@ fn execute_operator(
             resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
         }
         (None, Some(target)) => {
-            resolve_target(registry, document, cursor, target, motion_count, cancel)?
+            resolve_target(registry, document, buffer_id, cursor, target, motion_count, cancel)?
         }
         (None, None) => return Err(CommandError::MissingTarget),
     };
@@ -512,6 +518,7 @@ fn flatten_effect(e: Effect, out: &mut Vec<Effect>) {
 fn resolve_target(
     registry: &CommandRegistry,
     document: &Document,
+    buffer_id: BufferId,
     cursor: Position,
     target: &Target,
     count: crate::command::Count,
@@ -525,6 +532,7 @@ fn resolve_target(
             let motion = require_motion(entry)?;
             let ctx = MotionContext {
                 buffer: document.buffer(),
+                buffer_id,
                 from: cursor,
                 count,
                 args: args.clone(),
@@ -667,7 +675,7 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            Position::ZERO,
+            lattice_core::BufferId(0), Position::ZERO,
             inv,
             &CancellationToken::never(),
         )

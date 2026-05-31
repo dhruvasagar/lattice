@@ -48,7 +48,7 @@ fn motion_word_forward(c: &mut Criterion) {
                 let _ = execute(
                     &registry,
                     &mut doc,
-                    black_box(Position::ZERO),
+                    lattice_core::BufferId(0), black_box(Position::ZERO),
                     inv.clone(),
                     &CancellationToken::never(),
                 )
@@ -75,7 +75,7 @@ fn motion_word_backward(c: &mut Criterion) {
                 let _ = execute(
                     &registry,
                     &mut doc,
-                    black_box(Position::new(last_line, line_len)),
+                    lattice_core::BufferId(0), black_box(Position::new(last_line, line_len)),
                     inv.clone(),
                     &CancellationToken::never(),
                 )
@@ -100,7 +100,7 @@ fn motion_word_end(c: &mut Criterion) {
                 let _ = execute(
                     &registry,
                     &mut doc,
-                    black_box(Position::ZERO),
+                    lattice_core::BufferId(0), black_box(Position::ZERO),
                     inv.clone(),
                     &CancellationToken::never(),
                 )
@@ -124,7 +124,7 @@ fn motion_first_non_blank(c: &mut Criterion) {
             let _ = execute(
                 &registry,
                 &mut doc,
-                black_box(Position::new(25_000, 0)),
+                lattice_core::BufferId(0), black_box(Position::new(25_000, 0)),
                 inv.clone(),
                 &CancellationToken::never(),
             )
@@ -147,7 +147,7 @@ fn motion_word_forward_with_count(c: &mut Criterion) {
             let _ = execute(
                 &registry,
                 &mut doc,
-                black_box(Position::ZERO),
+                lattice_core::BufferId(0), black_box(Position::ZERO),
                 inv.clone(),
                 &CancellationToken::never(),
             )
@@ -173,7 +173,7 @@ fn motion_find_char_forward(c: &mut Criterion) {
             let _ = execute(
                 &registry,
                 &mut doc,
-                black_box(Position::ZERO),
+                lattice_core::BufferId(0), black_box(Position::ZERO),
                 inv.clone(),
                 &CancellationToken::never(),
             )

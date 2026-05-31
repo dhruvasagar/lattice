@@ -102,6 +102,13 @@ pub(crate) enum ActorMsg {
     /// Cheap callers that don't need cancellation pass
     /// [`CancellationToken::never()`].
     Dispatch {
+        /// M.2.b.0.A (2026-05-31): registry-level `BufferId`
+        /// for this dispatch. Threaded through to
+        /// `MotionContext::buffer_id` so kind-specific motions
+        /// can look up active-mode state via a service
+        /// registry. Distinct from the actor's owned
+        /// `Document::id()` which is a `DocumentId`.
+        buffer_id: lattice_core::BufferId,
         invocation: CommandInvocation,
         cursor: Position,
         cancel: CancellationToken,
@@ -198,6 +205,7 @@ impl DocumentActor {
                 let _ = reply.send(Ok(()));
             }
             ActorMsg::Dispatch {
+                buffer_id,
                 invocation,
                 cursor,
                 cancel,
@@ -206,6 +214,7 @@ impl DocumentActor {
                 let result = execute(
                     &self.registry,
                     &mut self.document,
+                    buffer_id,
                     cursor,
                     invocation,
                     &cancel,
@@ -245,7 +254,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apply_edit_publishes_new_snapshot() {
-        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
         let initial = handle.snapshot();
         assert_eq!(initial.text(), "hello");
         let initial_version = initial.version;
@@ -263,7 +272,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn undo_restores_previous_snapshot_text() {
-        let handle = spawn_document(Document::from_text("a"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("a"), empty_registry());
         handle
             .apply_edit(Edit::insert(Position::new(0, 1), "b"))
             .await
@@ -275,7 +284,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn redo_replays_undone_edit() {
-        let handle = spawn_document(Document::from_text(""), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
         handle
             .apply_edit(Edit::insert(Position::ZERO, "x"))
             .await
@@ -289,7 +298,7 @@ mod tests {
     async fn snapshots_loaded_pre_publish_remain_coherent() {
         // §5.6.8 contract: an Arc<DocumentSnapshot> obtained at
         // frame start stays valid for the whole frame.
-        let handle = spawn_document(Document::from_text("v1"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("v1"), empty_registry());
         let pinned = handle.snapshot();
         handle
             .apply_edit(Edit::insert(Position::new(0, 2), "!"))
@@ -301,7 +310,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn invalid_edit_returns_core_error_without_publish() {
-        let handle = spawn_document(Document::from_text("abc"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("abc"), empty_registry());
         let v_before = handle.snapshot().version;
         // Insert at line 99 -- out of range.
         let res = handle
@@ -318,7 +327,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dropping_all_handles_shuts_down_actor() {
-        let handle = spawn_document(Document::from_text(""), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
         let h2 = handle.clone();
         drop(handle);
         h2.apply_edit(Edit::insert(Position::ZERO, "a"))
@@ -339,7 +348,7 @@ mod tests {
         use lattice_grammar::CommandInvocation;
         use lattice_grammar::error::CommandError;
 
-        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
         let token = CancellationToken::new();
         token.cancel();
 
@@ -364,7 +373,7 @@ mod tests {
         use lattice_grammar::CommandInvocation;
         use lattice_grammar::error::CommandError;
 
-        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
         let token = CancellationToken::new();
 
         let result = handle

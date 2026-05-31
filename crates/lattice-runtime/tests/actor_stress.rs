@@ -43,7 +43,7 @@ async fn mailbox_burst_lands_every_edit() {
     // bounded-channel contract was "Busy under burst, accepted
     // count + busy count == burst"; the new contract is just
     // "every edit lands."
-    let handle = spawn_document(Document::from_text(""), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
     let burst = 4096usize;
     let mut pendings = Vec::with_capacity(burst);
     for _ in 0..burst {
@@ -69,7 +69,7 @@ async fn concurrent_handles_serialise_through_actor() {
     // Many cloned handles racing. The actor owns the only mutable
     // Document, so per-handle edits commit in some serialisation
     // -- the final length must equal the sum of accepted edits.
-    let handle = spawn_document(Document::from_text(""), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
     let n_tasks = 16usize;
     let edits_per_task = 32usize;
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -117,7 +117,7 @@ async fn snapshot_observed_after_reply_reflects_that_edit() {
     // The §5.6.8 publish-before-reply ordering: every reply
     // implies the matching snapshot is already published. Hammer
     // it by alternating insert -> snapshot reads.
-    let handle = spawn_document(Document::from_text(""), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
     for i in 0..256 {
         let edit = Edit::insert(Position::ZERO, "z");
         // With the unbounded mailbox the apply always lands;
@@ -141,7 +141,7 @@ async fn dispatch_with_pre_flipped_token_under_load_short_circuits() {
     // an already-flipped token MUST surface Cancelled, no matter
     // what's queued ahead of it -- the dispatcher's first check
     // is the cancellation poll.
-    let handle = spawn_document(Document::from_text("seed"), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("seed"), empty_registry());
 
     // Keep the mailbox warm. With the unbounded mailbox (audit
     // slice 6 / H3) there's no saturation case; we just want a
@@ -180,7 +180,7 @@ async fn dropping_last_handle_with_queued_messages_drains_cleanly() {
     // Fire a burst, drop the only handle clone, and verify the
     // tokio task exits naturally (no panic, no deadlock). We
     // assert via a tokio::join! against a watchdog timeout.
-    let handle = spawn_document(Document::from_text(""), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
     let mut pendings = Vec::new();
     for _ in 0..64 {
         // Hold the Pending so the future isn't dropped before the
@@ -209,7 +209,7 @@ fn block_on_burst_lands_every_edit() {
     // path. With the unbounded mailbox (audit slice 6 / H3),
     // every queued edit lands -- no Busy. We fire a 256-edit
     // burst and assert all of them committed.
-    let handle = spawn_document(Document::from_text(""), empty_registry());
+    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
     let mut pendings = Vec::new();
     for _ in 0..256 {
         pendings.push(handle.apply_edit(Edit::insert(Position::ZERO, "x")));

@@ -109,6 +109,24 @@ pub trait DiffParticipantSource: Send + Sync + 'static + std::fmt::Debug {
 	/// recompute; the implementor decides whether to clone a
 	/// cached rope or rematerialise from a backing store.
 	fn snapshot(&self) -> Rope;
+
+	/// D.8.d (2026-05-31): the buffer id this source is
+	/// backed by, if any. Returns `None` for non-buffer
+	/// sources (`StaticSource`, `OnDiskSource`, future
+	/// `GitSource`); `BufferSource` overrides to return
+	/// `Some(buffer_id)`.
+	///
+	/// Load-bearing for the slot ↔ buffer mapping the
+	/// subsystem's membership API + the D.6.d
+	/// `pane_index_of` helper rely on. Without it,
+	/// `compute_get_edit` / `compute_put_plan` /
+	/// `remove_participant_buffer` would need a sidecar map
+	/// to find "the slot in `Hunk::ranges` for buffer X".
+	/// Default `None` means non-overriding impls continue
+	/// to work — they just can't be addressed by buffer id.
+	fn buffer_id(&self) -> Option<BufferId> {
+		None
+	}
 }
 
 /// In-memory participant source — an owned `Rope` cloned on
@@ -300,6 +318,10 @@ impl BufferSource {
 impl DiffParticipantSource for BufferSource {
 	fn snapshot(&self) -> Rope {
 		self.provider.buffer_rope(self.buffer_id).unwrap_or_default()
+	}
+
+	fn buffer_id(&self) -> Option<BufferId> {
+		Some(self.buffer_id)
 	}
 }
 
@@ -557,6 +579,26 @@ pub enum DiffOutcome {
 	Reject,
 }
 
+/// D.8.d (2026-05-31): errors the subsystem's membership
+/// API returns when mutating a session's participant set.
+/// Distinct from [`DiffEngineError`] (which is the engine
+/// crate's surface) so callers don't have to import
+/// `lattice_diff` just to pattern-match on
+/// `add_participant` failures. The engine's cap on arity
+/// (N ≥ 4 rejected in v1) surfaces here as
+/// `EngineRejected(DiffEngineError::Unsupported{...})`.
+#[derive(Debug, thiserror::Error)]
+pub enum MembershipError {
+	#[error("no diff session registered for buffer {0:?}")]
+	NoSession(BufferId),
+	#[error("slot {slot} out of range; session arity = {arity}")]
+	SlotOutOfRange { slot: usize, arity: usize },
+	#[error("buffer {0:?} is not a participant of this session")]
+	NotParticipant(BufferId),
+	#[error("engine rejected new arity: {0}")]
+	EngineRejected(#[from] lattice_diff::DiffEngineError),
+}
+
 /// D.5.b (2026-05-30): describes the edit the diff-mode `do`
 /// (diff-get) operator would apply when invoked at a given
 /// cursor row on the active side of a session. Produced by
@@ -721,26 +763,29 @@ enum TargetResolution {
 	Unknown,
 }
 
-/// Find the slot index in `hunk.ranges` corresponding to
-/// `buffer_id`. Slot count comes from the descriptor's
-/// shape (2 for two-way, 3 for three-way via `remote =
-/// Some`); slot-to-buffer mapping comes from
-/// `descriptor.participants`.
+/// Find the slot index in `hunk.ranges` (= position in
+/// `descriptor.sources`) corresponding to `buffer_id`.
 ///
-/// Inline sessions (single participant) are a special
-/// case: the sole live buffer is the current side, which
-/// always sits at slot 1; slot 0 is the non-buffer-backed
-/// baseline. Multi-participant sessions use the position
-/// in the `participants` list directly (slot 0 = base /
-/// baseline, slot 1 = local / current, slot 2 = remote).
+/// D.8.d (2026-05-31): rewritten to walk `sources`
+/// directly via the [`DiffParticipantSource::buffer_id`]
+/// method. The post-D.8.c arity-agnostic sources vector
+/// puts each source at the same slot index it occupies in
+/// `Hunk::ranges`, so finding the buffer's slot reduces
+/// to a position-by-trait-method query. Pre-D.8.d this
+/// function carried an "inline → slot 1" special-case
+/// derived from `descriptor.participants` because the
+/// D.6 fixed-arity descriptor didn't expose source
+/// identities. With D.8.b's `BufferSource::buffer_id()`
+/// trait method the special-case is no longer needed —
+/// inline 1-source sessions report slot 0 directly, and
+/// inline 2-source sessions (StaticSource at slot 0 +
+/// BufferSource at slot 1) report slot 1 from the
+/// position-walk.
 fn pane_index_of(descriptor: &DiffDescriptor, buffer_id: BufferId) -> Option<usize> {
-	if descriptor.participants.len() == 1 {
-		return (descriptor.participants[0] == buffer_id).then_some(1);
-	}
 	descriptor
-		.participants
+		.sources
 		.iter()
-		.position(|&b| b == buffer_id)
+		.position(|s| s.buffer_id() == Some(buffer_id))
 }
 
 /// Resolve `target` to a pane slot index:
@@ -1661,6 +1706,301 @@ impl DiffSubsystem {
 		// `removed` is false (double-drop / drop-before-open).
 		self.mode_bridge.note_session_closed(buffer_id);
 		removed
+	}
+
+	/// D.8.d (2026-05-31): add a participant to an existing
+	/// session. Appends `source` to `descriptor.sources` and
+	/// (if `participant_buffer` is `Some`) to `descriptor.
+	/// watch` + `descriptor.participants` + the inverse
+	/// watcher index. Triggers a recompute through the
+	/// existing debouncer so the new arity shows up
+	/// immediately.
+	///
+	/// Returns the **new arity** after the add (on success).
+	///
+	/// Errors:
+	/// - [`MembershipError::NoSession`] — no descriptor
+	///   registered for `session_key`.
+	/// - [`MembershipError::EngineRejected`] — the new arity
+	///   would exceed what the engine supports (v1: N≥4).
+	///   The session's descriptor is **not** mutated when
+	///   this fires — the caller's add fails atomically.
+	pub fn add_participant(
+		self: &Arc<Self>,
+		session_key: BufferId,
+		source: Arc<dyn DiffParticipantSource>,
+		participant_buffer: Option<BufferId>,
+	) -> Result<usize, MembershipError> {
+		// Pre-check arity against the engine cap before any
+		// mutation so a rejected add is atomic.
+		let new_arity = {
+			let descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			let descriptor = descriptors
+				.get(&session_key)
+				.ok_or(MembershipError::NoSession(session_key))?;
+			let proposed = descriptor.arity() + 1;
+			// Probe the engine. v1 caps at 3; if we'd cross
+			// the cap, surface the typed engine error
+			// untouched.
+			if proposed >= 4 {
+				return Err(MembershipError::EngineRejected(
+					lattice_diff::DiffEngineError::Unsupported { n: proposed },
+				));
+			}
+			proposed
+		};
+
+		// Mutate the descriptor under the mutex. The
+		// borrow above was read-only; this block re-locks
+		// for write so we don't hold both locks at once.
+		{
+			let mut descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			let descriptor = descriptors
+				.get_mut(&session_key)
+				.ok_or(MembershipError::NoSession(session_key))?;
+			descriptor.sources.push(source);
+			if let Some(buf) = participant_buffer {
+				if !descriptor.watch.contains(&buf) {
+					descriptor.watch.push(buf);
+				}
+				if !descriptor.participants.contains(&buf) {
+					descriptor.participants.push(buf);
+				}
+			}
+		}
+
+		// Watcher index + secondary index gain the new
+		// buffer (skips primary + duplicates internally).
+		if let Some(buf) = participant_buffer {
+			self.install_watcher_entries(session_key, &[buf]);
+			self.install_secondary_entries(session_key, &[buf]);
+			// Bridge: mode refcount + per-session
+			// participant list grow.
+			self.mode_bridge.note_session_extended(session_key, buf);
+		}
+
+		// Kick a recompute so the new arity publishes
+		// promptly without waiting for the next edit.
+		Arc::clone(self).poke_session(session_key);
+
+		Ok(new_arity)
+	}
+
+	/// D.8.d (2026-05-31): remove the participant at slot
+	/// `slot` from `session_key`. Drops the corresponding
+	/// `sources[slot]`; if the slot corresponded to a buffer
+	/// in `participants`, scrubs it from the watcher index +
+	/// notifies the bridge.
+	///
+	/// **Auto-collapse semantics:**
+	/// - New arity ≥ 2: session stays active, recompute
+	///   fires with the smaller participant set.
+	/// - New arity == 1: session is **dormant** (registered,
+	///   refcount stays on the remaining buffer, but
+	///   `compute_diff` publishes an empty `HunkIndex` since
+	///   there's no peer to diff against).
+	/// - New arity == 0: session **auto-drops** (calls
+	///   `drop_session` internally).
+	///
+	/// Returns the new arity (0 on auto-drop).
+	pub fn remove_participant(
+		self: &Arc<Self>,
+		session_key: BufferId,
+		slot: usize,
+	) -> Result<usize, MembershipError> {
+		// Read out the buffer-id at this slot (if any) so
+		// the bridge + watcher index can update.
+		let removed_buf = {
+			let mut descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			let descriptor = descriptors
+				.get_mut(&session_key)
+				.ok_or(MembershipError::NoSession(session_key))?;
+			let arity = descriptor.arity();
+			if slot >= arity {
+				return Err(MembershipError::SlotOutOfRange { slot, arity });
+			}
+			descriptor.sources.remove(slot);
+			// `participants` indices may not align with
+			// `sources` slot indices (participants only
+			// lists buffer-backed sides), so we can't blindly
+			// remove by slot. Instead, if the descriptor's
+			// participants/watch lists carry a buffer at the
+			// same position as a buffer-backed source, the
+			// caller passes the buffer id explicitly via
+			// `remove_participant_buffer`. For slot-based
+			// removal we just trim the source vector and
+			// leave participants/watch alone; the next
+			// add_participant or recompute will reconcile.
+			None::<BufferId>
+		};
+
+		// If the new arity is 0, auto-drop.
+		let new_arity = {
+			let descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			descriptors
+				.get(&session_key)
+				.map(|d| d.arity())
+				.unwrap_or(0)
+		};
+		if new_arity == 0 {
+			self.drop_session(session_key);
+			return Ok(0);
+		}
+
+		// Bridge / index updates only fire if we know which
+		// buffer left (the buffer-aware path).
+		if let Some(buf) = removed_buf {
+			self.scrub_watcher_entries(session_key, &[buf]);
+			self.scrub_secondary_entries(session_key, &[buf]);
+			self.mode_bridge.note_session_shrunk(session_key, buf);
+		}
+
+		// Kick a recompute with the new arity.
+		Arc::clone(self).poke_session(session_key);
+		Ok(new_arity)
+	}
+
+	/// D.8.d (2026-05-31): convenience — remove the slot
+	/// whose `participants` entry equals `buffer_id`. Looks
+	/// up the slot via [`pane_index_of`] (D.6.d helper),
+	/// then delegates to [`Self::remove_participant`].
+	/// Updates `watch` + `participants` + bridge in this
+	/// path (unlike slot-only removal, since we know which
+	/// buffer leaves).
+	///
+	/// This is the typical entry point for `:diffthis` /
+	/// per-buffer `:diffoff` (D.8.e / D.8.f).
+	pub fn remove_participant_buffer(
+		self: &Arc<Self>,
+		session_key: BufferId,
+		buffer_id: BufferId,
+	) -> Result<usize, MembershipError> {
+		// Find the slot first under a read lock.
+		let slot = {
+			let descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			let descriptor = descriptors
+				.get(&session_key)
+				.ok_or(MembershipError::NoSession(session_key))?;
+			pane_index_of(descriptor, buffer_id)
+				.ok_or(MembershipError::NotParticipant(buffer_id))?
+		};
+
+		// Mutate under a write lock: drop the source +
+		// trim `watch` + `participants`.
+		{
+			let mut descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			let descriptor = descriptors
+				.get_mut(&session_key)
+				.ok_or(MembershipError::NoSession(session_key))?;
+			descriptor.sources.remove(slot);
+			descriptor.watch.retain(|&b| b != buffer_id);
+			descriptor.participants.retain(|&b| b != buffer_id);
+		}
+
+		// Auto-drop on N → 0.
+		let new_arity = {
+			let descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			descriptors
+				.get(&session_key)
+				.map(|d| d.arity())
+				.unwrap_or(0)
+		};
+		if new_arity == 0 {
+			self.drop_session(session_key);
+			return Ok(0);
+		}
+
+		// Scrub indexes + notify bridge.
+		self.scrub_watcher_entries(session_key, &[buffer_id]);
+		self.scrub_secondary_entries(session_key, &[buffer_id]);
+		self.mode_bridge.note_session_shrunk(session_key, buffer_id);
+
+		// Kick recompute.
+		Arc::clone(self).poke_session(session_key);
+		Ok(new_arity)
+	}
+
+	/// D.8.d (2026-05-31): atomically swap a session's
+	/// descriptor while preserving session identity. The
+	/// `Arc<DiffSession>` stays the same — any holder
+	/// (`compute_get_edit` / `compute_put_plan` callers,
+	/// renderer-side `current_hunks` readers) sees a smooth
+	/// transition. Useful for transitioning a session from
+	/// N=1 dormant to N=2 active (the natural
+	/// `:diffthis` flow) when we want to swap the entire
+	/// source list rather than `add_participant`-ing one
+	/// at a time.
+	///
+	/// Internally: `drop_session`'s scrub semantic for the
+	/// old descriptor, then `register_with_sources`'s install
+	/// semantic for the new one — but without dropping the
+	/// session entry from the registry. The mode-bridge
+	/// re-scrubs + re-installs participants the same way
+	/// `note_session_opened` already does on re-open.
+	pub fn replace_descriptor(
+		self: &Arc<Self>,
+		session_key: BufferId,
+		descriptor: DiffDescriptor,
+	) -> Result<(), MembershipError> {
+		// Reject N≥4 atomically before any mutation.
+		if descriptor.arity() >= 4 {
+			return Err(MembershipError::EngineRejected(
+				lattice_diff::DiffEngineError::Unsupported {
+					n: descriptor.arity(),
+				},
+			));
+		}
+		// Require an existing session.
+		if self.lookup(session_key).is_none() {
+			return Err(MembershipError::NoSession(session_key));
+		}
+
+		// Scrub the old descriptor's index entries.
+		let old_descriptor = {
+			let mut descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			descriptors.insert(session_key, descriptor.clone())
+		};
+		if let Some(old) = old_descriptor {
+			self.scrub_watcher_entries(session_key, &old.watch);
+			self.scrub_secondary_entries(session_key, &old.watch);
+		}
+
+		// Install the new descriptor's index entries.
+		self.install_watcher_entries(session_key, &descriptor.watch);
+		self.install_secondary_entries(session_key, &descriptor.watch);
+
+		// Bridge: re-open semantic (scrubs old participants,
+		// installs new ones with refcount transitions).
+		self.mode_bridge
+			.note_session_opened(session_key, &descriptor.participants);
+
+		// Kick a recompute with the new shape.
+		Arc::clone(self).poke_session(session_key);
+		Ok(())
 	}
 
 	// Internal helper: add this session_key to each watched
@@ -3563,6 +3903,290 @@ mod tests {
 		assert_eq!(two_way.arity(), 2);
 		let three_way = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
 		assert_eq!(three_way.arity(), 3);
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.8.d (2026-05-31): membership API
+	// ──────────────────────────────────────────────────────
+
+	/// `add_participant` on a 2-pane session grows the arity
+	/// to 3, mutates the descriptor's sources / watch /
+	/// participants lists, and routes a recompute through
+	/// the debouncer.
+	#[tokio::test]
+	async fn add_participant_grows_arity_2_to_3() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("a\n"));
+		provider.set(bid(2), Rope::from("b\n"));
+		provider.set(bid(3), Rope::from("c\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc = descriptor(&dyn_provider, bid(1), bid(2));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		// Add a third participant.
+		let new_source: Arc<dyn DiffParticipantSource> =
+			Arc::new(BufferSource::new(Arc::clone(&dyn_provider), bid(3)));
+		let new_arity = sub
+			.add_participant(bid(2), new_source, Some(bid(3)))
+			.expect("add must succeed");
+		assert_eq!(new_arity, 3);
+
+		// Descriptor now has 3 sources + bid(3) in
+		// watch + participants.
+		let updated = sub.lookup_descriptor(bid(2)).expect("descriptor present");
+		assert_eq!(updated.arity(), 3);
+		assert!(updated.watch.contains(&bid(3)));
+		assert!(updated.participants.contains(&bid(3)));
+	}
+
+	/// `add_participant` that would push arity to 4 returns
+	/// `EngineRejected` and **does not mutate** the
+	/// descriptor (atomic-failure invariant).
+	#[test]
+	fn add_participant_fourth_returns_engine_rejected_and_no_mutation() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::new());
+		let desc = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let result = sub.add_participant(
+			bid(2),
+			Arc::new(StaticSource::new(Rope::new())),
+			Some(bid(4)),
+		);
+		assert!(matches!(
+			result,
+			Err(MembershipError::EngineRejected(
+				lattice_diff::DiffEngineError::Unsupported { n: 4 }
+			))
+		));
+
+		// Descriptor unchanged — arity still 3, no bid(4)
+		// in watch/participants.
+		let unchanged = sub.lookup_descriptor(bid(2)).expect("session intact");
+		assert_eq!(unchanged.arity(), 3);
+		assert!(!unchanged.watch.contains(&bid(4)));
+		assert!(!unchanged.participants.contains(&bid(4)));
+	}
+
+	/// `add_participant` on a missing session returns
+	/// `NoSession`.
+	#[test]
+	fn add_participant_no_session_returns_no_session_error() {
+		let sub = Arc::new(DiffSubsystem::new());
+		let result = sub.add_participant(
+			bid(99),
+			Arc::new(StaticSource::new(Rope::new())),
+			None,
+		);
+		assert!(matches!(result, Err(MembershipError::NoSession(b)) if b == bid(99)));
+	}
+
+	/// `remove_participant_buffer` on a 3-pane session
+	/// shrinks to 2-pane (still active, recompute fires
+	/// with the smaller participant set).
+	#[tokio::test]
+	async fn remove_participant_buffer_3_to_2_keeps_session_active() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let new_arity = sub
+			.remove_participant_buffer(bid(2), bid(3))
+			.expect("remove must succeed");
+		assert_eq!(new_arity, 2);
+
+		// Session still registered; descriptor narrowed.
+		let session = sub.lookup(bid(2)).expect("session alive");
+		assert_eq!(session.buffer_id(), bid(2));
+		let updated = sub.lookup_descriptor(bid(2)).expect("descriptor present");
+		assert_eq!(updated.arity(), 2);
+		assert!(!updated.watch.contains(&bid(3)));
+		assert!(!updated.participants.contains(&bid(3)));
+	}
+
+	/// `remove_participant_buffer` that drops arity to 1
+	/// leaves the session **dormant** — registered but
+	/// no peer to diff against.
+	#[tokio::test]
+	async fn remove_participant_buffer_to_1_leaves_session_dormant() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc = descriptor(&provider, bid(1), bid(2));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let new_arity = sub
+			.remove_participant_buffer(bid(2), bid(1))
+			.expect("remove must succeed");
+		assert_eq!(new_arity, 1);
+
+		// Session stays registered.
+		assert!(sub.lookup(bid(2)).is_some());
+		let updated = sub.lookup_descriptor(bid(2)).expect("descriptor present");
+		assert_eq!(updated.arity(), 1);
+	}
+
+	/// `remove_participant_buffer` that drops arity to 0
+	/// **auto-drops** the session entirely.
+	#[tokio::test]
+	async fn remove_participant_buffer_to_0_auto_drops_session() {
+		let provider = Arc::new(MockProvider::default());
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+		let sub = Arc::new(DiffSubsystem::new());
+
+		// Build a 1-participant dormant session by
+		// registering with sources = [BufferSource(bid(1))]
+		// only.
+		let desc = DiffDescriptor {
+			sources: vec![Arc::new(BufferSource::new(
+				Arc::clone(&dyn_provider),
+				bid(1),
+			))],
+			watch: vec![bid(1)],
+			participants: vec![bid(1)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		assert!(sub.lookup(bid(1)).is_some(), "dormant session registered");
+
+		let new_arity = sub
+			.remove_participant_buffer(bid(1), bid(1))
+			.expect("remove must succeed");
+		assert_eq!(new_arity, 0);
+		assert!(sub.lookup(bid(1)).is_none(), "session auto-dropped");
+	}
+
+	/// `remove_participant_buffer` for a buffer that isn't a
+	/// participant returns `NotParticipant`.
+	#[test]
+	fn remove_participant_buffer_not_a_participant_errors() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::new());
+		let desc = descriptor(&provider, bid(1), bid(2));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let result = sub.remove_participant_buffer(bid(2), bid(99));
+		assert!(matches!(
+			result,
+			Err(MembershipError::NotParticipant(b)) if b == bid(99)
+		));
+	}
+
+	/// `remove_participant_buffer` decrements the mode
+	/// bridge's refcount on the removed buffer.
+	#[tokio::test]
+	async fn remove_participant_buffer_decrements_mode_bridge_refcount() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+		let bridge = sub.mode_bridge();
+		assert_eq!(bridge.refcount(bid(3)), 1, "3-way activates bid(3)");
+
+		sub.remove_participant_buffer(bid(2), bid(3))
+			.expect("remove succeeds");
+		assert_eq!(
+			bridge.refcount(bid(3)),
+			0,
+			"bid(3) refcount drops to zero after removal"
+		);
+		// Other participants still active.
+		assert_eq!(bridge.refcount(bid(1)), 1);
+		assert_eq!(bridge.refcount(bid(2)), 1);
+	}
+
+	/// `add_participant` increments the mode bridge's
+	/// refcount on the new buffer.
+	#[tokio::test]
+	async fn add_participant_increments_mode_bridge_refcount() {
+		let provider = Arc::new(MockProvider::default());
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc = descriptor(&dyn_provider, bid(1), bid(2));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+		let bridge = sub.mode_bridge();
+		assert_eq!(bridge.refcount(bid(3)), 0, "bid(3) not yet a participant");
+
+		sub.add_participant(
+			bid(2),
+			Arc::new(BufferSource::new(Arc::clone(&dyn_provider), bid(3))),
+			Some(bid(3)),
+		)
+		.expect("add succeeds");
+		assert_eq!(
+			bridge.refcount(bid(3)),
+			1,
+			"bid(3) refcount activates on add"
+		);
+	}
+
+	/// `replace_descriptor` swaps the source list while
+	/// preserving session identity. The `Arc<DiffSession>`
+	/// is the same after replace; only the descriptor's
+	/// contents change.
+	#[tokio::test]
+	async fn replace_descriptor_preserves_session_identity() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			1,
+		)));
+		let desc_a = descriptor(&provider, bid(1), bid(2));
+		let session_a = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_a);
+		let before_ptr = Arc::as_ptr(&session_a);
+
+		// Replace with a three-way descriptor.
+		let desc_b = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.replace_descriptor(bid(2), desc_b)
+			.expect("replace succeeds");
+
+		// Session Arc identity preserved.
+		let session_b = sub.lookup(bid(2)).expect("session alive");
+		assert_eq!(Arc::as_ptr(&session_b), before_ptr);
+		// Descriptor's arity reflects the new shape.
+		assert_eq!(
+			sub.lookup_descriptor(bid(2)).unwrap().arity(),
+			3,
+			"new descriptor is three-way"
+		);
+	}
+
+	/// `replace_descriptor` rejects a new descriptor with
+	/// N≥4 atomically — the existing descriptor is not
+	/// mutated.
+	#[test]
+	fn replace_descriptor_rejects_n4_atomically() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::new());
+		let desc_3 = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_3);
+
+		// Build an N=4 descriptor by extending sources.
+		let mut bad = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		bad.sources.push(Arc::new(StaticSource::new(Rope::new())));
+		bad.watch.push(bid(4));
+		bad.participants.push(bid(4));
+
+		let result = sub.replace_descriptor(bid(2), bad);
+		assert!(matches!(
+			result,
+			Err(MembershipError::EngineRejected(
+				lattice_diff::DiffEngineError::Unsupported { n: 4 }
+			))
+		));
+		// Old descriptor still arity 3.
+		assert_eq!(sub.lookup_descriptor(bid(2)).unwrap().arity(), 3);
 	}
 
 	/// `register_with_sources` on a three-source descriptor

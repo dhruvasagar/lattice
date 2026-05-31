@@ -243,6 +243,54 @@ impl DiffModeBridge {
         }
     }
 
+    /// D.8.d (2026-05-31): record that an existing session
+    /// gained a new participant `buf`. Increments the refcount
+    /// + appends `buf` to the session's participant list so
+    /// subsequent [`Self::note_session_closed`] decrements
+    /// every participant including this one.
+    ///
+    /// Idempotent: re-adding a buffer that's already a
+    /// participant of `session_key` is a no-op (the refcount
+    /// bucket dedupes by session-key, mirroring
+    /// [`Self::note_session_opened`]).
+    ///
+    /// No-op on unknown `session_key` — the caller has either
+    /// already torn the session down or the bridge was never
+    /// notified of the open. Defensive against races between
+    /// `:diffthis` (which goes through the membership API) and
+    /// `drop_session` (which goes through `note_session_closed`).
+    pub fn note_session_extended(&self, session_key: BufferId, buf: BufferId) {
+        let mut state = self.state.lock().expect("DiffModeBridge mutex poisoned");
+        let Some(participants) = state.sessions.get_mut(&session_key) else {
+            return;
+        };
+        if participants.contains(&buf) {
+            return;
+        }
+        participants.push(buf);
+        Self::inc_refcount(&mut state, session_key, buf);
+    }
+
+    /// D.8.d (2026-05-31): record that a participant `buf` was
+    /// removed from `session_key`. Decrements the refcount; if
+    /// `buf` no longer participates in any session, queues a
+    /// `Deactivate` change so the dispatch tail flips
+    /// `ActiveModes.diff-mode` off on that buffer. Removes `buf`
+    /// from the session's participant list so a subsequent
+    /// `note_session_closed` doesn't double-decrement it.
+    ///
+    /// No-op on unknown `session_key` or unknown participant.
+    pub fn note_session_shrunk(&self, session_key: BufferId, buf: BufferId) {
+        let mut state = self.state.lock().expect("DiffModeBridge mutex poisoned");
+        let Some(participants) = state.sessions.get_mut(&session_key) else {
+            return;
+        };
+        if let Some(pos) = participants.iter().position(|b| *b == buf) {
+            participants.swap_remove(pos);
+            Self::dec_refcount(&mut state, session_key, buf);
+        }
+    }
+
     /// Drain every pending change. Callers (the dispatch tail)
     /// apply them via the mode registry, which mutates the
     /// per-buffer `ActiveModes`.

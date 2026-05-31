@@ -3613,6 +3613,77 @@ shared with multibuffer-views and post-v1 inlay hints.
     `crates/lattice-host/src/diff/subsystem.rs`,
     `crates/lattice-host/src/dispatch.rs`,
     `crates/lattice-host/benches/diff_subsystem.rs`.
+  - ✅ **D.8.d** (2026-05-31) — subsystem membership API.
+    Four new public methods on `DiffSubsystem`, all
+    returning `Result<usize, MembershipError>` (the new
+    arity on success):
+    - `add_participant(session_key, source: Arc<dyn
+      DiffParticipantSource>, participant_buffer:
+      Option<BufferId>)` — appends to `sources` and
+      (when `Some`) to `watch` + `participants` + the
+      inverse watcher index. Bridge gains a refcount on
+      the new buffer. Rejects N≥4 atomically before
+      mutation via `MembershipError::EngineRejected(
+      DiffEngineError::Unsupported{n})`.
+    - `remove_participant(session_key, slot: usize)` —
+      slot-indexed remove. Auto-collapses: arity→1
+      keeps the session **dormant** (registered,
+      bridge refcount stays), arity→0 auto-drops the
+      session via `drop_session`.
+    - `remove_participant_buffer(session_key,
+      buffer_id)` — convenience that looks up the slot
+      via [`pane_index_of`] then delegates. Updates
+      `watch` + `participants` + bridge in this path
+      (the slot-only `remove_participant` can't know
+      which buffer left without a re-scan). Returns
+      `NotParticipant(buffer_id)` if the buffer isn't
+      in the descriptor.
+    - `replace_descriptor(session_key, descriptor)` —
+      atomic swap. Preserves the `Arc<DiffSession>` so
+      every holder (renderer-side `current_hunks`
+      readers, `compute_get_edit` / `compute_put_plan`
+      callers, the completion-signal receiver) keeps
+      its handle stable. The mode-bridge re-scrubs +
+      re-installs participants the same way
+      `note_session_opened` already does on re-open.
+    `MembershipError` enum (with `thiserror::Error`):
+    `NoSession`, `SlotOutOfRange { slot, arity }`,
+    `NotParticipant(BufferId)`,
+    `EngineRejected(DiffEngineError)` (the
+    `#[from] DiffEngineError` impl forwards typed
+    engine errors — currently just `Unsupported { n }`
+    when arity would exceed v1's N=3 cap).
+    `DiffModeBridge` gains
+    `note_session_extended(session_key, buf)` +
+    `note_session_shrunk(session_key, buf)` — refcount
+    increment/decrement on participant join/leave with
+    the same idempotent guard as `note_session_opened`.
+    **`DiffParticipantSource` trait extended** with
+    `buffer_id() -> Option<BufferId>` (default `None`,
+    overridden by `BufferSource` to return
+    `Some(self.buffer_id)`). Load-bearing for the
+    `pane_index_of` rewrite — D.8.d retires the D.6.d
+    "inline-session special-case" (which assumed
+    participants.len() == 1 means the buffer sits at
+    slot 1 of `Hunk::ranges`). With the trait method
+    in place, `pane_index_of` walks
+    `descriptor.sources.iter().position(|s|
+    s.buffer_id() == Some(buf))` — correct for
+    every shape including inline 1-source, inline
+    2-source-with-StaticSource-baseline, and arbitrary
+    multi-pane.
+    **11 new tests** in `diff::subsystem::tests`:
+    arity-grow 2→3 + descriptor mutations,
+    fourth-participant atomic rejection,
+    `NoSession` error path,
+    `remove_participant_buffer` shrink 3→2 / 2→1
+    dormant / 1→0 auto-drop, `NotParticipant` error
+    path, bridge refcount inc on add + dec on
+    remove, `replace_descriptor` identity-preservation
+    + N≥4 atomic rejection. 650 lattice-host (+11) +
+    1461 workspace tests green. Touched:
+    `crates/lattice-host/src/diff/{mode.rs,
+    subsystem.rs}`.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

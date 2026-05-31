@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// non-document kinds are read-only), and which buffer-local
 /// bindings apply (Help binds `<CR>` to follow-link, FileTree binds
 /// `<CR>` to follow-entry, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BufferKind {
     /// The user's edit-target -- one [`Document`] today.
     ///

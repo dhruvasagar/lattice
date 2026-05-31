@@ -41,6 +41,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lattice_core::BufferKind;
 use lattice_protocol::ids::BufferId;
 
 use crate::active::ActiveModes;
@@ -60,9 +61,17 @@ pub enum RegistrationError {
 
 /// Mode registry. Owns the catalogue of registered modes
 /// (`Arc<dyn DynMode>`) and drives activation / deactivation.
+///
+/// H.2 (2026-05-31): `kind_index` maps each [`BufferKind`] to the
+/// major mode that declared `target_buffer_kind() == Some(kind)`.
+/// Populated at register-time; first registration wins (subsequent
+/// claims log a warning rather than failing, so foundation
+/// registration order and feature-crate registration order can
+/// interleave deterministically).
 #[derive(Clone)]
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn DynMode>>,
+    kind_index: HashMap<BufferKind, ModeId>,
 }
 
 impl Default for ModeRegistry {
@@ -83,17 +92,43 @@ impl ModeRegistry {
     pub fn new() -> Self {
         Self {
             modes: HashMap::new(),
+            kind_index: HashMap::new(),
         }
     }
 
     /// Register a mode. Same id twice is a `Duplicate` error.
+    ///
+    /// H.2: if `mode.target_buffer_kind()` is `Some(kind)` and no
+    /// major has claimed `kind` yet, the mode is recorded as the
+    /// default major for that kind (queryable via
+    /// [`Self::find_major_for_kind`]). Subsequent claims for the
+    /// same `kind` log a `tracing::warn!` and leave the existing
+    /// binding in place — clobbering is treated as a developer bug,
+    /// not a hot-swap mechanism.
     pub fn register<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
         let id = <M as Mode>::id(&mode);
         if self.modes.contains_key(&id) {
             return Err(RegistrationError::Duplicate(id));
         }
+        let target_kind = <M as Mode>::target_buffer_kind(&mode);
         let arc: Arc<dyn DynMode> = Arc::new(mode);
         self.modes.insert(id, arc);
+        if let Some(kind) = target_kind {
+            match self.kind_index.entry(kind) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(id);
+                }
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    tracing::warn!(
+                        existing = %e.get(),
+                        rejected = %id,
+                        ?kind,
+                        "ModeRegistry: ignoring duplicate target_buffer_kind \
+                         claim; first registration wins"
+                    );
+                }
+            }
+        }
         Ok(id)
     }
 
@@ -105,6 +140,17 @@ impl ModeRegistry {
     /// Look up a registered mode by id.
     pub fn get(&self, id: ModeId) -> Option<Arc<dyn DynMode>> {
         self.modes.get(&id).cloned()
+    }
+
+    /// H.2: look up the major mode declared as the default for a
+    /// given [`BufferKind`] (via `Mode::target_buffer_kind`).
+    /// Returns `None` for kinds with no declared major
+    /// (e.g. [`BufferKind::Document`], which dispatches through
+    /// language detection rather than a kind-bound major).
+    ///
+    /// Index built at register-time, so lookup is `HashMap`-cheap.
+    pub fn find_major_for_kind(&self, kind: BufferKind) -> Option<ModeId> {
+        self.kind_index.get(&kind).copied()
     }
 
     /// Iterate every registered mode's `(id, kind)`.
@@ -564,6 +610,7 @@ mod tests {
         required: CapabilitySet,
         conflicts: Vec<ModeId>,
         implies: Vec<ModeId>,
+        target_kind: Option<BufferKind>,
         activate_calls: StdArc<AtomicU32>,
         deactivate_calls: StdArc<AtomicU32>,
     }
@@ -586,9 +633,14 @@ mod tests {
                 required: CapabilitySet::empty(),
                 conflicts: Vec::new(),
                 implies: Vec::new(),
+                target_kind: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
                 deactivate_calls: StdArc::new(AtomicU32::new(0)),
             }
+        }
+        fn targeting(mut self, kind: BufferKind) -> Self {
+            self.target_kind = Some(kind);
+            self
         }
         fn minor(name: &str) -> Self {
             Self {
@@ -597,6 +649,7 @@ mod tests {
                 required: CapabilitySet::empty(),
                 conflicts: Vec::new(),
                 implies: Vec::new(),
+                target_kind: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
                 deactivate_calls: StdArc::new(AtomicU32::new(0)),
             }
@@ -622,6 +675,9 @@ mod tests {
         }
         fn kind(&self) -> ModeKind {
             self.kind
+        }
+        fn target_buffer_kind(&self) -> Option<BufferKind> {
+            self.target_kind
         }
         fn required_capabilities(&self) -> CapabilitySet {
             self.required
@@ -672,6 +728,52 @@ mod tests {
         rx.recv()
             .await
             .expect("bus channel should deliver the event")
+    }
+
+    #[test]
+    fn find_major_for_kind_returns_registered_mode() {
+        let mut r = ModeRegistry::new();
+        let id = r
+            .register(MockMode::major("ft-mode").targeting(BufferKind::FileTree))
+            .unwrap();
+        assert_eq!(r.find_major_for_kind(BufferKind::FileTree), Some(id));
+    }
+
+    #[test]
+    fn find_major_for_kind_returns_none_when_unbound() {
+        let mut r = ModeRegistry::new();
+        r.register(MockMode::major("plain-mode")).unwrap();
+        // No mode declared `target_buffer_kind`, so the index is
+        // empty for every kind.
+        assert_eq!(r.find_major_for_kind(BufferKind::Oil), None);
+    }
+
+    #[test]
+    fn find_major_for_kind_keeps_first_registration_when_clobbered() {
+        // Two modes both claim BufferKind::Oil. The first wins;
+        // the second is logged (no panic, no error) so deterministic
+        // boot order isn't load-bearing for correctness.
+        let mut r = ModeRegistry::new();
+        let first = r
+            .register(MockMode::major("oil-a").targeting(BufferKind::Oil))
+            .unwrap();
+        let _second = r
+            .register(MockMode::major("oil-b").targeting(BufferKind::Oil))
+            .unwrap();
+        assert_eq!(r.find_major_for_kind(BufferKind::Oil), Some(first));
+    }
+
+    #[test]
+    fn find_major_for_kind_ignores_minor_target() {
+        // Minor modes never own a kind. Even if one declares a
+        // target_buffer_kind by mistake, treating it as the major
+        // would violate the kind contract — but we don't filter
+        // by ModeKind, we just respect whatever the mode declares.
+        // A test for the *common* case: a minor with no target is
+        // not indexed.
+        let mut r = ModeRegistry::new();
+        r.register(MockMode::minor("a-minor")).unwrap();
+        assert_eq!(r.find_major_for_kind(BufferKind::Document), None);
     }
 
     #[tokio::test]

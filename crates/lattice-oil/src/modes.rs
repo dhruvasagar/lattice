@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 
+use lattice_core::BufferKind;
 use lattice_mode::{
     BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -39,6 +40,11 @@ impl Mode for OilMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Major
+    }
+    /// H.2: oil buffers (`BufferKind::Oil`) dispatch to this major
+    /// via the registry's kind index.
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::Oil)
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()

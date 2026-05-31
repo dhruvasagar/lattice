@@ -30,6 +30,7 @@
 use std::path::PathBuf;
 
 use lattice_config::OptionOverrideSet;
+use lattice_core::BufferKind;
 use lattice_mode::{
     BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -54,6 +55,11 @@ impl Mode for FileTreeMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Major
+    }
+    /// H.2: file-tree buffers (`BufferKind::FileTree`) dispatch to
+    /// this major via the registry's kind index.
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::FileTree)
     }
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {

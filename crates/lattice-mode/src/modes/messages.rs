@@ -28,6 +28,7 @@
 
 use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 use lattice_config::OptionOverrideSet;
+use lattice_core::BufferKind;
 
 /// Major mode for the `*messages*` buffer.
 pub struct MessagesMode;
@@ -45,6 +46,12 @@ impl Mode for MessagesMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Major
+    }
+    /// H.2: `*messages*` and any future `BufferKind::Messages`
+    /// buffer dispatches to this major via the registry's kind
+    /// index.
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::Messages)
     }
     fn options(&self) -> OptionOverrideSet {
         // User keystrokes can't mutate `*messages*` -- the

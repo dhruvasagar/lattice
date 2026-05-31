@@ -227,43 +227,33 @@ pub use lattice_mode::{HelpMode, HoverMode};
 pub use lattice_file_tree::FileTreeMode;
 pub use lattice_oil::OilMode;
 
-/// Resolve the default major-mode id for a [`BufferKind`].
-/// `Document` returns `None` because the mode is determined
-/// by language detection (see
-/// [`lattice_syntax::major_mode_id_for_lang`]); when the
-/// language detection returns `Lang::Plain` the caller falls
-/// back further to `text-mode`.
-pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
-    match kind {
-        BufferKind::Document => None,
-        // M.4 (Option B): help buffers run `markdown-mode` as the
-        // major (the markdown content drives motion + syntax) and
-        // pick up `help-mode` as a minor at activation time. The
-        // minor adds the help-only behaviour (ReadOnly, links,
-        // anchors, `:help`-family commands) without forking the
-        // major-mode chassis.
-        BufferKind::Help => Some(lattice_syntax::MarkdownMode::mode_id()),
-        BufferKind::FileTree => Some(FileTreeMode::mode_id()),
-        BufferKind::Oil => Some(OilMode::mode_id()),
-        // Terminal-mode T1: `terminal-mode` is the major. It
-        // contributes `ReadOnly` + `NoFile` (no dirty tracking,
-        // no `:w` warn). T2 layers Normal-in-terminal grammar
-        // and the Terminal-Insert sub-state on top.
-        BufferKind::Terminal => Some(lattice_terminal::TerminalMode::mode_id()),
-        // `messages-mode` is the major for `*messages*`;
-        // contributes `ReadOnly` + `NoFile`. The buffer is
-        // rope-backed so motions / yank / search work like any
-        // Document — the mode just gates writes.
-
-        BufferKind::Messages => Some(lattice_mode::MessagesMode::mode_id()),
-        // M.2.b.1 (2026-05-31): placeholder. M.2.b.2 lands
-        // `MultibufferMode` in `lattice-multibuffer` and returns
-        // its id here. For now (multibuffer buffers aren't
-        // openable yet via any user-facing path), `None` is
-        // observably equivalent to "no major mode" and tests
-        // don't exercise this branch.
-        BufferKind::Multibuffer => None,
+/// Resolve the default major-mode id for a [`BufferKind`] via
+/// the registry's kind index (H.2).
+///
+/// `Document` returns `None` because the mode is determined by
+/// language detection (see
+/// [`lattice_syntax::major_mode_id_for_lang`]); when the language
+/// detection returns `Lang::Plain` the caller falls back further
+/// to `text-mode`.
+///
+/// All other kinds dispatch through
+/// [`ModeRegistry::find_major_for_kind`]: each major mode
+/// (`FileTreeMode`, `OilMode`, `MarkdownMode` for Help,
+/// `MessagesMode`, `TerminalMode`, future plugin-defined majors)
+/// declares its target kind via [`Mode::target_buffer_kind`] and
+/// the registry indexes them at register-time. Adding a new
+/// kind-bound major requires zero host-side hand edits — register
+/// the mode and the index picks it up.
+pub fn major_mode_id_for_buffer_kind(
+    registry: &ModeRegistry,
+    kind: BufferKind,
+) -> Option<ModeId> {
+    if kind == BufferKind::Document {
+        // Document dispatches via `Lang` detection; the kind index
+        // does not bind to `Document`.
+        return None;
     }
+    registry.find_major_for_kind(kind)
 }
 
 /// M.4 (Option B): minor modes the App activates alongside the
@@ -335,19 +325,21 @@ pub fn register_buffer_kind_modes(_registry: &mut ModeRegistry) {
     // intentionally empty
 }
 
-/// Resolve the major-mode id a buffer should activate based
-/// on its kind + (for `Document` kinds) detected language.
-/// Combines [`major_mode_id_for_buffer_kind`] with
-/// [`lattice_syntax::major_mode_id_for_lang`], falling back to
-/// [`TextMode`] when neither layer matches (`Document` +
-/// `Lang::Plain`). M.3.1 wires this into the buffer-creation
-/// path so each new buffer auto-activates its corresponding
-/// major.
-pub fn resolve_major_mode(kind: BufferKind, lang: Lang) -> ModeId {
-    if let Some(id) = major_mode_id_for_buffer_kind(kind) {
+/// Resolve the major-mode id a buffer should activate based on
+/// its kind + (for `Document` kinds) detected language.
+///
+/// H.2 (2026-05-31): rewritten to consult the [`ModeRegistry`]'s
+/// kind index ([`major_mode_id_for_buffer_kind`]) for non-Document
+/// kinds, then [`lattice_syntax::major_mode_id_for_lang`] for
+/// Document-kind buffers, finally falling back to [`TextMode`]
+/// when neither layer matches (Document + `Lang::Plain`, or an
+/// unknown / unbound kind).
+pub fn resolve_major_mode(registry: &ModeRegistry, kind: BufferKind, lang: Lang) -> ModeId {
+    if let Some(id) = major_mode_id_for_buffer_kind(registry, kind) {
         return id;
     }
-    // Document kind: pick by language, fall through to text-mode.
+    // Document kind (or any kind with no registered major): pick
+    // by language, fall through to text-mode.
     lattice_syntax::major_mode_id_for_lang(lang).unwrap_or_else(TextMode::mode_id)
 }
 
@@ -371,12 +363,25 @@ mod tests {
 
     #[test]
     fn buffer_kind_to_mode_id_table() {
-        assert_eq!(major_mode_id_for_buffer_kind(BufferKind::Document), None);
+        // H.2: lookups now go through the registry's kind index.
+        // Foundation + feature-crate registration helpers must run
+        // first so the index is populated.
+        let mut registry = ModeRegistry::new();
+        lattice_mode::register_foundation_modes(&mut registry);
+        lattice_syntax::register_language_modes(&mut registry);
+        lattice_oil::register_oil_modes(&mut registry);
+        lattice_file_tree::register_file_tree_modes(&mut registry);
+        lattice_terminal::register_terminal_modes(&mut registry);
+
+        assert_eq!(
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Document),
+            None
+        );
         // M.4 (Option B): help buffers run markdown-mode as their
         // major; help-mode is layered on as a minor by the App's
         // activation path (see `default_minor_mode_id_for_buffer_kind`).
         assert_eq!(
-            major_mode_id_for_buffer_kind(BufferKind::Help),
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Help),
             Some(lattice_syntax::MarkdownMode::mode_id())
         );
         assert_eq!(
@@ -384,7 +389,7 @@ mod tests {
             Some(HelpMode::mode_id())
         );
         assert_eq!(
-            major_mode_id_for_buffer_kind(BufferKind::FileTree),
+            major_mode_id_for_buffer_kind(&registry, BufferKind::FileTree),
             Some(FileTreeMode::mode_id())
         );
         assert_eq!(
@@ -392,8 +397,25 @@ mod tests {
             None
         );
         assert_eq!(
-            major_mode_id_for_buffer_kind(BufferKind::Oil),
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Oil),
             Some(OilMode::mode_id())
+        );
+        assert_eq!(
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Messages),
+            Some(lattice_mode::MessagesMode::mode_id())
+        );
+        assert_eq!(
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Terminal),
+            Some(lattice_terminal::TerminalMode::mode_id())
+        );
+        // M.2.b.2 will register MultibufferMode through a
+        // `lattice_multibuffer::register_multibuffer_modes` helper
+        // and this assertion will flip to Some(...). Today the
+        // multibuffer crate has no Mode, so the kind index is
+        // empty for that slot.
+        assert_eq!(
+            major_mode_id_for_buffer_kind(&registry, BufferKind::Multibuffer),
+            None
         );
     }
 
@@ -416,33 +438,45 @@ mod tests {
         assert!(registry.is_registered(HoverMode::mode_id()));
     }
 
+    fn populated_registry() -> ModeRegistry {
+        let mut r = ModeRegistry::new();
+        lattice_mode::register_foundation_modes(&mut r);
+        lattice_syntax::register_language_modes(&mut r);
+        lattice_oil::register_oil_modes(&mut r);
+        lattice_file_tree::register_file_tree_modes(&mut r);
+        lattice_terminal::register_terminal_modes(&mut r);
+        r
+    }
+
     #[test]
     fn resolve_major_mode_combines_kind_and_lang() {
         // Help / FileTree / Oil ignore Lang -- their kind alone
         // determines the major. Help maps to markdown-mode
         // (Option B); help-mode is the minor.
+        let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(BufferKind::Help, Lang::Rust),
+            resolve_major_mode(&registry, BufferKind::Help, Lang::Rust),
             lattice_syntax::MarkdownMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(BufferKind::FileTree, Lang::Plain),
+            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain),
             FileTreeMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(BufferKind::Oil, Lang::Markdown),
+            resolve_major_mode(&registry, BufferKind::Oil, Lang::Markdown),
             OilMode::mode_id()
         );
     }
 
     #[test]
     fn resolve_major_mode_for_document_picks_by_lang() {
+        let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(BufferKind::Document, Lang::Rust),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust),
             lattice_syntax::RustMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(BufferKind::Document, Lang::Markdown),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Markdown),
             lattice_syntax::MarkdownMode::mode_id()
         );
     }
@@ -450,8 +484,21 @@ mod tests {
     #[test]
     fn resolve_major_mode_falls_back_to_text_mode() {
         // Document + Plain ⇒ text-mode (foundation catch-all).
+        let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(BufferKind::Document, Lang::Plain),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Plain),
+            TextMode::mode_id()
+        );
+    }
+
+    #[test]
+    fn resolve_major_mode_handles_empty_registry() {
+        // Brand-new registry has no kind index entries — every
+        // non-Document kind falls through to TextMode (the
+        // language-detection catch-all on `Lang::Plain`).
+        let registry = ModeRegistry::new();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain),
             TextMode::mode_id()
         );
     }

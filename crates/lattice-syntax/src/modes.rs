@@ -21,6 +21,7 @@ use lattice_completion::{
     CandidateKind, CompletionSourceContribution, CompletionSourceKind, InsertContext, RawCandidate,
     SourceId, SyncCompletionSource,
 };
+use lattice_core::BufferKind;
 use lattice_mode::{
     CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -31,8 +32,20 @@ use crate::lang::Lang;
 /// impl with the canonical name. Reduces boilerplate while
 /// keeping each mode's source plain Rust (no proc-macro
 /// indirection for now).
+///
+/// Second arm (with `target_kind = $kind`) overrides
+/// [`Mode::target_buffer_kind`] for language majors that are also
+/// the default major for a non-`Document` [`BufferKind`] — today
+/// only `markdown-mode`, which serves both `Document + Markdown`
+/// (via `Lang` detection) and `Help` (via H.2's kind dispatch).
 macro_rules! lang_mode {
     ($struct_name:ident, $mode_name:literal) => {
+        lang_mode!(@inner $struct_name, $mode_name, None);
+    };
+    ($struct_name:ident, $mode_name:literal, target_kind = $kind:expr) => {
+        lang_mode!(@inner $struct_name, $mode_name, Some($kind));
+    };
+    (@inner $struct_name:ident, $mode_name:literal, $target_kind:expr) => {
         pub struct $struct_name;
 
         impl $struct_name {
@@ -49,6 +62,9 @@ macro_rules! lang_mode {
             fn kind(&self) -> ModeKind {
                 ModeKind::Major
             }
+            fn target_buffer_kind(&self) -> Option<BufferKind> {
+                $target_kind
+            }
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
@@ -62,7 +78,12 @@ macro_rules! lang_mode {
 lang_mode!(RustMode, "rust-mode");
 lang_mode!(PythonMode, "python-mode");
 lang_mode!(JavascriptMode, "javascript-mode");
-lang_mode!(MarkdownMode, "markdown-mode");
+// H.2 (2026-05-31): `markdown-mode` is the default major for two
+// dispatch paths — `Document + Lang::Markdown` (via language
+// detection) and `BufferKind::Help` (via the registry's kind
+// index). Both paths land on the same mode; the kind binding
+// here drives the latter.
+lang_mode!(MarkdownMode, "markdown-mode", target_kind = BufferKind::Help);
 
 /// Resolve a [`Lang`] to its corresponding major-mode id.
 /// `Lang::Plain` returns `None` because `text-mode` (the

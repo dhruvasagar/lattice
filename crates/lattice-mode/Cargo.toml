@@ -42,6 +42,10 @@ lattice-core = { path = "../lattice-core" }
 # every caller crate needs `linkme` as a direct dep -- proc-macro
 # attribute paths can't route through re-exports.
 linkme = { workspace = true }
+# H.2 (2026-05-31): ModeRegistry uses `tracing::warn!` when a
+# second mode claims a BufferKind that's already bound — first
+# registration wins, the duplicate claim is logged for debugging.
+tracing = { workspace = true }
 
 [dev-dependencies]
 # M-async.2: registry tests are `#[tokio::test]` so they can

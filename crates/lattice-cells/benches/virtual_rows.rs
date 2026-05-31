@@ -13,7 +13,7 @@ use std::sync::Arc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use lattice_cells::{
 	AnchorPosition, Cell, CellChunk, CellMatrix, CellRow, MatrixVersion, VirtualRow,
-	VirtualRowMatrix, VirtualRowVersion,
+	VirtualRowKind, VirtualRowMatrix, VirtualRowVersion,
 };
 
 fn build_matrix(lines: u32) -> CellMatrix {
@@ -39,6 +39,7 @@ fn build_virtual_rows(count: u32, source_line_count: u32) -> Vec<VirtualRow> {
 			},
 			cells: Arc::from([] as [Cell; 0]),
 			height: 1,
+			kind: VirtualRowKind::Generic,
 		})
 		.collect()
 }

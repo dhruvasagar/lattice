@@ -12,6 +12,7 @@ use crate::context::ModeContext;
 use crate::contributions::{DecorationProvider, Keymap, Subscription};
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
+use lattice_core::BufferKind;
 
 /// Canonical identity of a mode. Interned-string for `Copy + Eq +
 /// Hash` at zero allocation cost on the hot path.
@@ -135,6 +136,34 @@ pub trait Mode: Send + Sync + 'static {
 
     /// Major / minor.
     fn kind(&self) -> ModeKind;
+
+    /// H.2 (2026-05-31): for major modes, the [`BufferKind`] this
+    /// mode is the default major for. `ModeRegistry::register`
+    /// indexes this so [`ModeRegistry::find_major_for_kind`] can
+    /// dispatch buffer-creation events to the right major without
+    /// host-side `match BufferKind { ... }` blocks.
+    ///
+    /// Returns `None` for:
+    /// - All minor modes.
+    /// - Major modes that don't bind to a [`BufferKind`] directly
+    ///   (e.g. language majors like `rust-mode` / `markdown-mode`
+    ///   on plain Documents — they activate via `Lang` detection
+    ///   on [`BufferKind::Document`], not via kind dispatch).
+    ///
+    /// One [`BufferKind`] is owned by at most one major; the
+    /// registry treats the first registration as authoritative
+    /// and warns on subsequent claims (clobbering is a
+    /// developer bug, not an extensibility seam).
+    ///
+    /// Note: a single major may be referenced by *both* a kind and
+    /// a `Lang` (e.g. `markdown-mode` is the major for
+    /// [`BufferKind::Help`] and also the language major for
+    /// [`BufferKind::Document`] + `Lang::Markdown`). Declaring
+    /// `target_buffer_kind = Some(Help)` does not exclude the
+    /// `Lang`-detected dispatch path — they cohabit.
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        None
+    }
 
     /// Option overrides this mode contributes. Pure declarative
     /// (same return value every call); the registry merges these
@@ -267,6 +296,7 @@ pub trait Mode: Send + Sync + 'static {
 pub trait DynMode: Send + Sync + 'static {
     fn id(&self) -> ModeId;
     fn kind(&self) -> ModeKind;
+    fn target_buffer_kind(&self) -> Option<BufferKind>;
     fn options(&self) -> OptionOverrideSet;
     fn keymap(&self) -> Keymap;
     fn subscriptions(&self) -> Vec<Subscription>;
@@ -294,6 +324,9 @@ impl<M: Mode> DynMode for M {
     }
     fn kind(&self) -> ModeKind {
         <M as Mode>::kind(self)
+    }
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        <M as Mode>::target_buffer_kind(self)
     }
     fn options(&self) -> OptionOverrideSet {
         <M as Mode>::options(self)

@@ -10441,7 +10441,7 @@ impl Editor {
             }
             _ => lattice_syntax::Lang::Plain,
         };
-        let major_id = crate::modes::resolve_major_mode(kind, lang);
+        let major_id = crate::modes::resolve_major_mode(&self.mode_registry, kind, lang);
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         match self.mode_registry.activate_major(

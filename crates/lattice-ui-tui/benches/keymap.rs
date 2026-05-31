@@ -489,6 +489,7 @@ fn translate_ctx<'a>(
             terminal_visual_active: false,
         keymap,
         partial_chord,
+        active_minor_modes: &[],
     }
 }
 

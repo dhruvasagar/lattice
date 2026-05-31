@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use lattice_config::OptionOverrideSet;
-use lattice_core::BufferId;
+use lattice_core::{BufferId, BufferKind};
 use lattice_mode::{
     CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -23,6 +23,11 @@ impl Mode for TerminalMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Major
+    }
+    /// H.2: terminal buffers (`BufferKind::Terminal`) dispatch to
+    /// this major via the registry's kind index.
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::Terminal)
     }
     fn options(&self) -> OptionOverrideSet {
         // Terminal buffers are PTY-backed cell grids, not

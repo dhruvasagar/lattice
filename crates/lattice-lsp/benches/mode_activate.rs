@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use lattice_core::BufferFlags;
+use lattice_core::{BufferFlags, BufferKind};
 use lattice_lsp::completion::register_lsp_completion_mode;
 use lattice_lsp::modes::{LspMode, register_lsp_log_modes};
 use lattice_lsp::{LspLogger, LspSupervisor, LspSupervisorHandle};
@@ -63,8 +63,22 @@ impl BufferStore for NullBufferStore {
     fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
         None
     }
-    fn handle_for(&self, _id: lattice_core::BufferId) -> Option<lattice_runtime::RopeDocumentHandle> {
+    fn handle_for(
+        &self,
+        _id: lattice_core::BufferId,
+    ) -> Option<Arc<dyn lattice_runtime::Document>> {
         None
+    }
+    fn insert_document_buffer(
+        &self,
+        _id: lattice_core::BufferId,
+        _kind: BufferKind,
+        _handle: Arc<dyn lattice_runtime::Document>,
+        _flags: BufferFlags,
+        _name: Option<String>,
+    ) {
+        // Bench's NullBufferStore never has a producer call this
+        // through; satisfy the trait contract with a no-op.
     }
 }
 

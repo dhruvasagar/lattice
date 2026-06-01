@@ -4177,7 +4177,8 @@ architecture §10 for the rationale.
   source-load + per-hit excerpt population, jump-to-source
   keymap, query-refresh chord, bench gate.
 - 🗒 **M.6.1** — Source-load + per-hit excerpt population +
-  jump-to-source keymap (`<CR>`) + query-refresh chord (`r`) +
+  jump-to-source keymap (`<CR>`) + query-refresh chord (`gr` —
+  `r` collides with vim's replace-character operator) +
   `project_search_first_batch_p99_ms` bench (≤ 50ms / 1k-file).
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo

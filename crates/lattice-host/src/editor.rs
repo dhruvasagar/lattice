@@ -68,6 +68,7 @@ use crate::actions::ActionIds;
 use crate::buffer_registry::BufferRegistry;
 use crate::buffers::BufferId;
 use crate::chord::KeyChord;
+use crate::dispatch::RendererSignal;
 use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::pane::PaneTree;
 use crate::versioned::Versioned;
@@ -1356,9 +1357,37 @@ pub struct Editor {
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,
+    /// M.2.b.2 (2026-06-01): `RendererSignal`s accumulated by
+    /// `impl ModeActivator for Editor` calls made through
+    /// extension-crate code paths (`create_multibuffer_view` and
+    /// future provider triggers). The trait surface returns `()`
+    /// — keeping `RendererSignal` out of `lattice-mode` — so
+    /// signals are stashed here until the App's dispatch loop
+    /// drains them via
+    /// [`Editor::drain_pending_renderer_signals`].
+    pub pending_renderer_signals: Vec<RendererSignal>,
 }
 
 impl Editor {
+    /// M.2.b.2 (2026-06-01): drain renderer signals accumulated
+    /// by `impl ModeActivator for Editor` calls — extension-crate
+    /// code (`lattice_multibuffer::create_multibuffer_view`,
+    /// future provider triggers) drives activation through the
+    /// trait surface that returns `()`, so the host loop must
+    /// pull queued signals into the active `DispatchOutcome`
+    /// after the call frame returns.
+    #[must_use]
+    pub fn drain_pending_renderer_signals(&mut self) -> Vec<RendererSignal> {
+        std::mem::take(&mut self.pending_renderer_signals)
+    }
+
+    /// M.2.b.2 (2026-06-01): push a renderer-signal batch onto
+    /// the trait-activator's pending queue. Called by
+    /// [`crate::activator`]'s impl after each cascade returns.
+    pub(crate) fn enqueue_renderer_signals(&mut self, mut signals: Vec<RendererSignal>) {
+        self.pending_renderer_signals.append(&mut signals);
+    }
+
     /// 2026-05-26: register an invocation-runner function under
     /// the mode-id its owning [`lattice_mode::Mode`] declares via
     /// [`lattice_mode::Mode::invocation_runner`]. Called from

@@ -32,6 +32,7 @@
 
 pub mod action;
 pub mod actions;
+pub mod activator;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;

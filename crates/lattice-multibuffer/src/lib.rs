@@ -42,6 +42,16 @@
 //! * **M.5–M.8** — expand-context, provider trait + first
 //!   consumer, fold providers.
 
+pub mod mode;
+pub mod registry;
+pub mod view;
+
+pub use crate::mode::{MultibufferMode, register_multibuffer_modes};
+pub use crate::registry::{
+    InMemoryMultibufferRegistry, MultibufferRegistry, MultibufferRegistryHandle,
+};
+pub use crate::view::create_multibuffer_view;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -199,10 +209,21 @@ impl RowTranslation {
 struct MultibufferInner {
     id: DocumentId,
     buffer_id: BufferId,
-    sources: HashMap<BufferId, Arc<dyn Document>>,
-    excerpts: Vec<Excerpt>,
+    // M.2.b.2 (2026-06-01): sources + excerpts move behind a
+    // Mutex so providers can stream updates asynchronously via
+    // `append_excerpts` / `replace_excerpts` / `add_source` /
+    // `remove_source`. Hot reads (`snapshot`, `row_translation`,
+    // `excerpts`) go through the lock-free `PublishedSnapshot`
+    // cell and the `ArcSwap<RowTranslation>` — the Mutex is
+    // only acquired on mutation + on the recompose seam.
+    state: std::sync::Mutex<MultibufferState>,
     snapshot_cell: Arc<PublishedSnapshot>,
     row_translation: ArcSwap<RowTranslation>,
+}
+
+struct MultibufferState {
+    sources: HashMap<BufferId, Arc<dyn Document>>,
+    excerpts: Vec<Excerpt>,
 }
 
 /// A multibuffer document handle. Composes N source
@@ -215,13 +236,22 @@ pub struct MultibufferDocumentHandle {
 }
 
 impl MultibufferDocumentHandle {
+    /// Construct a multibuffer composing `sources` + `excerpts`.
+    ///
+    /// M.2.b.2 (2026-06-01): empty `sources` + empty `excerpts`
+    /// are valid — async providers (project-search, lsp-references,
+    /// etc.) open an empty view immediately and stream content in
+    /// via [`Self::append_excerpts`] / [`Self::add_source`] as
+    /// their scan progresses. The previous `EmptyExcerpts` error
+    /// was relaxed when the async-provider pattern landed; see
+    /// `multibuffer-views.md` §3.7.
+    ///
+    /// Returns `UnknownSource` if any excerpt references a
+    /// source BufferId not present in `sources`.
     pub fn new(
         sources: HashMap<BufferId, Arc<dyn Document>>,
         excerpts: Vec<Excerpt>,
     ) -> Result<Self, MultibufferError> {
-        if excerpts.is_empty() {
-            return Err(MultibufferError::EmptyExcerpts);
-        }
         for ex in &excerpts {
             if !sources.contains_key(&ex.source) {
                 return Err(MultibufferError::UnknownSource {
@@ -241,47 +271,144 @@ impl MultibufferDocumentHandle {
             inner: Arc::new(MultibufferInner {
                 id,
                 buffer_id,
-                sources,
-                excerpts,
+                state: std::sync::Mutex::new(MultibufferState { sources, excerpts }),
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
             }),
         })
     }
 
+    /// Convenience constructor for the async-provider pattern:
+    /// build an empty view with no sources and no excerpts. The
+    /// provider streams content in via [`Self::append_excerpts`].
+    /// Infallible.
+    pub fn empty() -> Self {
+        Self::new(HashMap::new(), Vec::new())
+            .expect("empty inputs are valid; UnknownSource impossible")
+    }
+
     pub fn buffer_id(&self) -> BufferId {
         self.inner.buffer_id
+    }
+
+    /// M.2.b.2 (2026-06-01): the multibuffer's `DocumentId`, used
+    /// by the cleanup subscriber to match an `Event::DocumentClosed`
+    /// payload (which carries `DocumentId`, not `BufferId`) back
+    /// to a registry entry keyed by `BufferId`.
+    pub fn document_id(&self) -> DocumentId {
+        self.inner.id
     }
 
     pub fn row_translation(&self) -> Arc<RowTranslation> {
         self.inner.row_translation.load_full()
     }
 
-    pub fn excerpts(&self) -> &[Excerpt] {
-        &self.inner.excerpts
+    /// Snapshot the current excerpt list. M.2.b.2 (2026-06-01):
+    /// returns an owned `Vec` clone because excerpts now live
+    /// behind a Mutex (async providers mutate); callers that
+    /// need a borrow held across `await` points or across
+    /// concurrent mutations get a deterministic copy instead.
+    pub fn excerpts(&self) -> Vec<Excerpt> {
+        self.lock_state().excerpts.clone()
     }
 
-    pub fn source_buffer_ids(&self) -> impl Iterator<Item = BufferId> + '_ {
-        self.inner.sources.keys().copied()
+    /// Count of currently-registered excerpts. Cheap probe that
+    /// avoids the `Vec` clone of [`Self::excerpts`].
+    pub fn excerpt_count(&self) -> usize {
+        self.lock_state().excerpts.len()
+    }
+
+    pub fn source_buffer_ids(&self) -> Vec<BufferId> {
+        self.lock_state().sources.keys().copied().collect()
+    }
+
+    /// M.2.b.2 (2026-06-01): append excerpts to the end of the
+    /// view. Used by async providers streaming batches of
+    /// results (project-search, lsp-references, etc.). Any
+    /// excerpts whose source isn't present are silently
+    /// skipped (log + drop). Recomposes + publishes after the
+    /// mutation.
+    pub fn append_excerpts(&self, excerpts: Vec<Excerpt>) {
+        if excerpts.is_empty() {
+            return;
+        }
+        let mut state = self.lock_state();
+        for ex in excerpts {
+            if !state.sources.contains_key(&ex.source) {
+                // Silently drop — the provider is responsible
+                // for adding the source first via `add_source`
+                // if it's a new file. M.6 SearchProvider does
+                // this in its scan task.
+                continue;
+            }
+            state.excerpts.push(ex);
+        }
+        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let translation = RowTranslation::build(&state.excerpts);
+        drop(state);
+        self.inner.snapshot_cell.store(snapshot);
+        self.inner.row_translation.store(Arc::new(translation));
+    }
+
+    /// M.2.b.2 (2026-06-01): replace the entire excerpt list +
+    /// source map atomically. Used by providers reacting to a
+    /// query / filter change (e.g. user refines a search). The
+    /// previous excerpts are dropped; the new set is composed
+    /// + published in one mutation.
+    pub fn replace_excerpts(
+        &self,
+        sources: HashMap<BufferId, Arc<dyn Document>>,
+        excerpts: Vec<Excerpt>,
+    ) {
+        for ex in &excerpts {
+            if !sources.contains_key(&ex.source) {
+                // Same skip-and-continue behaviour as append.
+                // Provider's responsibility to keep sources
+                // map coherent with excerpts.
+            }
+        }
+        let mut state = self.lock_state();
+        state.sources = sources;
+        state.excerpts = excerpts;
+        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let translation = RowTranslation::build(&state.excerpts);
+        drop(state);
+        self.inner.snapshot_cell.store(snapshot);
+        self.inner.row_translation.store(Arc::new(translation));
+    }
+
+    /// M.2.b.2 (2026-06-01): add a source buffer to the view's
+    /// source map. Subsequent `append_excerpts` calls can
+    /// reference it. Idempotent: re-adding an existing source
+    /// updates the handle reference (which may have been
+    /// replaced via slot-replacement upstream).
+    pub fn add_source(&self, id: BufferId, source: Arc<dyn Document>) {
+        let mut state = self.lock_state();
+        state.sources.insert(id, source);
     }
 
     /// Recompose the snapshot from current source state.
     /// Rebuilds the composed buffer + row translation, then
     /// publishes via `ArcSwap::store`.
     ///
-    /// M.1 ships this as a manual API; M.4 wires automatic
-    /// invocation via source-edit event subscriptions.
+    /// M.1 shipped this as a manual API; M.4 wires automatic
+    /// invocation via source-edit event subscriptions. M.2.b.2
+    /// kept the public surface stable but rerouted reads through
+    /// the Mutex.
     pub fn recompose(&self) {
-        let new_snapshot = compose_snapshot(
-            self.inner.id,
-            &self.inner.sources,
-            &self.inner.excerpts,
-        );
-        let new_translation = RowTranslation::build(&self.inner.excerpts);
+        let state = self.lock_state();
+        let new_snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let new_translation = RowTranslation::build(&state.excerpts);
+        drop(state);
         self.inner.snapshot_cell.store(new_snapshot);
+        self.inner.row_translation.store(Arc::new(new_translation));
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, MultibufferState> {
         self.inner
-            .row_translation
-            .store(Arc::new(new_translation));
+            .state
+            .lock()
+            .expect("MultibufferInner state mutex poisoned")
     }
 }
 
@@ -334,19 +461,22 @@ impl Document for MultibufferDocumentHandle {
 
 impl std::fmt::Debug for MultibufferDocumentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.lock_state();
         f.debug_struct("MultibufferDocumentHandle")
             .field("id", &self.inner.id)
             .field("buffer_id", &self.inner.buffer_id)
-            .field("sources", &self.inner.sources.len())
-            .field("excerpts", &self.inner.excerpts.len())
+            .field("sources", &state.sources.len())
+            .field("excerpts", &state.excerpts.len())
             .finish()
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultibufferError {
-    #[error("multibuffer must have at least one excerpt")]
-    EmptyExcerpts,
+    /// An excerpt referenced a `source` BufferId not present in
+    /// the sources map. M.2.b.2 (2026-06-01) relaxed
+    /// `EmptyExcerpts` (the async-provider pattern needs empty
+    /// views).
     #[error("excerpt {excerpt:?} references unknown source buffer {source_buffer:?}")]
     UnknownSource {
         excerpt: ExcerptId,
@@ -391,7 +521,7 @@ impl VirtualRowProvider for MultibufferHeaderProvider {
     }
 
     fn collect(&self) -> Vec<VirtualRow> {
-        compose_header_rows(self.multibuffer.excerpts(), default_header_cells)
+        compose_header_rows(&self.multibuffer.excerpts(), default_header_cells)
     }
 }
 
@@ -552,10 +682,61 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn empty_excerpts_returns_error() {
+    async fn empty_excerpts_is_valid_for_async_providers() {
+        // M.2.b.2 (2026-06-01): empty inputs are valid. Async
+        // providers open an empty view and stream excerpts in
+        // as their scan progresses.
+        let mb = MultibufferDocumentHandle::empty();
+        assert_eq!(mb.excerpt_count(), 0);
+        assert_eq!(mb.snapshot().buffer.as_string(), "");
         let (sources, _ids) = make_sources(&["x"]);
-        let err = MultibufferDocumentHandle::new(sources, Vec::new()).unwrap_err();
-        assert!(matches!(err, MultibufferError::EmptyExcerpts));
+        let mb = MultibufferDocumentHandle::new(sources, Vec::new()).unwrap();
+        assert_eq!(mb.excerpt_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_excerpts_extends_the_view() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let mb = MultibufferDocumentHandle::new(sources.clone(), Vec::new()).unwrap();
+        assert_eq!(mb.excerpt_count(), 0);
+
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 0, 0)]);
+        assert_eq!(mb.excerpt_count(), 1);
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\n");
+
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 2, 2)]);
+        assert_eq!(mb.excerpt_count(), 2);
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\ngamma\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_excerpts_drops_unknown_source_silently() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
+        let mb = MultibufferDocumentHandle::new(sources, Vec::new()).unwrap();
+        let bogus = BufferId(0xDEAD_BEEF);
+        mb.append_excerpts(vec![
+            Excerpt::new(ids[0], 0, 0),
+            Excerpt::new(bogus, 0, 0),
+        ]);
+        assert_eq!(
+            mb.excerpt_count(),
+            1,
+            "unknown-source excerpt should be silently dropped",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replace_excerpts_swaps_atomically() {
+        let (sources_a, ids_a) = make_sources(&["a-1\na-2\n"]);
+        let excerpts_a = vec![Excerpt::new(ids_a[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources_a, excerpts_a).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "a-1\n");
+
+        let (sources_b, ids_b) = make_sources(&["b-1\nb-2\n"]);
+        let excerpts_b = vec![Excerpt::new(ids_b[0], 1, 1)];
+        mb.replace_excerpts(sources_b, excerpts_b);
+        assert_eq!(mb.snapshot().buffer.as_string(), "b-2\n");
+        assert_eq!(mb.excerpt_count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -246,6 +246,15 @@ impl Editor {
         let snippet_registry_handle: Arc<ArcSwap<SnippetRegistry>> =
             Arc::new(ArcSwap::from_pointee(SnippetRegistry::new()));
 
+        // M.2.b.2 (2026-06-01): build the multibuffer registry
+        // handle before the mode registry so
+        // `register_multibuffer_modes` can capture a clone for
+        // its `DocumentClosed` cleanup subscriber AND the
+        // services block below can register the same Arc'd
+        // handle for provider lookups.
+        let multibuffer_registry_handle: lattice_multibuffer::MultibufferRegistryHandle =
+            lattice_multibuffer::InMemoryMultibufferRegistry::handle();
+
         // M.5.1 (mode-architecture §9.6.1): build the mode
         // registry first so we can iterate it and register a
         // `:<mode-name>` toggle ex-command per mode. The mode
@@ -266,6 +275,14 @@ impl Editor {
             // (ReadOnly + NoFile) apply to Terminal buffers.
             lattice_terminal::register_terminal_modes(&mut mr);
             crate::modes::register_buffer_kind_modes(&mut mr);
+            // M.2.b.2 (2026-06-01): register `multibuffer-mode`
+            // + wire its `DocumentClosed` cleanup subscriber. The
+            // mode is H.2 kind-bound to `BufferKind::Multibuffer`.
+            lattice_multibuffer::register_multibuffer_modes(
+                &mut mr,
+                &event_bus,
+                multibuffer_registry_handle.clone(),
+            );
             // D.5.a (2026-05-30): `diff-mode` minor — marker bit
             // consulted by K.1.c per-keystroke lookup so D.5.b/c
             // `do`/`dp` chords gate on per-buffer diff
@@ -821,6 +838,12 @@ impl Editor {
                 let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
                 s.register(lattice_mode::BufferStoreHandle::new(store));
                 s.register(lsp_logger.clone());
+                // M.2.b.2 (2026-06-01): expose the typed
+                // multibuffer-handle lookup so providers
+                // (`create_multibuffer_view`, future M.6
+                // `:search` minor) reach it via
+                // `services().get::<MultibufferRegistryHandle>()`.
+                s.register(multibuffer_registry_handle.clone());
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

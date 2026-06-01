@@ -52,6 +52,7 @@
 //! (see `mode-architecture.md` §6.3 / §9.3 for why the split).
 
 pub mod active;
+pub mod activator;
 pub mod buffer_store;
 pub mod capability;
 pub mod context;
@@ -66,6 +67,7 @@ pub mod registry;
 pub mod services;
 
 pub use crate::active::ActiveModes;
+pub use crate::activator::ModeActivator;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;

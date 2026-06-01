@@ -3547,6 +3547,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "lattice-cells",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-mode",
@@ -3554,6 +3555,7 @@ dependencies = [
  "lattice-runtime",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

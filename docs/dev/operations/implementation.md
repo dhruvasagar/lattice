@@ -3986,7 +3986,7 @@ diagnostics-as-buffer with one implementation.
     seam without event-bus indirection. See
     [`multibuffer-views.md`](../architecture/multibuffer-views.md)
     §3.7 for the full design + worked SearchProvider example.
-  - 🗒 **M.2.b.2** (locked 2026-06-01, ready to land) —
+  - ✅ **M.2.b.2** (landed 2026-06-01, commit `501bb41`) —
     Five abstractions per architecture §3.7: (1)
     `ModeActivator` trait in `lattice-mode` + `impl ModeActivator
     for Editor` in `lattice-host`. (2) `MultibufferMode`
@@ -4007,14 +4007,27 @@ diagnostics-as-buffer with one implementation.
     gains one boot-time call; zero `match BufferKind::Multibuffer`
     arms. Tests cover round-trip, cleanup, stub-provider
     handle reach.
-  - 🗒 **M.2.b.3** — `]e` / `[e` / `]E` / `[E` motions
-    registered through `lattice-grammar`; bound in
-    `MultibufferMode::keymap()`. Lives in
-    `lattice-multibuffer/src/motions.rs`. Handlers compute
-    target row from current row + excerpt geometry pulled
-    via `MultibufferRegistry::handle(buffer_id)`.
-  - 🗒 **M.2.c** — `multibuffer_render_p99_us` bench gating
-    ≤ 200µs at 50 visible excerpts.
+  - ✅ **M.2.b.3** (landed 2026-06-01, commit `3274214`) —
+    `]e` / `[e` / `]E` / `[E` motions registered through
+    `lattice-grammar`; bound in the multibuffer-mode keymap
+    layer via `lattice-host::multibuffer_keymap`. Pure
+    helpers (`excerpt_start_rows`, `containing_excerpt_index`,
+    `next_excerpt_start_row`, `prev_excerpt_start_row`,
+    `file_boundary_indices`, `next_file_boundary_row`,
+    `prev_file_boundary_row`) carry the geometry logic.
+    File-boundary semantic: `]E` / `[E` jump to the FIRST
+    excerpt of the next / prev file group. Counts compose
+    (`3]e`). 8 unit tests; workspace tests green.
+  - ✅ **M.2.c** (landed 2026-06-01, commit `7a7793b`) —
+    motion + compose + translation-rebuild benches in
+    `crates/lattice-multibuffer/benches/`. Two bench files
+    (`multibuffer_motion.rs`, `multibuffer_compose.rs`).
+    `--quick` smoke: `]e` / `[e` at 50 excerpts ~80 ns; at
+    5k ~8 µs. `]E` / `[E` at 50 excerpts ~120 ns; at 5k
+    ~12 µs — all 600× under the 8 ms 120 Hz frame budget.
+    Compose / translation rebuild gates per arch §7 carry
+    over; baseline numbers land on the next regression
+    sweep. See `benchmarks.md` ## M.2.c section.
 
 ## kind-agnostic buffer + mode infrastructure (H-series, closed 2026-06-01)
 

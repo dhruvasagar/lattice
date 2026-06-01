@@ -598,6 +598,32 @@ mod tests {
     }
 
     #[test]
+    fn describe_key_resolved_binding_uses_friendly_layer_label() {
+        // K.2.4.A.2: layer label in the resolved section
+        // renders as `Built-in` (friendly) rather than
+        // `Builtin` (debug). The runtime-registry section
+        // (K.1.d, retiring in K.2.4.A.4) also uses friendly
+        // labels, so this assertion holds against the whole
+        // body.
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key j".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(
+            body.contains("layer: Built-in"),
+            "expected friendly `layer: Built-in` label: {body}"
+        );
+        // Friendly form is `Built-in` (with hyphen); the
+        // raw debug form is `Builtin` (no hyphen). Assert the
+        // debug form does NOT appear standalone.
+        assert!(
+            !body.contains("layer: Builtin\n") && !body.contains("layer: Builtin "),
+            "debug-format `Builtin` should not appear: {body}"
+        );
+    }
+
+    #[test]
     fn describe_key_resolved_binding_falls_back_to_unbound_message() {
         // Chord parses fine but doesn't bind in any of the
         // four common binding-modes. The section still emits

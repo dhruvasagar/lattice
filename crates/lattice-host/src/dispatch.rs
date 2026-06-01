@@ -21378,6 +21378,33 @@ impl Editor {
             .with_markdown_syntax(self.lang_registry.clone())
     }
 
+    /// K.2.4.A.2 (2026-06-02): friendly label for a
+    /// [`crate::keymap_trie::KeymapLayer`].
+    ///
+    /// Replaces `{:?}` debug formatting in both the
+    /// resolved-binding section (K.2.4.A.1) and the
+    /// runtime-registry section (K.1.d). Output:
+    ///
+    /// - `Builtin` → `"Built-in"`
+    /// - `MajorMode` → `"Major mode"`
+    /// - `MinorMode(mode_id)` → `"Minor: <mode_id>"`
+    ///   (e.g. `"Minor: diff-mode"`). `ModeId` has a `Display`
+    ///   impl that yields the canonical name without any
+    ///   wrapping debug brackets.
+    /// - `User` → `"User config"`
+    /// - `Buffer` → `"Buffer-local"`
+    fn friendly_layer_label(layer: crate::keymap_trie::KeymapLayer) -> String {
+        match layer {
+            crate::keymap_trie::KeymapLayer::Builtin => "Built-in".to_string(),
+            crate::keymap_trie::KeymapLayer::MajorMode => "Major mode".to_string(),
+            crate::keymap_trie::KeymapLayer::MinorMode(mode_id) => {
+                format!("Minor: {mode_id}")
+            }
+            crate::keymap_trie::KeymapLayer::User => "User config".to_string(),
+            crate::keymap_trie::KeymapLayer::Buffer => "Buffer-local".to_string(),
+        }
+    }
+
     /// K.2.4.A.1 (2026-06-02): write the "Resolved binding
     /// (under current active modes)" section into `lines`.
     ///
@@ -21395,10 +21422,11 @@ impl Editor {
     /// hit IS the dispatch outcome — no manual layer
     /// reconciliation the reader has to do.
     ///
-    /// Layer + source rendered via `{:?}` debug formatting
-    /// for now; K.2.4.A.2 swaps `layer:?` for friendly labels
-    /// (`Built-in` / `Major: rust-mode` / `Minor: diff-mode`
-    /// / …), and K.2.4.A.3 swaps `source:?` for
+    /// Layer is rendered via [`Self::friendly_layer_label`]
+    /// (K.2.4.A.2) — `Built-in` / `Major mode` /
+    /// `Minor: <mode_id>` / `User config` / `Buffer-local`.
+    /// Source is still `{:?}` debug-formatted for now;
+    /// K.2.4.A.3 swaps it for
     /// [`lattice_grammar::SourceLocation::as_link`] so the
     /// file:line becomes a clickable help-buffer link.
     ///
@@ -21459,7 +21487,7 @@ impl Editor {
             lines.push(String::new());
             lines.push(format!("  [{mode_label} mode]"));
             lines.push(format!("    → {cmd_name}"));
-            lines.push(format!("    layer: {:?}", bound.layer));
+            lines.push(format!("    layer: {}", Self::friendly_layer_label(bound.layer)));
             lines.push(format!("    source: {:?}", bound.source));
         }
 
@@ -21534,8 +21562,16 @@ impl Editor {
                     }
                     _ => "",
                 };
+                // K.2.4.A.2 (2026-06-02): friendly layer
+                // label replaces `{layer:?}` debug. The
+                // CommandId still renders as `{:?}` here
+                // because K.2.4.A.4 retires this section
+                // entirely as part of the catalog/registry
+                // unification — no point name-resolving when
+                // the section is going away.
                 lines.push(format!(
-                    "    {layer:?} → {:?}{active_marker}",
+                    "    {} → {:?}{active_marker}",
+                    Self::friendly_layer_label(layer),
                     bound.command.command,
                 ));
                 lines.push(format!("      source: {:?}", bound.source));

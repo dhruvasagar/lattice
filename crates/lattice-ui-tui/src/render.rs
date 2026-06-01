@@ -2705,9 +2705,22 @@ fn draw_inactive_document(
     //     and the per-row partition matches the legacy shape).
     //  3. Empty otherwise -- plain text, no syntax. Acceptable
     //     for the rare same-doc-different-scroll case.
+    // K.4.3 (2026-06-01): include document-backed kinds
+    // (Document / Messages / Multibuffer) per
+    // `feedback_buffers_no_special_case`. After
+    // `activate_buffer` routes the latter two through
+    // `activate_document`, `app.ad().document_buffer_id` IS
+    // their live document id, so the syntax-cell fallback
+    // below (`active_doc_id == Some(pane.buffer_id)`) should
+    // resolve for them too. Pre-K.4.3 this matcher was
+    // `Document`-only, so multibuffer / messages panes hit
+    // the empty-highlights branch and rendered without
+    // tree-sitter styling.
     let active_doc_id = if matches!(
         app.ad().buffer_kind,
         crate::buffers::BufferKind::Document
+            | crate::buffers::BufferKind::Messages
+            | crate::buffers::BufferKind::Multibuffer
     ) {
         Some(app.ad().document_buffer_id)
     } else {

@@ -8537,8 +8537,25 @@ impl Editor {
     ) -> Arc<[crate::render_state::PaneCellsInputs]> {
         use crate::render_state::PaneCellsInputs;
         let foldenable = self.foldenable();
-        let active_doc_active =
-            matches!(self.active_buffer, lattice_core::BufferKind::Document);
+        // K.4.2 (2026-06-01): the cells pipeline serves every
+        // document-backed buffer kind, not just `Document`. After
+        // `activate_buffer` routes Messages / Multibuffer
+        // through `activate_document` (`dispatch.rs:21907`),
+        // `self.document` / `self.document_buffer_id` / `self.folds`
+        // are live for all three kinds, so the "is the active
+        // buffer the kind whose `self.document` is the source of
+        // truth?" check must include them. Pre-K.4.2 this matcher
+        // was `Document`-only, so multibuffer panes never received
+        // a `PaneCellsInputs` entry from the loop below and the
+        // cells worker had nothing to recompute — motions updated
+        // `self.cursor` but no rendered output reflected them.
+        // Aligned with `feedback_buffers_no_special_case`.
+        let active_doc_active = matches!(
+            self.active_buffer,
+            lattice_core::BufferKind::Document
+                | lattice_core::BufferKind::Messages
+                | lattice_core::BufferKind::Multibuffer
+        );
         let active_buffer_id = self.document_buffer_id;
         let active_pane_id = self.pane_tree.active().id;
         let theme_hash: u64 = {
@@ -8563,7 +8580,21 @@ impl Editor {
         let mut entries: Vec<PaneCellsInputs> =
             Vec::with_capacity(self.pane_tree.leaves().len());
         for leaf in self.pane_tree.leaves() {
-            if !matches!(leaf.buffer, lattice_core::BufferKind::Document) {
+            // K.4.2 (2026-06-01): include document-backed kinds
+            // (Document / Messages / Multibuffer) — see the
+            // matching comment on `active_doc_active` above for
+            // the rationale. The pipeline reads through
+            // `buffers.document_handle(buffer_id)` below, which
+            // returns `Some` for any of these three kinds via the
+            // post-K.4 `contains_document` predicate. Help / Oil
+            // / FileTree / Terminal have their own render paths
+            // and remain excluded here.
+            if !matches!(
+                leaf.buffer,
+                lattice_core::BufferKind::Document
+                    | lattice_core::BufferKind::Messages
+                    | lattice_core::BufferKind::Multibuffer
+            ) {
                 continue;
             }
             let buffer_id = leaf.buffer_id;
@@ -11192,6 +11223,50 @@ impl Editor {
         &self,
         invocation: lattice_grammar::CommandInvocation,
     ) -> Result<lattice_grammar::Effect, lattice_runtime::RuntimeError> {
+        // K.4.4 (2026-06-01): Multibuffer has no own actor —
+        // its composed document is a virtual read-only view
+        // over N source handles. `MultibufferDocumentHandle::
+        // dispatch_with_cancel` returns `ReadOnly` with a
+        // design comment that says "grammar dispatch runs at
+        // the host layer against the composed snapshot." That
+        // host-layer work was never wired; pre-K.4.4 every
+        // motion / operator on a multibuffer view bounced
+        // with `ReadOnly` and the cursor didn't move.
+        //
+        // Wire it now: run `lattice_grammar::execute` against
+        // a scratch `lattice_core::Document` built from the
+        // composed snapshot. Motions return a cursor Effect
+        // (no edits) and flow through `apply_effect_host` as
+        // for any document. Operators (`d` / `c` / `y` / `>>`
+        // / ...) return an `Effect::Edits` in composed
+        // coordinates; the existing `apply_edit_blocking`
+        // path routes those through the multibuffer's
+        // `apply_edit`, which translates to source coordinates
+        // and forwards to the underlying source document
+        // (M.3).
+        //
+        // Contained kind branch — the only one in
+        // `dispatch_blocking`. The architectural follow-up
+        // (implement `dispatch_with_cancel` properly on
+        // `MultibufferDocumentHandle` once `CommandRegistry`
+        // threads through `create_multibuffer_view`) is
+        // tracked as a K.4 follow-up. See
+        // `multibuffer-is-a-regular-buffer.md` §2.8 + slice
+        // plan K.4.4.
+        if matches!(self.active_buffer, BufferKind::Multibuffer) {
+            let snapshot = self.document.snapshot();
+            let composed: String = snapshot.buffer.as_string();
+            let mut scratch = lattice_core::Document::from_text(&composed);
+            return lattice_grammar::execute(
+                &self.registry,
+                &mut scratch,
+                self.document_buffer_id,
+                self.cursor,
+                invocation,
+                &lattice_protocol::CancellationToken::never(),
+            )
+            .map_err(lattice_runtime::RuntimeError::Grammar);
+        }
         lattice_runtime::block_on(self.document.dispatch_with_cancel(
             invocation,
             self.cursor,

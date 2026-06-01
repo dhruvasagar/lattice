@@ -4239,6 +4239,28 @@ architecture §10 for the rationale.
   the view). Host's `:search <query>` ex-command thin-wraps
   the trigger. Bench: `project_search_first_batch_p99_ms` ≤
   50ms at 1k-file corpus.
+- 🗒 **M.6.4** — wgrep-style edit-results follow-up. Drop
+  `ReadOnly = true` from `ProjectSearchMultibufferMode::options()`,
+  open sources through `BufferRegistry`, hook `:w` to save
+  source files. Tracked alongside M.6 because it's the user-
+  facing completeness of the search provider (see
+  `multibuffer-views.md` §3.7). Paused until **K.2** lands —
+  source-write plumbing touches the same translation layer
+  that K.2 reshapes.
+- 🗒 **K.2** — Keymap substrate (mode-owned bindings). Closes
+  the `lattice-mode::Keymap` stub
+  (`crates/lattice-mode/src/contributions.rs:19`, TODO since
+  mode-system design) so `Mode::keymap()` is real and modes
+  contribute bindings from their own crate. Sub-slices:
+  K.2.1 chord primitives → `lattice-protocol`; K.2.2
+  `BindingMode` → `lattice-mode`; K.2.3 real `Keymap` type +
+  `lattice-grammar` dep on `lattice-mode`; K.2.4 boot-path
+  translation pass walking `ModeRegistry`; K.2.5 migrate
+  multibuffer + project-search bindings out of host (delete
+  `crates/lattice-host/src/multibuffer_keymap.rs`); K.2.6
+  docs; K.2.7 unblock MO.1–MO.4. Pauses M.6.4+. Design at
+  [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
+  §11; sequencing at [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
 - 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
   into the existing fold registry. **No new keymaps** — the

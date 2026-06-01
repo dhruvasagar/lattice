@@ -1128,8 +1128,113 @@ type-hoisting decisions, and the sub-slice plan.
   trie; it does not affect the literal-chord lookup path. Bench
   on slice 8.b confirms.
 
+## 11. Mode-owned keymap contributions (substrate gap)
+
+Sections 5.2--5.3 describe major / minor mode bindings as
+"host registers when a major mode activates" / "pushed when a
+minor activates." The *registration* path was specified; the
+*declaration* path -- how a `Mode` impl in another crate
+expresses what its bindings are -- was never wired. The
+`lattice-mode::contributions::Keymap` stub
+(`crates/lattice-mode/src/contributions.rs`) currently carries
+a `_private: ()` field with a TODO comment: *"the placeholder
+lets modes declare intent to contribute a keymap layer without
+forcing `lattice-mode` to depend on `lattice-grammar`."*
+
+Until this gap closes, every mode that ships bindings ends up
+registering them in `lattice-host` via a hand-rolled
+`<mode>_keymap.rs` (`multibuffer_keymap.rs`, the LSP /
+Oil / Snippet bindings under `KeymapLayer::Builtin`). This
+contradicts the mode-ownership convention
+(`feedback_mode_owns_its_surface`) and blocks the MO.1--MO.4
+cleanup slices.
+
+### 11.1 Substrate placement
+
+The chord-substrate moves down the dependency graph so modes
+in any crate can construct bindings:
+
+| Type | Today (host-owned) | Target crate | Why |
+|---|---|---|---|
+| `KeyChord`, `KeyKind`, `KeyMods`, `ChordPattern` | `lattice-host::chord` | `lattice-protocol` | Renderer-neutral wire data; same shape class as `BufferId` / `Position` / `Selection`. Renderers produce them, dispatchers consume them. |
+| `BindingMode` | `lattice-host::keymap` | `lattice-mode` | Vim-modal-state enum; semantically part of the mode subsystem. |
+| `Keymap` contribution type | stub in `lattice-mode::contributions` | `lattice-mode` (real) | Returned by `Mode::keymap()`. |
+| `KeymapTrie`, `KeymapLayer`, `BoundCommand` | `lattice-host::keymap_trie` | stay in host | Matcher engine + layer resolution; implementation detail of the lookup hot path. |
+
+`lattice-runtime` was considered and rejected: it owns async
+substrate (EventBus, Document spawning, snapshots), and chord
+primitives have no runtime characteristics. Coupling them
+into runtime would be by accident, not by meaning.
+
+Adding `lattice-grammar` as a `lattice-mode` dep is permitted:
+`lattice-grammar` does not depend on `lattice-mode`, so no
+cycle. The previously-cited reason for the stub deferral is
+resolved by accepting the dep.
+
+### 11.2 The real `Keymap` contribution type
+
+```rust
+// crates/lattice-mode/src/contributions.rs
+pub struct Keymap {
+	pub bindings: Vec<KeymapBinding>,
+}
+
+pub struct KeymapBinding {
+	pub mode: BindingMode,
+	pub chords: Vec<ChordPattern>,
+	pub command: CommandInvocation,
+	pub source: SourceLocation,
+}
+```
+
+Modes return `Keymap` from `Mode::keymap()`. The contribution
+is *declarative* -- same value returned every call -- so the
+host can ask once at registration time and cache the result.
+Layer is implicit: every binding contributed by `Mode X` lives
+at `KeymapLayer::MinorMode(x.id())` (which covers both majors
+and minors per K.1.b convention).
+
+### 11.3 Host translation
+
+Host gains one new pass in the boot path (and on every
+dynamic `ModeRegistry::register` after boot):
+
+```rust
+for mode in mode_registry.iter() {
+	let layer = KeymapLayer::MinorMode(mode.id());
+	for binding in mode.keymap().bindings {
+		let bound = BoundCommand::from_invocation(
+			binding.command,
+			binding.source,
+			layer,
+		);
+		host_keymap.trie_for(binding.mode).insert(&binding.chords, Arc::new(bound));
+	}
+}
+```
+
+The existing `KeymapTrie::insert` is the only matcher touch
+point; the K.2 work is plumbing *to* it, not changing it.
+
+### 11.4 Effect on §2's five-layer model
+
+No change to the layer model. Mode-contributed bindings still
+land at layer 2 (major) / layer 3 (minor). The substrate
+moves *who builds them* (host today → owning mode crate
+tomorrow); resolution is unchanged.
+
+### 11.5 Migration sequencing
+
+See [slice plan: keymap-substrate](../operations/slice-plans/keymap-substrate.md)
+for the K.2.1--K.2.7 carving. The K.2 substrate unblocks the
+MO.1--MO.4 cleanup slices (LSP, Oil, Snippet bindings move
+out of host) and the `multibuffer_keymap.rs` deletion that
+M.6 left in host as known debt.
+
 ## See also
 
+- [slice plan: keymap-substrate](../operations/slice-plans/keymap-substrate.md) -- K.2 sequencing.
+- [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.
 - [design.md §5.2.3](design.md) -- canonical spec.
 - [design.md §5.2.4](design.md) -- extensibility (matches §5.5
   here).

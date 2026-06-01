@@ -4214,9 +4214,18 @@ architecture §10 for the rationale.
   0))))` so the cursor lands at the matched line.
   Per-view scoping: same path in two different views is not
   shared. 1 new unit test;  workspace tests green.
-- 🗒 **M.6.3** — Regex matching. Replace literal-matcher
-  with `grep-matcher` + `aho-corasick`. Configurable via
-  `ProjectSearchOptions::regex`. Default stays literal.
+- ✅ **M.6.3** (landed 2026-06-01) — Regex matching. New
+  `ProjectSearchOptions::regex: bool` (default `false`).
+  `Matcher` enum (`Literal { needle, case_sensitive }` /
+  `Regex(fancy_regex::Regex)`) compiled once per scan via
+  `build_matcher`. Case-insensitivity layered by injecting
+  `(?i)` into the regex pattern. Invalid regex → `SearchStatus::Failed`
+  + early `ProjectSearchCompleted` with zero counts. Chose
+  `fancy-regex` (workspace-uniform) over `grep-matcher` +
+  `aho-corasick` (rg-style; overkill for the per-line model).
+  4 new tests cover case-sensitive + case-insensitive regex
+  + alternation + invalid-pattern rejection. Literal-mode
+  tests retained. Workspace tests green.
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo
   feature pulling `ignore` / `grep-matcher` / `aho-corasick`.

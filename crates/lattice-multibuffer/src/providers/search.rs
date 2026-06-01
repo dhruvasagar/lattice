@@ -51,8 +51,7 @@ pub struct ProjectSearchOptions {
     /// Project root the scan walks. Defaults to CWD when the
     /// trigger function isn't given an explicit one.
     pub root: PathBuf,
-    /// Whether matches are case-sensitive. M.6.0 is literal
-    /// substring; M.6.1 adds regex.
+    /// Whether matches are case-sensitive.
     pub case_sensitive: bool,
     /// Cap on the number of files scanned. `None` = unlimited
     /// (defaults to large; the scan respects `.gitignore`).
@@ -61,6 +60,12 @@ pub struct ProjectSearchOptions {
     /// hit-limit; prevents one huge file from monopolising the
     /// batch budget).
     pub max_hits_per_file: usize,
+    /// M.6.3 (2026-06-01): interpret `query` as a `fancy-regex`
+    /// pattern instead of a literal substring. `false` (default)
+    /// keeps the M.6.0 literal-match path for back-compat.
+    /// Case-sensitivity layered on via an injected `(?i)` flag
+    /// when `case_sensitive == false`.
+    pub regex: bool,
 }
 
 impl Default for ProjectSearchOptions {
@@ -70,6 +75,7 @@ impl Default for ProjectSearchOptions {
             case_sensitive: false,
             max_files: None,
             max_hits_per_file: 100,
+            regex: false,
         }
     }
 }
@@ -567,10 +573,29 @@ async fn run_scan(
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
 ) {
-    let needle = if options.case_sensitive {
-        query.clone()
-    } else {
-        query.to_lowercase()
+    // M.6.3: compile the matcher up-front. Literal mode stores
+    // the (possibly lowercased) needle; regex mode compiles a
+    // `fancy-regex::Regex` with case-sensitivity baked into the
+    // pattern via an injected `(?i)` flag. Bad regex aborts the
+    // scan early with `SearchStatus::Failed` so the headerline
+    // surfaces the error.
+    let matcher = match build_matcher(&query, &options) {
+        Ok(m) => m,
+        Err(e) => {
+            service.set_status(
+                view,
+                SearchStatus::Failed {
+                    reason: e.clone(),
+                },
+            );
+            events.publish_typed(ProjectSearchCompleted {
+                view,
+                total_hits: 0,
+                files_scanned: 0,
+            });
+            tracing::warn!(error = %e, "project-search: failed to compile matcher");
+            return;
+        }
     };
 
     let mut walker = ignore::Walk::new(&options.root);
@@ -590,7 +615,7 @@ async fn run_scan(
             break;
         }
         let path = entry.into_path();
-        let hits = scan_file(&path, &needle, options.case_sensitive, options.max_hits_per_file);
+        let hits = scan_file(&path, &matcher, options.max_hits_per_file);
         files_scanned += 1;
 
         if !hits.is_empty() {
@@ -625,18 +650,67 @@ async fn run_scan(
     });
 }
 
-fn scan_file(path: &Path, needle: &str, case_sensitive: bool, max_hits: usize) -> Vec<u32> {
+/// M.6.3 (2026-06-01): compiled matcher. Literal mode stores the
+/// (possibly lowercased) needle; regex mode wraps a compiled
+/// `fancy-regex::Regex`.
+#[derive(Debug)]
+enum Matcher {
+    Literal {
+        needle: String,
+        case_sensitive: bool,
+    },
+    Regex(fancy_regex::Regex),
+}
+
+impl Matcher {
+    fn line_matches(&self, line: &str) -> bool {
+        match self {
+            Matcher::Literal {
+                needle,
+                case_sensitive: true,
+            } => line.contains(needle.as_str()),
+            Matcher::Literal {
+                needle,
+                case_sensitive: false,
+            } => line.to_lowercase().contains(needle.as_str()),
+            Matcher::Regex(re) => re.is_match(line).unwrap_or(false),
+        }
+    }
+}
+
+fn build_matcher(query: &str, options: &ProjectSearchOptions) -> Result<Matcher, String> {
+    if options.regex {
+        // Inject `(?i)` when case-insensitive so the compiled
+        // pattern handles the casing — leaves the user's
+        // pattern verbatim otherwise.
+        let pattern = if options.case_sensitive {
+            query.to_string()
+        } else {
+            format!("(?i){query}")
+        };
+        fancy_regex::Regex::new(&pattern)
+            .map(Matcher::Regex)
+            .map_err(|e| format!("invalid regex `{query}`: {e}"))
+    } else {
+        let needle = if options.case_sensitive {
+            query.to_string()
+        } else {
+            query.to_lowercase()
+        };
+        Ok(Matcher::Literal {
+            needle,
+            case_sensitive: options.case_sensitive,
+        })
+    }
+}
+
+fn scan_file(path: &Path, matcher: &Matcher, max_hits: usize) -> Vec<u32> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     let mut hits = Vec::new();
     for (row, line) in text.lines().enumerate() {
-        let found = if case_sensitive {
-            line.contains(needle)
-        } else {
-            line.to_lowercase().contains(needle)
-        };
-        if found {
+        if matcher.line_matches(line) {
             hits.push(row as u32);
             if hits.len() >= max_hits {
                 break;
@@ -709,14 +783,38 @@ mod tests {
         assert!(svc.state(view).is_none());
     }
 
+    fn literal_matcher(needle: &str, case_sensitive: bool) -> Matcher {
+        build_matcher(
+            needle,
+            &ProjectSearchOptions {
+                regex: false,
+                case_sensitive,
+                ..ProjectSearchOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn regex_matcher(pattern: &str, case_sensitive: bool) -> Matcher {
+        build_matcher(
+            pattern,
+            &ProjectSearchOptions {
+                regex: true,
+                case_sensitive,
+                ..ProjectSearchOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn scan_file_finds_literal_matches() {
         let tmp = tempfile_path();
         std::fs::write(&tmp, "alpha\nBetA Foo\ngamma\nfoo bar\n").unwrap();
-        let hits = scan_file(&tmp, "foo", false, 100);
+        let hits = scan_file(&tmp, &literal_matcher("foo", false), 100);
         assert_eq!(hits, vec![1, 3]);
 
-        let hits_case = scan_file(&tmp, "foo", true, 100);
+        let hits_case = scan_file(&tmp, &literal_matcher("foo", true), 100);
         assert_eq!(hits_case, vec![3]);
 
         std::fs::remove_file(&tmp).ok();
@@ -726,9 +824,46 @@ mod tests {
     fn scan_file_respects_max_hits() {
         let tmp = tempfile_path();
         std::fs::write(&tmp, "foo\nfoo\nfoo\nfoo\n").unwrap();
-        let hits = scan_file(&tmp, "foo", true, 2);
+        let hits = scan_file(&tmp, &literal_matcher("foo", true), 2);
         assert_eq!(hits, vec![0, 1]);
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn scan_file_regex_mode_matches_pattern() {
+        let tmp = tempfile_path();
+        std::fs::write(
+            &tmp,
+            "TODO: fix\nDONE: nothing\ntodo: lowercase\nFIXME: also\n",
+        )
+        .unwrap();
+
+        // Case-sensitive regex: only literal "TODO".
+        let hits = scan_file(&tmp, &regex_matcher(r"^TODO", true), 100);
+        assert_eq!(hits, vec![0]);
+
+        // Case-insensitive regex: TODO + todo lines match.
+        let hits_ci = scan_file(&tmp, &regex_matcher(r"^TODO", false), 100);
+        assert_eq!(hits_ci, vec![0, 2]);
+
+        // Alternation: TODO or FIXME.
+        let hits_alt = scan_file(&tmp, &regex_matcher(r"^(TODO|FIXME)", true), 100);
+        assert_eq!(hits_alt, vec![0, 3]);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn build_matcher_rejects_invalid_regex() {
+        let err = build_matcher(
+            "(unclosed",
+            &ProjectSearchOptions {
+                regex: true,
+                ..ProjectSearchOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid regex"));
     }
 
     #[test]
@@ -768,8 +903,7 @@ mod tests {
     fn scan_file_missing_returns_empty() {
         let hits = scan_file(
             Path::new("/tmp/__lattice_definitely_missing__"),
-            "x",
-            true,
+            &literal_matcher("x", true),
             100,
         );
         assert!(hits.is_empty());

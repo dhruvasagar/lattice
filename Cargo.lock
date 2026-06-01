@@ -3547,6 +3547,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "fancy-regex",
  "ignore",
  "lattice-cells",
  "lattice-config",

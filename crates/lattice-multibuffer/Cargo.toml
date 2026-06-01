@@ -34,13 +34,18 @@ linkme = { workspace = true }
 # with respect for .gitignore / .git/info/exclude / .ignore.
 # Feature-gated so opt-out builds don't pull the dep tree.
 ignore = { workspace = true, optional = true }
+# M.6.3 (2026-06-01): regex matcher for `ProjectSearchOptions::regex`.
+# Workspace already uses fancy-regex for lookaround/backref
+# support in other call sites; same dep here so the regex
+# dialect is uniform across the editor.
+fancy-regex = { workspace = true, optional = true }
 
 [features]
 # M.6 (2026-06-01): each in-tree provider ships behind its own
 # cargo feature so opt-out builds disable per provider. Default
 # enables the providers we ship.
 default = ["search"]
-search = ["dep:ignore"]
+search = ["dep:ignore", "dep:fancy-regex"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }

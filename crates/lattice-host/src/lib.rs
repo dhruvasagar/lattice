@@ -144,3 +144,12 @@ pub mod versioned;
 // the conventional `lattice_host::Renderer` path renderer
 // crates use when implementing.
 pub use renderer::{MinimalRenderer, Renderer};
+
+// K.2.4.A.0.1 (2026-06-02): re-export the `keymap_entry!` macro
+// at the host crate root so the `lattice_host::keymap_entry!`
+// path used by `lattice-ui-tui/src/lib.rs:51` keeps resolving
+// after the macro's `#[macro_export]` origin moved to
+// `lattice-mode`. The macro's canonical home is
+// `lattice_mode::keymap_entry!`; this re-export retires once
+// downstream call sites flip to the canonical path.
+pub use lattice_mode::keymap_entry;

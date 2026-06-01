@@ -61,6 +61,13 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod guards;
+// K.2.4.A.0.1 (2026-06-02): static keymap catalog + `keymap_entry!`
+// macro relocated from `lattice-host::keymap` so mode crates can
+// declare bindings without depending on `lattice-host`. The host
+// retains `lattice-host::keymap` as a re-export shim so the
+// dispatcher / TUI drift test / `:describe-key` / `:keymap` keep
+// resolving verbatim.
+pub mod keymap_entry;
 pub mod locals;
 pub mod mode;
 pub mod modes;
@@ -74,6 +81,7 @@ pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{DecorationProvider, Keymap, KeymapBinding, Subscription};
+pub use crate::keymap_entry::KeymapEntry;
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};

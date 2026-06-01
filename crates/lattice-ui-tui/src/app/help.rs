@@ -432,16 +432,19 @@ mod tests {
             body.contains("Bound at:"),
             "describe-key output missing `Bound at:`: {body}"
         );
+        // K.2.4.A.0.1 (2026-06-02): static catalog moved to
+        // `lattice-mode::keymap_entry`; the `file!()` captures
+        // now resolve to `keymap_entry.rs` rather than `keymap.rs`.
         assert!(
-            body.contains("keymap.rs"),
+            body.contains("keymap_entry.rs"),
             "describe-key output missing source label: {body}"
         );
         let links = a.popup_help_links().expect("help links seeded");
         let has_source = links.iter().any(|l| {
             matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
-                if path.to_string_lossy().contains("keymap.rs"))
+                if path.to_string_lossy().contains("keymap_entry.rs"))
         });
-        assert!(has_source, "expected a Source HelpLink to keymap.rs");
+        assert!(has_source, "expected a Source HelpLink to keymap_entry.rs");
         assert!(
             body.contains("(built-in)"),
             "describe-key output missing source-layer label: {body}"
@@ -496,7 +499,8 @@ mod tests {
             source_links.len(),
             links
         );
-        // Each link should point at a distinct line in keymap.rs.
+        // Each link should point at a distinct line in keymap_entry.rs
+        // (K.2.4.A.0.1 — catalog moved to lattice-mode).
         let mut lines: Vec<u32> = source_links
             .iter()
             .filter_map(|l| match &l.target {

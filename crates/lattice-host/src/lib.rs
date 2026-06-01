@@ -105,7 +105,15 @@ pub mod keymap_replace;
 pub mod keymap_terminal;
 pub mod keymap_trie;
 pub mod keymap_visual;
-pub mod multibuffer_keymap;
+// K.2.5 (2026-06-02): `multibuffer_keymap` retired. Multibuffer +
+// project-search keymap bindings and ex-commands moved to
+// `lattice-multibuffer` (`MultibufferMode::keymap()`,
+// `ProjectSearchMultibufferMode::keymap()`,
+// `lattice_multibuffer::register_multibuffer_ex_commands`,
+// `lattice_multibuffer::providers::search::register_search_ex_command`).
+// Boot wiring in `editor_boot.rs` calls into the new home directly;
+// the K.2.4 translation pass picks up the `Mode::keymap()`
+// contributions and inserts them into the matcher trie.
 pub mod lsp_helpers;
 pub mod lsp_watcher;
 pub mod modes;

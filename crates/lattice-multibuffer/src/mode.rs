@@ -17,17 +17,62 @@
 //!
 //! See `docs/dev/architecture/multibuffer-views.md` §3.7.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lattice_config::{OptionOverrideSet, overrides};
 use lattice_core::BufferKind;
 use lattice_mode::{
-    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    ModeRegistry, keymap_entry,
 };
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 
 use crate::registry::MultibufferRegistryHandle;
+
+/// K.2.5 (2026-06-02): static keymap catalog for `MultibufferMode`.
+///
+/// Four excerpt-jump motions registered by
+/// [`crate::register_multibuffer_motions`] (`motions.rs:57-109`)
+/// against the [`lattice_grammar::CommandRegistry`] under their
+/// canonical names. The host translation pass
+/// (`crates/lattice-host/src/keymap_mode_contributions.rs`)
+/// resolves each row's `cmd` string at registration time and
+/// builds a `KeymapBinding` carrying the entry's `doc` and
+/// macro-captured `source`.
+///
+/// Replaces `crates/lattice-host/src/multibuffer_keymap.rs`'s
+/// `multibuffer_mode_layer_bindings` which built the layer
+/// trie by hand and was pushed explicitly via
+/// `KeymapHandle::push_layer` at boot. The K.2.4 translation
+/// pass handles that uniformly now; no per-mode host glue.
+fn multibuffer_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "]e",
+                doc: "Jump to next excerpt",
+                cmd: "multibuffer.next-excerpt-start"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[e",
+                doc: "Jump to previous excerpt",
+                cmd: "multibuffer.prev-excerpt-start"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]E",
+                doc: "Jump to next file boundary",
+                cmd: "multibuffer.next-file-boundary"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[E",
+                doc: "Jump to previous file boundary",
+                cmd: "multibuffer.prev-file-boundary"
+            },
+        ]
+    })
+}
 
 /// Major mode for buffers of [`BufferKind::Multibuffer`]. Generic;
 /// knows nothing about *why* excerpts exist. Provider-specific
@@ -75,6 +120,16 @@ impl Mode for MultibufferMode {
 
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
+    }
+
+    /// K.2.5 (2026-06-02): excerpt-jump chord bindings.
+    /// `]e` / `[e` (next / previous excerpt) and `]E` / `[E`
+    /// (next / previous file boundary). Resolved at host
+    /// translation time via `CommandRegistry` against the
+    /// canonical motion names registered by
+    /// `register_multibuffer_motions`.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(multibuffer_keymap_entries())
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
@@ -137,4 +192,89 @@ pub fn register_multibuffer_modes(
             }
         }
     });
+}
+
+/// K.2.5 (2026-06-02): register `:multibuffer-expand [n]` and
+/// `:multibuffer-contract [n]` ex-commands.
+///
+/// Relocated from `crates/lattice-host/src/multibuffer_keymap.rs::register_multibuffer_ex_commands`
+/// as part of the K.2.5 migration that moves multibuffer keymap +
+/// ex-command registration into its owning crate. Boot path in
+/// `editor_boot.rs` now calls this directly instead of the host
+/// glue. Behaviour preserved verbatim:
+///
+/// Both commands take an optional non-negative integer (default 5
+/// — Zed precedent). `apply` produces
+/// `Effect::AppAction(AppEffect::MultibufferExpand { delta })`
+/// where `delta` is positive for expand, negative for contract.
+/// The dispatch handler routes to `Editor::do_multibuffer_expand`,
+/// which looks up the active view via `MultibufferRegistry` and
+/// calls `expand_excerpt_at` at the active cursor's row.
+///
+/// No-op when invoked on a non-multibuffer active buffer (no
+/// registry entry for the buffer id).
+pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::app_effect::AppEffect;
+    use lattice_grammar::args::{ArgSpec, Args};
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::error::CommandError;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+
+    fn parse_optional_count(s: &str, _bang: bool) -> Result<Args, CommandError> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Ok(Args::None);
+        }
+        match trimmed.parse::<u32>() {
+            // Stash as the decimal string so the apply closure
+            // can re-parse without re-validating; production code
+            // typically passes 1-2 digit counts.
+            Ok(_) => Ok(Args::String(trimmed.to_string())),
+            Err(_) => Err(CommandError::BadArgs(format!(
+                "expected non-negative integer, got `{trimmed}`"
+            ))),
+        }
+    }
+
+    fn count_from_args(args: &Args) -> i32 {
+        match args {
+            Args::String(s) => s.parse::<i32>().unwrap_or(5),
+            _ => 5,
+        }
+    }
+
+    registry.register_ex_command(
+        "multibuffer-expand",
+        "Expand context around the excerpt under the cursor by N rows (default 5).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_count),
+            apply: Box::new(|ctx| {
+                let delta = count_from_args(&ctx.args);
+                Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
+    registry.register_ex_command(
+        "multibuffer-contract",
+        "Contract the excerpt under the cursor by N rows (default 5).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_count),
+            apply: Box::new(|ctx| {
+                let delta = -count_from_args(&ctx.args);
+                Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }

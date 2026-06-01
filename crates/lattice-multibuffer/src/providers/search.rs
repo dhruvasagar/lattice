@@ -25,14 +25,14 @@
 //! batches hits, publishes `ProjectSearchBatchReady` events.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use lattice_config::{OptionOverrideSet, overrides};
 use lattice_core::{BufferFlags, BufferId};
 use lattice_grammar::CommandRegistry;
 use lattice_mode::{
-    CapabilitySet, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
-    ModeRegistry, ServiceRegistry,
+    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId,
+    ModeKind, ModeRegistry, ServiceRegistry, keymap_entry,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 use tokio::sync::mpsc;
@@ -314,6 +314,42 @@ impl ProjectSearchMultibufferMode {
     }
 }
 
+/// K.2.5 (2026-06-02): static keymap catalog for
+/// `ProjectSearchMultibufferMode`.
+///
+/// Two action chords:
+/// - `<CR>` → `action:search-jump-to-source` (jump to the file/row
+///   of the excerpt under the cursor)
+/// - `g` `r` → `action:search-refresh` (re-run scan with the
+///   view's current query)
+///
+/// Action names registered by
+/// `crates/lattice-host/src/actions.rs:populate` against the
+/// host's `CommandRegistry`. The K.2.4 host translation pass
+/// resolves the names at registration time.
+///
+/// Replaces `crates/lattice-host/src/multibuffer_keymap.rs`'s
+/// `project_search_mode_layer_bindings` which built the trie by
+/// hand and was pushed explicitly via `KeymapHandle::push_layer`
+/// at boot.
+fn project_search_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "<CR>",
+                doc: "Jump to source file/row of the excerpt under cursor",
+                cmd: "action:search-jump-to-source"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gr",
+                doc: "Re-run the project-search scan with the view's current query",
+                cmd: "action:search-refresh"
+            },
+        ]
+    })
+}
+
 pub struct ProjectSearchMultibufferModeGuard {
     forwarder: Option<tokio::task::JoinHandle<()>>,
     subs: Vec<lattice_runtime::SubscriptionId>,
@@ -347,6 +383,14 @@ impl Mode for ProjectSearchMultibufferMode {
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
+    }
+    /// K.2.5 (2026-06-02): action chord bindings for
+    /// project-search views — `<CR>` jumps to the source file
+    /// and `gr` re-runs the scan. Resolved at host translation
+    /// time via `CommandRegistry` against the action names
+    /// registered by `lattice-host::actions::populate`.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(project_search_keymap_entries())
     }
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
@@ -789,6 +833,53 @@ pub fn register_project_search_mode(mode_registry: &mut ModeRegistry) {
 pub fn register_project_search_service(services: &mut ServiceRegistry) {
     let svc: ProjectSearchServiceHandle = Arc::new(InMemoryProjectSearchService::new());
     services.register(svc);
+}
+
+/// K.2.5 (2026-06-02): register the `:search <query>` ex-command.
+///
+/// Relocated from `crates/lattice-host/src/multibuffer_keymap.rs::register_search_ex_command`
+/// as part of the K.2.5 migration. Boot path in `editor_boot.rs`
+/// calls this directly now; behaviour preserved verbatim.
+///
+/// Stashes the query as `Args::String` and routes through
+/// `AppEffect::SearchTrigger { query }` → `Action::SearchTrigger
+/// { query }` → `Editor::do_search`. Empty query is rejected with
+/// `BadArgs` — opening an empty search view doesn't make sense.
+pub fn register_search_ex_command(registry: &mut CommandRegistry) {
+    use lattice_grammar::app_effect::AppEffect;
+    use lattice_grammar::args::{ArgSpec, Args};
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::error::CommandError;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+
+    registry.register_ex_command(
+        "search",
+        "Project-wide search for the literal query. Opens a multibuffer view that streams results as the scan runs.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(|s: &str, _bang: bool| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Err(CommandError::BadArgs(
+                        ":search requires a non-empty query".into(),
+                    ));
+                }
+                Ok(Args::String(trimmed.to_string()))
+            }),
+            apply: Box::new(|ctx| {
+                let query = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                Ok(Effect::AppAction(AppEffect::SearchTrigger { query }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }
 
 /// Convenience wrapper that calls both helpers. Useful for

@@ -309,22 +309,29 @@ impl Editor {
         // motions (`]e` / `[e` / `]E` / `[E`) against the command
         // registry. Handlers capture the multibuffer registry
         // handle so they reach the typed view by buffer id at
-        // dispatch time. The returned `MultibufferMotionIds`
-        // feeds the keymap-layer push below.
-        let multibuffer_motion_ids = lattice_multibuffer::register_multibuffer_motions(
+        // dispatch time.
+        //
+        // K.2.5 (2026-06-02): the returned `MultibufferMotionIds`
+        // is no longer consumed here — the multibuffer-mode
+        // keymap now references the motions by canonical name
+        // (`multibuffer.next-excerpt-start` etc.) via
+        // `MultibufferMode::keymap()`, resolved at host
+        // translation time. The registration side-effect (motion
+        // names in `CommandRegistry`) is what keeps the keymap's
+        // name lookup successful.
+        let _ = lattice_multibuffer::register_multibuffer_motions(
             &mut registry,
             multibuffer_registry_handle.clone(),
         );
 
-        // M.5 (2026-06-01): register `:multibuffer-expand [n]` /
-        // `:multibuffer-contract [n]` ex-commands.
-        crate::multibuffer_keymap::register_multibuffer_ex_commands(&mut registry);
-
-        // M.6 (2026-06-01): register the `:search` ex-command
-        // that triggers `lattice_multibuffer::providers::search::project_search`.
-        // The provider's mode + service are registered later
-        // inside the services + mode-registry blocks below.
-        crate::multibuffer_keymap::register_search_ex_command(&mut registry);
+        // K.2.5 (2026-06-02): ex-commands moved to
+        // lattice-multibuffer in the migration that retires the
+        // host-side `multibuffer_keymap.rs` glue. Behaviour
+        // preserved verbatim; the new home sits next to the
+        // modes that use them.
+        lattice_multibuffer::register_multibuffer_ex_commands(&mut registry);
+        #[cfg(feature = "search")]
+        lattice_multibuffer::providers::search::register_search_ex_command(&mut registry);
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
@@ -932,33 +939,18 @@ impl Editor {
                     "diff-mode",
                     crate::diff::mode::diff_mode_layer_bindings(&action_ids),
                 );
-                // M.2.b.3 (2026-06-01): push the multibuffer-mode
-                // keymap layer binding `]e` / `[e` / `]E` / `[E`
-                // to the four excerpt-jump motions registered
-                // above. K.1.c's per-keystroke filter gates the
-                // chord so it only fires on buffers where
-                // `multibuffer-mode` is the active major.
-                h.push_layer(
-                    crate::keymap_registry::PushLayerKind::MinorMode(
-                        lattice_multibuffer::MultibufferMode::mode_id(),
-                    ),
-                    "multibuffer-mode",
-                    crate::multibuffer_keymap::multibuffer_mode_layer_bindings(
-                        &multibuffer_motion_ids,
-                    ),
-                );
-                // M.6.1 (2026-06-01): project-search-multibuffer-mode
-                // bindings (`<CR>` jump-to-source, `gr` refresh).
-                // Pushed under the minor's ModeId so K.1.c's filter
-                // gates fire only when the minor is active.
-                #[cfg(feature = "search")]
-                h.push_layer(
-                    crate::keymap_registry::PushLayerKind::MinorMode(
-                        lattice_multibuffer::providers::search::ProjectSearchMultibufferMode::mode_id(),
-                    ),
-                    "project-search-multibuffer-mode",
-                    crate::multibuffer_keymap::project_search_mode_layer_bindings(&action_ids),
-                );
+                // K.2.5 (2026-06-02): explicit push_layer calls
+                // for `multibuffer-mode` and
+                // `project-search-multibuffer-mode` retired.
+                // Their bindings now flow through
+                // `MultibufferMode::keymap()` and
+                // `ProjectSearchMultibufferMode::keymap()` via
+                // the K.2.4 translation pass below — host glue
+                // no longer needs to know about them. (Diff
+                // mode's bindings still go through the explicit
+                // path above; migrating them is a separate
+                // MO.x slice tracked under
+                // `mode-ownership-cleanup.md`.)
                 // K.2.4 (2026-06-01): translate every registered
                 // mode's `Mode::keymap()` contribution into a
                 // `MinorMode(mode_id)` layer on `h`. Today most

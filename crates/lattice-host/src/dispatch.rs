@@ -10701,12 +10701,22 @@ impl Editor {
         let Some(path) = search_svc.source_path(view_id, source_buffer) else {
             return;
         };
-        let _ = source_row;
         // Open the file as a regular Document buffer. The
         // existing `:edit` machinery handles registry insertion +
-        // major activation. M.6.2 can teach this to seek the
-        // cursor to `source_row`.
+        // major activation.
         let _ = self.do_edit(Some(path), false);
+        // M.6.2 (2026-06-01): seek cursor to the matched
+        // source row. `do_edit` switched `self.document` to the
+        // opened buffer; `set_selections_blocking` writes
+        // through the actor mpsc, blocking until the rope's
+        // selections field updates so the renderer reads the
+        // post-jump position on the next frame.
+        let target = lattice_protocol::selection::Selection::cursor(
+            lattice_protocol::position::Position::new(source_row, 0),
+        );
+        self.set_selections_blocking(
+            lattice_protocol::selection::SelectionSet::single(target),
+        );
     }
 
     #[cfg(not(feature = "search"))]

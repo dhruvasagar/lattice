@@ -141,6 +141,12 @@ pub trait ProjectSearchService: Send + Sync + std::fmt::Debug {
     /// M.6.1: look up the path for a source buffer (used by
     /// jump-to-source after finding the excerpt under cursor).
     fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf>;
+    /// M.6.2 (2026-06-01): reverse lookup — find an existing
+    /// source buffer for a path inside a view. Forwarder uses
+    /// this to dedup file loads across batches: a file with
+    /// hits split across two batches reuses the same source
+    /// buffer instead of spawning a second `RopeDocumentHandle`.
+    fn find_source_for_path(&self, view: BufferId, path: &Path) -> Option<BufferId>;
 }
 
 pub type ProjectSearchServiceHandle = Arc<dyn ProjectSearchService>;
@@ -218,6 +224,15 @@ impl ProjectSearchService for InMemoryProjectSearchService {
     }
     fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf> {
         self.state(view)?.read().ok()?.source_paths.get(&source).cloned()
+    }
+    fn find_source_for_path(&self, view: BufferId, path: &Path) -> Option<BufferId> {
+        let state = self.state(view)?;
+        let guard = state.read().ok()?;
+        guard
+            .source_paths
+            .iter()
+            .find(|(_, p)| p.as_path() == path)
+            .map(|(id, _)| *id)
     }
 }
 
@@ -383,28 +398,43 @@ impl Mode for ProjectSearchMultibufferMode {
                             let mut hit_count_in_batch = 0usize;
                             for fh in batch.files {
                                 let path = fh.path.clone();
-                                let Ok(text_res) =
-                                    tokio::task::spawn_blocking({
+                                // M.6.2 (2026-06-01): dedup —
+                                // if a previous batch already
+                                // loaded this file as a source,
+                                // reuse the existing source
+                                // buffer instead of spawning a
+                                // second one.
+                                let existing = search_svc_for_task
+                                    .as_ref()
+                                    .and_then(|svc| {
+                                        svc.find_source_for_path(view_id_for_task, &path)
+                                    });
+                                let source_id = if let Some(existing) = existing {
+                                    existing
+                                } else {
+                                    let Ok(text_res) = tokio::task::spawn_blocking({
                                         let p = path.clone();
                                         move || std::fs::read_to_string(&p)
                                     })
                                     .await
-                                else { continue; };
-                                let Ok(text) = text_res else { continue; };
+                                    else { continue; };
+                                    let Ok(text) = text_res else { continue; };
 
-                                let source_id = BufferId::next();
-                                let document = lattice_core::Document::from_text(&text);
-                                let registry = Arc::new(CommandRegistry::new());
-                                let handle = spawn_document(source_id, document, registry);
-                                let dyn_handle: Arc<dyn Document> = Arc::new(handle);
-                                view.add_source(source_id, dyn_handle);
-                                if let Some(svc) = &search_svc_for_task {
-                                    svc.record_source_path(
-                                        view_id_for_task,
-                                        source_id,
-                                        path.clone(),
-                                    );
-                                }
+                                    let id = BufferId::next();
+                                    let document = lattice_core::Document::from_text(&text);
+                                    let registry = Arc::new(CommandRegistry::new());
+                                    let handle = spawn_document(id, document, registry);
+                                    let dyn_handle: Arc<dyn Document> = Arc::new(handle);
+                                    view.add_source(id, dyn_handle);
+                                    if let Some(svc) = &search_svc_for_task {
+                                        svc.record_source_path(
+                                            view_id_for_task,
+                                            id,
+                                            path.clone(),
+                                        );
+                                    }
+                                    id
+                                };
 
                                 let excerpts: Vec<Excerpt> = fh
                                     .rows
@@ -699,6 +729,39 @@ mod tests {
         let hits = scan_file(&tmp, "foo", true, 2);
         assert_eq!(hits, vec![0, 1]);
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn find_source_for_path_reverse_lookup_roundtrips() {
+        // M.6.2: the dedup hook in the forwarder consults
+        // `find_source_for_path` before spawning a fresh
+        // RopeDocumentHandle. Verify the lookup returns the
+        // first-recorded source for a path.
+        let svc = InMemoryProjectSearchService::new();
+        let view = BufferId(1);
+        svc.set_state(
+            view,
+            ProjectSearchState::scanning("q".into(), ProjectSearchOptions::default()),
+        );
+
+        let path_a = PathBuf::from("/tmp/a.rs");
+        let path_b = PathBuf::from("/tmp/b.rs");
+        let src_a = BufferId(10);
+        let src_b = BufferId(11);
+        svc.record_source_path(view, src_a, path_a.clone());
+        svc.record_source_path(view, src_b, path_b.clone());
+
+        assert_eq!(svc.find_source_for_path(view, &path_a), Some(src_a));
+        assert_eq!(svc.find_source_for_path(view, &path_b), Some(src_b));
+        assert_eq!(
+            svc.find_source_for_path(view, &PathBuf::from("/tmp/missing.rs")),
+            None,
+        );
+        // A second view with the same path doesn't see source-a.
+        assert_eq!(
+            svc.find_source_for_path(BufferId(2), &path_a),
+            None,
+        );
     }
 
     #[test]

@@ -4204,7 +4204,19 @@ architecture §10 for the rationale.
   mapping but isn't consulted yet for dedup); cursor-placement
   at the matched row inside the opened buffer (do_edit lands at
   row 0); regex via `grep-matcher` + `aho-corasick`.
-- 🗒 **M.6.2** — Dedup + cursor-placement + regex.
+- ✅ **M.6.2** (landed 2026-06-01) — Search dedup +
+  cursor-placement. New `ProjectSearchService::find_source_for_path(view,
+  path) -> Option<BufferId>` reverse lookup. Forwarder's
+  BatchReady arm checks for an existing source before
+  spawning a new `RopeDocumentHandle` — files with hits in
+  multiple batches reuse the same source. `Editor::do_search_jump_to_source`
+  follows `do_edit` with `set_selections_blocking(SelectionSet::single(Selection::cursor(Position::new(source_row,
+  0))))` so the cursor lands at the matched line.
+  Per-view scoping: same path in two different views is not
+  shared. 1 new unit test;  workspace tests green.
+- 🗒 **M.6.3** — Regex matching. Replace literal-matcher
+  with `grep-matcher` + `aho-corasick`. Configurable via
+  `ProjectSearchOptions::regex`. Default stays literal.
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo
   feature pulling `ignore` / `grep-matcher` / `aho-corasick`.

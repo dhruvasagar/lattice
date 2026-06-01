@@ -898,7 +898,17 @@ impl Editor {
             // mutation has fired between publishes.
             buffer_locals: crate::versioned::Versioned::new(buffer_locals),
             help_topics,
-            registry,
+            // K.2.4.A.0.3 (2026-06-02): clone the Arc so the
+            // `keymap: { ... }` block below can still borrow
+            // `registry` to pass as the `&CommandRegistry`
+            // argument that K.2.4.A.0.3 added to
+            // `translate_mode_keymaps`. Field initializers run
+            // top-down in source order; the original Arc would
+            // otherwise be moved into the struct before
+            // `keymap:` evaluates. Same shape as the
+            // `mode_registry: mode_registry.clone()` cell
+            // above.
+            registry: registry.clone(),
             event_bus: event_bus.clone(),
             builtins,
             action_ids,
@@ -961,7 +971,11 @@ impl Editor {
                 // in the same slice. The pass is idempotent on
                 // `mode_id`: re-pushing replaces the layer rather
                 // than minting a sibling (K.1.b).
-                crate::keymap_mode_contributions::translate_mode_keymaps(&h, &mode_registry);
+                crate::keymap_mode_contributions::translate_mode_keymaps(
+                    &h,
+                    &mode_registry,
+                    &registry,
+                );
                 h
             },
             completion_registry,

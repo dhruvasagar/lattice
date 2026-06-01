@@ -3195,3 +3195,173 @@ Only the persistence path is deferred. GUI-specific
 upgrades to the form widgets (color pickers, sliders) are
 also post-v1, but the TUI form is fully functional on its
 own and is not blocked on those.
+
+## 13. Mode-owned keymaps + contribution debt (2026-06-01)
+
+### The convention (going forward)
+
+**A mode owns its full surface — keymaps, lifecycle
+subscriptions, status-line contributions, decoration providers,
+completion sources, option overrides, capability requirements.
+None of these should live at a universal layer if they're
+feature-gated by the mode's activation.**
+
+Concretely, for keymaps:
+
+- **A feature-specific chord lives at `KeymapLayer::MinorMode(mode_id)`
+  (or `MajorMode(mode_id)`)**, NOT at `KeymapLayer::Builtin`.
+  The mode-id-scoped layer means K.1.c's per-keystroke filter
+  only fires the chord when the mode is in `ActiveModes` for
+  the active buffer.
+
+- **The mode's owning crate registers its keymap**, via a
+  `register_<mode>_keymap(handle, action_ids)` helper called
+  at boot OR via the `Mode::keymap()` trait method's
+  declarative path. Precedent: `crate::diff::mode::diff_mode_layer_bindings`
+  (host-side diff-mode owns its keymap),
+  `lattice_multibuffer::providers::search::project_search_mode_layer_bindings`
+  (search provider owns its minor's keymap).
+
+- **No global Builtin entry for feature-gated bindings.** If
+  the binding wouldn't work in every buffer (because the
+  feature isn't always active), it doesn't belong at Builtin.
+
+### The principle generalises beyond keymaps
+
+The same logic applies to every Mode trait slot. The trait
+already provides `Mode::keymap()`, `Mode::options()`,
+`Mode::decorations()`, `Mode::subscriptions()`,
+`Mode::completion_sources()`, `Mode::required_capabilities()`,
+`Mode::conflicts_with()` / `Mode::implies()`, and
+`Mode::on_activate()`.
+
+**Current state (2026-06-01): modes are under-utilised — they
+declare a few slots but the host still owns lots of
+mode-specific surface that should live in the mode itself.**
+This is technical debt that compounds as new modes (M.6+
+providers, post-v1 plugins) follow the existing inconsistent
+pattern.
+
+### Cleanup debt list (2026-06-01)
+
+Audited via grep against `crates/lattice-host/src/keymap_*.rs`
+after the M.6.1 SearchProvider review surfaced the question:
+
+**LSP — 7 bindings at Normal Builtin that should live in
+`lsp-mode`'s keymap (owned by `lattice-lsp`):**
+
+| Chord | Action | Notes |
+|---|---|---|
+| `K` | `lsp_hover_request` | Hover popup |
+| `gd` | `lsp_definition_request` | Go-to-definition |
+| `gD` | `lsp_declaration_request` | Go-to-declaration |
+| `gy` | `lsp_type_definition_request` | Go-to-type |
+| `gI` | `lsp_implementation_request` | Go-to-implementation |
+| `gr` | `lsp_references_request` | References picker |
+| `gx` | `lsp_follow_link_at_cursor` | documentLink follow |
+
+LSP auto-activates path-driven (`maybe_auto_activate_lsp_mode`
+short-circuits on no-path buffers like multibuffer views), so
+these bindings are *de facto* no-ops outside LSP-attached
+buffers today — but they STILL fire the `Action::Lsp*`
+dispatch and reach the supervisor before the no-op happens.
+Mode-scoped registration short-circuits at the keymap layer
+instead, which is correct.
+
+**Oil — 1 binding at Normal Builtin that should live in
+`oil-mode`'s keymap (owned by `lattice-oil`):**
+
+| Chord | Action | Notes |
+|---|---|---|
+| `-` | `oil_navigate_up` | Oil parent-directory chord |
+
+**Snippet — 4 bindings at Insert Builtin gated by runtime
+`is_snippet_active` check; should live in `snippet-mode` (or
+a dedicated `snippet-active-mode` minor):**
+
+| Chord | Action | Notes |
+|---|---|---|
+| `<Tab>` | `snippet_expand` | Expand template at cursor |
+| `<Tab>` | `snippet_next_placeholder` | Move to next placeholder |
+| `<S-Tab>` | `snippet_prev_placeholder` | Move to prev placeholder |
+| `<Esc>` | `snippet_leave` | Exit snippet session |
+
+The runtime `is_snippet_active` boolean check is a
+poor-person's keymap layer. A `MinorMode(snippet-active-mode)`
+layer with K.1.c precedence does this cleanly.
+
+### Patterns already correct (the convention in action)
+
+- `diff-mode`'s `do` / `dp` chords — registered via
+  `crate::diff::mode::diff_mode_layer_bindings` at
+  `MinorMode(diff-mode)` layer.
+- `multibuffer-mode`'s `]e` / `[e` / `]E` / `[E` motions —
+  registered via `multibuffer_mode_layer_bindings` at
+  `MinorMode(multibuffer-mode)` layer.
+- `project-search-multibuffer-mode`'s `<CR>` / `gr` chords —
+  registered via `project_search_mode_layer_bindings` at
+  `MinorMode(project-search-multibuffer-mode)` layer.
+
+### Cleanup sequencing
+
+Phased migration (each phase independent, each its own slice;
+each landing AFTER the M-series multibuffer work completes):
+
+1. **LSP** — biggest cluster. Move 7 bindings to a new
+   `register_lsp_mode_keymap` helper in `lattice-lsp/src/modes.rs`
+   (alongside `LspMode`). Boot calls it. Drop the 7 entries
+   from `keymap_normal.rs`. Verify K.1.c filters by activating
+   LSP on a Document buffer in tests.
+2. **Oil** — single binding. Move `-` to a
+   `register_oil_mode_keymap` helper in `lattice-oil/src/modes.rs`.
+3. **Snippet** — design call: introduce a `snippet-active-mode`
+   minor (separate from the always-on `snippet-mode` that
+   contributes completion sources) and migrate the 4 bindings
+   under its layer. Drop the runtime `is_snippet_active`
+   check from K.1.c.
+
+### Convention for new mode work (going forward)
+
+- New modes register their keymap at boot via a
+  `register_<mode>_keymap(handle, action_ids)` helper in the
+  mode's owning crate.
+- The helper returns the trie via
+  `KeymapLayer::MinorMode(<mode>::mode_id())` so K.1.c
+  filtering scopes the chord to mode-active buffers.
+- If a mode's chord set is small (1–4 bindings), the helper
+  inlines them; if larger (LSP-scale), split per logical
+  sub-mode (a future `lsp-folding-mode` would have its own
+  helper distinct from the main `lsp-mode` keymap).
+- The trait's `Mode::keymap()` declarative path is the
+  long-term ideal but requires the registry to consume + push
+  layers at activation time (not just at boot). The boot-time
+  helper pattern is the pragmatic intermediate.
+
+### Broader "modes are under-utilised" follow-up
+
+Beyond keymaps, expect a wider refactor pass once the
+multibuffer M-series wraps. Audit candidates that should move
+from host-owned to mode-owned:
+
+- **Decoration providers** — gutter signs (diagnostics,
+  diff hunks, LSP code-lens chips, breakpoints) — most are
+  declared host-side; should be `Mode::decorations()`
+  contributions.
+- **Status-line items** — LSP "rust-analyzer ready", diff
+  "+5 -3", recording macro indicator — same shape: each
+  mode's `status_line_items()` (new trait method?) contributes
+  its own segments.
+- **Lifecycle subscriptions** — the host wires several typed-event
+  subscribers (LSP progress, diagnostic refresh, semantic
+  tokens refresh, code-lens refresh, document highlight)
+  that are LSP-mode-specific. These should live in
+  `LspMode::on_activate`'s returned Guard.
+- **Per-buffer state** — buffer-locals already follow this
+  pattern (`feedback_mode_owns_its_buffers`); the same
+  principle extends to other per-buffer collections that
+  host currently owns.
+
+The under-utilisation is real; the cleanup is bounded. The
+refactor lands as a series of focused per-area slices,
+sequenced after M-series multibuffer work to avoid touching
+the same files concurrently.

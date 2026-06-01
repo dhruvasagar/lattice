@@ -1231,9 +1231,76 @@ MO.1--MO.4 cleanup slices (LSP, Oil, Snippet bindings move
 out of host) and the `multibuffer_keymap.rs` deletion that
 M.6 left in host as known debt.
 
+## 12. Help-prefix bindings (`<C-h>` map)
+
+Lattice ships an emacs-style help prefix on `<C-h>` in
+**Normal mode only**. The prefix is **Layer 1 (built-in
+defaults)**, not a mode contribution -- help is universal,
+not a state-machine transition. Lives in a host-owned helper
+module (`crates/lattice-host/src/keymap_help.rs`) per the
+slice plan.
+
+### 12.1 Binding table (Normal mode)
+
+| Chord | Command | Notes |
+|---|---|---|
+| `<C-h>` (bare) | `:help-for-help` (alias of `:help`) | Ambiguous-leaf resolution via `timeoutlen` -- if no follow-on arrives, the bare value fires. |
+| `<C-h> <C-h>` | `:help-for-help` | Explicit alternative; same effect as bare `<C-h>` after timeout. |
+| `<C-h> k` | `:describe-key` | Prompts for chord; shows the bound command + provenance. |
+| `<C-h> c` | `:describe-command` | Letter `c` chosen over emacs's `f` (function) -- matches Lattice vocab. |
+| `<C-h> o` | `:describe-option` | Letter `o` chosen over emacs's `v` (variable) -- matches Lattice vocab. |
+| `<C-h> e` | `:describe-event` | Lattice-native; emacs has no first-class event introspection. |
+| `<C-h> m` | `:describe-mode` | Active majors + minors on the current buffer. |
+| `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, mode stack, ...). |
+| `<C-h> a` | `:apropos` | Cross-cutting search across commands / options / events. |
+| `<C-h> K` | `:keymap` | Keymap listing for the current state. Capital K because lowercase `k` is `:describe-key`. |
+
+### 12.2 Out-of-scope binding modes
+
+- **Insert mode**: `<C-h>` retains vim's backspace
+  semantics. No help-prefix in Insert.
+- **Cmdline** (the rich minibuffer per design.md §5.9.10):
+  retains its existing `<C-h>` (cmdline-level backspace).
+  No help-prefix at the `:` line.
+- **Visual / OperatorPending**: no help-prefix. The two
+  binding modes already carry vim's most chord-dense
+  grammars; keeping the help-prefix Normal-only avoids
+  surprise rebindings and chord collisions in pending state.
+  Users who need help mid-visual escape to Normal first --
+  vim's mental model.
+
+### 12.3 Ambiguous-leaf resolution
+
+`<C-h>` is both a fireable leaf (`:help-for-help`) and a
+prefix to multiple sub-bindings. The keymap dispatcher
+resolves the ambiguity via `timeoutlen` (option, default
+1000 ms):
+
+1. User presses `<C-h>` -> trie matches a node that has both
+   a value AND children.
+2. Dispatcher arms a timer for `timeoutlen` ms.
+3. If a follow-on chord arrives before the timer fires AND
+   extends to a deeper match -> fire the deeper match.
+4. If the timer fires first, OR if a non-matching follow-on
+   arrives -> fire the bare `<C-h>` value (`:help-for-help`).
+
+Same machinery vim uses for general chord ambiguity. K.3.0
+verifies the trie supports this; if not, a small extension
+ships alongside the bindings.
+
+### 12.4 Sequencing
+
+See [slice plan: help-prefix](../operations/slice-plans/help-prefix.md)
+for K.3.0--K.3.4 carving. K.3 is gated on K.2 landing
+(otherwise the bindings go through the host-glue path that
+K.2.5 is dismantling), but is a thin slice -- substrate is
+unchanged, only new bindings + the timeout-resolution
+verification.
+
 ## See also
 
 - [slice plan: keymap-substrate](../operations/slice-plans/keymap-substrate.md) -- K.2 sequencing.
+- [slice plan: help-prefix](../operations/slice-plans/help-prefix.md) -- K.3 sequencing.
 - [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.
 - [design.md §5.2.3](design.md) -- canonical spec.
 - [design.md §5.2.4](design.md) -- extensibility (matches §5.5

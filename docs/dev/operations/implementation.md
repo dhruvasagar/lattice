@@ -4261,6 +4261,22 @@ architecture §10 for the rationale.
   docs; K.2.7 unblock MO.1–MO.4. Pauses M.6.4+. Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
   §11; sequencing at [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
+- 🗒 **K.3** — Help-prefix bindings (`<C-h>` map,
+  Normal-mode only). Emacs-style discoverability for the
+  self-documenting help facility (design.md §5.11): bare
+  `<C-h>` and `<C-h><C-h>` open `:help-for-help`;
+  `<C-h>{k,c,o,e,m,b,a,K}` route to the existing
+  `:describe-*` / `:apropos` / `:keymap` commands.
+  Insert / Visual / OperatorPending / cmdline retain
+  existing `<C-h>` semantics (cmdline keeps its built-in
+  backspace; vim-convention preserved). Sub-slices: K.3.0
+  trie ambiguous-leaf timeout audit/extension; K.3.1
+  `:help-for-help` alias of `:help`; K.3.2
+  `keymap_help.rs` register helper; K.3.3 mode-scope
+  enforcement tests; K.3.4 user-doc + bench. Gated on K.2.
+  Design at
+  [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
+  §12; sequencing at [`slice-plans/help-prefix.md`](slice-plans/help-prefix.md).
 - 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
   into the existing fold registry. **No new keymaps** — the

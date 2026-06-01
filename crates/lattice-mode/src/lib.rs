@@ -53,6 +53,7 @@
 
 pub mod active;
 pub mod activator;
+pub mod binding_mode;
 pub mod buffer_store;
 pub mod capability;
 pub mod context;
@@ -68,6 +69,7 @@ pub mod services;
 
 pub use crate::active::ActiveModes;
 pub use crate::activator::ModeActivator;
+pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;

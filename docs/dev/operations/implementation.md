@@ -3976,83 +3976,126 @@ diagnostics-as-buffer with one implementation.
     constructs an entry whose `kind()` returns Multibuffer);
     H.1 fixes this by adding the missing `BufferData`
     variant. Workspace + tests green.
-  - **M.2 paused after M.2.b.1 (2026-05-31).** Honest
-    architectural review (vs. hybrid producer ↔ activation
-    coupling) surfaced that every kind-specific feature
-    will hit the same host-coupling wall: hardcoded
-    `resolve_major_mode(kind)`, no generic `BufferStore::
-    insert_buffer`, no event-driven activation pipeline.
-    The H-series infrastructure removes the coupling for
-    multibuffer AND for every future kind-specific feature
-    (plugin-defined kinds, project-diff provider, etc.).
-    M.2.b.2 / M.2.b.3 / M.2.c resume after the H-series
-    lands — they become straightforward consumers of the
-    new infrastructure instead of fighting against the
-    existing wiring. See
-    [`kind-agnostic-buffers.md`](../architecture/kind-agnostic-buffers.md)
-    + its slice plan for the H-series detail.
-  - 🗒 **M.2.b.2** (deferred behind H-series) —
-    `MultibufferMode` as the major mode for
-    `BufferKind::Multibuffer`. Per-buffer Guard carries
-    `Arc<MultibufferDocumentHandle>`. `target_buffer_kind
-    () -> Some(BufferKind::Multibuffer)` (H.2). Mode
-    activates via host's `BufferOpened` subscriber (H.3).
-    `lattice_multibuffer::create_multibuffer_view(...)`
-    exposed as the public entry point — uses H.1's
-    `insert_buffer`, publishes `BufferOpened`, host
-    dispatches activation generically.
-  - 🗒 **M.2.b.3** (deferred behind H-series) — `]e` /
-    `[e` / `]E` / `[E` motions registered through grammar;
-    bound in `MultibufferMode` keymap.
-  - 🗒 **M.2.c** (deferred behind H-series) —
-    `multibuffer_render_p99_us` bench gating ≤ 200µs at 50
-    visible excerpts.
+  - **M.2 paused 2026-05-31 → resumed 2026-06-01.** Honest
+    architectural review surfaced shared host-coupling
+    across every future kind-specific feature; H-series
+    opened to land kind-agnostic infrastructure. H-series
+    closed at H.2 (H.3 deferred — see [`kind-agnostic-buffers.md`](../architecture/kind-agnostic-buffers.md)
+    §10); 2026-06-01 M.2.b.2 design pass locked the shape:
+    five abstractions covering the in-tree extension-crate
+    seam without event-bus indirection. See
+    [`multibuffer-views.md`](../architecture/multibuffer-views.md)
+    §3.7 for the full design + worked SearchProvider example.
+  - 🗒 **M.2.b.2** (locked 2026-06-01, ready to land) —
+    Five abstractions per architecture §3.7: (1)
+    `ModeActivator` trait in `lattice-mode` + `impl ModeActivator
+    for Editor` in `lattice-host`. (2) `MultibufferMode`
+    declaring `target_buffer_kind() = Some(Multibuffer)`,
+    contributing `ReadOnly` + `NoFile`. (3) `MultibufferRegistry`
+    trait + `InMemoryMultibufferRegistry` impl in
+    `lattice-multibuffer/src/registry.rs` returning typed
+    `Arc<MultibufferDocumentHandle>` keyed by view BufferId.
+    (4) `register_multibuffer_modes(®istry, &events, &mut services)`
+    boot helper wiring the mode + the service + the
+    `DocumentClosed` cleanup subscriber. (5)
+    `create_multibuffer_view(activator, sources, excerpts,
+    name, flags) -> BufferId` atomically inserting via H.1's
+    `BufferStore::insert_document_buffer` + registering the
+    typed handle + activating multibuffer-mode via the
+    activator. Plus `MultibufferDocumentHandle::append_excerpts`
+    / `replace_excerpts` for provider-driven updates. Host
+    gains one boot-time call; zero `match BufferKind::Multibuffer`
+    arms. Tests cover round-trip, cleanup, stub-provider
+    handle reach.
+  - 🗒 **M.2.b.3** — `]e` / `[e` / `]E` / `[E` motions
+    registered through `lattice-grammar`; bound in
+    `MultibufferMode::keymap()`. Lives in
+    `lattice-multibuffer/src/motions.rs`. Handlers compute
+    target row from current row + excerpt geometry pulled
+    via `MultibufferRegistry::handle(buffer_id)`.
+  - 🗒 **M.2.c** — `multibuffer_render_p99_us` bench gating
+    ≤ 200µs at 50 visible excerpts.
 
-## kind-agnostic buffer + mode infrastructure (H-series, in design, 2026-05-31)
+## kind-agnostic buffer + mode infrastructure (H-series, closed 2026-06-01)
 
 Design fragment:
 [`../architecture/kind-agnostic-buffers.md`](../architecture/kind-agnostic-buffers.md).
 Slice plan:
 [`slice-plans/kind-agnostic-buffers.md`](slice-plans/kind-agnostic-buffers.md).
-Removes host's hardcoded coupling to specific buffer kinds so
-every kind-specific feature (multibuffer today, plugin-defined
-kinds post-v1) composes through generic infrastructure.
+**Status: H-series closed after H.2.** H.1 + H.2 removed host's
+hardcoded coupling to specific buffer kinds for the in-tree
+extension-crate case (the only case that exists pre-v1). H.3
+deferred to the WASM Component Model plugin host slice — see
+architecture §10 for the rationale.
 
-- 🗒 **H.1** — `BufferStore::insert_buffer(BufferEntry) ->
-  BufferId` trait method. Hoist `BufferEntry` / `BufferData`
-  / `DocumentEntry` / `BufferFlags` from
-  `lattice-host::buffer_registry` to `lattice-mode`
-  (re-exports preserved in host so existing imports keep
-  working). Add `BufferData::Multibuffer(DocumentEntry)`
-  variant + matching `BufferEntry::kind()` arm. Closes the
-  M.2.b.1 unreachable-variant gap.
-- 🗒 **H.2** — `Mode::target_buffer_kind() -> Option<
-  BufferKind>` method (default `None`). Override on
-  existing major modes (FileTreeMode, OilMode, MarkdownMode
-  for Help, MessagesMode, TerminalMode).
-  `ModeRegistry::find_major_for_kind(BufferKind) -> Option<
-  ModeId>` indexes registered modes by their declared kind.
-  Host's `resolve_major_mode` rewrites to use the registry
-  lookup; the hardcoded `match kind { ... }` block
-  disappears.
-- 🗒 **H.3** — New `Event::BufferOpened { id, kind }`
-  (distinct from `DocumentOpened`'s LSP-attach event). Host
-  wires one subscriber that activates the major mode via
-  `find_major_for_kind`. Existing producers
-  (`editor_boot`, `synthetic_buffers::ensure_named_
-  document_for`, `do_edit` brand-new-file branch, file-tree
-  + oil openers) migrate from direct `activate_major(...)`
-  calls to event publication.
+- ✅ **H.1** (2026-05-31, commit `22ee033`) —
+  `BufferStore::insert_document_buffer(id, kind, handle: Arc<dyn
+  Document>, flags, name)` trait method in `lattice-mode`. Host's
+  `BufferRegistry` impl maps the `kind` tag to the appropriate
+  `BufferData::Document` / `Messages` / `Multibuffer` variant.
+  Added `BufferData::Multibuffer(DocumentEntry)` variant +
+  matching `BufferEntry::kind()` arm. Closed the M.2.b.1
+  unreachable-variant gap. No type hoisting needed — primitives
+  (`BufferId`, `BufferKind`, `Arc<dyn Document>`, `BufferFlags`,
+  `Option<String>`) already lived in `lattice-core` /
+  `lattice-runtime`. Kinds whose payload is NOT Document
+  (FileTree, Oil, Terminal, Help) keep their host-internal
+  insertion path. Existing producers didn't migrate.
+- ✅ **H.2** (2026-06-01, commit `6f32f94`) —
+  `Mode::target_buffer_kind() -> Option<BufferKind>` (default
+  `None`). `ModeRegistry::find_major_for_kind(BufferKind) ->
+  Option<ModeId>` indexes registered modes via a `kind_index:
+  HashMap<BufferKind, ModeId>` populated at register-time
+  (first-registration-wins on clobber; second claim logs
+  `tracing::warn!`). Overrides landed on `FileTreeMode →
+  FileTree`, `OilMode → Oil`, `MarkdownMode → Help` (Option B:
+  markdown-mode also serves `Document + Lang::Markdown` via the
+  `Lang`-detection path; the two cohabit), `MessagesMode →
+  Messages`, `TerminalMode → Terminal`. Host's
+  `crate::modes::resolve_major_mode(®istry, kind, lang)`
+  rewrote to use the lookup; the hardcoded match block
+  disappeared. `BufferKind` gained `Hash`; `lattice-mode`
+  gained a `tracing` dep. Drive-by fixes for unrelated bench
+  rot (lattice-cells virtual_rows bench, lattice-lsp
+  mode_activate bench, lattice-ui-tui keymap bench). 312
+  insertions, 64 deletions, 15 files.
+- ⏸ **H.3** — **Deferred 2026-06-01.** Original design preserved
+  in architecture §3 / §10 for the future WASM Component Model
+  plugin host slice. In-tree extension crates (`lattice-multibuffer`
+  today) reach activation through the `ModeActivator` trait
+  introduced in [`multibuffer-views.md`](../architecture/multibuffer-views.md)
+  §3.7 — no event-bus indirection needed because in-tree
+  dispatch already runs on the App thread with `&mut Editor`
+  in scope. The event-bus path is the right shape for capability-
+  gated WASM plugin producers and lands when that work begins.
 - 🗒 **M.3** — Edit propagation: translation-table lookup →
   source dispatch; boundary clipping; multi-excerpt selection
   split; undo grouping across source buffers.
 - 🗒 **M.4** — Live updates from source buffers: anchor-driven
-  excerpt tracking, debounced translation rebuild,
-  cross-pane consistency.
+  excerpt tracking, debounced translation rebuild, cross-pane
+  consistency, **`MultibufferDocumentHandle::set_headerline`
+  API** for the view-header status convention (per architecture
+  §3.7 — async-buffer status surfaces through the headerline,
+  uniform across multibuffer providers and any future
+  async-populated buffer mechanism). `MultibufferSourceClosed
+  { view, source }` typed event so providers choose source-close
+  policy (search drops; diff may keep).
 - 🗒 **M.5** — Expand-context affordance:
   `:multibuffer-expand` / `:multibuffer-contract`.
-- 🗒 **M.6** — `MultibufferProvider` trait + first consumer
-  (`SearchProvider` / `:search-buffer`).
+- 🗒 **M.6** — First provider: `lattice-multibuffer::providers::search`
+  (locked 2026-06-01 — all in-tree providers live within
+  `lattice-multibuffer`, feature-gated). Adds `search` cargo
+  feature pulling `ignore` / `grep-matcher` / `aho-corasick`.
+  Ships `ProjectSearchService` trait + impl + handle, typed
+  events (`ProjectSearchBatchReady` / `Completed` / `Refreshed`
+  / `ProgressUpdated`), `ProjectSearchMultibufferMode`,
+  `project_search(activator, query, options) -> BufferId`
+  public trigger using the async pattern from architecture
+  §3.7 (empty view immediately, headerline shows progress,
+  scan runs on tokio worker threads, batched events update
+  the view). Host's `:search <query>` ex-command thin-wraps
+  the trigger. Bench: `project_search_first_batch_p99_ms` ≤
+  50ms at 1k-file corpus.
 - 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
   into the existing fold registry. **No new keymaps** — the

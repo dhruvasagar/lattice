@@ -6,43 +6,35 @@ The design fragment owns *what + why + contracts*; this file owns
 *when + in what order + status*. Authoritative status per slice
 lives in [`../implementation.md`](../implementation.md).
 
-The H-series unblocks the M.2.b.2 multibuffer major mode by
-making host's buffer + mode dispatch kind-agnostic. After the
-H-series lands, **`lattice-multibuffer` (and every future
-extension crate) can create a buffer of a new kind without
-host knowing the kind exists.**
+> **Status (2026-06-01):** H-series closed after H.2. H.1 + H.2 ✅; **H.3 deferred** to the WASM plugin host slice. See architecture fragment §10 for the rationale.
 
-| Slice | Title | What lands |
-|-------|-------|------------|
-| **H.1** | 🗒 Generic `BufferStore::insert_document_buffer` API | `BufferStore` trait (in `lattice-mode`) gains `insert_document_buffer(id, kind, handle: Arc<dyn Document>, flags, name)`. Host's `BufferRegistry` impl constructs the right `BufferData::Document` / `BufferData::Messages` / `BufferData::Multibuffer` variant from the `kind` tag. Add `BufferData::Multibuffer(DocumentEntry)` variant + matching `BufferEntry::kind()` arm. All `lattice-host` exhaustive matches over `BufferData` extend to cover Multibuffer. No type hoisting needed — primitives (`BufferId`, `BufferKind`, `Arc<dyn Document>`, `BufferFlags`, `Option<String>`) already live in `lattice-core` / `lattice-runtime`. Kinds whose payload is NOT a Document (FileTree, Oil, Terminal, Help) keep their host-internal insertion path. Existing producers (synthetic_buffers, etc.) **don't migrate** in H.1; they keep using the host-internal path. Tests: extension-crate insertion via the trait method roundtrips (lookup returns expected handle + kind). |
-| **H.2** | 🗒 Mode declares target `BufferKind` | `Mode` trait gains `target_buffer_kind() -> Option<BufferKind>` with default `None`. `ModeRegistry::find_major_for_kind(BufferKind) -> Option<ModeId>` indexes registered modes by their declared kind. Override on the existing major modes (`FileTreeMode`, `OilMode`, `MarkdownMode` for `Help`, `MessagesMode`, `TerminalMode`). Refactor host's `crate::modes::resolve_major_mode(kind, lang)` to use the registry lookup; the hardcoded `match kind { ... }` disappears (Document keeps its `Lang`-based dispatch). Tests: registry returns the correct ModeId for each registered kind; existing mode activation paths still work end-to-end. |
-| **H.3** | 🗒 Event-driven major-mode activation | New `Event::BufferOpened { id: BufferId, kind: BufferKind }` in `lattice-protocol::event` (distinct from `DocumentOpened` which stays as the LSP-specific event with text payload). Host wires one `EventKind::BufferOpened` subscriber that looks up the kind via `BufferStore::kind_of(id)` and activates the major mode via `find_major_for_kind`. Migrate existing producers (`editor_boot`, `synthetic_buffers::ensure_named_document_for`, `dispatch::do_edit` brand-new-file branch, file-tree opener, oil opener) from direct `activate_major(...)` calls to `event_bus.publish(BufferOpened { ... })`. Integration test: each buffer kind constructed via the migrated path activates its major mode correctly. |
+The H-series goal was to unblock the M.2.b.2 multibuffer major mode by making host's buffer + mode dispatch kind-agnostic. H.1 + H.2 achieve that for **in-tree extension crates** (the only producers that exist pre-v1). H.3 was the additional infrastructure needed by **WASM plugins** (producers that can't hold `&mut Editor`); pre-v1 it's premature.
 
-After H.3 lands, **M.2.b.2** resumes with:
+| Slice | Title | Status | What lands |
+|-------|-------|--------|------------|
+| **H.1** | Generic `BufferStore::insert_document_buffer` API | ✅ 2026-05-31 (commit `22ee033`) | `BufferStore` trait (in `lattice-mode`) gained `insert_document_buffer(id, kind, handle: Arc<dyn Document>, flags, name)`. Host's `BufferRegistry` impl constructs the right `BufferData::Document` / `BufferData::Messages` / `BufferData::Multibuffer` variant from the `kind` tag. Added `BufferData::Multibuffer(DocumentEntry)` variant + matching `BufferEntry::kind()` arm. All `lattice-host` exhaustive matches over `BufferData` extended to cover Multibuffer. Kinds whose payload is NOT a Document (FileTree, Oil, Terminal, Help) keep their host-internal insertion path. Existing producers (synthetic_buffers, etc.) don't migrate; they keep using the host-internal path. |
+| **H.2** | Mode declares target `BufferKind` | ✅ 2026-06-01 (commit `6f32f94`) | `Mode` trait gained `target_buffer_kind() -> Option<BufferKind>` (default `None`). `ModeRegistry::find_major_for_kind(BufferKind) -> Option<ModeId>` indexes registered modes by their declared kind. Overrides landed on `FileTreeMode → FileTree`, `OilMode → Oil`, `MarkdownMode → Help` (Option B: markdown-mode also serves `Document + Lang::Markdown` via the `Lang`-detection path; the two cohabit), `MessagesMode → Messages`, `TerminalMode → Terminal`. Host's `crate::modes::resolve_major_mode(®istry, kind, lang)` rewrites to use the lookup; the hardcoded match disappears. `BufferKind` gained `Hash`; `lattice-mode` gained a `tracing` dep for the first-registration-wins warning on clobbered kinds. |
+| **H.3** | ~~Event-driven major-mode activation~~ | **Deferred** 2026-06-01 | Original design ([architecture §3 H.3](../../architecture/kind-agnostic-buffers.md)) preserved for the future WASM plugin host slice. See architecture §10 for the rationale. Summary: in-tree extension crates reach activation through the `ModeActivator` trait introduced in [`multibuffer-views.md`](multibuffer-views.md) §3.7; the event-bus path is the right shape for WASM plugins (capability gating, fuel-limited dispatch) and lands when that work begins. |
 
-- `MultibufferMode::target_buffer_kind() -> Some(BufferKind::Multibuffer)` declaration.
-- `lattice_multibuffer::create_multibuffer_view(sources, excerpts) -> Result<Handle>` entry point that internally: builds handle → inserts into MultibufferRegistry → calls `BufferStore::insert_buffer(...)` → publishes `BufferOpened` event. Host has zero multibuffer-specific code.
+## What unblocks M.2.b.2
 
-## Slice sequencing
+H.1 + H.2 are sufficient. M.2.b.2 design is locked at [`multibuffer-views.md`](multibuffer-views.md) §3.7 + the slice plan at [`slice-plans/multibuffer-views.md`](multibuffer-views.md). M.2.b.2 ships:
 
-- **H.1** is foundational — H.2 and H.3 build on the registry / trait changes it lands.
-- **H.2** depends on H.1 (`ModeRegistry::find_major_for_kind` needs the `BufferKind`-aware infrastructure that H.1 prepares around).
-- **H.3** depends on H.2 (the subscriber's mode-lookup goes through `find_major_for_kind`).
+- `MultibufferMode` declaring `target_buffer_kind() = Some(BufferKind::Multibuffer)` (consumed by H.2's registry lookup).
+- `lattice_multibuffer::create_multibuffer_view(activator, sources, excerpts, name, flags) -> BufferId` — inserts via H.1's `BufferStore::insert_document_buffer`, registers the typed handle in `MultibufferRegistry`, activates `multibuffer-mode` via the new `ModeActivator::activate_major_for_kind` (the in-tree synchronous activation surface that replaces the deferred H.3 event path).
+- Host gains: one boot-time `register_multibuffer_modes` + `register InMemoryMultibufferRegistry` call. Zero `match BufferKind::Multibuffer` arms. Zero references to multibuffer types.
 
-## Test discipline
+## Test discipline (H.1 + H.2 landed)
 
-Each slice ships green-on-merge with:
+Both shipped with:
 
-- Architecture-fragment updates if the slice reveals a design refinement.
-- Tests: new APIs + migration tests proving existing modes still activate correctly.
-- Graceful error handling: unknown-kind lookups return `Option::None`, not panics. Producers handle "no major mode for this kind" without crashing.
+- Architecture-fragment updates + slice-plan status flips.
+- Unit tests: H.1 verified `insert_document_buffer` round-trip through the `Document` slot; H.2 verified `find_major_for_kind` returns the registered id, returns `None` for unbound kinds, keeps the first registration on clobber, ignores modes that don't declare a target.
+- Integration tests: `lattice-host` `modes::tests` rewrites confirm `resolve_major_mode` parity for Help / FileTree / Oil / Messages / Terminal post-H.2, and the empty-registry fall-through to `text-mode`.
+- Graceful error handling: unknown-kind lookups return `Option::None`. Duplicate kind claims log + skip (first-wins).
 
-## After H — back to multibuffer
+## Resolved during H.1 / H.2
 
-- **M.2.b.2** ships `MultibufferMode` + `create_multibuffer_view(...)`. Uses H.1's `insert_buffer`, declares its target kind via H.2, publishes `BufferOpened` for H.3 to activate it.
-- **M.2.b.3** ships the `]e` / `[e` / `]E` / `[E` motions through the mode's keymap.
-- **M.2.c** ships the bench.
-
-## Pending issue from M.2.b.1
-
-M.2.b.1 added `BufferKind::Multibuffer` but did NOT add a matching `BufferData::Multibuffer(DocumentEntry)` variant. Today the variant is declared-but-unreachable — no path constructs an entry whose `kind()` returns `Multibuffer`. **H.1 fixes this** by adding the missing `BufferData::Multibuffer` variant alongside the trait method.
+- **`BufferData::Multibuffer` unreachable-variant gap** (open issue from M.2.b.1) — H.1 closed it.
+- **Pre-v1 `BufferData` extensibility** (architecture §8 Q1/Q2) — closed enum retained; in-tree extension crates use the typed `insert_document_buffer` primitive method; plugin-defined kinds revisit when the plugin host work starts.
+- **H.3's right shape** — answered: not pre-v1. See architecture §10.

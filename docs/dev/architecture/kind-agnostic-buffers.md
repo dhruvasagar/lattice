@@ -1,5 +1,7 @@
 # Kind-agnostic buffer + mode infrastructure (H-series)
 
+> **Status (2026-06-01):** H-series closed after H.2. H.1 + H.2 ✅ landed; **H.3 deferred** — see §10 below for rationale.
+
 ## 1. Vision
 
 Today every new `BufferKind` requires hand-edits in `lattice-host`:
@@ -10,9 +12,9 @@ Today every new `BufferKind` requires hand-edits in `lattice-host`:
 
 This wiring violates paramount goal #2 (extensibility, WASM Component Model plugin path). When a plugin defines a buffer kind, the plugin **also has to land patches in lattice-host** to make the kind reachable — exactly the cross-plugin coupling the everything-is-a-buffer principle is supposed to eliminate.
 
-The H-series removes that coupling. The shape (verbal):
+The H-series removes that coupling for the **insertion** and **mode-resolution** axes. The activation axis was originally planned for H.3 but deferred (§10) after the design pass showed it was the wrong shape pre-v1. Post-H.2 verbal goal:
 
-> When ANY producer (in-tree code, plugin) creates a buffer, host's role is uniform dispatch: read the kind, find the major mode for that kind via the mode registry, activate it. Host never names a specific kind.
+> When ANY producer (in-tree code, in-tree extension crate) creates a buffer, host's `resolve_major_mode` looks up the kind in a registry-indexed table that the mode itself populated — no `match BufferKind` block in host code. WASM-plugin-driven activation (the event-driven path originally framed as H.3) lands when the plugin host actually exists.
 
 ## 2. Paramount-goal alignment
 
@@ -100,50 +102,28 @@ pub fn resolve_major_mode(kind: BufferKind, lang: Lang) -> ModeId {
 
 The hardcoded `match kind { BufferKind::Help => ..., BufferKind::FileTree => ..., ... }` disappears. Each mode self-declares.
 
-### H.3 — Event-driven major-mode activation
+### H.3 — Event-driven major-mode activation **(deferred — see §10)**
 
-New event:
+The original H.3 design proposed a typed `BufferOpened { id, kind }` event with a single host subscriber driving activation. The 2026-06-01 design pass (§10) showed this is the right shape *for the WASM plugin host*, but premature pre-v1. In-tree extension crates (`lattice-multibuffer` today, future in-tree provider crates) reach activation through the synchronous `ModeActivator` trait introduced by the multibuffer slice plan — no event-bus indirection needed because in-tree dispatch already runs on the App thread with `&mut Editor` access.
 
-```rust
-// in lattice-protocol::event
-Event::BufferOpened {
-    id: BufferId,
-    kind: BufferKind,
-}
-```
-
-(Distinct from `DocumentOpened`, which stays as the LSP-specific event with `text` payload.)
-
-Host subscribes once at boot:
+Sketch retained below for the future slice that lands the WASM-plugin path:
 
 ```rust
-event_bus.subscribe(
-    EventFilter::kind(EventKind::BufferOpened),
+// (Deferred — design preserved for the WASM plugin host slice.)
+Event::BufferOpened { id: BufferId, kind: BufferKind }
+
+event_bus.subscribe(EventFilter::kind(EventKind::BufferOpened),
     SubscriptionTarget::Sync(Arc::new(move |event| {
         if let Event::BufferOpened { id, kind } = event {
             let major_id = mode_registry.find_major_for_kind(kind)?;
             mode_registry.activate_major(/* … */, id, major_id, /* … */)?;
         }
-    })),
-);
+    })));
 ```
 
-This single subscriber covers every kind, in-tree or plugin-defined. Producers replace their direct `mode_registry.activate_major(...)` calls with `event_bus.publish(Event::BufferOpened { id, kind })`.
+## 4. Migration shape (existing producers) **(deferred with H.3)**
 
-## 4. Migration shape (existing producers)
-
-Producers that today create buffers + activate modes:
-
-| Producer | Today | Post-H.3 |
-|---|---|---|
-| `editor_boot` (initial document) | Direct `activate_major(...)` from boot | Publishes `BufferOpened`; subscriber activates |
-| `synthetic_buffers::ensure_named_document_for` | Direct `activate_major(...)` for `*lsp*` / `*messages*` etc. | Publishes `BufferOpened` |
-| `dispatch::do_edit` (brand-new-file) | Direct `activate_major(...)` inside `open_fresh_into_active_slot` | Publishes `BufferOpened` |
-| File-tree / Oil openers | Direct `activate_major(...)` | Publish `BufferOpened` |
-| Future `MultibufferDocumentHandle` producers | (doesn't exist yet) | Publishes `BufferOpened` |
-| Future plugin producers | (doesn't exist yet) | Publishes `BufferOpened` via host import |
-
-Every producer becomes uniform: insert into registry → publish event. Activation is dispatched centrally.
+The original H.3 carve migrated five existing producers off direct `activate_major` calls onto event publication. Per §10's deferral, all five **stay on the direct-call path**. The `lattice-multibuffer` slice plan introduces a `ModeActivator` trait (see [`multibuffer-views.md`](multibuffer-views.md) §3.6) that gives extension crates the same synchronous activation surface without requiring `&lattice_host::Editor`. That seam is what H.3 would have eventually generalised; pre-v1 the in-tree shape is enough.
 
 ## 5. Rejected alternatives
 
@@ -218,6 +198,46 @@ Should the event carry the handle (`Arc<dyn Document>`) or just the BufferId + k
 
 ## 9. Cross-references
 
-- `docs/dev/architecture/multibuffer-views.md` §3.6 — the original "MultibufferMode is a major mode" design that the H-series unblocks.
+- `docs/dev/architecture/multibuffer-views.md` §3.6 — the original "MultibufferMode is a major mode" design that the H-series unblocks; §3.7 (2026-06-01) introduces the `ModeActivator` trait that supersedes H.3 for in-tree extension crates.
 - `feedback_mode_owns_its_buffers` (memory) — the principle the H-series enforces at the infrastructure level.
 - `feedback_buffers_no_special_case` (memory) — the no-kind-branching rule the H-series makes infrastructure-enforceable.
+
+## 10. H.3 deferral (2026-06-01)
+
+### What changed
+
+H.1 (`BufferStore::insert_document_buffer`) and H.2 (`Mode::target_buffer_kind` + `ModeRegistry::find_major_for_kind`) landed as designed. **H.3 (event-driven activation) is deferred** to the slice that lands the WASM Component Model plugin host.
+
+### Why
+
+The 2026-06-01 design pass for `multibuffer-views.md` M.2.b.2 (covering the first extension crate to consume H.1 + H.2) worked through a concrete end-to-end SearchProvider example and found:
+
+1. **In-tree extension crates already have synchronous activation access.** `lattice-multibuffer` (and every future in-tree provider crate that ships within it) is invoked from host dispatch paths that already hold `&mut Editor`. The activation cascade (`activate_major_for_buffer_kind` → default minor → auto minors → recompute options + completion → maybe-auto-LSP) is `&mut Editor`-bound. A thin `ModeActivator` trait in `lattice-mode` exposes that surface to extension crates without requiring `&lattice_host::Editor` in the type signature (see `multibuffer-views.md` §3.7). No event-bus indirection needed.
+
+2. **H.3's design serves a use case that doesn't exist pre-v1.** The architectural rationale for publish-and-drain activation is: "a producer that can't hold `&mut Editor` needs a way to trigger activation." That producer is a WASM Component Model plugin instance running in `wasmtime::Store`. Pre-v1 the plugin host doesn't exist; pre-v1 every producer is in-tree and holds `&mut Editor`.
+
+3. **H.3 was the most-flexible shape, not the right one pre-v1.** Per the H-series doc's own §3.1 stance ("closed enum pre-v1 — build the right shape, not the most flexible shape"), preemptively shipping an event-driven path that no current producer needs and that the WASM-plugin design will want to redesign anyway (capability gating, fuel-limited dispatch, error propagation through the plugin boundary) trades correctness for premature generality.
+
+4. **The full activation cascade is `&mut Editor`-bound in non-trivial ways.** Default-minor + auto-minor + recompute-options + recompute-completion-sources + maybe-auto-LSP-mode all mutate Editor state beyond `ActiveModes`. A sync subscriber inside `Arc<dyn Fn>` can't reach those without interior mutability (regressive for goal #1) or a per-tick drain (semantic deferral the slice plan didn't acknowledge). Both rough edges disappear when activation happens on the App thread with `&mut Editor` in scope.
+
+### What stays
+
+- H.1: `BufferStore::insert_document_buffer` — extension crates insert Document-shaped buffers without host knowing the kind.
+- H.2: `Mode::target_buffer_kind` + `ModeRegistry::find_major_for_kind` — kind-to-major lookup goes through the registry, not a host-side match.
+- The five existing producers stay on direct `activate_major_for_buffer_kind` calls; nothing migrates.
+
+### What the deferred work looks like when it lands
+
+When the WASM Component Model plugin host slice begins:
+
+- `BufferOpened { id, kind }` typed event (using the typed-event-bus path established post-§8 Q3).
+- One host subscriber that runs the activation cascade.
+- The subscriber forwards into the App's per-tick drain (same shape as `drain_mode_lifecycle_events`).
+- WASM plugins publish `BufferOpened` through the capability-gated bus surface; the cascade runs deferred-by-one-tick on the App thread.
+- Capability gating, fuel-limited dispatch, error propagation, and trust-domain isolation get designed in from the start — not retrofitted onto a pre-v1 surface.
+
+### Sources for this decision
+
+- The 2026-06-01 M.2.b.2 design conversation (this file's edit log + `multibuffer-views.md` §3.7).
+- Project memory `feedback_evaluate_against_paramount_goals` — H.3's value tested against goals #2 (extensibility for plugins) and #4 (async); it lands when goal #2 has a concrete claimant (plugin host) and a capability boundary to design against.
+- CLAUDE.md decision heuristic #1 ("best long-term fit beats easy implementation") + the explicit pre-v1 stance ("build the right shape, not the most flexible shape").

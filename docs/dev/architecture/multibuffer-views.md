@@ -610,6 +610,15 @@ post-v1 follow the same pattern: new crate + new major mode
   AND in the sidecar) and puts kind-specific surface in
   host. Major-mode ownership achieves the same typed-access
   goal without the storage duplication or host pollution.
+  **Note (2026-06-01):** §3.7 introduces a `MultibufferRegistry`
+  living **in `lattice-multibuffer` itself** (not host) as a
+  typed lookup service. That's a different shape from this
+  rejected alternative: storage isn't duplicated (the registry
+  holds the typed `Arc<MultibufferDocumentHandle>` for downcast-
+  free provider access; `BufferRegistry` holds the upcast
+  `Arc<dyn Document>` for kind-agnostic dispatch — the same
+  underlying handle, two access paths for two access patterns).
+  Host stays oblivious.
 - *`Document` trait gains `excerpts()` accessor (default
   `None`).* Pollutes the universal trait with one kind's
   surface. Every future Document impl carries an accessor it
@@ -624,6 +633,397 @@ post-v1 follow the same pattern: new crate + new major mode
   multibuffer ISN'T a state attached to a regular buffer —
   it IS the buffer's identity. Major mode captures that
   correctly.
+
+### 3.7 M.2.b.2 — the in-tree extension-crate seam (2026-06-01)
+
+The H-series ([`kind-agnostic-buffers.md`](kind-agnostic-buffers.md))
+opened H.3 as a planned event-driven activation path. The
+2026-06-01 design pass for M.2.b.2 worked through a concrete
+end-to-end `SearchProvider` example and chose a different shape:
+**deferred H.3** + introduced four small abstractions that give
+`lattice-multibuffer` (and every future in-tree provider crate
+shipped within it) everything it needs without the event-bus
+indirection. The event-bus path remains the right design for
+WASM plugins; it lands when that plugin host exists.
+
+The abstractions, in dependency order:
+
+#### `ModeActivator` (in `lattice-mode`)
+
+```rust
+pub trait ModeActivator {
+    fn activate_major_for_kind(&mut self, id: BufferId, kind: BufferKind);
+    fn activate_minor_by_id(&mut self, id: BufferId, mode: ModeId);
+    fn services(&self) -> Arc<ServiceRegistry>;
+}
+```
+
+`impl ModeActivator for Editor` is three thin wrappers — the
+existing `Editor::activate_major_for_buffer_kind` /
+`Editor::activate_minor_by_id` already run the full cascade
+(major → default minor → auto minors → recompute options +
+completion → maybe-auto-LSP). `services()` returns a cloned
+`Arc<ServiceRegistry>` so extension-crate code can pull
+service handles without fighting the borrow checker against the
+`&mut` activator borrow.
+
+**Why a trait, not `&mut Editor`:** `lattice-multibuffer` can't
+depend on `lattice-host` (host already depends on
+`lattice-multibuffer`). The trait lives in `lattice-mode` (both
+crates depend on it). The seam is also what the WASM plugin
+host will eventually need to implement against a synthetic
+activator that publishes events for off-thread plugin trigger;
+the trait surface stays the same.
+
+**Signal routing.** `activate_major_for_kind` returns `()`.
+`Editor`'s impl drains internal `RendererSignal`s into the
+existing per-Editor pending-signals queue (already shipped for
+the M-async cascade). Extension-crate code never touches
+`RendererSignal`. Keeps `lattice-mode` free of a host-layer
+type.
+
+#### `MultibufferRegistry` (in `lattice-multibuffer`)
+
+```rust
+pub trait MultibufferRegistry: Send + Sync {
+    fn handle(&self, view: BufferId) -> Option<Arc<MultibufferDocumentHandle>>;
+}
+pub type MultibufferRegistryHandle = Arc<dyn MultibufferRegistry>;
+
+pub struct InMemoryMultibufferRegistry { /* RwLock<HashMap<BufferId, Arc<MultibufferDocumentHandle>>> */ }
+```
+
+Registered in `ServiceRegistry` at boot.
+`create_multibuffer_view` writes; providers + multibuffer-
+internal code read by `BufferId`. Returns the **typed**
+`Arc<MultibufferDocumentHandle>` so providers can call typed
+methods (`append_excerpts`, `replace_excerpts`,
+`refresh_for_source`) without downcasting from
+`Arc<dyn Document>`.
+
+**Cleanup.** `register_multibuffer_modes(&mut registry, &events)`
+subscribes a typed `DocumentClosed` handler at boot that removes
+the entry when its view buffer closes. Self-contained; no
+external bookkeeping.
+
+**Why typed-handle registry instead of `Document: Any` +
+downcast:** keeps `Document` clean; matches the existing
+`TerminalStoreHandle` precedent; isolates the multibuffer-
+specific lookup to its own crate.
+
+**Why not in host (the §3.6 rejected alternative):** the §3.6
+rejection was about storage *duplication* — multibuffer handles
+in `BufferRegistry` AND in a sidecar in `lattice-host`. The
+M.2.b.2 registry lives in `lattice-multibuffer` and stores the
+same underlying handle that `BufferRegistry` upcasts to
+`Arc<dyn Document>`. Two access paths for two access patterns,
+zero kind-specific surface in host.
+
+#### `create_multibuffer_view` (in `lattice-multibuffer`)
+
+```rust
+pub fn create_multibuffer_view(
+    activator: &mut dyn ModeActivator,
+    sources: Vec<BufferId>,
+    excerpts: Vec<Excerpt>,
+    name: Option<String>,
+    flags: BufferFlags,
+) -> BufferId
+```
+
+The atomic "make me a multibuffer view" call. Internally:
+
+1. Allocate `BufferId`.
+2. Build `MultibufferDocumentHandle` from `sources` + `excerpts`
+   (may be empty — providers commonly create empty and stream
+   excerpts in asynchronously; see "async-provider pattern"
+   below).
+3. Insert the typed handle into `MultibufferRegistry` (pulled
+   from `activator.services()`).
+4. Insert into the buffer registry via
+   `BufferStore::insert_document_buffer(id, BufferKind::Multibuffer, handle.clone() as Arc<dyn Document>, flags, name)` (H.1).
+5. `activator.activate_major_for_kind(id, BufferKind::Multibuffer)` — H.2's registry lookup finds `MultibufferMode`; the activation cascade runs through `Editor`'s impl.
+6. Return `id`.
+
+Failures (missing `BufferStore` / `MultibufferRegistry` service,
+activation cascade failure) log + skip + return early via the
+existing `ModeEvent::ModeActivationFailed` path. No panics. No
+`Result` return type — matching `activate_major_for_buffer_kind`'s
+existing signature. Provider can verify post-create via
+`activator.services().get::<MultibufferRegistryHandle>()
+.and_then(|r| r.handle(id))` returning `Some`.
+
+#### `MultibufferMode` (in `lattice-multibuffer`)
+
+```rust
+pub struct MultibufferMode;
+impl Mode for MultibufferMode {
+    type Guard = ();
+    fn id(&self) -> ModeId { Self::mode_id() }                       // "multibuffer-mode"
+    fn kind(&self) -> ModeKind { ModeKind::Major }
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::Multibuffer)                                // consumed by H.2
+    }
+    fn options(&self) -> OptionOverrideSet {
+        overrides! { ReadOnly = true, NoFile = true }                // M.3 flips ReadOnly conditional on edit-propagation policy
+    }
+    fn keymap(&self) -> Keymap { excerpt_motion_keymap() }           // M.2.b.3 fills in ]e/[e/]E/[E
+    fn on_activate(&self, _ctx) -> LifecycleFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+}
+```
+
+Generic. Knows nothing about *why* excerpts exist. Provider-
+minors layer provider-specific behaviour on top.
+
+### Provider model
+
+A multibuffer **provider** is a unit of code (a submodule of
+`lattice-multibuffer/src/providers/`) that owns one
+multibuffer-backed user surface (project-search, lsp-
+references, project-diff, ai-edits, diagnostics). Each provider
+ships:
+
+- A **public trigger function** (`project_search(activator,
+  query, options) -> BufferId`) that the host's ex-command
+  dispatcher calls.
+- A **provider-minor mode** (`ProjectSearchMultibufferMode`)
+  carrying the provider-specific keymap, lifecycle
+  subscriptions, and Guard cleanup.
+- A **provider service trait + impl**
+  (`ProjectSearchService` + `ProjectSearchServiceHandle`)
+  holding per-view state keyed by the multibuffer's
+  `BufferId`. Registered in `ServiceRegistry` at boot. The
+  service trait abstracts storage so the impl can use whatever
+  fits (`RwLock<HashMap>`, dashmap, ArcSwap of an Arc map,
+  etc.).
+- **Typed events** (`ProjectSearchBatchReady`,
+  `ProjectSearchCompleted`, `ProjectSearchRefreshed`,
+  optionally `ProjectSearchProgressUpdated`) declared via
+  `lattice_protocol::register_event!`. The minor subscribes;
+  the scan task publishes.
+- A **`register_<provider>(&mut registry, &mut services, …)`**
+  helper called from boot wiring.
+
+**Crate layout** (locked 2026-06-01):
+
+```
+crates/lattice-multibuffer/
+├── Cargo.toml
+└── src/
+    ├── lib.rs                   # re-exports
+    ├── document.rs              # MultibufferDocumentHandle (M.1.a + update API)
+    ├── mode.rs                  # MultibufferMode + register_multibuffer_modes
+    ├── registry.rs              # MultibufferRegistry trait + InMem impl + DocumentClosed subscriber
+    ├── view.rs                  # create_multibuffer_view
+    ├── motions.rs               # ]e/[e/]E/[E (M.2.b.3)
+    ├── header.rs                # MultibufferHeaderProvider (M.2.a, landed)
+    └── providers/
+        ├── mod.rs
+        ├── search.rs            # M.6
+        ├── lsp_references.rs    # later
+        ├── diff.rs              # later
+        ├── diagnostics.rs       # later
+        └── ai_edits.rs          # later
+```
+
+Each provider gated behind a cargo feature so opt-out builds
+stay clean:
+
+```toml
+[features]
+default = ["search", "lsp-references", "diff", "diagnostics", "ai-edits"]
+search = ["dep:ignore", "dep:grep-matcher", "dep:aho-corasick"]
+lsp-references = ["dep:lattice-lsp"]
+diff = ["dep:lattice-diff"]            # diff subsystem extraction precedes this provider
+diagnostics = ["dep:lattice-diagnostics"]
+ai-edits = []
+```
+
+**Dep-direction audit**: `lattice-host` already depends on
+`lattice-multibuffer` (per recent M.2.b.0 / M.2.b.1). So
+`lattice-multibuffer` MUST NOT depend on `lattice-host`. The
+`diff` provider's data source (`lattice-host::diff` today)
+gets extracted to `lattice-diff` first; same for diagnostics.
+`lattice-lsp` doesn't depend on `lattice-multibuffer`, so the
+`lsp-references` provider can depend on `lattice-lsp` cleanly.
+
+### Async provider pattern
+
+Providers that compute their excerpts via I/O (search, diff,
+LSP, diagnostics) run the computation in a `tokio` task —
+**never on the UI thread**, per paramount goal #1 (sub-frame
+input latency: UI thread does no I/O, no parsing, no shaping).
+
+The pattern:
+
+1. Trigger function (sync, returns fast):
+   - Calls `create_multibuffer_view` with **empty `sources`
+     and `excerpts`** — the view opens immediately, showing
+     the "Searching..." placeholder in its headerline (see
+     "Status surface" below).
+   - Registers initial provider state in the provider service.
+   - Activates the provider-minor.
+   - Spawns the compute task (via the provider service's
+     `spawn_scan` / equivalent, which retains the `JoinHandle`
+     for cancellation on refresh / view close).
+   - Returns the `BufferId`.
+2. Compute task (async, on tokio worker threads):
+   - Walks its source data.
+   - Accumulates into batches (size + interval bounded — e.g.,
+     50 files OR 16ms, whichever first).
+   - Publishes typed events (`ProjectSearchBatchReady { view,
+     files }`) on each batch boundary.
+   - Publishes a `ProjectSearchCompleted { view, total }`
+     event when done.
+3. Provider-minor's `on_activate`:
+   - Pulls the typed view handle via
+     `ctx.service::<MultibufferRegistryHandle>().handle(ctx.buffer_id())`.
+   - Subscribes to provider events via `ctx.events()`.
+   - Spawns lightweight forwarder tasks that filter events to
+     **this** view's `BufferId`, then call
+     `view.append_excerpts(batch.to_excerpts())`.
+   - Stashes subscription IDs + forwarder `JoinHandle`s in the
+     `Guard`. `Drop` aborts the forwarders + lets the bus
+     prune the channels lazily.
+
+This is the canonical shape for **any** async multibuffer
+provider. Sync providers (e.g., `lsp_references` triggered
+after the LSP server's response is in hand) skip the spawn
+step and pass `sources` + `excerpts` to
+`create_multibuffer_view` directly.
+
+### Status surface — the headerline convention
+
+**Cross-cutting convention** (applies to every multibuffer
+provider, and to any future async-populated buffer mechanism):
+async operation status is surfaced through the multibuffer's
+**headerline** — the view-header virtual row above the first
+excerpt, distinct from per-excerpt headers.
+
+Concrete progression:
+
+- **Project-search:** `"Searching... 42 hits, 1.2k files
+  scanned"` → `"Search complete: 87 hits in 2.3k files"`
+- **LSP-references:** `"Fetching references..."` → `"12
+  references across 4 files"`
+- **Project-diff:** `"Computing diff..."` → `"47 changes
+  across 9 files (working tree vs HEAD)"`
+- **Diagnostics:** `"Loading diagnostics..."` → `"23 errors,
+  14 warnings, 5 hints"`
+
+**Why:** async operations need progress + completion signals
+visible inline with the data the user is waiting on. Status
+lines / notification badges fragment attention. The headerline
+is already part of the multibuffer's render surface (M.2.a
+`MultibufferHeaderProvider`); extending it to carry view-level
+status keeps the affordance uniform across providers.
+
+**API surface** (lands with M.4's live-update infrastructure,
+sketched for M.2.b.2 / M.6 awareness):
+
+```rust
+impl MultibufferDocumentHandle {
+    /// Set the view-level header text. Renders above the first
+    /// excerpt. Provider-driven; typical use is progress +
+    /// completion status. Publishes `MultibufferHeaderlineChanged`.
+    pub fn set_headerline(&self, status: HeaderlineStatus);
+}
+
+pub enum HeaderlineStatus {
+    Idle,                                    // no headerline rendered
+    InProgress { label: String, count: Option<usize> },
+    Complete { summary: String },
+    Failed { reason: String },
+}
+```
+
+**Convention applies beyond multibuffer.** Any future
+async-populated buffer kind (REPL streaming output, log tails,
+build output, etc.) surfaces operation status through its own
+headerline / view-header equivalent. Keeps the affordance
+discoverable and uniform across the editor.
+
+### Worked example — SearchProvider end-to-end
+
+The composition of all five abstractions, traced for
+`:search "TODO"`:
+
+```text
+User → :search "TODO" (host ex-command dispatch, &mut Editor)
+      → lattice_multibuffer::providers::search::project_search(
+            &mut editor, "TODO".to_string(), SearchOptions::default()
+        )
+          → search_svc = editor.services().get::<ProjectSearchServiceHandle>()
+          → view_id = create_multibuffer_view(
+                editor, Vec::new(), Vec::new(),
+                Some("*search:TODO*"), BufferFlags::default()
+            )
+            → registers handle in MultibufferRegistry
+            → BufferStore::insert_document_buffer (H.1)
+            → editor.activate_major_for_kind(id, Multibuffer)
+              → resolve_major_mode finds multibuffer-mode (H.2)
+              → cascade runs (ReadOnly + NoFile contributions land)
+          → search_svc.set_state(view_id, ProjectSearchState::scanning(...))
+          → view.set_headerline(InProgress { label: "Searching", count: Some(0) })
+          → editor.activate_minor_by_id(view_id, ProjectSearchMultibufferMode::mode_id())
+            → on_activate(ctx) subscribes to ProjectSearchBatchReady /
+              ProjectSearchCompleted / DocumentChanged-on-sources
+          → search_svc.spawn_scan(view_id, "TODO", opts)
+            → tokio::spawn { walker.next() → matcher.scan_file() → ... }
+          → returns view_id
+
+[scan task, tokio worker thread]
+  for each (file_batch, batch_count):
+      events.publish_typed(ProjectSearchBatchReady { view: view_id, files: batch })
+  events.publish_typed(ProjectSearchCompleted { view: view_id, total: N })
+
+[provider-minor forwarder task, tokio]
+  while batch = rx.recv().await:
+      if batch.view != view_id: continue
+      view = mb_registry.handle(view_id)
+      view.append_excerpts(batch.to_excerpts())
+      view.set_headerline(InProgress { label: "Searching", count: Some(view.excerpt_count()) })
+
+[completion forwarder task]
+  let evt = completion_rx.recv().await
+  if evt.view == view_id:
+      view.set_headerline(Complete { summary: format!("{} hits", evt.total) })
+
+[user closes view]
+  :bd → DocumentClosed published
+       → MultibufferRegistry cleanup subscriber removes entry
+       → ProjectSearchService.clear(view_id) (own subscriber)
+       → ModeRegistry deactivates minor → Guard drops → forwarders abort,
+         subscriptions go silent (closed-tx pruned lazily on next publish)
+```
+
+Every transition uses an existing or M.2.b.2-introduced seam.
+Host has zero search-specific code, zero references to
+`MultibufferDocumentHandle`, zero `match BufferKind::Multibuffer`
+arms.
+
+### Decisions locked 2026-06-01
+
+| ID | Decision | Rationale |
+|---|---|---|
+| Activation seam | `ModeActivator` trait | `lattice-multibuffer` can't depend on `lattice-host`; trait in `lattice-mode` works both directions. Same surface WASM plugin host will eventually need. |
+| Major activation | `create_multibuffer_view` does it | Provider can't forget; insert+activate stays atomic. |
+| Minor activation | Provider does it explicitly | Provider seeds per-view state between major activation and minor activation; folding minor activation into `create_multibuffer_view` adds a parameter that's awkward for sync providers without minors. |
+| Registry cleanup | `DocumentClosed` subscriber in `lattice-multibuffer`'s register helper | Self-contained; matches the typed-event-driven cleanup pattern used elsewhere. |
+| Source-buffer close | Multibuffer holds `BufferId`s only; publishes `MultibufferSourceClosed { view, source }` on close; providers choose policy | Different providers want different behaviour (search drops; diff keeps as historical reference); deferring to provider is correct. |
+| Activator return type | `()` on the trait; signals drain via Editor's internal queue | Keeps `RendererSignal` out of `lattice-mode`. |
+| Async-scan UX | Open empty view immediately; populate via batched events; headerline shows progress | Paramount goal #1 (UI thread does no I/O); goal #4 (async by construction). |
+| Provider crate location | All in-tree providers live in `lattice-multibuffer/src/providers/`, feature-gated | User decision (2026-06-01) — providers we ship are part of multibuffer's deliverable, not standalone crates. |
+| Status surface | Headerline (view-header virtual row) | Discoverable, uniform across providers, doesn't fragment user attention. Convention extends to all future async-populated buffer kinds. |
+| Excerpt motions location | `lattice-multibuffer/src/motions.rs`, contributed via `MultibufferMode::keymap()` | Excerpts only exist in multibuffers; motion ownership tracks data ownership. |
+
+### Rejected during the 2026-06-01 pass
+
+- **H.3 event-driven activation pre-v1.** See [`kind-agnostic-buffers.md`](kind-agnostic-buffers.md) §10. Reintroduced when the WASM plugin host slice begins.
+- **Buffer-locals access on `ModeContext`.** ModeContext's design rationale (App-managed buffer-locals, App-side writes) stays. Per-provider state lives in per-provider services keyed by `BufferId`. Buffer-locals stay reserved for cross-cutting App-owned state (syntax handles, fold lists, icons).
+- **Sync initial scan + async continuation.** Even a "fast first batch" sync scan on the dispatch thread violates paramount goal #1. Trigger returns immediately; everything happens via events.
+- **`Document: Any` + downcast for typed handle access.** Contaminates the universal trait; opens the escape-hatch pattern for every future kind. Typed registry (`MultibufferRegistry`) keeps the downcast confined to multibuffer's own crate.
+- **Provider crates external to `lattice-multibuffer`.** User decision (2026-06-01): providers ship with multibuffer; the convention is one crate, feature-gated provider submodules.
 
 ## 4. Edit propagation
 

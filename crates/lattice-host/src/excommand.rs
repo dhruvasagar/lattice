@@ -437,6 +437,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("HoverClose", "ex:hover-close"),
     ("h", "ex:help"),
     ("help", "ex:help"),
+    // K.3.1 (2026-06-02): emacs-style canonical name for the
+    // help-for-help entry point. Same effect as `:help` — the
+    // <C-h>-prefix bindings (`<C-h><C-h>` / `<C-h>?`) wire here
+    // per the K.3 help-prefix slice plan.
+    ("help-for-help", "ex:help"),
     ("diagnostics", "ex:diagnostics"),
     ("diag", "ex:diagnostics"),
     ("diag-next", "ex:diag-next"),

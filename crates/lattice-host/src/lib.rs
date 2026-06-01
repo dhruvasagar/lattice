@@ -89,6 +89,10 @@ pub mod virtual_rows_worker;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;
+// K.3.2 (2026-06-02): emacs-style <C-h> help-prefix bindings
+// (Normal-mode, Builtin layer). See module doc for the design
+// rationale incl. Option 2 (no bare <C-h> leaf).
+pub mod keymap_help;
 pub mod keymap_insert;
 // K.2.4 (2026-06-01): host translation pass that walks
 // `ModeRegistry`, calls `Mode::keymap()` on each mode, and

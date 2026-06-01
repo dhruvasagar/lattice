@@ -925,6 +925,15 @@ impl Editor {
                 crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                // K.3.2 (2026-06-02): emacs-style <C-h> map at
+                // KeymapLayer::Builtin (Normal-mode only) —
+                // <C-h><C-h> / <C-h>? open :help-for-help;
+                // <C-h>{k,c,o,e,m,b,a,K} route to the
+                // respective :describe-* / :apropos / :keymap.
+                // Resolves command names against the registry
+                // (populated above by ex_commands::populate +
+                // actions::populate).
+                crate::keymap_help::register_help_prefix_bindings(&h, &registry);
                 // D.5.b (2026-05-30): push the diff-mode minor
                 // keymap layer once. K.1.c per-keystroke filter
                 // gates the chord so it only fires on buffers

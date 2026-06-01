@@ -49,7 +49,7 @@ use crate::BindingMode;
 /// privacy boundary — preserving forgery-prevention per
 /// DESIGN.md §5.11.1: every binding's source is captured at the row's
 /// own `file!()` + `line!()`, not supplied ad-hoc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeymapEntry {
     pub chord: &'static str,
     pub mode: BindingMode,

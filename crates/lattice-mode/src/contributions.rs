@@ -13,6 +13,7 @@ use lattice_grammar::{CommandInvocation, SourceLocation};
 use lattice_protocol::ChordPattern;
 
 use crate::binding_mode::BindingMode;
+use crate::keymap_entry::KeymapEntry;
 
 /// One mode-contributed keymap binding.
 ///
@@ -42,13 +43,25 @@ pub struct KeymapBinding {
     /// Where this binding was registered. Surfaces in
     /// `:describe-key` and the upcoming `:keymap` listing.
     pub source: SourceLocation,
+    /// Human-readable one-line doc surfaced by `:describe-key`
+    /// and the `:keymap` listing. K.2.4.A.0.2: populated when
+    /// the binding originates from a `keymap_entry!`-driven
+    /// entry (every entry carries a doc) and translated by the
+    /// host pass into a `KeymapBinding`. `None` when the
+    /// binding came via `bind_chord` (the terse chain form,
+    /// optimized for ergonomics) or via `KeymapBinding::new`
+    /// directly. Plugin and runtime `:bind` callers can attach
+    /// docs via [`Self::with_doc`].
+    pub doc: Option<&'static str>,
 }
 
 impl KeymapBinding {
     /// Construct one mode-contributed binding. Modes use the
     /// `lattice_grammar::SourceLocation::builtin_file(file!(),
     /// line!())` idiom for `source` so provenance points at
-    /// the binding declaration's own `file:line`.
+    /// the binding declaration's own `file:line`. `doc`
+    /// defaults to `None`; attach a doc string via
+    /// [`Self::with_doc`].
     pub fn new(
         mode: BindingMode,
         chords: Vec<ChordPattern>,
@@ -60,7 +73,16 @@ impl KeymapBinding {
             chords,
             command,
             source,
+            doc: None,
         }
+    }
+
+    /// Attach a human-readable one-line doc. Returned via
+    /// `:describe-key` and `:keymap`. Builder shape so call
+    /// sites can chain `KeymapBinding::new(...).with_doc("...")`.
+    pub fn with_doc(mut self, doc: &'static str) -> Self {
+        self.doc = Some(doc);
+        self
     }
 }
 
@@ -68,13 +90,41 @@ impl KeymapBinding {
 ///
 /// `Keymap::default()` is the empty contribution -- modes that
 /// don't ship bindings rely on the [`crate::Mode::keymap`] trait
-/// default. Modes that do contribute build the binding list
-/// imperatively (today) or via a macro (a thin layer on top of
-/// this type can ship later without touching the substrate).
+/// default.
+///
+/// Two declaration paths share the same contribution shape:
+///
+/// 1. **Chain form** — `Keymap::new().bind_chord(...)` /
+///    `.bind(...)`. Terse; ergonomic for 1-5 bindings; populates
+///    [`Keymap::bindings`] with fully-typed [`KeymapBinding`]s.
+///    Source-location auto-captured via `#[track_caller]`. No
+///    docstring per binding (use `.bind(KeymapBinding::new(...)
+///    .with_doc(...))` if needed).
+/// 2. **Table form** — `Keymap::from_entries(&MY_TABLE)` /
+///    `.extend_with_entries(&...)`. Static-catalog-style;
+///    ergonomic for 5-20+ bindings; references a
+///    `&'static [KeymapEntry]` built with the [`keymap_entry!`]
+///    macro. Each entry carries a docstring; the host
+///    translation pass (K.2.4.A.0.3) resolves the entry's
+///    canonical command-name string against the
+///    `CommandRegistry` at registration time, building one
+///    [`KeymapBinding`] per resolvable entry. Mode authors
+///    declare entries in a `static` slice next to the impl;
+///    macro-captured `file!()` + `line!()` give per-row
+///    provenance.
+///
+/// The two paths compose:
+///
+/// ```ignore
+/// fn keymap(&self) -> Keymap {
+///     Keymap::from_entries(&MULTIBUFFER_KEYMAP)
+///         .bind_chord(BindingMode::Normal, "<C-r>", self.cmd.refresh)
+/// }
+/// ```
 ///
 /// Layer placement is implicit at translation time: every
-/// binding in this list lands at
-/// `KeymapLayer::MinorMode(mode.id())` per K.1.b convention.
+/// binding / entry contributed by `Mode X` lands at
+/// `KeymapLayer::MinorMode(x.id())` per K.1.b convention.
 /// Per-binding layer is *not* exposed here -- letting a mode
 /// inject into another layer would break the layer-priority
 /// contract (a "minor mode" silently shadowing a builtin would
@@ -82,7 +132,18 @@ impl KeymapBinding {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Keymap {
     /// Declarative list of bindings this mode contributes.
+    /// Populated by the chain form (`bind` / `bind_chord`) and
+    /// by the host translation pass when it resolves entries.
     pub bindings: Vec<KeymapBinding>,
+    /// Static-catalog-style entries this mode contributes.
+    /// Populated by [`Self::from_entries`] /
+    /// [`Self::extend_with_entries`]. The host translation
+    /// pass (K.2.4.A.0.3) walks both `bindings` and `entries`;
+    /// entries get name→`CommandId` resolved via the
+    /// `CommandRegistry` and the resulting [`KeymapBinding`]s
+    /// (carrying the entry's `doc`) flow into the trie
+    /// alongside the explicit `bindings`.
+    pub entries: Vec<&'static KeymapEntry>,
 }
 
 impl Keymap {
@@ -90,6 +151,34 @@ impl Keymap {
     /// for symmetry with builder-style construction.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a keymap from a static slice of `keymap_entry!`-
+    /// constructed entries. The host translation pass resolves
+    /// each entry's canonical command-name string against the
+    /// `CommandRegistry` at registration time; unresolvable
+    /// names log a `tracing::warn!` and skip the binding
+    /// (matches the existing catalog-drift convention).
+    ///
+    /// Returns a keymap with [`Self::entries`] populated and
+    /// [`Self::bindings`] empty. Compose with the chain form
+    /// (`.bind_chord(...)`) to add typed bindings on top.
+    pub fn from_entries(entries: &'static [KeymapEntry]) -> Self {
+        Self {
+            bindings: Vec::new(),
+            entries: entries.iter().collect(),
+        }
+    }
+
+    /// Append a static slice of `keymap_entry!`-constructed
+    /// entries to an existing keymap. Returns `self` so call
+    /// sites can chain
+    /// `Keymap::new().bind_chord(...).extend_with_entries(&TBL)`
+    /// or
+    /// `Keymap::from_entries(&BASE).extend_with_entries(&MORE)`.
+    pub fn extend_with_entries(mut self, entries: &'static [KeymapEntry]) -> Self {
+        self.entries.extend(entries.iter());
+        self
     }
 
     /// Append one binding. Returns `self` so call sites can
@@ -342,5 +431,67 @@ mod tests {
             "<Foo>",
             synthetic_invocation(),
         );
+    }
+
+    // ---- K.2.4.A.0.2: table-form contribution (`from_entries`) ----
+
+    #[test]
+    fn default_keymap_has_no_entries() {
+        // Sibling of `default_keymap_has_no_bindings` for the
+        // new `entries` field. Modes that don't ship table-form
+        // entries leave it empty; the host translation pass
+        // walks it without finding work.
+        let km = Keymap::default();
+        assert!(km.entries.is_empty());
+    }
+
+    #[test]
+    fn from_entries_collects_slice() {
+        // Use the built-in vim default keymap (the static
+        // catalog moved to lattice-mode in K.2.4.A.0.1) as a
+        // realistic fixture — confirms the type plumbing
+        // accepts the same shape modes will return from
+        // `Mode::keymap()`.
+        let catalog = crate::keymap_entry::default_keymap();
+        let km = Keymap::from_entries(catalog);
+        assert!(
+            km.bindings.is_empty(),
+            "from_entries leaves the bindings list empty"
+        );
+        assert_eq!(km.entries.len(), catalog.len());
+    }
+
+    #[test]
+    fn extend_with_entries_appends_in_order() {
+        // Split the static catalog in half and feed it through
+        // the chain form. Resulting entries should be the
+        // catalog's concatenation, with order preserved across
+        // both halves.
+        let catalog = crate::keymap_entry::default_keymap();
+        let mid = catalog.len() / 2;
+        let first = &catalog[..mid];
+        let second = &catalog[mid..];
+        let km = Keymap::from_entries(first).extend_with_entries(second);
+        assert_eq!(km.entries.len(), catalog.len());
+        // Pointer-equality on the borrowed entries: the first
+        // collected entry IS the catalog's first entry; the
+        // entry at `mid` IS the second slice's first entry.
+        assert!(std::ptr::eq(km.entries[0], &first[0]));
+        assert!(std::ptr::eq(km.entries[mid], &second[0]));
+    }
+
+    // ---- K.2.4.A.0.2: KeymapBinding::with_doc ----
+
+    #[test]
+    fn with_doc_sets_doc() {
+        let binding = KeymapBinding::new(
+            BindingMode::Normal,
+            vec![ChordPattern::Literal(KeyChord::char('q'))],
+            synthetic_invocation(),
+            SourceLocation::builtin_file(file!(), line!()),
+        );
+        assert_eq!(binding.doc, None, "KeymapBinding::new defaults doc to None");
+        let binding = binding.with_doc("Quit");
+        assert_eq!(binding.doc, Some("Quit"));
     }
 }

@@ -21342,11 +21342,26 @@ impl Editor {
                 lattice_help::key_link(chord),
                 hits.len()
             ));
-            for entry in hits {
-                lines.push(String::new());
-                for l in lattice_grammar::render_introspection_lines(entry) {
-                    lines.push(l);
-                }
+        }
+
+        // K.2.4.A.1 (2026-06-02): resolved-binding indicator.
+        // Answers the practical question users open describe-
+        // key for — "what does this chord do RIGHT NOW under
+        // the current active modes?" Sits between the title
+        // and the catalog/registry sections so the resolution
+        // is the first thing the eye lands on. Computed by
+        // replaying the K.1.c precedence fold per
+        // binding-mode (Normal / Insert / Visual / Replace).
+        self.append_resolved_binding_section(chord, &mut lines);
+
+        // Static-catalog hits (one block per `(chord, mode)`
+        // descriptor). Catalog-side body — the dispatchable
+        // bindings + their docstrings as enumerated by the
+        // catalog drift table.
+        for entry in hits {
+            lines.push(String::new());
+            for l in lattice_grammar::render_introspection_lines(entry) {
+                lines.push(l);
             }
         }
 
@@ -21361,6 +21376,102 @@ impl Editor {
 
         lattice_help::HelpContent::from_lines(format!("describe-key {chord}"), lines)
             .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// K.2.4.A.1 (2026-06-02): write the "Resolved binding
+    /// (under current active modes)" section into `lines`.
+    ///
+    /// For each of the four common binding-modes (Normal /
+    /// Insert / Visual / Replace), call
+    /// [`crate::keymap_registry::KeymapHandle::lookup_with_context`]
+    /// with the active buffer's `ActiveModes.minors()` and
+    /// print the resolved [`crate::keymap_trie::BoundCommand`]
+    /// — the binding that would actually fire if the user
+    /// pressed the chord in that mode right now. The lookup
+    /// performs the full K.1.c precedence fold
+    /// (`Builtin / MajorMode + User / Buffer` cached always-on
+    /// trie, then minor-mode layers overlaid in activation
+    /// order with last-activated winning), so the rendered
+    /// hit IS the dispatch outcome — no manual layer
+    /// reconciliation the reader has to do.
+    ///
+    /// Layer + source rendered via `{:?}` debug formatting
+    /// for now; K.2.4.A.2 swaps `layer:?` for friendly labels
+    /// (`Built-in` / `Major: rust-mode` / `Minor: diff-mode`
+    /// / …), and K.2.4.A.3 swaps `source:?` for
+    /// [`lattice_grammar::SourceLocation::as_link`] so the
+    /// file:line becomes a clickable help-buffer link.
+    ///
+    /// If no binding-mode fires (chord is bound only inside
+    /// inactive minors, or genuinely unbound everywhere), the
+    /// section still emits a single line explaining that
+    /// "Resolved binding: not bound under the current active
+    /// modes" — so the user reading the output never wonders
+    /// whether the section was empty because no work was done
+    /// vs. because the resolution genuinely came up empty.
+    ///
+    /// Best-effort parse: a chord string that doesn't parse
+    /// via `chord::parse_chord_sequence` skips the section
+    /// silently (the catalog hits above and runtime registry
+    /// below still render).
+    fn append_resolved_binding_section(&self, chord: &str, lines: &mut Vec<String>) {
+        let Ok(parsed) = crate::chord::parse_chord_sequence(chord) else {
+            return;
+        };
+
+        let modes = [
+            ("normal", crate::keymap::BindingMode::Normal),
+            ("insert", crate::keymap::BindingMode::Insert),
+            ("visual", crate::keymap::BindingMode::Visual),
+            ("replace", crate::keymap::BindingMode::Replace),
+        ];
+
+        // K.1.c per-buffer active-modes set; the lookup_with_context
+        // call performs the per-keystroke precedence fold against
+        // this list (last-activated minor wins, overlaying
+        // builtin/major/user/buffer).
+        let active_minors: Vec<lattice_mode::mode::ModeId> = self
+            .active_modes
+            .get(&self.document_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+
+        let mut emitted_header = false;
+        for (mode_label, mode) in modes {
+            let result = self.keymap.lookup_with_context(mode, &parsed, &active_minors);
+            let crate::keymap_trie::LookupResult::Bound { command: bound, .. } = result else {
+                continue;
+            };
+            if !emitted_header {
+                lines.push(String::new());
+                lines.push("Resolved binding (under current active modes):".to_string());
+                emitted_header = true;
+            }
+            // CommandId → canonical name. Falls back to debug
+            // formatting if the id isn't registered (shouldn't
+            // happen for resolved bindings since they came
+            // from the registry, but defensive).
+            let cmd_name = self
+                .registry
+                .lookup(bound.command.command)
+                .map(|spec| spec.name.clone())
+                .unwrap_or_else(|| format!("{:?}", bound.command.command));
+            lines.push(String::new());
+            lines.push(format!("  [{mode_label} mode]"));
+            lines.push(format!("    → {cmd_name}"));
+            lines.push(format!("    layer: {:?}", bound.layer));
+            lines.push(format!("    source: {:?}", bound.source));
+        }
+
+        if !emitted_header {
+            lines.push(String::new());
+            lines.push(
+                "Resolved binding: not bound under the current active modes. \
+                 See bindings below for catalog rows and inactive mode-scoped \
+                 bindings."
+                    .to_string(),
+            );
+        }
     }
 
     /// K.1.d (2026-05-30): append the runtime-registry

@@ -527,6 +527,93 @@ mod tests {
         assert!(body.contains("not bound"), "body: {body}");
     }
 
+    // ---- K.2.4.A.1: resolved-binding indicator ----
+
+    #[test]
+    fn describe_key_shows_resolved_binding_section_for_bound_chord() {
+        // The "Resolved binding (under current active modes):"
+        // section is the K.2.4.A.1 polish — it sits between
+        // the title and the catalog-hits and tells the user
+        // what would fire RIGHT NOW. For `j` (a builtin Normal
+        // and Visual binding), the resolved section should
+        // surface both `[normal mode]` and `[visual mode]`.
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key j".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(
+            body.contains("Resolved binding (under current active modes):"),
+            "missing resolved-binding header: {body}"
+        );
+        assert!(
+            body.contains("[normal mode]"),
+            "missing [normal mode] resolution row: {body}"
+        );
+        assert!(
+            body.contains("[visual mode]"),
+            "missing [visual mode] resolution row: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_key_resolved_binding_renders_canonical_command_name() {
+        // The resolved-binding section uses the registry's
+        // canonical command name (`motion:line-down`) rather
+        // than `CommandId(N)` debug formatting. This is the
+        // user-facing contract that K.2.4.A.1 establishes:
+        // name resolution via the host's CommandRegistry, not
+        // raw ids.
+        //
+        // K.2.4.A.4 (catalog/registry unification) will retire
+        // the K.1.d runtime-registry section that still
+        // formats its hits as `CommandId(...)`; until then we
+        // narrowly verify the new K.2.4.A.1 section (between
+        // the resolved-binding header and the next blank
+        // section).
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key j".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        let header = "Resolved binding (under current active modes):";
+        let start = body
+            .find(header)
+            .unwrap_or_else(|| panic!("missing resolved header: {body}"));
+        // Slice from the header to the next double-newline-
+        // separated section (runtime registry / catalog hits).
+        let after_header = &body[start..];
+        let resolved_section = after_header
+            .find("\n\nRuntime registry:")
+            .map(|end| &after_header[..end])
+            .unwrap_or(after_header);
+        assert!(
+            resolved_section.contains("→ motion:line-down"),
+            "resolved section should render canonical name: {resolved_section}"
+        );
+        assert!(
+            !resolved_section.contains("→ CommandId("),
+            "resolved section should not leak CommandId debug: {resolved_section}"
+        );
+    }
+
+    #[test]
+    fn describe_key_resolved_binding_falls_back_to_unbound_message() {
+        // Chord parses fine but doesn't bind in any of the
+        // four common binding-modes. The section still emits
+        // the fallback line so the reader knows the absence
+        // is intentional rather than an empty section.
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key <C-S-q>".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(
+            body.contains("Resolved binding: not bound under the current active modes"),
+            "missing resolved-binding fallback message: {body}"
+        );
+    }
+
     #[test]
     fn describe_command_resolves_alias_arg() {
         // `:describe-command apropos` -- the arg is an alias.

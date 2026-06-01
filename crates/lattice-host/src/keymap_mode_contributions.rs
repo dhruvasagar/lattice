@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lattice_grammar::{CommandInvocation, CommandRegistry};
-use lattice_mode::{BindingMode, DynMode, Keymap, KeymapBinding, ModeId, ModeRegistry};
+use lattice_mode::{BindingMode, DynMode, KeymapBinding, ModeId, ModeRegistry};
 use lattice_protocol::ChordPattern;
 
 use crate::keymap_registry::{KeymapHandle, PushLayerKind};
@@ -236,7 +236,9 @@ mod tests {
     use std::sync::OnceLock;
 
     use lattice_grammar::{CommandInvocation, CommandRegistry, SourceLocation};
-    use lattice_mode::{KeymapBinding, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeKind};
+    use lattice_mode::{
+        Keymap, KeymapBinding, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeKind,
+    };
     use lattice_protocol::ids::CommandId;
     use lattice_protocol::{ChordPattern, KeyChord};
 

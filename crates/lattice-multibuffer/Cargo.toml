@@ -68,5 +68,17 @@ name = "project_search"
 harness = false
 required-features = ["search"]
 
+# M.6.X (2026-06-01): companion bench to
+# `tests/ui_responsive_during_scan.rs`. Tracks the worst
+# probe-gap on a current_thread runtime while a 1k-file scan
+# runs concurrently. The bench number IS the paramount-goal-1
+# property: keystroke-pipeline latency at the runtime layer
+# during provider load. Pre-M.6.X: hundreds of ms (freeze).
+# Post-M.6.X: stays close to the 5 ms sleep budget.
+[[bench]]
+name = "actor_latency_during_scan"
+harness = false
+required-features = ["search"]
+
 [lints]
 workspace = true

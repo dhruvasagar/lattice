@@ -10644,13 +10644,67 @@ impl Editor {
     /// provider's service isn't registered.
     #[cfg(feature = "search")]
     pub fn do_search(&mut self, query: String) {
+        if query.trim().is_empty() {
+            self.set_message(
+                EchoLevel::Warn,
+                ":search requires a non-empty query".to_string(),
+            );
+            return;
+        }
         let options =
             lattice_multibuffer::providers::search::ProjectSearchOptions::default();
-        let _ = lattice_multibuffer::providers::search::project_search(self, query, options);
+        let query_for_echo = query.clone();
+        tracing::info!(query = %query_for_echo, "do_search: triggering project_search");
+        let view_id = match lattice_multibuffer::providers::search::project_search(
+            self, query, options,
+        ) {
+            Some(id) => id,
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "project-search: service not registered (rebuild with --features search)"
+                        .to_string(),
+                );
+                tracing::warn!(
+                    query = %query_for_echo,
+                    "do_search: project_search returned None"
+                );
+                return;
+            }
+        };
+        tracing::info!(
+            view_id = view_id.0,
+            query = %query_for_echo,
+            "do_search: project_search created view; switching active pane"
+        );
+        // M.6.X follow-up (2026-06-01): route through the
+        // canonical activation pipeline (`activate_buffer` →
+        // `activate_document` for Multibuffer kind → returns
+        // `true` for a full-activation path → caller runs
+        // `activate_buffer_state` + enqueues renderer signals).
+        // Earlier hand-rolled pane manipulation skipped
+        // `self.document` rewire + major-mode activation +
+        // signal enqueue, so the new view was registered but
+        // not visibly active. Same path `:b N` and other
+        // pane-switch ex-commands use, with no kind-specific
+        // branching — `feedback_buffers_no_special_case`.
+        if self.activate_buffer(view_id) {
+            let signals = self.activate_buffer_state();
+            self.enqueue_renderer_signals(signals);
+        }
+        self.set_message(
+            EchoLevel::Info,
+            format!("project-search: scanning for \"{query_for_echo}\"…"),
+        );
     }
 
     #[cfg(not(feature = "search"))]
-    pub fn do_search(&mut self, _query: String) {}
+    pub fn do_search(&mut self, _query: String) {
+        self.set_message(
+            EchoLevel::Warn,
+            "search feature not compiled in this build".to_string(),
+        );
+    }
 
     /// M.6.1 (2026-06-01): `<CR>` in project-search-multibuffer-mode.
     /// Resolves the excerpt under cursor to its source file +

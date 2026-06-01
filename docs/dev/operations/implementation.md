@@ -4239,6 +4239,31 @@ architecture §10 for the rationale.
   the view). Host's `:search <query>` ex-command thin-wraps
   the trigger. Bench: `project_search_first_batch_p99_ms` ≤
   50ms at 1k-file corpus.
+- ✅ **M.6.X** (landed 2026-06-01) — UI-discipline
+  retrofit (would have been M.6.0 had the four-artefact
+  contract been honoured). M.6.0–M.6.3 shipped with a
+  latent paramount-goal-1 violation: `run_scan` walked
+  `ignore::Walk` synchronously on the editor actor's
+  `current_thread` runtime (`editor_actor.rs:575`),
+  freezing `:search` for the scan duration. The
+  `project_search_first_batch_p99_ms` bench measured
+  throughput, not actor responsiveness — structurally
+  incapable of catching the failure. Fix:
+  `run_scan` extracts a `run_scan_blocking` sync helper
+  wrapped in `tokio::task::spawn_blocking`; fs work
+  moves to tokio's blocking pool; current_thread
+  runtime stays free. **Missing artefacts now shipped:**
+  test `tests/ui_responsive_during_scan.rs` (probe-gap
+  assertion on a current_thread runtime with 500-file
+  corpus, threshold 50 ms — pre-fix hundreds of ms);
+  criterion bench `benches/actor_latency_during_scan.rs`
+  (CI-tracked p99 probe-gap with 1k-file corpus);
+  `feedback_no_ui_thread_work` memory updated with the
+  bench/test-pair pattern any fs / net / blocking
+  provider must accompany its code with. **Scan
+  cancellation on refresh** (old task keeps running on
+  blocking pool until the walk completes) is a separate
+  follow-up.
 - 🗒 **M.6.4** — wgrep-style edit-results follow-up. Drop
   `ReadOnly = true` from `ProjectSearchMultibufferMode::options()`,
   open sources through `BufferRegistry`, hook `:w` to save

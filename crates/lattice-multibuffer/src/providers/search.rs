@@ -605,6 +605,50 @@ async fn run_scan(
         }
     };
 
+    // M.6.X (2026-06-01) UI-discipline retrofit. The editor
+    // actor runs on a `current_thread` tokio runtime
+    // (`editor_actor.rs:575`); `tokio::spawn` inside
+    // `spawn_scan_task` lands on that same single-threaded
+    // runtime. `ignore::Walk` + `std::fs::read_to_string` are
+    // synchronous blocking calls with no `.await` between
+    // syscalls — a `yield_now().await` per file is not nearly
+    // enough to keep the actor's command loop responsive
+    // (paramount-goal-1: keystroke → glyph ≤ 8 ms).
+    //
+    // Architectural relocation per `feedback_no_ui_thread_work`:
+    // wrap the entire walk + match + publish loop in
+    // `tokio::task::spawn_blocking` so the work runs on
+    // tokio's dedicated blocking-task pool, leaving the
+    // current_thread runtime free for the actor + the
+    // forwarder. `EventBus::publish_typed` is sync-safe (brief
+    // `Mutex<Inner>` acquisition; subscribers use unbounded
+    // mpsc senders, see `subscribe_typed(...)` at line 376),
+    // so publishes from the blocking task remain correct.
+    let view_for_task = view;
+    let service_for_task = service.clone();
+    let events_for_task = events.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        run_scan_blocking(
+            view_for_task,
+            matcher,
+            options,
+            service_for_task,
+            events_for_task,
+        );
+    })
+    .await;
+}
+
+/// Synchronous body of the scan. Runs on tokio's blocking
+/// pool via `spawn_blocking`; never touches the current_thread
+/// runtime that drives the editor actor.
+fn run_scan_blocking(
+    view: BufferId,
+    matcher: Matcher,
+    options: ProjectSearchOptions,
+    service: ProjectSearchServiceHandle,
+    events: Arc<EventBus>,
+) {
     let mut walker = ignore::Walk::new(&options.root);
     let mut files_scanned: usize = 0;
     let mut total_hits: usize = 0;
@@ -641,7 +685,6 @@ async fn run_scan(
         if files_scanned % progress_interval == 0 {
             events.publish_typed(ProjectSearchProgressUpdated { view, files_scanned });
         }
-        tokio::task::yield_now().await;
     }
 
     if !batch.is_empty() {

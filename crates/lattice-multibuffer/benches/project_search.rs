@@ -146,6 +146,7 @@ fn bench_first_batch(c: &mut Criterion) {
                     case_sensitive: true,
                     max_files: None,
                     max_hits_per_file: 100,
+                    regex: false,
                 };
                 let _view = project_search(&mut activator, needle.to_string(), options);
                 let _ = rx.recv().await;

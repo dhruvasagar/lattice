@@ -11,6 +11,14 @@ bitflags = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 lattice-protocol = { path = "../lattice-protocol" }
+# K.2.3 (2026-06-01): real `Keymap` contribution type returned
+# from `Mode::keymap()` carries `CommandInvocation` +
+# `SourceLocation` from `lattice-grammar`. The reverse edge
+# (lattice-grammar -> lattice-mode) does not exist -- grammar
+# deps are protocol/core/thiserror/serde/tracing -- so adding
+# this dep is cycle-free. Resolves the stub-deferral reason
+# noted in keymap-architecture.md §11.
+lattice-grammar = { path = "../lattice-grammar" }
 # M.4 dep-inversion: modes contribute typed-option overrides
 # (e.g. `Mode::options() -> OptionOverrideSet`); the override
 # types live in `lattice-config`, so `lattice-mode` pulls them

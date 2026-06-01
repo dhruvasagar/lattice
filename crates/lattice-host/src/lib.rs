@@ -98,6 +98,7 @@ pub mod keymap_replace;
 pub mod keymap_terminal;
 pub mod keymap_trie;
 pub mod keymap_visual;
+pub mod multibuffer_keymap;
 pub mod lsp_helpers;
 pub mod lsp_watcher;
 pub mod modes;

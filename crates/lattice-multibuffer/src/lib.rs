@@ -43,10 +43,12 @@
 //!   consumer, fold providers.
 
 pub mod mode;
+pub mod motions;
 pub mod registry;
 pub mod view;
 
 pub use crate::mode::{MultibufferMode, register_multibuffer_modes};
+pub use crate::motions::{MultibufferMotionIds, register_multibuffer_motions};
 pub use crate::registry::{
     InMemoryMultibufferRegistry, MultibufferRegistry, MultibufferRegistryHandle,
 };

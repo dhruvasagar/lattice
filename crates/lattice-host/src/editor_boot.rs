@@ -299,6 +299,17 @@ impl Editor {
         // build typed `CommandInvocation`s for chord bindings.
         let action_ids = crate::actions::populate(&mut registry, &builtins);
 
+        // M.2.b.3 (2026-06-01): register multibuffer excerpt-jump
+        // motions (`]e` / `[e` / `]E` / `[E`) against the command
+        // registry. Handlers capture the multibuffer registry
+        // handle so they reach the typed view by buffer id at
+        // dispatch time. The returned `MultibufferMotionIds`
+        // feeds the keymap-layer push below.
+        let multibuffer_motion_ids = lattice_multibuffer::register_multibuffer_motions(
+            &mut registry,
+            multibuffer_registry_handle.clone(),
+        );
+
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind
@@ -874,6 +885,21 @@ impl Editor {
                     ),
                     "diff-mode",
                     crate::diff::mode::diff_mode_layer_bindings(&action_ids),
+                );
+                // M.2.b.3 (2026-06-01): push the multibuffer-mode
+                // keymap layer binding `]e` / `[e` / `]E` / `[E`
+                // to the four excerpt-jump motions registered
+                // above. K.1.c's per-keystroke filter gates the
+                // chord so it only fires on buffers where
+                // `multibuffer-mode` is the active major.
+                h.push_layer(
+                    crate::keymap_registry::PushLayerKind::MinorMode(
+                        lattice_multibuffer::MultibufferMode::mode_id(),
+                    ),
+                    "multibuffer-mode",
+                    crate::multibuffer_keymap::multibuffer_mode_layer_bindings(
+                        &multibuffer_motion_ids,
+                    ),
                 );
                 h
             },

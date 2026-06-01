@@ -4302,6 +4302,36 @@ architecture §10 for the rationale.
   Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
   §12; sequencing at [`slice-plans/help-prefix.md`](slice-plans/help-prefix.md).
+- 🚧 **K.4** — Multibuffer-is-a-regular-buffer audit +
+  integration verification. Triggered by M.6 testing
+  surfacing four latent failures (silent EventBus None,
+  current_thread freeze, `contains_document` exclusion,
+  vim grammar broken). Closes the integration-verification
+  gap M.2.b shipped without. **Landed (commit `8bc77e4`):**
+  K.4.0 audit doc enumerating 35 seam sites + danger
+  pattern §3; K.4.2 `build_cells_panes` kind-gate
+  extension (Document | Messages | Multibuffer); K.4.3
+  renderer syntax-cell gate extension (`render.rs:2708`);
+  K.4.4 `dispatch_blocking` host-side grammar for
+  Multibuffer (root cause for "cursor doesn't move at
+  all" — `MultibufferDocumentHandle::dispatch_with_cancel`
+  returning `ReadOnly`). **Pending:** K.4.1 integration
+  test scaffold (`tests/multibuffer_is_a_regular_buffer.rs`);
+  K.4.5 visual-mode highlights (new finding); K.4.6
+  excerpt-header virtual-row pipeline (architectural —
+  provider registration seam + per-pane matrix
+  resolution); K.4.7 per-excerpt syntax highlighting
+  (design slice — composer language tracking + renderer
+  per-excerpt spans); K.4.8 `:ls` listing format polish;
+  K.4.9 audit-comment pass; K.4.10 convention
+  codification; K.4.11 `dispatch_with_cancel` proper
+  impl on `MultibufferDocumentHandle` (architectural
+  follow-up). Design at
+  [`../architecture/multibuffer-is-a-regular-buffer.md`](../architecture/multibuffer-is-a-regular-buffer.md);
+  sequencing at [`slice-plans/multibuffer-is-a-regular-buffer.md`](slice-plans/multibuffer-is-a-regular-buffer.md).
+  Convention codified in
+  `feedback_buffers_no_special_case` memory (2026-06-01
+  section).
 - 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
   into the existing fold registry. **No new keymaps** — the

@@ -577,4 +577,53 @@ mod tests {
         let result = lookup(&h, BindingMode::Normal, &[mode_id], &[KeyChord::char('z')]);
         assert!(matches!(result, LookupResult::Unbound));
     }
+
+    // ---- K.2.4.A.0.4: chain form + table form composability ----
+
+    #[test]
+    fn translate_combines_chain_form_with_table_form_entries() {
+        // A mode whose `Mode::keymap()` returns a Keymap built
+        // from BOTH paths in one chain — typical real-world
+        // shape K.2.5 will adopt for multibuffer-mode (static
+        // table for the bulk of the bindings + a few
+        // dynamically-named bindings from the mode's own
+        // CommandInvocations). After translation, BOTH the
+        // entry-resolved 'z' chord AND the chain-form '<C-r>'
+        // chord must lookup as Bound.
+        let h = KeymapHandle::new();
+        let cmd_registry = registry_with_builtins();
+        let chain_cmd = synthetic_invocation(123);
+
+        let keymap = Keymap::from_entries(fixture_table_form_entries())
+            .bind_chord(BindingMode::Normal, "<C-r>", chain_cmd.clone());
+
+        let mut registry = ModeRegistry::new();
+        let mode_id = registry
+            .register(test_mode("test-mode/combined", keymap))
+            .expect("register");
+
+        translate_mode_keymaps(&h, &registry, &cmd_registry);
+
+        // Entry-form chord 'z' fires (resolved through registry).
+        let expected_id = cmd_registry
+            .id_by_name("motion:line-down")
+            .expect("motion:line-down should be registered by builtins");
+        match lookup(&h, BindingMode::Normal, &[mode_id], &[KeyChord::char('z')]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, expected_id, "entry-form");
+                assert_eq!(command.layer, KeymapLayer::MinorMode(mode_id));
+            }
+            other => panic!("expected Bound for entry-form 'z', got {other:?}"),
+        }
+
+        // Chain-form chord '<C-r>' fires (typed invocation
+        // direct, no resolution needed).
+        match lookup(&h, BindingMode::Normal, &[mode_id], &[KeyChord::ctrl('r')]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command, chain_cmd, "chain-form");
+                assert_eq!(command.layer, KeymapLayer::MinorMode(mode_id));
+            }
+            other => panic!("expected Bound for chain-form '<C-r>', got {other:?}"),
+        }
+    }
 }

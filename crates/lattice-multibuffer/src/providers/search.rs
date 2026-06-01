@@ -519,8 +519,15 @@ pub fn project_search(
     // unwrap once.
     let search_svc_outer = services.get::<ProjectSearchServiceHandle>()?;
     let search_svc: ProjectSearchServiceHandle = (*search_svc_outer).clone();
-    let events_outer = services.get::<EventBus>()?;
-    let events: Arc<EventBus> = events_outer;
+    // EventBus is registered as `Arc<EventBus>` in
+    // `editor_boot.rs` (`s.register(event_bus.clone())` where
+    // `event_bus: Arc<EventBus>`). Lookup therefore queries
+    // `Arc<EventBus>` and unwraps one Arc layer to get a usable
+    // `Arc<EventBus>` — same shape as the `ProjectSearchServiceHandle`
+    // unwrap above. Earlier sites that queried `EventBus`
+    // directly silently returned None.
+    let events_outer = services.get::<Arc<EventBus>>()?;
+    let events: Arc<EventBus> = (*events_outer).clone();
 
     let view_id = create_multibuffer_view(
         activator,

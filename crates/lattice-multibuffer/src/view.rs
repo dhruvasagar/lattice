@@ -112,7 +112,16 @@ pub fn create_multibuffer_view(
     // MultibufferSourceClosed when a source closes. No-op if the
     // EventBus service isn't registered (test paths without the
     // bus wired up).
-    if let Some(events) = services.get::<EventBus>() {
+    // EventBus is registered as `Arc<EventBus>` at boot
+    // (`editor_boot.rs` -> `s.register(event_bus.clone())` where
+    // `event_bus: Arc<EventBus>`); lookup must query the same
+    // shape and unwrap one Arc layer. Earlier
+    // `services.get::<EventBus>()` returned None silently —
+    // tests still pass because they wire the bus directly via
+    // `attach_event_subscriptions`, but production paths missed
+    // their subscriptions.
+    if let Some(events_outer) = services.get::<Arc<EventBus>>() {
+        let events: Arc<EventBus> = (*events_outer).clone();
         handle.attach_event_subscriptions(&events);
     }
 

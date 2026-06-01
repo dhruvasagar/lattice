@@ -10755,10 +10755,18 @@ impl Editor {
         let Some(view) = mb_registry.handle(view_id) else {
             return;
         };
-        let Some(events_outer) = self.services.get::<lattice_runtime::EventBus>() else {
+        // EventBus is registered as `Arc<EventBus>` at boot
+        // (`editor_boot.rs:881`); lookup must query
+        // `Arc<EventBus>` and unwrap one Arc layer. Earlier
+        // sites that queried `EventBus` directly silently
+        // returned None.
+        let Some(events_outer) = self
+            .services
+            .get::<std::sync::Arc<lattice_runtime::EventBus>>()
+        else {
             return;
         };
-        let events: std::sync::Arc<lattice_runtime::EventBus> = events_outer;
+        let events: std::sync::Arc<lattice_runtime::EventBus> = (*events_outer).clone();
 
         // Clear the view + state for a fresh run.
         view.replace_excerpts(std::collections::HashMap::new(), Vec::new());

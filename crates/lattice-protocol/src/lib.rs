@@ -25,6 +25,7 @@
 //! command" type now.
 
 pub mod cancel;
+pub mod chord;
 pub mod edit;
 pub mod error;
 pub mod event;
@@ -34,6 +35,10 @@ pub mod position;
 pub mod selection;
 
 pub use crate::cancel::CancellationToken;
+pub use crate::chord::{
+    ChordParseError, ChordPattern, KeyChord, KeyKind, KeyMods, SpecialKey,
+    last_chord_token_byte_len, parse_chord_sequence, special_label,
+};
 pub use crate::edit::{Edit, EditDelta, EditKind};
 pub use crate::error::{ProtocolError, Result};
 pub use crate::event::{Event, EventKind};

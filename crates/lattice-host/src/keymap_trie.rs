@@ -55,6 +55,15 @@ use std::sync::Arc;
 use lattice_grammar::{CommandInvocation, SourceLocation};
 use lattice_mode::mode::ModeId;
 
+// K.2.1: `ChordPattern` moved to `lattice-protocol` alongside
+// `KeyChord` so mode crates can construct registration paths
+// without depending on `lattice-host`. Re-exported below for
+// the existing `use crate::keymap_trie::ChordPattern` callers
+// (`keymap_registry.rs`, `keymap_replace.rs`,
+// `multibuffer_keymap.rs`). The matcher engine
+// (`KeymapTrie`, `KeymapLayer`, `BoundCommand`) stays in host.
+pub use lattice_protocol::ChordPattern;
+
 use crate::chord::{KeyChord, KeyKind, KeyMods};
 
 /// Where in the five-layer model (DESIGN.md §5.2.3) a binding
@@ -120,17 +129,6 @@ impl BoundCommand {
             layer,
         }
     }
-}
-
-/// One element of a registration path.
-///
-/// `Literal` matches a specific chord; `CharLiteral` matches
-/// any single bare-char chord (no modifiers). The wildcard
-/// captures the matched char for the resulting invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChordPattern {
-    Literal(KeyChord),
-    CharLiteral,
 }
 
 /// Lookup outcome.

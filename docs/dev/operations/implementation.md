@@ -4290,14 +4290,38 @@ architecture §10 for the rationale.
   spec, plus a `Keymap::bind_chord(mode, chord_str, command)`
   ergonomic surface with `#[track_caller]` source capture +
   string-parsed chord sequences handling emacs-style prefix
-  shapes like `<C-x>pp` / `<C-x><C-s>`; 10 unit tests).
-  **Pending:** K.2.4 boot-path translation pass walking
-  `ModeRegistry`; K.2.5 migrate multibuffer + project-search
-  bindings out of host (delete
+  shapes like `<C-x>pp` / `<C-x><C-s>`; 10 unit tests);
+  K.2.4 host translation pass (commit `ff9f9bf`;
+  `keymap_mode_contributions::translate_mode_keymaps` walks
+  ModeRegistry, calls `Mode::keymap()`, groups by
+  BindingMode, pushes one `MinorMode(mode_id)` layer per
+  mode with bindings; boot call site in editor_boot.rs; 5
+  unit tests). **K.2.4.A polish sub-arc landed (2026-06-02):**
+  K.2.4.A.0.1 `keymap_entry!` + `KeymapEntry` substrate move
+  from `lattice-host` to `lattice-mode::keymap_entry`
+  (commit `4f763d5`; private `source` + `__new` constructor;
+  host shim retains lattice_host::keymap path);
+  K.2.4.A.0.2 `Keymap::from_entries()` +
+  `KeymapBinding.doc` (commit `6461f56`; chain-form +
+  table-form contribution paths cohabit on the same
+  `Keymap`); K.2.4.A.0.3 translation pass walks
+  `Keymap::entries`, resolves canonical command names via
+  `CommandRegistry` (commit `81c4600`; synthetic-skip /
+  drift-warn behaviour); K.2.4.A.0.4 chain+table
+  composability test (commit `eaf9e33`). **Pending in
+  K.2.4.A:** K.2.4.A.0.5 K.2.4.A.0 doc artefacts;
+  K.2.4.A.1 resolved-binding indicator on `:describe-key`;
+  K.2.4.A.2 friendly layer labels; K.2.4.A.3 source
+  rendering via `as_link()`; K.2.4.A.4 catalog/registry
+  unification (drops the static-catalog section, single
+  unified output); K.2.4.A.5 user docs + BENCHMARKS row.
+  **Pending after K.2.4.A:** K.2.5 migrate multibuffer +
+  project-search bindings out of host (delete
   `crates/lattice-host/src/multibuffer_keymap.rs`); K.2.6
   docs; K.2.7 unblock MO.1–MO.4. Pauses M.6.4+. Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
-  §11 (ergonomic surface in §11.2.1); sequencing at
+  §11 (chain ergonomic surface in §11.2.1; table form in
+  §11.2.2); sequencing at
   [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
 - 🗒 **K.3** — Help-prefix bindings (`<C-h>` map,
   Normal-mode only). Emacs-style discoverability for the

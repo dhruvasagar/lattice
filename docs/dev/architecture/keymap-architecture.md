@@ -1274,6 +1274,126 @@ appropriate (`SourceLayer::Plugin(...)`,
 `SourceLayer::Runtime`, …). `bind_chord` is the affordance
 for the built-in-Rust idiom; it does not own the contract.
 
+#### 11.2.2 Table-form contribution: `Keymap::from_entries`
+
+The chain form is ergonomic for 1-5 bindings. Mode crates
+that ship 5-20+ bindings (LSP majors / minors, multibuffer,
+oil, snippet, file-tree, …) read better as a **table** the
+eye can scan top-down. K.2.4.A.0 promoted the host's
+`keymap_entry!` macro out of `lattice-host` and into
+`lattice-mode` so any mode crate can declare bindings as
+static-catalog rows:
+
+```rust
+use lattice_mode::{
+    keymap_entry, BindingMode, Keymap, KeymapEntry,
+    LifecycleFuture, Mode, ModeContext, ModeKind, ModeId,
+};
+use std::sync::OnceLock;
+
+fn multibuffer_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! { mode: Normal, chord: "]e",
+                doc: "Jump to next excerpt",
+                cmd: "multibuffer:excerpt-next" },
+            keymap_entry! { mode: Normal, chord: "[e",
+                doc: "Jump to previous excerpt",
+                cmd: "multibuffer:excerpt-prev" },
+            keymap_entry! { mode: Normal, chord: "]E",
+                doc: "Jump to next file boundary",
+                cmd: "multibuffer:file-next" },
+            keymap_entry! { mode: Normal, chord: "[E",
+                doc: "Jump to previous file boundary",
+                cmd: "multibuffer:file-prev" },
+        ]
+    })
+}
+
+impl Mode for MultibufferMode {
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(multibuffer_keymap_entries())
+    }
+    // ...id(), kind(), on_activate(), ...
+}
+```
+
+Each `keymap_entry!` row carries `mode`, `chord` (notation
+string), `doc` (one-line summary), and `cmd` (canonical
+command name registered in the `CommandRegistry`). The macro
+captures `file!()` + `line!()` per row via a `#[doc(hidden)]
+pub` constructor (`KeymapEntry::__new`) so the row's
+declaration site flows through to `:describe-key`'s source
+link without any per-row boilerplate.
+
+The table form expands the [`Keymap`] contribution shape with
+a second field:
+
+```rust
+pub struct Keymap {
+    pub bindings: Vec<KeymapBinding>,           // chain form
+    pub entries: Vec<&'static KeymapEntry>,     // table form
+}
+```
+
+Both fields populate the same matcher trie; what differs is
+the resolution timing.
+
+**Chain form**: `bindings` already carries a typed
+`CommandInvocation`, and `bind_chord` parsed the chord string
+at call time. The host pass inserts directly into the trie.
+
+**Table form**: each `entry` carries a `&'static str`
+canonical command name (`"multibuffer:excerpt-next"`); the
+host pass walks `entries` at registration time, looks up each
+name in the `CommandRegistry` to mint a `CommandId`, parses
+the chord string into a `Vec<ChordPattern::Literal>`, builds
+a `KeymapBinding` carrying the entry's `doc` + `source`, and
+inserts it into the trie alongside the chain-form bindings.
+
+The two paths compose freely:
+
+```rust
+fn keymap(&self) -> Keymap {
+    Keymap::from_entries(multibuffer_keymap_entries())
+        .bind_chord(BindingMode::Normal, "<C-r>", self.refresh_cmd.clone())
+}
+```
+
+The `<C-r>` binding doesn't fit the catalog because
+`self.refresh_cmd` is built at mode-construction time (not a
+static name), so it routes through the chain form; the rest
+of the bindings ride the table.
+
+**Per-entry resolution behaviour** (translation pass
+`crates/lattice-host/src/keymap_mode_contributions.rs`):
+
+| Entry shape | Pass behaviour |
+|---|---|
+| `command = None` | Silent skip. Synthetic catalog row (PushDigit / SetPending / find-char prefix / register prefix / mark-name prefix) — informational for `:describe-key` and `:keymap`, not dispatchable. |
+| `command = Some(name)`, registry lookup miss | `tracing::warn!` and skip. Catalog drift — the binding names an invocation no command implements. Matches existing catalog drift-test convention. |
+| Chord string fails `parse_chord_sequence` | `tracing::warn!` and skip. Defensive — the `keymap_entry!` macro doesn't validate chord strings at expansion; a typo lands here. |
+| Otherwise | Build `KeymapBinding::new(mode, parsed_chords, CommandInvocation::of(cmd_id), entry.source().clone()).with_doc(entry.doc)` and feed into the same grouping pass the chain form uses. |
+
+**When to pick which form:**
+
+| Form | Picks up | Best for |
+|---|---|---|
+| Chain form (`bind_chord`) | Typed `CommandInvocation` (no registry lookup), no per-binding doc, `#[track_caller]` source capture | 1-5 bindings; dynamically-named commands the mode itself constructs; per-binding parameterisation (counts, args) |
+| Table form (`from_entries`) | `&'static str` command name (looked up at registration), per-row `doc` string surfaced by `:describe-key`, macro-captured source per row | 5-20+ bindings against the standard command vocabulary; reads as a binding-table; static catalog for `:keymap` |
+
+The two paths converge at the same `KeymapTrie` at the same
+`KeymapLayer::MinorMode(mode.id())`, so they're
+indistinguishable from the matcher's point of view.
+
+Sub-arc landed (2026-06-02): K.2.4.A.0.1 substrate move
+(commit `4f763d5`); K.2.4.A.0.2 `Keymap::from_entries` +
+`KeymapBinding.doc` (commit `6461f56`); K.2.4.A.0.3 host
+translation pass entry resolution (commit `81c4600`);
+K.2.4.A.0.4 chain + table composability test
+(commit `eaf9e33`).
+
 ### 11.3 Host translation
 
 Host gains one new pass in the boot path (and on every

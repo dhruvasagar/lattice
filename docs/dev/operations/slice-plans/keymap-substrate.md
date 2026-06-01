@@ -118,27 +118,169 @@ source-location capture, chord-string parsing, modifier
 notation, emacs-style multi-chord prefix (`<C-x>pp`
 explicitly), track-caller source capture, panic-on-malformed.
 
-### K.2.4 — Host translation pass
+### K.2.4 — Host translation pass ✅ (commit `ff9f9bf`)
 
-Host gains an internal helper
-(`crates/lattice-host/src/keymap_trie/mode_contribution.rs`
-or similar) that walks `ModeRegistry`, calls `mode.keymap()`,
-and translates each `KeymapBinding` into a
-`BoundCommand::from_invocation(...)` insert at
-`KeymapLayer::MinorMode(mode.id())`. The pass runs:
+Landed at `crates/lattice-host/src/keymap_mode_contributions.rs`
+(the slice plan's tentative `keymap_trie/mode_contribution.rs`
+home wasn't viable — `keymap_trie.rs` is a flat file, not a
+directory — so the pass lives as a sibling module).
 
-- At boot, after `ModeRegistry` is fully populated.
-- On every `ModeRegistry::register` after boot (for plugin /
-  dynamic mode loads).
+- Public entry `translate_mode_keymaps(handle, registry,
+  command_registry)` (boot-path bulk walk) and
+  `translate_mode_keymap(handle, mode_id, mode,
+  command_registry)` (single-mode pass for future dynamic
+  registration). The third `&CommandRegistry` arg added in
+  K.2.4.A.0.3 supports table-form entry resolution; chain
+  form alone ignores it.
+- `ModeRegistry::iter() -> impl Iterator<Item = (ModeId,
+  Arc<dyn DynMode>)>` added to `lattice-mode` to give the
+  pass the live trait object alongside the `ModeId`.
+- `lattice_mode::KeymapBinding` re-exported at crate root.
+- Per-mode the pass: calls `mode.keymap()`; if empty (both
+  `bindings` and `entries`), skip; otherwise concatenate
+  chain-form bindings with resolved table-form entries,
+  group by `BindingMode` into one `KeymapTrie` per mode,
+  call `handle.push_layer(MinorMode(mode_id), label, map)`.
+  One layer-rebuild per mode (idempotent on `mode_id` per
+  K.1.b).
+- Boot call site wired in `editor_boot.rs` right after the
+  existing diff / multibuffer / project-search `push_layer`
+  block; `mode_registry` and `registry` cloned at the
+  struct-field assignment so the `keymap: { ... }` block
+  borrows them after the moves.
+- 9 unit tests (5 chain-form from K.2.4 + 3 entry-form from
+  K.2.4.A.0.3 + 1 composability from K.2.4.A.0.4):
+  empty-keymap-skips-layer, single-binding round-trip,
+  binding-mode grouping, emacs-style `<C-x>pp` chord,
+  bulk-vs-single parity, table-form name resolution via
+  registry, synthetic-entry silent skip, unresolvable-name
+  warn-and-skip, chain + table composability.
 
-Test coverage: round-trip — register a mode that returns one
-binding via `Keymap`, assert the trie matches the chord at the
-right layer. Cover both boot-time and post-boot registration
-paths.
+Bench row (sub-100µs single-mode translation) deferred to
+K.2.4.A.5 alongside the K.2.4.A.0.5 doc carry-through —
+benchmarks block on the polish arc landing first because the
+describe-key tightening (K.2.4.A.1-A.4) churns the same code
+path.
 
-Bench coverage: add a row to `BENCHMARKS.md` for *"mode keymap
-translation at activation"* — single-mode translation should
-be sub-100µs for realistic binding counts (<50 per mode).
+### K.2.4.A — Tighten `:describe-key` output 🚧
+
+User-testing surfaced that `:describe-key`'s current output
+enumerates all sources but doesn't make the layered-keymap-
+resolution model legible. Four pieces of polish + a substrate-
+cleanup sub-arc and the user docs that describe the polished
+output factually. Insertion between K.2.4 and K.2.5 — K.2.5's
+multibuffer / project-search migration consumes the polished
+output and the unified catalog/registry presentation, so the
+polish has to land first.
+
+#### K.2.4.A.0 — `keymap_entry!` substrate consolidation 🚧
+
+K.2.1's substrate-floor move stopped at the chord primitives;
+`KeymapEntry` and `keymap_entry!` stayed in host. K.2.4.A.0
+finishes the job so the macro is reachable from mode crates
+and the table form becomes a real contribution path.
+Composed of five sub-slices:
+
+- **K.2.4.A.0.1 ✅ (commit `4f763d5`)** — `KeymapEntry`,
+  `keymap_entry!` macro, `__builtin_source`, and the
+  `default_keymap` / `lookup` / `entries` accessors moved
+  from `lattice-host::keymap` to
+  `lattice-mode::keymap_entry`. Forgery-prevention preserved
+  via `KeymapEntry::__new` constructor + private `source`
+  field. `lattice-host::keymap` is a re-export shim so
+  `:describe-key`, `:keymap`, the TUI drift test, and
+  every `keymap_normal`/`visual`/`insert`/`replace.rs`
+  consumer keep resolving verbatim. Macro re-exported at
+  `lattice_host` crate root so the `lattice_host::keymap_entry!`
+  path used by `lattice-ui-tui` still resolves. Test path
+  assertions updated `keymap.rs` → `keymap_entry.rs`.
+- **K.2.4.A.0.2 ✅ (commit `6461f56`)** — `Keymap`
+  contribution shape extended with `entries: Vec<&'static
+  KeymapEntry>` alongside the chain-form `bindings`.
+  `Keymap::from_entries(&'static [KeymapEntry])` +
+  `extend_with_entries(...)` builders. `KeymapBinding` grew
+  `pub doc: Option<&'static str>` + `with_doc(...)` builder
+  so the entry-path's docstring survives into the runtime
+  binding for `:describe-key` and `:keymap`. `KeymapEntry`
+  gained `PartialEq + Eq` derives. 4 unit tests cover
+  default-empty, from_entries-collects-slice,
+  extend-appends-in-order, with_doc-sets-doc.
+- **K.2.4.A.0.3 ✅ (commit `81c4600`)** —
+  `translate_mode_keymaps` walks `keymap.entries`, resolves
+  each entry's canonical command-name string against the
+  `CommandRegistry`, parses the chord string, builds one
+  `KeymapBinding` per resolvable entry carrying the entry's
+  doc + source. Per-entry resolution: `command == None` →
+  silent skip (synthetic catalog row); registry miss →
+  `tracing::warn!` and skip (catalog drift);
+  `parse_chord_sequence` failure → `tracing::warn!` and skip
+  (defensive). Boot call site updated to pass
+  `&command_registry`. 3 unit tests + 5 existing tests
+  updated to thread the new `&CommandRegistry` arg.
+- **K.2.4.A.0.4 ✅ (commit `eaf9e33`)** — single unit test
+  closing the entry-form arc: a mode whose
+  `Mode::keymap()` returns `Keymap::from_entries(&CAT)
+  .bind_chord(Normal, "<C-r>", typed_cmd)` —
+  composability case proving both paths land at the same
+  `MinorMode(mode_id)` layer. Shape K.2.5's multibuffer
+  migration will adopt.
+- **K.2.4.A.0.5 🚧** — docs (this slice): `keymap-architecture.md`
+  §11.2.2 entry-form contribution; this slice plan +
+  ledger refresh; brief mention in user docs deferred to
+  K.2.4.A.5 alongside the describe-key user-docs arc.
+
+#### K.2.4.A.1 — Resolved-binding indicator 🗒
+
+Add a "Resolved binding (under current active modes)" line
+at the top of `:describe-key` output per binding-mode where
+the chord is bound. Computed by replaying the K.1.c
+precedence fold for the active buffer's mode set
+(builtin/major < user/buffer < minors-in-activation-order;
+last write wins). Shows: chord, resolved command, the winning
+layer, the resolved binding's source via `as_link()`. If no
+layer fires (chord bound only in inactive minors):
+`"Not resolved here — bound in {inactive minor list}"`.
+~80 LOC + tests.
+
+#### K.2.4.A.2 — Friendly layer labels 🗒
+
+Replace `{layer:?}` debug formatting in the runtime-registry
+section with a labeller: `Built-in` / `Major: {major_name}`
+/ `Minor: {minor_name}` / `User config` / `Buffer-local`.
+Reuse the existing `KeymapHandle::layer_label(LayerId)` where
+informative; fall back to the layer-kind name + mode-id
+where not. ~30 LOC + tests.
+
+#### K.2.4.A.3 — Source rendering via `as_link()` 🗒
+
+Replace `format!("{source:?}")` with `source.as_link()` so
+file:line entries render as clickable markdown links in the
+help buffer. `SourceLocation::as_link()` already exists; the
+follow-link handler routes `file:` links. ~15 LOC + tests.
+
+#### K.2.4.A.4 — Catalog/registry unification 🗒
+
+After K.2.4.A.0 lands, the static catalog
+(`lattice_mode::keymap_entry::default_keymap()`) is the same
+shape as the runtime registry's content. Drop the static-
+catalog section from `:describe-key` output; render one
+unified section per binding-mode. Eliminates the duality
+users see today (the same `j` showing twice — once from the
+informational catalog, once from the registry). ~50 LOC +
+tests.
+
+#### K.2.4.A.5 — User docs + bench row 🗒
+
+Now that the polish (.A.1-.A.4) makes the layered resolution
+visible, write the user-doc section in `docs/user/modes.md`
+covering: how mode-contributed bindings appear in
+`:describe-key` / `:keymap`, the K.1.c precedence model, how
+to discover what a mode contributes. Plus the mode-author
+guide at `docs/dev/notes/mode-keymap-authoring.md` covering
+both the chain form (`bind_chord`) and table form
+(`keymap_entry!`/`from_entries`). BENCHMARKS row for
+single-mode translation deferred from K.2.4 lands here too,
+once the post-polish translation cost is stable.
 
 ### K.2.5 — Migrate multibuffer + project-search bindings
 

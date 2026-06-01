@@ -21564,17 +21564,25 @@ impl Editor {
                     }
                     _ => "",
                 };
-                // K.2.4.A.2 (2026-06-02): friendly layer
-                // label replaces `{layer:?}` debug. The
-                // CommandId still renders as `{:?}` here
-                // because K.2.4.A.4 retires this section
-                // entirely as part of the catalog/registry
-                // unification — no point name-resolving when
-                // the section is going away.
+                // K.2.4.A.2: friendly layer label;
+                // K.2.4.A.3: source rendered via as_link;
+                // K.2.4.A.4 (2026-06-02): CommandId resolved
+                // to canonical name via the host's
+                // CommandRegistry — matches the
+                // K.2.4.A.1 resolved-binding section
+                // format so the two sections are visually
+                // consistent. Falls back to debug formatting
+                // only on registry miss (defensive — bindings
+                // came through the registry so they should
+                // resolve back).
+                let cmd_name = self
+                    .registry
+                    .lookup(bound.command.command)
+                    .map(|spec| spec.name.clone())
+                    .unwrap_or_else(|| format!("{:?}", bound.command.command));
                 lines.push(format!(
-                    "    {} → {:?}{active_marker}",
+                    "    {} → {cmd_name}{active_marker}",
                     Self::friendly_layer_label(layer),
-                    bound.command.command,
                 ));
                 lines.push(format!("      source: {}", bound.source.as_link()));
             }

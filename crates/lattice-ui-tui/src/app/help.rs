@@ -648,6 +648,39 @@ mod tests {
     }
 
     #[test]
+    fn describe_key_runtime_registry_section_renders_canonical_command_names() {
+        // K.2.4.A.4: the K.1.d runtime-registry section now
+        // resolves CommandId → canonical name (matching the
+        // K.2.4.A.1 resolved section's rendering). The two
+        // sections present consistently — same friendly
+        // layer label format, same canonical name, same
+        // as_link source — so the whole describe-key output
+        // reads as one coherent view rather than three
+        // stylistically-different stacked sections.
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key j".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        // Find the runtime-registry section (sits after the
+        // resolved section and catalog hits).
+        let runtime_start = body.find("Runtime registry:").unwrap_or_else(|| {
+            panic!("missing Runtime registry header: {body}");
+        });
+        let runtime_section = &body[runtime_start..];
+        // Should contain the canonical name `motion:line-down`
+        // and NOT the debug-formatted `CommandId(...)` form.
+        assert!(
+            runtime_section.contains("→ motion:line-down"),
+            "runtime-registry section should render canonical name: {runtime_section}"
+        );
+        assert!(
+            !runtime_section.contains("→ CommandId("),
+            "runtime-registry section should not leak CommandId debug: {runtime_section}"
+        );
+    }
+
+    #[test]
     fn describe_key_resolved_binding_uses_friendly_layer_label() {
         // K.2.4.A.2: layer label in the resolved section
         // renders as `Built-in` (friendly) rather than

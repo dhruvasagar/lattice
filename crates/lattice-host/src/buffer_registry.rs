@@ -454,10 +454,27 @@ impl BufferRegistry {
     }
 
     pub fn contains_document(&self, id: BufferId) -> bool {
+        // H.1 / M.6.X follow-up (2026-06-01): Multibuffer
+        // entries are document-backed (`document()` at line 137
+        // already returns `Some` for them), so the activation
+        // pipeline that gates on this predicate must accept
+        // them. Without this, `:b N` on a multibuffer view
+        // bounces with "buffer #N not a document" even though
+        // the registry can hand back a usable document handle.
+        // Aligned with `feedback_buffers_no_special_case` —
+        // Multibuffer is uniform with Document/Messages at the
+        // activation seam.
         lock_inner(&self.inner)
             .by_id
             .get(&id)
-            .map(|e| matches!(e.data, BufferData::Document(_) | BufferData::Messages(_)))
+            .map(|e| {
+                matches!(
+                    e.data,
+                    BufferData::Document(_)
+                        | BufferData::Messages(_)
+                        | BufferData::Multibuffer(_)
+                )
+            })
             .unwrap_or(false)
     }
 

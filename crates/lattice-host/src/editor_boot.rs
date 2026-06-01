@@ -855,6 +855,14 @@ impl Editor {
                 // `:search` minor) reach it via
                 // `services().get::<MultibufferRegistryHandle>()`.
                 s.register(multibuffer_registry_handle.clone());
+                // M.4 (2026-06-01): expose the EventBus so
+                // multibuffer views (and future provider
+                // triggers) can subscribe to source events +
+                // publish typed events
+                // (`MultibufferSourceClosed`,
+                // `MultibufferHeaderlineChanged`) via
+                // `services().get::<EventBus>()`.
+                s.register(event_bus.clone());
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

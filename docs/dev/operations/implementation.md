@@ -4102,15 +4102,26 @@ architecture §10 for the rationale.
   Pending resolving when the future completes. Tests: 7 new M.3
   tests + the existing `dispatches_via_dyn_document` updated.
   Workspace tests green.
-- 🗒 **M.4** — Live updates from source buffers: anchor-driven
-  excerpt tracking, debounced translation rebuild, cross-pane
-  consistency, **`MultibufferDocumentHandle::set_headerline`
-  API** for the view-header status convention (per architecture
-  §3.7 — async-buffer status surfaces through the headerline,
-  uniform across multibuffer providers and any future
-  async-populated buffer mechanism). `MultibufferSourceClosed
-  { view, source }` typed event so providers choose source-close
-  policy (search drops; diff may keep).
+- ✅ **M.4** (landed 2026-06-01) — Live updates from source
+  buffers + headerline API. `MultibufferDocumentHandle::attach_event_subscriptions(events)`
+  subscribes the view to `DocumentChanged` + `DocumentClosed`;
+  forwarder task filters by source `DocumentId`, recomposes on
+  edits, prunes + publishes `MultibufferSourceClosed { view,
+  source }` on close. Forwarder holds `Weak<MultibufferInner>`;
+  subscriptions tracked in `SubscriptionBookkeeping` on Inner so
+  Drop unsubscribes. Idempotent re-attach. Graceful no-runtime
+  fallback (test path). New `HeaderlineStatus` enum
+  (`Idle / InProgress / Complete / Failed`), `set_headerline` /
+  `headerline()` methods, `MultibufferHeaderlineChanged` typed
+  event. `create_multibuffer_view` auto-calls
+  `attach_event_subscriptions` when `EventBus` is in the
+  ServiceRegistry; boot registers `Arc<EventBus>` there. 5 new
+  M.4 tests; workspace tests green. **Anchor sliding + self-loop
+  debouncer + bench deferred to M.4.1** — the
+  `Excerpt::{start_line, end_line}` → `Anchor` refactor is a
+  significant data-model change deserving its own slice.
+- 🗒 **M.4.1** — Anchor sliding + self-loop debouncer +
+  `multibuffer_source_edit_p99_us` bench gate.
 - 🗒 **M.5** — Expand-context affordance:
   `:multibuffer-expand` / `:multibuffer-contract`.
 - 🗒 **M.6** — First provider: `lattice-multibuffer::providers::search`

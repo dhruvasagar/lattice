@@ -221,12 +221,116 @@ struct MultibufferInner {
     state: std::sync::Mutex<MultibufferState>,
     snapshot_cell: Arc<PublishedSnapshot>,
     row_translation: ArcSwap<RowTranslation>,
+    // M.4 (2026-06-01): view-level headerline rendered above the
+    // first excerpt. Async providers update this to surface
+    // progress + completion status (see
+    // `multibuffer-views.md` §3.7 "headerline status convention").
+    // Lock-free read via `ArcSwap`; writes go through
+    // `set_headerline` which also publishes
+    // `MultibufferHeaderlineChanged`.
+    headerline: ArcSwap<HeaderlineStatus>,
+    // M.4 (2026-06-01): event-bus subscription bookkeeping for
+    // the auto-recompose forwarder. `SubscriptionId`s registered
+    // by `attach_event_subscriptions` are unsubscribed on Drop.
+    subscriptions: std::sync::Mutex<SubscriptionBookkeeping>,
+}
+
+#[derive(Default)]
+struct SubscriptionBookkeeping {
+    /// Subscription ids returned by `EventBus::subscribe`; cleared
+    /// on Inner Drop via `unsubscribe`.
+    ids: Vec<lattice_runtime::SubscriptionId>,
+    /// Cheap-clone Arc for the unsubscribe path. `None` until
+    /// `attach_event_subscriptions` runs.
+    bus: Option<Arc<lattice_runtime::EventBus>>,
+}
+
+impl Drop for MultibufferInner {
+    fn drop(&mut self) {
+        // Unsubscribe + drop the bus reference so the forwarder
+        // task (which holds a Weak<MultibufferInner>) sees the
+        // upgrade fail and exits cleanly.
+        if let Ok(mut book) = self.subscriptions.lock() {
+            if let Some(bus) = book.bus.take() {
+                for id in book.ids.drain(..) {
+                    let _ = bus.unsubscribe(id);
+                }
+            }
+        }
+    }
 }
 
 struct MultibufferState {
     sources: HashMap<BufferId, Arc<dyn Document>>,
     excerpts: Vec<Excerpt>,
 }
+
+// ─────────────────────────────────────────────────────────────────
+// M.4 (2026-06-01): headerline status + typed events
+// ─────────────────────────────────────────────────────────────────
+
+/// View-level headerline status. Rendered above the first
+/// excerpt (M.2.a `MultibufferHeaderProvider` extends to handle
+/// the view header in a later renderer slice).
+///
+/// Async providers transition `Idle → InProgress → Complete` /
+/// `Failed` as their scan progresses. See
+/// `multibuffer-views.md` §3.7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderlineStatus {
+    /// No status rendered. The view-header virtual row is empty.
+    Idle,
+    /// A scan / fetch / computation is running. `label` describes
+    /// it; `count` is an optional running tally (hits found so
+    /// far, files scanned, etc.).
+    InProgress { label: String, count: Option<usize> },
+    /// The operation completed successfully. `summary` is the
+    /// terminal label rendered to the user.
+    Complete { summary: String },
+    /// The operation failed. `reason` is the terminal label
+    /// rendered to the user.
+    Failed { reason: String },
+}
+
+impl Default for HeaderlineStatus {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+/// M.4 (2026-06-01): published whenever a view's headerline
+/// status changes. Renderers + status-line consumers subscribe
+/// via `EventBus::subscribe_typed::<MultibufferHeaderlineChanged>`.
+#[derive(Debug, Clone)]
+pub struct MultibufferHeaderlineChanged {
+    pub view: BufferId,
+    pub status: HeaderlineStatus,
+}
+
+lattice_protocol::register_event!(
+    MultibufferHeaderlineChanged,
+    "multibuffer.headerline-changed",
+    "Multibuffer view's headerline status changed (Idle / InProgress / Complete / Failed).",
+    "lattice-multibuffer",
+);
+
+/// M.4 (2026-06-01): published when one of a multibuffer's
+/// source buffers closes. Providers subscribe to choose a
+/// source-close policy: project-search drops the stale excerpts;
+/// project-diff may keep them as historical reference.
+/// Multibuffer itself prunes the source from its internal map.
+#[derive(Debug, Clone)]
+pub struct MultibufferSourceClosed {
+    pub view: BufferId,
+    pub source: BufferId,
+}
+
+lattice_protocol::register_event!(
+    MultibufferSourceClosed,
+    "multibuffer.source-closed",
+    "One of a multibuffer view's source buffers closed; providers choose policy (drop excerpts, keep stale, etc.).",
+    "lattice-multibuffer",
+);
 
 /// A multibuffer document handle. Composes N source
 /// `Arc<dyn Document>`s into one read-only composed view; impls
@@ -276,6 +380,8 @@ impl MultibufferDocumentHandle {
                 state: std::sync::Mutex::new(MultibufferState { sources, excerpts }),
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
+                headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
+                subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
             }),
         })
     }
@@ -412,6 +518,164 @@ impl MultibufferDocumentHandle {
             .lock()
             .expect("MultibufferInner state mutex poisoned")
     }
+
+    /// M.4 (2026-06-01): the view's current headerline status.
+    /// Lock-free read.
+    pub fn headerline(&self) -> Arc<HeaderlineStatus> {
+        self.inner.headerline.load_full()
+    }
+
+    /// M.4 (2026-06-01): set the view's headerline status.
+    /// Publishes `MultibufferHeaderlineChanged` on the event bus
+    /// the handle was attached to (no-op if
+    /// [`Self::attach_event_subscriptions`] hasn't been called —
+    /// the status still updates locally).
+    pub fn set_headerline(&self, status: HeaderlineStatus) {
+        let bus = self
+            .inner
+            .subscriptions
+            .lock()
+            .ok()
+            .and_then(|book| book.bus.clone());
+        self.inner.headerline.store(Arc::new(status.clone()));
+        if let Some(bus) = bus {
+            bus.publish_typed(MultibufferHeaderlineChanged {
+                view: self.inner.buffer_id,
+                status,
+            });
+        }
+    }
+
+    /// M.4 (2026-06-01): subscribe the view to its sources'
+    /// `DocumentChanged` / `DocumentClosed` events. On a source
+    /// change, the view auto-recomposes; on a source close, the
+    /// view publishes [`MultibufferSourceClosed`] and removes the
+    /// source from its internal map.
+    ///
+    /// Subscriptions live until the handle drops — `MultibufferInner::drop`
+    /// unsubscribes via the bookkeeping. The spawned forwarder
+    /// task holds a `Weak<MultibufferInner>` so it exits cleanly
+    /// once the handle is dropped.
+    ///
+    /// Idempotent: re-calling on an already-attached handle is a
+    /// no-op. Requires a current tokio runtime context (the
+    /// forwarder task is spawned via `tokio::spawn`).
+    pub fn attach_event_subscriptions(&self, events: &Arc<lattice_runtime::EventBus>) {
+        let mut book = self
+            .inner
+            .subscriptions
+            .lock()
+            .expect("subscriptions mutex poisoned");
+        if book.bus.is_some() {
+            // Already attached.
+            return;
+        }
+        // Drop into the no-tokio-runtime case gracefully: the
+        // event-bus subscribe still works, but the forwarder
+        // task can't spawn. Match `register_multibuffer_modes`'s
+        // shape.
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::debug!(
+                "MultibufferDocumentHandle::attach_event_subscriptions: no tokio runtime; \
+                 skipping forwarder task wiring (expected in test paths)"
+            );
+            // Still stash the bus so set_headerline can publish.
+            book.bus = Some(events.clone());
+            return;
+        }
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+        let sub_id = events.subscribe(
+            lattice_runtime::EventFilter::kinds(vec![
+                lattice_protocol::EventKind::DocumentChanged,
+                lattice_protocol::EventKind::DocumentClosed,
+            ]),
+            lattice_runtime::SubscriptionTarget::Channel(tx),
+        );
+        book.ids.push(sub_id);
+        book.bus = Some(events.clone());
+        drop(book);
+
+        let weak_inner = Arc::downgrade(&self.inner);
+        let events_for_task = events.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let Some(inner) = weak_inner.upgrade() else {
+                    break;
+                };
+                match event {
+                    lattice_protocol::Event::DocumentChanged { id, .. } => {
+                        if let Some(source_id) = source_buffer_for_document_id(&inner, id) {
+                            // Recompose the view to reflect the
+                            // updated source snapshot. The
+                            // recompose is idempotent so the
+                            // self-loop case (multibuffer's own
+                            // apply_edit caused this change) is
+                            // safe — slightly wasteful but
+                            // correct. A self-loop debouncer
+                            // can land in M.4.1 alongside
+                            // anchor sliding.
+                            recompose_inner(&inner);
+                            // Source id is unused for the simple
+                            // recompose; M.4.1 anchor sliding
+                            // reads it to know which anchors to
+                            // slide.
+                            let _ = source_id;
+                        }
+                    }
+                    lattice_protocol::Event::DocumentClosed { id } => {
+                        if let Some(source_id) = source_buffer_for_document_id(&inner, id) {
+                            // Remove the source from our map.
+                            if let Ok(mut state) = inner.state.lock() {
+                                state.sources.remove(&source_id);
+                            }
+                            // Publish the typed event so providers
+                            // pick up the close + choose policy.
+                            events_for_task.publish_typed(MultibufferSourceClosed {
+                                view: inner.buffer_id,
+                                source: source_id,
+                            });
+                            // Recompose: removed source's
+                            // excerpts will render empty rows
+                            // (no entries in the source map).
+                            recompose_inner(&inner);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+
+/// Translate a [`DocumentId`] (carried by `Event::DocumentChanged`
+/// / `Event::DocumentClosed`) to the `BufferId` key in our source
+/// map, if the document is one of our sources.
+fn source_buffer_for_document_id(
+    inner: &Arc<MultibufferInner>,
+    document_id: DocumentId,
+) -> Option<BufferId> {
+    let state = inner.state.lock().ok()?;
+    state
+        .sources
+        .iter()
+        .find(|(_, h)| h.id() == document_id)
+        .map(|(id, _)| *id)
+}
+
+/// Recompose an Inner — same shape as `MultibufferDocumentHandle::recompose`
+/// but works against an `Arc<MultibufferInner>` so the forwarder
+/// task can call it without holding a strong handle reference.
+fn recompose_inner(inner: &Arc<MultibufferInner>) {
+    let Ok(state) = inner.state.lock() else {
+        return;
+    };
+    let new_snapshot = compose_snapshot(inner.id, &state.sources, &state.excerpts);
+    let new_translation = RowTranslation::build(&state.excerpts);
+    drop(state);
+    inner.snapshot_cell.store(new_snapshot);
+    inner.row_translation.store(Arc::new(new_translation));
 }
 
 impl Document for MultibufferDocumentHandle {
@@ -997,6 +1261,164 @@ mod tests {
         // After "<" at (0,0): "<alpha\nbeta\ngamma\n"
         // After ">" at composed (2,5) = source (2,5): "<alpha\nbeta\ngamma>\n"
         assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\ngamma>\n");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // M.4 tests
+    // ─────────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m4_headerline_starts_idle_and_can_be_set() {
+        let (sources, ids) = make_sources(&["x\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        assert!(matches!(*mb.headerline(), HeaderlineStatus::Idle));
+
+        mb.set_headerline(HeaderlineStatus::InProgress {
+            label: "Searching".into(),
+            count: Some(42),
+        });
+        match &*mb.headerline() {
+            HeaderlineStatus::InProgress { label, count } => {
+                assert_eq!(label, "Searching");
+                assert_eq!(*count, Some(42));
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+
+        mb.set_headerline(HeaderlineStatus::Complete {
+            summary: "87 hits".into(),
+        });
+        match &*mb.headerline() {
+            HeaderlineStatus::Complete { summary } => assert_eq!(summary, "87 hits"),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m4_set_headerline_publishes_changed_event_when_attached() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MultibufferHeaderlineChanged>();
+        bus.subscribe_typed::<MultibufferHeaderlineChanged>(tx);
+
+        let (sources, ids) = make_sources(&["y\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let view_id = mb.buffer_id();
+        mb.attach_event_subscriptions(&bus);
+
+        mb.set_headerline(HeaderlineStatus::Complete {
+            summary: "done".into(),
+        });
+
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("event should arrive")
+            .expect("channel open");
+        assert_eq!(evt.view, view_id);
+        assert!(matches!(evt.status, HeaderlineStatus::Complete { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m4_source_change_auto_recomposes_view() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
+        let source_handle = sources.get(&ids[0]).unwrap().clone();
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\nbeta\n");
+
+        // Source edit publishes DocumentChanged on the bus the
+        // multibuffer subscribed to. After a brief yield, the
+        // forwarder task should have recomposed.
+        // The mock setup above doesn't wire the source handle to
+        // PUBLISH on the bus — `spawn_document` publishes events
+        // only when given a bus. So this test verifies the
+        // SUBSCRIBE path: directly publish a DocumentChanged
+        // event with the source's DocumentId and confirm the
+        // multibuffer recomposes.
+        source_handle
+            .apply_edit(Edit::insert(Position::new(0, 0), "<"))
+            .await
+            .unwrap();
+        // Simulate the source's DocumentChanged publish.
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: source_handle.id(),
+            path: None,
+            version: source_handle.version(),
+            edits: Vec::new(),
+        });
+
+        // Wait for the spawned forwarder to process. Longer
+        // budget than yield_now because tokio's multi-thread
+        // runtime may park the task briefly.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if mb.snapshot().buffer.as_string() != "alpha\nbeta\n" {
+                break;
+            }
+        }
+        assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m4_source_close_publishes_typed_event_and_prunes() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<MultibufferSourceClosed>();
+        bus.subscribe_typed::<MultibufferSourceClosed>(tx);
+
+        let (sources, ids) = make_sources(&["a\n", "b\n"]);
+        let source_a_handle = sources.get(&ids[0]).unwrap().clone();
+        let excerpts = vec![
+            Excerpt::new(ids[0], 0, 0),
+            Excerpt::new(ids[1], 0, 0),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let view_id = mb.buffer_id();
+        mb.attach_event_subscriptions(&bus);
+        assert_eq!(mb.source_buffer_ids().len(), 2);
+
+        // Publish DocumentClosed for source A.
+        bus.publish(lattice_protocol::Event::DocumentClosed {
+            id: source_a_handle.id(),
+        });
+
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("event should arrive")
+            .expect("channel open");
+        assert_eq!(evt.view, view_id);
+        assert_eq!(evt.source, ids[0]);
+
+        // Source A pruned from the map.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if mb.source_buffer_ids().len() == 1 {
+                break;
+            }
+        }
+        assert_eq!(mb.source_buffer_ids(), vec![ids[1]]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m4_attach_is_idempotent() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["x\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+        // Second call returns immediately; no second subscription
+        // ID is recorded (verifiable via the unique-ID set count
+        // staying at 1, but our internal bookkeeping isn't
+        // public — instead we verify no panic + behaviour stays
+        // correct).
+        mb.attach_event_subscriptions(&bus);
+        mb.set_headerline(HeaderlineStatus::Complete {
+            summary: "x".into(),
+        });
     }
 
     #[tokio::test(flavor = "multi_thread")]

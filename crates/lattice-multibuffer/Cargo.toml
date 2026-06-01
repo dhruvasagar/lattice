@@ -25,6 +25,11 @@ thiserror = { workspace = true }
 # cleanup task; view.rs logs missing-service warnings.
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 tracing = { workspace = true }
+# M.4 (2026-06-01): `register_event!` macro expands into a
+# `#[linkme::distributed_slice(...)]` static — every crate that
+# uses the macro needs `linkme` as a direct dep (the macro can't
+# route through a re-export).
+linkme = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }

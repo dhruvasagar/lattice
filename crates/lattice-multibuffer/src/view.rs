@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_mode::{BufferStoreHandle, ModeActivator};
-use lattice_runtime::Document;
+use lattice_runtime::{Document, EventBus};
 
 use crate::registry::MultibufferRegistryHandle;
 use crate::{Excerpt, MultibufferDocumentHandle};
@@ -105,6 +105,17 @@ pub fn create_multibuffer_view(
         }
     };
     let buffer_id = handle.buffer_id();
+
+    // Step 2.5 (M.4 2026-06-01): auto-subscribe to source events
+    // so the view recomposes when a source publishes
+    // DocumentChanged and prunes + publishes
+    // MultibufferSourceClosed when a source closes. No-op if the
+    // EventBus service isn't registered (test paths without the
+    // bus wired up).
+    if let Some(events) = services.get::<EventBus>() {
+        handle.attach_event_subscriptions(&events);
+    }
+
     let typed_handle = Arc::new(handle);
 
     // Step 3: typed-handle registry insert (providers reach

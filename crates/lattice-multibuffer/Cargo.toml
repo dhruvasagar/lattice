@@ -28,6 +28,18 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }
+# M.2.c (2026-06-01): criterion-driven multibuffer benches —
+# excerpt-jump motion latency, view compose latency, translation
+# rebuild latency. CI gates per `multibuffer-views.md` §7.
+criterion = { workspace = true }
+
+[[bench]]
+name = "multibuffer_motion"
+harness = false
+
+[[bench]]
+name = "multibuffer_compose"
+harness = false
 
 [lints]
 workspace = true

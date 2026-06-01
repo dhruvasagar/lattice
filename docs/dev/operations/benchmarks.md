@@ -28,6 +28,66 @@ target rather than just a slower number.
 
 ---
 
+## M.2.c — multibuffer motion + compose benches (2026-06-01)
+
+Bench files: `crates/lattice-multibuffer/benches/multibuffer_motion.rs`
++ `crates/lattice-multibuffer/benches/multibuffer_compose.rs`.
+Run: `cargo bench -p lattice-multibuffer`.
+
+### Motion latency (excerpt-jump motions)
+
+Pure-helper latency for the four motions registered in
+`lattice-multibuffer::motions`. The motion handlers wrap these
+with `MultibufferRegistry::handle(buffer_id)` (an `RwLock::read`
++ `HashMap::get` + `Arc::clone`, sub-µs); the benches measure
+the geometry walk that dominates at large excerpt counts.
+
+`--quick` numbers (criterion 100-sample mode), x86-64 WSL2:
+
+| Bench / size | Median time | Notes |
+|---|---|---|
+| `next_excerpt_start/50` | ~80 ns | CI-relevant size; well under per-keystroke budget |
+| `next_excerpt_start/500` | ~870 ns | |
+| `next_excerpt_start/5000` | ~7.9 µs | Stress shape; still 1000× under 8 ms frame budget |
+| `prev_excerpt_start/50` | ~80 ns | Symmetric |
+| `prev_excerpt_start/500` | ~850 ns | |
+| `prev_excerpt_start/5000` | ~8.0 µs | |
+| `next_file_boundary/50` | ~120 ns | Boundary-list walk is one extra pass; cost difference small at small N |
+| `next_file_boundary/500` | ~1.5 µs | |
+| `next_file_boundary/5000` | ~12 µs | |
+| `prev_file_boundary/50` | ~120 ns | Symmetric |
+| `prev_file_boundary/500` | ~1.6 µs | |
+| `prev_file_boundary/5000` | ~12 µs | |
+
+**Envelope for future regressions:** `]e` / `[e` are O(N) over
+excerpt count — the prefix-sum walk dominates. `]E` / `[E`
+include the boundary-list scan (one extra O(N) pass). At the
+M.2 architecture-§7 CI-gate size (50 excerpts), all four
+motions land sub-µs. At 5k excerpts (well past any realistic
+single-view size), the worst case is ~12 µs — still 600× under
+the 8 ms 120 Hz frame budget. Any future change that pushes the
+50-excerpt case past ~5 µs should be reviewed.
+
+### View construction + translation rebuild
+
+Bench file: `multibuffer_compose.rs`. Three groups:
+
+1. `multibuffer_compose_50_excerpts` — cold
+   `MultibufferDocumentHandle::new` over 50 excerpts × 20 rows
+   across 10 source documents. Measures the construction-time
+   `compose_snapshot` + `RowTranslation::build` cost.
+2. `multibuffer_translation_rebuild` — `recompose()` over a
+   pre-built view at 100 and 1000 excerpts (the architecture
+   §7 stress shape uses 1k × 20 = 20k composed rows).
+3. `multibuffer_append_excerpts` — provider-streaming path
+   (`append_excerpts(batch)`); measures one 10-excerpt batch
+   onto a pre-existing 50 / 500 excerpt view.
+
+CI gates per architecture §7: compose ≤ 200 µs / 50 excerpts,
+translation rebuild ≤ 2000 µs / 20k rows. The bench
+infrastructure is in place; first baseline numbers land on the
+next regression sweep.
+
 ## M.-0 — Document hot-path baseline (2026-05-31)
 
 Baseline numbers for `lattice-core::Document` (the inner

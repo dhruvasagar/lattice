@@ -3546,6 +3546,7 @@ name = "lattice-multibuffer"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "criterion",
  "lattice-cells",
  "lattice-config",
  "lattice-core",

@@ -84,6 +84,32 @@ impl<T> Pending<T> {
         }
     }
 
+    /// M.3 (2026-06-01): build a `Pending<T>` that resolves when
+    /// the spawned future completes. Lets callers compose
+    /// multiple `Pending`s into one without blocking the runtime
+    /// (used by `MultibufferDocumentHandle::apply_edit_batch` to
+    /// fan a translated batch across N source handles, await each
+    /// source's Pending asynchronously, and combine the results).
+    ///
+    /// Requires a current tokio runtime context. Panics inside
+    /// `tokio::spawn` if no runtime is in scope — same constraint
+    /// every async editor path observes.
+    pub fn spawn<F>(future: F) -> Self
+    where
+        F: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = future.await;
+            let _ = tx.send(result);
+        });
+        Self {
+            id: InvocationId::next(),
+            rx,
+        }
+    }
+
     /// Block the current thread until the actor responds. Used by
     /// the TUI input loop and by tests that don't drive a tokio
     /// reactor explicitly. Panics only if the oneshot's internal

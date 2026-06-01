@@ -4081,9 +4081,27 @@ architecture §10 for the rationale.
   dispatch already runs on the App thread with `&mut Editor`
   in scope. The event-bus path is the right shape for capability-
   gated WASM plugin producers and lands when that work begins.
-- 🗒 **M.3** — Edit propagation: translation-table lookup →
-  source dispatch; boundary clipping; multi-excerpt selection
-  split; undo grouping across source buffers.
+- ✅ **M.3** (landed 2026-06-01) — Edit propagation.
+  `MultibufferDocumentHandle::apply_edit` translates composed
+  coordinates → source coordinates via the excerpt walk, forwards
+  to the source's `Document::apply_edit`. Boundary clipping per
+  architecture §4: cross-excerpt edits clip end to the start
+  excerpt's last source row end-of-line (read from the source's
+  current snapshot in `build_source_edit`). `apply_edit_batch`
+  translates up-front + awaits sequentially via the new
+  `Pending::spawn` helper in `lattice-runtime` — combines N
+  source Pendings into one without blocking the runtime. `undo` /
+  `redo` fan out across every source the view references; errors
+  per-source tolerated. `save` / `save_as` / `set_selections` /
+  `dispatch_with_cancel` stay `ReadOnly` (multibuffers aren't
+  files; selections are view-owned; grammar runs at host layer).
+  `MultibufferMode::options()` drops `ReadOnly` — providers that
+  need read-only views layer a minor contributing it.
+  `Pending::spawn` is the new public Pending constructor that
+  takes a `Future<Output=Result<T,RuntimeError>>` and returns a
+  Pending resolving when the future completes. Tests: 7 new M.3
+  tests + the existing `dispatches_via_dyn_document` updated.
+  Workspace tests green.
 - 🗒 **M.4** — Live updates from source buffers: anchor-driven
   excerpt tracking, debounced translation rebuild, cross-pane
   consistency, **`MultibufferDocumentHandle::set_headerline`

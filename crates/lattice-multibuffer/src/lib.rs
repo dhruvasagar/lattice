@@ -423,23 +423,114 @@ impl Document for MultibufferDocumentHandle {
         SnapshotCache::new(self.inner.snapshot_cell.clone())
     }
 
-    fn apply_edit(&self, _edit: Edit) -> Pending<AppliedEdit> {
-        Pending::ready(Err(RuntimeError::ReadOnly))
+    /// M.3 (2026-06-01): translate the composed-coordinate `edit`
+    /// to its source-coordinate equivalent and forward to the
+    /// source document's `apply_edit`.
+    ///
+    /// The returned `Pending<AppliedEdit>` carries the source's
+    /// AppliedEdit — ranges + delta in source coordinates. Caller
+    /// recompose()s (M.3) or auto-subscribes (M.4) to reflect.
+    ///
+    /// Boundary clipping (architecture §4): if `edit.range.end`
+    /// extends past the start excerpt's last composed row, the
+    /// end is clipped to the end-of-line of the excerpt's last
+    /// source row. The edit's contribution to subsequent
+    /// excerpts (and their sources) is dropped — matching Zed's
+    /// "edits stay in the excerpt" rule. Out-of-range edits
+    /// (cursor past view end, no excerpts) return
+    /// `RuntimeError::ReadOnly`.
+    fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
+        let state = self.lock_state();
+        let Some(target) = resolve_edit_target(&state, edit.range.start) else {
+            return Pending::ready(Err(RuntimeError::ReadOnly));
+        };
+        let source_edit = build_source_edit(&target, &edit);
+        let source_handle = target.source_handle.clone();
+        drop(state);
+        source_handle.apply_edit(source_edit)
     }
 
-    fn apply_edit_batch(&self, _edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        Pending::ready(Err(RuntimeError::ReadOnly))
+    /// M.3 (2026-06-01): translate + forward each edit to its
+    /// source. The batch is serialised through `apply_edit`
+    /// per-edit and combined via `Pending::spawn` so the
+    /// returned `Pending` resolves asynchronously without
+    /// blocking the runtime. Multi-source batches dispatch
+    /// each sub-edit sequentially; per-edit parallelism is a
+    /// later refinement once a consumer needs it.
+    fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
+        // Translate up-front (cheap, requires the state lock).
+        let state = self.lock_state();
+        let mut calls: Vec<(Arc<dyn Document>, Edit)> = Vec::with_capacity(edits.len());
+        for edit in edits {
+            if let Some(target) = resolve_edit_target(&state, edit.range.start) {
+                let source_edit = build_source_edit(&target, &edit);
+                let handle = target.source_handle.clone();
+                calls.push((handle, source_edit));
+            }
+        }
+        drop(state);
+
+        Pending::spawn(async move {
+            let mut results = Vec::with_capacity(calls.len());
+            for (handle, edit) in calls {
+                match handle.apply_edit(edit).await {
+                    Ok(applied) => results.push(applied),
+                    Err(RuntimeError::ReadOnly) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(results)
+        })
     }
 
+    /// M.3 (2026-06-01): fan undo out to every source the view
+    /// references. Each source's undo independently rolls back
+    /// its most recent action; the multibuffer's recompose
+    /// (M.4 auto-driven, M.3 manual) reflects.
+    ///
+    /// v1 atomicity: each source's undo stack is independent.
+    /// When the user typed in the multibuffer last, each
+    /// affected source's most-recent entry IS that
+    /// multibuffer-originated edit, so a fan-out undo rolls
+    /// back the right thing. If a third pane edited a source
+    /// in between, that source's most-recent is the third
+    /// pane's edit — `u` from the multibuffer rolls THAT back.
+    /// M.6+ slices can add transaction tracking if the
+    /// independent-stack behaviour proves surprising.
     fn undo(&self) -> Pending<Vec<AppliedEdit>> {
-        Pending::ready(Err(RuntimeError::ReadOnly))
+        let sources: Vec<Arc<dyn Document>> =
+            self.lock_state().sources.values().cloned().collect();
+        Pending::spawn(async move {
+            let mut all = Vec::new();
+            for source in sources {
+                match source.undo().await {
+                    Ok(mut rs) => all.append(&mut rs),
+                    Err(_) => continue,
+                }
+            }
+            Ok(all)
+        })
     }
 
     fn redo(&self) -> Pending<Vec<AppliedEdit>> {
-        Pending::ready(Err(RuntimeError::ReadOnly))
+        let sources: Vec<Arc<dyn Document>> =
+            self.lock_state().sources.values().cloned().collect();
+        Pending::spawn(async move {
+            let mut all = Vec::new();
+            for source in sources {
+                match source.redo().await {
+                    Ok(mut rs) => all.append(&mut rs),
+                    Err(_) => continue,
+                }
+            }
+            Ok(all)
+        })
     }
 
     fn save(&self) -> Pending<std::path::PathBuf> {
+        // Multibuffers aren't on-disk files; `:w` is a no-op
+        // until a provider attaches save semantics (e.g.
+        // M.6 SearchProvider's "save all sources" wrapper).
         Pending::ready(Err(RuntimeError::ReadOnly))
     }
 
@@ -448,6 +539,10 @@ impl Document for MultibufferDocumentHandle {
     }
 
     fn set_selections(&self, _selections: SelectionSet) -> Pending<()> {
+        // Selections are view-owned in the composed coordinate
+        // space; M.3 doesn't propagate them to sources. The
+        // host's pane manages composed-side selections directly
+        // (renderer reads them off the snapshot).
         Pending::ready(Err(RuntimeError::ReadOnly))
     }
 
@@ -457,9 +552,105 @@ impl Document for MultibufferDocumentHandle {
         _cursor: Position,
         _cancel: CancellationToken,
     ) -> Pending<Effect> {
+        // Grammar dispatch runs at the host layer against the
+        // composed snapshot; the resulting Edits flow through
+        // `apply_edit`. The multibuffer doesn't own grammar
+        // semantics directly.
         Pending::ready(Err(RuntimeError::ReadOnly))
     }
 }
+
+// ──────────────────────────────────────────────────────────────
+// M.3 translation helpers
+// ──────────────────────────────────────────────────────────────
+
+/// One excerpt + position pair resolved from a composed-coordinate
+/// edit point. M.4 will likely read `source_id` for live-update
+/// subscription bookkeeping; M.3 only needs the handle.
+#[allow(dead_code)]
+struct EditTarget {
+    source_id: BufferId,
+    source_handle: Arc<dyn Document>,
+    /// The composed `Position` we translated from.
+    composed_start: Position,
+    /// Source-coordinate position equivalent to `composed_start`.
+    source_start: Position,
+    /// Last composed row of the containing excerpt (inclusive).
+    excerpt_end_composed_row: u32,
+    /// Last source row of the containing excerpt (inclusive).
+    excerpt_end_source_row: u32,
+}
+
+/// Walk excerpts in display order to find the one that contains
+/// `composed_pos`. Returns the source handle + the source
+/// position equivalent. `None` when the position is past the
+/// last excerpt or the source map doesn't have the excerpt's
+/// source (an invariant violation, treated as out-of-range).
+fn resolve_edit_target(state: &MultibufferState, composed_pos: Position) -> Option<EditTarget> {
+    let mut composed_cursor: u32 = 0;
+    for excerpt in &state.excerpts {
+        let lines = excerpt.line_count();
+        let next_cursor = composed_cursor.saturating_add(lines);
+        if composed_pos.line < next_cursor {
+            let offset_in_excerpt = composed_pos.line - composed_cursor;
+            let source_row = excerpt.start_line.saturating_add(offset_in_excerpt);
+            let source_handle = state.sources.get(&excerpt.source)?.clone();
+            return Some(EditTarget {
+                source_id: excerpt.source,
+                source_handle,
+                composed_start: composed_pos,
+                source_start: Position {
+                    line: source_row,
+                    byte: composed_pos.byte,
+                },
+                excerpt_end_composed_row: next_cursor.saturating_sub(1),
+                excerpt_end_source_row: excerpt.end_line,
+            });
+        }
+        composed_cursor = next_cursor;
+    }
+    None
+}
+
+/// Build the source-coordinate `Edit` from a translation target +
+/// the original composed-coordinate edit. Applies boundary
+/// clipping: if `edit.range.end` extends past the start
+/// excerpt's last row, the end is clipped to the end-of-line
+/// of the excerpt's last source row.
+fn build_source_edit(target: &EditTarget, edit: &Edit) -> Edit {
+    let end_composed = edit.range.end;
+    let source_end = if end_composed.line > target.excerpt_end_composed_row {
+        // Boundary clip: pull `end` back to end-of-line of the
+        // excerpt's last source row. Length comes from the
+        // source's current snapshot — we already hold the
+        // handle.
+        let snap = target.source_handle.snapshot();
+        let line_text = snap.buffer.line(target.excerpt_end_source_row);
+        let line_byte_len = line_text
+            .as_deref()
+            .map(|s| s.trim_end_matches('\n').len() as u32)
+            .unwrap_or(0);
+        Position {
+            line: target.excerpt_end_source_row,
+            byte: line_byte_len,
+        }
+    } else {
+        let row_offset = end_composed.line.saturating_sub(target.composed_start.line);
+        Position {
+            line: target.source_start.line.saturating_add(row_offset),
+            byte: end_composed.byte,
+        }
+    };
+
+    Edit {
+        range: lattice_protocol::position::Range {
+            start: target.source_start,
+            end: source_end,
+        },
+        kind: edit.kind.clone(),
+    }
+}
+
 
 impl std::fmt::Debug for MultibufferDocumentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -666,21 +857,173 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn writes_are_rejected() {
+    async fn save_and_set_selections_still_rejected_post_m3() {
+        // M.3 (2026-06-01): apply_edit / undo / redo now
+        // propagate; save / save_as / set_selections /
+        // dispatch_with_cancel stay rejected per the design
+        // comments in `impl Document` (`:w` is no-op until a
+        // provider attaches save semantics; selections are
+        // view-owned; grammar dispatch runs at the host layer).
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
 
-        assert!(matches!(
-            mb.apply_edit(Edit::insert(Position::ZERO, "y")).await,
-            Err(RuntimeError::ReadOnly)
-        ));
-        assert!(matches!(mb.undo().await, Err(RuntimeError::ReadOnly)));
         assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
         assert!(matches!(
             mb.set_selections(SelectionSet::default()).await,
             Err(RuntimeError::ReadOnly)
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_insert_translates_and_forwards_to_source() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let source_handle = sources.get(&ids[0]).expect("source present").clone();
+        let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Insert "X-" at composed position (line=1, byte=0) — should land at
+        // source position (line=1, byte=0) since the excerpt starts at line 0.
+        let applied = mb
+            .apply_edit(Edit::insert(Position::new(1, 0), "X-"))
+            .await
+            .expect("insert should propagate");
+        assert_eq!(applied.inserted_text, "X-");
+
+        // Source reflects after recompose.
+        mb.recompose();
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\nX-beta\ngamma\n");
+        // Direct read of the source confirms the edit landed there
+        // (not just in some multibuffer-local cache).
+        assert_eq!(source_handle.text(), "alpha\nX-beta\ngamma\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_insert_translates_when_excerpt_starts_off_zero() {
+        // Excerpt starts at source row 2; composed row 0 maps to
+        // source row 2.
+        let (sources, ids) = make_sources(&["zero\none\ntwo\nthree\nfour\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 2, 4)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "two\nthree\nfour\n");
+
+        // Insert "Z " at composed (0, 0) → source (2, 0).
+        mb.apply_edit(Edit::insert(Position::new(0, 0), "Z "))
+            .await
+            .expect("insert should propagate");
+        mb.recompose();
+        assert_eq!(mb.snapshot().buffer.as_string(), "Z two\nthree\nfour\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_delete_within_excerpt_translates() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Delete "beta\n" — composed range (1,0)..(2,0).
+        use lattice_protocol::position::Range;
+        let _ = mb
+            .apply_edit(Edit::delete(Range::new(
+                Position::new(1, 0),
+                Position::new(2, 0),
+            )))
+            .await
+            .expect("delete should propagate");
+        mb.recompose();
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\ngamma\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_out_of_range_edit_returns_read_only() {
+        let (sources, ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Composed row 50 is way past the view's last row.
+        assert!(matches!(
+            mb.apply_edit(Edit::insert(Position::new(50, 0), "x")).await,
+            Err(RuntimeError::ReadOnly)
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_boundary_clip_drops_cross_excerpt_tail() {
+        // Two excerpts from two different sources.
+        let (mut sources, ids) = make_sources(&["AA\nBB\nCC\n", "11\n22\n33\n"]);
+        // sources contains both; ids[0] = A-source, ids[1] = B-source.
+        let excerpts = vec![
+            // composed rows 0..=2 — A
+            Excerpt::new(ids[0], 0, 2),
+            // composed rows 3..=5 — B
+            Excerpt::new(ids[1], 0, 2),
+        ];
+        // Snapshot the original B-source text for the post-edit assertion.
+        let b_handle = sources.remove(&ids[1]).expect("B source present");
+        sources.insert(ids[1], b_handle.clone());
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let original_b_text = b_handle.text();
+
+        // Cross-excerpt delete: range (0,0)..(5,0) — spans into B.
+        use lattice_protocol::position::Range;
+        let _ = mb
+            .apply_edit(Edit::delete(Range::new(
+                Position::new(0, 0),
+                Position::new(5, 0),
+            )))
+            .await;
+
+        // A was edited (boundary-clipped to A's last row).
+        // B was NOT edited (boundary clip dropped the tail).
+        assert_eq!(b_handle.text(), original_b_text, "B source must be untouched");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_apply_edit_batch_serialises_inserts() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Two inserts in row order. Batch dispatches them
+        // sequentially; second insert sees the buffer state
+        // after the first.
+        let edits = vec![
+            Edit::insert(Position::new(0, 0), "<"),
+            Edit::insert(Position::new(2, 5), ">"),
+        ];
+        let results = mb.apply_edit_batch(edits).await.expect("batch ok");
+        assert_eq!(results.len(), 2);
+        mb.recompose();
+        // After "<" at (0,0): "<alpha\nbeta\ngamma\n"
+        // After ">" at composed (2,5) = source (2,5): "<alpha\nbeta\ngamma>\n"
+        assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\ngamma>\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_undo_fans_out_to_each_source() {
+        let (sources, ids) = make_sources(&["aaa\n", "bbb\n"]);
+        let a = sources.get(&ids[0]).unwrap().clone();
+        let b = sources.get(&ids[1]).unwrap().clone();
+        let excerpts = vec![
+            Excerpt::new(ids[0], 0, 0),
+            Excerpt::new(ids[1], 0, 0),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Edit each source directly so each has something to undo.
+        a.apply_edit(Edit::insert(Position::new(0, 0), "A!")).await.unwrap();
+        b.apply_edit(Edit::insert(Position::new(0, 0), "B!")).await.unwrap();
+        assert_eq!(a.text(), "A!aaa\n");
+        assert_eq!(b.text(), "B!bbb\n");
+
+        // Undo on the multibuffer fans out — both sources roll back.
+        let applied = mb.undo().await.expect("undo ok");
+        assert!(
+            !applied.is_empty(),
+            "fan-out undo should produce at least one AppliedEdit"
+        );
+        assert_eq!(a.text(), "aaa\n");
+        assert_eq!(b.text(), "bbb\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -762,10 +1105,13 @@ mod tests {
         let dyn_doc: Arc<dyn Document> = Arc::new(mb);
         assert_eq!(dyn_doc.text(), "foo\nbar\n");
         assert!(!dyn_doc.dirty());
-        assert!(matches!(
-            dyn_doc.apply_edit(Edit::insert(Position::ZERO, "x")).await,
-            Err(RuntimeError::ReadOnly)
-        ));
+        // M.3 (2026-06-01): apply_edit now translates and
+        // forwards rather than returning ReadOnly.
+        let applied = dyn_doc
+            .apply_edit(Edit::insert(Position::ZERO, "x"))
+            .await
+            .expect("apply_edit should propagate");
+        assert_eq!(applied.inserted_text, "x");
     }
 
     #[tokio::test(flavor = "multi_thread")]

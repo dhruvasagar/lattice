@@ -61,13 +61,14 @@ impl Mode for MultibufferMode {
     }
 
     fn options(&self) -> OptionOverrideSet {
-        // M.2.b.2: views are read-only until M.3 (edit
-        // propagation) lands the back-translation path. NoFile
-        // because multibuffers aren't on-disk files — `:w` is a
-        // no-op (M.3 may change this to "apply edits to sources"
-        // semantics).
+        // M.3 (2026-06-01): `ReadOnly` dropped from the major's
+        // contribution now that edit propagation lands. Providers
+        // that want a read-only view (e.g. read-only LSP-references
+        // view) layer a minor mode that contributes `ReadOnly = true`.
+        // `NoFile` stays because multibuffers aren't on-disk files;
+        // `:w` is a no-op until a provider attaches save semantics
+        // (M.6 SearchProvider's "save all sources" wrapper, etc.).
         overrides! {
-            lattice_config::ReadOnly = true,
             lattice_config::NoFile = true,
         }
     }

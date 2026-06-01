@@ -255,6 +255,34 @@ rebind. To override a specific mode's binding, bind inside
 that mode's layer (capability-gated; takes precedence on ties
 via same-layer last-write-wins).
 
+### The `<C-h>` help prefix
+
+In Normal mode, `<C-h>` (Ctrl+h) is the emacs-style
+**discoverability prefix**. From any code or text buffer,
+press `<C-h>` followed by one of these keys:
+
+| Sequence | Opens |
+|---|---|
+| `<C-h><C-h>` or `<C-h>?` | `:help-for-help` index |
+| `<C-h>k` | `:describe-key` (prompt for chord) |
+| `<C-h>c` | `:describe-command` (prompt for name) |
+| `<C-h>o` | `:describe-option` (prompt for name) |
+| `<C-h>e` | `:describe-event` (prompt for name) |
+| `<C-h>m` | `:describe-mode` (active modes here) |
+| `<C-h>b` | `:describe-buffer` (this buffer's metadata) |
+| `<C-h>a` | `:apropos` (cross-cutting search) |
+| `<C-h>K` | `:keymap` (full keymap listing) |
+
+The prefix is Normal-mode only. In Insert mode `<C-h>`
+remains backspace; in the `:` cmdline / `/` `?` search line
+it remains line-backspace; in Visual / OperatorPending /
+Replace it's not bound (vim conventions preserved).
+
+There's no bare `<C-h>` leaf binding — pressing `<C-h>` alone
+puts the editor in a partial-chord state waiting for the
+follow-up key (or `<Esc>` to abort). Use `<C-h><C-h>` or
+`<C-h>?` for the help index.
+
 ### `:describe-key`
 
 `:describe-key <chord>` answers the practical question "what

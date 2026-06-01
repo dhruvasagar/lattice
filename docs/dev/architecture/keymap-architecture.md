@@ -1440,12 +1440,18 @@ not a state-machine transition. Lives in a host-owned helper
 module (`crates/lattice-host/src/keymap_help.rs`) per the
 slice plan.
 
-### 12.1 Binding table (Normal mode)
+### 12.1 Binding table (Normal mode) — landed (K.3, 2026-06-02)
+
+K.3.2 (commit `ed2a1bf`) registers these bindings at
+`KeymapLayer::Builtin`, `BindingMode::Normal`, from
+`crates/lattice-host/src/keymap_help.rs`. The
+`:help-for-help` row is an alias of `:help` added by K.3.1
+in the host's ex-command alias table.
 
 | Chord | Command | Notes |
 |---|---|---|
-| `<C-h>` (bare) | `:help-for-help` (alias of `:help`) | Ambiguous-leaf resolution via `timeoutlen` -- if no follow-on arrives, the bare value fires. |
-| `<C-h> <C-h>` | `:help-for-help` | Explicit alternative; same effect as bare `<C-h>` after timeout. |
+| `<C-h> <C-h>` | `:help-for-help` | Explicit form. Two presses of `<C-h>` open the help-for-help index. |
+| `<C-h> ?` | `:help-for-help` | Easier-to-type alias of `<C-h><C-h>` — single keypress after the prefix. |
 | `<C-h> k` | `:describe-key` | Prompts for chord; shows the bound command + provenance. |
 | `<C-h> c` | `:describe-command` | Letter `c` chosen over emacs's `f` (function) -- matches Lattice vocab. |
 | `<C-h> o` | `:describe-option` | Letter `o` chosen over emacs's `v` (variable) -- matches Lattice vocab. |
@@ -1454,6 +1460,8 @@ slice plan.
 | `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, mode stack, ...). |
 | `<C-h> a` | `:apropos` | Cross-cutting search across commands / options / events. |
 | `<C-h> K` | `:keymap` | Keymap listing for the current state. Capital K because lowercase `k` is `:describe-key`. |
+
+**No bare `<C-h>` leaf binding** — see §12.3 for the rationale.
 
 ### 12.2 Out-of-scope binding modes
 
@@ -1469,33 +1477,70 @@ slice plan.
   Users who need help mid-visual escape to Normal first --
   vim's mental model.
 
-### 12.3 Ambiguous-leaf resolution
+### 12.3 No bare `<C-h>` leaf — Option 2 from K.3.0 (2026-06-02)
 
-`<C-h>` is both a fireable leaf (`:help-for-help`) and a
-prefix to multiple sub-bindings. The keymap dispatcher
-resolves the ambiguity via `timeoutlen` (option, default
-1000 ms):
+The original §12.3 envisioned `<C-h>` as both a fireable
+leaf (`:help-for-help`) and a prefix to deeper bindings,
+resolved via `timeoutlen` — same machinery vim uses for
+general chord ambiguity. The K.3.0 trie audit landed a
+different decision.
 
-1. User presses `<C-h>` -> trie matches a node that has both
-   a value AND children.
-2. Dispatcher arms a timer for `timeoutlen` ms.
-3. If a follow-on chord arrives before the timer fires AND
-   extends to a deeper match -> fire the deeper match.
-4. If the timer fires first, OR if a non-matching follow-on
-   arrives -> fire the bare `<C-h>` value (`:help-for-help`).
+**K.3.0 finding.** Today's
+[`crates/lattice-host/src/keymap_trie.rs`](https://github.com/dhruvasagar/lattice)
+`lookup()` at lines 251-263 returns `Bound` immediately when
+a node has a binding, even if it also has children. The
+dispatcher has no `timeoutlen` machinery anywhere — partial-
+chord state is handled by an `AbsorbPartialChord(c)` Action
+that absorbs the chord and waits for the next, but only when
+the trie returns `Partial` (no leaf binding at this node).
+There's no mid-state "Bound-but-also-has-children" signal
+the dispatcher could time-out on.
 
-Same machinery vim uses for general chord ambiguity. K.3.0
-verifies the trie supports this; if not, a small extension
-ships alongside the bindings.
+**Option 2 decision (user-confirmed, 2026-06-02).** Skip the
+bare `<C-h>` leaf binding. `<C-h>` stays a pure prefix node
+(returns `Partial`). The slice plan's already-listed
+alternatives `<C-h><C-h>` and `<C-h>?` serve as the
+explicit `:help-for-help` entry points. One keystroke of
+extra friction; zero new dispatcher infrastructure.
 
-### 12.4 Sequencing
+The discarded alternatives were:
 
-See [slice plan: help-prefix](../operations/slice-plans/help-prefix.md)
-for K.3.0--K.3.4 carving. K.3 is gated on K.2 landing
-(otherwise the bindings go through the host-glue path that
-K.2.5 is dismantling), but is a thin slice -- substrate is
-unchanged, only new bindings + the timeout-resolution
-verification.
+- **Option 1**: Implement full `timeoutlen` mechanism.
+  Adds a `Bound { is_also_prefix: bool }` (or a new
+  `BoundOrPartial`) variant + timer-driven dispatch in the
+  App. ~150-200 LOC across `keymap_trie.rs`,
+  `keymap_registry.rs`, `input.rs`, App state.
+  First piece of timer-driven dispatch in the project.
+- **Option 3**: Reverse "leaf wins" — return `Partial` when
+  a node is both leaf and prefix. Vim-adjacent but not
+  vim-exact (no actual timeout; user must press a deeper
+  chord OR `<Esc>` to abort to the leaf). Medium effort.
+
+Option 1 is the correct long-term answer when timer-driven
+dispatch arrives for other reasons (a future `j10j` count-
+absorbing slice, for example). At that point bare `<C-h>`
+can land alongside, and this section retires. Until then,
+the explicit form is the convention.
+
+### 12.4 Sequencing — landed (2026-06-02)
+
+Full carving in
+[slice plan: help-prefix](../operations/slice-plans/help-prefix.md).
+K.3 was gated on K.2 landing (it did, commit `0938572` closing
+the K.2 arc) and shipped as a thin slice on top: substrate
+unchanged, just the new bindings + Option-2 design lock-in +
+mode-scope tests + docs.
+
+- K.3.0 ✅ trie audit + Option 2 decision (this section).
+- K.3.1 ✅ `:help-for-help` ex-command alias
+  (commit `ed2a1bf`).
+- K.3.2 ✅ `keymap_help.rs` registers the binding table at
+  `KeymapLayer::Builtin`, `BindingMode::Normal`
+  (commit `ed2a1bf`).
+- K.3.3 ✅ mode-scope enforcement tests (Visual /
+  OperatorPending / Cmdline / Search / Replace)
+  (commit `05c2e25`).
+- K.3.4 ✅ doc artefacts (this slice).
 
 ## See also
 

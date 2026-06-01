@@ -4340,22 +4340,58 @@ architecture §10 for the rationale.
   [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md);
   full sequencing + commit table at
   [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
-- 🗒 **K.3** — Help-prefix bindings (`<C-h>` map,
-  Normal-mode only). Emacs-style discoverability for the
-  self-documenting help facility (design.md §5.11): bare
-  `<C-h>` and `<C-h><C-h>` open `:help-for-help`;
-  `<C-h>{k,c,o,e,m,b,a,K}` route to the existing
-  `:describe-*` / `:apropos` / `:keymap` commands.
-  Insert / Visual / OperatorPending / cmdline retain
-  existing `<C-h>` semantics (cmdline keeps its built-in
-  backspace; vim-convention preserved). Sub-slices: K.3.0
-  trie ambiguous-leaf timeout audit/extension; K.3.1
-  `:help-for-help` alias of `:help`; K.3.2
-  `keymap_help.rs` register helper; K.3.3 mode-scope
-  enforcement tests; K.3.4 user-doc + bench. Gated on K.2.
+- ✅ **K.3** — Help-prefix bindings (`<C-h>` map,
+  Normal-mode only). Closed 2026-06-02. Emacs-style
+  discoverability for the §5.11 self-documenting help
+  facility. Landed on top of the closed K.2 substrate
+  (commit `0938572`) as a thin slice.
+
+  **K.3.0 ambiguous-leaf trie audit + Option 2 decision.**
+  Found `keymap_trie.rs:251-263` returns `Bound`
+  immediately on a leaf node even when children exist, and
+  the dispatcher has no `timeoutlen` machinery anywhere.
+  Rather than introduce timer-driven dispatch for a single
+  affordance, dropped the bare `<C-h>` leaf binding and
+  used the explicit `<C-h><C-h>` + `<C-h>?` forms for
+  help-for-help. One keystroke of friction; zero new
+  infra. Full `timeoutlen` (Option 1) becomes the right
+  answer when timer-driven dispatch arrives for other
+  reasons (a future count-absorbing slice, say); at that
+  point bare `<C-h>` can land.
+
+  **K.3.1 `:help-for-help` ex-command alias** (commit
+  `ed2a1bf`) — alias row added to the host's ex-command
+  alias table; resolves to canonical `ex:help`.
+
+  **K.3.2 `keymap_help.rs` module** (commit `ed2a1bf`) —
+  registers the §12.1 binding table at
+  `KeymapLayer::Builtin`, `BindingMode::Normal`. Takes
+  `&CommandRegistry`, resolves each row's canonical
+  `ex:*` name via `id_by_name`; unresolvable warns and
+  skips. Boot wired in `editor_boot.rs` right after the
+  four `register_<mode>_bindings` calls. 6 unit tests.
+
+  **K.3.3 mode-scope enforcement** (commit `05c2e25`) — 5
+  additional unit tests covering Visual / OperatorPending /
+  Command (cmdline) / Search / Replace, all asserting the
+  `<C-h>k` lookup returns `Unbound` (the K.1.c
+  per-keystroke filter enforces this, but the tests pin the
+  contract).
+
+  **K.3.4 doc artefacts** (this slice) — `keymap-architecture.md`
+  §12 rewritten (Option-2 binding table; §12.3 records the
+  decision + discarded alternatives + when Option 1 retires
+  it); slice plan flipped to ✅ with commit refs; user docs
+  in `docs/user/modes.md` get the `<C-h>` discovery
+  pointer. BENCHMARKS row deferred — pre-Option-2 the bench
+  would have measured timer-driven dispatch; Option 2
+  removes the timer so the existing
+  `keymap_trie_lookup_partial` bench (11.8ns) covers it.
+
   Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
-  §12; sequencing at [`slice-plans/help-prefix.md`](slice-plans/help-prefix.md).
+  §12; sequencing + commit refs at
+  [`slice-plans/help-prefix.md`](slice-plans/help-prefix.md).
 - 🚧 **K.4** — Multibuffer-is-a-regular-buffer audit +
   integration verification. Triggered by M.6 testing
   surfacing four latent failures (silent EventBus None,

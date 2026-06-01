@@ -584,6 +584,11 @@ impl App {
             // through host-side action dispatch. No app-side
             // post-processing required.
             Action::SearchTrigger { .. } => {}
+            // M.6.1: project-search-multibuffer-mode chords —
+            // handled by `Editor::do_search_jump_to_source` /
+            // `Editor::do_search_refresh` host-side.
+            Action::SearchJumpToSource => {}
+            Action::SearchRefresh => {}
 
             // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`

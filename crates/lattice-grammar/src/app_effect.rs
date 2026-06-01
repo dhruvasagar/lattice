@@ -546,6 +546,16 @@ pub enum AppEffect {
     /// `lattice_multibuffer::providers::search::project_search`
     /// against the active editor as the activator.
     SearchTrigger { query: String },
+    /// M.6.1 (2026-06-01): `<CR>` chord in project-search-multibuffer-mode.
+    /// Resolves the excerpt under cursor → source path → opens
+    /// the file at the matched row via `Editor::do_search_jump_to_source`.
+    SearchJumpToSource,
+    /// M.6.1 (2026-06-01): `gr` chord in project-search-multibuffer-mode.
+    /// Re-runs the scan with the view's current query.
+    /// `Editor::do_search_refresh` reads the state from the
+    /// `ProjectSearchService`, cancels the in-flight task via
+    /// `attach_task` semantics, and spawns a fresh one.
+    SearchRefresh,
 }
 
 #[cfg(test)]

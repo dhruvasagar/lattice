@@ -29,16 +29,17 @@ use std::sync::{Arc, RwLock};
 
 use lattice_config::{OptionOverrideSet, overrides};
 use lattice_core::{BufferFlags, BufferId};
+use lattice_grammar::CommandRegistry;
 use lattice_mode::{
     CapabilitySet, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
     ModeRegistry, ServiceRegistry,
 };
-use lattice_runtime::EventBus;
+use lattice_runtime::{Document, EventBus, spawn_document};
 use tokio::sync::mpsc;
 
 use crate::registry::MultibufferRegistryHandle;
 use crate::view::create_multibuffer_view;
-use crate::HeaderlineStatus;
+use crate::{Excerpt, ExcerptHeader, HeaderlineStatus};
 
 // ─────────────────────────────────────────────────────────────────
 // Public state types
@@ -97,6 +98,11 @@ pub struct ProjectSearchState {
     pub status: SearchStatus,
     pub total_hits: usize,
     pub scan_task: Option<tokio::task::JoinHandle<()>>,
+    /// M.6.1: source `BufferId` → on-disk path. Populated by the
+    /// provider-minor's forwarder as it loads files into the
+    /// view's source map. `do_search_jump_to_source` reads this
+    /// to resolve the excerpt under cursor back to a file path.
+    pub source_paths: std::collections::HashMap<BufferId, PathBuf>,
 }
 
 impl ProjectSearchState {
@@ -107,6 +113,7 @@ impl ProjectSearchState {
             status: SearchStatus::Scanning,
             total_hits: 0,
             scan_task: None,
+            source_paths: std::collections::HashMap::new(),
         }
     }
 }
@@ -127,6 +134,13 @@ pub trait ProjectSearchService: Send + Sync + std::fmt::Debug {
     fn add_hits(&self, view: BufferId, add: usize);
     fn set_status(&self, view: BufferId, status: SearchStatus);
     fn len(&self) -> usize;
+    /// M.6.1: record the on-disk path for a source buffer the
+    /// forwarder just attached to the view. Jump-to-source reads
+    /// this map back to resolve excerpt → path.
+    fn record_source_path(&self, view: BufferId, source: BufferId, path: PathBuf);
+    /// M.6.1: look up the path for a source buffer (used by
+    /// jump-to-source after finding the excerpt under cursor).
+    fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf>;
 }
 
 pub type ProjectSearchServiceHandle = Arc<dyn ProjectSearchService>;
@@ -194,6 +208,16 @@ impl ProjectSearchService for InMemoryProjectSearchService {
     }
     fn len(&self) -> usize {
         self.inner.read().map(|m| m.len()).unwrap_or(0)
+    }
+    fn record_source_path(&self, view: BufferId, source: BufferId, path: PathBuf) {
+        if let Some(state) = self.state(view) {
+            if let Ok(mut s) = state.write() {
+                s.source_paths.insert(source, path);
+            }
+        }
+    }
+    fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf> {
+        self.state(view)?.read().ok()?.source_paths.get(&source).cloned()
     }
 }
 
@@ -332,25 +356,74 @@ impl Mode for ProjectSearchMultibufferMode {
             subs.push(bus.subscribe_typed::<ProjectSearchCompleted>(done_tx));
             subs.push(bus.subscribe_typed::<ProjectSearchProgressUpdated>(progress_tx));
 
+            // Pull the search service so the forwarder can record
+            // source-path mappings as it loads files. Provider-
+            // minor activation runs in a context where the service
+            // is registered; we tolerate it being missing (test
+            // paths) by skipping the record.
+            let search_svc_arc = ctx.service::<ProjectSearchServiceHandle>();
+
             let mb_for_task = mb_registry.clone();
             let view_id_for_task = view_id;
+            let search_svc_for_task: Option<ProjectSearchServiceHandle> =
+                search_svc_arc.as_ref().map(|s| (**s).clone());
             let forwarder = tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         Some(batch) = batch_rx.recv() => {
                             if batch.view != view_id_for_task { continue; }
                             let Some(view) = mb_for_task.handle(view_id_for_task) else { break; };
-                            // M.6.0: emit empty excerpts to make the
-                            // count user-visible via the headerline.
-                            // M.6.1 opens source files as Document
-                            // buffers + appends real excerpts; the
-                            // wiring here lands the event flow.
-                            let hit_count: usize = batch.files.iter().map(|f| f.rows.len()).sum();
-                            let _ = hit_count;
+                            // M.6.1: load each hit's source file as a
+                            // fresh RopeDocumentHandle, add to the
+                            // view's source map, append 1-row excerpts.
+                            // No dedup across batches in M.6.1.0 — a
+                            // file with hits split across batches loads
+                            // twice. Documented; M.6.2 adds dedup via
+                            // service's source_paths map.
+                            let mut hit_count_in_batch = 0usize;
+                            for fh in batch.files {
+                                let path = fh.path.clone();
+                                let Ok(text_res) =
+                                    tokio::task::spawn_blocking({
+                                        let p = path.clone();
+                                        move || std::fs::read_to_string(&p)
+                                    })
+                                    .await
+                                else { continue; };
+                                let Ok(text) = text_res else { continue; };
+
+                                let source_id = BufferId::next();
+                                let document = lattice_core::Document::from_text(&text);
+                                let registry = Arc::new(CommandRegistry::new());
+                                let handle = spawn_document(source_id, document, registry);
+                                let dyn_handle: Arc<dyn Document> = Arc::new(handle);
+                                view.add_source(source_id, dyn_handle);
+                                if let Some(svc) = &search_svc_for_task {
+                                    svc.record_source_path(
+                                        view_id_for_task,
+                                        source_id,
+                                        path.clone(),
+                                    );
+                                }
+
+                                let excerpts: Vec<Excerpt> = fh
+                                    .rows
+                                    .iter()
+                                    .map(|&row| {
+                                        Excerpt::new(source_id, row, row).with_header(
+                                            ExcerptHeader::new(format!("{}", path.display())),
+                                        )
+                                    })
+                                    .collect();
+                                hit_count_in_batch += excerpts.len();
+                                view.append_excerpts(excerpts);
+                            }
+
                             view.set_headerline(HeaderlineStatus::InProgress {
                                 label: "Searching".into(),
-                                count: Some(view.excerpt_count() + hit_count),
+                                count: Some(view.excerpt_count()),
                             });
+                            let _ = hit_count_in_batch;
                         }
                         Some(prog) = progress_rx.recv() => {
                             if prog.view != view_id_for_task { continue; }
@@ -443,7 +516,9 @@ pub fn project_search(
     Some(view_id)
 }
 
-fn spawn_scan_task(
+/// Public so the host's `do_search_refresh` can respawn after
+/// cancelling the prior task.
+pub fn spawn_scan_task(
     view: BufferId,
     query: String,
     options: ProjectSearchOptions,

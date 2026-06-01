@@ -1777,6 +1777,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // `lattice_multibuffer::providers::search::project_search`
         // against the Editor (which impls `ModeActivator`).
         Action::SearchTrigger { query } => editor.do_search(query),
+        // M.6.1: jump-to-source / refresh inside a project-search view.
+        Action::SearchJumpToSource => editor.do_search_jump_to_source(),
+        Action::SearchRefresh => editor.do_search_refresh(),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -4819,6 +4822,10 @@ impl Editor {
             AppEffect::SearchTrigger { query } => {
                 out.next_actions.push(Action::SearchTrigger { query })
             }
+            AppEffect::SearchJumpToSource => {
+                out.next_actions.push(Action::SearchJumpToSource)
+            }
+            AppEffect::SearchRefresh => out.next_actions.push(Action::SearchRefresh),
         }
     }
 
@@ -10644,6 +10651,134 @@ impl Editor {
 
     #[cfg(not(feature = "search"))]
     pub fn do_search(&mut self, _query: String) {}
+
+    /// M.6.1 (2026-06-01): `<CR>` in project-search-multibuffer-mode.
+    /// Resolves the excerpt under cursor to its source file +
+    /// row via `ProjectSearchService::source_path`, then opens
+    /// the file via `Editor::do_edit(path)`. Cursor placement
+    /// inside the opened buffer happens through the standard
+    /// `do_edit` path; the user lands at row 0 (line-targeting
+    /// in the opened buffer is M.6.2 work — the standard
+    /// position-history pop is enough for v1 navigation).
+    #[cfg(feature = "search")]
+    pub fn do_search_jump_to_source(&mut self) {
+        let view_id = self.pane_tree.active().buffer_id;
+        let Some(mb_registry) = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+        else {
+            return;
+        };
+        let Some(view) = mb_registry.handle(view_id) else {
+            return;
+        };
+        let Some(search_svc_outer) = self
+            .services
+            .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
+        else {
+            return;
+        };
+        let search_svc: lattice_multibuffer::providers::search::ProjectSearchServiceHandle =
+            (*search_svc_outer).clone();
+        let cursor_row = self.document.snapshot().selections.primary().head.line;
+        let excerpts = view.excerpts();
+        // Find which excerpt contains the cursor row.
+        let mut composed_cursor: u32 = 0;
+        let mut target: Option<(BufferId, u32)> = None;
+        for ex in &excerpts {
+            let next = composed_cursor.saturating_add(ex.line_count());
+            if cursor_row < next {
+                let offset = cursor_row - composed_cursor;
+                let source_row = ex.start_line.saturating_add(offset);
+                target = Some((ex.source, source_row));
+                break;
+            }
+            composed_cursor = next;
+        }
+        let Some((source_buffer, source_row)) = target else {
+            return;
+        };
+        let Some(path) = search_svc.source_path(view_id, source_buffer) else {
+            return;
+        };
+        let _ = source_row;
+        // Open the file as a regular Document buffer. The
+        // existing `:edit` machinery handles registry insertion +
+        // major activation. M.6.2 can teach this to seek the
+        // cursor to `source_row`.
+        let _ = self.do_edit(Some(path), false);
+    }
+
+    #[cfg(not(feature = "search"))]
+    pub fn do_search_jump_to_source(&mut self) {}
+
+    /// M.6.1 (2026-06-01): `gr` in project-search-multibuffer-mode.
+    /// Cancels the in-flight scan + spawns a new one with the
+    /// view's current query. State is preserved (same query,
+    /// same options); the view itself is cleared of stale
+    /// excerpts via `replace_excerpts` to avoid mixing old and
+    /// new results.
+    #[cfg(feature = "search")]
+    pub fn do_search_refresh(&mut self) {
+        let view_id = self.pane_tree.active().buffer_id;
+        let Some(search_svc_outer) = self
+            .services
+            .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
+        else {
+            return;
+        };
+        let search_svc: lattice_multibuffer::providers::search::ProjectSearchServiceHandle =
+            (*search_svc_outer).clone();
+        let Some(state) = search_svc.state(view_id) else {
+            return;
+        };
+        let (query, options) = {
+            let Ok(s) = state.read() else { return; };
+            (s.query.clone(), s.options.clone())
+        };
+        let Some(mb_registry) = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+        else {
+            return;
+        };
+        let Some(view) = mb_registry.handle(view_id) else {
+            return;
+        };
+        let Some(events_outer) = self.services.get::<lattice_runtime::EventBus>() else {
+            return;
+        };
+        let events: std::sync::Arc<lattice_runtime::EventBus> = events_outer;
+
+        // Clear the view + state for a fresh run.
+        view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
+        view.set_headerline(lattice_multibuffer::HeaderlineStatus::InProgress {
+            label: "Refreshing search".into(),
+            count: Some(0),
+        });
+        search_svc.set_state(
+            view_id,
+            lattice_multibuffer::providers::search::ProjectSearchState::scanning(
+                query.clone(),
+                options.clone(),
+            ),
+        );
+        let task = lattice_multibuffer::providers::search::spawn_scan_task(
+            view_id,
+            query.clone(),
+            options,
+            search_svc.clone(),
+            events.clone(),
+        );
+        search_svc.attach_task(view_id, task);
+        events.publish_typed(lattice_multibuffer::providers::search::ProjectSearchRefreshed {
+            view: view_id,
+            new_query: query,
+        });
+    }
+
+    #[cfg(not(feature = "search"))]
+    pub fn do_search_refresh(&mut self) {}
 
     /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
     /// `:multibuffer-contract [n]` action handler. Looks up the

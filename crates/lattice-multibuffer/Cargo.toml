@@ -57,5 +57,11 @@ harness = false
 name = "multibuffer_compose"
 harness = false
 
+# M.6.1 (2026-06-01): project_search_first_batch_p99_ms.
+[[bench]]
+name = "project_search"
+harness = false
+required-features = ["search"]
+
 [lints]
 workspace = true

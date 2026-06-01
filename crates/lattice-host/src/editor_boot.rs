@@ -930,6 +930,18 @@ impl Editor {
                         &multibuffer_motion_ids,
                     ),
                 );
+                // M.6.1 (2026-06-01): project-search-multibuffer-mode
+                // bindings (`<CR>` jump-to-source, `gr` refresh).
+                // Pushed under the minor's ModeId so K.1.c's filter
+                // gates fire only when the minor is active.
+                #[cfg(feature = "search")]
+                h.push_layer(
+                    crate::keymap_registry::PushLayerKind::MinorMode(
+                        lattice_multibuffer::providers::search::ProjectSearchMultibufferMode::mode_id(),
+                    ),
+                    "project-search-multibuffer-mode",
+                    crate::multibuffer_keymap::project_search_mode_layer_bindings(&action_ids),
+                );
                 h
             },
             completion_registry,

@@ -4176,10 +4176,35 @@ architecture §10 for the rationale.
   4 unit tests pass; workspace tests green. **Deferred to M.6.1**:
   source-load + per-hit excerpt population, jump-to-source
   keymap, query-refresh chord, bench gate.
-- 🗒 **M.6.1** — Source-load + per-hit excerpt population +
-  jump-to-source keymap (`<CR>`) + query-refresh chord (`gr` —
-  `r` collides with vim's replace-character operator) +
-  `project_search_first_batch_p99_ms` bench (≤ 50ms / 1k-file).
+- ✅ **M.6.1** (landed 2026-06-01) — Source-load + jump-to-source
+  + refresh + bench infrastructure. Forwarder in
+  `ProjectSearchMultibufferMode::on_activate` opens each hit's
+  file via `tokio::task::spawn_blocking(fs::read_to_string)`,
+  spawns a fresh `RopeDocumentHandle`, adds to the view's
+  source map, appends 1-row excerpts per hit. Headerline shows
+  running hit count. `<CR>` chord routes through
+  `AppEffect::SearchJumpToSource` → `Action::SearchJumpToSource`
+  → `Editor::do_search_jump_to_source` (walks excerpts to find
+  cursor's excerpt, looks up source path via
+  `ProjectSearchService::source_path`, calls `do_edit`). `gr`
+  chord routes through `AppEffect::SearchRefresh` →
+  `Action::SearchRefresh` → `Editor::do_search_refresh` (reads
+  query+options, clears view, resets state, spawns fresh scan
+  — `attach_task` cancels the prior). `gr` shadows LSP-references
+  `gr` only inside search views (K.1.c minor-mode precedence).
+  `ActionIds` gained `search_jump_to_source` / `search_refresh`.
+  Keymap layer pushed under
+  `MinorMode(project-search-multibuffer-mode)`. New bench
+  `crates/lattice-multibuffer/benches/project_search.rs` with
+  synthetic 1k-file corpus + `BenchActivator` mock; CI gate
+  `project_search_first_batch_p99_ms` ≤ 50 ms; baseline numbers
+  land on next regression sweep. **Deferred to M.6.2**: per-file
+  dedup across batches (currently a file hit in two batches
+  loads twice — known tradeoff; `source_paths` map tracks the
+  mapping but isn't consulted yet for dedup); cursor-placement
+  at the matched row inside the opened buffer (do_edit lands at
+  row 0); regex via `grep-matcher` + `aho-corasick`.
+- 🗒 **M.6.2** — Dedup + cursor-placement + regex.
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo
   feature pulling `ignore` / `grep-matcher` / `aho-corasick`.

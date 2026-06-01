@@ -334,6 +334,16 @@ pub enum Action {
     /// against the active Editor (as activator). Opens the
     /// resulting view as the active buffer.
     SearchTrigger { query: String },
+    /// M.6.1: `<CR>` in `project-search-multibuffer-mode` —
+    /// jump to the source file/row of the excerpt under cursor.
+    SearchJumpToSource,
+    /// M.6.1: `gr` in `project-search-multibuffer-mode` —
+    /// re-run the scan with the view's current query. `r` alone
+    /// would shadow vim's replace-character; `gr` is project-
+    /// search-specific (shadows LSP-references `gr` only inside
+    /// search views — K.1.c minor-mode precedence handles the
+    /// scope boundary).
+    SearchRefresh,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

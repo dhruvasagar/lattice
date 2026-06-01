@@ -230,3 +230,63 @@ pub fn register_search_ex_command(registry: &mut lattice_grammar::CommandRegistr
 /// boot site unconditionally calling it.
 #[cfg(not(feature = "search"))]
 pub fn register_search_ex_command(_registry: &mut lattice_grammar::CommandRegistry) {}
+
+/// M.6.1 (2026-06-01): keymap layer for `project-search-multibuffer-mode`.
+///
+/// Bindings (Normal mode only):
+/// - `<CR>` → `Action::SearchJumpToSource` (jump to file/row of
+///   excerpt under cursor)
+/// - `g` `r` → `Action::SearchRefresh` (re-run scan with current
+///   query)
+///
+/// Notes on chord choice:
+/// - `<CR>` is the standard "open / commit" affordance — used
+///   by Help link-follow, file-tree open-on-Enter, etc.
+/// - `gr` shadows the LSP-references trigger when inside a
+///   search view. K.1.c minor-mode keymap precedence makes the
+///   shadowing automatic; in regular buffers `gr` keeps its
+///   LSP-references semantic.
+/// - `r` alone would collide with vim's replace-character
+///   operator; explicitly avoided.
+#[cfg(feature = "search")]
+pub fn project_search_mode_layer_bindings(
+    actions: &crate::actions::ActionIds,
+) -> HashMap<BindingMode, KeymapTrie> {
+    use crate::chord::{KeyKind, SpecialKey};
+    let mode_id = lattice_multibuffer::providers::search::ProjectSearchMultibufferMode::mode_id();
+    let layer = KeymapLayer::MinorMode(mode_id);
+    let mut trie = KeymapTrie::new();
+
+    // `<CR>` → SearchJumpToSource
+    trie.insert(
+        &[ChordPattern::Literal(KeyChord {
+            key: KeyKind::Special(SpecialKey::Enter),
+            mods: KeyMods::NONE,
+        })],
+        Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(actions.search_jump_to_source),
+            SourceLocation::builtin_file(file!(), line!()),
+            layer,
+        )),
+    );
+    // `g` `r` → SearchRefresh
+    trie.insert(
+        &[lit('g'), lit('r')],
+        Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(actions.search_refresh),
+            SourceLocation::builtin_file(file!(), line!()),
+            layer,
+        )),
+    );
+
+    let mut modes = HashMap::new();
+    modes.insert(BindingMode::Normal, trie);
+    modes
+}
+
+#[cfg(not(feature = "search"))]
+pub fn project_search_mode_layer_bindings(
+    _actions: &crate::actions::ActionIds,
+) -> HashMap<BindingMode, KeymapTrie> {
+    HashMap::new()
+}

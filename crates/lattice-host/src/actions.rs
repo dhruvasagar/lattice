@@ -209,6 +209,14 @@ pub struct ActionIds {
     pub snippet_next_placeholder: CommandId,
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
+    /// M.6.1 (2026-06-01): `<CR>` chord under
+    /// `MinorMode(project-search-multibuffer-mode)`. Jump to
+    /// source file/row of the excerpt under cursor.
+    pub search_jump_to_source: CommandId,
+    /// M.6.1 (2026-06-01): `gr` chord under
+    /// `MinorMode(project-search-multibuffer-mode)`. Re-run the
+    /// scan with the view's current query.
+    pub search_refresh: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -1015,6 +1023,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:snippet-leave",
             "Active-snippet `<Esc>`: exit the snippet.",
             AppEffect::SnippetLeave,
+        ),
+        search_jump_to_source: register_simple(
+            registry,
+            "action:search-jump-to-source",
+            "project-search-multibuffer-mode `<CR>`: jump to source file/row of the excerpt under cursor.",
+            AppEffect::SearchJumpToSource,
+        ),
+        search_refresh: register_simple(
+            registry,
+            "action:search-refresh",
+            "project-search-multibuffer-mode `gr`: re-run the scan with the view's current query.",
+            AppEffect::SearchRefresh,
         ),
     }
 }

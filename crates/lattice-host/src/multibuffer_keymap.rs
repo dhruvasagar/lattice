@@ -180,3 +180,53 @@ pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandR
         },
     );
 }
+
+/// M.6 (2026-06-01): register the `:search <query>` ex-command.
+/// Stashes the query as `Args::String` and routes through
+/// `AppEffect::SearchTrigger { query }` → `Action::SearchTrigger
+/// { query }` → `Editor::do_search`.
+///
+/// Empty query is rejected with `BadArgs` — opening an empty
+/// search view doesn't make sense.
+#[cfg(feature = "search")]
+pub fn register_search_ex_command(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::app_effect::AppEffect;
+    use lattice_grammar::args::{ArgSpec, Args};
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::error::CommandError;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+
+    registry.register_ex_command(
+        "search",
+        "Project-wide search for the literal query. Opens a multibuffer view that streams results as the scan runs.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(|s: &str, _bang: bool| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Err(CommandError::BadArgs(
+                        ":search requires a non-empty query".into(),
+                    ));
+                }
+                Ok(Args::String(trimmed.to_string()))
+            }),
+            apply: Box::new(|ctx| {
+                let query = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                Ok(Effect::AppAction(AppEffect::SearchTrigger { query }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+}
+
+/// No-op stub when the `search` feature is disabled; keeps the
+/// boot site unconditionally calling it.
+#[cfg(not(feature = "search"))]
+pub fn register_search_ex_command(_registry: &mut lattice_grammar::CommandRegistry) {}

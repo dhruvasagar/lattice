@@ -30,6 +30,17 @@ tracing = { workspace = true }
 # uses the macro needs `linkme` as a direct dep (the macro can't
 # route through a re-export).
 linkme = { workspace = true }
+# M.6 (2026-06-01): `providers::search` walks the filesystem
+# with respect for .gitignore / .git/info/exclude / .ignore.
+# Feature-gated so opt-out builds don't pull the dep tree.
+ignore = { workspace = true, optional = true }
+
+[features]
+# M.6 (2026-06-01): each in-tree provider ships behind its own
+# cargo feature so opt-out builds disable per provider. Default
+# enables the providers we ship.
+default = ["search"]
+search = ["dep:ignore"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }

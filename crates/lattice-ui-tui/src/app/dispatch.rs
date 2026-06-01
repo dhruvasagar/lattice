@@ -580,6 +580,10 @@ impl App {
             // through host-side action dispatch. No app-side
             // post-processing required.
             Action::MultibufferExpand { .. } => {}
+            // M.6 (2026-06-01): handled by `Editor::do_search`
+            // through host-side action dispatch. No app-side
+            // post-processing required.
+            Action::SearchTrigger { .. } => {}
 
             // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`

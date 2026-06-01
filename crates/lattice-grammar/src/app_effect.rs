@@ -540,6 +540,12 @@ pub enum AppEffect {
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
     MultibufferExpand { delta: i32 },
+    /// M.6 (2026-06-01): `:search <query>` ex-command. Routed to
+    /// `Editor::do_search` via `Action::SearchTrigger`, which
+    /// calls
+    /// `lattice_multibuffer::providers::search::project_search`
+    /// against the active editor as the activator.
+    SearchTrigger { query: String },
 }
 
 #[cfg(test)]

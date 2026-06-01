@@ -1773,6 +1773,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // and calls `expand_excerpt_at` at the active cursor's
         // row. No-op when active buffer isn't a multibuffer.
         Action::MultibufferExpand { delta } => editor.do_multibuffer_expand(delta),
+        // M.6 (2026-06-01): `:search <query>` triggers
+        // `lattice_multibuffer::providers::search::project_search`
+        // against the Editor (which impls `ModeActivator`).
+        Action::SearchTrigger { query } => editor.do_search(query),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -4811,6 +4815,9 @@ impl Editor {
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
             AppEffect::MultibufferExpand { delta } => {
                 out.next_actions.push(Action::MultibufferExpand { delta })
+            }
+            AppEffect::SearchTrigger { query } => {
+                out.next_actions.push(Action::SearchTrigger { query })
             }
         }
     }
@@ -10622,6 +10629,21 @@ impl Editor {
         // direct path -- no manual variant matching.
         serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
     }
+
+    /// M.6 (2026-06-01): `:search <query>` action handler. Calls
+    /// `lattice_multibuffer::providers::search::project_search`
+    /// against `self` (which impls `ModeActivator`). Returns
+    /// silently when the search feature isn't compiled or the
+    /// provider's service isn't registered.
+    #[cfg(feature = "search")]
+    pub fn do_search(&mut self, query: String) {
+        let options =
+            lattice_multibuffer::providers::search::ProjectSearchOptions::default();
+        let _ = lattice_multibuffer::providers::search::project_search(self, query, options);
+    }
+
+    #[cfg(not(feature = "search"))]
+    pub fn do_search(&mut self, _query: String) {}
 
     /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
     /// `:multibuffer-contract [n]` action handler. Looks up the

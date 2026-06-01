@@ -283,6 +283,12 @@ impl Editor {
                 &event_bus,
                 multibuffer_registry_handle.clone(),
             );
+            // M.6 (2026-06-01): register the project-search
+            // provider-minor mode. The service handle is
+            // registered separately in the ServiceRegistry block
+            // below.
+            #[cfg(feature = "search")]
+            lattice_multibuffer::providers::search::register_project_search_mode(&mut mr);
             // D.5.a (2026-05-30): `diff-mode` minor — marker bit
             // consulted by K.1.c per-keystroke lookup so D.5.b/c
             // `do`/`dp` chords gate on per-buffer diff
@@ -313,6 +319,12 @@ impl Editor {
         // M.5 (2026-06-01): register `:multibuffer-expand [n]` /
         // `:multibuffer-contract [n]` ex-commands.
         crate::multibuffer_keymap::register_multibuffer_ex_commands(&mut registry);
+
+        // M.6 (2026-06-01): register the `:search` ex-command
+        // that triggers `lattice_multibuffer::providers::search::project_search`.
+        // The provider's mode + service are registered later
+        // inside the services + mode-registry blocks below.
+        crate::multibuffer_keymap::register_search_ex_command(&mut registry);
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
@@ -867,6 +879,11 @@ impl Editor {
                 // `MultibufferHeaderlineChanged`) via
                 // `services().get::<EventBus>()`.
                 s.register(event_bus.clone());
+                // M.6 (2026-06-01): register the project-search
+                // service handle so `project_search` triggers
+                // can look it up.
+                #[cfg(feature = "search")]
+                lattice_multibuffer::providers::search::register_project_search_service(&mut s);
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

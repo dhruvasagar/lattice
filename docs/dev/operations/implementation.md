@@ -4157,7 +4157,28 @@ architecture §10 for the rationale.
   `multibuffer_keymap.rs` at boot. 8 new M.5 tests; workspace
   tests green. `+` / `-` on the excerpt header deferred —
   header-context keymap is a wider design pass.
-- 🗒 **M.6** — First provider: `lattice-multibuffer::providers::search`
+- ✅ **M.6.0** (landed 2026-06-01) — First provider foundation:
+  `lattice-multibuffer::providers::search`. Lives in
+  `crates/lattice-multibuffer/src/providers/search.rs` behind
+  the `search` cargo feature (default-on; pulls `ignore` only).
+  Ships: `ProjectSearchService` trait + InMem impl + handle;
+  four typed events (`ProjectSearchBatchReady`, `Completed`,
+  `Refreshed`, `ProgressUpdated`); `ProjectSearchMultibufferMode`
+  minor with per-view forwarder task that filters typed events
+  by view BufferId and updates headerline; `project_search(activator,
+  query, options) -> Option<BufferId>` trigger; async scan task
+  using `ignore::Walk` + literal matching; host `:search <query>`
+  ex-command via `AppEffect::SearchTrigger` → `Action::SearchTrigger`
+  → `Editor::do_search`. Boot integration in `editor_boot.rs`
+  registers mode (mode-registry block) and service (services
+  block) under `#[cfg(feature = "search")]`. Host gains its own
+  `search` feature forwarding to `lattice-multibuffer/search`.
+  4 unit tests pass; workspace tests green. **Deferred to M.6.1**:
+  source-load + per-hit excerpt population, jump-to-source
+  keymap, query-refresh chord, bench gate.
+- 🗒 **M.6.1** — Source-load + per-hit excerpt population +
+  jump-to-source keymap (`<CR>`) + query-refresh chord (`r`) +
+  `project_search_first_batch_p99_ms` bench (≤ 50ms / 1k-file).
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo
   feature pulling `ignore` / `grep-matcher` / `aho-corasick`.

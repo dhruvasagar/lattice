@@ -44,6 +44,7 @@
 
 pub mod mode;
 pub mod motions;
+pub mod providers;
 pub mod registry;
 pub mod view;
 

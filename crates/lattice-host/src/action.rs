@@ -329,6 +329,11 @@ pub enum Action {
     /// active buffer isn't a multibuffer view (no
     /// `MultibufferRegistry` handle for the active id).
     MultibufferExpand { delta: i32 },
+    /// M.6 (2026-06-01): `:search <query>` — trigger
+    /// `lattice_multibuffer::providers::search::project_search`
+    /// against the active Editor (as activator). Opens the
+    /// resulting view as the active buffer.
+    SearchTrigger { query: String },
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

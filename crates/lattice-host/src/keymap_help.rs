@@ -381,4 +381,88 @@ mod tests {
             other => panic!("expected Unbound with empty registry, got {other:?}"),
         }
     }
+
+    // ---- K.3.3: mode-scope enforcement ----
+    //
+    // K.3.2 covers Normal (positive) and Insert (negative).
+    // K.3.3 fills out the remaining binding-modes the slice
+    // plan calls out: Visual, OperatorPending, and Cmdline
+    // (rich minibuffer's `Command` state). Each must NOT match
+    // the help-prefix bindings, so existing per-mode <C-h>
+    // semantics (cmdline backspace, etc.) keep working.
+
+    fn help_prefix_handle_for_mode_scope_tests() -> KeymapHandle {
+        let handle = KeymapHandle::new();
+        let registry = registry_with_help_commands();
+        register_help_prefix_bindings(&handle, &registry);
+        handle
+    }
+
+    #[test]
+    fn help_prefix_does_not_fire_in_visual_mode() {
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        let result = handle.lookup_with_context(
+            BindingMode::Visual,
+            &[KeyChord::ctrl('h'), KeyChord::char('k')],
+            &[],
+        );
+        assert!(matches!(result, LookupResult::Unbound));
+    }
+
+    #[test]
+    fn help_prefix_does_not_fire_in_operator_pending_mode() {
+        // OperatorPending sees `<C-h>` mid-operator (after `d`,
+        // `y`, `c`, `>`, `<`). The help prefix must not absorb
+        // those keystrokes — letting `<C-h>k` resolve in
+        // OperatorPending would surprise users mid-operator.
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        let result = handle.lookup_with_context(
+            BindingMode::OperatorPending,
+            &[KeyChord::ctrl('h'), KeyChord::char('k')],
+            &[],
+        );
+        assert!(matches!(result, LookupResult::Unbound));
+    }
+
+    #[test]
+    fn help_prefix_does_not_fire_in_cmdline_mode() {
+        // BindingMode::Command is the `:`-line / rich
+        // minibuffer state. <C-h> there has its own
+        // backspace-style semantics for editing the cmdline;
+        // the help-prefix bindings must not shadow them.
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        let result = handle.lookup_with_context(
+            BindingMode::Command,
+            &[KeyChord::ctrl('h'), KeyChord::char('k')],
+            &[],
+        );
+        assert!(matches!(result, LookupResult::Unbound));
+    }
+
+    #[test]
+    fn help_prefix_does_not_fire_in_search_mode() {
+        // Search (`/` `?`) minibuffer — same shape as Command;
+        // <C-h> retains its existing search-line backspace.
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        let result = handle.lookup_with_context(
+            BindingMode::Search,
+            &[KeyChord::ctrl('h'), KeyChord::char('k')],
+            &[],
+        );
+        assert!(matches!(result, LookupResult::Unbound));
+    }
+
+    #[test]
+    fn help_prefix_does_not_fire_in_replace_mode() {
+        // Replace mode is character-typing-with-overstrike;
+        // <C-h> there is restore-last-overwritten-byte. Help
+        // prefix must not interfere.
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        let result = handle.lookup_with_context(
+            BindingMode::Replace,
+            &[KeyChord::ctrl('h'), KeyChord::char('k')],
+            &[],
+        );
+        assert!(matches!(result, LookupResult::Unbound));
+    }
 }

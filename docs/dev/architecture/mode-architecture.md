@@ -3242,53 +3242,21 @@ This is technical debt that compounds as new modes (M.6+
 providers, post-v1 plugins) follow the existing inconsistent
 pattern.
 
-### Cleanup debt list (2026-06-01)
+### Outstanding debt (sequencing in slice plan)
 
-Audited via grep against `crates/lattice-host/src/keymap_*.rs`
-after the M.6.1 SearchProvider review surfaced the question:
+Sequencing + per-phase scope + status for the migration
+(LSP / Oil / Snippet / broader mode-ownership pass) lives in
+[`docs/dev/operations/slice-plans/mode-ownership-cleanup.md`](../operations/slice-plans/mode-ownership-cleanup.md).
+That file owns *when + in what order + status*; this section
+stays scoped to the *what + why* (the principle + the going-
+forward convention).
 
-**LSP — 7 bindings at Normal Builtin that should live in
-`lsp-mode`'s keymap (owned by `lattice-lsp`):**
-
-| Chord | Action | Notes |
-|---|---|---|
-| `K` | `lsp_hover_request` | Hover popup |
-| `gd` | `lsp_definition_request` | Go-to-definition |
-| `gD` | `lsp_declaration_request` | Go-to-declaration |
-| `gy` | `lsp_type_definition_request` | Go-to-type |
-| `gI` | `lsp_implementation_request` | Go-to-implementation |
-| `gr` | `lsp_references_request` | References picker |
-| `gx` | `lsp_follow_link_at_cursor` | documentLink follow |
-
-LSP auto-activates path-driven (`maybe_auto_activate_lsp_mode`
-short-circuits on no-path buffers like multibuffer views), so
-these bindings are *de facto* no-ops outside LSP-attached
-buffers today — but they STILL fire the `Action::Lsp*`
-dispatch and reach the supervisor before the no-op happens.
-Mode-scoped registration short-circuits at the keymap layer
-instead, which is correct.
-
-**Oil — 1 binding at Normal Builtin that should live in
-`oil-mode`'s keymap (owned by `lattice-oil`):**
-
-| Chord | Action | Notes |
-|---|---|---|
-| `-` | `oil_navigate_up` | Oil parent-directory chord |
-
-**Snippet — 4 bindings at Insert Builtin gated by runtime
-`is_snippet_active` check; should live in `snippet-mode` (or
-a dedicated `snippet-active-mode` minor):**
-
-| Chord | Action | Notes |
-|---|---|---|
-| `<Tab>` | `snippet_expand` | Expand template at cursor |
-| `<Tab>` | `snippet_next_placeholder` | Move to next placeholder |
-| `<S-Tab>` | `snippet_prev_placeholder` | Move to prev placeholder |
-| `<Esc>` | `snippet_leave` | Exit snippet session |
-
-The runtime `is_snippet_active` boolean check is a
-poor-person's keymap layer. A `MinorMode(snippet-active-mode)`
-layer with K.1.c precedence does this cleanly.
+The slice plan records the audited cluster sizes (LSP 7
+chords, Oil 1, Snippet 4 with a runtime `is_snippet_active`
+check standing in for what should be a keymap-layer scope)
+and the phasing constraint: each phase lands AFTER the
+M-series multibuffer work, to avoid concurrent touches to
+the same per-area code.
 
 ### Patterns already correct (the convention in action)
 
@@ -3301,24 +3269,6 @@ layer with K.1.c precedence does this cleanly.
 - `project-search-multibuffer-mode`'s `<CR>` / `gr` chords —
   registered via `project_search_mode_layer_bindings` at
   `MinorMode(project-search-multibuffer-mode)` layer.
-
-### Cleanup sequencing
-
-Phased migration (each phase independent, each its own slice;
-each landing AFTER the M-series multibuffer work completes):
-
-1. **LSP** — biggest cluster. Move 7 bindings to a new
-   `register_lsp_mode_keymap` helper in `lattice-lsp/src/modes.rs`
-   (alongside `LspMode`). Boot calls it. Drop the 7 entries
-   from `keymap_normal.rs`. Verify K.1.c filters by activating
-   LSP on a Document buffer in tests.
-2. **Oil** — single binding. Move `-` to a
-   `register_oil_mode_keymap` helper in `lattice-oil/src/modes.rs`.
-3. **Snippet** — design call: introduce a `snippet-active-mode`
-   minor (separate from the always-on `snippet-mode` that
-   contributes completion sources) and migrate the 4 bindings
-   under its layer. Drop the runtime `is_snippet_active`
-   check from K.1.c.
 
 ### Convention for new mode work (going forward)
 

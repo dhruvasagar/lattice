@@ -231,6 +231,116 @@ shadowing your write.
 
 ---
 
+## How modes interact with keybindings
+
+Modes can ship their own keybindings, the same way they ship
+typed options. When the mode is active on a buffer, its chords
+fire; when it deactivates, they stop. Nothing in your `init`
+or in the builtin Normal keymap needs to know about a mode's
+keys — discovery is automatic at the buffer where the mode is
+live.
+
+Concretely: `multibuffer-mode` ships `]e` / `[e` (jump to next
+/ previous excerpt) and `project-search-multibuffer-mode`
+ships `<CR>` (jump to source) / `gr` (refresh). Open a
+project-search results view and those chords work; switch to
+a regular file and they don't, with no rebinding ceremony. The
+chord-trie composes per-keystroke from `Builtin + MajorMode +
+User + Buffer` plus *every active minor's* layer in activation
+order; the most-recently activated minor wins ties (matching
+emacs's minor-mode-precedence-over-global semantics). This is
+**K.1.c precedence**: a mode-scoped chord intentionally claims
+its key while the mode is active, even over a user's global
+rebind. To override a specific mode's binding, bind inside
+that mode's layer (capability-gated; takes precedence on ties
+via same-layer last-write-wins).
+
+### `:describe-key`
+
+`:describe-key <chord>` answers the practical question "what
+does this chord do RIGHT NOW under my current active modes?"
+The output has three sections:
+
+1. **Resolved binding (under current active modes).** Top
+   section. For each binding-mode (Normal / Insert / Visual
+   / Replace), names the binding that would actually fire
+   if you pressed the chord in that mode. The result IS the
+   dispatch outcome — Lattice replayed the K.1.c precedence
+   fold against your active modes:
+
+   ```
+   Resolved binding (under current active modes):
+
+     [normal mode]
+       → motion:line-down
+       layer: Built-in
+       source: crates/lattice-host/src/keymap_normal.rs:1620
+
+     [visual mode]
+       → motion:line-down
+       layer: Built-in
+       source: crates/lattice-host/src/keymap_visual.rs:190
+   ```
+
+   The `source:` line is a clickable link — press `<CR>` on
+   it (in Normal mode inside the help buffer) to jump to the
+   binding's declaration site. The `layer:` value names the
+   priority tier (`Built-in` / `Major mode` /
+   `Minor: <mode-name>` / `User config` / `Buffer-local`).
+
+2. **Catalog descriptors.** Middle section. The static
+   keymap-table rows for the chord — these carry the
+   documented `doc` strings (`"Move cursor down"`,
+   `"Jump to next excerpt"`, etc.). Same `(file:...)`
+   clickable source links as the resolved section.
+
+3. **Runtime registry.** Bottom section. Every binding the
+   matcher trie has for this chord across every layer,
+   annotated `[active]` or `[inactive — mode not active on
+   this buffer]` for MinorMode rows. Useful for "why doesn't
+   `do` work here? oh, diff-mode isn't active on this
+   buffer" debugging.
+
+If the chord isn't bound under the current active modes (but
+IS bound elsewhere — for example only in an inactive minor),
+the resolved section emits "Resolved binding: not bound
+under the current active modes" so you can scan the runtime
+registry below to see where it WOULD be active.
+
+### `:keymap`
+
+`:keymap` lists every binding active on the current buffer
+right now, grouped by binding-mode. Each row shows the
+chord, the canonical command, and a clickable source link.
+The third column carries provenance: `Built-in` means the
+binding ships with the editor; a mode name means the mode
+contributed it; `User (path:line)` means your `init` did.
+
+### `:describe-mode`
+
+`:describe-mode <name>` shows everything a mode contributes —
+options, keybindings, subscriptions, decorations — in one
+view. Use it to answer "what does activating
+`multibuffer-mode` actually do to my buffer."
+
+### Why this matters
+
+The same model covers the future. When a plugin (Phase 7+,
+WASM Component Model) registers a mode, its keybindings land
+through the same path; the plugin's WIT-declared source
+shows in `:describe-key` and `:keymap`, so you can answer
+"who bound this key" without grep-spelunking. Today modes
+ship in Rust crates; tomorrow they ship from `.wasm` files.
+The discovery story is identical.
+
+For mode authors curious about the Rust API — `Mode::keymap()`
++ `Keymap::new().bind_chord(...)` (chain form) +
+`Keymap::from_entries(&[keymap_entry!{...}])` (table form),
+source-location capture, the chord-string notation — see
+[`../dev/notes/mode-keymap-authoring.md`](../dev/notes/mode-keymap-authoring.md).
+
+---
+
 ## Introspection
 
 ### `:list-modes`

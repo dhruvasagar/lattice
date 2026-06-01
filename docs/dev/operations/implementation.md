@@ -4140,8 +4140,23 @@ architecture §10 for the rationale.
 - 🗒 **M.4.2** — Self-loop debouncer (skip recompose when
   multibuffer's own edit caused the source change). Lands
   when profiling shows the redundant recompose matters.
-- 🗒 **M.5** — Expand-context affordance:
-  `:multibuffer-expand` / `:multibuffer-contract`.
+- ✅ **M.5** (landed 2026-06-01) — Expand-context affordance.
+  `MultibufferDocumentHandle::expand_excerpt_at(cursor_row,
+  delta_rows)` does symmetric grow/shrink around the cursor's
+  excerpt, clipping to source bounds (row 0 / line_count - 1),
+  no-op when contract would invert OR cursor sits outside the
+  excerpt OR delta is zero. Recomposes + publishes after the
+  mutation. `:multibuffer-expand [n]` / `:multibuffer-contract
+  [n]` ex-commands wired via `AppEffect::MultibufferExpand
+  { delta }` → `Action::MultibufferExpand { delta }` →
+  `Editor::do_multibuffer_expand` (pulls active view via
+  `MultibufferRegistry`, reads cursor row from primary
+  selection head, calls `expand_excerpt_at`). Default n = 5.
+  Args: optional non-negative integer; bad args → `BadArgs`.
+  Registered via `register_multibuffer_ex_commands` in
+  `multibuffer_keymap.rs` at boot. 8 new M.5 tests; workspace
+  tests green. `+` / `-` on the excerpt header deferred —
+  header-context keymap is a wider design pass.
 - 🗒 **M.6** — First provider: `lattice-multibuffer::providers::search`
   (locked 2026-06-01 — all in-tree providers live within
   `lattice-multibuffer`, feature-gated). Adds `search` cargo

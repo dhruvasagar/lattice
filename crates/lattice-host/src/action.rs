@@ -320,6 +320,15 @@ pub enum Action {
     /// `Editor::do_diff_put` and
     /// `crate::diff::subsystem::DiffSubsystem::compute_put_plan`.
     DiffPut,
+    /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
+    /// `:multibuffer-contract [n]`. `delta` is the signed row
+    /// count. Routed from `AppEffect::MultibufferExpand` and
+    /// dispatched to the active multibuffer view's
+    /// `expand_excerpt_at` from
+    /// `Editor::handle_multibuffer_expand`. No-op when the
+    /// active buffer isn't a multibuffer view (no
+    /// `MultibufferRegistry` handle for the active id).
+    MultibufferExpand { delta: i32 },
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

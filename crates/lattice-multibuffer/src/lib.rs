@@ -430,6 +430,88 @@ impl MultibufferDocumentHandle {
         self.lock_state().sources.keys().copied().collect()
     }
 
+    /// M.5 (2026-06-01): grow / shrink the excerpt containing
+    /// `cursor_row` by `delta_rows` total rows, split
+    /// symmetrically above and below.
+    ///
+    /// Behaviour:
+    /// - `delta_rows > 0` expands; `delta_rows < 0` contracts;
+    ///   `delta_rows == 0` is a no-op.
+    /// - Symmetric split: `delta_rows / 2` above, the remainder
+    ///   below. With `delta_rows = 5`: 2 rows added above, 3 below.
+    /// - Clip: `start_line` never goes below 0; `end_line` never
+    ///   exceeds the source's last row (read from
+    ///   `source.snapshot().buffer.line_count() - 1`).
+    /// - Min size: if the contract would make `start > end`,
+    ///   no-op (excerpt keeps its existing range).
+    /// - No-op when the cursor sits outside every excerpt OR the
+    ///   excerpt's source isn't in the source map (closed source).
+    ///
+    /// Recomposes + publishes after the mutation, matching
+    /// `append_excerpts` / `replace_excerpts` shape.
+    pub fn expand_excerpt_at(&self, cursor_row: u32, delta_rows: i32) {
+        if delta_rows == 0 {
+            return;
+        }
+        let mut state = self.lock_state();
+        let Some(idx) = crate::motions::containing_excerpt_index(&state.excerpts, cursor_row)
+        else {
+            return;
+        };
+        // `containing_excerpt_index` returns the last excerpt for
+        // rows past the view's end (motion-friendly). For
+        // expand-context the cursor must actually sit within the
+        // excerpt's composed range — verify by checking the
+        // start-rows table.
+        let starts = crate::motions::excerpt_start_rows(&state.excerpts);
+        let excerpt_start_composed = starts[idx];
+        let excerpt_end_composed = excerpt_start_composed
+            .saturating_add(state.excerpts[idx].line_count())
+            .saturating_sub(1);
+        if cursor_row > excerpt_end_composed {
+            return;
+        }
+
+        let source_id = state.excerpts[idx].source;
+        let Some(source) = state.sources.get(&source_id) else {
+            return;
+        };
+        let source_line_count = source.snapshot().buffer.line_count() as i64;
+        if source_line_count == 0 {
+            return;
+        }
+
+        // Symmetric split: half above (integer divide rounds
+        // toward zero, so positive delta puts the extra below;
+        // negative delta puts the extra above).
+        let above = (delta_rows / 2) as i64;
+        let below = (delta_rows as i64) - above;
+
+        let current_start = state.excerpts[idx].start_line as i64;
+        let current_end = state.excerpts[idx].end_line as i64;
+
+        let new_start = (current_start - above).clamp(0, source_line_count - 1);
+        let new_end = (current_end + below).clamp(0, source_line_count - 1);
+
+        if new_end < new_start {
+            // Contract would invert: leave the excerpt as-is.
+            return;
+        }
+        if new_start == current_start && new_end == current_end {
+            // Hit both clips; no observable change.
+            return;
+        }
+
+        state.excerpts[idx].start_line = new_start as u32;
+        state.excerpts[idx].end_line = new_end as u32;
+
+        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let translation = RowTranslation::build(&state.excerpts);
+        drop(state);
+        self.inner.snapshot_cell.store(snapshot);
+        self.inner.row_translation.store(Arc::new(translation));
+    }
+
     /// M.2.b.2 (2026-06-01): append excerpts to the end of the
     /// view. Used by async providers streaming batches of
     /// results (project-search, lsp-references, etc.). Any
@@ -1612,6 +1694,142 @@ mod tests {
         let excerpts_after = mb.excerpts();
         assert_eq!(excerpts_after[0].start_line, 0);
         assert_eq!(excerpts_after[0].end_line, 1);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // M.5 tests — expand-context
+    // ─────────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_expand_grows_symmetrically() {
+        // Source has 10 rows (line 0..9); excerpt covers rows 4-5.
+        let mut text = String::new();
+        for i in 0..10 {
+            text.push_str(&format!("L{i}\n"));
+        }
+        let (sources, ids) = make_sources(&[&text]);
+        let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Cursor on composed row 0 (= source row 4). Expand by 4
+        // rows: 2 above + 2 below → new range 2..7.
+        mb.expand_excerpt_at(0, 4);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 2);
+        assert_eq!(excerpts[0].end_line, 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_expand_clips_to_source_start() {
+        // Excerpt at rows 1-2; expand by 6 should clip top to 0.
+        let mut text = String::new();
+        for i in 0..10 {
+            text.push_str(&format!("L{i}\n"));
+        }
+        let (sources, ids) = make_sources(&[&text]);
+        let excerpts = vec![Excerpt::new(ids[0], 1, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // delta=6 → above=3, below=3. start = 1-3 = -2 → clipped to 0.
+        // end = 2+3 = 5.
+        mb.expand_excerpt_at(0, 6);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 0);
+        assert_eq!(excerpts[0].end_line, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_expand_clips_to_source_end() {
+        // Source text "L0\n...L9\n" has 10 content lines AND a
+        // trailing empty line after the final `\n` — `Buffer::line_count`
+        // returns 11. Clip target is the last row index = 10.
+        let mut text = String::new();
+        for i in 0..10 {
+            text.push_str(&format!("L{i}\n"));
+        }
+        let (sources, ids) = make_sources(&[&text]);
+        let excerpts = vec![Excerpt::new(ids[0], 7, 8)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // delta=6 → above=3, below=3. start = 7-3 = 4.
+        // end = 8+3 = 11 → clipped to source_line_count - 1 = 10.
+        mb.expand_excerpt_at(0, 6);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 4);
+        assert_eq!(excerpts[0].end_line, 10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_contract_shrinks_symmetrically() {
+        let mut text = String::new();
+        for i in 0..20 {
+            text.push_str(&format!("L{i}\n"));
+        }
+        let (sources, ids) = make_sources(&[&text]);
+        // Excerpt at rows 5-15 (11 rows).
+        let excerpts = vec![Excerpt::new(ids[0], 5, 15)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // delta=-4 → above=-2, below=-2. start = 5+2 = 7. end = 15-2 = 13.
+        mb.expand_excerpt_at(0, -4);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 7);
+        assert_eq!(excerpts[0].end_line, 13);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_contract_below_one_row_is_noop() {
+        let (sources, ids) = make_sources(&["a\nb\n"]);
+        // Excerpt at rows 0-0 (single row).
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Contract by 4 → new start = 2, new end = -2 (clipped to 0).
+        // 0 > 2 inverted → no-op.
+        mb.expand_excerpt_at(0, -4);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 0);
+        assert_eq!(excerpts[0].end_line, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_zero_delta_is_noop() {
+        let (sources, ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.expand_excerpt_at(0, 0);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 0);
+        assert_eq!(excerpts[0].end_line, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_no_excerpt_at_cursor_is_noop() {
+        let (sources, ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        // Cursor at composed row 50 — well past the single excerpt.
+        mb.expand_excerpt_at(50, 4);
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts[0].start_line, 0);
+        assert_eq!(excerpts[0].end_line, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m5_expand_then_recompose_reflects_new_content() {
+        let mut text = String::new();
+        for i in 0..10 {
+            text.push_str(&format!("L{i}\n"));
+        }
+        let (sources, ids) = make_sources(&[&text]);
+        let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "L4\nL5\n");
+
+        mb.expand_excerpt_at(0, 4);
+        // After expand_excerpt_at recomposes, the snapshot
+        // should already reflect the new rows.
+        assert_eq!(mb.snapshot().buffer.as_string(), "L2\nL3\nL4\nL5\nL6\nL7\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]

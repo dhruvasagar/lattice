@@ -310,6 +310,10 @@ impl Editor {
             multibuffer_registry_handle.clone(),
         );
 
+        // M.5 (2026-06-01): register `:multibuffer-expand [n]` /
+        // `:multibuffer-contract [n]` ex-commands.
+        crate::multibuffer_keymap::register_multibuffer_ex_commands(&mut registry);
+
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind

@@ -1767,6 +1767,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // D.5.c: diff-mode `dp` — push the current side's
         // hunk into the peer buffer.
         Action::DiffPut => editor.do_diff_put(None),
+        // M.5 (2026-06-01): `:multibuffer-expand [n]` /
+        // `:multibuffer-contract [n]`. Looks up the active
+        // multibuffer view via the `MultibufferRegistry` service
+        // and calls `expand_excerpt_at` at the active cursor's
+        // row. No-op when active buffer isn't a multibuffer.
+        Action::MultibufferExpand { delta } => editor.do_multibuffer_expand(delta),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -4803,6 +4809,9 @@ impl Editor {
             AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
+            AppEffect::MultibufferExpand { delta } => {
+                out.next_actions.push(Action::MultibufferExpand { delta })
+            }
         }
     }
 
@@ -10612,6 +10621,33 @@ impl Editor {
         // serialiser. Both crates speak serde, so this is the
         // direct path -- no manual variant matching.
         serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
+    /// `:multibuffer-contract [n]` action handler. Looks up the
+    /// active buffer's typed `MultibufferDocumentHandle` via the
+    /// `MultibufferRegistry` service and calls
+    /// `expand_excerpt_at(cursor_row, delta)`. No-op when the
+    /// active buffer isn't a multibuffer view.
+    pub fn do_multibuffer_expand(&mut self, delta: i32) {
+        let buffer_id = self.pane_tree.active().buffer_id;
+        let Some(mb_registry) = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+        else {
+            return;
+        };
+        let Some(view) = mb_registry.handle(buffer_id) else {
+            return;
+        };
+        let cursor_row = self
+            .document
+            .snapshot()
+            .selections
+            .primary()
+            .head
+            .line;
+        view.expand_excerpt_at(cursor_row, delta);
     }
 
     /// 5.5.F.5.3 (M-async.3): rollback drain for the mode dispatcher's

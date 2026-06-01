@@ -1,5 +1,9 @@
 //! M.2.b.3 (2026-06-01): keymap layer for `multibuffer-mode`.
 //!
+//! Also (M.5 2026-06-01) home of `register_multibuffer_ex_commands`
+//! which registers `:multibuffer-expand` / `:multibuffer-contract`
+//! against the grammar's command registry.
+//!
 //! Binds the four excerpt-jump motions registered in
 //! `lattice_multibuffer::motions` to their canonical chords:
 //!
@@ -97,4 +101,82 @@ pub fn multibuffer_mode_layer_bindings(
     let mut modes = HashMap::new();
     modes.insert(BindingMode::Normal, trie);
     modes
+}
+
+/// M.5 (2026-06-01): register `:multibuffer-expand [n]` and
+/// `:multibuffer-contract [n]` ex-commands. Both take an
+/// optional non-negative integer (default 5 — Zed precedent).
+/// `apply` produces `Effect::AppAction(AppEffect::MultibufferExpand
+/// { delta })` where `delta` is positive for expand, negative
+/// for contract. The dispatch handler routes to
+/// `Editor::do_multibuffer_expand`, which looks up the active
+/// view via `MultibufferRegistry` and calls
+/// `expand_excerpt_at` at the active cursor's row.
+///
+/// No-op when invoked on a non-multibuffer active buffer (no
+/// registry entry for the buffer id).
+pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::app_effect::AppEffect;
+    use lattice_grammar::args::{ArgSpec, Args};
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::error::CommandError;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+
+    fn parse_optional_count(s: &str, _bang: bool) -> Result<Args, CommandError> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Ok(Args::None);
+        }
+        match trimmed.parse::<u32>() {
+            // Stash as the decimal string so the apply closure
+            // can re-parse without re-validating; production code
+            // typically passes 1-2 digit counts.
+            Ok(_) => Ok(Args::String(trimmed.to_string())),
+            Err(_) => Err(CommandError::BadArgs(format!(
+                "expected non-negative integer, got `{trimmed}`"
+            ))),
+        }
+    }
+
+    fn count_from_args(args: &Args) -> i32 {
+        match args {
+            Args::String(s) => s.parse::<i32>().unwrap_or(5),
+            _ => 5,
+        }
+    }
+
+    registry.register_ex_command(
+        "multibuffer-expand",
+        "Expand context around the excerpt under the cursor by N rows (default 5).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_count),
+            apply: Box::new(|ctx| {
+                let delta = count_from_args(&ctx.args);
+                Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
+    registry.register_ex_command(
+        "multibuffer-contract",
+        "Contract the excerpt under the cursor by N rows (default 5).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_count),
+            apply: Box::new(|ctx| {
+                let delta = -count_from_args(&ctx.args);
+                Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
+            }),
+            args_schema: Vec::<ArgSpec>::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }

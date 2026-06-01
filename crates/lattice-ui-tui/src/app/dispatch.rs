@@ -576,6 +576,10 @@ impl App {
             Action::FollowLink => {}
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}
+            // M.5 (2026-06-01): handled by `Editor::do_multibuffer_expand`
+            // through host-side action dispatch. No app-side
+            // post-processing required.
+            Action::MultibufferExpand { .. } => {}
 
             // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`

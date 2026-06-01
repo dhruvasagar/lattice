@@ -533,6 +533,13 @@ pub enum AppEffect {
     /// the dispatch handler emits "dp: baseline is not a
     /// buffer; use :write" rather than silently no-op'ing.
     DiffPut,
+    /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
+    /// `:multibuffer-contract [n]` ex-commands. `delta` is the
+    /// signed row count (positive expands, negative contracts).
+    /// Routed to the active multibuffer view's `expand_excerpt_at`
+    /// from the dispatch path. No-op when the active buffer
+    /// isn't a multibuffer.
+    MultibufferExpand { delta: i32 },
 }
 
 #[cfg(test)]

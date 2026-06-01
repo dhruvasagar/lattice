@@ -605,23 +605,19 @@ impl MultibufferDocumentHandle {
                     break;
                 };
                 match event {
-                    lattice_protocol::Event::DocumentChanged { id, .. } => {
+                    lattice_protocol::Event::DocumentChanged {
+                        id, edits, ..
+                    } => {
                         if let Some(source_id) = source_buffer_for_document_id(&inner, id) {
-                            // Recompose the view to reflect the
-                            // updated source snapshot. The
-                            // recompose is idempotent so the
-                            // self-loop case (multibuffer's own
-                            // apply_edit caused this change) is
-                            // safe — slightly wasteful but
-                            // correct. A self-loop debouncer
-                            // can land in M.4.1 alongside
-                            // anchor sliding.
+                            // M.4.1: slide excerpts whose start
+                            // row sits strictly below the edit's
+                            // original end. Edits that overlap
+                            // an excerpt's range, or sit below
+                            // it, leave excerpts alone — the
+                            // recompose picks up the new
+                            // content for in-excerpt edits.
+                            slide_anchors_for_source(&inner, source_id, &edits);
                             recompose_inner(&inner);
-                            // Source id is unused for the simple
-                            // recompose; M.4.1 anchor sliding
-                            // reads it to know which anchors to
-                            // slide.
-                            let _ = source_id;
                         }
                     }
                     lattice_protocol::Event::DocumentClosed { id } => {
@@ -662,6 +658,56 @@ fn source_buffer_for_document_id(
         .iter()
         .find(|(_, h)| h.id() == document_id)
         .map(|(id, _)| *id)
+}
+
+/// M.4.1 (2026-06-01): walk the `AppliedEdit`s from a source's
+/// `DocumentChanged` event and slide excerpts of that source
+/// whose `start_line` sits strictly below the edit's original
+/// end row. Edits overlapping or below the excerpt leave it
+/// alone — the recompose picks up new content for in-excerpt
+/// edits; below-edits don't affect the excerpt's position.
+///
+/// Behaviourally equivalent to anchor tracking in the
+/// linewise case (which is what excerpts care about — they're
+/// line-bounded). A first-class `Anchor` primitive (line + col
+/// + generation) can land later if column-precise tracking
+/// proves load-bearing (none of the M.4.1 worked examples
+/// need it).
+///
+/// Conservative bias: edits whose original_range end is AT or
+/// ABOVE the excerpt's start_line don't slide. Erring against
+/// false-positive slides keeps the user's mental model stable
+/// when an edit straddles an excerpt boundary.
+fn slide_anchors_for_source(
+    inner: &Arc<MultibufferInner>,
+    source: BufferId,
+    edits: &[lattice_protocol::event::AppliedEdit],
+) {
+    if edits.is_empty() {
+        return;
+    }
+    let Ok(mut state) = inner.state.lock() else {
+        return;
+    };
+    for edit in edits {
+        let old_end_row = edit.original_range.end.line;
+        let new_end_row = edit.inserted_range.end.line;
+        let row_delta = (new_end_row as i64) - (old_end_row as i64);
+        if row_delta == 0 {
+            continue;
+        }
+        for excerpt in state.excerpts.iter_mut() {
+            if excerpt.source != source {
+                continue;
+            }
+            if old_end_row < excerpt.start_line {
+                let new_start = (excerpt.start_line as i64).saturating_add(row_delta).max(0);
+                let new_end = (excerpt.end_line as i64).saturating_add(row_delta).max(0);
+                excerpt.start_line = new_start as u32;
+                excerpt.end_line = new_end as u32;
+            }
+        }
+    }
 }
 
 /// Recompose an Inner — same shape as `MultibufferDocumentHandle::recompose`
@@ -1401,6 +1447,171 @@ mod tests {
             }
         }
         assert_eq!(mb.source_buffer_ids(), vec![ids[1]]);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // M.4.1 tests — anchor sliding
+    // ─────────────────────────────────────────────────────────────
+
+    fn applied_edit(
+        old_start: (u32, u32),
+        old_end: (u32, u32),
+        new_end: (u32, u32),
+        replaced: &str,
+        inserted: &str,
+    ) -> lattice_protocol::event::AppliedEdit {
+        use lattice_protocol::position::Range;
+        lattice_protocol::event::AppliedEdit {
+            original_range: Range::new(
+                Position::new(old_start.0, old_start.1),
+                Position::new(old_end.0, old_end.1),
+            ),
+            inserted_range: Range::new(
+                Position::new(old_start.0, old_start.1),
+                Position::new(new_end.0, new_end.1),
+            ),
+            replaced_text: replaced.into(),
+            inserted_text: inserted.into(),
+        }
+    }
+
+    async fn pump_forwarder() {
+        for _ in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m41_insert_above_excerpt_slides_down() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["aa\nbb\ncc\ndd\nee\n"]);
+        let src = sources.get(&ids[0]).unwrap().clone();
+        // Excerpt covers source rows 2-3 (cc, dd).
+        let excerpts = vec![Excerpt::new(ids[0], 2, 3)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Synthesise: edit at line 0 byte 0 → line 0 byte 0
+        // inserts 2 lines of content (row_delta = +2).
+        // original_range end = (0, 0); inserted_range end = (2, 0).
+        let edit = applied_edit((0, 0), (0, 0), (2, 0), "", "X\nY\n");
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: src.id(),
+            path: None,
+            version: 1,
+            edits: vec![edit],
+        });
+
+        pump_forwarder().await;
+        let excerpts_after = mb.excerpts();
+        assert_eq!(excerpts_after[0].start_line, 4, "excerpt should slide to row 4");
+        assert_eq!(excerpts_after[0].end_line, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m41_delete_above_excerpt_slides_up() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["aa\nbb\ncc\ndd\nee\nff\n"]);
+        let src = sources.get(&ids[0]).unwrap().clone();
+        // Excerpt covers rows 4-5 (ee, ff).
+        let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Delete rows 0-1 (aa\nbb\n). original_range end = (2, 0);
+        // inserted_range end = (0, 0). row_delta = -2.
+        let edit = applied_edit((0, 0), (2, 0), (0, 0), "aa\nbb\n", "");
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: src.id(),
+            path: None,
+            version: 1,
+            edits: vec![edit],
+        });
+
+        pump_forwarder().await;
+        let excerpts_after = mb.excerpts();
+        assert_eq!(excerpts_after[0].start_line, 2, "excerpt should slide up to row 2");
+        assert_eq!(excerpts_after[0].end_line, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m41_edit_below_excerpt_does_not_slide() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["aa\nbb\ncc\ndd\nee\n"]);
+        let src = sources.get(&ids[0]).unwrap().clone();
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Edit at row 3: original_range end = (3, 0).
+        // excerpt.start_line = 0; condition is `old_end < start_line`
+        // → `3 < 0` false → no slide.
+        let edit = applied_edit((3, 0), (3, 0), (4, 0), "", "X\n");
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: src.id(),
+            path: None,
+            version: 1,
+            edits: vec![edit],
+        });
+
+        pump_forwarder().await;
+        let excerpts_after = mb.excerpts();
+        assert_eq!(excerpts_after[0].start_line, 0);
+        assert_eq!(excerpts_after[0].end_line, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m41_overlapping_edit_does_not_slide_excerpt() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["aa\nbb\ncc\ndd\n"]);
+        let src = sources.get(&ids[0]).unwrap().clone();
+        // Excerpt covers rows 1-2.
+        let excerpts = vec![Excerpt::new(ids[0], 1, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Edit that ends inside the excerpt (rows 0..=1):
+        // original_range end = (2, 0). `2 < 1` false → no slide.
+        let edit = applied_edit((0, 0), (2, 0), (1, 0), "aa\nbb\n", "X\n");
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: src.id(),
+            path: None,
+            version: 1,
+            edits: vec![edit],
+        });
+
+        pump_forwarder().await;
+        // Conservative slide: excerpt stays put. Recompose
+        // picks up new content for the now-overlapped rows.
+        let excerpts_after = mb.excerpts();
+        assert_eq!(excerpts_after[0].start_line, 1);
+        assert_eq!(excerpts_after[0].end_line, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m41_other_source_edits_dont_slide_this_source() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let (sources, ids) = make_sources(&["aa\nbb\n", "11\n22\n"]);
+        let src_b = sources.get(&ids[1]).unwrap().clone();
+        // Excerpt of source A at rows 0-1; source B has its own.
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Insert 5 rows in source B above row 0. Should NOT
+        // slide source A's excerpt.
+        let edit = applied_edit((0, 0), (0, 0), (5, 0), "", "x\nx\nx\nx\nx\n");
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: src_b.id(),
+            path: None,
+            version: 1,
+            edits: vec![edit],
+        });
+
+        pump_forwarder().await;
+        let excerpts_after = mb.excerpts();
+        assert_eq!(excerpts_after[0].start_line, 0);
+        assert_eq!(excerpts_after[0].end_line, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

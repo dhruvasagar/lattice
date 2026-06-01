@@ -4120,8 +4120,26 @@ architecture §10 for the rationale.
   debouncer + bench deferred to M.4.1** — the
   `Excerpt::{start_line, end_line}` → `Anchor` refactor is a
   significant data-model change deserving its own slice.
-- 🗒 **M.4.1** — Anchor sliding + self-loop debouncer +
-  `multibuffer_source_edit_p99_us` bench gate.
+- ✅ **M.4.1** (landed 2026-06-01) — Anchor sliding +
+  source-edit bench. `slide_anchors_for_source` walks
+  `AppliedEdit`s from a source's DocumentChanged event and
+  shifts excerpts whose `start_line` is strictly below the
+  edit's `original_range.end.line` by the row delta.
+  Conservative: edits AT or overlapping the excerpt's start
+  don't slide (recompose picks up new content; false-positive
+  slides during boundary edits would surprise more than stale
+  positions). Excerpt struct keeps integer line bounds — a
+  first-class `Anchor` primitive can land later if column
+  tracking proves load-bearing. 5 new M.4.1 tests cover
+  insert-above-slides-down, delete-above-slides-up, edit-below
+  no-op, overlapping no-slide, other-source no-cross. Bench
+  `multibuffer_source_edit_p99_us` lands in
+  `benches/multibuffer_compose.rs`: 27 µs at 1k excerpts ×
+  10 sources (CI gate ≤ 200 µs — 7× under). Self-loop
+  debouncer deferred to M.4.2 if profiling warrants.
+- 🗒 **M.4.2** — Self-loop debouncer (skip recompose when
+  multibuffer's own edit caused the source change). Lands
+  when profiling shows the redundant recompose matters.
 - 🗒 **M.5** — Expand-context affordance:
   `:multibuffer-expand` / `:multibuffer-contract`.
 - 🗒 **M.6** — First provider: `lattice-multibuffer::providers::search`

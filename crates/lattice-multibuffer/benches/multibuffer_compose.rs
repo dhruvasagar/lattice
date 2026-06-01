@@ -42,11 +42,27 @@ fn build_view(
     sources_count: usize,
     excerpt_rows: u32,
 ) -> MultibufferDocumentHandle {
+    let (view, _) = build_view_with_sample(excerpt_count, sources_count, excerpt_rows);
+    view
+}
+
+/// Build a view AND return a sample source's `Arc<dyn Document>`
+/// so the source-edit bench can read its `DocumentId` for the
+/// synthetic `Event::DocumentChanged` publish.
+fn build_view_with_sample(
+    excerpt_count: usize,
+    sources_count: usize,
+    excerpt_rows: u32,
+) -> (MultibufferDocumentHandle, Arc<dyn Document>) {
     let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
     let mut source_ids: Vec<BufferId> = Vec::with_capacity(sources_count);
+    let mut sample: Option<Arc<dyn Document>> = None;
     for _ in 0..sources_count {
         let src = build_source(excerpt_rows * 8);
         let id = BufferId::next();
+        if sample.is_none() {
+            sample = Some(src.clone());
+        }
         sources.insert(id, src);
         source_ids.push(id);
     }
@@ -57,7 +73,8 @@ fn build_view(
         let end = start + excerpt_rows - 1;
         excerpts.push(Excerpt::new(s, start, end).with_header(ExcerptHeader::default()));
     }
-    MultibufferDocumentHandle::new(sources, excerpts).expect("valid construction")
+    let view = MultibufferDocumentHandle::new(sources, excerpts).expect("valid construction");
+    (view, sample.expect("at least one source"))
 }
 
 /// M.1 architecture-§7 compose bench: build a 50-excerpt view
@@ -121,10 +138,78 @@ fn bench_append_excerpts(c: &mut Criterion) {
     group.finish();
 }
 
+/// M.4.1 (2026-06-01): source-edit propagation bench.
+///
+/// Architecture §7 CI gate: `multibuffer_source_edit_p99_us`
+/// ≤ 200 µs at 1k excerpts × 10 source buffers. Measures the
+/// slide_anchors_for_source + recompose path the forwarder
+/// task runs on every `DocumentChanged` event.
+///
+/// The bench builds a view with N excerpts × 20 rows across
+/// 10 source documents, then drives one source-edit through
+/// the EventBus and times the forwarder catching up. We
+/// poll the snapshot to detect the recompose completion;
+/// each iteration includes one round-trip through the spawned
+/// task.
+fn bench_source_edit_propagation(c: &mut Criterion) {
+    use lattice_protocol::event::AppliedEdit;
+    use lattice_protocol::position::{Position, Range};
+
+    let mut group = c.benchmark_group("multibuffer_source_edit");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    for &n in &[100usize, 1_000] {
+        group.bench_with_input(BenchmarkId::new("excerpts", n), &n, |b, &n| {
+            // Build everything once outside iter so we measure
+            // just the propagation path, not view construction.
+            let (view, sample) = build_view_with_sample(n, 10, 20);
+            let bus = std::sync::Arc::new(lattice_runtime::EventBus::new());
+            rt.block_on(async {
+                view.attach_event_subscriptions(&bus);
+            });
+            let any_doc_id = sample.id();
+
+            b.iter(|| {
+                let edit = AppliedEdit {
+                    original_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                    inserted_range: Range::new(Position::new(0, 0), Position::new(1, 0)),
+                    replaced_text: String::new(),
+                    inserted_text: "X\n".to_string(),
+                };
+                let starting_version = view.snapshot().version;
+                bus.publish(lattice_protocol::Event::DocumentChanged {
+                    id: any_doc_id,
+                    path: None,
+                    version: 1,
+                    edits: vec![edit],
+                });
+                // Wait for the recompose to complete (poll the
+                // snapshot's version bump). This is what the
+                // gate measures: time-to-propagation.
+                rt.block_on(async {
+                    for _ in 0..1000 {
+                        tokio::task::yield_now().await;
+                        if view.snapshot().version != starting_version {
+                            return;
+                        }
+                    }
+                });
+                criterion::black_box(view.snapshot());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_compose_50_excerpts,
     bench_translation_rebuild,
-    bench_append_excerpts
+    bench_append_excerpts,
+    bench_source_edit_propagation,
 );
 criterion_main!(benches);

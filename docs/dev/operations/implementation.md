@@ -4272,56 +4272,73 @@ architecture §10 for the rationale.
   `multibuffer-views.md` §3.7). Paused until **K.2** lands —
   source-write plumbing touches the same translation layer
   that K.2 reshapes.
-- 🚧 **K.2** — Keymap substrate (mode-owned bindings). Closes
-  the `lattice-mode::Keymap` stub
+- ✅ **K.2** — Keymap substrate (mode-owned bindings).
+  Closed (2026-06-01 → 2026-06-02). The
+  `lattice-mode::Keymap` stub
   (`crates/lattice-mode/src/contributions.rs:19`, TODO since
-  mode-system design) so `Mode::keymap()` is real and modes
-  contribute bindings from their own crate. **Landed
-  (2026-06-01):** K.2.1 chord primitives →
-  `lattice-protocol` (commit `d075a66`; KeyChord / KeyKind /
-  KeyMods / SpecialKey / ChordParseError / parse_chord_sequence
-  / ChordPattern relocated; host re-export shim retained for
-  one cycle); K.2.2 `BindingMode` → `lattice-mode`
-  (commit `d3dbe87`; enum + label() byte-identical move,
-  host re-exports for matcher / dispatcher / TUI / GPUI call
-  sites); K.2.3 real `Keymap` contribution type
-  (commit `c6c3ffe`; `lattice-grammar` dep added to
-  `lattice-mode`, cycle-free; the type matches §11.2
-  spec, plus a `Keymap::bind_chord(mode, chord_str, command)`
-  ergonomic surface with `#[track_caller]` source capture +
-  string-parsed chord sequences handling emacs-style prefix
-  shapes like `<C-x>pp` / `<C-x><C-s>`; 10 unit tests);
-  K.2.4 host translation pass (commit `ff9f9bf`;
-  `keymap_mode_contributions::translate_mode_keymaps` walks
-  ModeRegistry, calls `Mode::keymap()`, groups by
-  BindingMode, pushes one `MinorMode(mode_id)` layer per
-  mode with bindings; boot call site in editor_boot.rs; 5
-  unit tests). **K.2.4.A polish sub-arc landed (2026-06-02):**
+  mode-system design) became the real contribution type;
+  `Mode::keymap()` is load-bearing and the host translation
+  pass routes the result into the matcher trie at the same
+  `KeymapLayer::MinorMode(mode_id)` the legacy host-glue
+  push_layer calls used. Multibuffer + project-search are
+  fully migrated and the host-side `multibuffer_keymap.rs`
+  glue is deleted. Substrate now in place for the MO.x
+  cleanup arc (LSP / Oil / Snippet / diff-mode).
+
+  **Substrate sub-slices (K.2.1 → K.2.4):**
+  K.2.1 chord primitives → `lattice-protocol`
+  (commit `d075a66`); K.2.2 `BindingMode` → `lattice-mode`
+  (commit `d3dbe87`); K.2.3 real `Keymap` contribution
+  type + `bind_chord` ergonomic surface (commit `c6c3ffe`);
+  K.2.4 host translation pass walking `ModeRegistry`
+  (commit `ff9f9bf`).
+
+  **K.2.4.A polish + unification sub-arc:**
   K.2.4.A.0.1 `keymap_entry!` + `KeymapEntry` substrate move
-  from `lattice-host` to `lattice-mode::keymap_entry`
-  (commit `4f763d5`; private `source` + `__new` constructor;
-  host shim retains lattice_host::keymap path);
+  to `lattice-mode::keymap_entry` (commit `4f763d5`);
   K.2.4.A.0.2 `Keymap::from_entries()` +
-  `KeymapBinding.doc` (commit `6461f56`; chain-form +
-  table-form contribution paths cohabit on the same
-  `Keymap`); K.2.4.A.0.3 translation pass walks
-  `Keymap::entries`, resolves canonical command names via
-  `CommandRegistry` (commit `81c4600`; synthetic-skip /
-  drift-warn behaviour); K.2.4.A.0.4 chain+table
-  composability test (commit `eaf9e33`). **Pending in
-  K.2.4.A:** K.2.4.A.0.5 K.2.4.A.0 doc artefacts;
-  K.2.4.A.1 resolved-binding indicator on `:describe-key`;
-  K.2.4.A.2 friendly layer labels; K.2.4.A.3 source
-  rendering via `as_link()`; K.2.4.A.4 catalog/registry
-  unification (drops the static-catalog section, single
-  unified output); K.2.4.A.5 user docs + BENCHMARKS row.
-  **Pending after K.2.4.A:** K.2.5 migrate multibuffer +
-  project-search bindings out of host (delete
-  `crates/lattice-host/src/multibuffer_keymap.rs`); K.2.6
-  docs; K.2.7 unblock MO.1–MO.4. Pauses M.6.4+. Design at
+  `KeymapBinding.doc` (commit `6461f56`); K.2.4.A.0.3
+  translation pass entry resolution
+  (commit `81c4600`); K.2.4.A.0.4 chain+table composability
+  test (commit `eaf9e33`); K.2.4.A.0.5 sub-arc docs +
+  §11.2.2 (commit `f9a15cd`); K.2.4.A.1 resolved-binding
+  indicator on `:describe-key` (commit `174cffd`);
+  K.2.4.A.2 friendly layer labels (commit `90be78c`);
+  K.2.4.A.3 source rendering via `as_link()`
+  (commit `9e01634`); K.2.4.A.4 canonical names in runtime
+  registry (commit `28562c5`); K.2.4.A.5 user docs +
+  mode-author guide (commit `3764c7d`).
+
+  **K.2.5 multibuffer migration** (commit `7719e27`) —
+  `multibuffer_keymap.rs` deleted (-292 LOC);
+  `MultibufferMode::keymap()` and
+  `ProjectSearchMultibufferMode::keymap()` return the table
+  form. Explicit `push_layer` calls retired — K.2.4 pass
+  handles them via `Mode::keymap()`. Diff-mode's helper
+  still in place, migration tracked under
+  `mode-ownership-cleanup.md` as MO.x.
+
+  **K.2.6 + K.2.7 docs** (this slice) — `mode-architecture.md`
+  §13 rewritten (the "long-term ideal" framing retires;
+  `Mode::keymap()` IS the convention now); slice plan +
+  ledger refreshed with commit hashes and the sub-arc
+  summary table; symbolic unblock note for MO.1-MO.4
+  + new MO.x diff-mode-keymap-migration slice.
+
+  M.6.4+ now unblocked (the source-write plumbing K.2 was
+  pausing it on is shipped). BENCHMARKS row deferred to
+  a measured profiling sweep — the existing benchmarks.md
+  rows are criterion-derived and a stub row would be
+  misleading.
+
+  Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
   §11 (chain ergonomic surface in §11.2.1; table form in
-  §11.2.2); sequencing at
+  §11.2.2); convention update in
+  [`../architecture/mode-architecture.md`](../architecture/mode-architecture.md#13-mode-owned-keymaps--contribution-debt-2026-06-01)
+  §13; mode-author guide at
+  [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md);
+  full sequencing + commit table at
   [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
 - 🗒 **K.3** — Help-prefix bindings (`<C-h>` map,
   Normal-mode only). Emacs-style discoverability for the

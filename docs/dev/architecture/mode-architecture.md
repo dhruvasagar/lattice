@@ -3214,13 +3214,18 @@ Concretely, for keymaps:
   only fires the chord when the mode is in `ActiveModes` for
   the active buffer.
 
-- **The mode's owning crate registers its keymap**, via a
-  `register_<mode>_keymap(handle, action_ids)` helper called
-  at boot OR via the `Mode::keymap()` trait method's
-  declarative path. Precedent: `crate::diff::mode::diff_mode_layer_bindings`
-  (host-side diff-mode owns its keymap),
-  `lattice_multibuffer::providers::search::project_search_mode_layer_bindings`
-  (search provider owns its minor's keymap).
+- **The mode's owning crate declares its keymap via the
+  `Mode::keymap()` trait method.** Returns a
+  [`lattice_mode::Keymap`] populated through the chain form
+  (`Keymap::new().bind_chord(...)`) or the table form
+  (`Keymap::from_entries(&[keymap_entry!{...}])`); see
+  [`keymap-architecture.md` §11.2](keymap-architecture.md#112-the-real-keymap-contribution-type)
+  for the API surface and
+  [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md)
+  for the recipe. The K.2.4 host translation pass walks the
+  registry at boot, calls `Mode::keymap()` on each mode, and
+  pushes the contribution as a `MinorMode(mode.id())` layer.
+  No per-mode helper, no host-side boot glue.
 
 - **No global Builtin entry for feature-gated bindings.** If
   the binding wouldn't work in every buffer (because the
@@ -3260,32 +3265,57 @@ the same per-area code.
 
 ### Patterns already correct (the convention in action)
 
-- `diff-mode`'s `do` / `dp` chords — registered via
-  `crate::diff::mode::diff_mode_layer_bindings` at
-  `MinorMode(diff-mode)` layer.
 - `multibuffer-mode`'s `]e` / `[e` / `]E` / `[E` motions —
-  registered via `multibuffer_mode_layer_bindings` at
-  `MinorMode(multibuffer-mode)` layer.
+  declared via `MultibufferMode::keymap()` returning
+  `Keymap::from_entries(&MULTIBUFFER_KEYMAP)` in
+  `lattice-multibuffer::mode`. Each entry references its
+  canonical motion name (`multibuffer.next-excerpt-start`,
+  etc.); the host translation pass resolves names at boot.
+  K.2.5 (commit `7719e27`).
 - `project-search-multibuffer-mode`'s `<CR>` / `gr` chords —
-  registered via `project_search_mode_layer_bindings` at
-  `MinorMode(project-search-multibuffer-mode)` layer.
+  declared via `ProjectSearchMultibufferMode::keymap()`
+  returning `Keymap::from_entries(&PROJECT_SEARCH_KEYMAP)` in
+  `lattice-multibuffer::providers::search`. K.2.5
+  (commit `7719e27`).
+- `diff-mode`'s `do` / `dp` chords still use the older
+  `crate::diff::mode::diff_mode_layer_bindings` helper at
+  `MinorMode(diff-mode)` layer (host-side, not yet
+  migrated). Migration is tracked under
+  [`../operations/slice-plans/mode-ownership-cleanup.md`](../operations/slice-plans/mode-ownership-cleanup.md)
+  as the MO.x diff-mode-keymap-migration slice.
 
 ### Convention for new mode work (going forward)
 
-- New modes register their keymap at boot via a
-  `register_<mode>_keymap(handle, action_ids)` helper in the
-  mode's owning crate.
-- The helper returns the trie via
-  `KeymapLayer::MinorMode(<mode>::mode_id())` so K.1.c
-  filtering scopes the chord to mode-active buffers.
-- If a mode's chord set is small (1–4 bindings), the helper
-  inlines them; if larger (LSP-scale), split per logical
-  sub-mode (a future `lsp-folding-mode` would have its own
-  helper distinct from the main `lsp-mode` keymap).
-- The trait's `Mode::keymap()` declarative path is the
-  long-term ideal but requires the registry to consume + push
-  layers at activation time (not just at boot). The boot-time
-  helper pattern is the pragmatic intermediate.
+- New modes implement `Mode::keymap()` and return a populated
+  `lattice_mode::Keymap`. Pick the chain form (`bind_chord`)
+  for 1–5 bindings or dynamically-named commands; the table
+  form (`from_entries` + `keymap_entry!`) for 5+ bindings
+  against canonical command names. The two forms cohabit on
+  the same `Keymap` if a mode needs both. The
+  [`mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md)
+  guide walks through the recipe end-to-end.
+- The K.2.4 translation pass (boot-time + dynamic
+  `ModeRegistry::register`) picks up the contribution and
+  pushes it as a `KeymapLayer::MinorMode(<mode>::mode_id())`
+  layer. K.1.c per-keystroke filtering scopes the chord to
+  mode-active buffers automatically — same shape major and
+  minor modes both use.
+- For larger keymaps (LSP-scale, 10+ chords), split per
+  logical sub-mode (a future `lsp-folding-mode` would have
+  its own `Mode::keymap()` distinct from the main
+  `lsp-mode`'s). Each sub-mode's contribution lands at its
+  own `MinorMode(mode_id)` layer; K.1.c overlay order is
+  activation-order, so the sub-mode activation sequence
+  determines precedence on ties.
+- For dynamic bindings whose `CommandInvocation` is
+  constructed at mode-construction time (not a canonical
+  registered name), the chain form (`bind_chord`) is the
+  right surface. The mode stashes the typed invocation on
+  `self` and references it in the `keymap()` impl.
+- Plugin-loaded modes (Phase 7+, WASM Component Model) land
+  through the same path — the plugin host calls
+  `Mode::keymap()` over the WIT boundary; the trait surface
+  is plugin-language-agnostic.
 
 ### Broader "modes are under-utilised" follow-up
 

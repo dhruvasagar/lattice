@@ -282,47 +282,128 @@ both the chain form (`bind_chord`) and table form
 single-mode translation deferred from K.2.4 lands here too,
 once the post-polish translation cost is stable.
 
-### K.2.5 — Migrate multibuffer + project-search bindings
+### K.2.5 — Migrate multibuffer + project-search bindings ✅ (commit `7719e27`)
 
-Delete `crates/lattice-host/src/multibuffer_keymap.rs`. The
-contents split:
+Landed. `crates/lattice-host/src/multibuffer_keymap.rs`
+deleted entirely (-292 LOC, 23 files modified in the K.2 arc
+total). The contents split as planned:
 
-- **Keymap bindings** (`multibuffer_mode_layer_bindings`,
-  `project_search_mode_layer_bindings`) → `Mode::keymap()`
-  on `MultibufferMode` / `ProjectSearchMultibufferMode` in
-  `crates/lattice-multibuffer/`.
+- **Keymap bindings** → `Mode::keymap()` table form on
+  `MultibufferMode` and `ProjectSearchMultibufferMode` in
+  `lattice-multibuffer`. Both return
+  `Keymap::from_entries(&STATIC_CATALOG)` with one
+  `keymap_entry!` row per chord. Names resolve at host
+  translation time against the `CommandRegistry`
+  (`multibuffer.next-excerpt-start`, `action:search-jump-to-source`,
+  etc.). Macro-captured source per row now points at the
+  owning crate's catalog file, so `:describe-key ]e` jumps
+  to `crates/lattice-multibuffer/src/mode.rs`.
 - **Ex-commands** (`register_multibuffer_ex_commands`,
-  `register_search_ex_command`) → `lattice-multibuffer`
-  via a new `register_<provider>_ex_commands(&mut CommandRegistry)`
-  helper on the provider module. Ex-command registration is
-  independent of keymap contribution; it stays explicit boot
-  glue, but moves to the owning crate.
+  `register_search_ex_command`) → `lattice-multibuffer` via
+  `pub fn`s on `mode.rs` and `providers::search` respectively.
+  Re-exported at the crate root.
 
 Boot path in `editor_boot.rs` calls
 `lattice_multibuffer::register_multibuffer_ex_commands` /
-`register_search_ex_commands` directly. No more host-side
-keymap glue for multibuffer.
+`lattice_multibuffer::providers::search::register_search_ex_command`
+directly. The explicit `push_layer(MinorMode(multibuffer-mode))`
+and `push_layer(MinorMode(project-search-multibuffer-mode))`
+calls retire — the K.2.4 translation pass handles those via
+`Mode::keymap()` now. `multibuffer_motion_ids` binding renamed
+to `_` since the typed `MotionIds` return is no longer needed
+(the keymap references motions by canonical name string; the
+registration side-effect is what keeps name lookup successful).
 
-### K.2.6 — Doc artefacts
+Diff-mode's helper (`diff_mode_layer_bindings`) still uses the
+older host-side push_layer pattern — migration is tracked
+under [`mode-ownership-cleanup.md`](./mode-ownership-cleanup.md)
+as the MO.x diff-mode-keymap-migration slice, sequenced after
+K.2.7.
 
-- ✅ Design fragment landed: [keymap-architecture.md §11](../../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap).
-- Update [mode-architecture.md](../../architecture/mode-architecture.md) §13
-  to point at the now-real `Mode::keymap()` instead of the
-  stub.
-- BENCHMARKS row added in K.2.4.
+Verification: 641 lattice-host lib tests, 60
+lattice-multibuffer lib tests, 12 describe-key tests all
+pass. Workspace `--all-targets` clean.
 
-### K.2.7 — Unblock MO.1–MO.4
+### K.2.6 — Doc artefacts ✅
 
-Once K.2.5 lands, [mode-ownership-cleanup](./mode-ownership-cleanup.md)
-slices reduce to:
+Architecture + slice plan + ledger updates carrying the K.2.5
+landing through:
 
-- **MO.1** LSP bindings → `Mode::keymap()` on `LspMode` /
-  `LspReferencesMode` etc. in `lattice-lsp`.
-- **MO.2** Oil bindings → `Mode::keymap()` on `OilMode`.
+- ✅ Design fragment landed: [keymap-architecture.md §11](../../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap),
+  with §11.2.1 (chain form, K.2.3) and §11.2.2 (table form,
+  K.2.4.A.0) added in earlier doc commits.
+- ✅ [mode-architecture.md §13](../../architecture/mode-architecture.md#13-mode-owned-keymaps--contribution-debt-2026-06-01)
+  rewritten to point at the now-real `Mode::keymap()` (K.2.3 +
+  K.2.4) instead of the "long-term ideal" framing. "Patterns
+  already correct" updated: `MultibufferMode` +
+  `ProjectSearchMultibufferMode` shown as table-form
+  `Keymap::from_entries(...)` per K.2.5; diff-mode noted as
+  still using the host-side helper pending the MO.x
+  diff-mode-keymap-migration slice. "Convention for new mode
+  work" rewritten — `Mode::keymap()` is THE convention now,
+  not the long-term ideal.
+- ✅ Slice plan + ledger refresh (this slice's commit) marks
+  K.2.4 / K.2.4.A / K.2.5 / K.2.6 / K.2.7 with final status
+  and commit hashes.
+- 🗒 BENCHMARKS row deferred to a measured profiling sweep
+  (see K.2.4.A.5 note) — the existing benchmarks.md rows are
+  criterion-derived, and adding a stub without measured data
+  would be misleading.
+
+### K.2.7 — Unblock MO.1–MO.4 ✅ (symbolic — substrate now in place)
+
+K.2.5 retired the last of the host-side `multibuffer_keymap`
+glue, and the K.2.4.A.0 table form is the recommended path
+for the LSP / Oil / Snippet keymap migrations. The
+[`mode-ownership-cleanup`](./mode-ownership-cleanup.md)
+slices that K.2 was blocking are now unblocked:
+
+- **MO.1** LSP bindings → `Mode::keymap()` (table form) on
+  `LspMode` / `LspReferencesMode` / `LspHoverMode` etc. in
+  `lattice-lsp`. Per the §13 cluster-size note, ~7 chords
+  split across logical sub-modes.
+- **MO.2** Oil bindings → `Mode::keymap()` on `OilMode`. 1
+  chord; trivial chain-form migration.
 - **MO.3** Snippet bindings → `Mode::keymap()` on
-  `SnippetMode` / `ActiveSnippetMode`.
+  `SnippetMode` / `ActiveSnippetMode`. 4 chords; the
+  runtime `is_snippet_active` check standing in for what
+  should be a keymap-layer scope retires.
 - **MO.4** Broader audit: every chord registered at
-  `KeymapLayer::Builtin` that's actually mode-scoped moves.
+  `KeymapLayer::Builtin` that's actually mode-scoped moves
+  via the same pattern.
+- **MO.x diff-mode** (added during K.2.5 review): the
+  host-side `diff_mode_layer_bindings` helper migrates to
+  `DiffMode::keymap()` — same shape as the multibuffer
+  migration K.2.5 landed.
+
+MO.x sequencing tracked in
+[`mode-ownership-cleanup.md`](./mode-ownership-cleanup.md);
+this slice plan's responsibility ends with the substrate
+being usable.
+
+## K.2 sub-arc summary
+
+Closed (2026-06-01 → 2026-06-02):
+
+| Slice | Commit | Outcome |
+|---|---|---|
+| K.2.1 | `d075a66` | Chord primitives → lattice-protocol |
+| K.2.2 | `d3dbe87` | BindingMode → lattice-mode |
+| K.2.3 | `c6c3ffe` | Real Keymap contribution + chain form (`bind_chord`) |
+| K.2.4 | `ff9f9bf` | Host translation pass (`translate_mode_keymaps`) |
+| K.2.4.A.0.1 | `4f763d5` | keymap_entry! macro relocated to lattice-mode |
+| K.2.4.A.0.2 | `6461f56` | Keymap::from_entries() + KeymapBinding.doc |
+| K.2.4.A.0.3 | `81c4600` | Translation pass entry resolution |
+| K.2.4.A.0.4 | `eaf9e33` | Chain + table composability test |
+| K.2.4.A.0.5 | `f9a15cd` | Sub-arc docs (§11.2.2) |
+| K.2.4.A.1 | `174cffd` | Resolved-binding indicator on :describe-key |
+| K.2.4.A.2 | `90be78c` | Friendly layer labels |
+| K.2.4.A.3 | `9e01634` | Source rendering via as_link() |
+| K.2.4.A.4 | `28562c5` | Canonical names in runtime registry |
+| K.2.4.A.5 | `3764c7d` | User docs + mode-author guide |
+| K.2.5 | `7719e27` | Multibuffer + project-search migrated; multibuffer_keymap.rs deleted |
+| K.2.6 | this | Doc artefacts (§13 + slice plan + ledger) |
+| K.2.7 | this | Symbolic unblock for MO.x |
 
 ## Risk + roll-back
 

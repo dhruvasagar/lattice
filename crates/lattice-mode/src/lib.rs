@@ -73,7 +73,7 @@ pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
-pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
+pub use crate::contributions::{DecorationProvider, Keymap, KeymapBinding, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};

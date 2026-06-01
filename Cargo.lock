@@ -3532,6 +3532,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-grammar",
  "lattice-protocol",
  "lattice-runtime",
  "linkme",

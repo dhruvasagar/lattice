@@ -850,7 +850,14 @@ impl Editor {
             picker_mru,
             picker_mru_path,
             config,
-            mode_registry,
+            // K.2.4 (2026-06-01): clone the Arc so the
+            // `keymap: { ... }` block below can still borrow
+            // `mode_registry` to run the mode-keymap
+            // translation pass. Field initializers run top-down
+            // in source order; the original binding would
+            // otherwise be moved into the struct before
+            // `keymap:` evaluates.
+            mode_registry: mode_registry.clone(),
             services: {
                 let mut s = ServiceRegistry::new();
                 s.register(lsp.clone());
@@ -942,6 +949,19 @@ impl Editor {
                     "project-search-multibuffer-mode",
                     crate::multibuffer_keymap::project_search_mode_layer_bindings(&action_ids),
                 );
+                // K.2.4 (2026-06-01): translate every registered
+                // mode's `Mode::keymap()` contribution into a
+                // `MinorMode(mode_id)` layer on `h`. Today most
+                // modes still return `Keymap::default()` (the empty
+                // contribution is skipped); K.2.5 promotes the
+                // multibuffer + project-search bindings into their
+                // owning mode crates so this pass becomes
+                // load-bearing for them, and the explicit
+                // `push_layer` calls above for those modes retire
+                // in the same slice. The pass is idempotent on
+                // `mode_id`: re-pushing replaces the layer rather
+                // than minting a sibling (K.1.b).
+                crate::keymap_mode_contributions::translate_mode_keymaps(&h, &mode_registry);
                 h
             },
             completion_registry,

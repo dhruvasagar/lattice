@@ -158,6 +158,21 @@ impl ModeRegistry {
         self.modes.iter().map(|(id, mode)| (*id, mode.kind()))
     }
 
+    /// Iterate every registered mode as `(id, Arc<dyn DynMode>)`.
+    ///
+    /// K.2.4: the keymap-substrate translation pass walks the
+    /// registry to call `Mode::keymap()` on each mode and merge
+    /// the contributed bindings into the host's `KeymapHandle`.
+    /// `iter_meta` is enough when only `(id, kind)` matters;
+    /// this is the variant that hands back the live mode trait
+    /// object so consumers can dispatch trait methods.
+    ///
+    /// Order is `HashMap`-undefined; callers that care about
+    /// determinism sort the iterator themselves.
+    pub fn iter(&self) -> impl Iterator<Item = (ModeId, Arc<dyn DynMode>)> + '_ {
+        self.modes.iter().map(|(id, mode)| (*id, Arc::clone(mode)))
+    }
+
     pub fn len(&self) -> usize {
         self.modes.len()
     }

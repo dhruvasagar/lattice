@@ -90,6 +90,13 @@ pub mod host_generators;
 pub mod input;
 pub mod keymap;
 pub mod keymap_insert;
+// K.2.4 (2026-06-01): host translation pass that walks
+// `ModeRegistry`, calls `Mode::keymap()` on each mode, and
+// pushes each non-empty contribution as a `MinorMode(mode_id)`
+// layer on the host's `KeymapHandle`. The K.2 substrate
+// (K.2.1 chord primitives, K.2.2 BindingMode, K.2.3 real
+// Keymap) is in place; this is the plumbing.
+pub mod keymap_mode_contributions;
 pub mod keymap_normal;
 pub mod keymap_registry;
 pub mod keymap_replace;

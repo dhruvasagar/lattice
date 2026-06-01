@@ -4272,20 +4272,33 @@ architecture §10 for the rationale.
   `multibuffer-views.md` §3.7). Paused until **K.2** lands —
   source-write plumbing touches the same translation layer
   that K.2 reshapes.
-- 🗒 **K.2** — Keymap substrate (mode-owned bindings). Closes
+- 🚧 **K.2** — Keymap substrate (mode-owned bindings). Closes
   the `lattice-mode::Keymap` stub
   (`crates/lattice-mode/src/contributions.rs:19`, TODO since
   mode-system design) so `Mode::keymap()` is real and modes
-  contribute bindings from their own crate. Sub-slices:
-  K.2.1 chord primitives → `lattice-protocol`; K.2.2
-  `BindingMode` → `lattice-mode`; K.2.3 real `Keymap` type +
-  `lattice-grammar` dep on `lattice-mode`; K.2.4 boot-path
-  translation pass walking `ModeRegistry`; K.2.5 migrate
-  multibuffer + project-search bindings out of host (delete
+  contribute bindings from their own crate. **Landed
+  (2026-06-01):** K.2.1 chord primitives →
+  `lattice-protocol` (commit `d075a66`; KeyChord / KeyKind /
+  KeyMods / SpecialKey / ChordParseError / parse_chord_sequence
+  / ChordPattern relocated; host re-export shim retained for
+  one cycle); K.2.2 `BindingMode` → `lattice-mode`
+  (commit `d3dbe87`; enum + label() byte-identical move,
+  host re-exports for matcher / dispatcher / TUI / GPUI call
+  sites); K.2.3 real `Keymap` contribution type
+  (commit `c6c3ffe`; `lattice-grammar` dep added to
+  `lattice-mode`, cycle-free; the type matches §11.2
+  spec, plus a `Keymap::bind_chord(mode, chord_str, command)`
+  ergonomic surface with `#[track_caller]` source capture +
+  string-parsed chord sequences handling emacs-style prefix
+  shapes like `<C-x>pp` / `<C-x><C-s>`; 10 unit tests).
+  **Pending:** K.2.4 boot-path translation pass walking
+  `ModeRegistry`; K.2.5 migrate multibuffer + project-search
+  bindings out of host (delete
   `crates/lattice-host/src/multibuffer_keymap.rs`); K.2.6
   docs; K.2.7 unblock MO.1–MO.4. Pauses M.6.4+. Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
-  §11; sequencing at [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
+  §11 (ergonomic surface in §11.2.1); sequencing at
+  [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
 - 🗒 **K.3** — Help-prefix bindings (`<C-h>` map,
   Normal-mode only). Emacs-style discoverability for the
   self-documenting help facility (design.md §5.11): bare

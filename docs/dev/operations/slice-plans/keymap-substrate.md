@@ -2,8 +2,10 @@
 
 **Design:** [keymap-architecture.md §11](../../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap).
 
-**Status:** 🗒 spec'd, paused on M.6.4+. Critical path: blocks
-MO.1–MO.4 cleanup and the `multibuffer_keymap.rs` deletion.
+**Status:** 🚧 in progress. K.2.1 / K.2.2 / K.2.3 landed
+(2026-06-01); K.2.4 (host translation pass) is the active
+sub-slice. Critical path: blocks MO.1–MO.4 cleanup and the
+`multibuffer_keymap.rs` deletion.
 
 **Why:** `Mode::keymap()` exists on the trait
 (`crates/lattice-mode/src/mode.rs:178`) but returns a
@@ -18,44 +20,66 @@ own crates.
 
 ## Sequencing
 
-### K.2.1 — Move chord primitives to `lattice-protocol`
+### K.2.1 — Move chord primitives to `lattice-protocol` ✅ (commit `d075a66`)
 
-Move `KeyChord`, `KeyKind`, `KeyMods`, `ChordPattern` from
-`crates/lattice-host/src/chord.rs` → `lattice-protocol`.
-`lattice-host::chord` becomes a `pub use lattice_protocol::*`
-shim for one release cycle to avoid downstream churn (TUI /
-GPUI renderers, dispatcher).
+Moved `KeyChord`, `KeyKind`, `KeyMods`, `SpecialKey`,
+`ChordParseError`, `special_label`, `parse_chord_sequence`,
+`last_chord_token_byte_len` (the full
+`crates/lattice-host/src/chord.rs` surface) to
+`crates/lattice-protocol/src/chord.rs`. `ChordPattern`
+relocated from `crates/lattice-host/src/keymap_trie.rs` into
+the same `lattice-protocol` module — it pairs with `KeyChord`
+and is consumed by the `Keymap` contribution type that K.2.3
+landed.
 
-- ~730 LOC moved.
-- Host re-exports for stability.
-- Test coverage: the existing chord unit tests move with the
-  types.
+- ~730 LOC moved; 14 chord round-trip / parser tests moved
+  with the types and pass against `lattice-protocol`.
+- `lattice-host::chord` retained as a re-export shim
+  (`pub use lattice_protocol::chord::*`) so the existing
+  `lattice_host::chord::{KeyChord, …}` import paths used by
+  the TUI / GPUI adapters and host internals keep resolving
+  verbatim.
+- `lattice-host::keymap_trie` re-exports `ChordPattern` from
+  protocol so the matcher engine's internal callers don't
+  churn.
 - Bench: no perf-relevant change (data types only).
+- Matcher engine (`KeymapTrie`, `KeymapLayer`, `BoundCommand`)
+  stays in host — it owns the lookup hot path, not the wire
+  shape.
 
-### K.2.2 — Move `BindingMode` to `lattice-mode`
+### K.2.2 — Move `BindingMode` to `lattice-mode` ✅ (commit `d3dbe87`)
 
-Move `BindingMode` enum from `crates/lattice-host/src/keymap.rs`
-→ `lattice-mode::binding_mode` (or alongside the `Mode` trait).
-Host re-exports.
+Moved the `BindingMode` enum + `label()` impl from
+`crates/lattice-host/src/keymap.rs` (lines 29-122) to
+`crates/lattice-mode/src/binding_mode.rs`. Variants +
+label byte-identical to the host copy. `lattice-mode`
+re-exports as `lattice_mode::BindingMode`;
+`lattice-host::keymap` re-exports as
+`pub use lattice_mode::BindingMode;` so the existing
+matcher / dispatcher / TUI input / GPUI peer call sites keep
+resolving (incl. `lattice_ui_tui::keymap::BindingMode` which
+re-exports `lattice_host::keymap` transitively).
 
-- Verify nothing outside host uses `BindingMode` today — host
-  is currently the only consumer; renderers receive resolved
+- Verified pre-move: host is the only consumer modulo the
+  TUI / GPUI re-export chain; renderers receive resolved
   `BoundCommand`s, not `BindingMode`.
+- 83 lattice-mode lib tests + 641 lattice-host lib tests
+  green after the move.
 
-### K.2.3 — Make `Keymap` real
+### K.2.3 — Make `Keymap` real ✅ (commit `c6c3ffe`)
 
-Add `lattice-grammar` dep to `lattice-mode`
-(verify no cycle: `lattice-grammar` does not depend on
-`lattice-mode`).
+Added `lattice-grammar` dep to `lattice-mode`. Cycle-free:
+`lattice-grammar`'s deps are
+`lattice-protocol`/`lattice-core`/`thiserror`/`serde`/`tracing`
+— none transitively reach `lattice-mode`. Resolves the
+stub-deferral reason cited in §11.
 
-Replace the `Keymap` stub in
-`crates/lattice-mode/src/contributions.rs` with the real
-type per [keymap-architecture.md §11.2](../../architecture/keymap-architecture.md#112-the-real-keymap-contribution-type):
+Replaced the `_private: ()` `Keymap` stub in
+`crates/lattice-mode/src/contributions.rs` with the real type
+per [keymap-architecture.md §11.2](../../architecture/keymap-architecture.md#112-the-real-keymap-contribution-type):
 
 ```rust
-pub struct Keymap {
-	pub bindings: Vec<KeymapBinding>,
-}
+pub struct Keymap { pub bindings: Vec<KeymapBinding> }
 pub struct KeymapBinding {
 	pub mode: BindingMode,
 	pub chords: Vec<ChordPattern>,
@@ -64,10 +88,35 @@ pub struct KeymapBinding {
 }
 ```
 
-Trait method default stays `Keymap::default()` (empty). Add
-unit tests in `lattice-mode` for the contribution type
-(equality, default-empty, source-location capture via
-`file!()` / `line!()`).
+Trait default `Keymap::default()` stays the empty
+contribution; every existing `Mode` impl across multibuffer /
+LSP / oil / snippet / help / file-tree / terminal / syntax
+keeps working unchanged. The substrate is opt-in — K.2.5
+onward migrates one mode at a time to return a populated
+`Keymap`.
+
+**Ergonomic surface added beyond the original §11.2 design.**
+`Keymap::new().bind_chord(mode, chord_str, command)` is the
+recommended idiom: `#[track_caller]` auto-captures the
+binding row's `file:line` into the `SourceLocation`
+(zero-boilerplate provenance), and the chord string parses
+via `lattice_protocol::parse_chord_sequence` so emacs-style
+prefix sequences (`<C-x>pp`, `<C-x><C-s>`), vim window-prefix
+(`<C-w>gd`), and arbitrary multi-chord paths declare in one
+row. Wildcards (`'a`, `"a`, `fX`) deliberately not
+expressible via `bind_chord`; the rare mode that needs
+`ChordPattern::CharLiteral` falls back to `Keymap::bind` with
+an explicit chord vector. Malformed chord strings panic at
+boot (compile-time-static call sites; bug in the mode impl,
+not a recoverable runtime condition). See
+[keymap-architecture.md §11.2.1](../../architecture/keymap-architecture.md#1121-ergonomic-surface-keymapbind_chord)
+for the full design rationale + the chord-notation table.
+
+10 unit tests landed in `contributions.rs`: default-empty,
+new-equals-default, bind-append-order, structural equality,
+source-location capture, chord-string parsing, modifier
+notation, emacs-style multi-chord prefix (`<C-x>pp`
+explicitly), track-caller source capture, panic-on-malformed.
 
 ### K.2.4 — Host translation pass
 

@@ -1194,6 +1194,86 @@ Layer is implicit: every binding contributed by `Mode X` lives
 at `KeymapLayer::MinorMode(x.id())` (which covers both majors
 and minors per K.1.b convention).
 
+#### 11.2.1 Ergonomic surface: `Keymap::bind_chord`
+
+The raw struct is the floor. The recommended idiom for
+mode-contributed keymaps reads like a binding table without
+manual chord-vector construction or `SourceLocation` plumbing
+per row:
+
+```rust
+impl Mode for MultibufferMode {
+	fn keymap(&self) -> Keymap {
+		Keymap::new()
+			.bind_chord(BindingMode::Normal, "]e", self.commands.excerpt_next)
+			.bind_chord(BindingMode::Normal, "[e", self.commands.excerpt_prev)
+	}
+}
+```
+
+`bind_chord` is `#[track_caller]` so `Location::caller()`
+captures the binding row's own `file:line` into the resulting
+[`SourceLocation`]. `:describe-key` shows the chord's
+declaration site directly; no
+`SourceLocation::builtin_file(file!(), line!())` boilerplate
+per row. (Boilerplate that would also rot: a row's
+hand-written `line!()` drifts every time a row above is
+inserted or deleted.)
+
+The chord string is parsed via the existing
+[`lattice_protocol::parse_chord_sequence`] -- same notation
+the host's `keymap_entry!` catalog uses. Multi-chord paths
+work uniformly across vim and emacs idioms:
+
+| chord string | parsed sequence | typical use |
+|---|---|---|
+| `"j"` | `[char('j')]` | vim motion |
+| `"gd"` | `[char('g'), char('d')]` | vim go-to-def |
+| `"]e"` | `[char(']'), char('e')]` | multibuffer next-excerpt |
+| `"<C-w>j"` | `[ctrl('w'), char('j')]` | vim split-down |
+| `"<C-w>gd"` | `[ctrl('w'), char('g'), char('d')]` | vim split-goto-def |
+| `"<C-x>pp"` | `[ctrl('x'), char('p'), char('p')]` | emacs project-switch |
+| `"<C-x><C-s>"` | `[ctrl('x'), ctrl('s')]` | emacs save-buffer |
+| `"<C-c><C-c>"` | `[ctrl('c'), ctrl('c')]` | mode-confirm |
+| `"<S-Tab>"` | `[shift(Tab)]` | snippet-prev |
+| `"<lt>"` | `[char('<')]` | literal `<` |
+
+The trie indexes the chord sequence directly. Pressing
+`<C-x>` after a `bind_chord(Normal, "<C-x>pp", …)` gives
+`Partial`; pressing the second `p` gives `Bound` and fires.
+No "after-C-x" binding-mode state is required -- the matcher
+walks the sequence generically. (This is the same trie
+discipline that has always supported vim's `gg`; the K.2.3
+surface just makes the emacs-prefix shape ergonomic to
+declare from a mode crate.)
+
+**Boot-fail on malformed chord strings.** Mode bindings live
+at compile-time-static call sites with constant strings; a
+parse error is a bug in the mode impl, not a runtime
+condition. `bind_chord` panics with a message naming the
+chord string and the caller location. The editor refuses to
+boot rather than silently dropping the binding -- same
+discipline the host's `keymap_entry!` catalog uses for the
+identical reason.
+
+**What `bind_chord` deliberately does not express:** wildcard
+slots (`'a` mark target, `"a` register name, `fX` find-char
+target, `qa` macro-name, `@a` macro-play target). The
+shorthand has no notation for "any single typed char"; the
+rare mode that needs `ChordPattern::CharLiteral` calls
+[`Keymap::bind`] with an explicit `chords` vector. Today
+every wildcard-bearing binding lives in the host's built-in
+catalog (Normal-mode marks / registers / find-char / macro
+prefixes), so mode crates almost never need the lower-level
+API.
+
+Plugin-loaded bindings, runtime `:bind` invocations, and
+test fixtures use the lower-level [`KeymapBinding::new`]
+constructor directly with whatever `SourceLocation` is
+appropriate (`SourceLayer::Plugin(...)`,
+`SourceLayer::Runtime`, …). `bind_chord` is the affordance
+for the built-in-Rust idiom; it does not own the contract.
+
 ### 11.3 Host translation
 
 Host gains one new pass in the boot path (and on every

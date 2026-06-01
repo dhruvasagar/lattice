@@ -476,44 +476,48 @@ mod tests {
 
     #[test]
     fn describe_key_each_binding_has_its_own_source_link() {
-        // `j` has 2 bindings -- Normal (line down) and Visual
-        // (extend down). Help inherits Normal's `j` via active-
-        // buffer routing (DESIGN.md §5.9), so it doesn't surface as
-        // a separate descriptor. Each remaining binding should
-        // surface its own `(file:...)` link because every
-        // KeymapEntry's source is captured at its own row.
+        // `j` has 2 catalog descriptors -- Normal (line down)
+        // and Visual (extend down). Help inherits Normal's `j`
+        // via active-buffer routing (DESIGN.md §5.9), so it
+        // doesn't surface as a separate descriptor. Each
+        // catalog descriptor should surface its own
+        // `(file:...)` link pointing at the entry's row in
+        // `lattice-mode::keymap_entry` (K.2.4.A.0.1 catalog
+        // location).
+        //
+        // K.2.4.A.3 (2026-06-02): the resolved-binding section
+        // (K.2.4.A.1) and runtime-registry section (K.1.d)
+        // ALSO emit `as_link()` source links now, so the
+        // total source-link count grew beyond 2. The contract
+        // this test still defends is "each catalog descriptor
+        // has a distinct keymap_entry.rs source link" — so
+        // filter to keymap_entry.rs links and dedup the line
+        // numbers.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-key j".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
         let links = a.popup_help_links().expect("help links seeded");
-        let source_links: Vec<_> = links
-            .iter()
-            .filter(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }))
-            .collect();
-        assert_eq!(
-            source_links.len(),
-            2,
-            "expected 2 source links (one per binding); got {}: {:?}",
-            source_links.len(),
-            links
-        );
-        // Each link should point at a distinct line in keymap_entry.rs
-        // (K.2.4.A.0.1 — catalog moved to lattice-mode).
-        let mut lines: Vec<u32> = source_links
+        let catalog_lines: Vec<u32> = links
             .iter()
             .filter_map(|l| match &l.target {
-                crate::help::HelpLinkTarget::Source { line, .. } => Some(*line),
+                crate::help::HelpLinkTarget::Source { path, line }
+                    if path.to_string_lossy().contains("keymap_entry.rs") =>
+                {
+                    Some(*line)
+                }
                 _ => None,
             })
             .collect();
-        lines.sort();
-        lines.dedup();
+        let mut deduped = catalog_lines.clone();
+        deduped.sort();
+        deduped.dedup();
         assert_eq!(
-            lines.len(),
+            deduped.len(),
             2,
-            "expected 2 distinct source line numbers; got {lines:?}",
+            "expected 2 distinct catalog source lines in keymap_entry.rs; got {deduped:?} \
+             (all source links: {links:?})",
         );
     }
 
@@ -594,6 +598,52 @@ mod tests {
         assert!(
             !resolved_section.contains("→ CommandId("),
             "resolved section should not leak CommandId debug: {resolved_section}"
+        );
+    }
+
+    #[test]
+    fn describe_key_resolved_binding_source_is_clickable_link() {
+        // K.2.4.A.3: source rows in the resolved-binding
+        // section render via SourceLocation::as_link() so the
+        // file:line entry is a clickable markdown link. The
+        // help framework extracts `[label](file:URL)` into
+        // the popup's HelpLink table; the rendered body
+        // shows only the label. Assert both ends of the
+        // contract: (a) the body has the bare file:line
+        // label form (the as_link() output's label half),
+        // and (b) the link table carries Source-target
+        // entries that the help follow-handler can route on
+        // `<CR>`.
+        let mut a = app_with("xx", 10);
+        a.editor.command_line = "describe-key j".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        // Body shows the label form (path:line) without the
+        // surrounding `[...]` markdown markers (they were
+        // extracted into the help-link table).
+        assert!(
+            body.contains("source: crates/lattice-host/src/keymap_normal.rs:"),
+            "resolved section should render source as as_link() label: {body}"
+        );
+        // And NOT the debug shape `SourceLocation { ... }`
+        // — K.2.4.A.3 contract.
+        assert!(
+            !body.contains("SourceLocation {"),
+            "no debug-formatted SourceLocation should leak: {body}"
+        );
+        // The link table should carry Source-target entries
+        // for the file:line URLs. At least one points at the
+        // host-side keymap_normal.rs the resolution traces
+        // back to.
+        let links = a.popup_help_links().expect("help links seeded");
+        let has_clickable_source = links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
+                if path.to_string_lossy().contains("keymap_normal.rs"))
+        });
+        assert!(
+            has_clickable_source,
+            "expected a clickable Source link to keymap_normal.rs from the resolved section: {links:?}"
         );
     }
 

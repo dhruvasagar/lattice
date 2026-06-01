@@ -21425,10 +21425,12 @@ impl Editor {
     /// Layer is rendered via [`Self::friendly_layer_label`]
     /// (K.2.4.A.2) — `Built-in` / `Major mode` /
     /// `Minor: <mode_id>` / `User config` / `Buffer-local`.
-    /// Source is still `{:?}` debug-formatted for now;
-    /// K.2.4.A.3 swaps it for
-    /// [`lattice_grammar::SourceLocation::as_link`] so the
-    /// file:line becomes a clickable help-buffer link.
+    /// Source is rendered via
+    /// [`lattice_grammar::SourceLocation::as_link`]
+    /// (K.2.4.A.3) — `[crates/.../file.rs:42](file:crates/.../file.rs:42)`
+    /// — so the file:line entry becomes a clickable
+    /// markdown link in the help buffer (the existing
+    /// follow-link handler routes `file:` URLs).
     ///
     /// If no binding-mode fires (chord is bound only inside
     /// inactive minors, or genuinely unbound everywhere), the
@@ -21488,7 +21490,7 @@ impl Editor {
             lines.push(format!("  [{mode_label} mode]"));
             lines.push(format!("    → {cmd_name}"));
             lines.push(format!("    layer: {}", Self::friendly_layer_label(bound.layer)));
-            lines.push(format!("    source: {:?}", bound.source));
+            lines.push(format!("    source: {}", bound.source.as_link()));
         }
 
         if !emitted_header {
@@ -21574,7 +21576,7 @@ impl Editor {
                     Self::friendly_layer_label(layer),
                     bound.command.command,
                 ));
-                lines.push(format!("      source: {:?}", bound.source));
+                lines.push(format!("      source: {}", bound.source.as_link()));
             }
         }
     }

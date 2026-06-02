@@ -24438,6 +24438,45 @@ impl Editor {
         // so popup overlays (Help) resolve through their own
         // popup_buffer's mode set, not the pane underneath.
         let buf_id = self.active_buffer_id();
+
+        // M.10.1.b (2026-06-03): consult ActionHandlerRegistry
+        // BEFORE the per-kind runner + before the
+        // CommandKind::Action gate. Mode-contributed handlers
+        // (registered from `Mode::on_activate` via
+        // `ctx.service::<ActionHandlerRegistryHandle>().register(...)`)
+        // own provider-specific actions like `<CR>` jump-to-source
+        // and `gr` refresh — they take priority over the generic
+        // runner / Action-grammar paths. When the handler returns
+        // `Some(Effect)`, the host applies it through the
+        // existing `handle_effect` pipeline. `None` from the
+        // handler treats the dispatch as consumed without an
+        // effect. When no handler is registered for the
+        // CommandId, fall through to the existing path.
+        //
+        // Per `feedback_mode_owns_its_surface`: mode owns chord
+        // choice (already via `Mode::keymap()`) AND handler body
+        // (via this registry). The host's role is the generic
+        // dispatch + effect-apply pipeline; provider-specific
+        // logic lives in the mode's closure.
+        if let Some(action_handlers_arc) = self
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()
+        {
+            let action_handlers: &lattice_mode::ActionHandlerRegistry = &**action_handlers_arc;
+            if let Some(handler) = action_handlers.lookup(inv.command) {
+                let ctx = lattice_mode::ActionContext {
+                    buffer_id: lattice_protocol::ids::BufferId::new(buf_id.0 as u64),
+                    cursor: self.cursor,
+                    services: &self.services,
+                    events: &self.event_bus,
+                };
+                if let Some(effect) = handler(&ctx) {
+                    handle_effect(self, effect, out);
+                }
+                return;
+            }
+        }
+
         let runner = self.resolve_invocation_runner(buf_id);
         if let Some(runner) = runner
             && runner(self, inv.clone())

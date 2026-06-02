@@ -79,6 +79,16 @@ pub type ActionHandler = Arc<
     dyn Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static,
 >;
 
+/// M.10.1.b (2026-06-03): typed handle for `ServiceRegistry`
+/// lookup. Boot registers a fresh `ActionHandlerRegistry` under
+/// this alias; modes pull it from `on_activate` via
+/// `ctx.service::<ActionHandlerRegistryHandle>()`.
+///
+/// Per `feedback_servicesregistry_arc_typeid`: register and
+/// lookup MUST use the same `T` for the TypeId hash to match.
+/// This alias guarantees the convention.
+pub type ActionHandlerRegistryHandle = Arc<ActionHandlerRegistry>;
+
 /// Wait-free registry of mode-contributed action handlers.
 ///
 /// Stored behind an `Arc` and shared by reference: the host's

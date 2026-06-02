@@ -892,6 +892,20 @@ impl Editor {
                 // can look it up.
                 #[cfg(feature = "search")]
                 lattice_multibuffer::providers::search::register_project_search_service(&mut s);
+                // M.10.1.b (2026-06-03): action-handler registry —
+                // mode-contributed chord/ex-command handler
+                // closures. Modes register from `on_activate` via
+                // `ctx.service::<ActionHandlerRegistryHandle>()`;
+                // the registry's lifetime spans the editor's
+                // lifetime, so a single Arc registered here
+                // serves every mode activation. See
+                // `mode-architecture.md` §5.3 +
+                // `feedback_mode_owns_its_surface`.
+                let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
+                    Arc::new(lattice_mode::ActionHandlerRegistry::new());
+                s.register::<lattice_mode::ActionHandlerRegistryHandle>(
+                    action_handlers.clone(),
+                );
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

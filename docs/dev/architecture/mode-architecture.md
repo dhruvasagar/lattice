@@ -509,11 +509,19 @@ impl ActionHandlerRegistry {
 ```
 
 The registry lives in `lattice-mode` next to `ModeRegistry`
-and `KeymapRegistry`. It is exposed on `ModeContext` so
-`on_activate` can register handler closures with full access
-to anything the mode captured at activation time
+and `KeymapRegistry`. **M.10.1.b (2026-06-03) discovery path:**
+boot registers a single `ActionHandlerRegistryHandle`
+(`Arc<ActionHandlerRegistry>`) in the `ServiceRegistry`; modes
+pull it from `on_activate` via
+`ctx.service::<ActionHandlerRegistryHandle>()`. This matches
+the established pattern for shared subsystem handles
 (`MultibufferRegistryHandle`, `ProjectSearchServiceHandle`,
-etc.).
+`LspSupervisorHandle`, ...) and avoids threading a sixth Arc
+parameter through the 40+ `activate_major`/`activate_minor`
+call sites in `lattice-host`. Per
+`feedback_servicesregistry_arc_typeid`, the handle's
+TypeId-keyed registration and lookup use the same
+`ActionHandlerRegistryHandle` alias.
 
 The host's chord-resolved-action dispatcher consults the
 registry. When the action's `ActionId` resolves to a

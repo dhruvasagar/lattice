@@ -473,6 +473,112 @@ a smaller blast radius:
 shows the syntax). Each entry pairs an option type with a value
 of that option's type; the compiler rejects any mismatch.
 
+### 5.3 Modes own their action handlers
+
+The keymap is half the surface. The other half is the **action
+handler body** — the closure that runs when a chord or
+ex-command fires. A mode contributing keymap entries to its
+own layer while leaving the handler bodies in
+`lattice-host::dispatch::do_<provider>_action` is a HALF
+MIGRATION and violates `feedback_mode_owns_its_surface`. The
+acid test: a new provider crate landing should require ZERO
+`Editor::` method additions in `lattice-host` and ZERO new
+variants in the host's `Action` enum.
+
+#### 5.3.1 `ActionHandlerRegistry` substrate
+
+```rust
+pub struct ActionHandlerRegistry { /* ... */ }
+
+pub type ActionHandler = Arc<dyn Fn(&ActionContext) -> Option<Effect>
+    + Send + Sync + 'static>;
+
+pub struct ActionContext<'a> {
+    pub buffer_id: BufferId,
+    pub cursor: Position,
+    pub services: &'a ServiceRegistry,
+    pub events: &'a EventBus,
+    // ...additional read-only host state the handler may need
+}
+
+impl ActionHandlerRegistry {
+    pub fn register(&self, action_id: ActionId, handler: ActionHandler);
+    pub fn unregister(&self, action_id: ActionId);
+    pub fn lookup(&self, action_id: ActionId) -> Option<&ActionHandler>;
+}
+```
+
+The registry lives in `lattice-mode` next to `ModeRegistry`
+and `KeymapRegistry`. It is exposed on `ModeContext` so
+`on_activate` can register handler closures with full access
+to anything the mode captured at activation time
+(`MultibufferRegistryHandle`, `ProjectSearchServiceHandle`,
+etc.).
+
+The host's chord-resolved-action dispatcher consults the
+registry. When the action's `ActionId` resolves to a
+registered closure, the host invokes the closure with an
+`ActionContext` and applies the returned `Effect` (if any)
+through the existing apply-effect pipeline. No host-side
+`match action { ... }` arm is needed for mode-contributed
+actions.
+
+#### 5.3.2 Lifecycle
+
+Handler registration is part of `on_activate`. The mode's
+`Guard` carries an `ActionHandlerRegistration` token; the
+token's `Drop` impl calls `unregister(action_id)` so chord
+dispatch returns `None` once the mode deactivates. Reload
+semantics are uniform with everything else — toggle the
+mode off, handlers vanish via Guard drop; toggle on,
+handlers re-register from `on_activate`.
+
+#### 5.3.3 What still lives in the host
+
+- The generic chord dispatcher (`Editor::dispatch_chord`)
+  that walks the keymap layer stack and resolves a chord to
+  an `ActionId`.
+- The generic Effect applier — `Effect::OpenAt { path,
+  position }`, `Effect::Edits(...)`, `Effect::CursorMove(...)`
+  all flow through the existing host pipeline regardless of
+  which closure produced them.
+- The host's `Action` enum carries ONLY host-intrinsic
+  actions (motion, edit, cursor, modal-state transitions).
+  Provider-specific actions (`<CR>` jump-to-source, `gr`
+  refresh, `:multibuffer-expand`) are NOT enum variants —
+  they are `ActionId`s registered via
+  `ActionIds::register(...)` and bound to handler closures
+  by the owning mode at activation.
+
+#### 5.3.4 What the substrate publishes vs. what the mode owns
+
+Per the **substrate-vs-helper rule** in `CLAUDE.md`:
+
+- **`Document` trait method** — for data the *renderer or
+  generic dispatch loop* reads uniformly across buffer kinds.
+  K.4.6 `display_line_numbers` and K.4.11
+  `dispatch_with_cancel` are correct trait methods because
+  the consumer is generic.
+- **Substrate helper function** in the substrate's owning
+  crate — for data only the mode's handler reads. The
+  multibuffer crate exports
+  `translate_composed_to_source(handle, cursor)`,
+  `multibuffer_expand_excerpts_at(handle, cursor, delta)`,
+  etc. The mode imports the helper and uses it inside its
+  handler closure.
+
+The acid test for whether mode-relevant behavior belongs on
+the trait or in a helper: **who consumes it?** If only a
+specific mode's handler reads it, it's a helper. If the
+renderer or the generic chord-dispatch loop reads it
+uniformly, it's a trait method.
+
+This carving is what closes the half-migration loophole. The
+chord is bound by the mode; the handler is registered by the
+mode; the substrate data the handler reads is a helper, not a
+trait method that implies host involvement; the host's role
+is purely generic dispatch.
+
 ## 6. Option resolution
 
 ### 6.1 Layers (highest to lowest priority)

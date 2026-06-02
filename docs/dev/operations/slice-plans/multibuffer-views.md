@@ -67,6 +67,93 @@ Slice sequencing:
   updates; live-update must be stable first).
 - **M.8** depends on M.6 (provider-driven excerpt sets must
   be stable before fold ranges union across them).
+- **M.10** depends on nothing new (audit-driven cleanup of
+  the M.5 / M.6.1 host-side handler bodies that violated
+  `feedback_mode_owns_its_surface`). Lands in parallel with
+  M.6.5 / M.6.6 / M.6.7 — independent slice sequence.
+
+## M.10 — Mode-ownership audit (host de-leak)
+
+**Status:** 🚧 audit complete 2026-06-02; sub-slices carved
+under five locked decisions (see `mode-architecture.md` §5.3
+and the conversation 2026-06-02 for the full heuristic
+mapping).
+
+**Context.** M.5 and M.6.1 landed action handler bodies
+(`Editor::do_multibuffer_expand`, `Editor::do_search`,
+`Editor::do_search_jump_to_source`, `Editor::do_search_refresh`)
+into `lattice-host::dispatch`. The keymap layers correctly
+live in the owning mode crates, but the handler bodies and
+matching `Action::*` enum variants stayed in the host. The
+`feedback_mode_owns_its_surface` standing rule (sharpened
+2026-06-02) names this a HALF MIGRATION: a mode owning the
+chord choice but not the handler body violates the rule. The
+M.10 audit closes the gap and establishes the substrate
+needed so future providers can't recreate it.
+
+### Locked design decisions
+
+All five decisions evaluated against the four paramount goals
++ five heuristics + standing rules per the heuristic-mapping
+rule in `CLAUDE.md`.
+
+- **D1 — JumpToSource handler location.** Recommended **(γ)
+  Mode owns chord + handler end-to-end.** `<CR>` is bound by
+  `ProjectSearchMultibufferMode` at activation; handler
+  closure registered via M.10.1 substrate uses a helper from
+  `lattice-multibuffer` to compute the target. Anchored on
+  paramount #2 + `feedback_mode_owns_its_surface`.
+- **D2 — `:multibuffer-expand` / `-contract` handler.**
+  Recommended **(γ)** for the same reason; `MultibufferMode`
+  (major) owns the ex-commands + handlers. Anchored on
+  paramount #2 + standing rule.
+- **D3 — `gr` Refresh handler.** Recommended **(γ)**;
+  provider-mode owns. Anchored on paramount #2.
+- **D4 — Mode handler substrate.** Recommended **(γ.2)
+  function-handler registry per `ActionId`** over a `Mode`
+  trait method, anchored on heuristic #1 (long-term fit with
+  existing extensibility substrate — keymap, ex-command, and
+  event registrations are all closure-contribution shapes).
+- **D5 — Host `Action` enum.** Recommended **(β) provider
+  actions are typed `ActionId`s, NOT host enum variants.**
+  Anchored on paramount #3 (host enum stays host-intrinsic)
+  + heuristic #1.
+
+### Sub-slices
+
+| Slice | Title | What lands |
+|---|---|---|
+| **M.10.1** | `ActionHandlerRegistry` substrate | New `ActionHandlerRegistry` in `lattice-mode` exposing `register(action_id, closure)` / `unregister(action_id)` / `lookup(action_id)`. Handle in `ModeContext`. Host's chord-resolved-action dispatcher consults the registry; registered closure receives an `ActionContext` (buffer_id, cursor, services, events) and returns `Option<Effect>` that the host applies through the existing pipeline. Lifecycle: handlers registered in `Mode::on_activate`; mode `Guard` carries a registration token whose `Drop` unregisters. Default behaviour: lookup returns `None` for any unregistered `ActionId` so the host's existing `match action { ... }` arms keep working until migrated. Tests: register + lookup roundtrip; Guard drop unregisters; concurrent lookup is wait-free (ArcSwap-backed). |
+| **M.10.2** | `translate_composed_to_source` helper | Pure-data function in `lattice-multibuffer`: `translate_composed_to_source(handle: &MultibufferDocumentHandle, cursor: Position) -> Option<(BufferId, Position)>`. Walks excerpts; returns `(source_buffer_id, source_position)` with full column precision (cursor.byte → source position byte). No trait method — substrate helper consumed by mode handlers only, per the substrate-vs-helper rule (`CLAUDE.md`). Tests: composed cursor at row R column C → source row + same column when excerpt covers full row; out-of-range cursor returns `None`. |
+| **M.10.3** | `<CR>` JumpToSource end-to-end | `ProjectSearchMultibufferMode::on_activate` registers the `<CR>` handler closure via M.10.1. Handler reads cursor from `ActionContext`, looks up the multibuffer view via the registry, calls `translate_composed_to_source` (M.10.2), resolves source path via `BufferRegistry::path_for`, returns `Effect::OpenAt { path, position }`. Host applies the Effect through existing `do_edit` + `set_selections_blocking` pipeline. `Editor::do_search_jump_to_source` deleted from `lattice-host/src/dispatch.rs`. `ProjectSearchServiceHandle::source_path` retired in favor of `BufferRegistry::path_for`. Column precision (M.6.1's hard-coded `Position::new(source_row, 0)` → cursor's actual byte) lands automatically. Tests: existing M.6.1 jump-to-source tests pass; new test asserts non-zero column lands correctly; another asserts handler unregisters when mode deactivates. |
+| **M.10.4** | `:multibuffer-expand` / `-contract` end-to-end | `MultibufferMode` (major) registers the ex-commands + handler closure via M.10.1. Handler calls substrate helper `multibuffer_expand_excerpts_at(handle, cursor, delta)` (exported from `lattice-multibuffer`). `Editor::do_multibuffer_expand` deleted from dispatch.rs. Tests: existing M.5 expand/contract tests pass via the new path. |
+| **M.10.5** | `gr` Refresh end-to-end | `ProjectSearchMultibufferMode::on_activate` registers the `gr` handler closure via M.10.1. Handler reads view state, replaces excerpts via existing handle API, resets `ProjectSearchState`, spawns fresh scan task via existing `spawn_scan_task`. `Editor::do_search_refresh` deleted from dispatch.rs. Tests: existing M.6.1 refresh tests pass via the new path. |
+| **M.10.6** | `:search` ex-command bypasses host hop | The ex-command handler closure (already in `lattice-multibuffer::providers::search::register_search_ex_command`) calls `project_search(activator, query, options)` directly. The host's `Editor::do_search`, `Action::SearchTrigger`, and `AppEffect::SearchTrigger` are deleted. The closure captures `MultibufferRegistryHandle` + `ProjectSearchServiceHandle` at registration. Tests: existing `:search foo` ex-command tests pass; verify `Editor` has no `do_search` method post-slice. |
+| **M.10.7** | Remove host Action enum variants | Delete `Action::SearchJumpToSource`, `Action::SearchRefresh`, `Action::MultibufferExpand`, `Action::SearchTrigger` from `lattice-host/src/action.rs` and matching `AppEffect::*` variants. Confirm `dispatch.rs` has zero `lattice_multibuffer::providers::search::*` provider-specific imports. Confirm `Editor` has zero `do_<provider>_*` methods. Tests: `rg "do_search\|do_multibuffer" crates/lattice-host/` returns empty (modulo intentional generic helpers); workspace tests green. |
+| **M.10.8** | Comment + doc sweep | Update stale `M.7 / M.8` references in `crates/lattice-host/src/fold_provider.rs:59` to reflect post-M.10 reality. Sweep modes.rs / render_state.rs / virtual_rows_worker.rs comments. Confirm CLAUDE.md `feedback_mode_owns_its_surface` rule + `mode-architecture.md` §5.3 cite M.10 as the precedent. |
+
+### Sequencing
+
+- **M.10.1** is load-bearing — substrate; M.10.3 / M.10.4 / M.10.5 / M.10.6 all depend on it.
+- **M.10.2** is a pure helper extraction; can land alongside M.10.1 or M.10.3.
+- **M.10.3** depends on M.10.1 + M.10.2.
+- **M.10.4** depends on M.10.1 (plus an `multibuffer_expand_excerpts_at` helper if it doesn't exist yet — minor extraction from the current `do_multibuffer_expand` body).
+- **M.10.5** depends on M.10.1.
+- **M.10.6** independent of the registry but follows the same ownership rule.
+- **M.10.7** depends on M.10.3 + M.10.4 + M.10.5 + M.10.6 (all migrations must complete before the enum variants disappear).
+- **M.10.8** is final cleanup.
+
+Slices land green independently; each is independently revertible. M.10.1 is the only one that touches a published substrate trait (`Mode`); the rest are migrations within the existing pattern.
+
+### Acid test
+
+Post-M.10, a new provider crate landing should require:
+
+- **Zero** `Editor::do_<provider>_*` methods added to `lattice-host`.
+- **Zero** new variants in `lattice-host::Action` / `AppEffect`.
+- The provider's own crate registers ActionIds via `ActionIds::register`, declares its mode (with keymap), and the mode's `on_activate` registers handler closures via the M.10.1 substrate.
+
+If a future PR needs a new `Editor::do_<x>` for provider-specific behavior, the PR is suspect and must re-evaluate whether the work belongs in the provider's mode instead.
 
 ## N.1 — Narrow mode (follow-on, depends on M.3)
 

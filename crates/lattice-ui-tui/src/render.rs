@@ -2179,16 +2179,18 @@ fn draw_pane_content(
     // draw_inactive_document and which buffer_id each carries.
     tracing::debug!(
         target: "k4x-clobber",
-        pane_idx = idx,
-        pane_buffer_id = pane.buffer_id.0,
-        pane_buffer_kind = ?pane.buffer,
-        active_buffer_id = app.ad().document_buffer_id.0,
-        active_buffer_kind = ?app.ad().buffer_kind,
-        snap_param_path = ?snap.path(),
-        snap_param_lines = snap.buffer.line_count(),
+        "[k4x] draw_pane_content idx={} pane_buf={} pane_kind={:?} \
+         active_buf={} active_kind={:?} is_active={} \
+         snap_path={:?} snap_lines={} provider={}",
+        idx,
+        pane.buffer_id.0,
+        pane.buffer,
+        app.ad().document_buffer_id.0,
+        app.ad().buffer_kind,
         is_active,
-        has_render_provider = app.pane_render_provider(pane.buffer_id).is_some(),
-        "draw_pane_content dispatch"
+        snap.path(),
+        snap.buffer.line_count(),
+        app.pane_render_provider(pane.buffer_id).is_some(),
     );
     if let Some(provider) = app.pane_render_provider(pane.buffer_id) {
         (provider.render)(frame, content_rect, app, snap, pane, is_active, idx);
@@ -2713,9 +2715,9 @@ fn draw_inactive_document(
     let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
         tracing::debug!(
             target: "k4x-clobber",
+            "[k4x] draw_inactive_document idx={} pane_buf={} NO_HANDLE",
             pane_idx,
-            pane_buffer_id = pane.buffer_id.0,
-            "draw_inactive_document: registry returned NO handle for buffer_id"
+            pane.buffer_id.0,
         );
         return;
     };
@@ -2723,22 +2725,18 @@ fn draw_inactive_document(
     let total_lines = snap.buffer.line_count();
     // K.4.x bug investigation (2026-06-02): log what the
     // per-pane handle resolved to. If `total_lines` matches
-    // the multibuffer's composed size (e.g. 8 for the user's
-    // two-excerpt search), the registry is returning the
-    // right handle and the bug is in this function's body.
-    // If `total_lines` matches the FILE's line count, the
-    // registry resolution is wrong (despite the host's view
-    // being correct — meaning `app.buffers().registry` is
-    // somehow stale or different from the editor's).
+    // the multibuffer's composed size, registry is correct.
+    // If it matches the FILE's line count, registry is wrong.
     tracing::debug!(
         target: "k4x-clobber",
+        "[k4x] draw_inactive_document idx={} pane_buf={} \
+         snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
         pane_idx,
-        pane_buffer_id = pane.buffer_id.0,
-        snap_doc_id = snap.id.0,
-        snap_path = ?snap.path,
-        snap_total_lines = total_lines,
-        snap_first_line = ?snap.buffer.line(0).unwrap_or_default(),
-        "draw_inactive_document: handle.snapshot() body"
+        pane.buffer_id.0,
+        snap.id.0,
+        snap.path,
+        total_lines,
+        snap.buffer.line(0).unwrap_or_default(),
     );
     let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
@@ -3101,13 +3099,14 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // draw_buffer is rendering for the active pane.
     tracing::debug!(
         target: "k4x-clobber",
-        active_buffer_id = app.ad().document_buffer_id.0,
-        active_buffer_kind = ?app.ad().buffer_kind,
-        snap_doc_id = snap.id.0,
-        snap_path = ?snap.path,
-        snap_total_lines = snap.buffer.line_count(),
-        snap_first_line = ?snap.buffer.line(0).unwrap_or_default(),
-        "draw_buffer: active pane body source"
+        "[k4x] draw_buffer active_buf={} active_kind={:?} \
+         snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
+        app.ad().document_buffer_id.0,
+        app.ad().buffer_kind,
+        snap.id.0,
+        snap.path,
+        snap.buffer.line_count(),
+        snap.buffer.line(0).unwrap_or_default(),
     );
     let lines = compose_visible_lines(app, snap, area.height as u32, area.width as u32);
     frame.render_widget(Paragraph::new(lines), area);

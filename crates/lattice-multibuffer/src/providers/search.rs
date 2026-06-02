@@ -527,11 +527,11 @@ impl Mode for ProjectSearchMultibufferMode {
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
                 let cmd_registry: &CommandRegistry = &**cmd_registry_arc;
+                let action_handlers: ActionHandlerRegistryHandle =
+                    (*action_handlers_arc).clone();
                 if let Some(jump_command_id) =
                     cmd_registry.id_by_name("action:search-jump-to-source")
                 {
-                    let action_handlers: ActionHandlerRegistryHandle =
-                        (*action_handlers_arc).clone();
                     let mb_registry_for_handler = mb_registry.clone();
                     let search_svc_for_handler: Option<ProjectSearchServiceHandle> =
                         search_svc_arc.as_ref().map(|s| (**s).clone());
@@ -590,6 +590,74 @@ impl Mode for ProjectSearchMultibufferMode {
                         },
                     );
                     action_registrations.push(action_handlers.register(jump_command_id, handler));
+                }
+
+                // M.10.5 (2026-06-03): register `gr` refresh handler.
+                // Pre-M.10.5 the chord routed through
+                // `AppEffect::SearchRefresh` → `Action::SearchRefresh`
+                // → `Editor::do_search_refresh` in
+                // `lattice-host::dispatch`. Now mode-owned: the
+                // handler closure captures view_id + the
+                // multibuffer registry + the search service +
+                // the event bus and performs the refresh
+                // in-place (clear excerpts, reset headerline,
+                // spawn fresh scan task, publish
+                // `ProjectSearchRefreshed`). Returns `None` —
+                // no Effect needed since the work is done
+                // synchronously inside the closure.
+                if let Some(refresh_command_id) =
+                    cmd_registry.id_by_name("action:search-refresh")
+                {
+                    let mb_registry_for_refresh = mb_registry.clone();
+                    let search_svc_for_refresh: Option<ProjectSearchServiceHandle> =
+                        search_svc_arc.as_ref().map(|s| (**s).clone());
+                    let bus_for_refresh = bus.clone();
+                    let view_id_for_refresh = view_id;
+                    let handler: lattice_mode::ActionHandler = Arc::new(
+                        move |_ctx: &ActionContext<'_>| -> Option<lattice_grammar::Effect> {
+                            // Tolerate missing service (test
+                            // harness without boot wiring).
+                            let search_svc = search_svc_for_refresh.as_ref()?;
+                            let state = search_svc.state(view_id_for_refresh)?;
+                            let (query, options) = {
+                                let s = state.read().ok()?;
+                                (s.query.clone(), s.options.clone())
+                            };
+                            let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
+                            // Clear + reset.
+                            view.replace_excerpts(
+                                std::collections::HashMap::new(),
+                                Vec::new(),
+                            );
+                            view.set_headerline(HeaderlineStatus::InProgress {
+                                label: "Refreshing search".into(),
+                                count: Some(0),
+                            });
+                            search_svc.set_state(
+                                view_id_for_refresh,
+                                ProjectSearchState::scanning(query.clone(), options.clone()),
+                            );
+                            // Spawn fresh scan task.
+                            let task = spawn_scan_task(
+                                view_id_for_refresh,
+                                query.clone(),
+                                options,
+                                search_svc.clone(),
+                                bus_for_refresh.clone(),
+                            );
+                            search_svc.attach_task(view_id_for_refresh, task);
+                            // Publish refresh event so any
+                            // other subscribers (e.g. headerline
+                            // listeners) can react.
+                            bus_for_refresh.publish_typed(ProjectSearchRefreshed {
+                                view: view_id_for_refresh,
+                                new_query: query,
+                            });
+                            None
+                        },
+                    );
+                    action_registrations
+                        .push(action_handlers.register(refresh_command_id, handler));
                 }
             }
 

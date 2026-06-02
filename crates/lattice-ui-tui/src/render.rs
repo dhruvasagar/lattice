@@ -2863,6 +2863,20 @@ fn draw_inactive_document(
             break;
         }
         let line_text = snap.buffer.line(buf_line).unwrap_or_default();
+        // K.4.x bug investigation (2026-06-02): log the actual
+        // body text being rendered for each visible line of the
+        // inactive pane. If this shows multibuffer content
+        // ("//!...", "── path ──", etc.) but the user sees file
+        // content, the bug is downstream of this point (paragraph
+        // assembly / ratatui paint). If it shows file content,
+        // snap.buffer.line() is returning the wrong text despite
+        // snap being the multibuffer's snap.
+        let line_preview: String = line_text.chars().take(80).collect();
+        tracing::debug!(
+            target: "k4x-clobber",
+            "[k4x] inactive_body idx={} buf_line={} text={:?}",
+            pane_idx, buf_line, line_preview
+        );
         let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
         let spans = highlights.get((i - 1) as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);

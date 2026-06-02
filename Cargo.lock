@@ -3527,6 +3527,7 @@ dependencies = [
 name = "lattice-mode"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bitflags 2.11.1",
  "internment",
  "lattice-cells",

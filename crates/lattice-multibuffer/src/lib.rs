@@ -68,7 +68,7 @@ use lattice_cells::virtual_rows::{
 };
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
-use lattice_grammar::{CancellationToken, CommandInvocation, Effect};
+use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
@@ -236,6 +236,15 @@ struct MultibufferInner {
     // the auto-recompose forwarder. `SubscriptionId`s registered
     // by `attach_event_subscriptions` are unsubscribed on Drop.
     subscriptions: std::sync::Mutex<SubscriptionBookkeeping>,
+    // K.4.11 (2026-06-02): CommandRegistry the multibuffer runs
+    // grammar against in `dispatch_with_cancel`. Passed at
+    // construction so the multibuffer is a self-sufficient
+    // Document — same shape `spawn_document(id, doc, registry)`
+    // takes for regular Document handles. Replaces the
+    // host-side kind-branch in `Editor::dispatch_blocking` (the
+    // multibuffer's own `Document::dispatch_with_cancel` impl
+    // now does the work uniformly).
+    registry: Arc<CommandRegistry>,
 }
 
 #[derive(Default)]
@@ -372,6 +381,7 @@ impl MultibufferDocumentHandle {
     pub fn new(
         sources: HashMap<BufferId, Arc<dyn Document>>,
         excerpts: Vec<Excerpt>,
+        registry: Arc<CommandRegistry>,
     ) -> Result<Self, MultibufferError> {
         for ex in &excerpts {
             if !sources.contains_key(&ex.source) {
@@ -406,6 +416,7 @@ impl MultibufferDocumentHandle {
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
+                registry,
             }),
         })
     }
@@ -414,8 +425,12 @@ impl MultibufferDocumentHandle {
     /// build an empty view with no sources and no excerpts. The
     /// provider streams content in via [`Self::append_excerpts`].
     /// Infallible.
-    pub fn empty() -> Self {
-        Self::new(HashMap::new(), Vec::new())
+    ///
+    /// K.4.11 (2026-06-02): takes the same `Arc<CommandRegistry>`
+    /// as the full [`Self::new`] constructor. The multibuffer is
+    /// grammar-capable from creation — empty-view or not.
+    pub fn empty(registry: Arc<CommandRegistry>) -> Self {
+        Self::new(HashMap::new(), Vec::new(), registry)
             .expect("empty inputs are valid; UnknownSource impossible")
     }
 
@@ -1015,15 +1030,43 @@ impl Document for MultibufferDocumentHandle {
 
     fn dispatch_with_cancel(
         &self,
-        _invocation: CommandInvocation,
-        _cursor: Position,
-        _cancel: CancellationToken,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
     ) -> Pending<Effect> {
-        // Grammar dispatch runs at the host layer against the
-        // composed snapshot; the resulting Edits flow through
-        // `apply_edit`. The multibuffer doesn't own grammar
-        // semantics directly.
-        Pending::ready(Err(RuntimeError::ReadOnly))
+        // K.4.11 (2026-06-02): the multibuffer now owns grammar
+        // dispatch directly. Pre-K.4.11 this returned
+        // Err(ReadOnly), and `Editor::dispatch_blocking`
+        // carried a kind-branch that ran `lattice_grammar::execute`
+        // against a scratch `lattice_core::Document` built from
+        // the composed snapshot. That was a paramount-#3 violation
+        // (kind-special-casing in the host); the registry now
+        // lives on `MultibufferInner` (passed at construction
+        // per spawn_document's shape) so the multibuffer can do
+        // the same work itself and the host's kind-branch
+        // disappears.
+        //
+        // Resulting Effect flows through the usual host pipeline:
+        // motions return a cursor Effect; operators return
+        // Effect::Edits in composed coordinates that the host's
+        // apply_edit_blocking routes through this handle's
+        // `apply_edit`, which translates to source coordinates +
+        // forwards to the source document (M.3).
+        let snapshot = self.snapshot();
+        let composed: String = snapshot.buffer.as_string();
+        let mut scratch = lattice_core::Document::from_text(&composed);
+        let buffer_id = self.inner.buffer_id;
+        let registry = Arc::clone(&self.inner.registry);
+        let result = lattice_grammar::execute(
+            &registry,
+            &mut scratch,
+            buffer_id,
+            cursor,
+            invocation,
+            &cancel,
+        )
+        .map_err(RuntimeError::Grammar);
+        Pending::ready(result)
     }
 }
 
@@ -1309,7 +1352,7 @@ mod tests {
     async fn single_source_single_excerpt_composes() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\ndelta\nepsilon\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 1, 3)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let snap = mb.snapshot();
         assert_eq!(snap.buffer.as_string(), "beta\ngamma\ndelta\n");
         assert_eq!(snap.dirty, false);
@@ -1324,7 +1367,7 @@ mod tests {
             Excerpt::new(ids[0], 0, 1),
             Excerpt::new(ids[1], 2, 2),
         ];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let snap = mb.snapshot();
         assert_eq!(snap.buffer.as_string(), "a1\na2\nb3\n");
     }
@@ -1341,7 +1384,7 @@ mod tests {
         // semantics; grammar dispatch runs at the host layer).
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
     }
@@ -1361,7 +1404,7 @@ mod tests {
 
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Initial snapshot: default empty selection set.
         let initial = mb.snapshot();
@@ -1403,7 +1446,7 @@ mod tests {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let source_handle = sources.get(&ids[0]).expect("source present").clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Insert "X-" at composed position (line=1, byte=0) — should land at
         // source position (line=1, byte=0) since the excerpt starts at line 0.
@@ -1427,7 +1470,7 @@ mod tests {
         // source row 2.
         let (sources, ids) = make_sources(&["zero\none\ntwo\nthree\nfour\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 2, 4)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         assert_eq!(mb.snapshot().buffer.as_string(), "two\nthree\nfour\n");
 
         // Insert "Z " at composed (0, 0) → source (2, 0).
@@ -1442,7 +1485,7 @@ mod tests {
     async fn m3_delete_within_excerpt_translates() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Delete "beta\n" — composed range (1,0)..(2,0).
         use lattice_protocol::position::Range;
@@ -1461,7 +1504,7 @@ mod tests {
     async fn m3_out_of_range_edit_returns_read_only() {
         let (sources, ids) = make_sources(&["a\nb\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Composed row 50 is way past the view's last row.
         assert!(matches!(
@@ -1484,7 +1527,7 @@ mod tests {
         // Snapshot the original B-source text for the post-edit assertion.
         let b_handle = sources.remove(&ids[1]).expect("B source present");
         sources.insert(ids[1], b_handle.clone());
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let original_b_text = b_handle.text();
 
         // Cross-excerpt delete: range (0,0)..(5,0) — spans into B.
@@ -1505,7 +1548,7 @@ mod tests {
     async fn m3_apply_edit_batch_serialises_inserts() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Two inserts in row order. Batch dispatches them
         // sequentially; second insert sees the buffer state
@@ -1530,7 +1573,7 @@ mod tests {
     async fn m4_headerline_starts_idle_and_can_be_set() {
         let (sources, ids) = make_sources(&["x\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         assert!(matches!(*mb.headerline(), HeaderlineStatus::Idle));
 
@@ -1563,7 +1606,7 @@ mod tests {
 
         let (sources, ids) = make_sources(&["y\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let view_id = mb.buffer_id();
         mb.attach_event_subscriptions(&bus);
 
@@ -1585,7 +1628,7 @@ mod tests {
         let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
         let source_handle = sources.get(&ids[0]).unwrap().clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
         assert_eq!(mb.snapshot().buffer.as_string(), "alpha\nbeta\n");
 
@@ -1635,7 +1678,7 @@ mod tests {
             Excerpt::new(ids[0], 0, 0),
             Excerpt::new(ids[1], 0, 0),
         ];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let view_id = mb.buffer_id();
         mb.attach_event_subscriptions(&bus);
         assert_eq!(mb.source_buffer_ids().len(), 2);
@@ -1701,7 +1744,7 @@ mod tests {
         let src = sources.get(&ids[0]).unwrap().clone();
         // Excerpt covers source rows 2-3 (cc, dd).
         let excerpts = vec![Excerpt::new(ids[0], 2, 3)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
 
         // Synthesise: edit at line 0 byte 0 → line 0 byte 0
@@ -1728,7 +1771,7 @@ mod tests {
         let src = sources.get(&ids[0]).unwrap().clone();
         // Excerpt covers rows 4-5 (ee, ff).
         let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
 
         // Delete rows 0-1 (aa\nbb\n). original_range end = (2, 0);
@@ -1753,7 +1796,7 @@ mod tests {
         let (sources, ids) = make_sources(&["aa\nbb\ncc\ndd\nee\n"]);
         let src = sources.get(&ids[0]).unwrap().clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
 
         // Edit at row 3: original_range end = (3, 0).
@@ -1780,7 +1823,7 @@ mod tests {
         let src = sources.get(&ids[0]).unwrap().clone();
         // Excerpt covers rows 1-2.
         let excerpts = vec![Excerpt::new(ids[0], 1, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
 
         // Edit that ends inside the excerpt (rows 0..=1):
@@ -1808,7 +1851,7 @@ mod tests {
         let src_b = sources.get(&ids[1]).unwrap().clone();
         // Excerpt of source A at rows 0-1; source B has its own.
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
 
         // Insert 5 rows in source B above row 0. Should NOT
@@ -1840,7 +1883,7 @@ mod tests {
         }
         let (sources, ids) = make_sources(&[&text]);
         let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Cursor on composed row 0 (= source row 4). Expand by 4
         // rows: 2 above + 2 below → new range 2..7.
@@ -1859,7 +1902,7 @@ mod tests {
         }
         let (sources, ids) = make_sources(&[&text]);
         let excerpts = vec![Excerpt::new(ids[0], 1, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // delta=6 → above=3, below=3. start = 1-3 = -2 → clipped to 0.
         // end = 2+3 = 5.
@@ -1880,7 +1923,7 @@ mod tests {
         }
         let (sources, ids) = make_sources(&[&text]);
         let excerpts = vec![Excerpt::new(ids[0], 7, 8)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // delta=6 → above=3, below=3. start = 7-3 = 4.
         // end = 8+3 = 11 → clipped to source_line_count - 1 = 10.
@@ -1899,7 +1942,7 @@ mod tests {
         let (sources, ids) = make_sources(&[&text]);
         // Excerpt at rows 5-15 (11 rows).
         let excerpts = vec![Excerpt::new(ids[0], 5, 15)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // delta=-4 → above=-2, below=-2. start = 5+2 = 7. end = 15-2 = 13.
         mb.expand_excerpt_at(0, -4);
@@ -1913,7 +1956,7 @@ mod tests {
         let (sources, ids) = make_sources(&["a\nb\n"]);
         // Excerpt at rows 0-0 (single row).
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Contract by 4 → new start = 2, new end = -2 (clipped to 0).
         // 0 > 2 inverted → no-op.
@@ -1927,7 +1970,7 @@ mod tests {
     async fn m5_zero_delta_is_noop() {
         let (sources, ids) = make_sources(&["a\nb\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.expand_excerpt_at(0, 0);
         let excerpts = mb.excerpts();
         assert_eq!(excerpts[0].start_line, 0);
@@ -1938,7 +1981,7 @@ mod tests {
     async fn m5_no_excerpt_at_cursor_is_noop() {
         let (sources, ids) = make_sources(&["a\nb\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         // Cursor at composed row 50 — well past the single excerpt.
         mb.expand_excerpt_at(50, 4);
         let excerpts = mb.excerpts();
@@ -1954,7 +1997,7 @@ mod tests {
         }
         let (sources, ids) = make_sources(&[&text]);
         let excerpts = vec![Excerpt::new(ids[0], 4, 5)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         assert_eq!(mb.snapshot().buffer.as_string(), "L4\nL5\n");
 
         mb.expand_excerpt_at(0, 4);
@@ -1968,7 +2011,7 @@ mod tests {
         let bus = Arc::new(lattice_runtime::EventBus::new());
         let (sources, ids) = make_sources(&["x\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         mb.attach_event_subscriptions(&bus);
         // Second call returns immediately; no second subscription
         // ID is recorded (verifiable via the unique-ID set count
@@ -1990,7 +2033,7 @@ mod tests {
             Excerpt::new(ids[0], 0, 0),
             Excerpt::new(ids[1], 0, 0),
         ];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // Edit each source directly so each has something to undo.
         a.apply_edit(Edit::insert(Position::new(0, 0), "A!")).await.unwrap();
@@ -2013,18 +2056,18 @@ mod tests {
         // M.2.b.2 (2026-06-01): empty inputs are valid. Async
         // providers open an empty view and stream excerpts in
         // as their scan progresses.
-        let mb = MultibufferDocumentHandle::empty();
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
         assert_eq!(mb.excerpt_count(), 0);
         assert_eq!(mb.snapshot().buffer.as_string(), "");
         let (sources, _ids) = make_sources(&["x"]);
-        let mb = MultibufferDocumentHandle::new(sources, Vec::new()).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, Vec::new(), empty_registry()).unwrap();
         assert_eq!(mb.excerpt_count(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn append_excerpts_extends_the_view() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
-        let mb = MultibufferDocumentHandle::new(sources.clone(), Vec::new()).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources.clone(), Vec::new(), empty_registry()).unwrap();
         assert_eq!(mb.excerpt_count(), 0);
 
         mb.append_excerpts(vec![Excerpt::new(ids[0], 0, 0)]);
@@ -2039,7 +2082,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn append_excerpts_drops_unknown_source_silently() {
         let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
-        let mb = MultibufferDocumentHandle::new(sources, Vec::new()).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, Vec::new(), empty_registry()).unwrap();
         let bogus = BufferId(0xDEAD_BEEF);
         mb.append_excerpts(vec![
             Excerpt::new(ids[0], 0, 0),
@@ -2056,7 +2099,7 @@ mod tests {
     async fn replace_excerpts_swaps_atomically() {
         let (sources_a, ids_a) = make_sources(&["a-1\na-2\n"]);
         let excerpts_a = vec![Excerpt::new(ids_a[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources_a, excerpts_a).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources_a, excerpts_a, empty_registry()).unwrap();
         assert_eq!(mb.snapshot().buffer.as_string(), "a-1\n");
 
         let (sources_b, ids_b) = make_sources(&["b-1\nb-2\n"]);
@@ -2071,7 +2114,7 @@ mod tests {
         let (sources, _ids) = make_sources(&["x"]);
         let bogus = BufferId(99_999);
         let excerpts = vec![Excerpt::new(bogus, 0, 0)];
-        let err = MultibufferDocumentHandle::new(sources, excerpts).unwrap_err();
+        let err = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap_err();
         assert!(matches!(
             err,
             MultibufferError::UnknownSource { source_buffer, .. } if source_buffer == bogus
@@ -2082,7 +2125,7 @@ mod tests {
     async fn dispatches_via_dyn_document() {
         let (sources, ids) = make_sources(&["foo\nbar\nbaz\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         let dyn_doc: Arc<dyn Document> = Arc::new(mb);
         assert_eq!(dyn_doc.text(), "foo\nbar\n");
@@ -2101,7 +2144,7 @@ mod tests {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let source_handle = sources.get(&ids[0]).expect("source present").clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         assert_eq!(mb.snapshot().text(), "alpha\nbeta\ngamma\n");
 
         source_handle
@@ -2164,7 +2207,7 @@ mod tests {
             Excerpt::new(ids[0], 0, 1).with_header(ExcerptHeader::new("first")),
             Excerpt::new(ids[0], 2, 2).with_header(ExcerptHeader::new("second")),
         ];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let provider = MultibufferHeaderProvider::new(mb);
         let rows = provider.collect();
 
@@ -2186,7 +2229,7 @@ mod tests {
         let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
         let source = sources.get(&ids[0]).unwrap().clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let provider = MultibufferHeaderProvider::new(mb.clone());
 
         let v_before = provider.version();

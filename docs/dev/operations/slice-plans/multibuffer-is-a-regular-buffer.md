@@ -414,36 +414,73 @@ incomplete.'"
 Reference: K.4.5 (audit-comment pass) in earlier memory text
 corrected to K.4.9 (the actual slice number per this plan).
 
-### K.4.11 — `dispatch_with_cancel` proper impl on `MultibufferDocumentHandle` 🗒 architectural follow-up
+### K.4.11 — `dispatch_with_cancel` proper impl on `MultibufferDocumentHandle` ✅ (commit pending)
 
-K.4.4 wired the multibuffer's grammar dispatch as a
-host-side kind branch in `Editor::dispatch_blocking`.
-The architecturally cleaner shape is to implement
-`Document::dispatch_with_cancel` on
-`MultibufferDocumentHandle` properly so the kind branch
-in host code disappears. Requires:
+**Locked recommendation (b) re-evaluated and overturned per the
+heuristic-mapping rule (CLAUDE.md).** The original "Recommend (b)
+— service-registry route, for consistency" cited *consistency*,
+which is not a paramount-goal-anchored justification. On
+re-evaluation:
 
-- `CommandRegistry` threading through
-  `create_multibuffer_view` (the multibuffer needs a
-  registry to run grammar). Three options:
-  - **(a)** Add `Arc<CommandRegistry>` parameter to
-    `create_multibuffer_view`.
-  - **(b)** Expose the registry via `ServiceRegistry`
-    so any code that already pulls
-    `activator.services()` can also pull the registry.
-  - **(c)** Have `MultibufferDocumentHandle`
-    construct itself with an `Arc<CommandRegistry>`
-    field set later via a `with_registry` builder
-    method.
-- Replace the `Pending::ready(Err(RuntimeError::ReadOnly))`
-  body of `dispatch_with_cancel` (`lib.rs:942-953`)
-  with the host-side body now in
-  `Editor::dispatch_blocking`.
-- Delete the kind branch in `dispatch_blocking`.
+- **Option (a) — constructor parameter (LANDED):** protects
+  paramount-#2 (every Document handle self-sufficient from
+  construction — same shape `spawn_document(id, doc, cmd_registry)`
+  takes); protects paramount-#3 (uniform dispatch, no
+  kind-branch anywhere). Heuristic #1 long-term fit:
+  yes — WIT plugins writing custom Document impls will
+  need the registry at construction.
+- **Option (b) — ServiceRegistry route:** would have introduced
+  a runtime-discovery failure mode (registry not registered
+  → silent None → dispatch fails). Has the
+  [[feedback-servicesregistry-arc-typeid]] pitfall risk
+  (register `Arc<X>` ⇒ lookup `Arc<X>`). The "consistency"
+  argument doesn't hold up — `spawn_document` already takes
+  the registry as an explicit parameter, so explicit-param IS
+  the consistency path.
+- **Option (c) — trait-method parameter:** would have changed
+  the `Document::dispatch_with_cancel` trait signature,
+  forcing every impl to accept a registry it doesn't use.
+  Trait-purity argument is valid but option (a) protects the
+  same goal without breaking the trait.
 
-Recommend (b) — service-registry route — for
-consistency with how other Document handles (LSP,
-ProjectSearchService) reach host wiring.
+**Implementation (option (a)):**
+
+- `MultibufferInner` gains `registry: Arc<CommandRegistry>`
+  field; `MultibufferDocumentHandle::new` (and `::empty`)
+  take the registry as their final parameter.
+- `Document::dispatch_with_cancel` impl on
+  `MultibufferDocumentHandle` runs `lattice_grammar::execute`
+  against a scratch `lattice_core::Document` built from the
+  composed snapshot — mirroring the host-side code that
+  previously lived in `Editor::dispatch_blocking`'s kind
+  branch.
+- `create_multibuffer_view` gains the registry parameter +
+  threads it to the constructor.
+- `project_search` (the M.6 entry point) gains the registry
+  parameter; the host's `do_search` passes
+  `self.registry.clone()`.
+- The kind branch in `Editor::dispatch_blocking` is **deleted**
+  — the method body collapses to one `block_on(self.document
+  .dispatch_with_cancel(...))` call uniform across BufferKinds.
+
+**Callers updated** (compile-time enforcement caught all of them):
+
+- `lattice-host/src/dispatch.rs` (`do_search`).
+- `lattice-host/src/buffer_registry.rs` (test).
+- `lattice-host/tests/multibuffer_is_a_regular_buffer.rs`.
+- `lattice-multibuffer/src/view.rs::create_multibuffer_view`.
+- `lattice-multibuffer/src/providers/search.rs::project_search`.
+- `lattice-multibuffer/src/registry.rs` (test helper).
+- `lattice-multibuffer/src/lib.rs` (4 test sites with
+  varying arg shapes — `Vec::new()`, `sources.clone()`, etc.).
+- `lattice-multibuffer/tests/m2b2_integration.rs` (3 sites).
+- `lattice-multibuffer/benches/multibuffer_compose.rs`.
+- `lattice-multibuffer/benches/project_search.rs`.
+
+**Verification:** 61/61 lattice-multibuffer tests; 658/658
+lattice-host unit tests; 10/10 K.4.1 integration tests
+(including the new K.4.5 `visual_selection_renders_for_multibuffer`);
+workspace `cargo test --workspace` clean.
 
 ## Risk + roll-back
 

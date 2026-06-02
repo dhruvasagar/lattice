@@ -96,12 +96,14 @@ fn boot_with_multibuffer() -> (Editor, BufferId) {
         Excerpt::new(BufferId(102), 0, 4),
     ];
 
+    let registry_for_view = editor.registry.clone();
     let view_id = create_multibuffer_view(
         &mut editor,
         sources,
         excerpts,
         Some("*test:multibuffer*".into()),
         BufferFlags::default(),
+        registry_for_view,
     );
 
     (editor, view_id)

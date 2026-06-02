@@ -1166,7 +1166,12 @@ mod tests {
             Excerpt::new(s1_id, 0, 1),
             Excerpt::new(s2_id, 1, 2),
         ];
-        let mb = MultibufferDocumentHandle::new(sources, excerpts).expect("mb constructs");
+        let mb = MultibufferDocumentHandle::new(
+            sources,
+            excerpts,
+            std::sync::Arc::new(lattice_grammar::CommandRegistry::new()),
+        )
+        .expect("mb constructs");
         let mb_buffer_id = mb.buffer_id();
         let mb_handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(mb);
 

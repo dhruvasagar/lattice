@@ -134,7 +134,9 @@ mod tests {
     use super::*;
 
     fn empty_handle() -> Arc<MultibufferDocumentHandle> {
-        Arc::new(MultibufferDocumentHandle::empty())
+        Arc::new(MultibufferDocumentHandle::empty(Arc::new(
+            lattice_grammar::CommandRegistry::new(),
+        )))
     }
 
     #[test]

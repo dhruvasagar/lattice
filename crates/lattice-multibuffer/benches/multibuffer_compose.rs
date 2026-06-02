@@ -73,7 +73,9 @@ fn build_view_with_sample(
         let end = start + excerpt_rows - 1;
         excerpts.push(Excerpt::new(s, start, end).with_header(ExcerptHeader::default()));
     }
-    let view = MultibufferDocumentHandle::new(sources, excerpts).expect("valid construction");
+    let registry = Arc::new(CommandRegistry::new());
+    let view = MultibufferDocumentHandle::new(sources, excerpts, registry)
+        .expect("valid construction");
     (view, sample.expect("at least one source"))
 }
 

@@ -148,7 +148,13 @@ fn bench_first_batch(c: &mut Criterion) {
                     max_hits_per_file: 100,
                     regex: false,
                 };
-                let _view = project_search(&mut activator, needle.to_string(), options);
+                let registry = Arc::new(lattice_grammar::CommandRegistry::new());
+                let _view = project_search(
+                    &mut activator,
+                    needle.to_string(),
+                    options,
+                    registry,
+                );
                 let _ = rx.recv().await;
             });
         });

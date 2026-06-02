@@ -68,6 +68,7 @@ pub fn create_multibuffer_view(
     excerpts: Vec<Excerpt>,
     name: Option<String>,
     flags: BufferFlags,
+    registry: Arc<lattice_grammar::CommandRegistry>,
 ) -> BufferId {
     let services = activator.services();
 
@@ -93,7 +94,7 @@ pub fn create_multibuffer_view(
         }
     };
 
-    let handle = match MultibufferDocumentHandle::new(sources, excerpts) {
+    let handle = match MultibufferDocumentHandle::new(sources, excerpts, registry) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(

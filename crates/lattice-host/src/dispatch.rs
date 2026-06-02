@@ -10940,8 +10940,12 @@ impl Editor {
             lattice_multibuffer::providers::search::ProjectSearchOptions::default();
         let query_for_echo = query.clone();
         tracing::info!(query = %query_for_echo, "do_search: triggering project_search");
+        let registry_for_search = self.registry.clone();
         let view_id = match lattice_multibuffer::providers::search::project_search(
-            self, query, options,
+            self,
+            query,
+            options,
+            registry_for_search,
         ) {
             Some(id) => id,
             None => {
@@ -11477,50 +11481,18 @@ impl Editor {
         &self,
         invocation: lattice_grammar::CommandInvocation,
     ) -> Result<lattice_grammar::Effect, lattice_runtime::RuntimeError> {
-        // K.4.4 (2026-06-01): Multibuffer has no own actor —
-        // its composed document is a virtual read-only view
-        // over N source handles. `MultibufferDocumentHandle::
-        // dispatch_with_cancel` returns `ReadOnly` with a
-        // design comment that says "grammar dispatch runs at
-        // the host layer against the composed snapshot." That
-        // host-layer work was never wired; pre-K.4.4 every
-        // motion / operator on a multibuffer view bounced
-        // with `ReadOnly` and the cursor didn't move.
-        //
-        // Wire it now: run `lattice_grammar::execute` against
-        // a scratch `lattice_core::Document` built from the
-        // composed snapshot. Motions return a cursor Effect
-        // (no edits) and flow through `apply_effect_host` as
-        // for any document. Operators (`d` / `c` / `y` / `>>`
-        // / ...) return an `Effect::Edits` in composed
-        // coordinates; the existing `apply_edit_blocking`
-        // path routes those through the multibuffer's
-        // `apply_edit`, which translates to source coordinates
-        // and forwards to the underlying source document
-        // (M.3).
-        //
-        // Contained kind branch — the only one in
-        // `dispatch_blocking`. The architectural follow-up
-        // (implement `dispatch_with_cancel` properly on
-        // `MultibufferDocumentHandle` once `CommandRegistry`
-        // threads through `create_multibuffer_view`) is
-        // tracked as a K.4 follow-up. See
-        // `multibuffer-is-a-regular-buffer.md` §2.8 + slice
-        // plan K.4.4.
-        if matches!(self.active_buffer, BufferKind::Multibuffer) {
-            let snapshot = self.document.snapshot();
-            let composed: String = snapshot.buffer.as_string();
-            let mut scratch = lattice_core::Document::from_text(&composed);
-            return lattice_grammar::execute(
-                &self.registry,
-                &mut scratch,
-                self.document_buffer_id,
-                self.cursor,
-                invocation,
-                &lattice_protocol::CancellationToken::never(),
-            )
-            .map_err(lattice_runtime::RuntimeError::Grammar);
-        }
+        // K.4.11 (2026-06-02): no kind-branch. The
+        // multibuffer's `Document::dispatch_with_cancel` impl
+        // now does grammar dispatch directly against the
+        // composed snapshot (the registry lives on
+        // `MultibufferInner`, threaded through
+        // `create_multibuffer_view → MultibufferDocumentHandle::new`
+        // per `spawn_document`'s shape). Pre-K.4.11 this
+        // method carried a `if BufferKind::Multibuffer` branch
+        // that ran `lattice_grammar::execute` against a
+        // scratch document — a paramount-#3 (no kind-special-
+        // casing in host) violation. The trait impl is now
+        // honest; the kind-branch disappears.
         lattice_runtime::block_on(self.document.dispatch_with_cancel(
             invocation,
             self.cursor,

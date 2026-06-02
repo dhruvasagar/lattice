@@ -555,6 +555,7 @@ pub fn project_search(
     activator: &mut dyn ModeActivator,
     query: String,
     options: ProjectSearchOptions,
+    registry: Arc<lattice_grammar::CommandRegistry>,
 ) -> Option<BufferId> {
     let services = activator.services();
     // `services.get::<T>()` wraps the registered value in an
@@ -579,6 +580,7 @@ pub fn project_search(
         Vec::new(),
         Some(format!("*search:{query}*")),
         BufferFlags::default(),
+        registry,
     );
 
     search_svc.set_state(

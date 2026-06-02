@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use lattice_core::{BufferFlags, BufferId, BufferKind};
+use lattice_grammar::CommandRegistry;
 use lattice_mode::{
     BufferStore, BufferStoreHandle, ModeActivator, ModeId, ServiceRegistry,
 };
@@ -125,6 +126,7 @@ fn empty_view_creates_inserts_and_activates_major() {
         Vec::new(),
         Some("*test:empty*".into()),
         BufferFlags::default(),
+        Arc::new(CommandRegistry::new()),
     );
 
     // Step 4: buffer-registry insert recorded the right kind.
@@ -158,6 +160,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         Vec::new(),
         None,
         BufferFlags::default(),
+        Arc::new(CommandRegistry::new()),
     );
     let b = create_multibuffer_view(
         &mut activator,
@@ -165,6 +168,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         Vec::new(),
         None,
         BufferFlags::default(),
+        Arc::new(CommandRegistry::new()),
     );
     assert_ne!(a, b);
     assert_eq!(activator.mb_registry.len(), 2);
@@ -175,7 +179,6 @@ fn view_returns_unique_buffer_ids_per_call() {
 #[tokio::test(flavor = "multi_thread")]
 async fn append_excerpts_after_create_extends_view() {
     use lattice_core::Document as CoreDocument;
-    use lattice_grammar::CommandRegistry;
     use lattice_runtime::spawn_document;
 
     let mut activator = MockActivator::new();
@@ -185,6 +188,7 @@ async fn append_excerpts_after_create_extends_view() {
         Vec::new(),
         None,
         BufferFlags::default(),
+        Arc::new(CommandRegistry::new()),
     );
     let handle = activator.mb_registry.handle(view_id).unwrap();
     assert_eq!(handle.excerpt_count(), 0);

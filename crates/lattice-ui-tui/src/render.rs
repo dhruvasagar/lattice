@@ -1845,6 +1845,24 @@ fn position_help_popup(
     // (the popup is only painted when active_pane.buffer != Help,
     // so this is the State A / B case where the active pane shows
     // a doc).
+    //
+    // K.4.9 (2026-06-02): explicit enumeration of which kinds hit
+    // each branch (per `feedback_buffers_no_special_case`):
+    //
+    // - `Document` arm: reads cursor + scroll from
+    //   `app.ad()` (the active document's published render
+    //   state). Used when the active pane shows a regular
+    //   document buffer.
+    // - `_` fallback: hit by Messages / Multibuffer / FileTree /
+    //   Oil / Terminal / Help. Reads from `panes.tree.active()`'s
+    //   PaneState — the per-pane cursor/scroll the pane carries
+    //   in its non-Document state. Same anchoring math; just a
+    //   different source for the cursor coords. Help typically
+    //   doesn't render its own popup anchor (the popup
+    //   placement function isn't reached for Help-active panes
+    //   per the comment above) but is defensively included in
+    //   the fallback since the function may be called from
+    //   future paths.
     let (cursor, scroll) = match app.ad().buffer_kind {
         crate::buffers::BufferKind::Document => (app.ad().cursor, app.ad().scroll),
         _ => {

@@ -63,6 +63,11 @@ linkme = { workspace = true }
 # second mode claims a BufferKind that's already bound — first
 # registration wins, the duplicate claim is logged for debugging.
 tracing = { workspace = true }
+# M.10.1 (2026-06-02): ActionHandlerRegistry uses ArcSwap for
+# wait-free lookups + copy-on-write register/unregister so the
+# host's chord dispatcher can read the closure map without
+# blocking mode activation/deactivation.
+arc-swap = { workspace = true }
 
 [dev-dependencies]
 # M-async.2: registry tests are `#[tokio::test]` so they can

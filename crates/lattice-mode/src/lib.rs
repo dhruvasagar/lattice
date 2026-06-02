@@ -51,6 +51,14 @@
 //! resolver and `ResolvedOptions` cache live in `lattice-config`
 //! (see `mode-architecture.md` §6.3 / §9.3 for why the split).
 
+// M.10.1 (2026-06-02): action-handler registry — mode-
+// contributed closures per `CommandId`. Required so modes own
+// BOTH chord choice (already done via `keymap()`) AND handler
+// body (this substrate), per `feedback_mode_owns_its_surface`
+// + `mode-architecture.md` §5.3. Host's chord-resolved-action
+// dispatcher consults via `lookup`; mode's `Guard` carries
+// `ActionHandlerRegistration` tokens whose `Drop` unregisters.
+pub mod action_handler_registry;
 pub mod active;
 pub mod activator;
 pub mod binding_mode;
@@ -74,6 +82,9 @@ pub mod modes;
 pub mod registry;
 pub mod services;
 
+pub use crate::action_handler_registry::{
+    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistry,
+};
 pub use crate::active::ActiveModes;
 pub use crate::activator::ModeActivator;
 pub use crate::binding_mode::BindingMode;

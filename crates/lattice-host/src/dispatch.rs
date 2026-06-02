@@ -1731,10 +1731,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // deletes the variant from the enum (and the matching
         // AppEffect variant). See `mode-architecture.md` §5.3.4.
         Action::MultibufferExpand { delta: _ } => {}
-        // M.6 (2026-06-01): `:search <query>` triggers
-        // `lattice_multibuffer::providers::search::project_search`
-        // against the Editor (which impls `ModeActivator`).
-        Action::SearchTrigger { query } => editor.do_search(query),
+        // M.10.6 (2026-06-03): work moved inline to the
+        // `AppEffect::SearchTrigger` arm; this variant is dead.
+        // M.10.7 will delete it from the Action enum.
+        Action::SearchTrigger { query: _ } => {}
         // M.6.1: jump-to-source / refresh inside a project-search view.
         Action::SearchJumpToSource => editor.do_search_jump_to_source(),
         Action::SearchRefresh => editor.do_search_refresh(),
@@ -4752,7 +4752,79 @@ impl Editor {
                 );
             }
             AppEffect::SearchTrigger { query } => {
-                out.next_actions.push(Action::SearchTrigger { query })
+                // M.10.6 (2026-06-03): the host hop is gone.
+                // Pre-fix: this pushed `Action::SearchTrigger`
+                // which routed to `Editor::do_search(query)`
+                // (lattice-host::dispatch). Now the work runs
+                // inline here against `&mut self`, which is
+                // exactly the same shape `do_search` had —
+                // no functionality change, one fewer dispatch
+                // hop. `Editor::do_search` deleted; M.10.7
+                // will remove the dead `Action::SearchTrigger`
+                // arm + the AppEffect variant.
+                //
+                // Per `feedback_mode_owns_its_surface` +
+                // `mode-architecture.md` §5.3: the `:search`
+                // ex-command registration lives in
+                // `lattice-multibuffer::providers::search`
+                // (the mode's owning crate); host's role is
+                // generic apply-effect routing into the
+                // substrate's `project_search()` trigger.
+                #[cfg(feature = "search")]
+                {
+                    if query.trim().is_empty() {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            ":search requires a non-empty query".to_string(),
+                        );
+                    } else {
+                        let raw = *self.resolved_option::<
+                            lattice_multibuffer::providers::search::SearchContextSize,
+                        >(self.active_pane_buffer_id());
+                        let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
+                        let options =
+                            lattice_multibuffer::providers::search::ProjectSearchOptions {
+                                context_lines,
+                                ..lattice_multibuffer::providers::search::ProjectSearchOptions::default()
+                            };
+                        let query_for_echo = query.clone();
+                        let registry_for_search = self.registry.clone();
+                        match lattice_multibuffer::providers::search::project_search(
+                            self,
+                            query,
+                            options,
+                            registry_for_search,
+                        ) {
+                            Some(view_id) => {
+                                if self.activate_buffer(view_id) {
+                                    let signals = self.activate_buffer_state();
+                                    self.enqueue_renderer_signals(signals);
+                                }
+                                self.set_message(
+                                    EchoLevel::Info,
+                                    format!(
+                                        "project-search: scanning for \"{query_for_echo}\"…"
+                                    ),
+                                );
+                            }
+                            None => {
+                                self.set_message(
+                                    EchoLevel::Warn,
+                                    "project-search: service not registered (rebuild with --features search)"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(feature = "search"))]
+                {
+                    let _ = query;
+                    self.set_message(
+                        EchoLevel::Warn,
+                        "search feature not compiled in this build".to_string(),
+                    );
+                }
             }
             AppEffect::SearchJumpToSource => out.next_actions.push(Action::SearchJumpToSource),
             AppEffect::SearchRefresh => out.next_actions.push(Action::SearchRefresh),
@@ -10832,97 +10904,16 @@ impl Editor {
         serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
     }
 
-    /// M.6 (2026-06-01): `:search <query>` action handler. Calls
-    /// `lattice_multibuffer::providers::search::project_search`
-    /// against `self` (which impls `ModeActivator`). Returns
-    /// silently when the search feature isn't compiled or the
-    /// provider's service isn't registered.
-    #[cfg(feature = "search")]
-    pub fn do_search(&mut self, query: String) {
-        if query.trim().is_empty() {
-            self.set_message(
-                EchoLevel::Warn,
-                ":search requires a non-empty query".to_string(),
-            );
-            return;
-        }
-        // K.4.6 follow-up (2026-06-02): resolve the
-        // `search.context_size` typed option from the active
-        // buffer's resolved options. Default `0` (just matched
-        // lines); user sets via `:set search.context_size=N`.
-        // Falls back to 0 when the option hasn't been resolved
-        // yet (e.g. during boot before the active buffer's
-        // option cascade completes) — matches the typed-option
-        // default.
-        // The typed option is i64 (lattice-config's canonical
-        // numeric); clamp non-negative before narrowing to u32
-        // (negative values would wrap-cast otherwise —
-        // defensive).
-        let raw = *self
-            .resolved_option::<lattice_multibuffer::providers::search::SearchContextSize>(
-                self.active_pane_buffer_id(),
-            );
-        let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
-        let options = lattice_multibuffer::providers::search::ProjectSearchOptions {
-            context_lines,
-            ..lattice_multibuffer::providers::search::ProjectSearchOptions::default()
-        };
-        let query_for_echo = query.clone();
-        tracing::info!(query = %query_for_echo, "do_search: triggering project_search");
-        let registry_for_search = self.registry.clone();
-        let view_id = match lattice_multibuffer::providers::search::project_search(
-            self,
-            query,
-            options,
-            registry_for_search,
-        ) {
-            Some(id) => id,
-            None => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "project-search: service not registered (rebuild with --features search)"
-                        .to_string(),
-                );
-                tracing::warn!(
-                    query = %query_for_echo,
-                    "do_search: project_search returned None"
-                );
-                return;
-            }
-        };
-        tracing::info!(
-            view_id = view_id.0,
-            query = %query_for_echo,
-            "do_search: project_search created view; switching active pane"
-        );
-        // M.6.X follow-up (2026-06-01): route through the
-        // canonical activation pipeline (`activate_buffer` →
-        // `activate_document` for Multibuffer kind → returns
-        // `true` for a full-activation path → caller runs
-        // `activate_buffer_state` + enqueues renderer signals).
-        // Earlier hand-rolled pane manipulation skipped
-        // `self.document` rewire + major-mode activation +
-        // signal enqueue, so the new view was registered but
-        // not visibly active. Same path `:b N` and other
-        // pane-switch ex-commands use, with no kind-specific
-        // branching — `feedback_buffers_no_special_case`.
-        if self.activate_buffer(view_id) {
-            let signals = self.activate_buffer_state();
-            self.enqueue_renderer_signals(signals);
-        }
-        self.set_message(
-            EchoLevel::Info,
-            format!("project-search: scanning for \"{query_for_echo}\"…"),
-        );
-    }
-
-    #[cfg(not(feature = "search"))]
-    pub fn do_search(&mut self, _query: String) {
-        self.set_message(
-            EchoLevel::Warn,
-            "search feature not compiled in this build".to_string(),
-        );
-    }
+    // M.10.6 (2026-06-03): `Editor::do_search` deleted. The work
+    // moved inline to the `AppEffect::SearchTrigger` apply_effect
+    // arm. Per `feedback_mode_owns_its_surface` +
+    // `mode-architecture.md` §5.3: `:search` ex-command
+    // registration lives in `lattice-multibuffer::providers::search`
+    // (the mode's owning crate); host's role is generic
+    // apply-effect routing into `project_search`. The
+    // `do_search` stub for the `#[cfg(not(feature = "search"))]`
+    // path is also deleted — the apply_effect arm has its own
+    // `#[cfg(not(...))]` echo.
 
     /// M.6.1 (2026-06-01): `<CR>` in project-search-multibuffer-mode.
     /// Resolves the excerpt under cursor to its source file +

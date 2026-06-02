@@ -310,49 +310,69 @@ renderer per-excerpt span resolution**, **K.4.7.3
 benchmark coverage**, **K.4.7.4 test additions to
 K.4.1**.
 
-### K.4.8 — `:ls` listing format polish 🗒
+### K.4.8 — `:ls` listing format polish ✅ (commit `6299564`)
 
-`dispatch.rs:21056` folds Multibuffer into the
-`Messages` listing row with `msg` label. Give
-Multibuffer its own row with `mb` label, distinct from
-Messages. Pure UX fix; no behavior change.
+Landed. The actual fold was at `build_list_buffers_content`
+(`dispatch.rs:21245` — the slice plan's earlier line ref
+21056 was stale, it pointed at the option-cascade code),
+combined arm `BufferKind::Messages | BufferKind::Multibuffer`
+with `msg` label + `*messages*` default. Split into two
+distinct arms; Multibuffer gets `mb` + `*multibuffer*` default
+matching the picker-source rendering at
+`picker_buffer_entry_for` (~23470).
 
-(Cosmetic — moved from the K.4 critical path to a polish
-slot. Could land alongside K.4.5 / K.4.6 trivially.)
+Summary header gained a multibuffer count alongside document /
+tree / help / message counts. `BufferRegistry::multibuffer_ids_sorted`
+added to mirror the existing `messages_ids_sorted` pattern
+(symmetric API surface across kinds).
 
-### K.4.9 — Audit comment pass 🗒
+### K.4.9 — Audit comment pass ✅ (commit `4c4631d`)
 
-For every renderer code path that's aligned-by-fallback
-(pattern (a) per audit doc §2.6), add a comment
-explicitly listing the kinds that hit the branch.
-Example:
+The one remaining `Document => ...; _ => fallback` pattern
+in the renderer (`lattice-ui-tui::render`'s popup-anchor
+cursor/scroll matcher around line 1867) now carries an
+explicit Messages / Multibuffer / FileTree / Oil / Terminal /
+Help enumeration on the fallback branch — readers see the
+exhaustive list without having to verify by running the
+integration test.
 
-```rust
-match buffer_kind {
-    BufferKind::Document => ...,
-    // Messages / Multibuffer fall through here — same
-    // pane-state semantics as Document; no per-kind
-    // override.
-    _ => fallback,
-}
-```
+Other K.4.0 audit pattern-(a) sites already have explicit
+enumerations from earlier slices:
+- K.4.2 (commit `8bc77e4`): `build_cells_panes` matchers at
+  `dispatch.rs:8534` + `:8566`.
+- K.4.3 (commit `8bc77e4`): syntax-cell gate at
+  `render.rs:2708`.
 
-The next code-reader / future kind author sees
-"Multibuffer fall through here" instead of having to
-verify by running the integration test. Prevents the
-renderer-side absence trap that K.4 closes.
+So this slice's scope reduced to the one previously-
+undocumented fallback.
 
-### K.4.10 — Convention codification 🗒
+### K.4.10 — Convention codification ✅ (memory updated 2026-06-02)
 
-Update `feedback_buffers_no_special_case` memory with a
-*"this is what 'no special case' looks like in
-practice"* section per audit doc §5. Include:
+`feedback_buffers_no_special_case` memory updated with a
+"2026-06-02 — K.4.1.a / K.4.8 / K.4.9 / K.4.10 landed"
+section recording concrete enforcement status:
 
-- Pointer to the K.4.1 integration test.
-- Rule: any new BufferKind must either pass the test
-  verbatim or document each diverging chord.
-- Rule: renderer paths gating on `BufferKind` must
-  enumerate the kinds that hit each branch in a comment.
+- K.4.1.a foundation slice landed (commit `6a14732`) — the
+  integration test path is real, not just plan'd.
+- K.4.8 listing split landed with commit ref.
+- K.4.9 audit comment pass landed with commit ref.
+- K.4.10 (this update) codifies the above as the current
+  enforcement state.
+
+Also recorded a sibling pattern surfaced 2026-06-02: K.3.5
+(commit `83df46d`) was the same "code shipped but the
+integration path was never tested end-to-end" shape — K.3.2
+bindings invoked required-arg commands without auditing the
+empty-args case. Fix: public `Editor::arm_missing_arg_prompt`
+API both cmdline-submit and keymap bindings call. Lesson
+codified: "before wiring a keymap binding (or any user-facing
+surface) to existing functionality, audit whether the
+function-being-called has an explicit public API. If not, the
+bug is 'the API doesn't exist yet' not 'the binding is
+incomplete.'"
+
+Reference: K.4.5 (audit-comment pass) in earlier memory text
+corrected to K.4.9 (the actual slice number per this plan).
 
 ### K.4.11 — `dispatch_with_cancel` proper impl on `MultibufferDocumentHandle` 🗒 architectural follow-up
 

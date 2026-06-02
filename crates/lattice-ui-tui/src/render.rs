@@ -2171,28 +2171,6 @@ fn draw_pane_content(
     is_active: bool,
     idx: usize,
 ) {
-    // K.4.x bug investigation (2026-06-02): user reports
-    // multibuffer pane body gets clobbered by file content
-    // after <C-w>v + :files + accept. Instrument the per-pane
-    // draw-path dispatch so the `LATTICE_LOG=debug` log
-    // shows which pane gets routed through draw_buffer vs
-    // draw_inactive_document and which buffer_id each carries.
-    tracing::debug!(
-        target: "k4x-clobber",
-        "[k4x] draw_pane_content idx={} pane_buf={} pane_kind={:?} \
-         content_rect=({},{},{},{}) active_buf={} active_kind={:?} is_active={} \
-         snap_path={:?} snap_lines={} provider={}",
-        idx,
-        pane.buffer_id.0,
-        pane.buffer,
-        content_rect.x, content_rect.y, content_rect.width, content_rect.height,
-        app.ad().document_buffer_id.0,
-        app.ad().buffer_kind,
-        is_active,
-        snap.path(),
-        snap.buffer.line_count(),
-        app.pane_render_provider(pane.buffer_id).is_some(),
-    );
     if let Some(provider) = app.pane_render_provider(pane.buffer_id) {
         (provider.render)(frame, content_rect, app, snap, pane, is_active, idx);
         return;
@@ -2714,33 +2692,10 @@ fn draw_inactive_document(
     // Slice 3c.final.B (group 1): registry lookup via
     // `app.buffers()`.
     let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
-        tracing::debug!(
-            target: "k4x-clobber",
-            "[k4x] draw_inactive_document idx={} pane_buf={} NO_HANDLE",
-            pane_idx,
-            pane.buffer_id.0,
-        );
         return;
     };
     let snap = handle.snapshot();
     let total_lines = snap.buffer.line_count();
-    // K.4.x bug investigation (2026-06-02): log what the
-    // per-pane handle resolved to AND the rect being painted.
-    // If `total_lines` matches multibuffer's composed size,
-    // registry is correct. If file pane's rect overlaps this
-    // rect, the file's body would overwrite the multibuffer's.
-    tracing::debug!(
-        target: "k4x-clobber",
-        "[k4x] draw_inactive_document idx={} pane_buf={} area=({},{},{},{}) \
-         snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
-        pane_idx,
-        pane.buffer_id.0,
-        area.x, area.y, area.width, area.height,
-        snap.id.0,
-        snap.path,
-        total_lines,
-        snap.buffer.line(0).unwrap_or_default(),
-    );
     let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
@@ -2823,23 +2778,29 @@ fn draw_inactive_document(
     // identically (deletion blocks land at the same anchor
     // positions).
     //
-    // K.4.6 c.ii (2026-06-02): prefer the per-pane matrix for
-    // the active pane (sourced from
-    // `Editor::virtual_rows_matrix_for(active_buffer_id)` at
-    // publish time) so multibuffer / messages / future
-    // synthetic kinds see their own virtual rows. Fallback to
-    // the single-cell `virtual_rows.matrix` (boot-seeded to
-    // the original Document) covers transient races during
-    // pane teardown / before the worker's first publish for a
-    // newly-activated pane. Intentional fallback — see K.4.0
-    // audit-comment convention.
+    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02): each pane reads
+    // ITS OWN virtual-rows matrix via `matrix_for_pane(pane.id)`.
+    // Earlier version used `active_pane_id` here too, which gave
+    // the inactive pane the active pane's matrix (wrong for any
+    // case where the panes show different buffers). Worse, the
+    // `rs.virtual_rows.matrix` fallback returned the boot-seeded
+    // single cell — which shares Arc identity with whichever
+    // pane was active LAST, so multibuffer headers leaked into
+    // panes that should have had no virtual rows.
+    //
+    // Now: per-pane lookup, no fallback. When a pane has no
+    // entry (test paths / transient publish race), use an empty
+    // matrix → no virtual rows render for that pane. That's the
+    // correct behaviour for a buffer with no registered
+    // virtual-row providers.
     let virtual_rows_matrix = {
         let rs = app.render_state.load();
-        let active_pane_id = app.panes().tree.active().id;
         rs.virtual_rows
-            .matrix_for_pane(active_pane_id)
+            .matrix_for_pane(pane.id)
             .map(|cell| cell.load_full())
-            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
+            })
     };
     let inactive_body_col_width = buffer_w;
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
@@ -2865,23 +2826,7 @@ fn draw_inactive_document(
         if (lines.len() as u32) >= area.height as u32 {
             break;
         }
-        let raw_line_text = snap.buffer.line(buf_line).unwrap_or_default();
-        // K.4.x bug investigation (2026-06-02): prepend a visible
-        // marker so the user can verify whether the bytes
-        // `draw_inactive_document` produces actually reach the
-        // terminal. If the user sees `>K0>` followed by the
-        // multibuffer's text → renderer is correct, bug is in
-        // perception. If the body shows `>K0> <p align=\"center\">`
-        // → snap is wrong somehow. If no `>K0>` prefix appears →
-        // something downstream is overwriting this function's
-        // output.
-        let line_text = format!(">K0> {raw_line_text}");
-        let line_preview: String = raw_line_text.chars().take(80).collect();
-        tracing::debug!(
-            target: "k4x-clobber",
-            "[k4x] inactive_body idx={} buf_line={} text={:?}",
-            pane_idx, buf_line, line_preview
-        );
+        let line_text = snap.buffer.line(buf_line).unwrap_or_default();
         let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
         let spans = highlights.get((i - 1) as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
@@ -3114,24 +3059,6 @@ fn draw_oil_pane(
 }
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
-    // K.4.x bug investigation (2026-06-02): log what snap
-    // draw_buffer is rendering for the active pane AND the
-    // rect it's painting into. If this rect overlaps the
-    // inactive multibuffer pane's rect, the file's body
-    // would overwrite the multibuffer's body in the
-    // overlapping cells.
-    tracing::debug!(
-        target: "k4x-clobber",
-        "[k4x] draw_buffer area=({},{},{},{}) active_buf={} active_kind={:?} \
-         snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
-        area.x, area.y, area.width, area.height,
-        app.ad().document_buffer_id.0,
-        app.ad().buffer_kind,
-        snap.id.0,
-        snap.path,
-        snap.buffer.line_count(),
-        snap.buffer.line(0).unwrap_or_default(),
-    );
     let lines = compose_visible_lines(app, snap, area.height as u32, area.width as u32);
     frame.render_widget(Paragraph::new(lines), area);
 
@@ -3573,17 +3500,24 @@ fn compose_visible_lines_inner(
     // lines. Lock-free `Arc` clone; the matrix lives on the
     // RenderState snapshot already loaded by callers.
     //
-    // K.4.6 c.ii (2026-06-02): prefer per-pane matrix from
-    // pane_matrices keyed on the active pane id. See
-    // draw_inactive_document for the K.4.6 audit-comment
-    // explaining the active-pane-only resolution.
+    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02):
+    // compose_visible_lines_inner only ever runs for the active
+    // pane (draw_buffer → compose_visible_lines), so the active
+    // pane's id is the right lookup key here. Drop the
+    // boot-seeded fallback for the same reason as
+    // draw_inactive_document — falling back to
+    // `rs.virtual_rows.matrix` leaks the last-active-pane's
+    // headers into panes (e.g. a file pane) that have no
+    // providers.
     let virtual_rows_matrix = {
         let rs = view.app.render_state.load();
         let active_pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
             .matrix_for_pane(active_pane_id)
             .map(|cell| cell.load_full())
-            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
+            })
     };
     let body_col_width = buffer_w;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
@@ -5219,15 +5153,18 @@ fn buffer_line_to_visible_row_with(
     // visually landed on the wrong row whenever a deletion
     // block sat between the scroll and the cursor.
     //
-    // K.4.6 c.ii (2026-06-02): per-pane matrix lookup. Same
-    // pattern as compose_visible_lines_inner.
+    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02): per-pane matrix
+    // lookup, no boot-seeded fallback. Same fix as
+    // compose_visible_lines_inner.
     let virtual_rows_matrix = {
         let rs = view.app.render_state.load();
         let active_pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
             .matrix_for_pane(active_pane_id)
             .map(|cell| cell.load_full())
-            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
+            })
     };
     let total_lines = snap.buffer.line_count();
     let mut buf_line = scroll;

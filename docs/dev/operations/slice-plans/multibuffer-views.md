@@ -74,10 +74,21 @@ Slice sequencing:
 
 ## M.10 — Mode-ownership audit (host de-leak)
 
-**Status:** 🚧 audit complete 2026-06-02; sub-slices carved
-under five locked decisions (see `mode-architecture.md` §5.3
-and the conversation 2026-06-02 for the full heuristic
-mapping).
+**Status:** ✅ all sub-slices landed 2026-06-03. M.10.1 (substrate)
+→ M.10.1.b (boot wiring + `run_invocation` consultation) →
+M.10.2 (translate helper) → M.10.3 (`<CR>` JumpToSource +
+jump-list) → M.10.4 (`:multibuffer-expand` substrate-helper
+migration) → M.10.5 (`gr` Refresh) → M.10.6 (`:search` host
+hop deleted) → M.10.7 (sweep dead Action variants + Editor
+methods + arms) → M.10.8 (comment + doc cleanup pass).
+Acid test passes: dispatch.rs has zero `do_<provider>_*`
+methods; the host's `Action` enum carries zero provider-named
+variants. Future provider crates add chord/handler ownership
+through `ActionHandlerRegistry` + `MultibufferRegistryHandle`
+without host edits.
+
+See `mode-architecture.md` §5.3 and the conversation 2026-06-02
+for the full heuristic mapping.
 
 **Context.** M.5 and M.6.1 landed action handler bodies
 (`Editor::do_multibuffer_expand`, `Editor::do_search`,

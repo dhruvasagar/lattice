@@ -207,9 +207,10 @@ pub fn register_multibuffer_modes(
 /// — Zed precedent). `apply` produces
 /// `Effect::AppAction(AppEffect::MultibufferExpand { delta })`
 /// where `delta` is positive for expand, negative for contract.
-/// The dispatch handler routes to `Editor::do_multibuffer_expand`,
-/// which looks up the active view via `MultibufferRegistry` and
-/// calls `expand_excerpt_at` at the active cursor's row.
+/// The host's apply_effect arm calls the substrate helper
+/// `multibuffer_expand_excerpt_at` (M.10.4, 2026-06-03), which
+/// looks up the active view via `MultibufferRegistry` and calls
+/// `expand_excerpt_at` at the active cursor's row.
 ///
 /// No-op when invoked on a non-multibuffer active buffer (no
 /// registry entry for the buffer id).

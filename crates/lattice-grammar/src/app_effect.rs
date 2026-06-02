@@ -540,21 +540,34 @@ pub enum AppEffect {
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
     MultibufferExpand { delta: i32 },
-    /// M.6 (2026-06-01): `:search <query>` ex-command. Routed to
-    /// `Editor::do_search` via `Action::SearchTrigger`, which
-    /// calls
+    /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
+    /// (2026-06-03) inlined the work into the host's
+    /// apply_effect arm — it calls
     /// `lattice_multibuffer::providers::search::project_search`
-    /// against the active editor as the activator.
+    /// against the active editor as the activator. No longer
+    /// trampolines through `Action::SearchTrigger` /
+    /// `Editor::do_search` (both deleted).
     SearchTrigger { query: String },
     /// M.6.1 (2026-06-01): `<CR>` chord in project-search-multibuffer-mode.
     /// Resolves the excerpt under cursor → source path → opens
-    /// the file at the matched row via `Editor::do_search_jump_to_source`.
+    /// the file at the matched row. M.10.3 (2026-06-03) made
+    /// this mode-owned: the search mode's `on_activate`
+    /// registers a closure via `ActionHandlerRegistry` that
+    /// intercepts in `run_invocation` before the
+    /// `CommandKind::Action` evaluator emits this AppEffect.
+    /// The AppEffect arm is now a no-op marker — kept because
+    /// `actions::populate::register_simple` references it as
+    /// the registered ActionSpec payload.
     SearchJumpToSource,
     /// M.6.1 (2026-06-01): `gr` chord in project-search-multibuffer-mode.
-    /// Re-runs the scan with the view's current query.
-    /// `Editor::do_search_refresh` reads the state from the
-    /// `ProjectSearchService`, cancels the in-flight task via
-    /// `attach_task` semantics, and spawns a fresh one.
+    /// Re-runs the scan with the view's current query. M.10.5
+    /// (2026-06-03) made this mode-owned (same shape as
+    /// SearchJumpToSource above): the search mode's
+    /// `on_activate` registers a closure that intercepts via
+    /// `ActionHandlerRegistry` before this AppEffect arm runs.
+    /// The arm is a no-op marker; the work happens in the
+    /// mode's closure (reading state, clearing excerpts,
+    /// spawning a fresh scan task).
     SearchRefresh,
 }
 

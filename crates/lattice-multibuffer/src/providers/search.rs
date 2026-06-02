@@ -146,8 +146,10 @@ pub struct ProjectSearchState {
     pub scan_task: Option<tokio::task::JoinHandle<()>>,
     /// M.6.1: source `BufferId` → on-disk path. Populated by the
     /// provider-minor's forwarder as it loads files into the
-    /// view's source map. `do_search_jump_to_source` reads this
-    /// to resolve the excerpt under cursor back to a file path.
+    /// view's source map. The mode's `<CR>` handler (M.10.3,
+    /// registered via `ActionHandlerRegistry` from
+    /// `on_activate`) reads this to resolve the excerpt under
+    /// cursor back to a file path.
     pub source_paths: std::collections::HashMap<BufferId, PathBuf>,
 }
 
@@ -893,8 +895,9 @@ pub fn project_search(
     Some(view_id)
 }
 
-/// Public so the host's `do_search_refresh` can respawn after
-/// cancelling the prior task.
+/// Public so the mode's `gr` refresh handler (M.10.5,
+/// registered via `ActionHandlerRegistry` from `on_activate`)
+/// can respawn after cancelling the prior task.
 pub fn spawn_scan_task(
     view: BufferId,
     query: String,
@@ -1137,9 +1140,11 @@ pub fn register_project_search_service(services: &mut ServiceRegistry) {
 /// calls this directly now; behaviour preserved verbatim.
 ///
 /// Stashes the query as `Args::String` and routes through
-/// `AppEffect::SearchTrigger { query }` → `Action::SearchTrigger
-/// { query }` → `Editor::do_search`. Empty query is rejected with
-/// `BadArgs` — opening an empty search view doesn't make sense.
+/// `AppEffect::SearchTrigger { query }`. M.10.6 (2026-06-03)
+/// inlined the work into the host's apply_effect arm; the
+/// previous `Action::SearchTrigger` + `Editor::do_search` hops
+/// are gone. Empty query is rejected with `BadArgs` — opening
+/// an empty search view doesn't make sense.
 pub fn register_search_ex_command(registry: &mut CommandRegistry) {
     use lattice_grammar::app_effect::AppEffect;
     use lattice_grammar::args::{ArgSpec, Args};

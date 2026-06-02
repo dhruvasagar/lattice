@@ -937,6 +937,63 @@ pub enum HeaderlineStatus {
 }
 ```
 
+#### Two streams — provider + view-system status
+
+The headerline surfaces **two distinct status streams** that
+compose on the same view-header row (added 2026-06-03 from
+user-testing observation post-M.11):
+
+- **Provider status** — what the user explicitly invoked (the
+  `set_headerline` API above). Search progress, LSP-references
+  fetching, AI-proposed-edits computing. Steady state once the
+  async operation completes.
+- **View-system status** — transient UX-relevant view state the
+  user otherwise has no visibility into:
+  - `Building cells…` during the cells-worker's first matrix
+    build after activation. M.11's compose-heavy multibuffer
+    makes this a perceptible one-time cost — user observed a
+    short delay before syntax styling appears on the first
+    activation; the marker explains it.
+  - `N edits pending source sync` while the M.11 source
+    forwarder has unflushed edits queued for source actors.
+  - `Sources stale — refresh?` when an external pane edited a
+    source after the user started typing into the multibuffer
+    (M.4.x merge-policy hook; placeholder marker in v1).
+  - Multibuffer dirty indicator — distinct from regular `[+]`
+    since multibuffer save is multi-source (M.11.b).
+
+The two streams are independently produced and rendered side-
+by-side rather than concatenated into one string — providers
+contribute to the right segment, view-system status occupies
+the left. Future streams (LSP request count, diagnostics
+indicator) slot in as additional structured segments without
+collision on a string-format protocol.
+
+Heuristic-mapping: structured-segments-over-concatenation
+protects paramount #2 (each contribution point is independent
+and pluggable) and heuristic #1 (long-term fit — additional
+streams compose cleanly).
+
+#### Renderer adoption
+
+M.6.5 lands the view-header virtual-row publisher reading both
+the headerline cell AND a new `ViewSystemStatus` cell on
+`MultibufferInner`. The cell is populated by:
+
+- M.11's source-forwarder publishes its queue depth to a
+  shared cell.
+- The cells-worker emits `WorkerDecision` (`CacheHit /
+  Recomputed / RecomputedIncremental / Clear`); a subscriber
+  on `MultibufferInner` maps `Recomputed` → `Building cells…`,
+  `CacheHit` after Recomputed → clears the marker.
+- M.4 forwarder publishes "external source edits while local
+  edits pending" → `Sources stale` marker.
+
+TUI + GPUI updated in lockstep per `feedback_tui_gpui_parity`.
+Renderer styling uses existing host_theme conventions; progress
+glyph during `InProgress` follows `feedback_icon_palette`
+(nerd-font + BMP fallback).
+
 **Convention applies beyond multibuffer.** Any future
 async-populated buffer kind (REPL streaming output, log tails,
 build output, etc.) surfaces operation status through its own

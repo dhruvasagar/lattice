@@ -1125,33 +1125,60 @@ impl Document for MultibufferDocumentHandle {
     /// M.6+ slices can add transaction tracking if the
     /// independent-stack behaviour proves surprising.
     fn undo(&self) -> Pending<Vec<AppliedEdit>> {
-        let sources: Vec<Arc<dyn Document>> =
-            self.lock_state().sources.values().cloned().collect();
-        Pending::spawn(async move {
-            let mut all = Vec::new();
-            for source in sources {
-                match source.undo().await {
-                    Ok(mut rs) => all.append(&mut rs),
-                    Err(_) => continue,
+        // M.11 (2026-06-02): undo operates on the LOCAL
+        // composed_doc — synchronous, no cross-actor round-trip.
+        // Pre-fix this used `Pending::spawn(async move { for
+        // source in sources { source.undo().await } })` which
+        // deadlocked the editor actor's current_thread runtime
+        // when the host called via `block_on(self.document.undo())`
+        // (same root cause as the apply_edit freeze before M.11).
+        //
+        // Source-side undo is NOT forwarded in v1 — the local
+        // composed_doc retains its own undo stack and reversing
+        // here gives the user visual undo of multibuffer edits.
+        // Sources stay forward-edited (the search-and-replace
+        // workflow's "I changed my mind on this hunk" semantics
+        // need richer transaction tracking to coordinate
+        // multi-source undo; queued for a future slice).
+        let applied = {
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            match doc.undo() {
+                Ok(applied) => {
+                    let selections = self.lock_state().selections.clone();
+                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
+                    self.inner.snapshot_cell.store(snap);
+                    applied
                 }
+                Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
             }
-            Ok(all)
-        })
+        };
+        Pending::ready(Ok(applied))
     }
 
     fn redo(&self) -> Pending<Vec<AppliedEdit>> {
-        let sources: Vec<Arc<dyn Document>> =
-            self.lock_state().sources.values().cloned().collect();
-        Pending::spawn(async move {
-            let mut all = Vec::new();
-            for source in sources {
-                match source.redo().await {
-                    Ok(mut rs) => all.append(&mut rs),
-                    Err(_) => continue,
+        // M.11 (2026-06-02): redo operates on the LOCAL
+        // composed_doc — symmetric with `undo` above.
+        let applied = {
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            match doc.redo() {
+                Ok(applied) => {
+                    let selections = self.lock_state().selections.clone();
+                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
+                    self.inner.snapshot_cell.store(snap);
+                    applied
                 }
+                Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
             }
-            Ok(all)
-        })
+        };
+        Pending::ready(Ok(applied))
     }
 
     fn save(&self) -> Pending<std::path::PathBuf> {
@@ -2525,31 +2552,45 @@ mod tests {
         });
     }
 
+    /// M.11 (2026-06-02): undo operates on the LOCAL composed_doc,
+    /// not via fan-out to source actors. The composed_doc has its
+    /// own undo stack populated by `apply_edit`; `undo()` pops
+    /// the most recent entry and applies its inverse. Sources
+    /// are NOT reverted (they retain their forwarded edits) —
+    /// richer multi-source transaction tracking is a future
+    /// slice. Replaces the pre-M.11 `m3_undo_fans_out_to_each_source`
+    /// test whose semantics no longer apply.
     #[tokio::test(flavor = "multi_thread")]
-    async fn m3_undo_fans_out_to_each_source() {
-        let (sources, ids) = make_sources(&["aaa\n", "bbb\n"]);
-        let a = sources.get(&ids[0]).unwrap().clone();
-        let b = sources.get(&ids[1]).unwrap().clone();
-        let excerpts = vec![
-            Excerpt::new(ids[0], 0, 0),
-            Excerpt::new(ids[1], 0, 0),
-        ];
+    async fn m11_undo_reverses_local_composed_doc_edit() {
+        let (sources, ids) = make_sources(&["aaa\nbbb\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let pre_text = mb.snapshot().buffer.as_string();
+        assert_eq!(pre_text, "aaa\nbbb\n");
 
-        // Edit each source directly so each has something to undo.
-        a.apply_edit(Edit::insert(Position::new(0, 0), "A!")).await.unwrap();
-        b.apply_edit(Edit::insert(Position::new(0, 0), "B!")).await.unwrap();
-        assert_eq!(a.text(), "A!aaa\n");
-        assert_eq!(b.text(), "B!bbb\n");
+        // Apply an edit via the multibuffer (lands in composed_doc).
+        mb.apply_edit(Edit::insert(Position::new(0, 3), "X"))
+            .await
+            .expect("insert ok");
+        assert_eq!(mb.snapshot().buffer.as_string(), "aaaX\nbbb\n");
 
-        // Undo on the multibuffer fans out — both sources roll back.
+        // Undo reverses on composed_doc — synchronous, no
+        // Pending::spawn deadlock (the user-reported freeze on
+        // `u` after an insert was the pre-M.11 fan-out path).
         let applied = mb.undo().await.expect("undo ok");
         assert!(
             !applied.is_empty(),
-            "fan-out undo should produce at least one AppliedEdit"
+            "undo should return the inverse edits applied to composed_doc"
         );
-        assert_eq!(a.text(), "aaa\n");
-        assert_eq!(b.text(), "bbb\n");
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "aaa\nbbb\n",
+            "composed_doc must roll back to pre-edit state"
+        );
+
+        // Redo replays the insert.
+        let _ = mb.redo().await.expect("redo ok");
+        assert_eq!(mb.snapshot().buffer.as_string(), "aaaX\nbbb\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]

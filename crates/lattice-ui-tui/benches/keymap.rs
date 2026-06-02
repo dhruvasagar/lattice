@@ -27,11 +27,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
+use lattice_mode::mode::ModeId;
 use lattice_protocol::ids::CommandId;
 use lattice_ui_tui::buffers::BufferKind;
 use lattice_ui_tui::chord::{KeyChord, parse_chord_sequence};
 use lattice_ui_tui::keymap::BindingMode;
-use lattice_ui_tui::keymap_registry::KeymapHandle;
+use lattice_ui_tui::keymap_registry::{KeymapHandle, PushLayerKind};
 use lattice_ui_tui::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
 };
@@ -529,6 +530,151 @@ fn dispatch_translate_full_operator_motion(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------
+// K.1.c — `lookup_with_context` minor-mode composite-fold benches
+// (review action R1, 2026-06-02)
+//
+// Per the keymap-api-review §"Open performance gap — K.1.c
+// minor-mode composite fold", the read-side path that fires
+// when ≥1 minor mode is active builds a fresh `KeymapTrie` via
+// `merge_over(always_on) + merge_over(each minor)` *every
+// keystroke*. The existing `keymap_handle_lookup_*` benches
+// cover the no-minor fast path. These rows pin the slow path
+// at 1 / 2 / 3 active minors × 1 / 3-chord depth so any future
+// regression on mode-aware composability surfaces against a
+// fixed baseline. Budget target: end-to-end keystroke
+// (`KeyEvent → KeyChord → lookup_with_context → Action`)
+// stays under 100 µs at 3 active minors / 3-chord depth so
+// the 8 ms-at-120 Hz frame budget retains its 99% headroom.
+// ---------------------------------------------------------------
+
+/// Add `n` distinct synthetic minor-mode keymap layers to `h`.
+/// Each layer binds 3 single-chord Normal-mode rows
+/// (`m{i}-j`, `m{i}-k`, `m{i}-w`); the chords don't conflict
+/// with `populated_handle`'s Normal-mode rows so the lookup
+/// still resolves on the same `j` / `gd` / `diw` paths the
+/// non-minor benches use, and the fold pays the per-mode
+/// `merge_over` cost without short-circuiting on an early
+/// override.
+fn push_synthetic_minor_layers(h: &KeymapHandle, n: usize) -> Vec<ModeId> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let id = ModeId::new(format!("synth-minor-{i}").as_str());
+        ids.push(id);
+        let mut trie = KeymapTrie::new();
+        let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
+        let bound = Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(CommandId::new(0)),
+            SourceLocation::synthetic("bench-minor"),
+            KeymapLayer::MinorMode(id),
+        ));
+        // Three chord rows per minor layer; distinct from
+        // Normal's `j` / `k` / `w` builtin so the fold has
+        // real work but lookup still hits `always_on`.
+        trie.insert(&[lit('M')], Arc::clone(&bound));
+        trie.insert(&[lit('N')], Arc::clone(&bound));
+        trie.insert(&[lit('Q')], Arc::clone(&bound));
+        let mut by_mode: std::collections::HashMap<BindingMode, KeymapTrie> =
+            std::collections::HashMap::new();
+        by_mode.insert(BindingMode::Normal, trie);
+        h.push_layer(PushLayerKind::MinorMode(id), format!("synth-minor-{i}"), by_mode);
+    }
+    ids
+}
+
+/// Hot path with 1 active minor. Single-chord lookup. Pays
+/// one `ArcSwap::load` (`always_on`) + one `ArcSwap::load`
+/// (`minor_mode_tries`) + two `merge_over` calls (base + 1
+/// minor) + the trie walk.
+fn keymap_handle_lookup_with_one_minor(c: &mut Criterion) {
+    let h = populated_handle();
+    let active = push_synthetic_minor_layers(&h, 1);
+    let path = vec![KeyChord::char('j')];
+    c.bench_function("keymap_handle_lookup_with_one_minor", |b| {
+        b.iter(|| {
+            let r = h.lookup_with_context(
+                BindingMode::Normal,
+                black_box(&path),
+                black_box(&active),
+            );
+            black_box(r);
+        });
+    });
+}
+
+/// Hot path with 2 active minors. Single-chord lookup.
+fn keymap_handle_lookup_with_two_minors(c: &mut Criterion) {
+    let h = populated_handle();
+    let active = push_synthetic_minor_layers(&h, 2);
+    let path = vec![KeyChord::char('j')];
+    c.bench_function("keymap_handle_lookup_with_two_minors", |b| {
+        b.iter(|| {
+            let r = h.lookup_with_context(
+                BindingMode::Normal,
+                black_box(&path),
+                black_box(&active),
+            );
+            black_box(r);
+        });
+    });
+}
+
+/// Hot path with 3 active minors at 3-chord depth (`diw`).
+/// The worst realistic case — three composite merges plus
+/// the deepest realistic trie walk. End-to-end the budget
+/// target is single-digit µs; if this regresses above ~10 µs
+/// the K.1.c memoized-composite-cache follow-up (review R4)
+/// becomes load-bearing.
+fn keymap_handle_lookup_with_three_minors_three_chord(c: &mut Criterion) {
+    let h = populated_handle();
+    let active = push_synthetic_minor_layers(&h, 3);
+    let path = vec![
+        KeyChord::char('d'),
+        KeyChord::char('i'),
+        KeyChord::char('w'),
+    ];
+    c.bench_function(
+        "keymap_handle_lookup_with_three_minors_three_chord",
+        |b| {
+            b.iter(|| {
+                let r = h.lookup_with_context(
+                    BindingMode::Normal,
+                    black_box(&path),
+                    black_box(&active),
+                );
+                black_box(r);
+            });
+        },
+    );
+}
+
+/// Hot path with 3 minors registered but `active_modes`
+/// empty. Confirms the fast path bypasses the composite
+/// fold and only pays one `ArcSwap::load` + lookup. Pre-
+/// review-R3 fix this incurs an unconditional `Vec` build
+/// + sort even though `active_modes` is empty; bench-row
+/// flushes that out so the optimisation (or its absence)
+/// is visible.
+fn keymap_handle_lookup_empty_minors_with_layers_registered(c: &mut Criterion) {
+    let h = populated_handle();
+    let _ = push_synthetic_minor_layers(&h, 3);
+    let empty: Vec<ModeId> = Vec::new();
+    let path = vec![KeyChord::char('j')];
+    c.bench_function(
+        "keymap_handle_lookup_empty_minors_with_layers_registered",
+        |b| {
+            b.iter(|| {
+                let r = h.lookup_with_context(
+                    BindingMode::Normal,
+                    black_box(&path),
+                    black_box(&empty),
+                );
+                black_box(r);
+            });
+        },
+    );
+}
+
 criterion_group!(
     benches,
     keychord_from_event_plain_letter,
@@ -550,6 +696,10 @@ criterion_group!(
     keymap_handle_lookup_single,
     keymap_handle_lookup_two_chord,
     keymap_handle_lookup_three_chord,
+    keymap_handle_lookup_with_one_minor,
+    keymap_handle_lookup_with_two_minors,
+    keymap_handle_lookup_with_three_minors_three_chord,
+    keymap_handle_lookup_empty_minors_with_layers_registered,
     dispatch_translate_full_two_chord,
     dispatch_translate_full_operator_motion,
 );

@@ -526,6 +526,51 @@ impl MultibufferDocumentHandle {
         self.lock_state().sources.keys().copied().collect()
     }
 
+    /// M.10.2 (2026-06-03): translate a composed-coordinate
+    /// cursor to its source-coordinate equivalent. Walks excerpts
+    /// in display order to find the one containing
+    /// `cursor.line`; returns `(source_buffer_id,
+    /// source_position)` where `source_position.line` is the
+    /// row in the originating source rope and
+    /// `source_position.byte` is preserved verbatim (each
+    /// composed row is a verbatim copy of its source line, so
+    /// byte columns map 1:1).
+    ///
+    /// Returns `None` when the cursor is past the last
+    /// excerpt's last composed row. Pure read; doesn't mutate
+    /// any state.
+    ///
+    /// Consumed by mode handlers (search `<CR>`, project-diff
+    /// `<CR>`, lsp-references `<CR>` once those land) — see
+    /// `mode-architecture.md` §5.3.4 (substrate-vs-helper
+    /// rule). Returning data, not behavior — the chord-binding
+    /// + open-and-position logic lives in the mode's handler
+    /// closure registered via the M.10.1.b
+    /// `ActionHandlerRegistry`.
+    pub fn translate_composed_to_source(
+        &self,
+        cursor: Position,
+    ) -> Option<(BufferId, Position)> {
+        let state = self.lock_state();
+        let mut composed_cursor: u32 = 0;
+        for excerpt in &state.excerpts {
+            let next = composed_cursor.saturating_add(excerpt.line_count());
+            if cursor.line < next {
+                let offset = cursor.line - composed_cursor;
+                let source_row = excerpt.start_line.saturating_add(offset);
+                return Some((
+                    excerpt.source,
+                    Position {
+                        line: source_row,
+                        byte: cursor.byte,
+                    },
+                ));
+            }
+            composed_cursor = next;
+        }
+        None
+    }
+
     /// M.5 (2026-06-01): grow / shrink the excerpt containing
     /// `cursor_row` by `delta_rows` total rows, split
     /// symmetrically above and below.
@@ -1994,6 +2039,63 @@ mod tests {
             "composed snapshot must reflect the new content; \
              the renderer reads this on the next frame"
         );
+    }
+
+    /// M.10.2 (2026-06-03): cursor at composed (0, 5) on an
+    /// excerpt covering source rows 5..=7 maps to source
+    /// (5, 5). Byte column preserved (each composed row is a
+    /// verbatim copy of its source line).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m10_2_translate_composed_to_source_single_excerpt() {
+        let (sources, ids) = make_sources(&["0\n1\n2\n3\n4\n5\n6\n7\n8\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 5, 7)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        let target = mb
+            .translate_composed_to_source(Position::new(0, 5))
+            .expect("composed (0,5) must translate");
+        assert_eq!(target.0, ids[0], "source buffer id");
+        assert_eq!(target.1, Position::new(5, 5), "source position");
+
+        // Composed (2, 0) → source (5 + 2, 0) = (7, 0).
+        let target = mb
+            .translate_composed_to_source(Position::new(2, 0))
+            .expect("composed (2,0) must translate");
+        assert_eq!(target.1, Position::new(7, 0));
+    }
+
+    /// M.10.2 (2026-06-03): out-of-range composed cursor
+    /// returns None (no excerpt covers that row).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m10_2_translate_composed_to_source_out_of_range() {
+        let (sources, ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Excerpt covers composed rows 0..=1; row 5 is past.
+        assert!(mb.translate_composed_to_source(Position::new(5, 0)).is_none());
+    }
+
+    /// M.10.2 (2026-06-03): multi-excerpt walk — cursor on the
+    /// second excerpt maps to its source.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m10_2_translate_composed_to_source_multi_excerpt() {
+        let (sources, ids) = make_sources(&["AA\nBB\n", "11\n22\n"]);
+        let excerpts = vec![
+            Excerpt::new(ids[0], 0, 1), // composed 0..=1
+            Excerpt::new(ids[1], 0, 1), // composed 2..=3
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Composed (0, 1) → source A (0, 1).
+        let t = mb.translate_composed_to_source(Position::new(0, 1)).unwrap();
+        assert_eq!(t.0, ids[0]);
+        assert_eq!(t.1, Position::new(0, 1));
+
+        // Composed (3, 1) → source B (1, 1).
+        let t = mb.translate_composed_to_source(Position::new(3, 1)).unwrap();
+        assert_eq!(t.0, ids[1]);
+        assert_eq!(t.1, Position::new(1, 1));
     }
 
     /// M.11 (2026-06-02): the search provider's exact flow —

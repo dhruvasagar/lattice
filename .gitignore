@@ -19,3 +19,8 @@ Cargo.lock.bak
 # under .claude/worktrees/ for isolated sub-agent runs. They live
 # only as long as the owning session and aren't part of the repo.
 .claude/worktrees/
+# Ad-hoc tracing-log captures from `:w /tmp/...` or
+# `LATTICE_STDERR=1 ... 2>logs.txt` redirects. Useful for
+# interactive bug investigation; not part of the repo.
+logs.txt
+*.log

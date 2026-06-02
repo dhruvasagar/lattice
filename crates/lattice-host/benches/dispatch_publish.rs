@@ -64,9 +64,10 @@ fn populated_editor() -> Editor {
         // B.4.b: realistic buffer_uris population. Skips the
         // synthetic / unnamed scratch buffers but covers any
         // file-backed buffer the LSP would attach to.
-        let uri = <lattice_lsp::Uri as std::str::FromStr>::from_str(
-            &format!("file:///tmp/bench/file_{}.rs", i),
-        )
+        let uri = <lattice_lsp::Uri as std::str::FromStr>::from_str(&format!(
+            "file:///tmp/bench/file_{}.rs",
+            i
+        ))
         .expect("synthetic file URI parses");
         editor.buffer_uris.insert(id, uri);
     }
@@ -98,9 +99,7 @@ fn populated_editor() -> Editor {
     // B.4.b: 4 tabs (1 default + 3 extras) so the `tabs` cache
     // saves the build_tabs_render_state walk on no-op publishes.
     for _ in 0..3 {
-        editor
-            .tabs
-            .push(lattice_core::ui::tab::TabSlot::new());
+        editor.tabs.push(lattice_core::ui::tab::TabSlot::new());
     }
 
     editor
@@ -131,7 +130,9 @@ fn mutated_modes(c: &mut Criterion) {
             if editor.active_modes.contains_key(&toggle_id) {
                 editor.active_modes.remove(&toggle_id);
             } else {
-                editor.active_modes.insert(toggle_id, ActiveModes::default());
+                editor
+                    .active_modes
+                    .insert(toggle_id, ActiveModes::default());
             }
             editor.publish_render_state();
             black_box(editor.render_state.load_full());
@@ -160,7 +161,9 @@ fn mutated_all(c: &mut Criterion) {
             if editor.active_modes.contains_key(&toggle_id) {
                 editor.active_modes.remove(&toggle_id);
             } else {
-                editor.active_modes.insert(toggle_id, ActiveModes::default());
+                editor
+                    .active_modes
+                    .insert(toggle_id, ActiveModes::default());
             }
             if editor.buffer_locals.contains_key(&toggle_id) {
                 editor.buffer_locals.remove(&toggle_id);

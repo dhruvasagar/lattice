@@ -43,12 +43,12 @@
 
 use std::sync::Arc;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use smallvec::smallvec;
 
 use lattice_core::{BufferId, Fold, ProviderId};
 use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
-use lattice_host::diff::fold::{hunk_fold_identity, HunkFoldProvider};
+use lattice_host::diff::fold::{HunkFoldProvider, hunk_fold_identity};
 use lattice_host::editor::Editor;
 use lattice_host::fold_provider::{FoldContext, FoldProvider};
 

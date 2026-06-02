@@ -141,20 +141,21 @@ impl Editor {
                 let head_line = (visual.head_line - origin).max(0) as u32;
                 let anchor = Position::new(anchor_line, visual.anchor_col as u32);
                 let head = Position::new(head_line, visual.head_col as u32);
-                let (a, b) = if anchor <= head { (anchor, head) } else { (head, anchor) };
+                let (a, b) = if anchor <= head {
+                    (anchor, head)
+                } else {
+                    (head, anchor)
+                };
                 Some(match visual.kind {
-                    TermVisualKind::Line => Range::new(
-                        Position::new(a.line, 0),
-                        Position::new(b.line, u32::MAX),
-                    ),
-                    TermVisualKind::Char => Range::new(
-                        a,
-                        Position::new(b.line, b.byte.saturating_add(1)),
-                    ),
-                    TermVisualKind::Block => Range::new(
-                        a,
-                        Position::new(b.line, b.byte.saturating_add(1)),
-                    ),
+                    TermVisualKind::Line => {
+                        Range::new(Position::new(a.line, 0), Position::new(b.line, u32::MAX))
+                    }
+                    TermVisualKind::Char => {
+                        Range::new(a, Position::new(b.line, b.byte.saturating_add(1)))
+                    }
+                    TermVisualKind::Block => {
+                        Range::new(a, Position::new(b.line, b.byte.saturating_add(1)))
+                    }
                 })
             })
             .flatten()

@@ -188,10 +188,9 @@ impl HunkRowMapper {
 
 impl RowMapper for HunkRowMapper {
     fn map_row(&self, from: usize, to: usize, row: u32) -> u32 {
-        let (Some(from_pane), Some(to_pane)) = (
-            self.shape.pane_index_of(from),
-            self.shape.pane_index_of(to),
-        ) else {
+        let (Some(from_pane), Some(to_pane)) =
+            (self.shape.pane_index_of(from), self.shape.pane_index_of(to))
+        else {
             // Member pair the mapper wasn't constructed for —
             // fall back to identity rather than guess.
             return row;
@@ -230,8 +229,7 @@ pub fn map_between(index: &HunkIndex, from_pane: usize, to_pane: usize, row: u32
         }
         // Past this hunk's `from_pane` range — accumulate
         // delta for the next iteration / fall-through.
-        shift +=
-            (to_r.end as i32 - to_r.start as i32) - (from_r.end as i32 - from_r.start as i32);
+        shift += (to_r.end as i32 - to_r.start as i32) - (from_r.end as i32 - from_r.start as i32);
     }
     apply_shift(row, shift)
 }
@@ -414,7 +412,7 @@ mod tests {
         assert_eq!(map_baseline_to_current(&i, 10), 10); // 0/3 → 0
         assert_eq!(map_baseline_to_current(&i, 11), 11); // 1*5/3=1
         assert_eq!(map_baseline_to_current(&i, 12), 13); // 2*5/3=3
-                                                          // After the hunk: shift = 5 - 3 = +2.
+        // After the hunk: shift = 5 - 3 = +2.
         assert_eq!(map_baseline_to_current(&i, 20), 22);
     }
 
@@ -432,7 +430,7 @@ mod tests {
         assert_eq!(map_baseline_to_current(&i, 12), 10); // 2*2/5=0
         assert_eq!(map_baseline_to_current(&i, 13), 11); // 3*2/5=1
         assert_eq!(map_baseline_to_current(&i, 14), 11); // 4*2/5=1
-                                                          // After: shift = 2 - 5 = -3.
+        // After: shift = 2 - 5 = -3.
         assert_eq!(map_baseline_to_current(&i, 20), 17);
     }
 
@@ -442,11 +440,7 @@ mod tests {
     fn cumulative_shift_across_multiple_hunks() {
         // Two Adds: +3 then +2.
         let i = idx(vec![
-            hunk(
-                HunkKind::Add,
-                LineRange::new(5, 5),
-                LineRange::new(5, 8),
-            ),
+            hunk(HunkKind::Add, LineRange::new(5, 5), LineRange::new(5, 8)),
             hunk(
                 HunkKind::Add,
                 LineRange::new(20, 20),
@@ -465,11 +459,7 @@ mod tests {
     fn mixed_add_and_remove_cumulative_shifts_cancel() {
         // Add 3, then Remove 3 — cumulative shift returns to 0.
         let i = idx(vec![
-            hunk(
-                HunkKind::Add,
-                LineRange::new(5, 5),
-                LineRange::new(5, 8),
-            ),
+            hunk(HunkKind::Add, LineRange::new(5, 5), LineRange::new(5, 8)),
             hunk(
                 HunkKind::Remove,
                 LineRange::new(15, 18),

@@ -397,9 +397,8 @@ impl WatcherTaskState {
                 "lsp_watcher: installing recursive watch (may block on large trees)"
             );
             let started = std::time::Instant::now();
-            let result = tokio::task::block_in_place(|| {
-                self.watcher.watch(&p, RecursiveMode::Recursive)
-            });
+            let result =
+                tokio::task::block_in_place(|| self.watcher.watch(&p, RecursiveMode::Recursive));
             match result {
                 Ok(()) => {
                     tracing::info!(
@@ -611,8 +610,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
-        std::fs::write(dir.join(".gitignore"), "secret/\n*.log\n")
-            .expect("write .gitignore");
+        std::fs::write(dir.join(".gitignore"), "secret/\n*.log\n").expect("write .gitignore");
         let mut roots = HashSet::new();
         roots.insert(dir.clone());
         let matcher = WatcherIgnoreMatcher::build(&roots);

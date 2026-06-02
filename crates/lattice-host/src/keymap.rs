@@ -30,7 +30,7 @@ pub use lattice_mode::BindingMode;
 
 // K.2.4.A.0.1: static catalog + entry-row metadata.
 pub use lattice_mode::keymap_entry::{
-    KeymapEntry, __builtin_source, default_keymap, entries, lookup,
+    __builtin_source, KeymapEntry, default_keymap, entries, lookup,
 };
 
 // `#[macro_export]`'d macros land at the defining crate's root. The

@@ -378,11 +378,7 @@ mod tests {
         // Baseline-side fillers: 2 from the Add only.
         // Current-side fillers: 3 from the Remove only.
         let i = idx(vec![
-            hunk(
-                HunkKind::Add,
-                LineRange::new(5, 5),
-                LineRange::new(5, 7),
-            ),
+            hunk(HunkKind::Add, LineRange::new(5, 5), LineRange::new(5, 7)),
             hunk(
                 HunkKind::Remove,
                 LineRange::new(20, 23),
@@ -451,10 +447,7 @@ mod tests {
 
     #[test]
     fn provider_collect_reads_published_session_hunks() {
-        let session = Arc::new(DiffSession::new(
-            BufferId(1),
-            DiffAlgorithm::Histogram,
-        ));
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
         // Empty session ⇒ no fillers.
         let provider = FillerRowProvider::new(session.clone(), Side::Baseline);
         assert!(provider.collect().is_empty());
@@ -472,10 +465,7 @@ mod tests {
 
     #[test]
     fn provider_version_changes_with_session_revision() {
-        let session = Arc::new(DiffSession::new(
-            BufferId(1),
-            DiffAlgorithm::Histogram,
-        ));
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
         let p = FillerRowProvider::new(session.clone(), Side::Baseline);
         let v0 = p.version();
         session.publish(Arc::new(idx(vec![hunk(
@@ -489,10 +479,7 @@ mod tests {
 
     #[test]
     fn provider_version_differs_across_sides_at_rev_zero() {
-        let session = Arc::new(DiffSession::new(
-            BufferId(1),
-            DiffAlgorithm::Histogram,
-        ));
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
         let baseline = FillerRowProvider::new(session.clone(), Side::Baseline);
         let current = FillerRowProvider::new(session, Side::Current);
         assert_ne!(
@@ -675,10 +662,7 @@ mod tests {
 
     #[test]
     fn provider_version_distinct_across_all_three_sides_at_rev_zero() {
-        let session = Arc::new(DiffSession::new(
-            BufferId(1),
-            DiffAlgorithm::Histogram,
-        ));
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
         let baseline = FillerRowProvider::new(session.clone(), Side::Baseline);
         let current = FillerRowProvider::new(session.clone(), Side::Current);
         let remote = FillerRowProvider::new(session, Side::Remote);
@@ -691,10 +675,7 @@ mod tests {
 
     #[test]
     fn remote_provider_collect_reads_published_three_way_hunks() {
-        let session = Arc::new(DiffSession::new(
-            BufferId(1),
-            DiffAlgorithm::Histogram,
-        ));
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
         session.publish(Arc::new(idx(vec![hunk3(
             HunkKind::Add,
             LineRange::new(10, 10),

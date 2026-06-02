@@ -328,12 +328,16 @@ pub enum Action {
     /// `Editor::handle_multibuffer_expand`. No-op when the
     /// active buffer isn't a multibuffer view (no
     /// `MultibufferRegistry` handle for the active id).
-    MultibufferExpand { delta: i32 },
+    MultibufferExpand {
+        delta: i32,
+    },
     /// M.6 (2026-06-01): `:search <query>` — trigger
     /// `lattice_multibuffer::providers::search::project_search`
     /// against the active Editor (as activator). Opens the
     /// resulting view as the active buffer.
-    SearchTrigger { query: String },
+    SearchTrigger {
+        query: String,
+    },
     /// M.6.1: `<CR>` in `project-search-multibuffer-mode` —
     /// jump to the source file/row of the excerpt under cursor.
     SearchJumpToSource,

@@ -71,13 +71,13 @@ use crate::chord::KeyChord;
 use crate::dispatch::RendererSignal;
 use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::pane::PaneTree;
-use crate::versioned::Versioned;
 use crate::state::{
     CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
 use crate::ui::theme::Theme as HostTheme;
+use crate::versioned::Versioned;
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
 
@@ -951,8 +951,7 @@ pub struct Editor {
     /// runtime can store results directly when the response
     /// arrives — no channel, no UI-thread drain. Renderers read
     /// wait-free via `editor.render_state.load().lsp.document_highlights.load()`.
-    pub lsp_document_highlights:
-        std::sync::Arc<arc_swap::ArcSwapOption<DocumentHighlightCache>>,
+    pub lsp_document_highlights: std::sync::Arc<arc_swap::ArcSwapOption<DocumentHighlightCache>>,
     /// Cursor position at which the most recent
     /// `documentHighlight` request was issued.
     pub last_document_highlight_issue_cursor: Option<ProtoPosition>,
@@ -987,8 +986,7 @@ pub struct Editor {
     /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>` so the spawned
     /// LSP request task writes results directly. Renderers read
     /// via `rs.lsp.document_links.get_for(buffer_id)`.
-    pub lsp_document_links_cache:
-        crate::per_buffer_cache::PerBufferCache<LspDocumentLinksCache>,
+    pub lsp_document_links_cache: crate::per_buffer_cache::PerBufferCache<LspDocumentLinksCache>,
     /// Per-buffer code-lens cache.
     /// Per-buffer `textDocument/codeLens` cache. Phase 5.8.AF.5
     /// / Slice 3b.3: `PerBufferCache<T>` so the spawned LSP
@@ -998,8 +996,7 @@ pub struct Editor {
     /// Per-buffer `documentColor` cache.
     /// Per-buffer `textDocument/documentColor` cache. Phase
     /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>`.
-    pub lsp_document_color_cache:
-        crate::per_buffer_cache::PerBufferCache<LspDocumentColorCache>,
+    pub lsp_document_color_cache: crate::per_buffer_cache::PerBufferCache<LspDocumentColorCache>,
     /// Per-buffer semantic-tokens cache.
     /// Per-buffer cache of the last `textDocument/semanticTokens/*`
     /// response. Phase 5.8.AF.5 / Slice 3b.2: `PerBufferCache<T>`
@@ -1007,8 +1004,7 @@ pub struct Editor {
     /// Delta-applied / Empty) directly when the response arrives.
     /// Renderers read wait-free via
     /// `rs.lsp.semantic_tokens.get_for(buffer_id)`.
-    pub lsp_semantic_tokens_cache:
-        crate::per_buffer_cache::PerBufferCache<LspSemanticTokensCache>,
+    pub lsp_semantic_tokens_cache: crate::per_buffer_cache::PerBufferCache<LspSemanticTokensCache>,
     /// Per-buffer pull-diagnostics cache (keyed
     /// `result_id`s for `Unchanged` short-circuit).
     /// Per-buffer `textDocument/diagnostic` (pull) cache.
@@ -1098,8 +1094,7 @@ pub struct Editor {
     /// holds a sibling clone and writes directly via
     /// `cell.store(new_matrix)`. Empty `CellMatrix` until the
     /// worker lands.
-    pub cells_matrix_cell:
-        std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    pub cells_matrix_cell: std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
     /// D.4.d.0 (2026-05-29): per-document cells-matrix
     /// registry. Each visible buffer gets its own
     /// `Arc<ArcSwap<CellMatrix>>` so the cells worker can
@@ -1206,8 +1201,7 @@ pub struct Editor {
     /// `Editor::default()` path (used by tests that don't
     /// boot through `editor_boot`) can leave it unset without
     /// the bind machinery firing.
-    pub diff_subscription_guard:
-        Option<crate::diff::subsystem::DiffSubscriptionGuard>,
+    pub diff_subscription_guard: Option<crate::diff::subsystem::DiffSubscriptionGuard>,
     /// D.3.a.1 (2026-05-29): per-session wake-forwarder
     /// `JoinHandle`s. `:diff` spawns a tokio task that awaits
     /// `DiffSession::publish_notify().notified()` and fires
@@ -1215,8 +1209,11 @@ pub struct Editor {
     /// the task by `BufferId` and unregisters the provider.
     /// `tokio::sync::Mutex` is overkill here — mutation is
     /// `:diff`/`:diffoff` frequency, never per-frame.
-    pub diff_forwarders:
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<lattice_core::BufferId, tokio::task::JoinHandle<()>>>>,
+    pub diff_forwarders: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<lattice_core::BufferId, tokio::task::JoinHandle<()>>,
+        >,
+    >,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

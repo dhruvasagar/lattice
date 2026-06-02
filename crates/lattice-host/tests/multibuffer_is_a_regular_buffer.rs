@@ -177,10 +177,11 @@ fn opening_a_file_does_not_clobber_multibuffer_snapshot() {
 
     // Write a fresh file outside the working tree so do_edit's
     // `Document::open(path)` succeeds.
-    let temp_path = std::env::temp_dir()
-        .join(format!("lattice_multibuffer_clobber_test_{}.txt", std::process::id()));
-    std::fs::write(&temp_path, "FILE-LINE-0\nFILE-LINE-1\nFILE-LINE-2\n")
-        .expect("write tmp file");
+    let temp_path = std::env::temp_dir().join(format!(
+        "lattice_multibuffer_clobber_test_{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&temp_path, "FILE-LINE-0\nFILE-LINE-1\nFILE-LINE-2\n").expect("write tmp file");
 
     // The actual call the picker / `:e` end up making.
     let outcome = editor.do_edit(Some(temp_path.clone()), false);
@@ -314,7 +315,10 @@ fn motion_gg_jumps_to_top() {
     dispatch_chord(&mut editor, KeyChord::char('g'), &mut partial);
     assert_eq!(partial.len(), 1, "first `g` should absorb into partial");
     dispatch_chord(&mut editor, KeyChord::char('g'), &mut partial);
-    assert!(partial.is_empty(), "second `g` should resolve `gg` and clear");
+    assert!(
+        partial.is_empty(),
+        "second `g` should resolve `gg` and clear"
+    );
     assert_eq!(
         editor.cursor.line, 0,
         "`gg` on a multibuffer view must land cursor.line at 0"
@@ -358,10 +362,7 @@ fn visual_mode_enter_works() {
     let mut partial = Vec::new();
     dispatch_chord(&mut editor, KeyChord::char('v'), &mut partial);
     assert!(
-        matches!(
-            editor.modal,
-            lattice_grammar::ModalState::Visual(_)
-        ),
+        matches!(editor.modal, lattice_grammar::ModalState::Visual(_)),
         "pressing `v` on a multibuffer view must enter Visual \
          modal state (modal is {:?})",
         editor.modal

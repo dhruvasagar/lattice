@@ -166,9 +166,7 @@ pub enum EditorCommand {
     /// the message. Used by tests to await processing without
     /// observing side effects. Also useful for synchronous
     /// barriers in subsequent slices.
-    Ping {
-        reply: oneshot::Sender<()>,
-    },
+    Ping { reply: oneshot::Sender<()> },
     /// Tear down the actor. The thread joins cleanly after the
     /// in-flight command completes.
     Shutdown,
@@ -216,11 +214,7 @@ pub enum EditorCommand {
     /// is mirrored into `Editor::viewport_height` for the
     /// cursor-clamp + highlights-worker code paths that don't
     /// carry a pane index. Publishes RS at the tail.
-    SetPaneViewport {
-        idx: usize,
-        height: u32,
-        width: u32,
-    },
+    SetPaneViewport { idx: usize, height: u32, width: u32 },
 }
 
 /// Renderer-side handle to the editor actor.
@@ -279,9 +273,7 @@ pub struct EditorActorHandle {
 ///   3. Non-MultiThread runtime (the GPUI main thread case) —
 ///      escape to a fresh OS thread via `std::thread::scope` and
 ///      do the blocking recv there, outside any tokio context.
-fn safe_blocking_recv<T: Send>(
-    rx: oneshot::Receiver<T>,
-) -> Result<T, oneshot::error::RecvError> {
+fn safe_blocking_recv<T: Send>(rx: oneshot::Receiver<T>) -> Result<T, oneshot::error::RecvError> {
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current() {
         Ok(handle) if matches!(handle.runtime_flavor(), RuntimeFlavor::MultiThread) => {
@@ -312,10 +304,7 @@ impl EditorActorHandle {
     /// immediately; the dispatched action runs on the actor
     /// thread and publishes RenderState when done (the existing
     /// `paint_request` Notify wakes the GPUI peer's next paint).
-    pub fn send_action(
-        &self,
-        action: Action,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn send_action(&self, action: Action) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::Apply(action))
     }
 
@@ -383,11 +372,8 @@ impl EditorActorHandle {
         let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
         let closure: Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send> =
             Box::new(move |e| Box::new(f(e)));
-        self.send(EditorCommand::Read {
-            closure,
-            reply: tx,
-        })
-        .expect("editor actor alive");
+        self.send(EditorCommand::Read { closure, reply: tx })
+            .expect("editor actor alive");
         // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
         let any = safe_blocking_recv(rx).expect("editor actor alive");
         *any.downcast::<R>().expect("read RPC result type matches")
@@ -404,11 +390,8 @@ impl EditorActorHandle {
         let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
         let closure: Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send> =
             Box::new(move |e| Box::new(f(e)));
-        self.send(EditorCommand::MutateWithReply {
-            closure,
-            reply: tx,
-        })
-        .expect("editor actor alive");
+        self.send(EditorCommand::MutateWithReply { closure, reply: tx })
+            .expect("editor actor alive");
         // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
         let any = safe_blocking_recv(rx).expect("editor actor alive");
         *any.downcast::<R>().expect("mutate RPC result type matches")
@@ -433,26 +416,17 @@ impl EditorActorHandle {
     }
 
     /// Replace `cursor.line` and republish.
-    pub fn set_cursor_line(
-        &self,
-        line: u32,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_cursor_line(&self, line: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::SetCursorLine(line))
     }
 
     /// Replace `cursor.byte` and republish.
-    pub fn set_cursor_byte(
-        &self,
-        byte: u32,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_cursor_byte(&self, byte: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::SetCursorByte(byte))
     }
 
     /// Replace `scroll` and republish.
-    pub fn set_scroll(
-        &self,
-        scroll: u32,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_scroll(&self, scroll: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::SetScroll(scroll))
     }
 
@@ -960,7 +934,10 @@ mod tests {
         handle
             .apply_blocking(Action::None)
             .expect("apply blocking barrier");
-        assert_eq!(handle.render_state().active_document.cursor, Position::new(2, 1));
+        assert_eq!(
+            handle.render_state().active_document.cursor,
+            Position::new(2, 1)
+        );
     }
 
     #[test]

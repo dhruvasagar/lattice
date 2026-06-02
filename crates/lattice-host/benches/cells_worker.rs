@@ -45,13 +45,11 @@ use arc_swap::ArcSwap;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_cells::{CellMatrix, EditDelta, MatrixVersion, VirtualRowMatrix};
-use lattice_host::cells_worker::recompute;
-use lattice_host::cells_worker::WhitespaceConfig;
-use lattice_host::render_state::{
-    CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState,
-};
-use lattice_host::ui::theme::Theme;
 use lattice_core::Document;
+use lattice_host::cells_worker::WhitespaceConfig;
+use lattice_host::cells_worker::recompute;
+use lattice_host::render_state::{CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState};
+use lattice_host::ui::theme::Theme;
 use lattice_runtime::DocumentSnapshot;
 
 /// Fixed viewport height. Sized to a typical editing window;
@@ -63,11 +61,7 @@ const VIEWPORT_HEIGHT: u32 = 60;
 /// rather than empty buffers.
 fn synthetic_rust_doc(line_count: usize) -> Document {
     let body: String = (0..line_count)
-        .map(|i| {
-            format!(
-                "fn handler_{i:04}(input: &str) -> Result<Output, Error> {{ Ok(()) }}\n"
-            )
-        })
+        .map(|i| format!("fn handler_{i:04}(input: &str) -> Result<Output, Error> {{ Ok(()) }}\n"))
         .collect();
     Document::from_text(&body)
 }
@@ -88,10 +82,9 @@ fn rs_for(
     last_edit: Option<EditDelta>,
     matrix_cell: Arc<ArcSwap<CellMatrix>>,
 ) -> ArcSwap<RenderState> {
-    use lattice_core::ui::pane::PaneId;
     use lattice_core::BufferId;
-    let inlay_hints: Arc<[InlayHintRow]> =
-        Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice());
+    use lattice_core::ui::pane::PaneId;
+    let inlay_hints: Arc<[InlayHintRow]> = Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice());
     let folds: Arc<[lattice_core::Fold]> =
         Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice());
     let pane_entry = PaneCellsInputs {

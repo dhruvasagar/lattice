@@ -615,8 +615,7 @@ pub struct LspRenderState {
     /// `PerBufferCacheExt::insert_for`; renderers read wait-free
     /// via `.get_for(buffer_id)` and get a detached
     /// `Arc<LspInlayHintCache>`.
-    pub inlay_hints:
-        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspInlayHintCache>,
+    pub inlay_hints: crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspInlayHintCache>,
     /// Slice 3b.1: per-buffer `textDocument/foldingRange` cache.
     /// Same shape as `inlay_hints`; renderers read via
     /// `.get_for(buffer_id)`.
@@ -654,10 +653,7 @@ pub struct LspRenderState {
     /// `rs.lsp.progress.iter()` to populate the modeline progress
     /// strip instead of `app.editor.lsp_progress.iter()`.
     pub progress: std::sync::Arc<
-        std::collections::HashMap<
-            (std::sync::Arc<str>, String),
-            lattice_lsp::LspProgressUpdate,
-        >,
+        std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
     >,
     /// Slice 3c.final.B (group 4): LSP supervisor handle clone.
     /// The handle is internally `Arc<ArcSwap<SupervisorSnapshot>>`-
@@ -1709,8 +1705,12 @@ pub struct BufferLocalsRenderState {
 /// not per-frame.
 #[derive(Debug, Default, Clone)]
 pub struct ModesRenderState {
-    pub map:
-        std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<lattice_mode::ActiveModes>>>,
+    pub map: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<lattice_mode::ActiveModes>,
+        >,
+    >,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the
@@ -1847,8 +1847,8 @@ pub struct DiagnosticsRenderState {
 
 #[cfg(test)]
 mod tests {
-    use crate::editor::Editor;
     use crate::action::Action;
+    use crate::editor::Editor;
     use lattice_lsp::DiagnosticEvent;
     use lattice_lsp::lsp_types::{
         Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri,
@@ -1957,8 +1957,14 @@ mod tests {
         assert_eq!(rs.active_document.cursor, Position::new(7, 3));
         assert_eq!(rs.active_document.scroll, 5);
         assert_eq!(rs.active_document.viewport_height, 30);
-        assert_eq!(rs.active_document.modal, lattice_grammar::ModalState::Normal);
-        assert_eq!(rs.active_document.buffer_kind, lattice_core::BufferKind::Document);
+        assert_eq!(
+            rs.active_document.modal,
+            lattice_grammar::ModalState::Normal
+        );
+        assert_eq!(
+            rs.active_document.buffer_kind,
+            lattice_core::BufferKind::Document
+        );
         // Snapshot is a fresh Arc clone from `editor.document`.
         // Identity isn't preserved across publications (naive
         // rebuild today); the value is what matters.
@@ -2472,16 +2478,10 @@ mod tests {
         // Insert a synthetic span set for pane index 1 (the test
         // doesn't care about the span content; only the shape +
         // map round-trip matters).
-        editor
-            .pane_highlights
-            .insert(1, vec![vec![], vec![]]);
+        editor.pane_highlights.insert(1, vec![vec![], vec![]]);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        let spans = rs
-            .syntax
-            .pane_highlights
-            .get(&1)
-            .expect("pane 1 entry");
+        let spans = rs.syntax.pane_highlights.get(&1).expect("pane 1 entry");
         assert_eq!(spans.len(), 2);
         // Removal also round-trips.
         editor.pane_highlights.remove(&1);
@@ -2572,10 +2572,7 @@ mod tests {
         assert_eq!(last.level, EchoLevel::Info);
         assert_eq!(rs.modeline.cmdline_text.as_ref(), "describe-key ");
         assert!(rs.modeline.auto_submit_hint);
-        assert_eq!(
-            rs.modeline.search_pattern.as_deref(),
-            Some("needle"),
-        );
+        assert_eq!(rs.modeline.search_pattern.as_deref(), Some("needle"),);
         assert_eq!(
             rs.modeline.search_direction,
             Some(SearchDirection::Backward),
@@ -2877,8 +2874,8 @@ mod tests {
     /// iterate without a kind check per entry.
     #[test]
     fn cells_panes_skip_non_document_leaves() {
-        use lattice_core::ui::pane::SplitOrientation;
         use lattice_core::BufferKind;
+        use lattice_core::ui::pane::SplitOrientation;
         let mut editor = Editor::default();
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         // Flip pane index 1 to a non-Document kind. The filter
@@ -3003,8 +3000,8 @@ mod tests {
     /// cells for those kinds.
     #[test]
     fn cells_pane_matrices_skip_non_document_leaves() {
-        use lattice_core::ui::pane::SplitOrientation;
         use lattice_core::BufferKind;
+        use lattice_core::ui::pane::SplitOrientation;
         let mut editor = Editor::default();
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         let non_doc_pane_id = {
@@ -3089,8 +3086,8 @@ mod tests {
     /// `cells_pane_matrices_skip_non_document_leaves`.
     #[test]
     fn virtual_rows_pane_matrices_skip_non_document_leaves() {
-        use lattice_core::ui::pane::SplitOrientation;
         use lattice_core::BufferKind;
+        use lattice_core::ui::pane::SplitOrientation;
         let mut editor = Editor::default();
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         let non_doc_pane_id = {
@@ -3118,10 +3115,9 @@ mod tests {
         // Borderline impossible to hit the timeout if the permit
         // is set — `tokio::time::timeout` returns Err only on
         // genuine miss.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            async move { waker.notified().await },
-        )
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), async move {
+            waker.notified().await
+        })
         .await;
         assert!(
             result.is_ok(),

@@ -119,7 +119,13 @@ impl<T> PerBufferCacheExt<T> for PerBufferCache<T> {
         // map. Skip the rebuild entirely when nothing matches.
         let drop_keys: Vec<BufferId> = current
             .iter()
-            .filter_map(|(id, value)| if predicate(*id, value) { None } else { Some(*id) })
+            .filter_map(|(id, value)| {
+                if predicate(*id, value) {
+                    None
+                } else {
+                    Some(*id)
+                }
+            })
             .collect();
         if drop_keys.is_empty() {
             return;

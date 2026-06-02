@@ -132,9 +132,10 @@ fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
         (KeymapCapability::Full, _) => true,
         (KeymapCapability::User, KeymapLayer::User) => true,
         (KeymapCapability::MinorMode, KeymapLayer::MinorMode(_) | KeymapLayer::Buffer) => true,
-        (KeymapCapability::OwnedLayer { mode_id: cap_mode }, KeymapLayer::MinorMode(layer_mode)) => {
-            cap_mode == layer_mode
-        }
+        (
+            KeymapCapability::OwnedLayer { mode_id: cap_mode },
+            KeymapLayer::MinorMode(layer_mode),
+        ) => cap_mode == layer_mode,
         _ => false,
     }
 }
@@ -249,9 +250,7 @@ impl RegistryInner {
     /// The keystroke path consults this map for each active
     /// `ModeId` (in reverse activation order, last-wins) when
     /// composing the merged trie.
-    fn build_minor_mode_tries(
-        &self,
-    ) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
+    fn build_minor_mode_tries(&self) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
         let mut out = HashMap::new();
         for layer in &self.layers {
             if let KeymapLayer::MinorMode(mode_id) = layer.layer {
@@ -1099,11 +1098,7 @@ mod tests {
         ));
         t.insert(&[lit('q')], bound);
         bindings.insert(BindingMode::Normal, t);
-        let id = h.push_layer(
-            PushLayerKind::MinorMode(snippet_mode),
-            "snippet",
-            bindings,
-        );
+        let id = h.push_layer(PushLayerKind::MinorMode(snippet_mode), "snippet", bindings);
         assert_eq!(h.layer_label(id).as_deref(), Some("snippet"));
         // Unknown id -> None.
         assert!(h.layer_label(LayerId(9999)).is_none());
@@ -1497,7 +1492,11 @@ mod tests {
     fn plugin_binds_chord_that_fires_plugin_command() {
         let h = KeymapHandle::new();
         let mode_id = ModeId::new("plugin-foo");
-        let _id = h.push_layer(PushLayerKind::MinorMode(mode_id), "plugin-foo", HashMap::new());
+        let _id = h.push_layer(
+            PushLayerKind::MinorMode(mode_id),
+            "plugin-foo",
+            HashMap::new(),
+        );
         let cap = KeymapCapability::OwnedLayer { mode_id };
         let plugin_cmd = invocation(0xFEED);
 
@@ -1551,11 +1550,7 @@ mod tests {
         ));
         trie.insert(&[lit('d'), lit('o')], bound);
         bindings.insert(BindingMode::Normal, trie);
-        h.push_layer(
-            PushLayerKind::MinorMode(diff_mode),
-            "diff-mode",
-            bindings,
-        );
+        h.push_layer(PushLayerKind::MinorMode(diff_mode), "diff-mode", bindings);
 
         // Legacy lookup sees the binding (all modes active).
         let legacy = h.lookup(BindingMode::Normal, &[pressed('d'), pressed('o')]);

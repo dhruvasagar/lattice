@@ -120,36 +120,24 @@ pub fn key_to_ansi_with_mode(
         // table above before reaching this arm.
         KeyKind::Special(SpecialKey::Space) => Some(vec![b' ']),
         // ---- Arrows + Home/End — cursor-key family.
-        KeyKind::Special(SpecialKey::Up) => Some(cursor_key(
-            b'A',
-            mods,
-            cursor_keys_application_mode,
-        )),
-        KeyKind::Special(SpecialKey::Down) => Some(cursor_key(
-            b'B',
-            mods,
-            cursor_keys_application_mode,
-        )),
-        KeyKind::Special(SpecialKey::Right) => Some(cursor_key(
-            b'C',
-            mods,
-            cursor_keys_application_mode,
-        )),
-        KeyKind::Special(SpecialKey::Left) => Some(cursor_key(
-            b'D',
-            mods,
-            cursor_keys_application_mode,
-        )),
-        KeyKind::Special(SpecialKey::Home) => Some(cursor_key(
-            b'H',
-            mods,
-            cursor_keys_application_mode,
-        )),
-        KeyKind::Special(SpecialKey::End) => Some(cursor_key(
-            b'F',
-            mods,
-            cursor_keys_application_mode,
-        )),
+        KeyKind::Special(SpecialKey::Up) => {
+            Some(cursor_key(b'A', mods, cursor_keys_application_mode))
+        }
+        KeyKind::Special(SpecialKey::Down) => {
+            Some(cursor_key(b'B', mods, cursor_keys_application_mode))
+        }
+        KeyKind::Special(SpecialKey::Right) => {
+            Some(cursor_key(b'C', mods, cursor_keys_application_mode))
+        }
+        KeyKind::Special(SpecialKey::Left) => {
+            Some(cursor_key(b'D', mods, cursor_keys_application_mode))
+        }
+        KeyKind::Special(SpecialKey::Home) => {
+            Some(cursor_key(b'H', mods, cursor_keys_application_mode))
+        }
+        KeyKind::Special(SpecialKey::End) => {
+            Some(cursor_key(b'F', mods, cursor_keys_application_mode))
+        }
         // ---- Tilde-terminated family.
         KeyKind::Special(SpecialKey::PageUp) => Some(tilde_key(5, mods)),
         KeyKind::Special(SpecialKey::PageDown) => Some(tilde_key(6, mods)),
@@ -371,7 +359,10 @@ mod tests {
     // ---- T2.b (2026-05-25) — full encoder coverage ----
 
     fn special(k: SpecialKey, mods: KeyMods) -> KeyChord {
-        KeyChord { key: KeyKind::Special(k), mods }
+        KeyChord {
+            key: KeyKind::Special(k),
+            mods,
+        }
     }
 
     #[test]
@@ -420,10 +411,7 @@ mod tests {
         );
         // Ctrl+Shift = parameter `6` (bits 0b101 + 1).
         assert_eq!(
-            key_to_ansi(&special(
-                SpecialKey::Down,
-                KeyMods::CTRL | KeyMods::SHIFT,
-            )),
+            key_to_ansi(&special(SpecialKey::Down, KeyMods::CTRL | KeyMods::SHIFT,)),
             Some(b"\x1b[1;6B".to_vec()),
         );
     }
@@ -478,7 +466,8 @@ mod tests {
             assert_eq!(
                 key_to_ansi(&bare(KeyKind::Special(SpecialKey::F(n)))),
                 Some(vec![0x1b, b'O', letter]),
-                "F{n} should emit ESC O {}", letter as char,
+                "F{n} should emit ESC O {}",
+                letter as char,
             );
         }
     }
@@ -513,10 +502,7 @@ mod tests {
             key_to_ansi(&bare(KeyKind::Special(SpecialKey::F(13)))),
             None,
         );
-        assert_eq!(
-            key_to_ansi(&bare(KeyKind::Special(SpecialKey::F(0)))),
-            None,
-        );
+        assert_eq!(key_to_ansi(&bare(KeyKind::Special(SpecialKey::F(0)))), None,);
     }
 
     #[test]

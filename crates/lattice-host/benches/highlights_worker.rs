@@ -80,7 +80,13 @@ fn build_rs(
         }),
         ..RenderState::default()
     };
-    (ArcSwap::from_pointee(rs), handle, cell, rows_cell, overlay_cell)
+    (
+        ArcSwap::from_pointee(rs),
+        handle,
+        cell,
+        rows_cell,
+        overlay_cell,
+    )
 }
 
 fn rebuild_rs(
@@ -127,21 +133,17 @@ fn cache_hit_bench(c: &mut Criterion) {
             recompute(&rs, &cell, &rows_cell, &overlay_cell),
             WorkerDecision::Recomputed
         );
-        g.bench_with_input(
-            BenchmarkId::from_parameter(viewport),
-            &(),
-            |bencher, _| {
-                bencher.iter(|| {
-                    let d = recompute(
-                        black_box(&rs),
-                        black_box(&cell),
-                        black_box(&rows_cell),
-                        black_box(&overlay_cell),
-                    );
-                    debug_assert_eq!(d, WorkerDecision::CacheHit);
-                });
-            },
-        );
+        g.bench_with_input(BenchmarkId::from_parameter(viewport), &(), |bencher, _| {
+            bencher.iter(|| {
+                let d = recompute(
+                    black_box(&rs),
+                    black_box(&cell),
+                    black_box(&rows_cell),
+                    black_box(&overlay_cell),
+                );
+                debug_assert_eq!(d, WorkerDecision::CacheHit);
+            });
+        });
     }
     g.finish();
 }
@@ -155,36 +157,32 @@ fn recompute_bench(c: &mut Criterion) {
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(2000);
         let (_rs0, handle, cell, rows_cell, overlay_cell) = build_rs(&corpus, 0, viewport, 0, 1);
-        g.bench_with_input(
-            BenchmarkId::from_parameter(viewport),
-            &(),
-            |bencher, _| {
-                let mut scroll: u32 = 0;
-                bencher.iter(|| {
-                    scroll = (scroll + 1) % 100;
-                    let rs = rebuild_rs(
-                        &handle,
-                        &cell,
-                        &rows_cell,
-                        &overlay_cell,
-                        scroll,
-                        viewport,
-                        0,
-                        1,
-                    );
-                    let d = recompute(
-                        black_box(&rs),
-                        black_box(&cell),
-                        black_box(&rows_cell),
-                        black_box(&overlay_cell),
-                    );
-                    debug_assert!(matches!(
-                        d,
-                        WorkerDecision::Recomputed | WorkerDecision::CacheHit
-                    ));
-                });
-            },
-        );
+        g.bench_with_input(BenchmarkId::from_parameter(viewport), &(), |bencher, _| {
+            let mut scroll: u32 = 0;
+            bencher.iter(|| {
+                scroll = (scroll + 1) % 100;
+                let rs = rebuild_rs(
+                    &handle,
+                    &cell,
+                    &rows_cell,
+                    &overlay_cell,
+                    scroll,
+                    viewport,
+                    0,
+                    1,
+                );
+                let d = recompute(
+                    black_box(&rs),
+                    black_box(&cell),
+                    black_box(&rows_cell),
+                    black_box(&overlay_cell),
+                );
+                debug_assert!(matches!(
+                    d,
+                    WorkerDecision::Recomputed | WorkerDecision::CacheHit
+                ));
+            });
+        });
     }
     g.finish();
 }
@@ -209,32 +207,28 @@ fn stale_hold_bench(c: &mut Criterion) {
             WorkerDecision::Recomputed
         );
         let mut fold_hash: u64 = 0;
-        g.bench_with_input(
-            BenchmarkId::from_parameter(viewport),
-            &(),
-            |bencher, _| {
-                bencher.iter(|| {
-                    fold_hash = fold_hash.wrapping_add(1);
-                    let rs = rebuild_rs(
-                        &handle,
-                        &cell,
-                        &rows_cell,
-                        &overlay_cell,
-                        0,
-                        viewport,
-                        fold_hash,
-                        2,
-                    );
-                    let d = recompute(
-                        black_box(&rs),
-                        black_box(&cell),
-                        black_box(&rows_cell),
-                        black_box(&overlay_cell),
-                    );
-                    debug_assert_eq!(d, WorkerDecision::StaleSnapshotHold);
-                });
-            },
-        );
+        g.bench_with_input(BenchmarkId::from_parameter(viewport), &(), |bencher, _| {
+            bencher.iter(|| {
+                fold_hash = fold_hash.wrapping_add(1);
+                let rs = rebuild_rs(
+                    &handle,
+                    &cell,
+                    &rows_cell,
+                    &overlay_cell,
+                    0,
+                    viewport,
+                    fold_hash,
+                    2,
+                );
+                let d = recompute(
+                    black_box(&rs),
+                    black_box(&cell),
+                    black_box(&rows_cell),
+                    black_box(&overlay_cell),
+                );
+                debug_assert_eq!(d, WorkerDecision::StaleSnapshotHold);
+            });
+        });
     }
     g.finish();
 }

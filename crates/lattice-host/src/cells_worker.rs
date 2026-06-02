@@ -66,9 +66,7 @@ use tracing::{debug, info};
 
 use crate::editor::CellsWake;
 use crate::render_state::RenderState;
-use lattice_cells::{
-    Cell, CellChunk, CellMatrix, CellRow, MatrixVersion, CHUNK_SIZE_WHOLE_DOC,
-};
+use lattice_cells::{CHUNK_SIZE_WHOLE_DOC, Cell, CellChunk, CellMatrix, CellRow, MatrixVersion};
 
 /// 2026-05-27: `display.whitespace.*` snapshot consumed by the
 /// cell-builder when emitting cells. Mirrors the
@@ -424,8 +422,7 @@ fn try_incremental_build(
     let net = edit.net_delta();
 
     // Build inputs once for the affected-zone rebuild path.
-    let (default_fg, default_flags) =
-        resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
         pane.syntax_handle.as_deref().and_then(|h| {
@@ -487,9 +484,7 @@ fn try_incremental_build(
     // --- Step 1: prefix-reuse ---
     let mut rebuild_lo: u32 = 0;
     for chunk in published.chunks.iter() {
-        let chunk_end = chunk
-            .start_source_line
-            .saturating_add(published.chunk_size);
+        let chunk_end = chunk.start_source_line.saturating_add(published.chunk_size);
         if chunk_end <= edit_lo {
             new_chunks.push(Arc::clone(chunk));
             rebuild_lo = chunk_end;
@@ -602,15 +597,16 @@ fn build_matrix(
     // is available. `highlight_lines` returns one Vec<StyledSpan>
     // per line in [0, line_count); spans are line-relative byte
     // offsets.
-    let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> = syntax_handle.and_then(|h| {
-        let snap = h.snapshot();
-        // Stale snapshot — don't paint with mismatched offsets.
-        // Worker will rebuild when the syntax catches up.
-        if snap.text_version() < snapshot.text_version {
-            return None;
-        }
-        snap.highlight_lines(0, line_count).ok()
-    });
+    let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+        syntax_handle.and_then(|h| {
+            let snap = h.snapshot();
+            // Stale snapshot — don't paint with mismatched offsets.
+            // Worker will rebuild when the syntax catches up.
+            if snap.text_version() < snapshot.text_version {
+                return None;
+            }
+            snap.highlight_lines(0, line_count).ok()
+        });
 
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
@@ -634,9 +630,8 @@ fn build_matrix(
             CellMatrix::whole_doc(chunk, line_count)
         }
         ChunkMode::Chunked(chunk_size) => {
-            let mut chunks: Vec<Arc<CellChunk>> = Vec::with_capacity(
-                ((line_count + chunk_size - 1) / chunk_size) as usize,
-            );
+            let mut chunks: Vec<Arc<CellChunk>> =
+                Vec::with_capacity(((line_count + chunk_size - 1) / chunk_size) as usize);
             let mut start = 0u32;
             while start < line_count {
                 let end = start.saturating_add(chunk_size).min(line_count);
@@ -771,10 +766,7 @@ fn build_row_cells(
 ) -> (Vec<Cell>, Vec<lattice_cells::row::InlayOffset>) {
     // Capacity: source chars + sum of inlay char widths. Slight
     // over-estimate is fine.
-    let inlay_total_chars: usize = line_inlays
-        .iter()
-        .map(|(_, t)| t.chars().count())
-        .sum();
+    let inlay_total_chars: usize = line_inlays.iter().map(|(_, t)| t.chars().count()).sum();
     let mut cells: Vec<Cell> = Vec::with_capacity(text.len() + inlay_total_chars);
     let mut inlay_offsets: Vec<lattice_cells::row::InlayOffset> =
         Vec::with_capacity(line_inlays.len());
@@ -825,9 +817,7 @@ fn build_row_cells(
         // Splice every inlay whose `orig_byte` is at or before this
         // char position. Order-of-arrival ties at the same byte
         // resolve in input order.
-        while inlay_idx < line_inlays.len()
-            && (line_inlays[inlay_idx].0 as usize) <= byte
-        {
+        while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
             let (orig_byte, t) = line_inlays[inlay_idx];
             let char_width = t.chars().count() as u32;
             inlay_offsets.push((orig_byte, char_width));
@@ -919,8 +909,7 @@ fn bucket_inlays_by_line<'a>(
     inlay_hints: &'a [crate::render_state::InlayHintRow],
     line_count: u32,
 ) -> Vec<Vec<(u32, &'a str)>> {
-    let mut buckets: Vec<Vec<(u32, &'a str)>> =
-        vec![Vec::new(); line_count as usize];
+    let mut buckets: Vec<Vec<(u32, &'a str)>> = vec![Vec::new(); line_count as usize];
     if inlay_hints.is_empty() {
         return buckets;
     }
@@ -941,8 +930,7 @@ fn bucket_inlays_by_line<'a>(
 /// match / selection bg slots tracked in the polish backlog
 /// (#19).
 fn inlay_hint_fg() -> u32 {
-    crate::ui::theme::Color::Named(crate::ui::theme::NamedColor::DarkGray)
-        .to_rgb_u32(0)
+    crate::ui::theme::Color::Named(crate::ui::theme::NamedColor::DarkGray).to_rgb_u32(0)
 }
 
 /// Resolve a syntax style to its `0xRRGGBB` foreground colour via
@@ -964,10 +952,7 @@ fn resolve_fg(theme: &crate::ui::theme::Theme, style: lattice_syntax::Style) -> 
 /// [`crate::ui::theme::Modifiers`] for this style. Splice-flags
 /// like `INLAY` / `WS_MARKER` are NOT set here — callers OR those
 /// in separately when emitting an inlay or whitespace cell.
-fn resolve_style(
-    theme: &crate::ui::theme::Theme,
-    style: lattice_syntax::Style,
-) -> (u32, u16) {
+fn resolve_style(theme: &crate::ui::theme::Theme, style: lattice_syntax::Style) -> (u32, u16) {
     let s = theme.syntax_style(style);
     let fg = s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
     let flags = modifiers_to_flags(&s.modifiers);
@@ -1005,10 +990,7 @@ fn modifiers_to_flags(m: &crate::ui::theme::Modifiers) -> u16 {
 /// Resolve the highlight style at a given utf-8 byte offset inside
 /// `line_spans`. Mirrors `highlights_worker::style_at_byte` —
 /// bytes outside every span fall through to `Style::Default`.
-fn style_at_byte(
-    line_spans: &[lattice_syntax::StyledSpan],
-    byte: usize,
-) -> lattice_syntax::Style {
+fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> lattice_syntax::Style {
     for s in line_spans {
         if byte >= s.start && byte < s.end {
             return s.style;
@@ -1270,10 +1252,7 @@ mod tests {
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
         assert_eq!(recompute(&rs), WorkerDecision::CacheHit);
         let second_ptr = Arc::as_ptr(&matrix_cell.load_full());
-        assert_eq!(
-            first_ptr, second_ptr,
-            "cache-hit must not store a new Arc"
-        );
+        assert_eq!(first_ptr, second_ptr, "cache-hit must not store a new Arc");
     }
 
     /// Version bump triggers a fresh build. Earlier matrix is
@@ -1349,13 +1328,8 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs = rs_with_snapshot_themed(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            Some(handle),
-            theme,
-        );
+        let rs =
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
@@ -1381,9 +1355,11 @@ mod tests {
 
         // Line 1 is a line comment — every byte takes the comment fg.
         let line1 = rows[1];
-        assert!(line1.cells.iter().all(|c| c.fg == expected_comment),
+        assert!(
+            line1.cells.iter().all(|c| c.fg == expected_comment),
             "every cell on a line-comment row must carry the comment fg; got {:?}",
-            line1.cells.iter().map(|c| c.fg).collect::<Vec<_>>());
+            line1.cells.iter().map(|c| c.fg).collect::<Vec<_>>()
+        );
     }
 
     /// Without a syntax handle, every cell on every line takes the
@@ -1418,13 +1394,8 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 2);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs = rs_with_snapshot_themed(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            Some(handle),
-            theme,
-        );
+        let rs =
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let default_fg = resolve_fg(&theme, lattice_syntax::Style::Default);
@@ -1468,14 +1439,7 @@ mod tests {
         let snap = snap_of_versioned("hello", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 2, ": ")];
-        let rs = rs_with_snapshot_full(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            None,
-            theme,
-            hints,
-        );
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         let row = m.slice(0, 1).iter().next().cloned().unwrap();
@@ -1509,16 +1473,15 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // Insert out of order on purpose.
         let hints = vec![inlay(0, 2, "[2]"), inlay(0, 1, "[1]")];
-        let rs = rs_with_snapshot_full(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            None,
-            theme,
-            hints,
-        );
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
-        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        let row = matrix_cell
+            .load()
+            .slice(0, 1)
+            .iter()
+            .next()
+            .cloned()
+            .unwrap();
         assert_eq!(row_text(&row), "a[1]b[2]c");
         // Offsets ordered by orig_byte.
         assert_eq!(
@@ -1536,16 +1499,15 @@ mod tests {
         let snap = snap_of_versioned("xyz", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 0, "?")];
-        let rs = rs_with_snapshot_full(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            None,
-            theme,
-            hints,
-        );
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
-        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        let row = matrix_cell
+            .load()
+            .slice(0, 1)
+            .iter()
+            .next()
+            .cloned()
+            .unwrap();
         assert_eq!(row_text(&row), "?xyz");
         assert!(row.cells[0].is_inlay());
         assert_eq!(row.inlay_offsets.as_ref(), &[(0u32, 1u32)] as &[_]);
@@ -1561,16 +1523,15 @@ mod tests {
         let snap = snap_of_versioned("ab", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 2, ";")];
-        let rs = rs_with_snapshot_full(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            None,
-            theme,
-            hints,
-        );
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
-        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        let row = matrix_cell
+            .load()
+            .slice(0, 1)
+            .iter()
+            .next()
+            .cloned()
+            .unwrap();
         assert_eq!(row_text(&row), "ab;");
         assert!(row.cells[2].is_inlay());
         assert_eq!(row.inlay_offsets.as_ref(), &[(2u32, 1u32)] as &[_]);
@@ -1592,7 +1553,10 @@ mod tests {
             theme: 0,
             whitespace: 0,
         };
-        let v_b = MatrixVersion { inlay_hints: 1, ..v_a };
+        let v_b = MatrixVersion {
+            inlay_hints: 1,
+            ..v_a
+        };
 
         let rs1 = rs_with_snapshot_full(
             Some(snap.clone()),
@@ -1616,7 +1580,13 @@ mod tests {
         );
         assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
-        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        let row = matrix_cell
+            .load()
+            .slice(0, 1)
+            .iter()
+            .next()
+            .cloned()
+            .unwrap();
         assert_eq!(row_text(&row), "!a");
     }
 
@@ -1730,8 +1700,7 @@ mod tests {
 
         // Slice iteration walks across chunks transparently and
         // preserves logical source_line on each row.
-        let source_lines: Vec<u32> =
-            m.slice(0, 100).iter().map(|r| r.source_line).collect();
+        let source_lines: Vec<u32> = m.slice(0, 100).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, (0u32..25).collect::<Vec<_>>());
     }
 
@@ -1770,10 +1739,8 @@ mod tests {
         assert_eq!(m.source_line_count, 25);
         // 25 source - 10 elided (11..=20) = 15 visible rows.
         assert_eq!(m.visible_line_count, 15);
-        let source_lines: Vec<u32> =
-            m.slice(0, 100).iter().map(|r| r.source_line).collect();
-        let expected: Vec<u32> =
-            (0u32..=10).chain(21u32..25).collect();
+        let source_lines: Vec<u32> = m.slice(0, 100).iter().map(|r| r.source_line).collect();
+        let expected: Vec<u32> = (0u32..=10).chain(21u32..25).collect();
         assert_eq!(source_lines, expected);
     }
 
@@ -1873,11 +1840,7 @@ mod tests {
         assert_eq!(m.source_line_count, 5);
         // visible_line_count post-fold: 5 - 2 elided = 3 rows.
         assert_eq!(m.visible_line_count, 3);
-        let source_lines: Vec<u32> = m
-            .slice(0, 10)
-            .iter()
-            .map(|r| r.source_line)
-            .collect();
+        let source_lines: Vec<u32> = m.slice(0, 10).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, vec![0, 1, 4]);
     }
 
@@ -1903,8 +1866,7 @@ mod tests {
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert_eq!(m.visible_line_count, 3);
-        let source_lines: Vec<u32> =
-            m.slice(0, 10).iter().map(|r| r.source_line).collect();
+        let source_lines: Vec<u32> = m.slice(0, 10).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, vec![0, 1, 2]);
     }
 
@@ -1956,8 +1918,7 @@ mod tests {
         );
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
-        let source_lines: Vec<u32> =
-            m.slice(0, 10).iter().map(|r| r.source_line).collect();
+        let source_lines: Vec<u32> = m.slice(0, 10).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, vec![0, 3, 4]);
     }
 
@@ -1979,13 +1940,8 @@ mod tests {
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
-        let rs1 = rs_with_snapshot_themed(
-            Some(snap.clone()),
-            v_a,
-            matrix_cell.clone(),
-            None,
-            theme,
-        );
+        let rs1 =
+            rs_with_snapshot_themed(Some(snap.clone()), v_a, matrix_cell.clone(), None, theme);
         assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
 
@@ -1994,8 +1950,7 @@ mod tests {
         assert_eq!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
 
         // Bump only the theme axis: must rebuild.
-        let rs2 =
-            rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None, theme);
+        let rs2 = rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None, theme);
         assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
     }
@@ -2021,7 +1976,11 @@ mod tests {
 
         // First publish: 3-line doc at text_version 1, no edit.
         let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2039,7 +1998,11 @@ mod tests {
 
         // Second publish: insert a line at line 1; text_version → 2.
         let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let edit = edit_delta(1, 0, 1);
         let rs2 = rs_with_everything(
             Some(snap2),
@@ -2053,10 +2016,7 @@ mod tests {
             Some(edit),
             5,
         );
-        assert_eq!(
-            recompute(&rs2),
-            WorkerDecision::RecomputedIncremental
-        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
         let m = matrix_cell.load();
         assert!(m.is_whole_doc());
         assert_eq!(m.source_line_count, 4);
@@ -2089,7 +2049,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let snap1 = snap_of_versioned(&text1, 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2118,7 +2082,11 @@ mod tests {
             lines.join("\n")
         };
         let snap2 = snap_of_versioned(&text2, 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let edit = edit_delta(2, 0, 1);
         let rs2 = rs_with_everything(
             Some(snap2),
@@ -2132,10 +2100,7 @@ mod tests {
             Some(edit),
             5,
         );
-        assert_eq!(
-            recompute(&rs2),
-            WorkerDecision::RecomputedIncremental
-        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
         let m2 = matrix_cell.load();
         // Post-edit shape: chunked, chunk_size 16, 26 source lines.
         // Partitioning:
@@ -2157,11 +2122,7 @@ mod tests {
         // m2.chunks[2] is the shifted-from-m1.chunks[1] one.
         // Rows whose source_line was 16..25 now have source_lines
         // 17..26.
-        let shifted_lines: Vec<u32> = m2.chunks[2]
-            .rows
-            .iter()
-            .map(|r| r.source_line)
-            .collect();
+        let shifted_lines: Vec<u32> = m2.chunks[2].rows.iter().map(|r| r.source_line).collect();
         assert_eq!(
             shifted_lines,
             (17u32..26).collect::<Vec<_>>(),
@@ -2195,7 +2156,11 @@ mod tests {
         let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb", 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2213,7 +2178,11 @@ mod tests {
         // text bumps but last_edit stays None (multi-edit batch
         // semantics).
         let snap2 = snap_of_versioned("AA\nBB", 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let rs2 = rs_with_everything(
             Some(snap2),
             v2,
@@ -2293,7 +2262,11 @@ mod tests {
         let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb", 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2312,7 +2285,11 @@ mod tests {
         // lines_added=1 against pre 2 → expects 3, not 5. Bail
         // to full rebuild.
         let snap2 = snap_of_versioned("a\nb\nc\nd\ne", 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let edit = edit_delta(0, 0, 1);
         let rs2 = rs_with_everything(
             Some(snap2),
@@ -2338,7 +2315,11 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // 5 lines + viewport 5 → whole-doc (5 <= 20).
         let snap1 = snap_of_versioned("a\nb\nc\nd\ne", 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2362,7 +2343,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let snap2 = snap_of_versioned(&text2, 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let edit = edit_delta(5, 0, 25);
         let rs2 = rs_with_everything(
             Some(snap2),
@@ -2395,7 +2380,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let snap1 = snap_of_versioned(&text1, 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs1 = rs_with_everything(
             Some(snap1),
             v1,
@@ -2420,7 +2409,11 @@ mod tests {
             lines.join("\n")
         };
         let snap2 = snap_of_versioned(&text2, 2);
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let edit = edit_delta(3, 2, 0);
         let rs2 = rs_with_everything(
             Some(snap2),
@@ -2434,16 +2427,12 @@ mod tests {
             Some(edit),
             5,
         );
-        assert_eq!(
-            recompute(&rs2),
-            WorkerDecision::RecomputedIncremental
-        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
         let m2 = matrix_cell.load();
         assert_eq!(m2.source_line_count, 28);
         assert_eq!(m2.visible_line_count, 28);
         // Walk source_lines via slice — must be 0..28 contiguous.
-        let source_lines: Vec<u32> =
-            m2.slice(0, 100).iter().map(|r| r.source_line).collect();
+        let source_lines: Vec<u32> = m2.slice(0, 100).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, (0u32..28).collect::<Vec<_>>());
     }
 
@@ -2463,7 +2452,11 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // Tick 1: initial publish, no prior matrix → full Recomputed.
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
         let rs1 = rs_with_everything(
             Some(snap1.clone()),
@@ -2485,7 +2478,11 @@ mod tests {
 
         // Tick 3: single edit, all other axes unchanged →
         // incremental.
-        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
         let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
         let edit = edit_delta(1, 0, 1);
         let rs2 = rs_with_everything(
@@ -2500,10 +2497,7 @@ mod tests {
             Some(edit),
             5,
         );
-        assert_eq!(
-            recompute(&rs2),
-            WorkerDecision::RecomputedIncremental
-        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
 
         // Tick 4: theme axis bump alongside text — incremental
         // bails, full rebuild runs.
@@ -2539,13 +2533,9 @@ mod tests {
     fn cells_worker_does_not_corrupt_spans_cell() {
         let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let spans_cell: Arc<ArcSwap<crate::render_state::VisibleSpans>> =
-            Arc::default();
-        let rows_cell: Arc<ArcSwap<crate::render_state::VisibleRows>> =
-            Arc::default();
-        let overlay_cell: Arc<
-            ArcSwap<crate::render_state::StaticOverlayQuads>,
-        > = Arc::default();
+        let spans_cell: Arc<ArcSwap<crate::render_state::VisibleSpans>> = Arc::default();
+        let rows_cell: Arc<ArcSwap<crate::render_state::VisibleRows>> = Arc::default();
+        let overlay_cell: Arc<ArcSwap<crate::render_state::StaticOverlayQuads>> = Arc::default();
 
         // Seed a sentinel value into the spans cell so we can
         // detect any unintended mutation.
@@ -2564,7 +2554,11 @@ mod tests {
         // cells path must not touch spans_cell / rows_cell /
         // overlay_cell.
         let snap = snap_of_versioned("aa\nbb", 1);
-        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
         let rs = rs_with_everything(
             Some(snap),
             v1,
@@ -2612,7 +2606,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async move {
-            use tokio::time::{timeout, Duration};
+            use tokio::time::{Duration, timeout};
 
             let theme = crate::ui::theme::Theme::default();
             let render_state: Arc<ArcSwap<RenderState>> =
@@ -2630,67 +2624,60 @@ mod tests {
 
             // Helper: build + atomically publish a fresh
             // RenderState (single-pane), then fire the wake.
-            let publish = |text: &str,
-                           text_version: u64,
-                           last_edit: Option<lattice_cells::EditDelta>| {
-                let snap = snap_of_versioned(text, text_version);
-                let v = MatrixVersion {
-                    text: text_version,
-                    syntax: text_version,
-                    ..MatrixVersion::ZERO
+            let publish =
+                |text: &str, text_version: u64, last_edit: Option<lattice_cells::EditDelta>| {
+                    let snap = snap_of_versioned(text, text_version);
+                    let v = MatrixVersion {
+                        text: text_version,
+                        syntax: text_version,
+                        ..MatrixVersion::ZERO
+                    };
+                    let inputs = crate::render_state::PaneCellsInputs {
+                        pane_id: lattice_core::ui::pane::PaneId::default(),
+                        buffer_id: lattice_core::BufferId::default(),
+                        matrix: matrix_cell.clone(),
+                        virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                            lattice_cells::VirtualRowMatrix::empty(),
+                        )),
+                        version: v,
+                        snapshot: Some(snap.clone()),
+                        syntax_handle: None,
+                        inlay_hints: Arc::from(
+                            Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                        ),
+                        folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+                        viewport_height: 5,
+                        foldenable: true,
+                        last_edit,
+                    };
+                    let cells = CellsRenderState {
+                        matrix: matrix_cell.clone(),
+                        version: v,
+                        snapshot: Some(snap),
+                        syntax_handle: None,
+                        inlay_hints: Arc::from(
+                            Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                        ),
+                        folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+                        viewport_height: 5,
+                        foldenable: true,
+                        last_edit,
+                        theme,
+                        whitespace: WhitespaceConfig::default(),
+                        panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
+                        pane_matrices: {
+                            let mut m = std::collections::HashMap::new();
+                            m.insert(inputs.pane_id, inputs.matrix);
+                            Arc::new(m)
+                        },
+                    };
+                    let rs = RenderState {
+                        cells: Arc::new(cells),
+                        ..RenderState::default()
+                    };
+                    render_state.store(Arc::new(rs));
+                    wake.0.notify_one();
                 };
-                let inputs = crate::render_state::PaneCellsInputs {
-                    pane_id: lattice_core::ui::pane::PaneId::default(),
-                    buffer_id: lattice_core::BufferId::default(),
-                    matrix: matrix_cell.clone(),
-                    virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
-                        lattice_cells::VirtualRowMatrix::empty(),
-                    )),
-                    version: v,
-                    snapshot: Some(snap.clone()),
-                    syntax_handle: None,
-                    inlay_hints: Arc::from(
-                        Vec::<crate::render_state::InlayHintRow>::new()
-                            .into_boxed_slice(),
-                    ),
-                    folds: Arc::from(
-                        Vec::<lattice_core::Fold>::new().into_boxed_slice(),
-                    ),
-                    viewport_height: 5,
-                    foldenable: true,
-                    last_edit,
-                };
-                let cells = CellsRenderState {
-                    matrix: matrix_cell.clone(),
-                    version: v,
-                    snapshot: Some(snap),
-                    syntax_handle: None,
-                    inlay_hints: Arc::from(
-                        Vec::<crate::render_state::InlayHintRow>::new()
-                            .into_boxed_slice(),
-                    ),
-                    folds: Arc::from(
-                        Vec::<lattice_core::Fold>::new().into_boxed_slice(),
-                    ),
-                    viewport_height: 5,
-                    foldenable: true,
-                    last_edit,
-                    theme,
-                    whitespace: WhitespaceConfig::default(),
-                    panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
-                    pane_matrices: {
-                        let mut m = std::collections::HashMap::new();
-                        m.insert(inputs.pane_id, inputs.matrix);
-                        Arc::new(m)
-                    },
-                };
-                let rs = RenderState {
-                    cells: Arc::new(cells),
-                    ..RenderState::default()
-                };
-                render_state.store(Arc::new(rs));
-                wake.0.notify_one();
-            };
 
             // Publish #1 — fresh document.
             publish("aa\nbb\ncc", 1, None);
@@ -2733,9 +2720,7 @@ mod tests {
             wake.0.notify_one();
             // Brief wait window for the worker to process; expect
             // timeout (no paint wake fires).
-            let no_paint =
-                timeout(Duration::from_millis(150), paint_request.notified())
-                    .await;
+            let no_paint = timeout(Duration::from_millis(150), paint_request.notified()).await;
             assert!(
                 no_paint.is_err(),
                 "redundant wake must produce CacheHit, not a paint signal"
@@ -2761,7 +2746,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async move {
-            use tokio::time::{timeout, Duration};
+            use tokio::time::{Duration, timeout};
 
             let theme = crate::ui::theme::Theme::default();
             let render_state: Arc<ArcSwap<RenderState>> =
@@ -2780,7 +2765,11 @@ mod tests {
             // row. `Notify` collapses them to at most one
             // additional permit beyond the first.
             let snap = snap_of_versioned("hello\nworld", 1);
-            let v = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+            let v = MatrixVersion {
+                text: 1,
+                syntax: 1,
+                ..MatrixVersion::ZERO
+            };
             let inputs = crate::render_state::PaneCellsInputs {
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
@@ -2792,12 +2781,9 @@ mod tests {
                 snapshot: Some(snap.clone()),
                 syntax_handle: None,
                 inlay_hints: Arc::from(
-                    Vec::<crate::render_state::InlayHintRow>::new()
-                        .into_boxed_slice(),
+                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
-                folds: Arc::from(
-                    Vec::<lattice_core::Fold>::new().into_boxed_slice(),
-                ),
+                folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
                 viewport_height: 5,
                 foldenable: true,
                 last_edit: None,
@@ -2808,12 +2794,9 @@ mod tests {
                 snapshot: Some(snap),
                 syntax_handle: None,
                 inlay_hints: Arc::from(
-                    Vec::<crate::render_state::InlayHintRow>::new()
-                        .into_boxed_slice(),
+                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
-                folds: Arc::from(
-                    Vec::<lattice_core::Fold>::new().into_boxed_slice(),
-                ),
+                folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
                 viewport_height: 5,
                 foldenable: true,
                 last_edit: None,
@@ -2842,9 +2825,7 @@ mod tests {
             // The remaining wakes all see the same RenderState
             // → CacheHit → no further paint signals. Wait briefly
             // and confirm no extra wake arrives.
-            let drained =
-                timeout(Duration::from_millis(150), paint_request.notified())
-                    .await;
+            let drained = timeout(Duration::from_millis(150), paint_request.notified()).await;
             assert!(
                 drained.is_err(),
                 "redundant wakes must coalesce to CacheHit, no extra paint signal"
@@ -2889,9 +2870,7 @@ mod tests {
     /// Build an `ArcSwap<RenderState>` whose `cells.panes` carries
     /// the caller-supplied entries verbatim. Top-level inputs stay
     /// at default — the worker now reads from `panes`.
-    fn rs_with_panes(
-        entries: Vec<crate::render_state::PaneCellsInputs>,
-    ) -> ArcSwap<RenderState> {
+    fn rs_with_panes(entries: Vec<crate::render_state::PaneCellsInputs>) -> ArcSwap<RenderState> {
         let cells = CellsRenderState {
             panes: Arc::from(entries.into_boxed_slice()),
             ..CellsRenderState::default()
@@ -3032,19 +3011,34 @@ mod tests {
         let none = Modifiers::default();
         assert_eq!(modifiers_to_flags(&none), 0);
 
-        let bold = Modifiers { bold: true, ..Modifiers::default() };
+        let bold = Modifiers {
+            bold: true,
+            ..Modifiers::default()
+        };
         assert_eq!(modifiers_to_flags(&bold), cell_flags::BOLD);
 
-        let italic = Modifiers { italic: true, ..Modifiers::default() };
+        let italic = Modifiers {
+            italic: true,
+            ..Modifiers::default()
+        };
         assert_eq!(modifiers_to_flags(&italic), cell_flags::ITALIC);
 
-        let under = Modifiers { underline: true, ..Modifiers::default() };
+        let under = Modifiers {
+            underline: true,
+            ..Modifiers::default()
+        };
         assert_eq!(modifiers_to_flags(&under), cell_flags::UNDERLINE);
 
-        let dim = Modifiers { dim: true, ..Modifiers::default() };
+        let dim = Modifiers {
+            dim: true,
+            ..Modifiers::default()
+        };
         assert_eq!(modifiers_to_flags(&dim), cell_flags::DIM);
 
-        let rev = Modifiers { reverse: true, ..Modifiers::default() };
+        let rev = Modifiers {
+            reverse: true,
+            ..Modifiers::default()
+        };
         assert_eq!(modifiers_to_flags(&rev), cell_flags::REVERSE);
 
         let all = Modifiers {
@@ -3075,13 +3069,8 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs = rs_with_snapshot_themed(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            Some(handle),
-            theme,
-        );
+        let rs =
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();

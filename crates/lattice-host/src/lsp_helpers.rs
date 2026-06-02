@@ -347,8 +347,7 @@ pub fn range_covers(
 ) -> bool {
     let after_start =
         (range.start.line, range.start.character) <= (position.line, position.character);
-    let before_end =
-        (position.line, position.character) <= (range.end.line, range.end.character);
+    let before_end = (position.line, position.character) <= (range.end.line, range.end.character);
     after_start && before_end
 }
 

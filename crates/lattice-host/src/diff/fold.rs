@@ -129,8 +129,8 @@ mod tests {
     use super::*;
     use lattice_core::{Buffer, BufferId};
     use lattice_diff::{DiffAlgorithm, HunkIndex, HunkKind, LineRange};
-    use lattice_protocol::position::Position;
     use lattice_protocol::Edit;
+    use lattice_protocol::position::Position;
     use smallvec::smallvec;
 
     fn buf(text: &str) -> Buffer {
@@ -246,11 +246,7 @@ mod tests {
         let buffer = buf(&"x\n".repeat(20));
         let idx = HunkIndex {
             hunks: vec![
-                hunk(
-                    HunkKind::Change,
-                    LineRange::new(2, 5),
-                    LineRange::new(2, 6),
-                ),
+                hunk(HunkKind::Change, LineRange::new(2, 5), LineRange::new(2, 6)),
                 hunk(
                     HunkKind::Conflict,
                     LineRange::new(10, 12),
@@ -280,8 +276,10 @@ mod tests {
         };
         let a = HunkFoldProvider.compute(&ctx_with_hunks(&buffer, &mk_idx(1)));
         let b = HunkFoldProvider.compute(&ctx_with_hunks(&buffer, &mk_idx(2)));
-        assert_eq!(a[0].identity, b[0].identity,
-            "identity hashes only the fold span, not the publish revision — closed-state must survive a republish that produces the same hunk");
+        assert_eq!(
+            a[0].identity, b[0].identity,
+            "identity hashes only the fold span, not the publish revision — closed-state must survive a republish that produces the same hunk"
+        );
     }
 
     #[test]
@@ -312,7 +310,9 @@ mod tests {
             revision: 1,
         };
         let folds = HunkFoldProvider.compute(&ctx_with_hunks(&buffer, &idx));
-        assert!(folds.is_empty(), "missing current range → no fold, no panic");
+        assert!(
+            folds.is_empty(),
+            "missing current range → no fold, no panic"
+        );
     }
-
 }

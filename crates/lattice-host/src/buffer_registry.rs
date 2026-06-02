@@ -45,7 +45,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
 use crate::help::HelpBuffer;
@@ -470,9 +469,7 @@ impl BufferRegistry {
             .map(|e| {
                 matches!(
                     e.data,
-                    BufferData::Document(_)
-                        | BufferData::Messages(_)
-                        | BufferData::Multibuffer(_)
+                    BufferData::Document(_) | BufferData::Messages(_) | BufferData::Multibuffer(_)
                 )
             })
             .unwrap_or(false)
@@ -849,15 +846,27 @@ impl BufferRegistry {
         result
     }
 
-    pub fn with_terminal<R>(&self, id: BufferId, f: impl FnOnce(&TerminalBuffer) -> R) -> Option<R> {
+    pub fn with_terminal<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&TerminalBuffer) -> R,
+    ) -> Option<R> {
         let inner = lock_inner(&self.inner);
         inner.by_id.get(&id).and_then(|e| e.terminal()).map(f)
     }
 
-    pub fn with_terminal_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut TerminalBuffer) -> R) -> Option<R> {
+    pub fn with_terminal_mut<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&mut TerminalBuffer) -> R,
+    ) -> Option<R> {
         let result = {
             let mut inner = lock_inner(&self.inner);
-            inner.by_id.get_mut(&id).and_then(|e| e.terminal_mut()).map(f)
+            inner
+                .by_id
+                .get_mut(&id)
+                .and_then(|e| e.terminal_mut())
+                .map(f)
         };
         if result.is_some() {
             self.bump_version();
@@ -1120,11 +1129,13 @@ mod tests {
 
         // Two source documents.
         let registry = std::sync::Arc::new(lattice_grammar::CommandRegistry::new());
-        let s1 = spawn_document(lattice_core::BufferId(0), 
+        let s1 = spawn_document(
+            lattice_core::BufferId(0),
             lattice_core::Document::from_text("alpha\nbeta\ngamma\n"),
             registry.clone(),
         );
-        let s2 = spawn_document(lattice_core::BufferId(0), 
+        let s2 = spawn_document(
+            lattice_core::BufferId(0),
             lattice_core::Document::from_text("delta\nepsilon\nzeta\n"),
             registry.clone(),
         );
@@ -1134,10 +1145,8 @@ mod tests {
         let s1_id = BufferId::next();
         let s2_id = BufferId::next();
         let r = BufferRegistry::new();
-        let s1_handle: std::sync::Arc<dyn lattice_runtime::Document> =
-            std::sync::Arc::new(s1);
-        let s2_handle: std::sync::Arc<dyn lattice_runtime::Document> =
-            std::sync::Arc::new(s2);
+        let s1_handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(s1);
+        let s2_handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(s2);
         r.insert(BufferEntry {
             id: s1_id,
             flags: BufferFlags::default(),
@@ -1162,10 +1171,7 @@ mod tests {
             HashMap::new();
         sources.insert(s1_id, s1_handle);
         sources.insert(s2_id, s2_handle);
-        let excerpts = vec![
-            Excerpt::new(s1_id, 0, 1),
-            Excerpt::new(s2_id, 1, 2),
-        ];
+        let excerpts = vec![Excerpt::new(s1_id, 0, 1), Excerpt::new(s2_id, 1, 2)];
         let mb = MultibufferDocumentHandle::new(
             sources,
             excerpts,
@@ -1195,7 +1201,10 @@ mod tests {
         // M.2.b.1 had no `BufferData::Multibuffer` variant).
         assert!(r.contains(mb_buffer_id));
         assert_eq!(r.kind_of(mb_buffer_id), Some(BufferKind::Multibuffer));
-        assert_eq!(r.name_of(mb_buffer_id), Some("*search-results*".to_string()));
+        assert_eq!(
+            r.name_of(mb_buffer_id),
+            Some("*search-results*".to_string())
+        );
 
         // `document_handle` returns the trait-object handle —
         // reading through it yields the composed snapshot.

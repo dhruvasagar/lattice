@@ -38,9 +38,9 @@
 //!   is shorter for each hunk so hunks align visually
 //!   between the two panes. One provider per side.
 
-pub mod subsystem;
+pub mod filler;
+pub mod fold;
 pub mod mode;
 pub mod overlay;
-pub mod fold;
 pub mod pane_group;
-pub mod filler;
+pub mod subsystem;

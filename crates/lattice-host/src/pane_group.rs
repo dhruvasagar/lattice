@@ -20,8 +20,8 @@
 
 use std::sync::Arc;
 
-use lattice_core::ui::pane::{PaneGroupId, PaneId};
 use lattice_core::BufferId;
+use lattice_core::ui::pane::{PaneGroupId, PaneId};
 
 /// D.4.a: the `(pane, buffer)` pair a membership is keyed
 /// on. Propagation observes a pane's *currently-displayed*

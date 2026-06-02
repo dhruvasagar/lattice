@@ -55,76 +55,76 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use ropey::Rope;
 
 use lattice_core::BufferId;
 use lattice_diff::DiffAlgorithm;
 use lattice_host::diff::subsystem::{
-	BufferSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession,
-	DiffSubsystem, StaticSource,
+    BufferSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession, DiffSubsystem,
+    StaticSource,
 };
 
 #[derive(Debug)]
 struct EmptyProvider;
 
 impl BufferTextProvider for EmptyProvider {
-	fn buffer_rope(&self, _: BufferId) -> Option<Rope> {
-		Some(Rope::new())
-	}
+    fn buffer_rope(&self, _: BufferId) -> Option<Rope> {
+        Some(Rope::new())
+    }
 }
 
 fn make_rope(lines: u32) -> Rope {
-	let mut s = String::with_capacity((lines as usize) * 80);
-	for i in 0..lines {
-		for c in 0..80u32 {
-			let b = b'a' + (((i * 80) + c) % 26) as u8;
-			s.push(b as char);
-		}
-		s.push('\n');
-	}
-	Rope::from(s)
+    let mut s = String::with_capacity((lines as usize) * 80);
+    for i in 0..lines {
+        for c in 0..80u32 {
+            let b = b'a' + (((i * 80) + c) % 26) as u8;
+            s.push(b as char);
+        }
+        s.push('\n');
+    }
+    Rope::from(s)
 }
 
 fn mutate_a_few_lines(rope: &Rope, n: u32) -> Rope {
-	let owned = rope.to_string();
-	let lines: Vec<String> = owned.lines().map(|l| l.to_string()).collect();
-	let stride = ((lines.len() as u32) / n).max(1);
-	let mutated: Vec<String> = lines
-		.into_iter()
-		.enumerate()
-		.map(|(i, l)| {
-			if (i as u32) % stride == 0 {
-				let mut m = l;
-				if !m.is_empty() {
-					m.replace_range(0..1, "X");
-				}
-				m
-			} else {
-				l
-			}
-		})
-		.collect();
-	let mut out = mutated.join("\n");
-	if !out.ends_with('\n') {
-		out.push('\n');
-	}
-	Rope::from(out)
+    let owned = rope.to_string();
+    let lines: Vec<String> = owned.lines().map(|l| l.to_string()).collect();
+    let stride = ((lines.len() as u32) / n).max(1);
+    let mutated: Vec<String> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if (i as u32) % stride == 0 {
+                let mut m = l;
+                if !m.is_empty() {
+                    m.replace_range(0..1, "X");
+                }
+                m
+            } else {
+                l
+            }
+        })
+        .collect();
+    let mut out = mutated.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Rope::from(out)
 }
 
 fn bench_recompute_blocking(c: &mut Criterion) {
-	let mut group = c.benchmark_group("recompute_blocking");
-	for &lines in &[1_000u32, 5_000, 50_000] {
-		let baseline = make_rope(lines);
-		let current = mutate_a_few_lines(&baseline, 20);
-		group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
-			b.iter(|| {
-				let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
-				session.recompute_blocking(black_box(&[baseline.clone(), current.clone()]));
-			});
-		});
-	}
-	group.finish();
+    let mut group = c.benchmark_group("recompute_blocking");
+    for &lines in &[1_000u32, 5_000, 50_000] {
+        let baseline = make_rope(lines);
+        let current = mutate_a_few_lines(&baseline, 20);
+        group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
+            b.iter(|| {
+                let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
+                session.recompute_blocking(black_box(&[baseline.clone(), current.clone()]));
+            });
+        });
+    }
+    group.finish();
 }
 
 /// D.6.h (2026-05-31): three-way recompute bench.
@@ -144,153 +144,138 @@ fn bench_recompute_blocking(c: &mut Criterion) {
 /// 2000µs at 5k lines. The bench just records the value —
 /// CI threshold gating is a later infrastructure decision.
 fn bench_recompute_blocking_three_way(c: &mut Criterion) {
-	let mut group = c.benchmark_group("recompute_blocking_three_way");
-	for &lines in &[1_000u32, 5_000, 50_000] {
-		let base = make_rope(lines);
-		let local = mutate_a_few_lines(&base, 20);
-		// Remote diverges on different rows. Re-mutating
-		// `base` (not `local`) gives a clean three-way
-		// pattern: some hunks are local-only, some are
-		// remote-only, some overlap → Conflict.
-		let remote = mutate_a_few_lines(&base, 17);
-		group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
-			b.iter(|| {
-				let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
-				session.recompute_blocking(black_box(&[
-					base.clone(),
-					local.clone(),
-					remote.clone(),
-				]));
-			});
-		});
-	}
-	group.finish();
+    let mut group = c.benchmark_group("recompute_blocking_three_way");
+    for &lines in &[1_000u32, 5_000, 50_000] {
+        let base = make_rope(lines);
+        let local = mutate_a_few_lines(&base, 20);
+        // Remote diverges on different rows. Re-mutating
+        // `base` (not `local`) gives a clean three-way
+        // pattern: some hunks are local-only, some are
+        // remote-only, some overlap → Conflict.
+        let remote = mutate_a_few_lines(&base, 17);
+        group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
+            b.iter(|| {
+                let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
+                session.recompute_blocking(black_box(&[
+                    base.clone(),
+                    local.clone(),
+                    remote.clone(),
+                ]));
+            });
+        });
+    }
+    group.finish();
 }
 
 fn bench_routing_fanout(c: &mut Criterion) {
-	// Routing fan-out needs a tokio runtime because `Debouncer::poke`
-	// spawns a tokio task on first poke. The 60s debounce window
-	// guarantees the task never fires during the bench — we measure
-	// the entry path, not the deferred compute.
-	let rt = tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-		.expect("tokio runtime");
-	let _enter = rt.enter();
+    // Routing fan-out needs a tokio runtime because `Debouncer::poke`
+    // spawns a tokio task on first poke. The 60s debounce window
+    // guarantees the task never fires during the bench — we measure
+    // the entry path, not the deferred compute.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _enter = rt.enter();
 
-	let mut group = c.benchmark_group("routing_fanout");
-	let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
-	let shared = BufferId(u32::MAX);
-	for &n in &[10u32, 100, 1_000] {
-		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
-		for i in 0..n {
-			let id = BufferId(i + 1);
-			let desc = DiffDescriptor {
-
-
-				sources: vec![
-
-					Arc::new(StaticSource::new(Rope::new())),
-
-					Arc::new(BufferSource::new(Arc::clone(&provider), id)),
-
-				],
-				watch: vec![shared],
-				participants: vec![],
-			};
-			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
-		}
-		group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
-			b.iter(|| {
-				Arc::clone(sub).note_buffer_edited(black_box(shared));
-			});
-		});
-	}
-	group.finish();
+    let mut group = c.benchmark_group("routing_fanout");
+    let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
+    let shared = BufferId(u32::MAX);
+    for &n in &[10u32, 100, 1_000] {
+        let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
+        for i in 0..n {
+            let id = BufferId(i + 1);
+            let desc = DiffDescriptor {
+                sources: vec![
+                    Arc::new(StaticSource::new(Rope::new())),
+                    Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+                ],
+                watch: vec![shared],
+                participants: vec![],
+            };
+            sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
+        }
+        group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
+            b.iter(|| {
+                Arc::clone(sub).note_buffer_edited(black_box(shared));
+            });
+        });
+    }
+    group.finish();
 }
 
 fn bench_routing_isolated_lookup(c: &mut Criterion) {
-	// N sessions registered, only ONE watches the buffer that
-	// gets poked. Tests that routing cost is independent of
-	// total session count — the inverse index returns a
-	// 1-element list regardless of N. Confirms §3.4's
-	// "O(1 + dependents)" claim where dependents == 1.
-	let rt = tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-		.expect("tokio runtime");
-	let _enter = rt.enter();
+    // N sessions registered, only ONE watches the buffer that
+    // gets poked. Tests that routing cost is independent of
+    // total session count — the inverse index returns a
+    // 1-element list regardless of N. Confirms §3.4's
+    // "O(1 + dependents)" claim where dependents == 1.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _enter = rt.enter();
 
-	let mut group = c.benchmark_group("routing_isolated_lookup");
-	let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
-	let poked = BufferId(u32::MAX);
-	for &n in &[10u32, 100, 1_000] {
-		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
-		// Session 1 is the only one watching `poked`. Sessions
-		// 2..N watch their own private siblings — they're
-		// registered noise, not dependents.
-		let session_one = BufferId(1);
-		let desc_one = DiffDescriptor {
-
-
-			sources: vec![
-
-				Arc::new(StaticSource::new(Rope::new())),
-
-				Arc::new(BufferSource::new(Arc::clone(&provider), session_one)),
-
-			],
-			watch: vec![poked],
-			participants: vec![],
-		};
-		sub.register_with_sources(session_one, DiffAlgorithm::Histogram, desc_one);
-		for i in 2..=n {
-			let id = BufferId(i);
-			let sibling = BufferId(i + 100_000);
-			let desc = DiffDescriptor {
-
-
-				sources: vec![
-
-					Arc::new(StaticSource::new(Rope::new())),
-
-					Arc::new(BufferSource::new(Arc::clone(&provider), id)),
-
-				],
-				watch: vec![sibling],
-				participants: vec![],
-			};
-			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
-		}
-		group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
-			b.iter(|| {
-				Arc::clone(sub).note_buffer_edited(black_box(poked));
-			});
-		});
-	}
-	group.finish();
+    let mut group = c.benchmark_group("routing_isolated_lookup");
+    let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
+    let poked = BufferId(u32::MAX);
+    for &n in &[10u32, 100, 1_000] {
+        let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
+        // Session 1 is the only one watching `poked`. Sessions
+        // 2..N watch their own private siblings — they're
+        // registered noise, not dependents.
+        let session_one = BufferId(1);
+        let desc_one = DiffDescriptor {
+            sources: vec![
+                Arc::new(StaticSource::new(Rope::new())),
+                Arc::new(BufferSource::new(Arc::clone(&provider), session_one)),
+            ],
+            watch: vec![poked],
+            participants: vec![],
+        };
+        sub.register_with_sources(session_one, DiffAlgorithm::Histogram, desc_one);
+        for i in 2..=n {
+            let id = BufferId(i);
+            let sibling = BufferId(i + 100_000);
+            let desc = DiffDescriptor {
+                sources: vec![
+                    Arc::new(StaticSource::new(Rope::new())),
+                    Arc::new(BufferSource::new(Arc::clone(&provider), id)),
+                ],
+                watch: vec![sibling],
+                participants: vec![],
+            };
+            sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
+        }
+        group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
+            b.iter(|| {
+                Arc::clone(sub).note_buffer_edited(black_box(poked));
+            });
+        });
+    }
+    group.finish();
 }
 
 fn bench_debouncer_poke(c: &mut Criterion) {
-	let rt = tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-		.expect("tokio runtime");
-	let _enter = rt.enter();
-	let deb = Debouncer::new(Duration::from_secs(60));
-	c.bench_function("debouncer_poke", |b| {
-		b.iter(|| {
-			deb.poke(|| {});
-		});
-	});
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _enter = rt.enter();
+    let deb = Debouncer::new(Duration::from_secs(60));
+    c.bench_function("debouncer_poke", |b| {
+        b.iter(|| {
+            deb.poke(|| {});
+        });
+    });
 }
 
 criterion_group!(
-	benches,
-	bench_recompute_blocking,
-	bench_recompute_blocking_three_way,
-	bench_routing_fanout,
-	bench_routing_isolated_lookup,
-	bench_debouncer_poke
+    benches,
+    bench_recompute_blocking,
+    bench_recompute_blocking_three_way,
+    bench_routing_fanout,
+    bench_routing_isolated_lookup,
+    bench_debouncer_poke
 );
 criterion_main!(benches);

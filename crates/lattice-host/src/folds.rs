@@ -483,7 +483,11 @@ impl FoldIndex {
         closed.sort_unstable_by_key(|(s, _)| *s);
         let mut all_starts: Vec<u32> = folds.iter().map(|f| f.start_line).collect();
         all_starts.sort_unstable();
-        Self { closed, all_starts, foldenable }
+        Self {
+            closed,
+            all_starts,
+            foldenable,
+        }
     }
 
     /// True iff `line` is the start row of a closed fold. Matches
@@ -1103,10 +1107,20 @@ impl Buffer {
     // ---- FoldIndex (perf plan C) ---------------------------------
 
     fn closed(start: u32, end: u32) -> Fold {
-        Fold { start_line: start, end_line: end, closed: true, identity: None }
+        Fold {
+            start_line: start,
+            end_line: end,
+            closed: true,
+            identity: None,
+        }
     }
     fn open(start: u32, end: u32) -> Fold {
-        Fold { start_line: start, end_line: end, closed: false, identity: None }
+        Fold {
+            start_line: start,
+            end_line: end,
+            closed: false,
+            identity: None,
+        }
     }
 
     #[test]
@@ -1141,12 +1155,9 @@ impl Buffer {
                 .iter()
                 .any(|f| f.closed && line > f.start_line && line <= f.end_line)
         };
-        let naive_closed_start = |line: u32| -> bool {
-            folds.iter().any(|f| f.closed && f.start_line == line)
-        };
-        let naive_any_start = |line: u32| -> bool {
-            folds.iter().any(|f| f.start_line == line)
-        };
+        let naive_closed_start =
+            |line: u32| -> bool { folds.iter().any(|f| f.closed && f.start_line == line) };
+        let naive_any_start = |line: u32| -> bool { folds.iter().any(|f| f.start_line == line) };
         for line in 0..25 {
             assert_eq!(
                 idx.line_inside_closed_fold(line),
@@ -1178,7 +1189,10 @@ impl Buffer {
         // end escape.
         let folds = vec![closed(0, 10), closed(3, 7)];
         let idx = FoldIndex::from_folds(&folds, true);
-        assert!(!idx.line_inside_closed_fold(0), "outer start row stays visible");
+        assert!(
+            !idx.line_inside_closed_fold(0),
+            "outer start row stays visible"
+        );
         for line in 1..=10 {
             assert!(
                 idx.line_inside_closed_fold(line),

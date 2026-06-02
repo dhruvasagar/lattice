@@ -828,21 +828,15 @@ impl Editor {
         // wiring step required.
         let diff_subscription_guard = {
             let _enter = runtime_handle.enter();
-            let resolver: std::sync::Arc<
-                dyn crate::diff::subsystem::DocumentBufferResolver,
-            > = std::sync::Arc::new(
-                crate::diff::subsystem::BufferRegistryDocumentResolver::new(
+            let resolver: std::sync::Arc<dyn crate::diff::subsystem::DocumentBufferResolver> =
+                std::sync::Arc::new(crate::diff::subsystem::BufferRegistryDocumentResolver::new(
                     buffers.clone(),
-                ),
-            );
+                ));
             diff_subsystem.bind(event_bus.clone(), resolver)
         };
         let diff_forwarders: std::sync::Arc<
             std::sync::Mutex<
-                std::collections::HashMap<
-                    lattice_core::BufferId,
-                    tokio::task::JoinHandle<()>,
-                >,
+                std::collections::HashMap<lattice_core::BufferId, tokio::task::JoinHandle<()>>,
             >,
         > = std::sync::Arc::default();
 

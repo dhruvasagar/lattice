@@ -244,10 +244,7 @@ pub use lattice_oil::OilMode;
 /// the registry indexes them at register-time. Adding a new
 /// kind-bound major requires zero host-side hand edits — register
 /// the mode and the index picks it up.
-pub fn major_mode_id_for_buffer_kind(
-    registry: &ModeRegistry,
-    kind: BufferKind,
-) -> Option<ModeId> {
+pub fn major_mode_id_for_buffer_kind(registry: &ModeRegistry, kind: BufferKind) -> Option<ModeId> {
     if kind == BufferKind::Document {
         // Document dispatches via `Lang` detection; the kind index
         // does not bind to `Document`.

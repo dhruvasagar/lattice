@@ -456,33 +456,25 @@ impl Editor {
                 .publish_cache
                 .lock()
                 .expect("publish_cache mutex poisoned");
-            let panes_arc = crate::render_state::cached_or_build(
-                &mut cache.panes,
-                panes_v,
-                || {
-                    // Same shape as the legacy unconditional path —
-                    // clone the inner `PaneTree` (not the wrapper)
-                    // through `Deref` so the sub-state holds
-                    // `Arc<PaneTree>`.
-                    std::sync::Arc::new(PanesRenderState {
-                        tree: std::sync::Arc::new((*self.pane_tree).clone()),
-                    })
-                },
-            );
-            let modes_arc = crate::render_state::cached_or_build(
-                &mut cache.modes,
-                modes_v,
-                || {
-                    std::sync::Arc::new(crate::render_state::ModesRenderState {
-                        map: std::sync::Arc::new(
-                            self.active_modes
-                                .iter()
-                                .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
-                                .collect(),
-                        ),
-                    })
-                },
-            );
+            let panes_arc = crate::render_state::cached_or_build(&mut cache.panes, panes_v, || {
+                // Same shape as the legacy unconditional path —
+                // clone the inner `PaneTree` (not the wrapper)
+                // through `Deref` so the sub-state holds
+                // `Arc<PaneTree>`.
+                std::sync::Arc::new(PanesRenderState {
+                    tree: std::sync::Arc::new((*self.pane_tree).clone()),
+                })
+            });
+            let modes_arc = crate::render_state::cached_or_build(&mut cache.modes, modes_v, || {
+                std::sync::Arc::new(crate::render_state::ModesRenderState {
+                    map: std::sync::Arc::new(
+                        self.active_modes
+                            .iter()
+                            .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
+                            .collect(),
+                    ),
+                })
+            });
             let buffer_locals_arc = crate::render_state::cached_or_build(
                 &mut cache.buffer_locals,
                 buffer_locals_v,
@@ -525,25 +517,21 @@ impl Editor {
             // Perf plan B.4.b: full `Arc<BuffersRenderState>` cached.
             // The `registry` clone is one Arc bump (cheap); the win
             // is on the `buffer_uris.clone()` HashMap allocation.
-            let buffers_arc = crate::render_state::cached_or_build(
-                &mut cache.buffers,
-                buffers_v,
-                || {
+            let buffers_arc =
+                crate::render_state::cached_or_build(&mut cache.buffers, buffers_v, || {
                     std::sync::Arc::new(BuffersRenderState {
                         registry: self.buffers.clone(),
                         uris: std::sync::Arc::new((*self.buffer_uris).clone()),
                     })
-                },
-            );
+                });
             // Perf plan B.4.b: full `Arc<TabsRenderState>` cached.
             // Saves the `build_tabs_render_state` walk per no-op
             // publish (label resolution per tab + tabline-show
             // option read).
-            let tabs_arc = crate::render_state::cached_or_build(
-                &mut cache.tabs,
-                tabs_input_v,
-                || std::sync::Arc::new(self.build_tabs_render_state()),
-            );
+            let tabs_arc =
+                crate::render_state::cached_or_build(&mut cache.tabs, tabs_input_v, || {
+                    std::sync::Arc::new(self.build_tabs_render_state())
+                });
             (
                 panes_arc,
                 modes_arc,
@@ -632,16 +620,12 @@ impl Editor {
                 // Terminal-mode T2.a: published so the translate
                 // layer can build TranslateContext from the
                 // snapshot without reaching into active_modes.
-                terminal_insert_active: matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) && self
-                    .active_modes
-                    .get(&self.active_pane_buffer_id())
-                    .map(|m| {
-                        m.is_active(lattice_terminal::TerminalInsertMode::mode_id())
-                    })
-                    .unwrap_or(false),
+                terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
+                    && self
+                        .active_modes
+                        .get(&self.active_pane_buffer_id())
+                        .map(|m| m.is_active(lattice_terminal::TerminalInsertMode::mode_id()))
+                        .unwrap_or(false),
                 // Terminal-mode T2.b.0: published so translate
                 // can branch on the option without reaching into
                 // `editor.config` per keystroke. Read off the
@@ -657,45 +641,36 @@ impl Editor {
                 // pane's buffer registry entry. Renderers and
                 // the modeline label key off this rather than
                 // reaching into the registry per frame.
-                terminal_visual_active: matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) && self
-                    .buffers
-                    .with_terminal(self.active_pane_buffer_id(), |t| t.visual.is_some())
-                    .unwrap_or(false),
+                terminal_visual_active: matches!(self.active_buffer, BufferKind::Terminal)
+                    && self
+                        .buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| t.visual.is_some())
+                        .unwrap_or(false),
                 // Terminal-mode T2.c: DECCKM bit from the active
                 // terminal's alacritty Term, snapshot'd so
                 // translate can read it without locking per
                 // keystroke. Sticks at `false` on non-Terminal
                 // buffers (irrelevant there).
-                terminal_app_cursor_keys: matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) && self
-                    .buffers
-                    .with_terminal(self.active_pane_buffer_id(), |t| {
-                        t.term.cursor_keys_application_mode()
-                    })
-                    .unwrap_or(false),
+                terminal_app_cursor_keys: matches!(self.active_buffer, BufferKind::Terminal)
+                    && self
+                        .buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| {
+                            t.term.cursor_keys_application_mode()
+                        })
+                        .unwrap_or(false),
                 // Terminal-mode T2.c: <C-\> arming flag for the
                 // two-key exit chord.
-                terminal_insert_exit_pending: matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) && self
-                    .buffers
-                    .with_terminal(self.active_pane_buffer_id(), |t| t.insert_exit_pending)
-                    .unwrap_or(false),
+                terminal_insert_exit_pending: matches!(self.active_buffer, BufferKind::Terminal)
+                    && self
+                        .buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| t.insert_exit_pending)
+                        .unwrap_or(false),
                 // 2026-05-25: surface the program basename on the
                 // modeline. Empty string when the active buffer
                 // isn't a terminal — the renderer keys off this
                 // and the `terminal_*_active` flags together so
                 // the per-frame branch stays kind-agnostic.
-                terminal_program_name: if matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) {
+                terminal_program_name: if matches!(self.active_buffer, BufferKind::Terminal) {
                     self.buffers
                         .with_terminal(self.active_pane_buffer_id(), |t| {
                             std::sync::Arc::<str>::from(t.program_name.as_str())
@@ -713,16 +688,12 @@ impl Editor {
                 // stays in sync as a renderer-convenience cache
                 // — motion paths stop writing it explicitly
                 // (single writer = publisher).
-                terminal_nav_cursor: if matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) {
+                terminal_nav_cursor: if matches!(self.active_buffer, BufferKind::Terminal) {
                     let cur = self.cursor;
                     self.buffers
                         .with_terminal_mut(self.active_pane_buffer_id(), |t| {
                             let nav = t.synthetic.as_ref().map(|s| {
-                                let grid_line =
-                                    s.origin_top_line + cur.line as i32;
+                                let grid_line = s.origin_top_line + cur.line as i32;
                                 let grid_col = cur.byte as u16;
                                 (grid_line, grid_col)
                             });
@@ -733,10 +704,7 @@ impl Editor {
                 } else {
                     None
                 },
-                terminal_visual: if matches!(
-                    self.active_buffer,
-                    BufferKind::Terminal
-                ) {
+                terminal_visual: if matches!(self.active_buffer, BufferKind::Terminal) {
                     self.buffers
                         .with_terminal(self.active_pane_buffer_id(), |t| t.visual)
                         .flatten()
@@ -748,16 +716,11 @@ impl Editor {
                 // through the published snapshot instead of
                 // `app.editor.X` directly.
                 folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
-                all_matches: std::sync::Arc::from(
-                    self.all_matches.clone().into_boxed_slice(),
-                ),
+                all_matches: std::sync::Arc::from(self.all_matches.clone().into_boxed_slice()),
                 current_match: self.current_match,
                 visual_range: self.visual_selection_range(),
                 visual_block_extents: self.visual_block_extents(),
-                substitute_preview: self
-                    .substitute_preview
-                    .clone()
-                    .map(std::sync::Arc::new),
+                substitute_preview: self.substitute_preview.clone().map(std::sync::Arc::new),
                 selections: self.document.selections(),
                 option_cache: self.option_cache,
                 // K.4.6 follow-up (2026-06-02): publish the
@@ -777,9 +740,7 @@ impl Editor {
             translator: std::sync::Arc::new(TranslatorRenderState {
                 builtins: self.builtins,
                 keymap: self.keymap.clone(),
-                partial_chord: std::sync::Arc::from(
-                    self.partial_chord.clone().into_boxed_slice(),
-                ),
+                partial_chord: std::sync::Arc::from(self.partial_chord.clone().into_boxed_slice()),
                 // D.5.b: per-publish snapshot of the active
                 // buffer's minor-mode set. K.1.c's
                 // `lookup_with_context` reads this so chord
@@ -794,9 +755,7 @@ impl Editor {
                 active_minor_modes: self
                     .active_modes
                     .get(&self.document_buffer_id)
-                    .map(|am| {
-                        std::sync::Arc::from(am.minors().to_vec().into_boxed_slice())
-                    })
+                    .map(|am| std::sync::Arc::from(am.minors().to_vec().into_boxed_slice()))
                     .unwrap_or_else(|| std::sync::Arc::from(Vec::new().into_boxed_slice())),
             }),
             // Slice 3c.final.B (group 6): lifecycle flags + theme.
@@ -1089,9 +1048,7 @@ impl Editor {
                 // no LSP, or no hints have arrived — the worker's
                 // splice walk short-circuits on the empty bucket.
                 inlay_hints,
-                folds: std::sync::Arc::from(
-                    self.folds.clone().into_boxed_slice(),
-                ),
+                folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
                 viewport_height: self.viewport_height,
                 foldenable: self.foldenable(),
                 // S2.4.b (2026-05-26): hand the per-publish-cycle
@@ -1121,9 +1078,7 @@ impl Editor {
             // is open). Renderer-side reads go through
             // `rs.diff.sign_map.sign_at(line)`.
             diff: std::sync::Arc::new(crate::render_state::DiffRenderState {
-                sign_map: self
-                    .diff_signs_for_active()
-                    .unwrap_or_default(),
+                sign_map: self.diff_signs_for_active().unwrap_or_default(),
                 // D.3.g (2026-05-29): expose hunk count so the
                 // modeline diff segment can render
                 // `[diff: N hunks]` without holding an Editor
@@ -1141,12 +1096,10 @@ impl Editor {
             // `rs.virtual_rows.matrix` for the active pane;
             // D.4.d.2.1.d adds `pane_matrices` so renderers
             // can resolve a non-active pane's matrix by id.
-            virtual_rows: std::sync::Arc::new(
-                crate::render_state::VirtualRowsRenderState {
-                    matrix: self.virtual_rows_matrix_cell.load_full(),
-                    pane_matrices: virtual_rows_pane_matrices,
-                },
-            ),
+            virtual_rows: std::sync::Arc::new(crate::render_state::VirtualRowsRenderState {
+                matrix: self.virtual_rows_matrix_cell.load_full(),
+                pane_matrices: virtual_rows_pane_matrices,
+            }),
             ..RenderState::default()
         }
     }
@@ -1189,19 +1142,14 @@ impl Editor {
             if start_line >= total_lines || end_line >= total_lines {
                 continue;
             }
-            let start_text = snapshot
-                .buffer
-                .line(start_line)
-                .unwrap_or_default();
+            let start_text = snapshot.buffer.line(start_line).unwrap_or_default();
             let end_text = snapshot.buffer.line(end_line).unwrap_or_default();
             let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
                 &start_text,
                 h.range.start.character,
             );
-            let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                &end_text,
-                h.range.end.character,
-            );
+            let end_byte =
+                lattice_lsp::position::utf16_column_to_utf8_byte(&end_text, h.range.end.character);
             out.push(lattice_protocol::position::Range {
                 start: lattice_protocol::position::Position {
                     line: start_line,
@@ -2068,7 +2016,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // so the GPUI peer reaches the same dispatch.
                 editor.do_help_follow_link(_out);
             }
-            BufferKind::Document | BufferKind::Terminal | BufferKind::Messages
+            BufferKind::Document
+            | BufferKind::Terminal
+            | BufferKind::Messages
             | BufferKind::Multibuffer => {}
         },
     }
@@ -2322,13 +2272,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // `editor.diff_subsystem.describe_sessions` and
             // renders the introspection help body. Infallible.
             let body = editor.diff_subsystem.build_describe_diff_content();
-            let lines: Vec<String> =
-                body.lines().map(|s| s.to_string()).collect();
-            let content = lattice_help::HelpContent::from_lines(
-                "describe-diff",
-                lines,
-            )
-            .with_markdown_syntax(editor.lang_registry.clone());
+            let lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
+            let content = lattice_help::HelpContent::from_lines("describe-diff", lines)
+                .with_markdown_syntax(editor.lang_registry.clone());
             out.renderer_signals
                 .push(RendererSignal::DisplayBuffer(Box::new(
                     DisplayBufferRequest {
@@ -2616,29 +2562,19 @@ impl Editor {
             );
             return;
         }
-        let provider_text: std::sync::Arc<
-            dyn crate::diff::subsystem::BufferTextProvider,
-        > = std::sync::Arc::new(
-            crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
-        );
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
+                self.buffers.clone(),
+            ));
         let baseline: std::sync::Arc<dyn crate::diff::subsystem::DiffParticipantSource> =
-            std::sync::Arc::new(
-                crate::diff::subsystem::OnDiskSource::new(path.clone()),
-            );
+            std::sync::Arc::new(crate::diff::subsystem::OnDiskSource::new(path.clone()));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	std::sync::Arc::clone(&baseline),
-
-            	std::sync::Arc::new(
-                crate::diff::subsystem::BufferSource::new(
+                std::sync::Arc::clone(&baseline),
+                std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                     std::sync::Arc::clone(&provider_text),
                     buffer_id,
-                ),
-            ),
-
+                )),
             ],
             watch: vec![buffer_id],
             // D.5.a (2026-05-30): file-on-disk baseline has
@@ -2655,14 +2591,12 @@ impl Editor {
         // handle so the D.3.b refresh task can write to the
         // same `Mutex<DiffOverlayCache>` the provider reads
         // from in `collect()` / `version()`.
-        let overlay = std::sync::Arc::new(
-            crate::diff::overlay::DiffOverlayVirtualRowProvider::new(
+        let overlay =
+            std::sync::Arc::new(crate::diff::overlay::DiffOverlayVirtualRowProvider::new(
                 std::sync::Arc::clone(&session),
-            ),
-        );
+            ));
         let overlay_cache_handle = overlay.cache_handle();
-        let overlay_provider: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
-            overlay;
+        let overlay_provider: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> = overlay;
         if !self
             .virtual_row_providers
             .register(buffer_id, overlay_provider.clone())
@@ -2922,32 +2856,27 @@ impl Editor {
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-            let mut active = self
-                .active_modes
-                .remove(&buffer_id)
-                .unwrap_or_default();
+            let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
             let res = match change.action {
-                crate::diff::mode::DiffModeAction::Activate => self
-                    .mode_registry
-                    .activate_minor(
-                        &mut active,
-                        &self.mode_guards,
-                        &self.config,
-                        &self.event_bus,
-                        &self.services,
-                        proto_id,
-                        diff_mode_id,
-                        lattice_mode::CapabilitySet::empty(),
-                    ),
-                crate::diff::mode::DiffModeAction::Deactivate => self
-                    .mode_registry
-                    .deactivate_minor(
+                crate::diff::mode::DiffModeAction::Activate => self.mode_registry.activate_minor(
+                    &mut active,
+                    &self.mode_guards,
+                    &self.config,
+                    &self.event_bus,
+                    &self.services,
+                    proto_id,
+                    diff_mode_id,
+                    lattice_mode::CapabilitySet::empty(),
+                ),
+                crate::diff::mode::DiffModeAction::Deactivate => {
+                    self.mode_registry.deactivate_minor(
                         &mut active,
                         &self.mode_guards,
                         &self.event_bus,
                         proto_id,
                         diff_mode_id,
-                    ),
+                    )
+                }
             };
             if let Err(e) = res {
                 tracing::debug!(
@@ -2998,11 +2927,7 @@ impl Editor {
                 }
                 // Buffer check: is the target pane still
                 // showing the buffer it was registered with?
-                let target_leaf = self
-                    .pane_tree
-                    .leaves()
-                    .iter()
-                    .find(|p| p.id == member.pane);
+                let target_leaf = self.pane_tree.leaves().iter().find(|p| p.id == member.pane);
                 let Some(target_leaf) = target_leaf else {
                     // Target pane no longer exists (closed).
                     // The next tick's group-prune will clean
@@ -3039,7 +2964,9 @@ impl Editor {
     /// is open for the active buffer; renderers fall back to
     /// the no-gutter path. Lock-free `ArcSwap::load_full`;
     /// renderer hot path.
-    pub fn diff_signs_for_active(&self) -> Option<std::sync::Arc<crate::diff::overlay::DiffSignMap>> {
+    pub fn diff_signs_for_active(
+        &self,
+    ) -> Option<std::sync::Arc<crate::diff::overlay::DiffSignMap>> {
         let session = self.diff_subsystem.lookup(self.document_buffer_id)?;
         Some(session.sign_map())
     }
@@ -3081,11 +3008,7 @@ impl Editor {
             // D.8.f: per-buffer semantic for diffthis-group
             // participation. Active buffer is in the group ⇒
             // route through the membership-API toggle.
-            if self
-                .diffthis_members
-                .iter()
-                .any(|m| m.buffer == active_buf)
-            {
+            if self.diffthis_members.iter().any(|m| m.buffer == active_buf) {
                 self.diffthis_toggle_off(active_buf);
                 self.virtual_rows_wake.0.notify_one();
                 return;
@@ -3187,10 +3110,7 @@ impl Editor {
         // session, the status message reports the count so
         // the user knows the bang actually mattered.
         if force && count > 1 {
-            self.set_message(
-                EchoLevel::Info,
-                format!("{ok_message} ({count} sessions)"),
-            );
+            self.set_message(EchoLevel::Info, format!("{ok_message} ({count} sessions)"));
         } else {
             self.set_message(EchoLevel::Info, ok_message);
         }
@@ -3214,10 +3134,7 @@ impl Editor {
         let primary = session.buffer_id();
         let pane_group_id = session.pane_group_id();
         let descriptor = self.diff_subsystem.lookup_descriptor(primary);
-        let is_three_way = descriptor
-            .as_ref()
-            .map(|d| d.arity() == 3)
-            .unwrap_or(false);
+        let is_three_way = descriptor.as_ref().map(|d| d.arity() == 3).unwrap_or(false);
         let watch: Vec<lattice_core::BufferId> = descriptor
             .as_ref()
             .map(|d| d.watch.clone())
@@ -3243,10 +3160,8 @@ impl Editor {
         // id would collide otherwise — different namespace
         // bits but same low-32 buffer-id pattern).
         for buf in &watch {
-            self.virtual_row_providers.unregister(
-                *buf,
-                crate::diff::overlay::diff_overlay_provider_id(*buf),
-            );
+            self.virtual_row_providers
+                .unregister(*buf, crate::diff::overlay::diff_overlay_provider_id(*buf));
             self.virtual_row_providers.unregister(
                 *buf,
                 crate::diff::filler::diff_filler_provider_id(
@@ -3344,10 +3259,7 @@ impl Editor {
         // Gate on Document kind.
         let active_leaf = self.pane_tree.active();
         if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
-            self.set_message(
-                EchoLevel::Error,
-                "diffthis: active pane is not a document",
-            );
+            self.set_message(EchoLevel::Error, "diffthis: active pane is not a document");
             return;
         }
         let active_member = crate::pane_group::PaneGroupMember {
@@ -3423,11 +3335,9 @@ impl Editor {
     fn diffthis_toggle_on(&mut self, active: crate::pane_group::PaneGroupMember) {
         let active_buf = active.buffer;
         let provider: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
-            std::sync::Arc::new(
-                crate::diff::subsystem::BufferRegistryTextProvider::new(
-                    self.buffers.clone(),
-                ),
-            );
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
+                self.buffers.clone(),
+            ));
         let source: std::sync::Arc<dyn crate::diff::subsystem::DiffParticipantSource> =
             std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                 std::sync::Arc::clone(&provider),
@@ -3461,9 +3371,11 @@ impl Editor {
             Some(group_key) => {
                 // N → N+1: extend via membership API. Reject
                 // engine-cap violations atomically.
-                let new_arity = match std::sync::Arc::clone(&self.diff_subsystem)
-                    .add_participant(group_key, source, Some(active_buf))
-                {
+                let new_arity = match std::sync::Arc::clone(&self.diff_subsystem).add_participant(
+                    group_key,
+                    source,
+                    Some(active_buf),
+                ) {
                     Ok(n) => n,
                     Err(crate::diff::subsystem::MembershipError::EngineRejected(
                         lattice_diff::DiffEngineError::Unsupported { n },
@@ -3478,10 +3390,7 @@ impl Editor {
                         return;
                     }
                     Err(e) => {
-                        self.set_message(
-                            EchoLevel::Error,
-                            format!("diffthis: {e}"),
-                        );
+                        self.set_message(EchoLevel::Error, format!("diffthis: {e}"));
                         return;
                     }
                 };
@@ -3517,10 +3426,7 @@ impl Editor {
         {
             Ok(n) => n,
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("diffthis: {e}"),
-                );
+                self.set_message(EchoLevel::Error, format!("diffthis: {e}"));
                 return;
             }
         };
@@ -3579,10 +3485,7 @@ impl Editor {
     /// Scroll-bind state resets per transition (acceptable
     /// for D.8.e; future optimisation could preserve it via
     /// an `extend_pane_group_member` API).
-    fn rebuild_diffthis_pane_group_and_fillers(
-        &mut self,
-        group_key: lattice_core::BufferId,
-    ) {
+    fn rebuild_diffthis_pane_group_and_fillers(&mut self, group_key: lattice_core::BufferId) {
         let Some(session) = self.diff_subsystem.lookup(group_key) else {
             return;
         };
@@ -3663,11 +3566,9 @@ impl Editor {
         ];
         for (slot, member) in self.diffthis_members.iter().enumerate() {
             let side = sides[slot.min(2)];
-            let filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
-                std::sync::Arc::new(crate::diff::filler::FillerRowProvider::new(
-                    std::sync::Arc::clone(&session),
-                    side,
-                ));
+            let filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> = std::sync::Arc::new(
+                crate::diff::filler::FillerRowProvider::new(std::sync::Arc::clone(&session), side),
+            );
             self.virtual_row_providers.register(member.buffer, filler);
         }
 
@@ -3755,11 +3656,10 @@ impl Editor {
             }
         }
 
-        let provider_text: std::sync::Arc<
-            dyn crate::diff::subsystem::BufferTextProvider,
-        > = std::sync::Arc::new(
-            crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
-        );
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
+                self.buffers.clone(),
+            ));
         let sources: Vec<std::sync::Arc<dyn crate::diff::subsystem::DiffParticipantSource>> =
             members
                 .iter()
@@ -3802,15 +3702,13 @@ impl Editor {
                 2,
             ))
         };
-        let pane_group_id = self
-            .add_pane_group(members.clone(), mapper)
-            .map_err(|e| {
-                // Roll back the session if pane-group
-                // registration fails — otherwise we'd leave
-                // a session with no UI binding.
-                self.diff_subsystem.drop_session(primary);
-                e
-            })?;
+        let pane_group_id = self.add_pane_group(members.clone(), mapper).map_err(|e| {
+            // Roll back the session if pane-group
+            // registration fails — otherwise we'd leave
+            // a session with no UI binding.
+            self.diff_subsystem.drop_session(primary);
+            e
+        })?;
         session.bind_pane_group(pane_group_id);
 
         // Filler provider per slot. Side encoding stays the
@@ -3872,20 +3770,13 @@ impl Editor {
     ///   `set_message`; the new pane stays open with
     ///   `<file>` loaded (the user can `:diffoff` or
     ///   `<C-w>q` from there).
-    pub fn do_diffsplit(
-        &mut self,
-        path: std::path::PathBuf,
-        remote: Option<std::path::PathBuf>,
-    ) {
+    pub fn do_diffsplit(&mut self, path: std::path::PathBuf, remote: Option<std::path::PathBuf>) {
         use lattice_core::ui::pane::SplitOrientation;
 
         // Gate 1: active pane must be a Document leaf.
         let active_leaf = self.pane_tree.active();
         if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
-            self.set_message(
-                EchoLevel::Error,
-                "diffsplit: active pane is not a document",
-            );
+            self.set_message(EchoLevel::Error, "diffsplit: active pane is not a document");
             return;
         }
         // In two-way the active pane is the baseline side;
@@ -3921,28 +3812,27 @@ impl Editor {
         // member or `Err(())` after closing the new pane
         // on open failure. The outer `do_diffsplit` already
         // surfaced an error via `do_edit`'s own message.
-        let open_into_new_split =
-            |this: &mut Self, p: std::path::PathBuf| -> Result<crate::pane_group::PaneGroupMember, ()> {
-                let new_idx = this.pane_tree.split_active(SplitOrientation::Vertical);
-                this.pane_tree.set_active(new_idx);
-                match this.do_edit(Some(p), false) {
-                    DoEditOutcome::Opened(_)
-                    | DoEditOutcome::Activated(_)
-                    | DoEditOutcome::Reloaded(_) => {
-                        let leaf = this.pane_tree.active();
-                        Ok(crate::pane_group::PaneGroupMember {
-                            pane: leaf.id,
-                            buffer: leaf.buffer_id,
-                        })
-                    }
-                    DoEditOutcome::Failed
-                    | DoEditOutcome::Directory(_)
-                    | DoEditOutcome::NoFileName => {
-                        this.pane_tree.close_active();
-                        Err(())
-                    }
+        let open_into_new_split = |this: &mut Self,
+                                   p: std::path::PathBuf|
+         -> Result<crate::pane_group::PaneGroupMember, ()> {
+            let new_idx = this.pane_tree.split_active(SplitOrientation::Vertical);
+            this.pane_tree.set_active(new_idx);
+            match this.do_edit(Some(p), false) {
+                DoEditOutcome::Opened(_)
+                | DoEditOutcome::Activated(_)
+                | DoEditOutcome::Reloaded(_) => {
+                    let leaf = this.pane_tree.active();
+                    Ok(crate::pane_group::PaneGroupMember {
+                        pane: leaf.id,
+                        buffer: leaf.buffer_id,
+                    })
                 }
-            };
+                DoEditOutcome::Failed | DoEditOutcome::Directory(_) | DoEditOutcome::NoFileName => {
+                    this.pane_tree.close_active();
+                    Err(())
+                }
+            }
+        };
 
         match remote {
             None => {
@@ -3956,9 +3846,7 @@ impl Editor {
                 let baseline = active_member;
                 let baseline_buf = baseline.buffer;
                 let new_current_buf = new_current.buffer;
-                if let Err(msg) =
-                    self.register_pane_group_diff(vec![baseline, new_current])
-                {
+                if let Err(msg) = self.register_pane_group_diff(vec![baseline, new_current]) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -3984,8 +3872,7 @@ impl Editor {
                 let Ok(base) = open_into_new_split(self, path) else {
                     return;
                 };
-                let Ok(remote_member) = open_into_new_split(self, remote_path)
-                else {
+                let Ok(remote_member) = open_into_new_split(self, remote_path) else {
                     // Base opened OK but remote failed —
                     // close the base pane too so we leave
                     // no orphan splits behind.
@@ -3997,11 +3884,7 @@ impl Editor {
                 let base_buf = base.buffer;
                 let local_buf = local.buffer;
                 let remote_buf = remote_member.buffer;
-                if let Err(msg) = self.register_pane_group_diff(vec![
-                    base,
-                    local,
-                    remote_member,
-                ]) {
+                if let Err(msg) = self.register_pane_group_diff(vec![base, local, remote_member]) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -4149,8 +4032,9 @@ impl Editor {
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             // `*messages*` shares Document storage; `self.document`
             // points at it when activated through `activate_document`.
-            BufferKind::Document | BufferKind::Messages
-            | BufferKind::Multibuffer => self.document.snapshot().buffer.clone(),
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
+                self.document.snapshot().buffer.clone()
+            }
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
@@ -4183,8 +4067,7 @@ impl Editor {
     /// file-tree / oil.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
         match self.active_buffer {
-            BufferKind::Document | BufferKind::Messages
-            | BufferKind::Multibuffer => self.cursor,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => self.cursor,
             BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
@@ -4838,9 +4721,7 @@ impl Editor {
             AppEffect::SearchTrigger { query } => {
                 out.next_actions.push(Action::SearchTrigger { query })
             }
-            AppEffect::SearchJumpToSource => {
-                out.next_actions.push(Action::SearchJumpToSource)
-            }
+            AppEffect::SearchJumpToSource => out.next_actions.push(Action::SearchJumpToSource),
             AppEffect::SearchRefresh => out.next_actions.push(Action::SearchRefresh),
         }
     }
@@ -5352,17 +5233,13 @@ impl Editor {
                 // exactly the auto-insert behavior the user just
                 // opted out of.
                 if state.candidates.len() >= 2 {
-                    let slot_prefix_len = self
-                        .command_line
-                        .len()
-                        .saturating_sub(state.replace_start);
+                    let slot_prefix_len =
+                        self.command_line.len().saturating_sub(state.replace_start);
                     let slot_prefix = self.command_line[state.replace_start..].to_string();
                     let lcp = longest_common_text_prefix(&state.candidates);
                     if lcp.len() > slot_prefix_len && lcp.starts_with(&slot_prefix) {
-                        self.command_line.replace_range(
-                            state.replace_start..self.command_line.len(),
-                            &lcp,
-                        );
+                        self.command_line
+                            .replace_range(state.replace_start..self.command_line.len(), &lcp);
                         // KEEP `state.original_line` as the user's
                         // typed prefix so `CommandLineDismissCompletion`
                         // restores to it rather than to the LCP rewrite.
@@ -7065,11 +6942,7 @@ impl Editor {
     /// Unknown source ids surface an error echo listing every
     /// registered id so the user can recover without `:apropos`.
     /// Phase 5.8.AF.3.
-    pub fn open_picker(
-        &mut self,
-        source: String,
-        args: Vec<String>,
-    ) -> Vec<RendererSignal> {
+    pub fn open_picker(&mut self, source: String, args: Vec<String>) -> Vec<RendererSignal> {
         // Slice `3c.unify.picker-registry-cutover` (7d.1):
         // dual-lookup. First consult `CompletionRegistry::source_by_id`
         // (engine-shape registrations: future plugin sources +
@@ -8275,9 +8148,7 @@ impl Editor {
                             lattice_lsp::cache::PullDiagnosticsOutcome::Unchanged {
                                 buffer_id,
                                 document_version: version,
-                                result_id: unchanged
-                                    .unchanged_document_diagnostic_report
-                                    .result_id,
+                                result_id: unchanged.unchanged_document_diagnostic_report.result_id,
                             }
                         }
                     }
@@ -8386,7 +8257,9 @@ impl Editor {
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_links_cache.get_for(self.document_buffer_id)
+        if let Some(cache) = self
+            .lsp_document_links_cache
+            .get_for(self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -8522,7 +8395,9 @@ impl Editor {
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_color_cache.get_for(self.document_buffer_id)
+        if let Some(cache) = self
+            .lsp_document_color_cache
+            .get_for(self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -8765,9 +8640,7 @@ impl Editor {
     /// the per-pane render path (window.rs / TUI render.rs were
     /// doing the same flattening every frame) onto the dispatch
     /// tail where it runs once per publish.
-    fn build_active_inlay_hints(
-        &self,
-    ) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
+    fn build_active_inlay_hints(&self) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
         let snapshot = self.document.snapshot();
         self.build_inlay_hints_for_buffer(self.document_buffer_id, &snapshot)
     }
@@ -8840,8 +8713,7 @@ impl Editor {
             h.finish()
         };
 
-        let mut entries: Vec<PaneCellsInputs> =
-            Vec::with_capacity(self.pane_tree.leaves().len());
+        let mut entries: Vec<PaneCellsInputs> = Vec::with_capacity(self.pane_tree.leaves().len());
         for leaf in self.pane_tree.leaves() {
             // K.4.2 (2026-06-01): include document-backed kinds
             // (Document / Messages / Multibuffer) — see the
@@ -8889,10 +8761,8 @@ impl Editor {
             // active vs non-active uniformly; wrap in Arc per
             // publish — mirrors the existing active-doc path
             // (`self.syntax.clone().map(Arc::new)`).
-            let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> = self
-                .document_syntax_for(buffer_id)
-                .cloned()
-                .map(Arc::new);
+            let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
+                self.document_syntax_for(buffer_id).cloned().map(Arc::new);
 
             // Folds. Active buffer: live mutable slot
             // (`Editor::folds`). Non-active: per-buffer entry on
@@ -8907,8 +8777,7 @@ impl Editor {
                     .unwrap_or_default()
             };
             let folds_hash = crate::folds::compute_fold_hash(&folds_vec);
-            let folds_arc: Arc<[lattice_core::Fold]> =
-                Arc::from(folds_vec.into_boxed_slice());
+            let folds_arc: Arc<[lattice_core::Fold]> = Arc::from(folds_vec.into_boxed_slice());
 
             // Inlay hints — keyed by `buffer_id`; gate checked
             // inside the helper.
@@ -8916,9 +8785,7 @@ impl Editor {
                 self.build_inlay_hints_for_buffer(buffer_id, snap)
             } else {
                 (
-                    Arc::from(
-                        Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-                    ),
+                    Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice()),
                     0u64,
                 )
             };
@@ -8952,7 +8819,11 @@ impl Editor {
                 folds: folds_arc,
                 viewport_height: leaf.viewport_height,
                 foldenable,
-                last_edit: if is_active_pane { last_edit_active } else { None },
+                last_edit: if is_active_pane {
+                    last_edit_active
+                } else {
+                    None
+                },
             });
         }
         Arc::from(entries.into_boxed_slice())
@@ -10438,10 +10309,7 @@ impl Editor {
         let buffer_id = self.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self
-            .active_modes
-            .remove(&buffer_id)
-            .unwrap_or_default();
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let currently = active.has_minor(popup_mode_id);
         if want_popup && !currently {
             let _ = self.mode_registry.activate_minor(
@@ -10957,9 +10825,10 @@ impl Editor {
         // numeric); clamp non-negative before narrowing to u32
         // (negative values would wrap-cast otherwise —
         // defensive).
-        let raw = *self.resolved_option::<
-            lattice_multibuffer::providers::search::SearchContextSize,
-        >(self.active_pane_buffer_id());
+        let raw = *self
+            .resolved_option::<lattice_multibuffer::providers::search::SearchContextSize>(
+                self.active_pane_buffer_id(),
+            );
         let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
         let options = lattice_multibuffer::providers::search::ProjectSearchOptions {
             context_lines,
@@ -11042,9 +10911,9 @@ impl Editor {
         let Some(view) = mb_registry.handle(view_id) else {
             return;
         };
-        let Some(search_svc_outer) = self
-            .services
-            .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
+        let Some(search_svc_outer) =
+            self.services
+                .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
         else {
             return;
         };
@@ -11084,9 +10953,7 @@ impl Editor {
         let target = lattice_protocol::selection::Selection::cursor(
             lattice_protocol::position::Position::new(source_row, 0),
         );
-        self.set_selections_blocking(
-            lattice_protocol::selection::SelectionSet::single(target),
-        );
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(target));
     }
 
     #[cfg(not(feature = "search"))]
@@ -11101,9 +10968,9 @@ impl Editor {
     #[cfg(feature = "search")]
     pub fn do_search_refresh(&mut self) {
         let view_id = self.pane_tree.active().buffer_id;
-        let Some(search_svc_outer) = self
-            .services
-            .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
+        let Some(search_svc_outer) =
+            self.services
+                .get::<lattice_multibuffer::providers::search::ProjectSearchServiceHandle>()
         else {
             return;
         };
@@ -11113,7 +10980,9 @@ impl Editor {
             return;
         };
         let (query, options) = {
-            let Ok(s) = state.read() else { return; };
+            let Ok(s) = state.read() else {
+                return;
+            };
             (s.query.clone(), s.options.clone())
         };
         let Some(mb_registry) = self
@@ -11159,10 +11028,12 @@ impl Editor {
             events.clone(),
         );
         search_svc.attach_task(view_id, task);
-        events.publish_typed(lattice_multibuffer::providers::search::ProjectSearchRefreshed {
-            view: view_id,
-            new_query: query,
-        });
+        events.publish_typed(
+            lattice_multibuffer::providers::search::ProjectSearchRefreshed {
+                view: view_id,
+                new_query: query,
+            },
+        );
     }
 
     #[cfg(not(feature = "search"))]
@@ -11185,13 +11056,7 @@ impl Editor {
         let Some(view) = mb_registry.handle(buffer_id) else {
             return;
         };
-        let cursor_row = self
-            .document
-            .snapshot()
-            .selections
-            .primary()
-            .head
-            .line;
+        let cursor_row = self.document.snapshot().selections.primary().head.line;
         view.expand_excerpt_at(cursor_row, delta);
     }
 
@@ -12645,11 +12510,7 @@ impl Editor {
         // Skip the override when the stretch wouldn't add any
         // lines -- avoids needlessly waking the worker for an
         // unchanged key.
-        if end <= default_end {
-            None
-        } else {
-            Some(end)
-        }
+        if end <= default_end { None } else { Some(end) }
     }
 
     /// Move the cursor out of any closed fold's hidden body to the
@@ -12744,7 +12605,10 @@ impl Editor {
         let len = buffer.line_byte_len(line);
         let byte = self.cursor.byte.min(len);
         self.cursor = lattice_protocol::position::Position::new(line, byte);
-        if matches!(self.active_buffer, BufferKind::Document) {
+        if matches!(
+            self.active_buffer,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+        ) {
             self.auto_open_folds_at_cursor();
         }
     }
@@ -12999,7 +12863,10 @@ impl Editor {
                 return Vec::new();
             }
         };
-        if matches!(self.active_buffer, BufferKind::Document) {
+        if matches!(
+            self.active_buffer,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+        ) {
             let cur = self.cursor;
             self.push_position_history(cur, crate::state::PositionSource::AutoJump);
         }
@@ -13087,9 +12954,7 @@ impl Editor {
                 let Some(parent) = current_dir.parent().map(std::path::Path::to_path_buf) else {
                     return Vec::new();
                 };
-                let reload_result = self
-                    .buffers
-                    .with_oil_mut(id, |oil| oil.reload(&parent));
+                let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
@@ -13207,10 +13072,7 @@ impl Editor {
     /// Phase 5.8.AD.1: hoisted from TUI App. The nerd-fonts setting
     /// reads from the host's `Theme` so both peers seed the tree
     /// identically.
-    pub fn do_open_file_tree(
-        &mut self,
-        root: Option<std::path::PathBuf>,
-    ) -> Vec<RendererSignal> {
+    pub fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) -> Vec<RendererSignal> {
         let root = match root {
             Some(p) => p,
             None => match self
@@ -13247,7 +13109,10 @@ impl Editor {
                 return Vec::new();
             }
         };
-        if matches!(self.active_buffer, BufferKind::Document) {
+        if matches!(
+            self.active_buffer,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+        ) {
             let cur = self.cursor;
             self.push_position_history(cur, crate::state::PositionSource::AutoJump);
         }
@@ -13716,11 +13581,7 @@ impl Editor {
             AcceptAction::JumpToFileLocation { path, line, col } => {
                 self.previewing = true;
                 let mut signals = Vec::new();
-                let same_buffer = self
-                    .document
-                    .path()
-                    .map(|p| p == path)
-                    .unwrap_or(false);
+                let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
                 if !same_buffer {
                     let outcome = self.do_edit(Some(path.clone()), false);
                     match outcome {
@@ -13988,17 +13849,17 @@ impl Editor {
                 return;
             };
             let origin = synthetic.origin_top_line;
-            let translate = |r: &lattice_protocol::position::Range|
-                -> lattice_terminal::GridSearchHit {
-                lattice_terminal::GridSearchHit {
-                    line: origin + r.start.line as i32,
-                    column: r.start.byte as u16,
-                    // `Range` is half-open in bytes; len is the
-                    // byte distance when the match is single-
-                    // line (the common case for vim search).
-                    len: r.end.byte.saturating_sub(r.start.byte),
-                }
-            };
+            let translate =
+                |r: &lattice_protocol::position::Range| -> lattice_terminal::GridSearchHit {
+                    lattice_terminal::GridSearchHit {
+                        line: origin + r.start.line as i32,
+                        column: r.start.byte as u16,
+                        // `Range` is half-open in bytes; len is the
+                        // byte distance when the match is single-
+                        // line (the common case for vim search).
+                        len: r.end.byte.saturating_sub(r.start.byte),
+                    }
+                };
             t.current_match = current.as_ref().map(translate);
             t.all_matches = all.iter().map(translate).collect();
             // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
@@ -14099,7 +13960,10 @@ impl Editor {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(
+                    self.active_buffer,
+                    BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+                ) {
                     self.auto_open_folds_at_cursor();
                 } else if matches!(self.active_buffer, BufferKind::Terminal) {
                     // T-search-1: translate doc-space results to
@@ -14214,7 +14078,10 @@ impl Editor {
                     };
                     self.set_message(EchoLevel::Warn, text.to_string());
                 }
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(
+                    self.active_buffer,
+                    BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+                ) {
                     self.auto_open_folds_at_cursor();
                 } else if matches!(self.active_buffer, BufferKind::Terminal) {
                     // T-search-1: refresh `all_matches` against
@@ -14326,7 +14193,10 @@ impl Editor {
                     pattern: escaped,
                     direction,
                 });
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(
+                    self.active_buffer,
+                    BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+                ) {
                     self.auto_open_folds_at_cursor();
                 } else if matches!(self.active_buffer, BufferKind::Terminal) {
                     let buf_id = self.active_pane_buffer_id();
@@ -14591,10 +14461,7 @@ impl Editor {
                 // recompute and republishes a fresh `HunkIndex`.
                 match self.apply_edit_blocking(edit) {
                     Ok(_) => {
-                        self.cursor = lattice_protocol::position::Position::new(
-                            post_cursor_row,
-                            0,
-                        );
+                        self.cursor = lattice_protocol::position::Position::new(post_cursor_row, 0);
                     }
                     Err(err) => {
                         tracing::debug!(
@@ -14606,9 +14473,7 @@ impl Editor {
                     }
                 }
             }
-            crate::diff::subsystem::DiffGetOutcome::TargetRequired {
-                available_targets,
-            } => {
+            crate::diff::subsystem::DiffGetOutcome::TargetRequired { available_targets } => {
                 // D.6.d: three-way merge needs an explicit
                 // bufnr. Surface a clear error pointing the
                 // user at the available choices.
@@ -14658,8 +14523,7 @@ impl Editor {
                 edit,
                 post_cursor_row,
             } => {
-                let Some(handle) = self.buffers.document_handle(target_buffer_id)
-                else {
+                let Some(handle) = self.buffers.document_handle(target_buffer_id) else {
                     // Descriptor named a target that has since
                     // closed (race with auto-drop). Silent
                     // no-op — the session is on its way out.
@@ -14686,10 +14550,7 @@ impl Editor {
                             version: snap.version,
                             edits: vec![edit_event],
                         });
-                        self.cursor = lattice_protocol::position::Position::new(
-                            post_cursor_row,
-                            0,
-                        );
+                        self.cursor = lattice_protocol::position::Position::new(post_cursor_row, 0);
                     }
                     Err(err) => {
                         tracing::debug!(
@@ -14702,14 +14563,9 @@ impl Editor {
                 }
             }
             crate::diff::subsystem::DiffPutOutcome::NoPeerBuffer => {
-                self.set_message(
-                    EchoLevel::Error,
-                    "dp: baseline is not a buffer; use :write",
-                );
+                self.set_message(EchoLevel::Error, "dp: baseline is not a buffer; use :write");
             }
-            crate::diff::subsystem::DiffPutOutcome::TargetRequired {
-                available_targets,
-            } => {
+            crate::diff::subsystem::DiffPutOutcome::TargetRequired { available_targets } => {
                 let avail = available_targets
                     .iter()
                     .map(|b| b.0.to_string())
@@ -15061,7 +14917,8 @@ impl Editor {
                 t.term.scroll_to_line(target.max(top_bound));
             } else {
                 // Republish so the cursor overlay repaints.
-                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+                t.term
+                    .scroll(lattice_terminal::TerminalScrollKind::Delta(0));
             }
         });
     }
@@ -15135,7 +14992,7 @@ impl Editor {
                 | BufferKind::Oil
                 | BufferKind::Terminal
                 | BufferKind::Messages
-            | BufferKind::Multibuffer => self.buffers.contains(e.buffer_id),
+                | BufferKind::Multibuffer => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
@@ -15167,8 +15024,7 @@ impl Editor {
             // Messages buffers share the activate_document path
             // (rope-backed); the kind tag is preserved via
             // self.active_buffer set inside activate_buffer.
-            BufferKind::Document | BufferKind::Messages
-            | BufferKind::Multibuffer => {
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
                 if self.buffers.contains_document(entry.buffer_id) {
                     let _ = self.activate_document(entry.buffer_id);
                     self.cursor = entry.position;
@@ -15482,10 +15338,7 @@ impl Editor {
                     error = %e,
                     "do_terminal_spawn: spawn failed",
                 );
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("terminal: spawn failed: {e}"),
-                );
+                self.set_message(EchoLevel::Error, format!("terminal: spawn failed: {e}"));
                 return;
             }
         };
@@ -15508,13 +15361,8 @@ impl Editor {
         };
 
         let id = BufferId::next();
-        let entry = TerminalBuffer::from_spawn(
-            id,
-            label.clone(),
-            cwd,
-            prog_basename.clone(),
-            handles,
-        );
+        let entry =
+            TerminalBuffer::from_spawn(id, label.clone(), cwd, prog_basename.clone(), handles);
         self.buffers.insert(crate::buffer_registry::BufferEntry {
             id,
             flags: lattice_core::BufferFlags {
@@ -15533,10 +15381,7 @@ impl Editor {
         // grammar has its SyntheticDoc to operate on; otherwise
         // the first `i` / `a` exits an empty Normal state with
         // no rope behind it.
-        let _ = self.activate_mode_by_id(
-            id,
-            lattice_terminal::TerminalNormalMode::mode_id(),
-        );
+        let _ = self.activate_mode_by_id(id, lattice_terminal::TerminalNormalMode::mode_id());
         // T-cursor-1 (2026-05-28): seed `self.cursor` from the
         // freshly-built SyntheticDoc so the doc-space cursor is
         // valid the moment the pane becomes active. Search /
@@ -15590,16 +15435,11 @@ impl Editor {
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             t.insert_exit_pending = false;
         });
-        let result = self
-            .buffers
-            .with_terminal(buf_id, |t| t.pty.write(bytes));
+        let result = self.buffers.with_terminal(buf_id, |t| t.pty.write(bytes));
         match result {
             Some(Ok(())) => {}
             Some(Err(e)) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("terminal: write failed: {e}"),
-                );
+                self.set_message(EchoLevel::Error, format!("terminal: write failed: {e}"));
             }
             None => {
                 // Active buffer is not a Terminal — silent
@@ -15652,14 +15492,8 @@ impl Editor {
         // the buffer becomes PTY-live again. The two minors are
         // mutually exclusive; the host's transition path is
         // the seam that enforces it.
-        let _ = self.deactivate_mode_by_id(
-            buf_id,
-            lattice_terminal::TerminalNormalMode::mode_id(),
-        );
-        let _ = self.activate_mode_by_id(
-            buf_id,
-            lattice_terminal::TerminalInsertMode::mode_id(),
-        );
+        let _ = self.deactivate_mode_by_id(buf_id, lattice_terminal::TerminalNormalMode::mode_id());
+        let _ = self.activate_mode_by_id(buf_id, lattice_terminal::TerminalInsertMode::mode_id());
     }
 
     /// Terminal-mode T2.a: deactivate `terminal-insert-mode`
@@ -15677,19 +15511,13 @@ impl Editor {
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             t.insert_exit_pending = false;
         });
-        let _ = self.deactivate_mode_by_id(
-            buf_id,
-            lattice_terminal::TerminalInsertMode::mode_id(),
-        );
+        let _ = self.deactivate_mode_by_id(buf_id, lattice_terminal::TerminalInsertMode::mode_id());
         // T-mode-1 (2026-05-27): activate TerminalNormalMode AFTER
         // TerminalInsertMode deactivates. on_activate runs the
         // rope build (`install_synthetic`) so the central vim
         // grammar has a Document to operate on for the duration
         // of Normal / Visual.
-        let _ = self.activate_mode_by_id(
-            buf_id,
-            lattice_terminal::TerminalNormalMode::mode_id(),
-        );
+        let _ = self.activate_mode_by_id(buf_id, lattice_terminal::TerminalNormalMode::mode_id());
         // T-cursor-1 (2026-05-28): seed `self.cursor` from the
         // freshly-built SyntheticDoc (the live PTY cursor
         // translated to doc-space at build time).
@@ -15738,9 +15566,7 @@ impl Editor {
             return;
         }
         let buf_id = self.active_pane_buffer_id();
-        let _ = self
-            .buffers
-            .with_terminal(buf_id, |t| t.term.scroll(kind));
+        let _ = self.buffers.with_terminal(buf_id, |t| t.term.scroll(kind));
     }
 
     pub fn do_new_tab(&mut self) {
@@ -15999,9 +15825,7 @@ impl Editor {
                 return;
             };
             let dir_display = dir.display().to_string();
-            let result = self
-                .buffers
-                .with_oil_mut(oil_id, |oil| oil.apply(&dir));
+            let result = self.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
             if let Some(r) = result {
                 match r {
                     Ok(()) => self.set_message(
@@ -16100,11 +15924,7 @@ impl Editor {
     /// every interested server under a bounded 500ms budget;
     /// apply collected TextEdits pre-save. Phase 5.8.AD.3.
     fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let handles = self.lsp.servers_for(&uri);
@@ -16186,9 +16006,7 @@ impl Editor {
                 None
             };
             let params = lattice_lsp::lsp_types::DidSaveTextDocumentParams {
-                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 text,
             };
             let _ = h.did_save(params);
@@ -16220,19 +16038,15 @@ impl Editor {
     /// LSP-shape range for the current code-action request.
     /// Visual selection when active; point range at cursor
     /// otherwise. Phase 5.8.AD.2.
-    fn code_action_range(
-        &self,
-        buffer: &lattice_core::Buffer,
-    ) -> lattice_lsp::lsp_types::Range {
+    fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lattice_lsp::lsp_types::Range {
         if let lattice_grammar::ModalState::Visual(_) = self.modal {
             let anchor = self.visual_anchor.unwrap_or(self.cursor);
             let head = self.cursor;
-            let (start_pos, end_pos) =
-                if (anchor.line, anchor.byte) <= (head.line, head.byte) {
-                    (anchor, head)
-                } else {
-                    (head, anchor)
-                };
+            let (start_pos, end_pos) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
+                (anchor, head)
+            } else {
+                (head, anchor)
+            };
             let start = crate::lsp_helpers::app_to_lsp_position(buffer, start_pos).unwrap_or(
                 lattice_lsp::lsp_types::Position {
                     line: 0,
@@ -16320,9 +16134,7 @@ impl Editor {
                 return;
             };
             let params = lattice_lsp::lsp_types::CodeActionParams {
-                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 range,
                 context,
                 work_done_progress_params: Default::default(),
@@ -16333,9 +16145,10 @@ impl Editor {
                     .into_iter()
                     .map(|act| {
                         let (title, kind_glyph) = match &act {
-                            lattice_lsp::lsp_types::CodeActionOrCommand::Command(c) => {
-                                (c.title.clone(), crate::lsp_helpers::code_action_kind_glyph(None))
-                            }
+                            lattice_lsp::lsp_types::CodeActionOrCommand::Command(c) => (
+                                c.title.clone(),
+                                crate::lsp_helpers::code_action_kind_glyph(None),
+                            ),
                             lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => (
                                 ca.title.clone(),
                                 crate::lsp_helpers::code_action_kind_glyph(ca.kind.as_ref()),
@@ -16395,8 +16208,7 @@ impl Editor {
         } else {
             None
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
@@ -16404,10 +16216,8 @@ impl Editor {
         let lsp_range = range_lines.map(|(s, e)| {
             let end_line_text_len = snapshot.buffer.line_byte_len(e);
             let line_text = snapshot.buffer.line(e).unwrap_or_default();
-            let end_char = lattice_lsp::position::utf8_byte_to_utf16_column(
-                &line_text,
-                end_line_text_len,
-            );
+            let end_char =
+                lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, end_line_text_len);
             lattice_lsp::lsp_types::Range {
                 start: lattice_lsp::lsp_types::Position {
                     line: s,
@@ -16443,36 +16253,35 @@ impl Editor {
                 });
                 return;
             };
-            let edits: Option<Vec<lattice_lsp::lsp_types::TextEdit>> = if let Some(range) =
-                lsp_range
-            {
-                let params = lattice_lsp::lsp_types::DocumentRangeFormattingParams {
-                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
-                        uri: uri.clone(),
-                    },
-                    range,
-                    options: options.clone(),
-                    work_done_progress_params: Default::default(),
+            let edits: Option<Vec<lattice_lsp::lsp_types::TextEdit>> =
+                if let Some(range) = lsp_range {
+                    let params = lattice_lsp::lsp_types::DocumentRangeFormattingParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        range,
+                        options: options.clone(),
+                        work_done_progress_params: Default::default(),
+                    };
+                    handle
+                        .range_formatting(params, token.clone())
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    let params = lattice_lsp::lsp_types::DocumentFormattingParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        options,
+                        work_done_progress_params: Default::default(),
+                    };
+                    handle
+                        .formatting(params, token.clone())
+                        .await
+                        .ok()
+                        .flatten()
                 };
-                handle
-                    .range_formatting(params, token.clone())
-                    .await
-                    .ok()
-                    .flatten()
-            } else {
-                let params = lattice_lsp::lsp_types::DocumentFormattingParams {
-                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
-                        uri: uri.clone(),
-                    },
-                    options,
-                    work_done_progress_params: Default::default(),
-                };
-                handle
-                    .formatting(params, token.clone())
-                    .await
-                    .ok()
-                    .flatten()
-            };
             let edits = edits.unwrap_or_default();
             let _ = tx.send(lattice_lsp::cache::FormatOutcome::Edits(edits));
         });
@@ -16500,14 +16309,14 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let lsp_position = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
-        {
-            Some(p) => p,
-            None => {
-                self.set_message(EchoLevel::Error, "rename: cursor out of buffer");
-                return;
-            }
-        };
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => {
+                    self.set_message(EchoLevel::Error, "rename: cursor out of buffer");
+                    return;
+                }
+            };
         let new_name = new_name.to_string();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::RenameOutcome>();
         let token = lattice_protocol::CancellationToken::new();
@@ -16537,9 +16346,8 @@ impl Editor {
                 match handle.prepare_rename(pos, token.clone()).await {
                     Ok(Some(prep)) => {
                         if effective_name.is_empty() {
-                            effective_name =
-                                crate::lsp_helpers::prepare_rename_placeholder(&prep)
-                                    .unwrap_or_default();
+                            effective_name = crate::lsp_helpers::prepare_rename_placeholder(&prep)
+                                .unwrap_or_default();
                         }
                     }
                     Ok(None) => {
@@ -16595,9 +16403,8 @@ impl Editor {
             token.cancel();
         }
         let snapshot_for_label = self.document.snapshot();
-        let label =
-            crate::lsp_helpers::word_under_cursor(&snapshot_for_label.buffer, self.cursor)
-                .unwrap_or_default();
+        let label = crate::lsp_helpers::word_under_cursor(&snapshot_for_label.buffer, self.cursor)
+            .unwrap_or_default();
         self.pending_tag_origin = Some(crate::state::TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
@@ -16631,8 +16438,7 @@ impl Editor {
             );
             return;
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
@@ -16674,7 +16480,9 @@ impl Editor {
                         if token.is_cancelled() {
                             return;
                         }
-                        rows.push(crate::lsp_helpers::call_hierarchy_to_row(&call.to, &item_name));
+                        rows.push(crate::lsp_helpers::call_hierarchy_to_row(
+                            &call.to, &item_name,
+                        ));
                     }
                 }
             } else {
@@ -16690,7 +16498,9 @@ impl Editor {
                         if token.is_cancelled() {
                             return;
                         }
-                        rows.push(crate::lsp_helpers::call_hierarchy_to_row(&call.from, &item_name));
+                        rows.push(crate::lsp_helpers::call_hierarchy_to_row(
+                            &call.from, &item_name,
+                        ));
                     }
                 }
             }
@@ -16714,9 +16524,8 @@ impl Editor {
             token.cancel();
         }
         let snapshot_for_label = self.document.snapshot();
-        let label =
-            crate::lsp_helpers::word_under_cursor(&snapshot_for_label.buffer, self.cursor)
-                .unwrap_or_default();
+        let label = crate::lsp_helpers::word_under_cursor(&snapshot_for_label.buffer, self.cursor)
+            .unwrap_or_default();
         self.pending_tag_origin = Some(crate::state::TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
@@ -16750,8 +16559,7 @@ impl Editor {
             );
             return;
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
@@ -16957,7 +16765,8 @@ impl Editor {
         let lattice_help::HelpContent { buffer, metadata } = content;
         let mut signals = Vec::new();
         if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
-            self.buffers.with_help_mut(existing_id, |slot| *slot = buffer);
+            self.buffers
+                .with_help_mut(existing_id, |slot| *slot = buffer);
             self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
             return (existing_id, signals);
@@ -17013,7 +16822,10 @@ impl Editor {
         let lattice_help::HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
         self.dismiss_stale_popup_registry();
-        if matches!(self.active_buffer, BufferKind::Document) {
+        if matches!(
+            self.active_buffer,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+        ) {
             let cur = self.cursor;
             self.push_position_history(cur, crate::state::PositionSource::AutoJump);
         }
@@ -17303,8 +17115,7 @@ impl Editor {
                 // halves — origin pane loses ORIG. Restore
                 // ORIG to the active pane before splitting so
                 // the post-split layout shows ORIG | candidate.
-                let preview_origin =
-                    std::mem::take(&mut self.pending_picker_preview_origin);
+                let preview_origin = std::mem::take(&mut self.pending_picker_preview_origin);
                 if let Some(origin) = preview_origin
                     && origin != self.active_pane_buffer_id()
                 {
@@ -17338,11 +17149,7 @@ impl Editor {
         col: u32,
     ) -> Vec<RendererSignal> {
         self.push_position_history(self.cursor, crate::state::PositionSource::PluginPush);
-        let same_buffer = self
-            .document
-            .path()
-            .map(|p| p == path)
-            .unwrap_or(false);
+        let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
         let mut signals = Vec::new();
         if !same_buffer {
             let outcome = self.do_edit(Some(path.to_path_buf()), false);
@@ -17451,10 +17258,7 @@ impl Editor {
             ExpandSnippet { id } => {
                 let snippet = self.snippet_registry.load().by_name(&id).cloned();
                 let Some(snippet) = snippet else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: no snippet named `{id}`"),
-                    );
+                    self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
                     return signals;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
@@ -17495,23 +17299,23 @@ impl Editor {
         };
         let content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors)
             .with_markdown_syntax(self.lang_registry.clone());
-        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-            content,
-            category: lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
-        }))]
+        vec![RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
+            },
+        ))]
     }
 
     /// `:describe-command <name>` direct-call. Phase 5.8.AD.5.
-    pub fn do_describe_command(
-        &mut self,
-        name: &str,
-        anchor: Option<&str>,
-    ) -> Vec<RendererSignal> {
+    pub fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) -> Vec<RendererSignal> {
         if let Some(content) = self.build_describe_command_content(name, anchor) {
-            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                content,
-                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            }))]
+            vec![RendererSignal::DisplayBuffer(Box::new(
+                DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                },
+            ))]
         } else {
             Vec::new()
         }
@@ -17520,10 +17324,12 @@ impl Editor {
     /// `:describe-key <chord>` direct-call. Phase 5.8.AD.5.
     pub fn do_describe_key(&mut self, chord: &str) -> Vec<RendererSignal> {
         let content = self.build_describe_key_content(chord);
-        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-            content,
-            category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        }))]
+        vec![RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            },
+        ))]
     }
 
     /// `K` (LSP hover) response / `:hover [markdown]`. Phase 5.8.AD.5.
@@ -17531,28 +17337,34 @@ impl Editor {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
         let content = lattice_help::HelpContent::from_lines("hover", lines)
             .with_markdown_syntax(self.lang_registry.clone());
-        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-            content,
-            category: lattice_core::ui::display::BufferDisplayCategory::Hover,
-        }))]
+        vec![RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+            },
+        ))]
     }
 
     /// `:describe-events` direct-call. Phase 5.8.AD.5.
     pub fn do_describe_events(&mut self) -> Vec<RendererSignal> {
         let content = self.build_describe_events_content();
-        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-            content,
-            category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-        }))]
+        vec![RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+            },
+        ))]
     }
 
     /// `:describe-event <name>` direct-call. Phase 5.8.AD.5.
     pub fn do_describe_event(&mut self, name: &str) -> Vec<RendererSignal> {
         if let Some(content) = self.build_describe_event_content(name) {
-            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                content,
-                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            }))]
+            vec![RendererSignal::DisplayBuffer(Box::new(
+                DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                },
+            ))]
         } else {
             Vec::new()
         }
@@ -17561,10 +17373,12 @@ impl Editor {
     /// `:describe-mode <name>` direct-call. Phase 5.8.AD.5.
     pub fn do_describe_mode(&mut self, name: &str) -> Vec<RendererSignal> {
         if let Some(content) = self.build_describe_mode_content(name) {
-            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                content,
-                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            }))]
+            vec![RendererSignal::DisplayBuffer(Box::new(
+                DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                },
+            ))]
         } else {
             Vec::new()
         }
@@ -17580,10 +17394,12 @@ impl Editor {
             Some(n) => self.build_customize_group_content(n),
         };
         if let Some(content) = content_opt {
-            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                content,
-                category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-            }))]
+            vec![RendererSignal::DisplayBuffer(Box::new(
+                DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                },
+            ))]
         } else {
             Vec::new()
         }
@@ -17654,7 +17470,11 @@ impl Editor {
             self.buffer_locals
                 .get(&id)
                 .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-                .and_then(|hl| hl.0.iter().find(|l| range_contains(&l.range, cursor)).cloned())
+                .and_then(|hl| {
+                    hl.0.iter()
+                        .find(|l| range_contains(&l.range, cursor))
+                        .cloned()
+                })
         };
         let link = popup_id.and_then(find_link).or_else(|| {
             if Some(pane_id) == popup_id {
@@ -17813,8 +17633,7 @@ impl Editor {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
         }
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
@@ -17967,14 +17786,24 @@ impl Editor {
                 let start = lattice_lsp::lsp_types::Position {
                     line: anchor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
-                        &self.document.snapshot().buffer.line(anchor.line).unwrap_or_default(),
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(anchor.line)
+                            .unwrap_or_default(),
                         anchor.byte,
                     ),
                 };
                 let end = lattice_lsp::lsp_types::Position {
                     line: self.cursor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
-                        &self.document.snapshot().buffer.line(self.cursor.line).unwrap_or_default(),
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(self.cursor.line)
+                            .unwrap_or_default(),
                         self.cursor.byte,
                     ),
                 };
@@ -18055,7 +17884,10 @@ impl Editor {
                 lattice_protocol::position::Position::new(te.range.start.line, start_byte),
                 lattice_protocol::position::Position::new(te.range.end.line, end_byte),
             );
-            all_edits.push(lattice_protocol::edit::Edit::replace(r, te.new_text.clone()));
+            all_edits.push(lattice_protocol::edit::Edit::replace(
+                r,
+                te.new_text.clone(),
+            ));
         }
         all_edits.push(main_edit.clone());
         all_edits.sort_by(|a, b| {
@@ -18206,18 +18038,14 @@ impl Editor {
             return;
         }
         let insert_text = item.raw.text.clone();
-        let range =
-            lattice_protocol::position::Range::new(state.anchor, self.cursor);
+        let range = lattice_protocol::position::Range::new(state.anchor, self.cursor);
         let edit = lattice_protocol::edit::Edit::replace(range, insert_text);
         match self.apply_edit_blocking(edit) {
             Ok(applied) => {
                 self.cursor = applied.inserted_range.end;
             }
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("completion: apply failed: {e:?}"),
-                );
+                self.set_message(EchoLevel::Error, format!("completion: apply failed: {e:?}"));
             }
         }
     }
@@ -18337,10 +18165,11 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let lsp_position = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
-            Some(p) => p,
-            None => return,
-        };
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => return,
+            };
         if self.lsp.servers_for(&uri).is_empty() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
                 lattice_lsp::cache::InsertCompletionLspOutcome,
@@ -18529,9 +18358,8 @@ impl Editor {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_lsp::cache::CompletionResolveOutcome,
-        >();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CompletionResolveOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_completion_resolve_rx = Some(rx);
         self.pending_completion_resolve_token = Some(token.clone());
@@ -19576,10 +19404,12 @@ impl Editor {
     pub fn do_lsp_status(&mut self) -> Vec<RendererSignal> {
         let content = lattice_lsp::help_views::lsp_status_help(&self.lsp)
             .with_markdown_syntax(self.lang_registry.clone());
-        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-            content,
-            category: lattice_core::ui::display::BufferDisplayCategory::LspStatus,
-        }))]
+        vec![RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::LspStatus,
+            },
+        ))]
     }
 
     /// `:lsp-progress-cancel [server]` -- send
@@ -19592,11 +19422,7 @@ impl Editor {
         let allowed: std::collections::HashSet<String> = match server_id {
             Some(id) => std::iter::once(id.to_string()).collect(),
             None => {
-                let Some(uri) = self
-                    .buffer_uris
-                    .get(&self.document_buffer_id)
-                    .cloned()
-                else {
+                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
                     self.set_message(
                         EchoLevel::Info,
                         "lsp-progress-cancel: buffer has no URI".to_string(),
@@ -19842,10 +19668,7 @@ impl Editor {
             lattice_lsp::cache::SelectionRangeStep::Expand => {
                 let next = self.lsp_selection_chain_index + 1;
                 if next >= chain.ranges.len() {
-                    self.set_message(
-                        EchoLevel::Info,
-                        "lsp-expand-region: outermost".to_string(),
-                    );
+                    self.set_message(EchoLevel::Info, "lsp-expand-region: outermost".to_string());
                     return true;
                 }
                 self.lsp_selection_chain_index = next;
@@ -19862,10 +19685,7 @@ impl Editor {
         true
     }
 
-    fn issue_selection_range_request(
-        &mut self,
-        step: lattice_lsp::cache::SelectionRangeStep,
-    ) {
+    fn issue_selection_range_request(&mut self, step: lattice_lsp::cache::SelectionRangeStep) {
         if !self.check_lsp_sub_mode_gate(
             lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
             "lsp-selection-range-mode",
@@ -19875,11 +19695,7 @@ impl Editor {
         if let Some(token) = self.pending_selection_range_token.take() {
             token.cancel();
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -19946,10 +19762,7 @@ impl Editor {
     /// captured replace range. Plain text only -- snippet
     /// expansion lands with the buffer-level Insert-mode
     /// completion shell. Phase 5.8.AF: hoisted from TUI App.
-    pub fn apply_lsp_completion_item(
-        &mut self,
-        item: &lattice_lsp::cache::CompletionItemRow,
-    ) {
+    pub fn apply_lsp_completion_item(&mut self, item: &lattice_lsp::cache::CompletionItemRow) {
         let (start_byte, end_byte) = item.replace_range;
         let range = lattice_protocol::position::Range::new(
             lattice_protocol::position::Position::new(item.line, start_byte),
@@ -19968,15 +19781,8 @@ impl Editor {
 
     /// Send the LSP response for one in-flight
     /// `showMessageRequest`. Phase 5.8.AF: hoisted from TUI App.
-    pub fn finalize_show_message_request(
-        &mut self,
-        request_id: u32,
-        selected_index: Option<u32>,
-    ) {
-        let Some(req) = self
-            .lsp_pending_show_message_requests
-            .remove(&request_id)
-        else {
+    pub fn finalize_show_message_request(&mut self, request_id: u32, selected_index: Option<u32>) {
+        let Some(req) = self.lsp_pending_show_message_requests.remove(&request_id) else {
             return;
         };
         let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
@@ -19988,7 +19794,10 @@ impl Editor {
     /// Advance the SMR queue. Phase 5.8.AF: hoisted.
     pub fn open_next_queued_show_message_request(&mut self) {
         while let Some(next_id) = self.lsp_show_message_request_queue.pop_front() {
-            if self.lsp_pending_show_message_requests.contains_key(&next_id) {
+            if self
+                .lsp_pending_show_message_requests
+                .contains_key(&next_id)
+            {
                 self.open_show_message_request_picker(next_id);
                 return;
             }
@@ -20326,18 +20135,14 @@ impl Editor {
                 ));
             }
             lattice_picker::RoutingPayload::JumpToMark { name } => {
-                signals.extend(
-                    self.apply_picker_outcome(
-                        lattice_picker::PickerAcceptOutcome::JumpToMark { name },
-                    ),
-                );
+                signals.extend(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::JumpToMark { name },
+                ));
             }
             lattice_picker::RoutingPayload::ExpandSnippet { id } => {
-                signals.extend(
-                    self.apply_picker_outcome(
-                        lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
-                    ),
-                );
+                signals.extend(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
+                ));
             }
             lattice_picker::RoutingPayload::AcceptShowMessageAction {
                 request_id,
@@ -20590,9 +20395,9 @@ impl Editor {
                 head: sel.head,
                 visual: Some(visual_kind_to_mode(kind)),
             };
-            self.set_selections_blocking(
-                lattice_protocol::selection::SelectionSet::single(switched),
-            );
+            self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+                switched,
+            ));
             return;
         }
         self.modal = ModalState::Visual(kind);
@@ -20717,7 +20522,8 @@ impl Editor {
                 }
             });
             let _ = self.buffers.with_terminal(buf_id, |t| {
-                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+                t.term
+                    .scroll(lattice_terminal::TerminalScrollKind::Delta(0));
             });
         }
     }
@@ -20741,14 +20547,12 @@ impl Editor {
             match restored {
                 Some(true) => {
                     let _ = self.buffers.with_terminal(buf_id, |t| {
-                        t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+                        t.term
+                            .scroll(lattice_terminal::TerminalScrollKind::Delta(0));
                     });
                 }
                 _ => {
-                    self.set_message(
-                        EchoLevel::Error,
-                        "no previous visual selection".to_string(),
-                    );
+                    self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
                 }
             }
             return;
@@ -21423,7 +21227,10 @@ impl Editor {
                     ));
                 }
                 BufferKind::Multibuffer => {
-                    let label = row.name.clone().unwrap_or_else(|| "*multibuffer*".to_string());
+                    let label = row
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "*multibuffer*".to_string());
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} mb       {label}",
                         id.0
@@ -21761,7 +21568,9 @@ impl Editor {
 
         let mut emitted_header = false;
         for (mode_label, mode) in modes {
-            let result = self.keymap.lookup_with_context(mode, &parsed, &active_minors);
+            let result = self
+                .keymap
+                .lookup_with_context(mode, &parsed, &active_minors);
             let crate::keymap_trie::LookupResult::Bound { command: bound, .. } = result else {
                 continue;
             };
@@ -21782,7 +21591,10 @@ impl Editor {
             lines.push(String::new());
             lines.push(format!("  [{mode_label} mode]"));
             lines.push(format!("    → {cmd_name}"));
-            lines.push(format!("    layer: {}", Self::friendly_layer_label(bound.layer)));
+            lines.push(format!(
+                "    layer: {}",
+                Self::friendly_layer_label(bound.layer)
+            ));
             lines.push(format!("    source: {}", bound.source.as_link()));
         }
 
@@ -21810,11 +21622,7 @@ impl Editor {
     /// parse via `chord::parse_chord_sequence` skips the
     /// section silently (the user already got the static-
     /// catalog hits above).
-    fn append_runtime_chord_bindings_section(
-        &self,
-        chord: &str,
-        lines: &mut Vec<String>,
-    ) {
+    fn append_runtime_chord_bindings_section(&self, chord: &str, lines: &mut Vec<String>) {
         let Ok(parsed) = crate::chord::parse_chord_sequence(chord) else {
             return;
         };
@@ -22279,8 +22087,7 @@ impl Editor {
             }
             // Document + Messages share the same hot-path stash
             // (cursor/scroll captured on the active pane below).
-            BufferKind::Document | BufferKind::Messages
-            | BufferKind::Multibuffer => {}
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
             // introduces a scrollback-cursor model that may
@@ -22428,8 +22235,9 @@ impl Editor {
             // same activation pipeline; `activate_document` reads
             // the kind from the registry and propagates it onto
             // `self.active_buffer`.
-            BufferKind::Document | BufferKind::Messages
-            | BufferKind::Multibuffer => self.activate_document(id),
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
+                self.activate_document(id)
+            }
             BufferKind::FileTree => {
                 self.activate_file_tree(id);
                 false
@@ -23351,9 +23159,7 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
 /// Extract a path from a routing payload when one is carried,
 /// otherwise `None`. Used by the picker-accepted event publish.
 /// Phase 5.8.AF: hoisted from TUI App.
-fn routing_payload_path(
-    payload: &lattice_picker::RoutingPayload,
-) -> Option<std::path::PathBuf> {
+fn routing_payload_path(payload: &lattice_picker::RoutingPayload) -> Option<std::path::PathBuf> {
     match payload {
         lattice_picker::RoutingPayload::OpenFile { path }
         | lattice_picker::RoutingPayload::LspLocation { path, .. } => Some(path.clone()),
@@ -23506,7 +23312,10 @@ pub fn raw_buffer_candidates(
                 format!("term{active_marker}"),
             ),
             BufferData::Messages(d) => {
-                let label = entry.name.clone().unwrap_or_else(|| "*messages*".to_string());
+                let label = entry
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "*messages*".to_string());
                 let dirty = if d.handle.dirty() { " [+]" } else { "" };
                 (
                     format!("#{:<3} {label}{dirty}", id.0),
@@ -23560,8 +23369,9 @@ fn parse_per_language_overrides_table(
                         .collect();
                     out.sources = Some(sources);
                 }
-                None => warnings
-                    .push(format!("{section_path}.sources: expected array of strings",)),
+                None => {
+                    warnings.push(format!("{section_path}.sources: expected array of strings",))
+                }
             },
             "auto_trigger" => match value.as_bool() {
                 Some(b) => out.auto_trigger = Some(b),
@@ -23569,8 +23379,7 @@ fn parse_per_language_overrides_table(
             },
             "auto_insert_single" => match value.as_bool() {
                 Some(b) => out.auto_insert_single = Some(b),
-                None => warnings
-                    .push(format!("{section_path}.auto_insert_single: expected bool",)),
+                None => warnings.push(format!("{section_path}.auto_insert_single: expected bool",)),
             },
             "suppress_in" => match value.as_array() {
                 Some(arr) => {
@@ -23643,7 +23452,10 @@ pub fn picker_buffer_entry(
         }
         BufferData::Terminal(t) => ("term".to_string(), None, t.label.clone(), false),
         BufferData::Messages(d) => {
-            let title = entry.name.clone().unwrap_or_else(|| "*messages*".to_string());
+            let title = entry
+                .name
+                .clone()
+                .unwrap_or_else(|| "*messages*".to_string());
             ("msg".to_string(), None, title, d.handle.dirty())
         }
         BufferData::Multibuffer(_) => {
@@ -23900,9 +23712,7 @@ const COMMAND_HISTORY_CAP: usize = 100;
 /// `open_completion_popup` to extend the cmdline visually when the
 /// user's typed prefix could be deterministically extended without
 /// committing to any single candidate.
-fn longest_common_text_prefix(
-    candidates: &[lattice_completion::RenderedCandidate],
-) -> String {
+fn longest_common_text_prefix(candidates: &[lattice_completion::RenderedCandidate]) -> String {
     let mut iter = candidates.iter();
     let Some(first) = iter.next() else {
         return String::new();
@@ -24246,9 +24056,7 @@ pub fn accept_action_to_outcome(
         AcceptAction::JumpToFileLocation { path, line, col } => {
             PickerAcceptOutcome::JumpToLocation { path, line, col }
         }
-        AcceptAction::InvokeCommand { id, args } => {
-            PickerAcceptOutcome::InvokeCommand { id, args }
-        }
+        AcceptAction::InvokeCommand { id, args } => PickerAcceptOutcome::InvokeCommand { id, args },
         AcceptAction::PasteRegister { name } => PickerAcceptOutcome::PasteRegister { name },
         AcceptAction::JumpToMark { name } => PickerAcceptOutcome::JumpToMark { name },
         AcceptAction::ExpandSnippet { id } => PickerAcceptOutcome::ExpandSnippet { id },
@@ -24816,10 +24624,7 @@ impl Editor {
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
         // below.
-        let visual = self
-            .buffers
-            .with_terminal(buf_id, |t| t.visual)
-            .flatten();
+        let visual = self.buffers.with_terminal(buf_id, |t| t.visual).flatten();
         if let Some(visual) = visual {
             // Visual-active reset: claimed branch, drop pending
             // count / op count so the next keystroke starts
@@ -24904,14 +24709,14 @@ impl Editor {
                     .flatten();
                 let (text, yank_kind, summary) = match visual_kind {
                     Some(Vk::Block) => {
-                        let extents = self
-                            .visual_block_extents()
-                            .unwrap_or(crate::visual::BlockExtents {
-                                start_line: 0,
-                                end_line: 0,
-                                start_col: 0,
-                                end_col: 0,
-                            });
+                        let extents =
+                            self.visual_block_extents()
+                                .unwrap_or(crate::visual::BlockExtents {
+                                    start_line: 0,
+                                    end_line: 0,
+                                    start_col: 0,
+                                    end_col: 0,
+                                });
                         let mut out = String::new();
                         let line_count = buffer.line_count();
                         for line in extents.start_line..=extents.end_line {
@@ -24939,7 +24744,10 @@ impl Editor {
                     Some(Vk::Line) => {
                         let range = self.visual_selection_range();
                         let (start_line, end_line) = match range {
-                            Some(r) => (r.start.line, r.end.line.min(buffer.line_count().saturating_sub(1))),
+                            Some(r) => (
+                                r.start.line,
+                                r.end.line.min(buffer.line_count().saturating_sub(1)),
+                            ),
                             None => (0, 0),
                         };
                         let mut out = String::new();
@@ -24961,7 +24769,11 @@ impl Editor {
                             None => String::new(),
                         };
                         let len = text.chars().count();
-                        (text, lattice_grammar::YankKind::Charwise, format!("{len} char(s)"))
+                        (
+                            text,
+                            lattice_grammar::YankKind::Charwise,
+                            format!("{len} char(s)"),
+                        )
                     }
                 };
                 let register = self
@@ -25068,10 +24880,7 @@ impl Editor {
             Some(_) => {
                 self.pending_count = 0;
                 self.op_count = 0;
-                self.set_message(
-                    EchoLevel::Info,
-                    "terminal buffer is read-only".to_string(),
-                );
+                self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
                 true
             }
         }
@@ -25133,10 +24942,7 @@ impl Editor {
                 // Non-mutating; nothing to apply on the buffer.
             }
             _ => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "terminal buffer is read-only".to_string(),
-                );
+                self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
             }
         }
     }
@@ -25231,16 +25037,14 @@ mod tests {
     /// not per-frame, so neither `String` cloning nor the `Box`
     /// allocation lands anywhere near the perf gate.
     fn rendered(text: &str) -> lattice_completion::RenderedCandidate {
-        lattice_completion::RenderedCandidate::from_scored(
-            lattice_completion::ScoredCandidate {
-                raw: lattice_completion::candidate::RawCandidate::plain(
-                    text,
-                    lattice_completion::candidate::CandidateKind::Plain,
-                ),
-                score: lattice_completion::candidate::MatchScore::PREFIX,
-                match_ranges: Vec::new(),
-            },
-        )
+        lattice_completion::RenderedCandidate::from_scored(lattice_completion::ScoredCandidate {
+            raw: lattice_completion::candidate::RawCandidate::plain(
+                text,
+                lattice_completion::candidate::CandidateKind::Plain,
+            ),
+            score: lattice_completion::candidate::MatchScore::PREFIX,
+            match_ranges: Vec::new(),
+        })
     }
 
     #[test]
@@ -25603,46 +25407,33 @@ mod tests {
         let shared = editor.pane_tree.leaves()[0].buffer_id;
 
         // Register two sessions through the shared buffer.
-        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> =
-            Arc::new(
-                crate::diff::subsystem::BufferRegistryTextProvider::new(
-                    editor.buffers.clone(),
-                ),
-            );
+        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> = Arc::new(
+            crate::diff::subsystem::BufferRegistryTextProvider::new(editor.buffers.clone()),
+        );
         let desc_a = crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                shared,
-            )),
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                lattice_core::BufferId(101),
-            )),
-
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    shared,
+                )),
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    lattice_core::BufferId(101),
+                )),
             ],
             watch: vec![shared, lattice_core::BufferId(101)],
             participants: vec![shared, lattice_core::BufferId(101)],
         };
         let desc_b = crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                shared,
-            )),
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                lattice_core::BufferId(102),
-            )),
-
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    shared,
+                )),
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    lattice_core::BufferId(102),
+                )),
             ],
             watch: vec![shared, lattice_core::BufferId(102)],
             participants: vec![shared, lattice_core::BufferId(102)],
@@ -25691,27 +25482,19 @@ mod tests {
         editor.pane_tree.leaves_mut()[1].buffer_id = lattice_core::BufferId(201);
         editor.pane_tree.leaves_mut()[2].buffer_id = lattice_core::BufferId(202);
         let shared = editor.pane_tree.leaves()[0].buffer_id;
-        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> =
-            Arc::new(
-                crate::diff::subsystem::BufferRegistryTextProvider::new(
-                    editor.buffers.clone(),
-                ),
-            );
+        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> = Arc::new(
+            crate::diff::subsystem::BufferRegistryTextProvider::new(editor.buffers.clone()),
+        );
         let mk = |peer: lattice_core::BufferId| crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                shared,
-            )),
-
-            	Arc::new(crate::diff::subsystem::BufferSource::new(
-                Arc::clone(&provider),
-                peer,
-            )),
-
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    shared,
+                )),
+                Arc::new(crate::diff::subsystem::BufferSource::new(
+                    Arc::clone(&provider),
+                    peer,
+                )),
             ],
             watch: vec![shared, peer],
             participants: vec![shared, peer],
@@ -25840,13 +25623,9 @@ mod tests {
     /// Boot an editor (with a running document actor) over
     /// `current_text` and register a `StaticSource`-backed
     /// session over `baseline_text`. Cursor starts at (0, 0).
-    fn boot_editor_with_diff_session(
-        current_text: &str,
-        baseline_text: &str,
-    ) -> Editor {
+    fn boot_editor_with_diff_session(current_text: &str, baseline_text: &str) -> Editor {
         use crate::diff::subsystem::{
-            BufferSource, BufferTextProvider, DiffDescriptor,
-            StaticSource,
+            BufferSource, BufferTextProvider, DiffDescriptor, StaticSource,
         };
         use lattice_diff::DiffAlgorithm;
         use ropey::Rope;
@@ -25868,23 +25647,16 @@ mod tests {
         let bid = editor.document_buffer_id;
         let provider: Arc<dyn BufferTextProvider> = Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-
-
             sources: vec![
-
-            	Arc::new(StaticSource::new(Rope::from(baseline_text))),
-
-            	Arc::new(BufferSource::new(provider, bid)),
-
+                Arc::new(StaticSource::new(Rope::from(baseline_text))),
+                Arc::new(BufferSource::new(provider, bid)),
             ],
             watch: vec![bid],
             participants: vec![bid],
         };
-        editor.diff_subsystem.register_with_sources(
-            bid,
-            DiffAlgorithm::Histogram,
-            desc,
-        );
+        editor
+            .diff_subsystem
+            .register_with_sources(bid, DiffAlgorithm::Histogram, desc);
         editor
     }
 
@@ -25938,13 +25710,11 @@ mod tests {
         let document = lattice_core::Document::from_text("unchanged\n");
         let mut editor = crate::editor::Editor::boot(document);
         let cursor_before = editor.cursor;
-        let snapshot_before =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let snapshot_before = editor.document.snapshot().buffer.to_rope().to_string();
 
         editor.do_diff_get(None);
 
-        let snapshot_after =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let snapshot_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
         assert_eq!(editor.cursor, cursor_before);
     }
@@ -26021,12 +25791,9 @@ mod tests {
     #[tokio::test]
     async fn do_diff_put_inline_baseline_emits_error_message() {
         use crate::diff::subsystem::{
-            BufferSource, BufferTextProvider, DiffDescriptor,
-            StaticSource,
+            BufferSource, BufferTextProvider, DiffDescriptor, StaticSource,
         };
-        use lattice_diff::{
-            DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange,
-        };
+        use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
         use ropey::Rope;
         use smallvec::smallvec;
 
@@ -26044,26 +25811,19 @@ mod tests {
         // Single-participant descriptor mirrors the
         // `:diff <file>` shape: file-on-disk baseline, no
         // peer buffer.
-        let provider: std::sync::Arc<dyn BufferTextProvider> =
-            std::sync::Arc::new(NoneProvider);
+        let provider: std::sync::Arc<dyn BufferTextProvider> = std::sync::Arc::new(NoneProvider);
         let desc = DiffDescriptor {
-
-
             sources: vec![
-
-            	std::sync::Arc::new(StaticSource::new(Rope::from("base-a\n"))),
-
-            	std::sync::Arc::new(BufferSource::new(provider, bid)),
-
+                std::sync::Arc::new(StaticSource::new(Rope::from("base-a\n"))),
+                std::sync::Arc::new(BufferSource::new(provider, bid)),
             ],
             watch: vec![bid],
             participants: vec![bid],
         };
-        let session = editor.diff_subsystem.register_with_sources(
-            bid,
-            DiffAlgorithm::Histogram,
-            desc,
-        );
+        let session =
+            editor
+                .diff_subsystem
+                .register_with_sources(bid, DiffAlgorithm::Histogram, desc);
         let rev = session.allocate_revision();
         session.publish(std::sync::Arc::new(HunkIndex {
             hunks: vec![Hunk {
@@ -26075,8 +25835,7 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
-        let text_before =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let text_before = editor.document.snapshot().buffer.to_rope().to_string();
         editor.do_diff_put(None);
 
         // Error message surfaced, no document mutation.
@@ -26087,8 +25846,7 @@ mod tests {
             msg.text
         );
         assert_eq!(msg.level, EchoLevel::Error);
-        let text_after =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let text_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(
             text_before, text_after,
             "current buffer must not be mutated by inline `dp`"
@@ -26103,10 +25861,7 @@ mod tests {
         use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
         use smallvec::smallvec;
 
-        let mut editor = boot_editor_with_diff_session(
-            "line-0\nline-1\nline-2\n",
-            "alt\n",
-        );
+        let mut editor = boot_editor_with_diff_session("line-0\nline-1\nline-2\n", "alt\n");
         let bid = editor.document_buffer_id;
         let session = editor.diff_subsystem.lookup(bid).unwrap();
         let rev = session.allocate_revision();
@@ -26120,11 +25875,9 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
-        let snapshot_before =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let snapshot_before = editor.document.snapshot().buffer.to_rope().to_string();
         editor.do_diff_get(None);
-        let snapshot_after =
-            editor.document.snapshot().buffer.to_rope().to_string();
+        let snapshot_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
         assert_eq!(editor.cursor.line, 2);
     }
@@ -26523,10 +26276,7 @@ mod tests {
         let bid = editor.document_buffer_id;
         let registry_cell = editor.virtual_rows_matrix_for(bid);
         assert!(
-            std::sync::Arc::ptr_eq(
-                &registry_cell,
-                &editor.virtual_rows_matrix_cell,
-            ),
+            std::sync::Arc::ptr_eq(&registry_cell, &editor.virtual_rows_matrix_cell,),
             "active-doc virtual-rows registry entry must share \
              Arc identity with `virtual_rows_matrix_cell` \
              (boot-seeded invariant)"
@@ -26710,7 +26460,9 @@ mod tests {
             .diff_subsystem
             .lookup(active_buffer)
             .expect("session alive");
-        let pg_id = session.pane_group_id().expect("pane group bound at arity 2");
+        let pg_id = session
+            .pane_group_id()
+            .expect("pane group bound at arity 2");
         let pg = editor
             .pane_groups
             .iter()
@@ -27112,19 +26864,12 @@ mod tests {
                 editor.buffers.clone(),
             ));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	std::sync::Arc::new(crate::diff::subsystem::StaticSource::new(
-                ropey::Rope::new(),
-            )),
-
-            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
-                provider_text,
-                primary,
-            )),
-
+                std::sync::Arc::new(crate::diff::subsystem::StaticSource::new(ropey::Rope::new())),
+                std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+                    provider_text,
+                    primary,
+                )),
             ],
             watch: vec![primary],
             participants: vec![primary],
@@ -27248,24 +26993,15 @@ mod tests {
             ));
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
-
-
                 sources: vec![
-
-                	std::sync::Arc::new(
-                    crate::diff::subsystem::BufferSource::new(
+                    std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
-                    ),
-                ),
-
-                	std::sync::Arc::new(
-                    crate::diff::subsystem::BufferSource::new(
+                    )),
+                    std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
-                    ),
-                ),
-
+                    )),
                 ],
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
@@ -27318,24 +27054,15 @@ mod tests {
         let peer_b = lattice_core::BufferId(203);
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
             crate::diff::subsystem::DiffDescriptor {
-
-
                 sources: vec![
-
-                	std::sync::Arc::new(
-                    crate::diff::subsystem::BufferSource::new(
+                    std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
-                    ),
-                ),
-
-                	std::sync::Arc::new(
-                    crate::diff::subsystem::BufferSource::new(
+                    )),
+                    std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
-                    ),
-                ),
-
+                    )),
                 ],
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
@@ -27414,28 +27141,20 @@ mod tests {
         // Stand-in descriptor — sources empty (their snapshots
         // return empty ropes); what matters is the `watch`
         // list shape: `[primary, secondary]`.
-        let provider_text: std::sync::Arc<
-            dyn crate::diff::subsystem::BufferTextProvider,
-        > = std::sync::Arc::new(
-            crate::diff::subsystem::BufferRegistryTextProvider::new(
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 crate::buffer_registry::BufferRegistry::new().into(),
-            ),
-        );
+            ));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
-
-
             sources: vec![
-
-            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
-                std::sync::Arc::clone(&provider_text),
-                secondary,
-            )),
-
-            	std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
-                std::sync::Arc::clone(&provider_text),
-                primary,
-            )),
-
+                std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+                    std::sync::Arc::clone(&provider_text),
+                    secondary,
+                )),
+                std::sync::Arc::new(crate::diff::subsystem::BufferSource::new(
+                    std::sync::Arc::clone(&provider_text),
+                    primary,
+                )),
             ],
             watch: vec![primary, secondary],
             participants: vec![primary, secondary],
@@ -27489,8 +27208,10 @@ mod tests {
         let mut bindings = HashMap::new();
         let mut trie = KeymapTrie::new();
         trie.insert(
-            &[ChordPattern::Literal(crate::chord::KeyChord::char('d')),
-              ChordPattern::Literal(crate::chord::KeyChord::char('o'))],
+            &[
+                ChordPattern::Literal(crate::chord::KeyChord::char('d')),
+                ChordPattern::Literal(crate::chord::KeyChord::char('o')),
+            ],
             Arc::new(BoundCommand::from_invocation(
                 CommandInvocation::of(CommandId::new(0xD1FF)),
                 SourceLocation::synthetic("test:diff-mode.do"),
@@ -27498,11 +27219,9 @@ mod tests {
             )),
         );
         bindings.insert(crate::keymap::BindingMode::Normal, trie);
-        editor.keymap.push_layer(
-            PushLayerKind::MinorMode(diff_mode),
-            "diff-mode",
-            bindings,
-        );
+        editor
+            .keymap
+            .push_layer(PushLayerKind::MinorMode(diff_mode), "diff-mode", bindings);
 
         // Active buffer does NOT have diff-mode active.
         let content = editor.build_describe_key_content("do");
@@ -27550,8 +27269,7 @@ mod tests {
     #[test]
     fn diffsplit_rejects_non_document_active_pane() {
         let mut editor = crate::editor::Editor::default();
-        editor.pane_tree.leaves_mut()[0].buffer =
-            lattice_core::BufferKind::FileTree;
+        editor.pane_tree.leaves_mut()[0].buffer = lattice_core::BufferKind::FileTree;
         let pane_count_before = editor.pane_tree.leaves().len();
 
         editor.do_diffsplit(std::path::PathBuf::from("/dev/null"), None);
@@ -27638,17 +27356,16 @@ mod tests {
             .expect("session registered under the new buffer");
         assert!(session.pane_group_id().is_some());
         // Either side resolves through the indirection map.
-        assert!(editor
-            .diff_subsystem
-            .lookup_session_for(baseline_buffer)
-            .is_some());
+        assert!(
+            editor
+                .diff_subsystem
+                .lookup_session_for(baseline_buffer)
+                .is_some()
+        );
         // Per-side filler providers registered scoped per
         // buffer (D.4.d.2.1.a).
         assert_eq!(
-            editor
-                .virtual_row_providers
-                .snapshot(baseline_buffer)
-                .len(),
+            editor.virtual_row_providers.snapshot(baseline_buffer).len(),
             1
         );
         assert_eq!(

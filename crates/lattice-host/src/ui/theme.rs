@@ -430,22 +430,14 @@ impl Default for Theme {
             // Rgb so they stay faint behind syntax-coloured
             // text without being remapped by the terminal's
             // 16-colour palette.
-            diff_add_sign_style: Style::empty()
-                .fg(Color::Named(NamedColor::Green))
-                .bold(),
-            diff_change_sign_style: Style::empty()
-                .fg(Color::Named(NamedColor::Yellow))
-                .bold(),
-            diff_remove_sign_style: Style::empty()
-                .fg(Color::Named(NamedColor::Red))
-                .bold(),
+            diff_add_sign_style: Style::empty().fg(Color::Named(NamedColor::Green)).bold(),
+            diff_change_sign_style: Style::empty().fg(Color::Named(NamedColor::Yellow)).bold(),
+            diff_remove_sign_style: Style::empty().fg(Color::Named(NamedColor::Red)).bold(),
             // D.6.f (2026-05-31): bold magenta sign for
             // three-way Conflict hunks. Distinct from the
             // Add/Change/Remove triad so users instantly
             // spot conflicts in the gutter.
-            diff_conflict_sign_style: Style::empty()
-                .fg(Color::Named(NamedColor::Magenta))
-                .bold(),
+            diff_conflict_sign_style: Style::empty().fg(Color::Named(NamedColor::Magenta)).bold(),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),

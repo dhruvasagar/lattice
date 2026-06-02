@@ -69,11 +69,11 @@ pub mod diff;
 // under a pluggable `RowMapper`. The trait + registry
 // land in this slice; the `HunkRowMapper` consumer is
 // D.4.b. See `docs/dev/architecture/pane-groups.md`.
-pub mod pane_group;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;
 pub mod highlights_worker;
+pub mod pane_group;
 // S2.2 (2026-05-26): cell-grid renderer's cell-builder worker.
 // Sibling of `highlights_worker`; consumes `RenderState.cells`
 // inputs, builds a whole-doc `CellMatrix`, publishes via
@@ -85,10 +85,10 @@ pub mod cells_worker;
 // polls registered `VirtualRowProvider`s on wake, publishes
 // via `Editor::virtual_rows_matrix_cell`. See
 // `docs/dev/architecture/virtual-rows.md`.
-pub mod virtual_rows_worker;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;
+pub mod virtual_rows_worker;
 // K.3.2 (2026-06-02): emacs-style <C-h> help-prefix bindings
 // (Normal-mode, Builtin layer). See module doc for the design
 // rationale incl. Option 2 (no bare <C-h> leaf).

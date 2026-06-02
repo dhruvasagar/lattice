@@ -1295,7 +1295,10 @@ mod tests {
             // Issue #29 (2026-05-22): tab management.
             // Issue #32 (2026-05-22): picker open-target overrides.
             (ids.picker_accept_in_split, "action:picker-accept-in-split"),
-            (ids.picker_accept_in_vsplit, "action:picker-accept-in-vsplit"),
+            (
+                ids.picker_accept_in_vsplit,
+                "action:picker-accept-in-vsplit",
+            ),
             (ids.picker_accept_in_tab, "action:picker-accept-in-tab"),
             (ids.next_tab, "action:next-tab"),
             (ids.prev_tab, "action:prev-tab"),

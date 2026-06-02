@@ -174,9 +174,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // as a separate event with the mode now off. T2.c will add
     // a stateful two-key chord so the escape sequence doesn't
     // leak `\x1c` into the PTY between the two keys.
-    if ctx.terminal_insert_active
-        && matches!(ctx.active_buffer, BufferKind::Terminal)
-    {
+    if ctx.terminal_insert_active && matches!(ctx.active_buffer, BufferKind::Terminal) {
         // Terminal-mode T2.c (2026-05-25): two-key exit chord.
         // If we're already in "armed" state (previous key was
         // `<C-\>`) the next keystroke resolves the chord:
@@ -191,10 +189,9 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
                 return Action::ExitTerminalInsert;
             }
             let mut bytes = vec![0x1c];
-            if let Some(b) = crate::keymap_terminal::key_to_ansi_with_mode(
-                &chord,
-                ctx.terminal_app_cursor_keys,
-            ) {
+            if let Some(b) =
+                crate::keymap_terminal::key_to_ansi_with_mode(&chord, ctx.terminal_app_cursor_keys)
+            {
                 bytes.extend(b);
             }
             return Action::TerminalInput(bytes);
@@ -217,10 +214,9 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // T2.c (2026-05-25): encode with DECCKM awareness so
         // arrow keys flip to SS3 when the program has flipped
         // application-cursor-keys mode.
-        if let Some(bytes) = crate::keymap_terminal::key_to_ansi_with_mode(
-            &chord,
-            ctx.terminal_app_cursor_keys,
-        ) {
+        if let Some(bytes) =
+            crate::keymap_terminal::key_to_ansi_with_mode(&chord, ctx.terminal_app_cursor_keys)
+        {
             return Action::TerminalInput(bytes);
         }
         return Action::None;
@@ -340,10 +336,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             }
         }
         match chord.key {
-            KeyKind::Char('i')
-            | KeyKind::Char('a')
-            | KeyKind::Char('I')
-            | KeyKind::Char('A') => {
+            KeyKind::Char('i') | KeyKind::Char('a') | KeyKind::Char('I') | KeyKind::Char('A') => {
                 return Action::EnterTerminalInsert;
             }
             _ => {}
@@ -633,6 +626,5 @@ fn compute_normal_action(
     // -> trie lookup. `lookup_normal` returns `Some(action)` for
     // any matched chord; on `None` we fall through to
     // `Action::None`.
-    crate::keymap_normal::lookup_normal(keymap, &chord, active_minor_modes)
-        .unwrap_or(Action::None)
+    crate::keymap_normal::lookup_normal(keymap, &chord, active_minor_modes).unwrap_or(Action::None)
 }

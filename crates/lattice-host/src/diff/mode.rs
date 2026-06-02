@@ -110,15 +110,10 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
 /// diff-mode bindings are invisible to them.
 pub fn diff_mode_layer_bindings(
     actions: &crate::actions::ActionIds,
-) -> std::collections::HashMap<
-    crate::keymap::BindingMode,
-    crate::keymap_trie::KeymapTrie,
-> {
+) -> std::collections::HashMap<crate::keymap::BindingMode, crate::keymap_trie::KeymapTrie> {
     use crate::chord::{KeyChord, KeyKind, KeyMods};
     use crate::keymap::BindingMode;
-    use crate::keymap_trie::{
-        BoundCommand, ChordPattern, KeymapLayer, KeymapTrie,
-    };
+    use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
     use lattice_grammar::CommandInvocation;
     use lattice_grammar::source::SourceLocation;
     use std::collections::HashMap;
@@ -366,10 +361,16 @@ mod tests {
         bridge.note_session_opened(bid(2), &[bid(1), bid(2)]);
         let changes = bridge.drain_pending();
         assert_eq!(changes.len(), 2);
-        assert!(changes.iter().any(|c| c.buffer == bid(1)
-            && c.action == DiffModeAction::Activate));
-        assert!(changes.iter().any(|c| c.buffer == bid(2)
-            && c.action == DiffModeAction::Activate));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.buffer == bid(1) && c.action == DiffModeAction::Activate)
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.buffer == bid(2) && c.action == DiffModeAction::Activate)
+        );
     }
 
     #[test]
@@ -380,7 +381,11 @@ mod tests {
         bridge.note_session_closed(bid(2));
         let changes = bridge.drain_pending();
         assert_eq!(changes.len(), 2);
-        assert!(changes.iter().all(|c| c.action == DiffModeAction::Deactivate));
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.action == DiffModeAction::Deactivate)
+        );
         assert!(changes.iter().any(|c| c.buffer == bid(1)));
         assert!(changes.iter().any(|c| c.buffer == bid(2)));
     }
@@ -416,7 +421,11 @@ mod tests {
         bridge.note_session_closed(bid(2));
         let after_close_a = bridge.drain_pending();
         assert_eq!(after_close_a.len(), 2);
-        assert!(after_close_a.iter().all(|c| c.action == DiffModeAction::Deactivate));
+        assert!(
+            after_close_a
+                .iter()
+                .all(|c| c.action == DiffModeAction::Deactivate)
+        );
         assert!(after_close_a.iter().any(|c| c.buffer == bid(1)));
         assert!(after_close_a.iter().any(|c| c.buffer == bid(2)));
 
@@ -446,7 +455,11 @@ mod tests {
         // (still held by session B).
         bridge.note_session_closed(bid(2));
         let changes = bridge.drain_pending();
-        assert_eq!(changes.len(), 1, "only file2 should deactivate, got {changes:?}");
+        assert_eq!(
+            changes.len(),
+            1,
+            "only file2 should deactivate, got {changes:?}"
+        );
         assert_eq!(changes[0].buffer, bid(2));
         assert_eq!(changes[0].action, DiffModeAction::Deactivate);
         assert_eq!(bridge.refcount(bid(1)), 1, "file1 still held by B");
@@ -455,7 +468,11 @@ mod tests {
         bridge.note_session_closed(bid(3));
         let changes = bridge.drain_pending();
         assert_eq!(changes.len(), 2);
-        assert!(changes.iter().all(|c| c.action == DiffModeAction::Deactivate));
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.action == DiffModeAction::Deactivate)
+        );
         assert!(changes.iter().any(|c| c.buffer == bid(1)));
         assert!(changes.iter().any(|c| c.buffer == bid(3)));
     }
@@ -492,10 +509,16 @@ mod tests {
         // Expect: file1 → Deactivate; file9 → Activate. file2's
         // refcount went 1 → 0 → 1 in one call, so its change
         // sequence is Deactivate + Activate.
-        assert!(changes.iter().any(|c| c.buffer == bid(1)
-            && c.action == DiffModeAction::Deactivate));
-        assert!(changes.iter().any(|c| c.buffer == bid(9)
-            && c.action == DiffModeAction::Activate));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.buffer == bid(1) && c.action == DiffModeAction::Deactivate)
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.buffer == bid(9) && c.action == DiffModeAction::Activate)
+        );
     }
 
     #[test]

@@ -185,8 +185,7 @@ pub fn recompute(
         // No language attached. Clear published spans so a
         // language detach doesn't leave stale highlights.
         let existing = spans_cell.load();
-        if existing.spans.is_empty()
-            && existing.computed_for_key == VisibleHighlightsKey::default()
+        if existing.spans.is_empty() && existing.computed_for_key == VisibleHighlightsKey::default()
         {
             return WorkerDecision::Clear;
         }
@@ -269,10 +268,11 @@ pub fn recompute(
     // Falls back to `scroll + viewport_height` (the pre-X2.9
     // shape) when the peer didn't request a stretch.
     let start = syntax.scroll;
-    let default_end = syntax
-        .scroll
-        .saturating_add(syntax.viewport_height.max(1));
-    let end = syntax.end_line_override.unwrap_or(default_end).max(default_end);
+    let default_end = syntax.scroll.saturating_add(syntax.viewport_height.max(1));
+    let end = syntax
+        .end_line_override
+        .unwrap_or(default_end)
+        .max(default_end);
     let spans = snap.highlight_lines(start, end).unwrap_or_default();
 
     // Perf plan A.2 slice A.2a: build pre-paint rows from the same
@@ -321,17 +321,14 @@ pub fn recompute(
     // below so the rows borrow doesn't outlive the per-row column
     // walk.
     let substitute_storage: Vec<lattice_protocol::position::Range>;
-    let substitute_matches: &[lattice_protocol::position::Range] = match rs
-        .active_document
-        .substitute_preview
-        .as_ref()
-    {
-        Some(prev) => {
-            substitute_storage = prev.matches.to_vec();
-            &substitute_storage
-        }
-        None => &[],
-    };
+    let substitute_matches: &[lattice_protocol::position::Range] =
+        match rs.active_document.substitute_preview.as_ref() {
+            Some(prev) => {
+                substitute_storage = prev.matches.to_vec();
+                &substitute_storage
+            }
+            None => &[],
+        };
     let static_overlay_quads = bucket_static_overlays(
         &rows,
         start,
@@ -586,9 +583,27 @@ fn bucket_static_overlays(
             .unwrap_or(source.len());
         let line_len = line_end - byte_off;
         let mut quads: Vec<RowOverlayQuad> = Vec::new();
-        push_layer_quads(&mut quads, doc_highlights, OverlayLayer::DocHighlight, line_idx, line_len);
-        push_layer_quads(&mut quads, all_matches, OverlayLayer::AllMatches, line_idx, line_len);
-        push_layer_quads(&mut quads, substitute_matches, OverlayLayer::Substitute, line_idx, line_len);
+        push_layer_quads(
+            &mut quads,
+            doc_highlights,
+            OverlayLayer::DocHighlight,
+            line_idx,
+            line_len,
+        );
+        push_layer_quads(
+            &mut quads,
+            all_matches,
+            OverlayLayer::AllMatches,
+            line_idx,
+            line_len,
+        );
+        push_layer_quads(
+            &mut quads,
+            substitute_matches,
+            OverlayLayer::Substitute,
+            line_idx,
+            line_len,
+        );
         out.push(quads);
         byte_off = (line_end + 1).min(source.len());
     }
@@ -640,9 +655,7 @@ fn push_layer_quads(
 /// Filters out hints whose line falls outside the visible window —
 /// inlays beyond the viewport never need a per-row vector even if
 /// they're in the published payload.
-fn bucket_inlays_by_line(
-    inlay_hints: &[InlayHintRow],
-) -> Vec<Vec<(u32, &str)>> {
+fn bucket_inlays_by_line(inlay_hints: &[InlayHintRow]) -> Vec<Vec<(u32, &str)>> {
     if inlay_hints.is_empty() {
         return Vec::new();
     }
@@ -709,7 +722,10 @@ fn weave_row(
                          pending_len: &mut u32| {
         if let Some(style) = pending_style.take() {
             if *pending_len > 0 {
-                runs.push(RowRun::Source { len: *pending_len, style });
+                runs.push(RowRun::Source {
+                    len: *pending_len,
+                    style,
+                });
             }
             *pending_len = 0;
         }
@@ -719,16 +735,16 @@ fn weave_row(
     for (orig_byte, ch) in line_text.char_indices() {
         // Splice inlays whose `orig_byte` lands at or before this
         // char. Multiple inlays at the same byte run in input order.
-        while inlay_idx < line_inlays.len()
-            && (line_inlays[inlay_idx].0 as usize) <= orig_byte
-        {
+        while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= orig_byte {
             let (off, text) = line_inlays[inlay_idx];
             let char_width = text.chars().count() as u32;
             inlay_offsets.push((off, char_width));
             // Inlay breaks the pending Source run.
             flush_pending(&mut runs, &mut pending_style, &mut pending_len);
             combined.push_str(text);
-            runs.push(RowRun::Inlay { len: text.len() as u32 });
+            runs.push(RowRun::Inlay {
+                len: text.len() as u32,
+            });
             inlay_idx += 1;
         }
         let style = style_at_byte(line_spans, orig_byte);
@@ -757,7 +773,9 @@ fn weave_row(
         inlay_offsets.push((off, char_width));
         flush_pending(&mut runs, &mut pending_style, &mut pending_len);
         combined.push_str(text);
-        runs.push(RowRun::Inlay { len: text.len() as u32 });
+        runs.push(RowRun::Inlay {
+            len: text.len() as u32,
+        });
         inlay_idx += 1;
     }
     flush_pending(&mut runs, &mut pending_style, &mut pending_len);
@@ -773,10 +791,7 @@ fn weave_row(
 /// `line_spans`. Returns `Style::Default` for bytes that fall
 /// outside every styled span (whitespace, punctuation that no
 /// theme styles, etc.).
-fn style_at_byte(
-    line_spans: &[lattice_syntax::StyledSpan],
-    byte: usize,
-) -> lattice_syntax::Style {
+fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> lattice_syntax::Style {
     for s in line_spans {
         if byte >= s.start && byte < s.end {
             return s.style;
@@ -811,7 +826,10 @@ fn collapse_source_runs(
         if len == 0 {
             return;
         }
-        if let Some(RowRun::Source { style: prev_style, len: prev_len }) = runs.last_mut()
+        if let Some(RowRun::Source {
+            style: prev_style,
+            len: prev_len,
+        }) = runs.last_mut()
             && *prev_style == style
         {
             *prev_len += len;
@@ -834,7 +852,11 @@ fn collapse_source_runs(
         cursor = end;
     }
     if cursor < combined_len {
-        push(&mut runs, lattice_syntax::Style::Default, combined_len - cursor);
+        push(
+            &mut runs,
+            lattice_syntax::Style::Default,
+            combined_len - cursor,
+        );
     }
     runs
 }
@@ -923,7 +945,13 @@ mod tests {
             }),
             ..RenderState::default()
         };
-        (ArcSwap::from_pointee(rs), handle, cell, rows_cell, overlay_cell)
+        (
+            ArcSwap::from_pointee(rs),
+            handle,
+            cell,
+            rows_cell,
+            overlay_cell,
+        )
     }
 
     /// Cache miss path: with a current snapshot and a fresh
@@ -931,7 +959,8 @@ mod tests {
     /// publishes the resulting spans into the cell.
     #[test]
     fn recompute_with_current_snapshot_publishes_spans() {
-        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        let (rs, _h, cell, rows_cell, overlay_cell) =
+            rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
         let decision = recompute(&rs, &cell, &rows_cell, &overlay_cell);
         assert_eq!(decision, WorkerDecision::Recomputed);
         let after = cell.load();
@@ -953,15 +982,19 @@ mod tests {
     /// `CacheHit` without re-walking or churning the cell.
     #[test]
     fn recompute_with_unchanged_key_is_cache_hit() {
-        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
-        let first_ptr = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::CacheHit);
-        let second_ptr = Arc::as_ptr(&cell.load_full());
+        let (rs, _h, cell, rows_cell, overlay_cell) =
+            rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
         assert_eq!(
-            first_ptr, second_ptr,
-            "cache-hit must not store a new Arc"
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Recomputed
         );
+        let first_ptr = Arc::as_ptr(&cell.load_full());
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::CacheHit
+        );
+        let second_ptr = Arc::as_ptr(&cell.load_full());
+        assert_eq!(first_ptr, second_ptr, "cache-hit must not store a new Arc");
     }
 
     /// Stale-snapshot HOLD: the document's `text_version` (the
@@ -995,7 +1028,7 @@ mod tests {
                 scroll: 0,
                 viewport_height: 5,
                 end_line_override: None,
-                fold_hash: 1, // changed -> key differs from cache
+                fold_hash: 1,    // changed -> key differs from cache
                 text_version: 2, // doc advanced
                 visible_spans: cell.clone(),
                 visible_rows: rows_cell.clone(),
@@ -1037,7 +1070,10 @@ mod tests {
         // covers every line.
         let text = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n";
         let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust(text, 0, 1, 0, 1, Some(4));
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Recomputed
+        );
         let after = cell.load();
         assert!(
             after.spans.len() >= 4,
@@ -1047,9 +1083,10 @@ mod tests {
         // Last covered line still carries a Keyword span for
         // `fn`, confirming the walk reached it.
         assert!(
-            after.spans[3]
-                .iter()
-                .any(|s| matches!(s.style, lattice_syntax::Style::Keyword | lattice_syntax::Style::Function)),
+            after.spans[3].iter().any(|s| matches!(
+                s.style,
+                lattice_syntax::Style::Keyword | lattice_syntax::Style::Function
+            )),
             "expected Keyword/Function span on extended row 3: {:?}",
             after.spans[3]
         );
@@ -1067,9 +1104,15 @@ mod tests {
         let rows_cell: ArcSwap<VisibleRows> = ArcSwap::from_pointee(VisibleRows::default());
         let overlay_cell: ArcSwap<StaticOverlayQuads> =
             ArcSwap::from_pointee(StaticOverlayQuads::default());
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Clear);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Clear
+        );
         let first = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Clear);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Clear
+        );
         let second = Arc::as_ptr(&cell.load_full());
         // The second `Clear` should NOT have allocated a new Arc:
         // when published spans are already empty + key default,
@@ -1178,11 +1221,20 @@ mod tests {
         let out = bucket_static_overlays(&rows, 0, src, &dh, &[], &[]);
         assert_eq!(out.len(), 3);
         // Row 0: from byte 2 to end → 2..5.
-        assert_eq!((out[0][0].source_byte_start, out[0][0].source_byte_end), (2, 5));
+        assert_eq!(
+            (out[0][0].source_byte_start, out[0][0].source_byte_end),
+            (2, 5)
+        );
         // Row 1: full line → 0..6.
-        assert_eq!((out[1][0].source_byte_start, out[1][0].source_byte_end), (0, 6));
+        assert_eq!(
+            (out[1][0].source_byte_start, out[1][0].source_byte_end),
+            (0, 6)
+        );
         // Row 2: from 0 to byte 1 → 0..1.
-        assert_eq!((out[2][0].source_byte_start, out[2][0].source_byte_end), (0, 1));
+        assert_eq!(
+            (out[2][0].source_byte_start, out[2][0].source_byte_end),
+            (0, 1)
+        );
     }
 
     /// `static_overlay_state_version` is deterministic per payload
@@ -1219,7 +1271,10 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert!(matches!(
             runs[0],
-            RowRun::Source { len: 10, style: lattice_syntax::Style::Default }
+            RowRun::Source {
+                len: 10,
+                style: lattice_syntax::Style::Default
+            }
         ));
 
         // Empty row → no runs at all (nothing to paint).
@@ -1233,20 +1288,44 @@ mod tests {
     fn collapse_source_runs_merges_and_fills_gaps() {
         use lattice_syntax::{Style, StyledSpan};
         let spans = vec![
-            StyledSpan { start: 0, end: 2, style: Style::Keyword },
-            StyledSpan { start: 2, end: 4, style: Style::Keyword }, // adjacent, same → merges
+            StyledSpan {
+                start: 0,
+                end: 2,
+                style: Style::Keyword,
+            },
+            StyledSpan {
+                start: 2,
+                end: 4,
+                style: Style::Keyword,
+            }, // adjacent, same → merges
             // gap [4..6) → Default
-            StyledSpan { start: 6, end: 9, style: Style::Function },
+            StyledSpan {
+                start: 6,
+                end: 9,
+                style: Style::Function,
+            },
             // gap [9..10) → Default
         ];
         let runs = collapse_source_runs(&spans, 10);
         assert_eq!(
             runs,
             vec![
-                RowRun::Source { len: 4, style: Style::Keyword },
-                RowRun::Source { len: 2, style: Style::Default },
-                RowRun::Source { len: 3, style: Style::Function },
-                RowRun::Source { len: 1, style: Style::Default },
+                RowRun::Source {
+                    len: 4,
+                    style: Style::Keyword
+                },
+                RowRun::Source {
+                    len: 2,
+                    style: Style::Default
+                },
+                RowRun::Source {
+                    len: 3,
+                    style: Style::Function
+                },
+                RowRun::Source {
+                    len: 1,
+                    style: Style::Default
+                },
             ]
         );
         let total: u32 = runs.iter().map(|r| r.len()).sum();
@@ -1261,14 +1340,24 @@ mod tests {
     #[test]
     fn weave_row_no_inlays_matches_collapse_source_runs() {
         use lattice_syntax::{Style, StyledSpan};
-        let spans = vec![StyledSpan { start: 0, end: 3, style: Style::Keyword }];
+        let spans = vec![StyledSpan {
+            start: 0,
+            end: 3,
+            style: Style::Keyword,
+        }];
         let row = weave_row("let x = 1;", &spans, &[]);
         assert_eq!(row.combined.as_ref(), "let x = 1;");
         assert!(row.inlay_offsets.is_empty());
         let total: u32 = row.runs.iter().map(|r| r.len()).sum();
         assert_eq!(total, "let x = 1;".len() as u32);
         // First run is Keyword (Source); rest are Source Default.
-        assert!(matches!(row.runs[0], RowRun::Source { style: Style::Keyword, .. }));
+        assert!(matches!(
+            row.runs[0],
+            RowRun::Source {
+                style: Style::Keyword,
+                ..
+            }
+        ));
         assert!(row.runs.iter().all(|r| matches!(r, RowRun::Source { .. })));
     }
 
@@ -1348,9 +1437,21 @@ mod tests {
     #[test]
     fn bucket_inlays_by_line_groups_and_sorts() {
         let hints = vec![
-            InlayHintRow { line: 0, byte: 5, text: "a".into() },
-            InlayHintRow { line: 2, byte: 1, text: "b".into() },
-            InlayHintRow { line: 0, byte: 2, text: "c".into() }, // earlier byte than first on line 0
+            InlayHintRow {
+                line: 0,
+                byte: 5,
+                text: "a".into(),
+            },
+            InlayHintRow {
+                line: 2,
+                byte: 1,
+                text: "b".into(),
+            },
+            InlayHintRow {
+                line: 0,
+                byte: 2,
+                text: "c".into(),
+            }, // earlier byte than first on line 0
         ];
         let buckets = bucket_inlays_by_line(&hints);
         assert_eq!(buckets.len(), 3); // lines 0..=2
@@ -1371,7 +1472,10 @@ mod tests {
 
     // ---- Perf plan B.1: dirty-row recomposition tests -----------
 
-    fn fake_styled(line_count: usize, line_byte_len: usize) -> Vec<Vec<lattice_syntax::StyledSpan>> {
+    fn fake_styled(
+        line_count: usize,
+        line_byte_len: usize,
+    ) -> Vec<Vec<lattice_syntax::StyledSpan>> {
         // One Default span per line covering [0, len). The
         // worker's `collapse_runs` will fold this into one
         // `Default` run per row — fine for cache-identity checks.
@@ -1472,14 +1576,20 @@ mod tests {
         // Reuse window: new_rows[0..8] == prev_rows_vec[2..10].
         for i in 0..8 {
             assert_eq!(
-                new_rows[i].combined, prev_rows_vec[i + 2].combined,
+                new_rows[i].combined,
+                prev_rows_vec[i + 2].combined,
                 "reuse mismatch at rel {i}"
             );
         }
         // Cold tail: new_rows[8..10] must match cold build for
         // absolute lines [20..22).
         let cold_tail_spans = fake_styled(2, 4);
-        let cold_tail = build_rows(&source, 20, &cold_tail_spans, &no_inlays(cold_tail_spans.len()));
+        let cold_tail = build_rows(
+            &source,
+            20,
+            &cold_tail_spans,
+            &no_inlays(cold_tail_spans.len()),
+        );
         assert_eq!(new_rows[8].combined, cold_tail[0].combined);
         assert_eq!(new_rows[9].combined, cold_tail[1].combined);
     }
@@ -1520,10 +1630,7 @@ mod tests {
         // source_a rows.
         assert_ne!(new_rows[0].combined, prev_rows_vec[0].combined);
         assert!(
-            new_rows[0]
-                .combined
-                .chars()
-                .all(|c| c.is_ascii_uppercase()),
+            new_rows[0].combined.chars().all(|c| c.is_ascii_uppercase()),
             "expected uppercase from source_b; got {:?}",
             new_rows[0].combined
         );
@@ -1556,7 +1663,10 @@ mod tests {
         // visible) the path must take the cold rebuild, not the
         // reuse short-circuit. Use spy-able output by changing the
         // per-line inlay list so the woven content differs.
-        let new_key = VisibleHighlightsKey { inlay_version: 99, ..prev_key };
+        let new_key = VisibleHighlightsKey {
+            inlay_version: 99,
+            ..prev_key
+        };
         let mut new_inlays: Vec<Vec<(u32, &str)>> = no_inlays(spans.len());
         new_inlays[0].push((1, ">>"));
         let new_rows = build_rows_with_cache(&source, 0, &spans, &new_inlays, &prev, &new_key);
@@ -1574,10 +1684,17 @@ mod tests {
     /// the two cells if they need to.
     #[test]
     fn recompute_publishes_rows_alongside_spans() {
-        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell, overlay_cell) =
+            rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Recomputed
+        );
         let rows = rows_cell.load_full();
-        assert!(!rows.rows.is_empty(), "rows must be populated on Recomputed");
+        assert!(
+            !rows.rows.is_empty(),
+            "rows must be populated on Recomputed"
+        );
         // computed_for_key matches the spans cell — same recompute.
         assert_eq!(rows.computed_for_key, cell.load_full().computed_for_key);
         // First row's combined text matches the source line.
@@ -1650,7 +1767,10 @@ mod tests {
             ..RenderState::default()
         };
         let rs = ArcSwap::from_pointee(rs_state);
-        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Recomputed
+        );
         let published = rows_cell.load_full();
         let row0 = &published.rows[0];
         assert!(

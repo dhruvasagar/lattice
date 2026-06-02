@@ -452,13 +452,20 @@ mod tests {
             &[mode_id],
             &[KeyChord::ctrl('x'), KeyChord::char('p')],
         );
-        assert!(matches!(still_partial, LookupResult::Partial), "after <C-x>p");
+        assert!(
+            matches!(still_partial, LookupResult::Partial),
+            "after <C-x>p"
+        );
         // Third chord terminates.
         let result = lookup(
             &h,
             BindingMode::Normal,
             &[mode_id],
-            &[KeyChord::ctrl('x'), KeyChord::char('p'), KeyChord::char('p')],
+            &[
+                KeyChord::ctrl('x'),
+                KeyChord::char('p'),
+                KeyChord::char('p'),
+            ],
         );
         match result {
             LookupResult::Bound { command, .. } => {
@@ -485,7 +492,12 @@ mod tests {
 
         translate_mode_keymaps(&bulk_handle, &registry, &empty_command_registry());
         let mode_arc = registry.get(mode_id).expect("registered mode");
-        translate_mode_keymap(&single_handle, mode_id, &mode_arc, &empty_command_registry());
+        translate_mode_keymap(
+            &single_handle,
+            mode_id,
+            &mode_arc,
+            &empty_command_registry(),
+        );
 
         let chord_path = [KeyChord::char('g'), KeyChord::char('d')];
         let bulk_result = lookup(&bulk_handle, BindingMode::Normal, &[mode_id], &chord_path);
@@ -596,8 +608,11 @@ mod tests {
         let cmd_registry = registry_with_builtins();
         let chain_cmd = synthetic_invocation(123);
 
-        let keymap = Keymap::from_entries(fixture_table_form_entries())
-            .bind_chord(BindingMode::Normal, "<C-r>", chain_cmd.clone());
+        let keymap = Keymap::from_entries(fixture_table_form_entries()).bind_chord(
+            BindingMode::Normal,
+            "<C-r>",
+            chain_cmd.clone(),
+        );
 
         let mut registry = ModeRegistry::new();
         let mode_id = registry

@@ -576,19 +576,15 @@ impl App {
             Action::FollowLink => {}
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}
-            // M.5 (2026-06-01): handled by `Editor::do_multibuffer_expand`
-            // through host-side action dispatch. No app-side
-            // post-processing required.
-            Action::MultibufferExpand { .. } => {}
-            // M.6 (2026-06-01): handled by `Editor::do_search`
-            // through host-side action dispatch. No app-side
-            // post-processing required.
-            Action::SearchTrigger { .. } => {}
-            // M.6.1: project-search-multibuffer-mode chords —
-            // handled by `Editor::do_search_jump_to_source` /
-            // `Editor::do_search_refresh` host-side.
-            Action::SearchJumpToSource => {}
-            Action::SearchRefresh => {}
+            // M.10.7 (2026-06-03): four Action arms removed —
+            // `MultibufferExpand`, `SearchTrigger`,
+            // `SearchJumpToSource`, `SearchRefresh`. The variants
+            // themselves are gone from the enum; the four
+            // chord / ex-command routes are mode-owned via the
+            // M.10.1.b ActionHandlerRegistry (search mode's
+            // `<CR>` + `gr`) or work inline in the
+            // `AppEffect::SearchTrigger` /
+            // `AppEffect::MultibufferExpand` apply_effect arms.
 
             // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`

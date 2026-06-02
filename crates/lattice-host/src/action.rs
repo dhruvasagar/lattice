@@ -320,34 +320,14 @@ pub enum Action {
     /// `Editor::do_diff_put` and
     /// `crate::diff::subsystem::DiffSubsystem::compute_put_plan`.
     DiffPut,
-    /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
-    /// `:multibuffer-contract [n]`. `delta` is the signed row
-    /// count. Routed from `AppEffect::MultibufferExpand` and
-    /// dispatched to the active multibuffer view's
-    /// `expand_excerpt_at` from
-    /// `Editor::handle_multibuffer_expand`. No-op when the
-    /// active buffer isn't a multibuffer view (no
-    /// `MultibufferRegistry` handle for the active id).
-    MultibufferExpand {
-        delta: i32,
-    },
-    /// M.6 (2026-06-01): `:search <query>` — trigger
-    /// `lattice_multibuffer::providers::search::project_search`
-    /// against the active Editor (as activator). Opens the
-    /// resulting view as the active buffer.
-    SearchTrigger {
-        query: String,
-    },
-    /// M.6.1: `<CR>` in `project-search-multibuffer-mode` —
-    /// jump to the source file/row of the excerpt under cursor.
-    SearchJumpToSource,
-    /// M.6.1: `gr` in `project-search-multibuffer-mode` —
-    /// re-run the scan with the view's current query. `r` alone
-    /// would shadow vim's replace-character; `gr` is project-
-    /// search-specific (shadows LSP-references `gr` only inside
-    /// search views — K.1.c minor-mode precedence handles the
-    /// scope boundary).
-    SearchRefresh,
+    // M.10.7 (2026-06-03): four dead Action variants deleted —
+    // `MultibufferExpand`, `SearchTrigger`, `SearchJumpToSource`,
+    // `SearchRefresh`. All four are now mode-owned via the
+    // M.10.1.b ActionHandlerRegistry (the chord/ex-command
+    // routes through `run_invocation` → registry consultation →
+    // handler) OR work happens inline in the apply_effect arm
+    // (`:multibuffer-expand` + `:search`). No production path
+    // constructs these variants any longer.
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

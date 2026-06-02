@@ -1239,24 +1239,40 @@ impl VirtualRowProvider for MultibufferHeaderProvider {
     }
 }
 
-/// Pure function from excerpt list → header virtual rows. Each
-/// excerpt contributes one row, anchored `Above` its first
-/// composed line.
+/// Pure function from excerpt list → header virtual rows.
+/// Emits ONE row per distinct consecutive source — i.e. when N
+/// consecutive excerpts share `excerpt.source` (BufferId), only
+/// the first contributes a header row, anchored `Above` its
+/// first composed line. The rest advance the composed cursor
+/// without emitting a header.
+///
+/// K.4.6 follow-up (2026-06-02): pre-fix this emitted one row
+/// per excerpt unconditionally, which broke "1 header per file"
+/// for providers like search that emit multiple excerpts per
+/// file (one per hit cluster). The dedup happens here in
+/// substrate, not in providers — every provider gets the
+/// correct "1 header per source" behavior by default.
+/// Providers that intentionally want one header per excerpt
+/// can emit excerpts with distinct synthetic `source` BufferIds.
 pub fn compose_header_rows(
     excerpts: &[Excerpt],
     mut render_cells: impl FnMut(&Excerpt) -> Arc<[Cell]>,
 ) -> Vec<VirtualRow> {
     let mut rows = Vec::with_capacity(excerpts.len());
     let mut composed_cursor: u32 = 0;
+    let mut last_source: Option<BufferId> = None;
     for excerpt in excerpts {
-        let cells = render_cells(excerpt);
-        rows.push(VirtualRow {
-            anchor_line: composed_cursor,
-            position: AnchorPosition::Above,
-            cells,
-            height: 1,
-            kind: VirtualRowKind::Generic,
-        });
+        if last_source != Some(excerpt.source) {
+            let cells = render_cells(excerpt);
+            rows.push(VirtualRow {
+                anchor_line: composed_cursor,
+                position: AnchorPosition::Above,
+                cells,
+                height: 1,
+                kind: VirtualRowKind::Generic,
+            });
+            last_source = Some(excerpt.source);
+        }
         composed_cursor = composed_cursor.saturating_add(excerpt.line_count());
     }
     rows
@@ -2172,12 +2188,47 @@ mod tests {
     // ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn header_rows_anchor_at_each_excerpts_first_composed_row() {
+    fn header_rows_dedupe_consecutive_same_source() {
+        // K.4.6 follow-up (2026-06-02): three excerpts sharing
+        // the same source BufferId emit ONE header row (anchored
+        // at the first excerpt's composed start). The remaining
+        // two excerpts advance the composed cursor without
+        // emitting headers. Closes the "1 header per file" UX
+        // for grep-style search results.
         let mb_source = BufferId::next();
         let excerpts = vec![
             Excerpt::new(mb_source, 0, 2).with_header(ExcerptHeader::new("a")),
             Excerpt::new(mb_source, 0, 1).with_header(ExcerptHeader::new("b")),
             Excerpt::new(mb_source, 0, 0).with_header(ExcerptHeader::new("c")),
+        ];
+        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "consecutive same-source excerpts dedup to one header"
+        );
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[0].position, AnchorPosition::Above);
+        assert_eq!(rows[0].height, 1);
+        assert_eq!(rows[0].kind, VirtualRowKind::Generic);
+    }
+
+    #[test]
+    fn header_rows_distinct_sources_each_emit_header() {
+        // K.4.6 follow-up (2026-06-02): excerpts with distinct
+        // source BufferIds each emit their own header at the
+        // correct composed offset. Three sources → three headers
+        // at 0, 3, 5. Mirrors the production scenario where
+        // search-provider clusters from three different files
+        // appear in the composed view.
+        let src_a = BufferId::next();
+        let src_b = BufferId::next();
+        let src_c = BufferId::next();
+        let excerpts = vec![
+            Excerpt::new(src_a, 0, 2).with_header(ExcerptHeader::new("a")),
+            Excerpt::new(src_b, 0, 1).with_header(ExcerptHeader::new("b")),
+            Excerpt::new(src_c, 0, 0).with_header(ExcerptHeader::new("c")),
         ];
         let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
 
@@ -2190,6 +2241,30 @@ mod tests {
             assert_eq!(row.height, 1);
             assert_eq!(row.kind, VirtualRowKind::Generic);
         }
+    }
+
+    #[test]
+    fn header_rows_interleaved_sources_each_get_header() {
+        // K.4.6 follow-up (2026-06-02): when the same source
+        // re-appears after a different source, it gets its own
+        // header (the dedup is on *consecutive* same-source, not
+        // on "has this source ever been seen"). Models a
+        // pathological search ordering where hits from file A
+        // and file B are interleaved.
+        let src_a = BufferId::next();
+        let src_b = BufferId::next();
+        let excerpts = vec![
+            Excerpt::new(src_a, 0, 0).with_header(ExcerptHeader::new("a")),
+            Excerpt::new(src_b, 0, 0).with_header(ExcerptHeader::new("b")),
+            Excerpt::new(src_a, 1, 1).with_header(ExcerptHeader::new("a-again")),
+        ];
+        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+
+        assert_eq!(
+            rows.len(),
+            3,
+            "non-consecutive same source still emits its own header"
+        );
     }
 
     #[test]
@@ -2212,7 +2287,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn provider_collects_one_row_per_excerpt() {
+    async fn provider_collects_one_row_per_distinct_source() {
+        // K.4.6 follow-up (2026-06-02): two excerpts from the
+        // same source dedup to ONE header — the search-provider
+        // "1 header per file, N excerpts per file (one per
+        // cluster)" UX.
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let excerpts = vec![
             Excerpt::new(ids[0], 0, 1).with_header(ExcerptHeader::new("first")),
@@ -2222,9 +2301,8 @@ mod tests {
         let provider = MultibufferHeaderProvider::new(mb);
         let rows = provider.collect();
 
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].anchor_line, 0);
-        assert_eq!(rows[1].anchor_line, 2);
     }
 
     #[test]

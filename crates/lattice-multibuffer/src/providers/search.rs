@@ -486,37 +486,62 @@ impl Mode for ProjectSearchMultibufferMode {
                                     id
                                 };
 
-                                // K.4.6 follow-up (2026-06-02): emit ONE
-                                // excerpt per file covering the hit range
-                                // (min..=max of fh.rows), not one excerpt
-                                // per hit. Pre-fix each hit became its
-                                // own excerpt, producing one excerpt
-                                // header per HIT instead of one per file
-                                // — wrong UX (Zed/VSCode convention is
-                                // one section per file in project-search
-                                // results).
+                                // K.4.6 follow-up v2 (2026-06-02): emit
+                                // one excerpt per HIT CLUSTER (±3 lines
+                                // of context per hit, adjacent clusters
+                                // merged when ranges overlap or touch),
+                                // not one per file. Pre-v2 emitted one
+                                // excerpt per file spanning
+                                // min..=max(rows) — which for a file
+                                // with hits at line 5 and line 950
+                                // produced an excerpt covering 5..=950
+                                // = the whole file. v2 produces N
+                                // narrow excerpts per file showing only
+                                // the hit clusters with context.
                                 //
-                                // Cross-batch dedup (a file whose hits
-                                // arrive in multiple batches) still
-                                // produces multiple excerpts per file —
-                                // the line-445 comment ("file with hits
-                                // split across batches loads twice")
-                                // applies here too. M.6 follow-up: track
-                                // the existing per-file excerpt + extend
-                                // its range when new hits arrive,
-                                // instead of appending a fresh one.
-                                let (excerpts, batch_hit_count): (Vec<Excerpt>, usize) =
-                                    if fh.rows.is_empty() {
-                                        (Vec::new(), 0)
-                                    } else {
-                                        let start = *fh.rows.iter().min().unwrap();
-                                        let end = *fh.rows.iter().max().unwrap();
-                                        let ex = Excerpt::new(source_id, start, end).with_header(
-                                            ExcerptHeader::new(format!("{}", path.display())),
-                                        );
-                                        (vec![ex], fh.rows.len())
-                                    };
-                                hit_count_in_batch += batch_hit_count;
+                                // The substrate's `compose_header_rows`
+                                // (lib.rs) dedupes consecutive same-
+                                // source excerpts to a single header,
+                                // so the user sees ONE header per file
+                                // + N narrow context-windows under it
+                                // — grep-style per
+                                // [[feedback_convention_first]].
+                                //
+                                // Context lines: `±3` matches grep's
+                                // `-C 3` convention. Future polish:
+                                // expose as `g:project_search_context`
+                                // typed option.
+                                const CONTEXT_LINES: u32 = 3;
+                                let excerpts: Vec<Excerpt> = if fh.rows.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    let mut sorted_rows = fh.rows.clone();
+                                    sorted_rows.sort_unstable();
+                                    let mut clusters: Vec<(u32, u32)> = Vec::new();
+                                    for &row in &sorted_rows {
+                                        let start = row.saturating_sub(CONTEXT_LINES);
+                                        let end = row.saturating_add(CONTEXT_LINES);
+                                        match clusters.last_mut() {
+                                            // Merge if the new cluster's
+                                            // start touches or overlaps
+                                            // the previous cluster's end
+                                            // (+1 = "touches, no gap").
+                                            Some(last) if start <= last.1.saturating_add(1) => {
+                                                last.1 = last.1.max(end);
+                                            }
+                                            _ => clusters.push((start, end)),
+                                        }
+                                    }
+                                    clusters
+                                        .into_iter()
+                                        .map(|(start, end)| {
+                                            Excerpt::new(source_id, start, end).with_header(
+                                                ExcerptHeader::new(format!("{}", path.display())),
+                                            )
+                                        })
+                                        .collect()
+                                };
+                                hit_count_in_batch += fh.rows.len();
                                 view.append_excerpts(excerpts);
                             }
 

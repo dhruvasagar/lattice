@@ -140,6 +140,105 @@ fn create_multibuffer_view_returns_a_valid_buffer_id() {
 }
 
 #[test]
+fn opening_a_file_does_not_clobber_multibuffer_snapshot() {
+    // K.4.x bug user reported 2026-06-02:
+    // > "As soon as I open a file the entire buffer
+    // >  (virtual rows remain) gets replaced"
+    //
+    // Repro: boot Editor with a multibuffer view, snapshot its
+    // composed body, simulate the user flow (split active pane,
+    // then `:e <fresh_file>`), and assert the multibuffer's
+    // body text is unchanged. Headers are known intact (the
+    // user said "virtual rows remain"); we're testing the
+    // body-text path only.
+    //
+    // If this test PASSES, the bug is downstream of host state
+    // (renderer / TUI app picker pipeline). If it FAILS, the
+    // bug is in `do_edit` / `open_fresh_into_active_slot` /
+    // `activate_buffer_state` writing to the multibuffer.
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+
+    // Snapshot the multibuffer's composed body BEFORE the
+    // file-open. This is what the user expects to remain
+    // intact.
+    let mb_handle_pre = editor
+        .buffers
+        .document_handle(view_id)
+        .expect("multibuffer is in registry");
+    let composed_pre = mb_handle_pre.snapshot().buffer.as_string();
+    assert!(
+        composed_pre.contains("a-line-0") && composed_pre.contains("b-line-0"),
+        "sanity: multibuffer should compose source content; got: {composed_pre:?}"
+    );
+
+    // User's repro: <C-w>v then open a file.
+    editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Vertical);
+
+    // Write a fresh file outside the working tree so do_edit's
+    // `Document::open(path)` succeeds.
+    let temp_path = std::env::temp_dir()
+        .join(format!("lattice_multibuffer_clobber_test_{}.txt", std::process::id()));
+    std::fs::write(&temp_path, "FILE-LINE-0\nFILE-LINE-1\nFILE-LINE-2\n")
+        .expect("write tmp file");
+
+    // The actual call the picker / `:e` end up making.
+    let outcome = editor.do_edit(Some(temp_path.clone()), false);
+    let _ = outcome;
+
+    // After file open: assert multibuffer's body is UNCHANGED.
+    // We re-fetch the handle through the registry because that's
+    // what the renderer does for inactive panes.
+    let mb_handle_post = editor
+        .buffers
+        .document_handle(view_id)
+        .expect("multibuffer should still be in registry after file open");
+    let composed_post = mb_handle_post.snapshot().buffer.as_string();
+
+    // Clean up before assertion so a panic doesn't leak the tmp.
+    let _ = std::fs::remove_file(&temp_path);
+
+    assert_eq!(
+        composed_post, composed_pre,
+        "BUG: opening a file clobbered the multibuffer's composed body.\n\
+         Pre-open composed text:\n{composed_pre}\n\
+         Post-open composed text:\n{composed_post}"
+    );
+
+    // Also check that the registry's handle for view_id still
+    // resolves to a Multibuffer (not a Document).
+    assert_eq!(
+        editor.buffers.kind_of(view_id),
+        Some(BufferKind::Multibuffer),
+        "BUG: multibuffer's registry entry got swapped to a different kind"
+    );
+
+    // Now check the PUBLISHED render state — what the renderer
+    // actually reads from. Force a publish and re-query.
+    editor.publish_render_state();
+    let rs = editor.render_state.load();
+    let published_kind = rs.buffers.registry.kind_of(view_id);
+    assert_eq!(
+        published_kind,
+        Some(BufferKind::Multibuffer),
+        "BUG: published render state's buffer registry lost the \
+         multibuffer's BufferKind"
+    );
+    let published_handle = rs
+        .buffers
+        .registry
+        .document_handle(view_id)
+        .expect("multibuffer should be in published registry");
+    let published_composed = published_handle.snapshot().buffer.as_string();
+    assert_eq!(
+        published_composed, composed_pre,
+        "BUG: published render state's multibuffer handle returned \
+         different body text than expected.\nPre-open:\n{composed_pre}\
+         \nPost-publish:\n{published_composed}"
+    );
+}
+
+#[test]
 fn active_buffer_is_multibuffer_after_activation() {
     let (mut editor, view_id) = boot_with_multibuffer();
     activate_pane(&mut editor, view_id);

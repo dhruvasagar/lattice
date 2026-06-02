@@ -911,13 +911,30 @@ impl Document for MultibufferDocumentHandle {
         // sets `editor.cursor = source_row` — cursor jumps to
         // composed row 429 (or wherever the source row lands)
         // and subsequent inserts go off into a void.
+        //
+        // 2026-06-02 freeze fix: this used to wrap in
+        // `Pending::spawn(...)` which calls `tokio::spawn` —
+        // tokio::spawn captures the caller's runtime, and
+        // `apply_edit`'s synchronous body runs on the editor
+        // actor's current_thread runtime BEFORE `block_on`
+        // swaps to the bridge thread. The spawned task got
+        // scheduled on the editor actor's current_thread
+        // runtime; that runtime then blocks in `block_on`
+        // waiting for the new oneshot — but the spawned task
+        // can't progress because the runtime is blocked.
+        // Deadlock on the first user-visible apply_edit; UI
+        // freeze.
+        //
+        // Pending::map_ok attaches the transform without a new
+        // task: the transform runs on whichever thread polls
+        // the Pending (the bridge thread inside `block_on`'s
+        // shared-runtime context). No spawn, no deadlock,
+        // "UI never blocks" honoured.
         let row_delta = target.composed_start.line as i64 - target.source_start.line as i64;
         drop(state);
-        let pending = source_handle.apply_edit(source_edit);
-        Pending::spawn(async move {
-            let applied = pending.await?;
-            Ok(translate_applied_to_composed(applied, row_delta))
-        })
+        source_handle
+            .apply_edit(source_edit)
+            .map_ok(move |applied| translate_applied_to_composed(applied, row_delta))
     }
 
     /// M.3 (2026-06-01): translate + forward each edit to its

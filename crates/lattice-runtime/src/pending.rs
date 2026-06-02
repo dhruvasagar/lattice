@@ -62,11 +62,41 @@ impl fmt::Display for InvocationId {
 pub struct Pending<T> {
     pub id: InvocationId,
     rx: oneshot::Receiver<Result<T, RuntimeError>>,
+    /// 2026-06-02: optional on-success transform applied at
+    /// poll / blocking_recv time. Lets a producer adapt the
+    /// inner actor's result coordinate space WITHOUT spawning
+    /// a second task — the transform runs on whichever thread
+    /// is driving the Pending (the consumer's thread).
+    /// `None` for vanilla actor-bound Pendings.
+    transform: Option<Box<dyn FnOnce(T) -> T + Send + 'static>>,
 }
 
 impl<T> Pending<T> {
     pub(crate) fn new(id: InvocationId, rx: oneshot::Receiver<Result<T, RuntimeError>>) -> Self {
-        Self { id, rx }
+        Self {
+            id,
+            rx,
+            transform: None,
+        }
+    }
+
+    /// 2026-06-02: attach an on-success transform that runs
+    /// when the inner result resolves. The transform runs on
+    /// the *consumer's* polling thread, NOT in a separately
+    /// spawned task — critical when the producer is inside a
+    /// `current_thread` runtime that's about to block in
+    /// `block_on`. Use this instead of `Pending::spawn` for
+    /// purely synchronous result-shape adaptation (e.g.
+    /// translating coordinate spaces).
+    ///
+    /// `map_ok` may be called only once per Pending. A second
+    /// call replaces the prior transform (last-write-wins).
+    pub fn map_ok<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T) -> T + Send + 'static,
+    {
+        self.transform = Some(Box::new(f));
+        self
     }
 
     /// M.1 (2026-05-31): build a `Pending<T>` that resolves
@@ -81,6 +111,7 @@ impl<T> Pending<T> {
         Self {
             id: InvocationId::next(),
             rx,
+            transform: None,
         }
     }
 
@@ -107,6 +138,7 @@ impl<T> Pending<T> {
         Self {
             id: InvocationId::next(),
             rx,
+            transform: None,
         }
     }
 
@@ -114,9 +146,16 @@ impl<T> Pending<T> {
     /// the TUI input loop and by tests that don't drive a tokio
     /// reactor explicitly. Panics only if the oneshot's internal
     /// invariants are violated, which can't happen in safe code.
-    pub fn blocking_recv(self) -> Result<T, RuntimeError> {
+    pub fn blocking_recv(mut self) -> Result<T, RuntimeError> {
         match self.rx.blocking_recv() {
-            Ok(res) => res,
+            Ok(Ok(t)) => {
+                if let Some(f) = self.transform.take() {
+                    Ok(f(t))
+                } else {
+                    Ok(t)
+                }
+            }
+            Ok(Err(e)) => Err(e),
             // Sender dropped without sending -- actor died mid-call.
             Err(_) => Err(RuntimeError::ActorGone),
         }
@@ -132,7 +171,15 @@ impl<T> std::future::Future for Pending<T> {
     ) -> std::task::Poll<Self::Output> {
         use std::task::Poll;
         match std::pin::Pin::new(&mut self.rx).poll(cx) {
-            Poll::Ready(Ok(res)) => Poll::Ready(res),
+            Poll::Ready(Ok(Ok(t))) => {
+                let transformed = if let Some(f) = self.transform.take() {
+                    f(t)
+                } else {
+                    t
+                };
+                Poll::Ready(Ok(transformed))
+            }
+            Poll::Ready(Ok(Err(e))) => Poll::Ready(Err(e)),
             Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::ActorGone)),
             Poll::Pending => Poll::Pending,
         }

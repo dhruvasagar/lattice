@@ -1,0 +1,233 @@
+//! K.4.1.a — Multibuffer-is-a-regular-buffer integration tests
+//! (foundation slice).
+//!
+//! Drives a real `Editor::boot` through the
+//! `create_multibuffer_view` + `activate_document` path against
+//! a synthetic two-excerpt multibuffer view. The 35-seam K.4.0
+//! audit identified that the existing inline lib tests + the
+//! `MockActivator`-based `m2b2_integration.rs` cover
+//! `create_multibuffer_view`'s registration contract but NOT
+//! the end-to-end "view exists in an Editor, becomes active,
+//! cursor/active_buffer state reflects the switch" pipeline —
+//! which is where K.4.2 / K.4.3 / K.4.4 silently regressed
+//! before user testing surfaced them.
+//!
+//! ## What this slice covers (and what's deferred)
+//!
+//! **Covered (K.4.1.a, this commit):**
+//!
+//! - Boot a real `Editor`, create a synthetic two-excerpt
+//!   multibuffer view, `activate_document` it. Assert
+//!   `active_buffer == BufferKind::Multibuffer` and the
+//!   view's BufferId is reachable through the buffer
+//!   registry.
+//! - K.4.5 / K.4.6 / K.4.7 dependency markers as `#[ignore]`'d
+//!   tests that document the contract each upcoming slice
+//!   will satisfy.
+//!
+//! **Deferred (K.4.1.b, follow-up slice):** motion / visual /
+//! insert chord tests. The slice plan envisioned these as
+//! `dispatch_chord(editor, KeyChord::char('j'))` helpers, but
+//! `Editor::dispatch_blocking` takes a `CommandInvocation`,
+//! not a `KeyChord` — full chord translation requires building
+//! a `TranslateContext` (active modes, partial-chord state,
+//! binding-mode resolution, picker overlay gating, etc.) that's
+//! several hundred LOC of test scaffolding. The TUI's input
+//! layer (`lattice-ui-tui::input`) is the only production
+//! caller that wires this end-to-end; a host-side helper would
+//! be a useful follow-up (`Editor::dispatch_chord` perhaps)
+//! that K.4.1.b would land alongside the motion tests.
+//!
+//! Until K.4.1.b, the chord-dispatch tests stay as commented
+//! intent in this file's `KeyChord -> CommandInvocation`
+//! marker block — they document what should fire and let
+//! readers see the verification gap without pretending it's
+//! closed.
+
+#![allow(clippy::unwrap_used)]
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use lattice_core::{BufferFlags, BufferId, BufferKind, Document as CoreDocument};
+use lattice_grammar::CommandRegistry;
+use lattice_host::editor::Editor;
+use lattice_multibuffer::{Excerpt, create_multibuffer_view};
+use lattice_runtime::spawn_document;
+
+// ─────────────────────────────────────────────────────────────
+//  Test scaffold
+// ─────────────────────────────────────────────────────────────
+
+/// Boot an Editor with one synthetic multibuffer view layered
+/// on top. The view spans two source documents
+/// (`source_a` and `source_b`), each with 4 short rows, mapped
+/// to two excerpts (one per source). Returns the editor + the
+/// multibuffer's BufferId.
+///
+/// Matches the shape K.4.6 / K.4.7 need to exercise (two
+/// distinct source buffers → two excerpts → file-boundary
+/// motions between them).
+fn boot_with_multibuffer() -> (Editor, BufferId) {
+    // Boot with a scratch document — the multibuffer is added
+    // separately. Editor::boot is synchronous; the shared
+    // runtime it acquires handles every spawn_document call
+    // below.
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+
+    // Build two source documents we'll embed into the
+    // multibuffer view.
+    let cmd_registry: Arc<CommandRegistry> = editor.registry.clone();
+    let source_a = spawn_document(
+        BufferId(101),
+        CoreDocument::from_text("a-line-0\na-line-1\na-line-2\na-line-3\n"),
+        cmd_registry.clone(),
+    );
+    let source_b = spawn_document(
+        BufferId(102),
+        CoreDocument::from_text("b-line-0\nb-line-1\nb-line-2\nb-line-3\n"),
+        cmd_registry,
+    );
+
+    let mut sources: HashMap<BufferId, Arc<dyn lattice_runtime::Document>> = HashMap::new();
+    sources.insert(
+        BufferId(101),
+        Arc::new(source_a) as Arc<dyn lattice_runtime::Document>,
+    );
+    sources.insert(
+        BufferId(102),
+        Arc::new(source_b) as Arc<dyn lattice_runtime::Document>,
+    );
+
+    let excerpts = vec![
+        Excerpt::new(BufferId(101), 0, 4),
+        Excerpt::new(BufferId(102), 0, 4),
+    ];
+
+    let view_id = create_multibuffer_view(
+        &mut editor,
+        sources,
+        excerpts,
+        Some("*test:multibuffer*".into()),
+        BufferFlags::default(),
+    );
+
+    (editor, view_id)
+}
+
+/// Switch the active pane to the multibuffer view. Mirrors what
+/// `:b <view-name>` or the search provider's open path does at
+/// runtime — flips `active_buffer` to `Multibuffer`, points the
+/// cursor at row 0, and triggers downstream render-state
+/// republishes.
+///
+/// `activate_document` takes `lattice_core::BufferId` (the
+/// `lattice-core`'s u32-shaped id, not the protocol's u64).
+fn activate_pane(editor: &mut Editor, view_id: BufferId) {
+    editor.activate_document(view_id);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Foundation tests (K.4.1.a) — Editor + view + activation
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+fn create_multibuffer_view_returns_a_valid_buffer_id() {
+    let (_editor, view_id) = boot_with_multibuffer();
+    // BufferId(0) is the sentinel `create_multibuffer_view`
+    // returns when BufferStoreHandle isn't registered. If we
+    // see it, the boot-order audit went wrong.
+    assert_ne!(
+        view_id,
+        BufferId(0),
+        "create_multibuffer_view returned the sentinel BufferId(0) — \
+         BufferStoreHandle service was not registered at boot"
+    );
+}
+
+#[test]
+fn active_buffer_is_multibuffer_after_activation() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    assert_eq!(
+        editor.active_buffer,
+        BufferKind::Multibuffer,
+        "after activate_document on a multibuffer view, \
+         active_buffer must be BufferKind::Multibuffer"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  K.4.1.b — chord-dispatch tests (deferred — see module doc)
+// ─────────────────────────────────────────────────────────────
+//
+// The slice plan listed 5 motion + 2 modal-state tests using
+// a `dispatch_chord(editor, KeyChord)` helper. That helper
+// requires a host-side chord-translation entry point that
+// doesn't exist yet (`Editor::dispatch_blocking` takes a
+// `CommandInvocation`, not a `KeyChord`; the chord-to-
+// invocation translation is wired through the TUI's input
+// layer today). K.4.1.b will land the helper + these tests:
+//
+// - `motion_j_advances_cursor`
+// - `motion_k_retreats_cursor`
+// - `motion_gg_jumps_to_top`
+// - `motion_G_jumps_to_bottom`
+// - `motion_w_advances_word`
+// - `motion_excerpt_next_advances_to_next_excerpt` (`]e`)
+// - `visual_mode_enter_works`
+// - `insert_mode_blocked_when_readonly`
+//
+// Until K.4.1.b lands, the K.4.2/3/4 fixes' end-to-end
+// verification rests on manual testing + user reports.
+
+// ─────────────────────────────────────────────────────────────
+//  K.4.5 / K.4.6 / K.4.7 dependencies (ignored markers)
+// ─────────────────────────────────────────────────────────────
+//
+// These tests document the contract the upcoming slices will
+// satisfy. Each is `#[ignore]`'d with the slice that will
+// flip the attribute off. When the slice lands, the ignore
+// drops and the test joins the run.
+//
+// Today they `panic!` so the test framework registers them
+// as ignored-but-known-broken; once the K.4.1.b chord-dispatch
+// helper exists, these can pull the chord-dispatch path back
+// in and become real assertions.
+
+#[test]
+#[ignore = "K.4.5 dependency — visual highlights for multibuffer not yet wired"]
+fn visual_selection_renders_for_multibuffer() {
+    // K.4.5 contract: after entering Visual mode + extending
+    // the selection on a multibuffer view, the published
+    // render state's `visual_range` should be `Some` covering
+    // the selected range (OR the per-cell paint should mark
+    // the selected cells as highlighted — exact shape TBD by
+    // K.4.5's chosen fix).
+    panic!("K.4.5 unimplemented — visual highlights don't render on multibuffer views");
+}
+
+#[test]
+#[ignore = "K.4.6 dependency — excerpt-header virtual rows not yet wired"]
+fn virtual_row_matrix_carries_excerpt_headers() {
+    // K.4.6 contract: the virtual-row matrix for a multibuffer
+    // view should contain one header row per excerpt
+    // (`AnchorPosition::Above` of each excerpt's first row).
+    // Two-excerpt synthetic view → two header rows in the
+    // matrix, whose text matches the excerpts' source path
+    // labels.
+    panic!("K.4.6 unimplemented — excerpt-header pipeline not in place");
+}
+
+#[test]
+#[ignore = "K.4.7 dependency — per-excerpt syntax highlighting not yet wired"]
+fn syntax_highlights_per_excerpt_use_source_language() {
+    // K.4.7 contract: an excerpt sourced from a `.rs` buffer
+    // should carry rust tree-sitter spans on its rows; an
+    // excerpt from a `.md` buffer should carry markdown spans.
+    // Today every row in a multibuffer view falls back to
+    // `Lang::Plain` and renders unstyled because the composed
+    // snapshot's filename is `*test:multibuffer*` which
+    // detects as Plain.
+    panic!("K.4.7 unimplemented — per-excerpt syntax not in place");
+}

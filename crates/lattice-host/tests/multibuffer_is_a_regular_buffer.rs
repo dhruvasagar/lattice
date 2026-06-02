@@ -43,6 +43,7 @@ use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId, BufferKind, Document as CoreDocument};
 use lattice_grammar::CommandRegistry;
+use lattice_host::dispatch::DispatchOutcome;
 use lattice_host::editor::Editor;
 use lattice_multibuffer::{Excerpt, create_multibuffer_view};
 use lattice_runtime::spawn_document;
@@ -432,6 +433,74 @@ fn visual_selection_renders_for_multibuffer() {
         "K.4.5: extended Visual on multibuffer must surface a non-degenerate range \
          (got {range:?}); pre-fix the multibuffer's set_selections no-op left this \
          pinned at the origin"
+    );
+}
+
+#[test]
+fn m11_insert_mode_on_multibuffer_produces_visible_text() {
+    // M.11 (2026-06-02): insert-mode keystrokes on a
+    // multibuffer view must land in the composed snapshot
+    // synchronously — byte-identical to insert mode on a
+    // regular Document. Reproduces the user's interactive bug
+    // ("after going in insert mode, key presses do nothing")
+    // through the full host pipeline: activate the multibuffer
+    // pane, call `do_insert_text` (the exact path
+    // `Action::Insert(s)` routes through at dispatch.rs:1923),
+    // assert the composed snapshot reflects the char AND
+    // `editor.cursor` advanced.
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+
+    // Pre-insert sanity. The multibuffer's composed text is the
+    // union of two 4-row excerpts (one per source); cursor sits
+    // at (0, 0) — the start of source_a row 0 = "a-line-0".
+    let pre_text = editor.document.snapshot().buffer.as_string();
+    assert!(
+        pre_text.starts_with("a-line-0"),
+        "expected composed view to start with first source's content; got: {pre_text:?}"
+    );
+    let pre_cursor = editor.cursor;
+    assert_eq!(pre_cursor.line, 0);
+    assert_eq!(pre_cursor.byte, 0);
+
+    // Insert "X" at the cursor — same code path the keystroke
+    // dispatcher uses when the user types a character in
+    // insert mode (do_insert_text → apply_edit_blocking →
+    // self.document.apply_edit).
+    let mut out = DispatchOutcome::default();
+    editor.do_insert_text("X", &mut out);
+
+    // Composed snapshot must reflect the insert immediately.
+    let post_text = editor.document.snapshot().buffer.as_string();
+    assert!(
+        post_text.starts_with("Xa-line-0"),
+        "M.11 insert must land in composed snapshot synchronously; \
+         pre-fix composed view stayed pre-edit. Got: {post_text:?}"
+    );
+
+    // Cursor must have advanced by one byte.
+    assert_eq!(
+        editor.cursor.line, 0,
+        "cursor.line should stay on row 0 after a single-char insert"
+    );
+    assert_eq!(
+        editor.cursor.byte, 1,
+        "cursor.byte must advance by 1 per char; got {:?}",
+        editor.cursor
+    );
+
+    // Second insert — verify it accumulates, mirroring the
+    // user's "first char landed, second didn't" symptom.
+    editor.do_insert_text("Y", &mut out);
+    let post_text_2 = editor.document.snapshot().buffer.as_string();
+    assert!(
+        post_text_2.starts_with("XYa-line-0"),
+        "second insert must accumulate on top of the first; got: {post_text_2:?}"
+    );
+    assert_eq!(
+        editor.cursor.byte, 2,
+        "cursor.byte must be 2 after two char inserts; got {:?}",
+        editor.cursor
     );
 }
 

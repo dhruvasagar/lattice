@@ -2865,16 +2865,18 @@ fn draw_inactive_document(
         if (lines.len() as u32) >= area.height as u32 {
             break;
         }
-        let line_text = snap.buffer.line(buf_line).unwrap_or_default();
-        // K.4.x bug investigation (2026-06-02): log the actual
-        // body text being rendered for each visible line of the
-        // inactive pane. If this shows multibuffer content
-        // ("//!...", "── path ──", etc.) but the user sees file
-        // content, the bug is downstream of this point (paragraph
-        // assembly / ratatui paint). If it shows file content,
-        // snap.buffer.line() is returning the wrong text despite
-        // snap being the multibuffer's snap.
-        let line_preview: String = line_text.chars().take(80).collect();
+        let raw_line_text = snap.buffer.line(buf_line).unwrap_or_default();
+        // K.4.x bug investigation (2026-06-02): prepend a visible
+        // marker so the user can verify whether the bytes
+        // `draw_inactive_document` produces actually reach the
+        // terminal. If the user sees `>K0>` followed by the
+        // multibuffer's text → renderer is correct, bug is in
+        // perception. If the body shows `>K0> <p align=\"center\">`
+        // → snap is wrong somehow. If no `>K0>` prefix appears →
+        // something downstream is overwriting this function's
+        // output.
+        let line_text = format!(">K0> {raw_line_text}");
+        let line_preview: String = raw_line_text.chars().take(80).collect();
         tracing::debug!(
             target: "k4x-clobber",
             "[k4x] inactive_body idx={} buf_line={} text={:?}",

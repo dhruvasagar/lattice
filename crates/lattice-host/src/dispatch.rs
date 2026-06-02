@@ -1724,12 +1724,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // D.5.c: diff-mode `dp` — push the current side's
         // hunk into the peer buffer.
         Action::DiffPut => editor.do_diff_put(None),
-        // M.5 (2026-06-01): `:multibuffer-expand [n]` /
-        // `:multibuffer-contract [n]`. Looks up the active
-        // multibuffer view via the `MultibufferRegistry` service
-        // and calls `expand_excerpt_at` at the active cursor's
-        // row. No-op when active buffer isn't a multibuffer.
-        Action::MultibufferExpand { delta } => editor.do_multibuffer_expand(delta),
+        // M.10.4 (2026-06-03): the work moved to a substrate
+        // helper called inline from the
+        // `AppEffect::MultibufferExpand` arm; this Action
+        // variant is now dead. Kept as a no-op until M.10.7
+        // deletes the variant from the enum (and the matching
+        // AppEffect variant). See `mode-architecture.md` §5.3.4.
+        Action::MultibufferExpand { delta: _ } => {}
         // M.6 (2026-06-01): `:search <query>` triggers
         // `lattice_multibuffer::providers::search::project_search`
         // against the Editor (which impls `ModeActivator`).
@@ -4729,7 +4730,26 @@ impl Editor {
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
             AppEffect::MultibufferExpand { delta } => {
-                out.next_actions.push(Action::MultibufferExpand { delta })
+                // M.10.4 (2026-06-03): the work moved to a
+                // substrate helper in `lattice-multibuffer`. No
+                // longer trampolines through
+                // `Action::MultibufferExpand` +
+                // `Editor::do_multibuffer_expand` (both deleted
+                // this slice). Per
+                // `feedback_mode_owns_its_surface` +
+                // `mode-architecture.md` §5.3.4: ex-command
+                // registration lives in `MultibufferMode`
+                // (multibuffer crate); the substrate helper
+                // owns the work; host's role is the generic
+                // apply-effect routing.
+                let buffer_id = self.pane_tree.active().buffer_id;
+                let cursor_row = self.document.snapshot().selections.primary().head.line;
+                lattice_multibuffer::multibuffer_expand_excerpt_at(
+                    &self.services,
+                    buffer_id,
+                    cursor_row,
+                    delta,
+                );
             }
             AppEffect::SearchTrigger { query } => {
                 out.next_actions.push(Action::SearchTrigger { query })
@@ -11052,26 +11072,15 @@ impl Editor {
     #[cfg(not(feature = "search"))]
     pub fn do_search_refresh(&mut self) {}
 
-    /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
-    /// `:multibuffer-contract [n]` action handler. Looks up the
-    /// active buffer's typed `MultibufferDocumentHandle` via the
-    /// `MultibufferRegistry` service and calls
-    /// `expand_excerpt_at(cursor_row, delta)`. No-op when the
-    /// active buffer isn't a multibuffer view.
-    pub fn do_multibuffer_expand(&mut self, delta: i32) {
-        let buffer_id = self.pane_tree.active().buffer_id;
-        let Some(mb_registry) = self
-            .services
-            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
-        else {
-            return;
-        };
-        let Some(view) = mb_registry.handle(buffer_id) else {
-            return;
-        };
-        let cursor_row = self.document.snapshot().selections.primary().head.line;
-        view.expand_excerpt_at(cursor_row, delta);
-    }
+    // M.10.4 (2026-06-03): `Editor::do_multibuffer_expand`
+    // deleted. The work moved to the substrate helper
+    // `lattice_multibuffer::multibuffer_expand_excerpt_at`,
+    // called inline from the `AppEffect::MultibufferExpand`
+    // apply_effect arm. Per `feedback_mode_owns_its_surface` +
+    // `mode-architecture.md` §5.3.4: ex-command registration
+    // lives in `MultibufferMode` (multibuffer crate); the
+    // substrate helper owns the work; host's role is generic
+    // apply-effect routing.
 
     /// 5.5.F.5.3 (M-async.3): rollback drain for the mode dispatcher's
     /// spawned lifecycle task. Reads `ModeEvent` variants off

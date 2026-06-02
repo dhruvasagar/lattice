@@ -1543,6 +1543,38 @@ pub fn compose_header_rows(
     rows
 }
 
+/// M.10.4 (2026-06-03): host glue for the
+/// `:multibuffer-expand [n]` / `:multibuffer-contract [n]`
+/// ex-commands. Looks up the active buffer's typed
+/// `MultibufferDocumentHandle` via the
+/// `MultibufferRegistryHandle` service and calls
+/// `expand_excerpt_at(cursor_row, delta)`. No-op when the
+/// active buffer isn't a multibuffer view, the service isn't
+/// registered (test harness), or the cursor is out of range.
+///
+/// Replaces `Editor::do_multibuffer_expand` which used to live
+/// in `lattice-host::dispatch`. Per
+/// [[feedback_mode_owns_its_surface]] + `mode-architecture.md`
+/// §5.3.4: this helper is the substrate-side counterpart to
+/// the ex-command registration in `MultibufferMode`. Host's
+/// `apply_effect` arm calls this directly — no longer
+/// trampolines through `Action::MultibufferExpand` +
+/// `Editor::do_multibuffer_expand`.
+pub fn multibuffer_expand_excerpt_at(
+    services: &lattice_mode::services::ServiceRegistry,
+    buffer_id: BufferId,
+    cursor_row: u32,
+    delta: i32,
+) {
+    let Some(mb_registry) = services.get::<crate::registry::MultibufferRegistryHandle>() else {
+        return;
+    };
+    let Some(view) = mb_registry.handle(buffer_id) else {
+        return;
+    };
+    view.expand_excerpt_at(cursor_row, delta);
+}
+
 /// Default header-rendering: `── <title> ──` (box-drawing
 /// rules). Empty title yields a row of box rules only.
 pub fn default_header_cells(excerpt: &Excerpt) -> Arc<[Cell]> {

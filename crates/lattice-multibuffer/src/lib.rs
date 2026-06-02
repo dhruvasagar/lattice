@@ -1052,9 +1052,20 @@ impl Document for MultibufferDocumentHandle {
         // apply_edit_blocking routes through this handle's
         // `apply_edit`, which translates to source coordinates +
         // forwards to the source document (M.3).
+        // K.4.11.perf-fix (2026-06-02): Pre-fix this routed
+        // `snapshot.buffer.as_string() → Document::from_text(&composed)`,
+        // which allocated O(composed_size) bytes + rebuilt a fresh
+        // Rope on EVERY keystroke on the App thread. For a search
+        // multibuffer growing to 100s of KB during the scan, that
+        // was tens of ms per `j`/`k` motion — the user-visible
+        // "cursor moves after a lot of delay" + "lattice freezes
+        // during scan" regressions. Architectural relocation per
+        // [[feedback_no_ui_thread_work]]: reuse the snapshot's
+        // existing Rope-backed Buffer directly. `Buffer::clone`
+        // is `Rope::clone` which is Arc-backed + O(1); the new
+        // path is one Arc bump per keystroke.
         let snapshot = self.snapshot();
-        let composed: String = snapshot.buffer.as_string();
-        let mut scratch = lattice_core::Document::from_text(&composed);
+        let mut scratch = lattice_core::Document::from_buffer(snapshot.buffer.clone());
         let buffer_id = self.inner.buffer_id;
         let registry = Arc::clone(&self.inner.registry);
         let result = lattice_grammar::execute(

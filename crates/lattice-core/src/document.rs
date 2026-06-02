@@ -53,6 +53,12 @@ pub struct Document {
 pub struct DocumentBuilder {
     path: Option<PathBuf>,
     initial_text: Option<String>,
+    /// K.4.11.perf-fix (2026-06-02): pre-built Buffer for callers
+    /// that already hold a Rope and want to skip the
+    /// `String → Buffer::from_text` round-trip. Wins over
+    /// `initial_text` when both are set (no caller sets both;
+    /// the precedence is documented for clarity).
+    prebuilt_buffer: Option<Buffer>,
 }
 
 impl DocumentBuilder {
@@ -66,10 +72,30 @@ impl DocumentBuilder {
         self
     }
 
+    /// K.4.11.perf-fix (2026-06-02): build the Document around a
+    /// pre-existing Buffer instead of going through a String.
+    /// Used by callers that already hold a Buffer (typically from
+    /// `DocumentSnapshot.buffer.clone()` — `Buffer::clone` is
+    /// `Rope::clone` which is Arc-backed and O(1)) and want to
+    /// avoid the `Buffer → as_string() → from_text(&str)` round-
+    /// trip. K.4.11's `MultibufferDocumentHandle::dispatch_with_cancel`
+    /// is the primary consumer: every multibuffer keystroke ran
+    /// the round-trip, allocating O(composed_size) bytes on the
+    /// App thread per motion. After this fix the per-keystroke
+    /// cost is one Arc bump.
+    pub fn with_buffer(mut self, buffer: Buffer) -> Self {
+        self.prebuilt_buffer = Some(buffer);
+        self
+    }
+
     pub fn build(self) -> Document {
-        let buffer = match self.initial_text {
-            Some(t) => Buffer::from_text(&t),
-            None => Buffer::empty(),
+        let buffer = match (self.prebuilt_buffer, self.initial_text) {
+            // K.4.11.perf-fix: prebuilt buffer wins. Callers go
+            // through `with_buffer` when they already have a Rope
+            // and want to skip the String round-trip.
+            (Some(b), _) => b,
+            (None, Some(t)) => Buffer::from_text(&t),
+            (None, None) => Buffer::empty(),
         };
         Document {
             id: next_document_id(),
@@ -99,6 +125,16 @@ impl Document {
 
     pub fn from_text(text: impl Into<String>) -> Self {
         DocumentBuilder::default().with_text(text).build()
+    }
+
+    /// K.4.11.perf-fix (2026-06-02): construct a Document around
+    /// a pre-built Buffer. Sister of [`Self::from_text`] for
+    /// callers that already hold a Rope-backed Buffer and want
+    /// to avoid the `as_string() → from_text(&str)` round-trip.
+    /// See [`DocumentBuilder::with_buffer`] for the rationale +
+    /// the K.4.11 consumer.
+    pub fn from_buffer(buffer: Buffer) -> Self {
+        DocumentBuilder::default().with_buffer(buffer).build()
     }
 
     pub fn open(path: impl AsRef<Path>) -> CoreResult<Self> {

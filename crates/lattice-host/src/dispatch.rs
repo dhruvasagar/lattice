@@ -20442,7 +20442,23 @@ impl Editor {
     ///   (defensive — shouldn't happen in practice).
     fn sync_active_document_to_pane(&mut self) {
         let pane = *self.pane_tree.active();
-        if !matches!(pane.buffer, BufferKind::Document) {
+        // K.4.X follow-up (2026-06-02): include Messages and
+        // Multibuffer alongside Document. All three carry
+        // `Arc<dyn Document>` handles in the registry and the
+        // active pane reads its content via
+        // `app.ad().snapshot`. Pre-fix this match was
+        // `Document`-only, so cycling active to a Multibuffer
+        // pane via `<C-w>w` (or any other path through
+        // activate_pane) left `self.document` pointing at the
+        // previously-active Document — `app.ad().snapshot`
+        // kept returning the file's snapshot and the renderer
+        // painted file content into the multibuffer's pane
+        // area. Same shape as K.4.2 / K.4.3 / K.4.9 kind-gate
+        // widenings. See [[feedback_buffers_no_special_case]].
+        if !matches!(
+            pane.buffer,
+            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+        ) {
             return;
         }
         if pane.buffer_id == self.document_buffer_id {

@@ -222,6 +222,24 @@ struct MultibufferInner {
     // cell and the `ArcSwap<RowTranslation>` — the Mutex is
     // only acquired on mutation + on the recompose seam.
     state: std::sync::Mutex<MultibufferState>,
+    /// M.11 (2026-06-02): the composed rope, owned LOCALLY.
+    /// Edits apply here synchronously (byte-identical to
+    /// `RopeDocumentHandle`'s apply_edit) before being forwarded
+    /// to the relevant source actor async. The multibuffer is no
+    /// longer a proxy — it IS a buffer.
+    ///
+    /// Wrapped in `Mutex` because `apply_edit` runs on the
+    /// caller's thread (the host's block_on bridge) while the
+    /// source forwarder task and excerpt-mutation paths
+    /// (append_excerpts / replace_excerpts) read it from other
+    /// contexts. Lock-free reads go through `snapshot_cell`.
+    composed_doc: std::sync::Mutex<lattice_core::Document>,
+    /// M.11 (2026-06-02): mpsc sender into the source-forwarder
+    /// task. Each `apply_edit` queues a (composed_edit,
+    /// row_translation_snapshot) pair; the forwarder task
+    /// translates to source coords and ships to the source
+    /// actor. Fire-and-forget — caller doesn't wait.
+    source_forward_tx: tokio::sync::mpsc::UnboundedSender<SourceForwardMsg>,
     snapshot_cell: Arc<PublishedSnapshot>,
     row_translation: ArcSwap<RowTranslation>,
     // M.4 (2026-06-01): view-level headerline rendered above the
@@ -270,6 +288,16 @@ impl Drop for MultibufferInner {
             }
         }
     }
+}
+
+/// M.11 (2026-06-02): one outbound edit waiting to be forwarded
+/// to a source actor. Carries pre-resolved source coords so the
+/// forwarder task doesn't need to re-walk the row translation
+/// (which may have shifted by the time the task runs).
+#[derive(Debug)]
+struct SourceForwardMsg {
+    source_handle: Arc<dyn Document>,
+    source_edit: Edit,
 }
 
 struct MultibufferState {
@@ -395,13 +423,40 @@ impl MultibufferDocumentHandle {
         let id = next_multibuffer_document_id();
         let buffer_id = BufferId::next();
         let row_translation = RowTranslation::build(&excerpts);
-        let composed = compose_snapshot(
+        // M.11 (2026-06-02): build the composed Document LOCALLY
+        // from source content at construction time. From here on,
+        // the multibuffer's composed_doc is authoritative — edits
+        // land on it synchronously; sources are downstream
+        // observers that get the same edit forwarded async.
+        let composed_text = compose_text_from_sources(&sources, &excerpts);
+        let composed_doc = lattice_core::Document::from_text(composed_text);
+        let composed = snapshot_from_composed_doc(
+            &composed_doc,
             id,
-            &sources,
-            &excerpts,
             Arc::new(SelectionSet::default()),
         );
         let snapshot_cell = Arc::new(PublishedSnapshot::new(composed));
+
+        // M.11 (2026-06-02): spawn the source-forwarder task on
+        // the shared multi-thread runtime — the same runtime that
+        // owns source actors (via `spawn_document` →
+        // `shared_runtime().spawn(actor.run())`). This guarantees:
+        // (1) the forwarder isn't tied to the caller's runtime
+        // (which may be a current_thread editor actor about to
+        // block in `block_on`); (2) cross-runtime mpsc + oneshot
+        // semantics aren't needed (both forwarder + source actor
+        // are on the same runtime); (3) the forwarder never gets
+        // starved by the caller's runtime.
+        let (source_forward_tx, mut source_forward_rx) =
+            tokio::sync::mpsc::unbounded_channel::<SourceForwardMsg>();
+        lattice_runtime::shared_runtime().spawn(async move {
+            while let Some(msg) = source_forward_rx.recv().await {
+                // Discard the AppliedEdit — the multibuffer's
+                // local composed_doc is already authoritative.
+                // Best-effort propagation.
+                let _ = msg.source_handle.apply_edit(msg.source_edit).await;
+            }
+        });
 
         Ok(Self {
             inner: Arc::new(MultibufferInner {
@@ -412,6 +467,8 @@ impl MultibufferDocumentHandle {
                     excerpts,
                     selections: Arc::new(SelectionSet::default()),
                 }),
+                composed_doc: std::sync::Mutex::new(composed_doc),
+                source_forward_tx,
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
@@ -896,65 +953,71 @@ impl Document for MultibufferDocumentHandle {
     /// (cursor past view end, no excerpts) return
     /// `RuntimeError::ReadOnly`.
     fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
+        // M.11 (2026-06-02): byte-identical shape to
+        // `RopeDocumentHandle::apply_edit` — mutate the LOCAL
+        // composed rope, publish the new snapshot, return
+        // synchronously. The multibuffer is now a true buffer at
+        // the substrate level: insert-mode keystrokes, motions,
+        // operators, undo/redo all flow through the same
+        // `Document` code path as a regular `Document`. No
+        // cross-actor round-trip, no Pending::spawn, no race
+        // with M.4 forwarder. Source actors catch up async via
+        // the source-forwarder task spawned at construction.
+        //
+        // Look up where the edit lands so the source forwarder
+        // can translate to source coords. The lookup uses the
+        // PRE-edit row translation (the only one that still
+        // describes the source position the cursor is on); after
+        // the edit the composed_doc's contents diverge from the
+        // source until the forwarder catches up, but the row
+        // translation continues to describe excerpt boundaries
+        // in the composed view (one row per excerpt today).
         let state = self.lock_state();
-        let Some(target) = resolve_edit_target(&state, edit.range.start) else {
-            return Pending::ready(Err(RuntimeError::ReadOnly));
-        };
-        let source_edit = build_source_edit(&target, &edit);
-        let source_handle = target.source_handle.clone();
-        // 2026-06-02 cursor-jump fix: the row offset between
-        // composed coords (what the host's cursor lives in) and
-        // source coords (what `source_handle.apply_edit` produces
-        // in the returned `AppliedEdit`). Without translating
-        // back, the host's insert-mode path reads
-        // `applied.inserted_range.end` (dispatch.rs:5422) and
-        // sets `editor.cursor = source_row` — cursor jumps to
-        // composed row 429 (or wherever the source row lands)
-        // and subsequent inserts go off into a void.
-        //
-        // 2026-06-02 freeze fix: this used to wrap in
-        // `Pending::spawn(...)` which calls `tokio::spawn` —
-        // tokio::spawn captures the caller's runtime, and
-        // `apply_edit`'s synchronous body runs on the editor
-        // actor's current_thread runtime BEFORE `block_on`
-        // swaps to the bridge thread. The spawned task got
-        // scheduled on the editor actor's current_thread
-        // runtime; that runtime then blocks in `block_on`
-        // waiting for the new oneshot — but the spawned task
-        // can't progress because the runtime is blocked.
-        // Deadlock on the first user-visible apply_edit; UI
-        // freeze.
-        //
-        // Pending::map_ok attaches the transform without a new
-        // task: the transform runs on whichever thread polls
-        // the Pending (the bridge thread inside `block_on`'s
-        // shared-runtime context). No spawn, no deadlock,
-        // "UI never blocks" honoured.
-        let row_delta = target.composed_start.line as i64 - target.source_start.line as i64;
-        let inner_for_recompose = self.inner.clone();
+        let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
+            let source_edit = build_source_edit(&target, &edit);
+            SourceForwardMsg {
+                source_handle: target.source_handle.clone(),
+                source_edit,
+            }
+        });
         drop(state);
-        source_handle
-            .apply_edit(source_edit)
-            .map_ok(move |applied| {
-                // 2026-06-02 stale-snapshot fix: after the source's
-                // apply_edit lands, the source's rope reflects the
-                // new content but the multibuffer's composed
-                // snapshot is still the pre-edit version. The M.4
-                // auto-recompose forwarder listens for
-                // `DocumentChanged` events under the SOURCE's id,
-                // but the host's `apply_edit_blocking` publishes
-                // `DocumentChanged` under the ACTIVE doc's id
-                // (the multibuffer itself) — the forwarder
-                // ignores it. Result: cursor advances correctly
-                // (translate_applied_to_composed produces fresh
-                // composed coords) but rendered text stays
-                // unchanged. Recompose synchronously here so the
-                // host's post-apply_edit_blocking re-render reads
-                // the updated snapshot. Idempotent vs. any
-                // forwarder-driven recompose from cross-pane edits.
-                recompose_inner(&inner_for_recompose);
-                translate_applied_to_composed(applied, row_delta)
-            })
+
+        // Mutate the local composed_doc synchronously.
+        let applied = {
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            match doc.apply_edit(edit) {
+                Ok(applied) => {
+                    // Publish the post-edit snapshot before
+                    // releasing the lock so consumers see a
+                    // consistent (rope, version) pair.
+                    let selections = self
+                        .lock_state()
+                        .selections
+                        .clone();
+                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
+                    self.inner.snapshot_cell.store(snap);
+                    applied
+                }
+                Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
+            }
+        };
+
+        // Fire-and-forget source forwarding. `try_send` so a full
+        // unbounded mpsc (effectively impossible) doesn't block;
+        // the forwarder task drains FIFO order so source actors
+        // see edits in the same order the user typed them. If
+        // construction had no tokio runtime (test paths), the rx
+        // half was dropped and try_send returns Err — that's
+        // expected, edits stay local-only.
+        if let Some(msg) = source_forward {
+            let _ = self.inner.source_forward_tx.send(msg);
+        }
+
+        Pending::ready(Ok(applied))
     }
 
     /// M.3 (2026-06-01): translate + forward each edit to its
@@ -965,36 +1028,51 @@ impl Document for MultibufferDocumentHandle {
     /// each sub-edit sequentially; per-edit parallelism is a
     /// later refinement once a consumer needs it.
     fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        // Translate up-front (cheap, requires the state lock).
-        // 2026-06-02 cursor-jump fix: keep `row_delta` per call
-        // so the per-result `AppliedEdit` can be translated back
-        // to composed coords (same fix as single `apply_edit`).
-        let state = self.lock_state();
-        let mut calls: Vec<(Arc<dyn Document>, Edit, i64)> = Vec::with_capacity(edits.len());
+        // M.11 (2026-06-02): same shape as `apply_edit` — local
+        // mutation per edit, sync source-forward enqueue, return
+        // synchronously. No Pending::spawn, no cross-actor
+        // round-trip.
+        let mut applied_results = Vec::with_capacity(edits.len());
+        let mut forwards = Vec::with_capacity(edits.len());
+
         for edit in edits {
-            if let Some(target) = resolve_edit_target(&state, edit.range.start) {
+            // Pre-resolve source forward target before mutating
+            // (the row translation uses composed coords valid
+            // before this edit lands).
+            let state = self.lock_state();
+            let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
                 let source_edit = build_source_edit(&target, &edit);
-                let handle = target.source_handle.clone();
-                let row_delta =
-                    target.composed_start.line as i64 - target.source_start.line as i64;
-                calls.push((handle, source_edit, row_delta));
+                SourceForwardMsg {
+                    source_handle: target.source_handle.clone(),
+                    source_edit,
+                }
+            });
+            drop(state);
+
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            match doc.apply_edit(edit) {
+                Ok(applied) => {
+                    let selections = self.lock_state().selections.clone();
+                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
+                    self.inner.snapshot_cell.store(snap);
+                    applied_results.push(applied);
+                    if let Some(msg) = source_forward {
+                        forwards.push(msg);
+                    }
+                }
+                Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
             }
         }
-        drop(state);
 
-        Pending::spawn(async move {
-            let mut results = Vec::with_capacity(calls.len());
-            for (handle, edit, row_delta) in calls {
-                match handle.apply_edit(edit).await {
-                    Ok(applied) => {
-                        results.push(translate_applied_to_composed(applied, row_delta))
-                    }
-                    Err(RuntimeError::ReadOnly) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(results)
-        })
+        for msg in forwards {
+            let _ = self.inner.source_forward_tx.send(msg);
+        }
+
+        Pending::ready(Ok(applied_results))
     }
 
     /// M.3 (2026-06-01): fan undo out to every source the view
@@ -1248,52 +1326,9 @@ fn build_source_edit(target: &EditTarget, edit: &Edit) -> Edit {
     }
 }
 
-/// 2026-06-02 cursor-jump fix: translate a source-coord
-/// [`AppliedEdit`] back to composed coords by shifting every
-/// `Position`'s `.line` by `row_delta` (composed_row -
-/// source_row at the excerpt's start). The host's insert path
-/// (`dispatch.rs:5422`) sets the cursor from
-/// `applied.inserted_range.end`; without this translation the
-/// cursor jumps to source row N (e.g. 429 for an excerpt
-/// pointing at line 429 of foo.rs) instead of staying at
-/// composed row M (e.g. 0 — the first composed row of the
-/// multibuffer view).
-///
-/// The byte fields (`start_byte` / `old_end_byte` /
-/// `new_end_byte`) are tree-sitter incremental-edit hints
-/// keyed to the SOURCE rope's byte axis. The multibuffer
-/// doesn't run its own tree-sitter parse against the composed
-/// rope (composed Lang is `Plain`), so no downstream consumer
-/// needs these in composed-byte coords. Leaving them as
-/// source-byte values: inert for the multibuffer's consumers,
-/// still correct for any subsystem that joins back through
-/// the source handle.
-fn translate_applied_to_composed(applied: AppliedEdit, row_delta: i64) -> AppliedEdit {
-    let shift = |p: Position| -> Position {
-        let line = (p.line as i64 + row_delta).max(0) as u32;
-        Position { line, byte: p.byte }
-    };
-    let shift_range = |r: lattice_protocol::position::Range| {
-        lattice_protocol::position::Range {
-            start: shift(r.start),
-            end: shift(r.end),
-        }
-    };
-    AppliedEdit {
-        original_range: shift_range(applied.original_range),
-        inserted_range: shift_range(applied.inserted_range),
-        replaced_text: applied.replaced_text,
-        inserted_text: applied.inserted_text,
-        delta: lattice_protocol::edit::EditDelta {
-            start_byte: applied.delta.start_byte,
-            old_end_byte: applied.delta.old_end_byte,
-            new_end_byte: applied.delta.new_end_byte,
-            start_position: shift(applied.delta.start_position),
-            old_end_position: shift(applied.delta.old_end_position),
-            new_end_position: shift(applied.delta.new_end_position),
-        },
-    }
-}
+// M.11 (2026-06-02): `translate_applied_to_composed` deleted —
+// edits now apply to the local composed_doc, so AppliedEdit
+// is already in composed coords. No translation needed.
 
 
 impl std::fmt::Debug for MultibufferDocumentHandle {
@@ -1429,6 +1464,53 @@ pub fn default_header_cells(excerpt: &Excerpt) -> Arc<[Cell]> {
 fn next_multibuffer_document_id() -> DocumentId {
     static NEXT: AtomicU64 = AtomicU64::new(0x1000_0000_0000_0000);
     DocumentId::new(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// M.11 (2026-06-02): build the composed text from sources at
+/// initialization time. The result feeds `Document::from_text`
+/// so the composed_doc starts in sync with the sources. After
+/// this point, the composed_doc evolves through `apply_edit` —
+/// sources catch up via the forwarder.
+fn compose_text_from_sources(
+    sources: &HashMap<BufferId, Arc<dyn Document>>,
+    excerpts: &[Excerpt],
+) -> String {
+    let mut composed_text = String::new();
+    for excerpt in excerpts {
+        let Some(source) = sources.get(&excerpt.source) else {
+            continue;
+        };
+        let snap = source.snapshot();
+        for row in excerpt.start_line..=excerpt.end_line {
+            if let Some(line) = snap.buffer.line(row) {
+                composed_text.push_str(&line);
+                if !composed_text.ends_with('\n') {
+                    composed_text.push('\n');
+                }
+            }
+        }
+    }
+    composed_text
+}
+
+/// M.11 (2026-06-02): build a `DocumentSnapshot` from the
+/// composed_doc plus identity metadata. The composed_doc IS the
+/// source of truth — this just wraps its current state in the
+/// shape the renderer reads.
+fn snapshot_from_composed_doc(
+    doc: &lattice_core::Document,
+    id: DocumentId,
+    selections: Arc<SelectionSet>,
+) -> DocumentSnapshot {
+    DocumentSnapshot {
+        id,
+        version: doc.version(),
+        text_version: doc.text_version(),
+        buffer: doc.buffer().clone(),
+        path: None,
+        dirty: doc.dirty(),
+        selections,
+    }
 }
 
 fn compose_snapshot(
@@ -1593,51 +1675,59 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn m3_insert_translates_and_forwards_to_source() {
+        // M.11 (2026-06-02): under the local-rope architecture
+        // the composed snapshot reflects the edit IMMEDIATELY
+        // (synchronous local mutation). The source rope catches
+        // up async via the source-forwarder task.
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let source_handle = sources.get(&ids[0]).expect("source present").clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
-        // Insert "X-" at composed position (line=1, byte=0) — should land at
-        // source position (line=1, byte=0) since the excerpt starts at line 0.
         let applied = mb
             .apply_edit(Edit::insert(Position::new(1, 0), "X-"))
             .await
-            .expect("insert should propagate");
+            .expect("insert should land locally");
         assert_eq!(applied.inserted_text, "X-");
-
-        // Source reflects after recompose.
-        mb.recompose();
+        // Composed snapshot reflects the edit synchronously.
         assert_eq!(mb.snapshot().buffer.as_string(), "alpha\nX-beta\ngamma\n");
-        // Direct read of the source confirms the edit landed there
-        // (not just in some multibuffer-local cache).
-        assert_eq!(source_handle.text(), "alpha\nX-beta\ngamma\n");
+
+        // Source catches up async via the forwarder task running
+        // on shared_runtime (cross-runtime from the test's
+        // multi_thread runtime). Poll with sleep.
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if source_handle.text() == "alpha\nX-beta\ngamma\n" {
+                return;
+            }
+        }
+        panic!(
+            "source did not converge to multibuffer edit; got: {:?}",
+            source_handle.text()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn m3_insert_translates_when_excerpt_starts_off_zero() {
-        // Excerpt starts at source row 2; composed row 0 maps to
-        // source row 2.
+        // M.11: composed snapshot reflects edit synchronously.
         let (sources, ids) = make_sources(&["zero\none\ntwo\nthree\nfour\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 2, 4)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         assert_eq!(mb.snapshot().buffer.as_string(), "two\nthree\nfour\n");
 
-        // Insert "Z " at composed (0, 0) → source (2, 0).
         mb.apply_edit(Edit::insert(Position::new(0, 0), "Z "))
             .await
-            .expect("insert should propagate");
-        mb.recompose();
+            .expect("insert should land locally");
         assert_eq!(mb.snapshot().buffer.as_string(), "Z two\nthree\nfour\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn m3_delete_within_excerpt_translates() {
+        // M.11: composed snapshot reflects edit synchronously.
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
-        // Delete "beta\n" — composed range (1,0)..(2,0).
         use lattice_protocol::position::Range;
         let _ = mb
             .apply_edit(Edit::delete(Range::new(
@@ -1645,22 +1735,26 @@ mod tests {
                 Position::new(2, 0),
             )))
             .await
-            .expect("delete should propagate");
-        mb.recompose();
+            .expect("delete should land locally");
         assert_eq!(mb.snapshot().buffer.as_string(), "alpha\ngamma\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn m3_out_of_range_edit_returns_read_only() {
+        // M.11: the local composed_doc is a regular `Document`,
+        // so its `apply_edit` rejects out-of-range edits via
+        // `CoreError`. Any Err variant is acceptable — the
+        // contract is "out-of-range fails, doesn't panic."
         let (sources, ids) = make_sources(&["a\nb\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 1)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
-        // Composed row 50 is way past the view's last row.
-        assert!(matches!(
-            mb.apply_edit(Edit::insert(Position::new(50, 0), "x")).await,
-            Err(RuntimeError::ReadOnly)
-        ));
+        assert!(
+            mb.apply_edit(Edit::insert(Position::new(50, 0), "x"))
+                .await
+                .is_err(),
+            "out-of-range edit must fail (any Err variant)"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1709,7 +1803,7 @@ mod tests {
         ];
         let results = mb.apply_edit_batch(edits).await.expect("batch ok");
         assert_eq!(results.len(), 2);
-        mb.recompose();
+        // M.11: composed snapshot reflects edits synchronously.
         // After "<" at (0,0): "<alpha\nbeta\ngamma\n"
         // After ">" at composed (2,5) = source (2,5): "<alpha\nbeta\ngamma>\n"
         assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\ngamma>\n");
@@ -1838,6 +1932,62 @@ mod tests {
             "composed snapshot must reflect the new content; \
              the renderer reads this on the next frame"
         );
+    }
+
+    /// 2026-06-02: simulate the user's insert-mode flow — two
+    /// consecutive single-char apply_edit calls. After each, the
+    /// composed snapshot must reflect the cumulative text. The
+    /// user reported the first char landed visibly but the second
+    /// didn't ("switched to how it was before, every character in
+    /// insert mode just moves the cursor along").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_consecutive_inserts_accumulate_in_composed_snapshot() {
+        // Source with 8 lines; excerpt covers source row 5 only.
+        let (sources, ids) = make_sources(&["0\n1\n2\n3\n4\nfive\n6\n7\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 5, 5)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "five\n");
+
+        // First insert at end-of-line (composed (0, 4)) — vim
+        // `a` at end-of-line lands here. Append 'x'.
+        let r1 = mb
+            .apply_edit(Edit::insert(Position::new(0, 4), "x"))
+            .await
+            .expect("first edit ok");
+        assert_eq!(
+            r1.inserted_range.end,
+            Position::new(0, 5),
+            "first cursor must be composed (0,5)"
+        );
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "fivex\n",
+            "first char must land in composed snapshot"
+        );
+
+        // Second insert at composed (0, 5) — append 'y'.
+        let r2 = mb
+            .apply_edit(Edit::insert(Position::new(0, 5), "y"))
+            .await
+            .expect("second edit ok");
+        assert_eq!(
+            r2.inserted_range.end,
+            Position::new(0, 6),
+            "second cursor must be composed (0,6)"
+        );
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "fivexy\n",
+            "second char must accumulate; not revert to original"
+        );
+
+        // Third insert at composed (0, 6) — append 'z'.
+        let r3 = mb
+            .apply_edit(Edit::insert(Position::new(0, 6), "z"))
+            .await
+            .expect("third edit ok");
+        assert_eq!(r3.inserted_range.end, Position::new(0, 7));
+        assert_eq!(mb.snapshot().buffer.as_string(), "fivexyz\n");
     }
 
     // ─────────────────────────────────────────────────────────────

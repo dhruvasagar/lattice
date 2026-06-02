@@ -931,10 +931,30 @@ impl Document for MultibufferDocumentHandle {
         // shared-runtime context). No spawn, no deadlock,
         // "UI never blocks" honoured.
         let row_delta = target.composed_start.line as i64 - target.source_start.line as i64;
+        let inner_for_recompose = self.inner.clone();
         drop(state);
         source_handle
             .apply_edit(source_edit)
-            .map_ok(move |applied| translate_applied_to_composed(applied, row_delta))
+            .map_ok(move |applied| {
+                // 2026-06-02 stale-snapshot fix: after the source's
+                // apply_edit lands, the source's rope reflects the
+                // new content but the multibuffer's composed
+                // snapshot is still the pre-edit version. The M.4
+                // auto-recompose forwarder listens for
+                // `DocumentChanged` events under the SOURCE's id,
+                // but the host's `apply_edit_blocking` publishes
+                // `DocumentChanged` under the ACTIVE doc's id
+                // (the multibuffer itself) — the forwarder
+                // ignores it. Result: cursor advances correctly
+                // (translate_applied_to_composed produces fresh
+                // composed coords) but rendered text stays
+                // unchanged. Recompose synchronously here so the
+                // host's post-apply_edit_blocking re-render reads
+                // the updated snapshot. Idempotent vs. any
+                // forwarder-driven recompose from cross-pane edits.
+                recompose_inner(&inner_for_recompose);
+                translate_applied_to_composed(applied, row_delta)
+            })
     }
 
     /// M.3 (2026-06-01): translate + forward each edit to its
@@ -1784,6 +1804,39 @@ mod tests {
             results[1].inserted_range.end,
             Position::new(1, 1),
             "second batch result must be composed (1,1)"
+        );
+    }
+
+    /// 2026-06-02 stale-snapshot regression: typing a character
+    /// in a multibuffer must update the composed snapshot the
+    /// renderer reads on the next frame. Pre-fix the host's
+    /// `publish_document_changed` fired under the multibuffer's
+    /// id (not the source's), so the M.4 forwarder ignored it
+    /// and the composed snapshot stayed pre-edit. Cursor would
+    /// advance correctly (translate_applied_to_composed) but the
+    /// rendered text never changed. Verify the snapshot updates
+    /// synchronously after apply_edit returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_apply_edit_updates_composed_snapshot_without_forwarder() {
+        let (sources, ids) = make_sources(&["hello\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        // No attach_event_subscriptions call — production path
+        // does it in create_multibuffer_view, but the forwarder
+        // wouldn't fire here anyway because no event bus is
+        // wired. Verify apply_edit's own recompose lands.
+        assert_eq!(mb.snapshot().buffer.as_string(), "hello\n");
+
+        let _ = mb
+            .apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .await
+            .expect("edit ok");
+
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "hello!\n",
+            "composed snapshot must reflect the new content; \
+             the renderer reads this on the next frame"
         );
     }
 

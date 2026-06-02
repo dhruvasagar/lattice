@@ -4433,10 +4433,17 @@ impl Editor {
             return;
         }
         if let Some(info) = self.try_resolve_missing_arg_prompt() {
-            let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
-            self.command_line = info.prefill;
-            self.auto_submit_after_chord = is_chord;
-            self.set_message(EchoLevel::Info, info.prompt);
+            // K.3.5 (2026-06-02): both cmdline-submit and the
+            // public `arm_missing_arg_prompt` API populate the
+            // editor state through `apply_missing_arg_prompt` so
+            // there's one source of truth for "this is what an
+            // armed missing-arg prompt looks like." Plugins /
+            // init.rs / keymap bindings all reach the same state
+            // by calling the public API; the cmdline path's
+            // distinction is that it derives the prompt info
+            // from the in-progress command line rather than from
+            // an explicit command name.
+            self.apply_missing_arg_prompt(info);
             return;
         }
         let line = std::mem::take(&mut self.command_line);
@@ -4873,6 +4880,113 @@ impl Editor {
             kind: first.kind,
             prompt,
         })
+    }
+
+    /// K.3.5 (2026-06-02): public API — arm the cmdline
+    /// missing-arg prompt for `command_name`.
+    ///
+    /// Looks up the command (accepts canonical names like
+    /// `"ex:describe-key"` AND ex-command aliases like
+    /// `"describe-key"`). If the command has a first arg with
+    /// `default: ArgDefault::Required`, transitions the editor
+    /// to `ModalState::Command`, prefills `command_line` with
+    /// `"<command_name> "` (a trailing space puts the cursor in
+    /// the first arg slot), arms `auto_submit_after_chord` for
+    /// [`ArgKind::Chord`] args (so the next keystroke submits
+    /// the prompt with the captured chord), and emits the
+    /// schema's prompt text into the echo area.
+    ///
+    /// Returns `true` if the prompt was armed; `false` if the
+    /// command doesn't exist, isn't an ex-command, or doesn't
+    /// have a required first arg. Callers receiving `false` can
+    /// invoke the command directly with empty args (e.g. for
+    /// no-arg commands like `:help`).
+    ///
+    /// ## Extensibility contract
+    ///
+    /// Public so plugins, user `init.rs` code, and host-side
+    /// keymap bindings reach the same prompt-armed state the
+    /// cmdline-submit path produces. The K.3.2 help-prefix
+    /// chord bindings (`<C-h>k` etc.) call this API directly
+    /// for `:describe-key` / `:describe-command` /
+    /// `:describe-option` / `:describe-event` / `:describe-mode`
+    /// / `:apropos` — there is no command-apply indirection;
+    /// both the keystroke and `:<name><CR>` typed in the
+    /// cmdline funnel through this same API.
+    ///
+    /// Internal implementation shares [`apply_missing_arg_prompt`]
+    /// with [`do_command_line_submit`] so the field updates are
+    /// identical regardless of call source.
+    pub fn arm_missing_arg_prompt(&mut self, command_name: &str) -> bool {
+        // Accept either the canonical CommandRegistry name
+        // ("ex:describe-key") or an ex-command alias
+        // ("describe-key"). Mirror try_resolve_missing_arg_prompt's
+        // resolution logic so both call sites accept the same
+        // forms.
+        let canonical = self.registry.id_by_name(command_name).or_else(|| {
+            crate::excommand::aliases()
+                .get(command_name)
+                .copied()
+                .and_then(|c| self.registry.id_by_name(c))
+        });
+        let Some(canonical) = canonical else {
+            return false;
+        };
+        let Some(spec) = self.registry.ex_command_spec(canonical) else {
+            return false;
+        };
+        let Some(first) = spec.args_schema.first() else {
+            return false;
+        };
+        if !matches!(first.default, lattice_grammar::ArgDefault::Required) {
+            return false;
+        }
+        let prompt = if first.prompt.is_empty() {
+            format!("{}:", first.name)
+        } else {
+            first.prompt.to_string()
+        };
+        let info = crate::state::MissingArgPrompt {
+            // Prefill the cmdline with the name the caller
+            // passed verbatim. When the user typed
+            // `:describe-key<CR>` the cmdline keeps showing
+            // `:describe-key ` (their typed form); when a
+            // keymap binding or plugin passes the canonical
+            // `ex:describe-key`, the cmdline shows that.
+            // Symmetric with the cmdline-submit path's prefill
+            // (which uses the raw user-typed token).
+            prefill: format!("{command_name} "),
+            kind: first.kind,
+            prompt,
+        };
+        self.apply_missing_arg_prompt(info);
+        true
+    }
+
+    /// K.3.5 (2026-06-02): shared internal helper that writes the
+    /// armed-prompt state to the editor.
+    ///
+    /// Both [`do_command_line_submit`]'s missing-arg branch and
+    /// the public [`arm_missing_arg_prompt`] API funnel through
+    /// here so the resulting editor state is byte-identical
+    /// regardless of call source.
+    ///
+    /// Effects:
+    /// - `modal` → `ModalState::Command` (no-op if already Command).
+    /// - `command_line` → `info.prefill` (e.g. `"describe-key "`).
+    /// - `auto_submit_after_chord` → `true` for
+    ///   [`ArgKind::Chord`] args (drives the input layer's
+    ///   chord-capture overlay so the next keystroke submits
+    ///   with the captured chord); `false` for typed-input args
+    ///   (user types name + `<CR>` to submit).
+    /// - Echo area gets the schema's prompt text (`"key:"`,
+    ///   `"command:"`, etc.).
+    fn apply_missing_arg_prompt(&mut self, info: crate::state::MissingArgPrompt) {
+        let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
+        self.command_line = info.prefill;
+        self.modal = ModalState::Command;
+        self.auto_submit_after_chord = is_chord;
+        self.set_message(EchoLevel::Info, info.prompt);
     }
 
     /// 5.5.G.23.cmdline: true when the cmdline cursor sits on an
@@ -24266,6 +24380,43 @@ impl Editor {
         inv: lattice_grammar::CommandInvocation,
         out: &mut DispatchOutcome,
     ) {
+        // K.3.5 (2026-06-02): missing-required-arg short-circuit.
+        //
+        // Some keymap bindings (notably the K.3 help-prefix
+        // `<C-h>k` / `<C-h>c` / `<C-h>o` / `<C-h>e` / `<C-h>m` /
+        // `<C-h>a` chords) bind to commands like `:describe-key`
+        // whose first arg is `default: Required`. Reaching this
+        // method with `inv.args == Args::None` for such a
+        // command would dispatch the apply closure with empty
+        // args, where `parse_required_string` would reject and
+        // silently fail (the user's complaint that originated
+        // K.3.5).
+        //
+        // Funnel through the same `arm_missing_arg_prompt` API
+        // the cmdline-submit path uses (`do_command_line_submit`
+        // → `apply_missing_arg_prompt`) so the keystroke path
+        // and the typed `:` path produce identical editor state.
+        // Plugins / init.rs can call the public API directly
+        // without going through this short-circuit.
+        if matches!(inv.args, lattice_grammar::args::Args::None)
+            && let Some(spec) = self.registry.lookup(inv.command)
+            && let Some(first) = spec.args_schema.first()
+            && matches!(first.default, lattice_grammar::ArgDefault::Required)
+        {
+            // Pass the user-friendly name to the API so the
+            // cmdline shows the unprefixed form ("describe-key ")
+            // rather than the canonical CommandRegistry name
+            // ("ex:describe-key "). Matches what the cmdline-
+            // submit path produces when the user typed the
+            // alias `:describe-key<CR>`.
+            let canonical = spec.name.clone();
+            let display = canonical
+                .strip_prefix("ex:")
+                .unwrap_or(canonical.as_str())
+                .to_string();
+            let _ = self.arm_missing_arg_prompt(&display);
+            return;
+        }
         // Issue #29 (2026-05-22): `{N}gt` — when `next_tab` is
         // invoked with count > 1, treat it as absolute tab N
         // (vim's semantic). Count-less `gt` falls through to
@@ -27570,6 +27721,113 @@ mod tests {
             base_handle.snapshot().buffer.to_rope().to_string(),
             "aaa\nbbb\nccc\n",
             "base buffer must remain unmutated by :diffput"
+        );
+    }
+
+    // ── K.3.5: missing-arg prompt API ──────────────────────────
+    //
+    // Regression coverage for the user-reported bug: the K.3.2
+    // help-prefix keymap bindings invoked required-arg commands
+    // with empty Args, which silently failed. Fix is the public
+    // `arm_missing_arg_prompt` API + a short-circuit in
+    // `run_invocation`. These tests pin the contract.
+
+    #[test]
+    fn arm_missing_arg_prompt_describe_key_arms_chord_capture() {
+        // Calling the public API with the alias form should
+        // arm the prompt with the alias's prefill and chord
+        // auto-submit (the first arg is `ArgKind::Chord`).
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let armed = editor.arm_missing_arg_prompt("describe-key");
+        assert!(armed, "arm_missing_arg_prompt must return true");
+        assert_eq!(editor.command_line, "describe-key ");
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
+        assert!(
+            editor.auto_submit_after_chord,
+            "ArgKind::Chord must arm auto_submit_after_chord"
+        );
+    }
+
+    #[test]
+    fn arm_missing_arg_prompt_canonical_name_works() {
+        // The canonical CommandRegistry name (with `ex:` prefix)
+        // should also resolve — same prompt is armed, with the
+        // canonical form in the cmdline.
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let armed = editor.arm_missing_arg_prompt("ex:describe-key");
+        assert!(armed);
+        assert_eq!(editor.command_line, "ex:describe-key ");
+    }
+
+    #[test]
+    fn arm_missing_arg_prompt_returns_false_for_no_required_arg() {
+        // `:help` and `:keymap` use `parse_no_args` — no required
+        // arg, so the API returns false (caller should invoke
+        // directly).
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let armed = editor.arm_missing_arg_prompt("help");
+        assert!(!armed, "no-required-arg commands must return false");
+        // Editor state untouched.
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Normal));
+    }
+
+    #[test]
+    fn arm_missing_arg_prompt_returns_false_for_unknown_command() {
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let armed = editor.arm_missing_arg_prompt("nonexistent-command-xyz");
+        assert!(!armed);
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Normal));
+    }
+
+    #[test]
+    fn run_invocation_arms_prompt_when_required_arg_missing() {
+        // The user-reported regression: a keymap binding invokes
+        // `ex:describe-key` with no args (the K.3.2 binding
+        // shape). Pre-K.3.5 this silently failed.
+        // Post-K.3.5 `run_invocation` short-circuits to the
+        // public API and arms the prompt — same end state as
+        // the user typing `:describe-key<CR>` in cmdline.
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let describe_key_id = editor
+            .registry
+            .id_by_name("ex:describe-key")
+            .expect("ex:describe-key registered by ex_commands::populate");
+        let inv = lattice_grammar::CommandInvocation::of(describe_key_id);
+        let mut out = DispatchOutcome::default();
+        editor.run_invocation(inv, &mut out);
+        assert_eq!(
+            editor.command_line, "describe-key ",
+            "run_invocation must arm the prompt with the alias form"
+        );
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
+        assert!(editor.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn run_invocation_arms_prompt_for_describe_command() {
+        // `:describe-command` first arg is `ArgKind::String`
+        // (not Chord). The prompt should still arm, but
+        // auto_submit_after_chord should be false (user types
+        // the name + <CR>).
+        let document = lattice_core::Document::empty();
+        let mut editor = Editor::boot(document);
+        let id = editor
+            .registry
+            .id_by_name("ex:describe-command")
+            .expect("ex:describe-command registered");
+        let inv = lattice_grammar::CommandInvocation::of(id);
+        let mut out = DispatchOutcome::default();
+        editor.run_invocation(inv, &mut out);
+        assert_eq!(editor.command_line, "describe-command ");
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
+        assert!(
+            !editor.auto_submit_after_chord,
+            "ArgKind::String args must NOT arm chord auto-submit"
         );
     }
 }

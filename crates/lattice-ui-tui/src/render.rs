@@ -2180,11 +2180,12 @@ fn draw_pane_content(
     tracing::debug!(
         target: "k4x-clobber",
         "[k4x] draw_pane_content idx={} pane_buf={} pane_kind={:?} \
-         active_buf={} active_kind={:?} is_active={} \
+         content_rect=({},{},{},{}) active_buf={} active_kind={:?} is_active={} \
          snap_path={:?} snap_lines={} provider={}",
         idx,
         pane.buffer_id.0,
         pane.buffer,
+        content_rect.x, content_rect.y, content_rect.width, content_rect.height,
         app.ad().document_buffer_id.0,
         app.ad().buffer_kind,
         is_active,
@@ -2724,15 +2725,17 @@ fn draw_inactive_document(
     let snap = handle.snapshot();
     let total_lines = snap.buffer.line_count();
     // K.4.x bug investigation (2026-06-02): log what the
-    // per-pane handle resolved to. If `total_lines` matches
-    // the multibuffer's composed size, registry is correct.
-    // If it matches the FILE's line count, registry is wrong.
+    // per-pane handle resolved to AND the rect being painted.
+    // If `total_lines` matches multibuffer's composed size,
+    // registry is correct. If file pane's rect overlaps this
+    // rect, the file's body would overwrite the multibuffer's.
     tracing::debug!(
         target: "k4x-clobber",
-        "[k4x] draw_inactive_document idx={} pane_buf={} \
+        "[k4x] draw_inactive_document idx={} pane_buf={} area=({},{},{},{}) \
          snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
         pane_idx,
         pane.buffer_id.0,
+        area.x, area.y, area.width, area.height,
         snap.id.0,
         snap.path,
         total_lines,
@@ -3110,11 +3113,16 @@ fn draw_oil_pane(
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
     // K.4.x bug investigation (2026-06-02): log what snap
-    // draw_buffer is rendering for the active pane.
+    // draw_buffer is rendering for the active pane AND the
+    // rect it's painting into. If this rect overlaps the
+    // inactive multibuffer pane's rect, the file's body
+    // would overwrite the multibuffer's body in the
+    // overlapping cells.
     tracing::debug!(
         target: "k4x-clobber",
-        "[k4x] draw_buffer active_buf={} active_kind={:?} \
+        "[k4x] draw_buffer area=({},{},{},{}) active_buf={} active_kind={:?} \
          snap_doc={} snap_path={:?} snap_lines={} first_line={:?}",
+        area.x, area.y, area.width, area.height,
         app.ad().document_buffer_id.0,
         app.ad().buffer_kind,
         snap.id.0,

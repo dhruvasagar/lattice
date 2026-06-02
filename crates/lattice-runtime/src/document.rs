@@ -134,6 +134,29 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     fn dispatch(&self, invocation: CommandInvocation, cursor: Position) -> Pending<Effect> {
         self.dispatch_with_cancel(invocation, cursor, CancellationToken::never())
     }
+
+    /// K.4.6 follow-up (2026-06-02): per-composed-row source line
+    /// number lookup for the gutter. `None` (default) = identity:
+    /// the composed-row index IS the source line number, so the
+    /// gutter formats `composed_row` directly. `Some(arr)` =
+    /// composed→source map: `arr[composed_row]` gives the source
+    /// line number to display.
+    ///
+    /// Regular `RopeDocumentHandle` keeps the default None impl —
+    /// for a single-file buffer, composed_row == source_row.
+    /// `MultibufferDocumentHandle` (lattice-multibuffer) overrides
+    /// to return the flattened `RowTranslation` so the gutter
+    /// shows the original file's line numbers (e.g. 429, 430,
+    /// 432 — skipping non-hit rows) rather than the meaningless
+    /// composed indices (0, 1, 2).
+    ///
+    /// Substrate-aligned per [[feedback_buffers_no_special_case]]:
+    /// the publisher reads `self.document.display_line_numbers()`
+    /// uniformly across all BufferKinds; no renderer-side or
+    /// publish-side kind branch needed.
+    fn display_line_numbers(&self) -> Option<Arc<[u32]>> {
+        None
+    }
 }
 
 /// M.0 (2026-05-31): the active-document slot held by

@@ -1191,12 +1191,26 @@ impl EditorView {
             &rs_guard.active_document.folds,
             rs_guard.active_document.option_cache.foldenable,
         );
+        // K.4.6 follow-up (2026-06-02): cache the
+        // display_line_numbers map outside the per-row closure.
+        // None for regular Documents (gutter shows composed-row
+        // identity); Some(arr) for Multibuffer where
+        // arr[composed_row] is the source line in the original
+        // file. Substrate-published via the Document trait
+        // method; renderer just consumes. TUI/GPUI parity per
+        // [[feedback_tui_gpui_parity]].
+        let display_line_numbers_for_meta =
+            rs_guard.active_document.display_line_numbers.clone();
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
                 let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
                 let severity =
                     line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
+                let display_line = display_line_numbers_for_meta
+                    .as_ref()
+                    .and_then(|m| m.get(line_idx).copied())
+                    .unwrap_or(line_idx as u32);
                 // D.3.d.2 (2026-05-29): diff sign lookup —
                 // read through the same `RenderState::diff`
                 // substate the TUI uses. Lock-free Arc load.
@@ -1231,6 +1245,7 @@ impl EditorView {
                     });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
+                    display_line,
                     fold_start,
                     severity,
                     diff_sign,

@@ -106,6 +106,16 @@ pub(crate) struct GutterLineMeta {
     /// Absolute buffer-line index this gutter row decorates
     /// (`scroll..scroll+viewport_height`, skipping folded lines).
     pub(crate) line_idx: u32,
+    /// K.4.6 follow-up (2026-06-02): the line number to RENDER
+    /// in the gutter cell. For regular Documents this equals
+    /// `line_idx` (identity — composed row IS the source line).
+    /// For Multibuffer views this is the SOURCE line number in
+    /// the originating file, looked up via the substrate's
+    /// `display_line_numbers` map at meta-construction time
+    /// (window.rs). Decoupling these two lets cursor / fold /
+    /// click handling stay on `line_idx` (composed coords) while
+    /// the user sees the meaningful source-file numbers.
+    pub(crate) display_line: u32,
     /// `true` => render the fold-start marker (►) in column 0.
     pub(crate) fold_start: bool,
     /// Pre-resolved diagnostic severity (glyph, colour). `None`
@@ -1690,7 +1700,7 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {
         fold = fold,
         sev = sev,
         diff = diff,
-        num = meta.line_idx as usize + 1,
+        num = meta.display_line as usize + 1,
         width = gutter_width,
     )
 }
@@ -1823,6 +1833,7 @@ mod tests {
     fn gutter_text_format_renders_padding_and_default_chars() {
         let meta = GutterLineMeta {
             line_idx: 0,
+            display_line: 0,
             fold_start: false,
             severity: None,
             diff_sign: None,
@@ -1836,6 +1847,7 @@ mod tests {
     fn gutter_text_format_fold_marker() {
         let meta = GutterLineMeta {
             line_idx: 41,
+            display_line: 41,
             fold_start: true,
             severity: None,
             diff_sign: None,
@@ -1849,9 +1861,11 @@ mod tests {
     fn gutter_text_format_severity_glyph() {
         let meta = GutterLineMeta {
             line_idx: 9,
+            display_line: 9,
             fold_start: false,
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
+            is_virtual: false,
         };
         // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
         assert_eq!(format_gutter_text(&meta, 2), " E 10 ");
@@ -1861,6 +1875,7 @@ mod tests {
     fn gutter_text_format_diff_sign_left_of_line_number() {
         let meta = GutterLineMeta {
             line_idx: 9,
+            display_line: 9,
             fold_start: false,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),

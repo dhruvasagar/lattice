@@ -486,62 +486,35 @@ impl Mode for ProjectSearchMultibufferMode {
                                     id
                                 };
 
-                                // K.4.6 follow-up v2 (2026-06-02): emit
-                                // one excerpt per HIT CLUSTER (±3 lines
-                                // of context per hit, adjacent clusters
-                                // merged when ranges overlap or touch),
-                                // not one per file. Pre-v2 emitted one
-                                // excerpt per file spanning
-                                // min..=max(rows) — which for a file
-                                // with hits at line 5 and line 950
-                                // produced an excerpt covering 5..=950
-                                // = the whole file. v2 produces N
-                                // narrow excerpts per file showing only
-                                // the hit clusters with context.
+                                // K.4.6 follow-up v3 (2026-06-02):
+                                // emit ONE excerpt per matched row
+                                // (single-row range `row..=row`), no
+                                // context. The substrate's
+                                // `compose_header_rows` (lib.rs)
+                                // dedupes consecutive same-source
+                                // excerpts to a single header, so
+                                // the user sees ONE header per file +
+                                // N single-line excerpts (one per
+                                // match) under it. Default matches
+                                // user expectation: "just the matched
+                                // lines."
                                 //
-                                // The substrate's `compose_header_rows`
-                                // (lib.rs) dedupes consecutive same-
-                                // source excerpts to a single header,
-                                // so the user sees ONE header per file
-                                // + N narrow context-windows under it
-                                // — grep-style per
-                                // [[feedback_convention_first]].
-                                //
-                                // Context lines: `±3` matches grep's
-                                // `-C 3` convention. Future polish:
-                                // expose as `g:project_search_context`
-                                // typed option.
-                                const CONTEXT_LINES: u32 = 3;
-                                let excerpts: Vec<Excerpt> = if fh.rows.is_empty() {
-                                    Vec::new()
-                                } else {
-                                    let mut sorted_rows = fh.rows.clone();
-                                    sorted_rows.sort_unstable();
-                                    let mut clusters: Vec<(u32, u32)> = Vec::new();
-                                    for &row in &sorted_rows {
-                                        let start = row.saturating_sub(CONTEXT_LINES);
-                                        let end = row.saturating_add(CONTEXT_LINES);
-                                        match clusters.last_mut() {
-                                            // Merge if the new cluster's
-                                            // start touches or overlaps
-                                            // the previous cluster's end
-                                            // (+1 = "touches, no gap").
-                                            Some(last) if start <= last.1.saturating_add(1) => {
-                                                last.1 = last.1.max(end);
-                                            }
-                                            _ => clusters.push((start, end)),
-                                        }
-                                    }
-                                    clusters
-                                        .into_iter()
-                                        .map(|(start, end)| {
-                                            Excerpt::new(source_id, start, end).with_header(
-                                                ExcerptHeader::new(format!("{}", path.display())),
-                                            )
-                                        })
-                                        .collect()
-                                };
-                                hit_count_in_batch += fh.rows.len();
+                                // Context lines (e.g. grep `-C 3`) are
+                                // a FUTURE typed-option polish
+                                // (`g:project_search_context: usize`,
+                                // default 0). Pre-v3 v2 hardcoded ±3
+                                // as default, which the user
+                                // explicitly rejected.
+                                let excerpts: Vec<Excerpt> = fh
+                                    .rows
+                                    .iter()
+                                    .map(|&row| {
+                                        Excerpt::new(source_id, row, row).with_header(
+                                            ExcerptHeader::new(format!("{}", path.display())),
+                                        )
+                                    })
+                                    .collect();
+                                hit_count_in_batch += excerpts.len();
                                 view.append_excerpts(excerpts);
                             }
 

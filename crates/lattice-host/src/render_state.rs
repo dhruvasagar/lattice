@@ -422,6 +422,25 @@ pub struct ActiveDocumentRenderState {
     /// by per-row paint (whitespace glyphs, current-line highlight,
     /// line-number style).
     pub option_cache: crate::state::OptionCache,
+    /// K.4.6 follow-up (2026-06-02): per-composed-row source line
+    /// number lookup. `None` for regular Documents (the gutter
+    /// uses the composed row index, which IS the source line
+    /// number — identity mapping). `Some(arr)` for Multibuffer
+    /// views, where `arr[composed_row]` gives the source line
+    /// number in the originating source buffer.
+    ///
+    /// The renderer's `render_gutter_for` reads
+    /// `arr[composed_row]` when present and formats THAT as the
+    /// gutter label, so the user sees the actual source file's
+    /// line numbers (e.g. 429, 430, 432 — skipping non-hit
+    /// lines) rather than the composed-buffer row indices
+    /// (0, 1, 2 — meaningless for navigation).
+    ///
+    /// Substrate-published per Option (a) confirmed in the K.4.6
+    /// design discussion: the gutter has one job ("show this
+    /// row's display line number"), the mapping is data, no
+    /// kind-special-casing in the renderer.
+    pub display_line_numbers: Option<Arc<[u32]>>,
 }
 
 impl Default for ActiveDocumentRenderState {
@@ -464,6 +483,7 @@ impl Default for ActiveDocumentRenderState {
             substitute_preview: None,
             selections: Arc::new(lattice_protocol::SelectionSet::default()),
             option_cache: crate::state::OptionCache::default(),
+            display_line_numbers: None,
         }
     }
 }

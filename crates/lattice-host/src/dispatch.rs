@@ -760,6 +760,15 @@ impl Editor {
                     .map(std::sync::Arc::new),
                 selections: self.document.selections(),
                 option_cache: self.option_cache,
+                // K.4.6 follow-up (2026-06-02): publish the
+                // composed→source row map for the gutter. None
+                // for regular Documents (gutter uses composed-row
+                // identity = source line), Some(arr) for
+                // Multibuffer (arr[composed_row] = source line in
+                // the originating file). Substrate-aligned via
+                // the Document trait method; no kind branch
+                // here.
+                display_line_numbers: self.document.display_line_numbers(),
             }),
             // Slice 3c.final.B (group 5): translator inputs.
             // `builtins` is `Copy`; `keymap` is one Arc bump;

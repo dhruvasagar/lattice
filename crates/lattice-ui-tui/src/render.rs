@@ -4367,13 +4367,33 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
+    // K.4.6 follow-up (2026-06-02): consult the substrate's
+    // composed→source row map (`display_line_numbers`) when
+    // present. Multibuffer publishes it; regular Documents
+    // return None (their composed row IS their source line).
+    // Substrate-aligned per [[feedback_buffers_no_special_case]]
+    // — the renderer checks the published mapping, not BufferKind.
+    let app = view.app;
+    let active = app.ad();
+    let display_line_idx: u32 = if let Some(map) = active.display_line_numbers.as_ref() {
+        // Multibuffer: composed_row → source line. Out-of-bounds
+        // is theoretically possible during transient renders
+        // mid-recompose; fall back to identity rather than
+        // panic.
+        *map.get(line_idx as usize).unwrap_or(&line_idx)
+    } else {
+        line_idx
+    };
     // Slice 3c.extension.fold-rs: use view.relative_line_numbers
     // (cached at frame entry) instead of app.relative_line_numbers()
     // — this gutter function runs once per visible line.
-    let app = view.app;
-    let cursor_line = app.ad().cursor.line;
-    if !view.relative_line_numbers || line_idx == cursor_line {
-        return render_gutter(line_idx, width, glyph);
+    let cursor_line = active.cursor.line;
+    // K.4.6 follow-up (2026-06-02): suppress relativenumber on
+    // multibuffer views — relative distance across non-
+    // contiguous source rows is meaningless. Matches Zed.
+    let multibuffer_mode = active.display_line_numbers.is_some();
+    if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
+        return render_gutter(display_line_idx, width, glyph);
     }
     let dist = line_idx.abs_diff(cursor_line);
     let n = dist.to_string();

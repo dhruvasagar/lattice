@@ -1028,6 +1028,24 @@ impl Document for MultibufferDocumentHandle {
         Pending::ready(Ok(()))
     }
 
+    /// K.4.6 follow-up (2026-06-02): publish the composed→source
+    /// row map so the gutter can show original file line numbers
+    /// (429, 430, 432, …) instead of composed-row indices
+    /// (0, 1, 2, …). Walks the published `RowTranslation` once
+    /// per call; cheap (typical N = hundreds-to-thousands; called
+    /// once per render-state publish, NOT per keystroke).
+    fn display_line_numbers(&self) -> Option<Arc<[u32]>> {
+        let translation = self.inner.row_translation.load_full();
+        let rows: Vec<u32> = translation
+            .entries
+            .iter()
+            .map(|e| match e {
+                RowEntry::Excerpt { source_row, .. } => *source_row,
+            })
+            .collect();
+        Some(Arc::from(rows.into_boxed_slice()))
+    }
+
     fn dispatch_with_cancel(
         &self,
         invocation: CommandInvocation,

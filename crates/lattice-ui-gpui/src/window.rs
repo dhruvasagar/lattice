@@ -1648,8 +1648,23 @@ impl EditorView {
             // fallback chain; folded rows / boot frames / the
             // brief buffer-switch gap fall through to the
             // existing prepaint and legacy paths.
+            // 2026-06-02 stale-matrix guard (parity with TUI): the
+            // cells worker is async. After `apply_edit` publishes
+            // a new snapshot, the worker rebuilds on a background
+            // task. Until it finishes the matrix has cells
+            // matching the PRE-edit content. Skip the matrix
+            // when `version.text` lags `snapshot.text_version` so
+            // EditorElement falls back to the legacy `shape_row`
+            // path with `snapshot.buffer.line(...)` — user sees
+            // the new char immediately, syntax styling catches
+            // up next frame.
             cell_matrix: if render_active {
-                Some(rs_guard.cells.matrix.load_full())
+                let m = rs_guard.cells.matrix.load_full();
+                if m.version.text == snapshot.text_version {
+                    Some(m)
+                } else {
+                    None
+                }
             } else {
                 None
             },

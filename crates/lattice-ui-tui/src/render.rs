@@ -3635,7 +3635,7 @@ fn compose_visible_lines_inner(
             // cell-grid.
             let rs_load = view.app.render_state.load();
             let matrix = rs_load.cells.matrix.load();
-            // 2026-06-02: two empty-spans paths fall through to
+            // 2026-06-02 (extended): three paths fall through to
             // plain `line_text`:
             //   1. matrix has no row at `line_idx` (boot frames,
             //      doc-switch gap, line out-of-range for the
@@ -3644,18 +3644,40 @@ fn compose_visible_lines_inner(
             //      `cell_row_to_source_spans` filters those, so
             //      the resulting Vec is empty even though
             //      `line_text` has content.
-            // Case (2) is the bug that left multibuffer composed
-            // row 0 blank when active: the row existed but its
-            // source bytes hadn't been processed yet, so the
-            // cells path produced [] and the rope contents were
-            // dropped. Falling back to `Span::raw(line_text)`
-            // when spans is empty but the rope line isn't keeps
-            // the source-byte overlays correct (visual /
-            // hlsearch / current-match all index by source byte
-            // and only need a body that spans the line's bytes).
-            let spans = match matrix.row_at_source_line(line_idx) {
-                Some(cell_row) => crate::cells_render::cell_row_to_source_spans(cell_row),
-                None => Vec::new(),
+            //   3. **matrix is STALE relative to the snapshot** —
+            //      `matrix.version.text != snap.text_version`. The
+            //      cells worker is async; after `apply_edit`
+            //      publishes a new snapshot, the worker wakes via
+            //      `highlight_wake.notify_one()` and rebuilds the
+            //      matrix on a background task. Until it finishes,
+            //      the matrix has cells matching the PRE-edit
+            //      content. Reading from the stale matrix paints
+            //      the OLD body, which manifests as
+            //      "typing has no visible effect for a frame"
+            //      (sometimes multiple frames for the multibuffer's
+            //      compose-heavy rebuilds). User-reported
+            //      2026-06-02: "after adding one character in
+            //      insert mode … I suddenly see changes" later
+            //      was this stale-matrix window.
+            //
+            //      Comparing version.text against snap.text_version
+            //      detects the lag and forces the line_text path
+            //      until cells catch up. Costs one u64 compare per
+            //      row; negligible.
+            //
+            // Case (3) implies the user temporarily loses syntax
+            // styling for the affected frames — acceptable since
+            // (i) it lasts only as long as the cells worker takes
+            // to rebuild, and (ii) the alternative is showing
+            // PRE-edit content which is much worse.
+            let cells_stale = matrix.version.text != snap.text_version;
+            let spans = if cells_stale {
+                Vec::new()
+            } else {
+                match matrix.row_at_source_line(line_idx) {
+                    Some(cell_row) => crate::cells_render::cell_row_to_source_spans(cell_row),
+                    None => Vec::new(),
+                }
             };
             if spans.is_empty() && !line_text.is_empty() {
                 truncate_spans_to_width(

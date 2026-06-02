@@ -4989,6 +4989,146 @@ impl Editor {
         self.set_message(EchoLevel::Info, info.prompt);
     }
 
+    /// K.4.1.b (2026-06-02): public chord-dispatch API.
+    ///
+    /// Programmatically dispatch a single [`KeyChord`] through the
+    /// host's translate + handle_action pipeline. Plugins / `init.rs`
+    /// / integration tests / scripted automation use this when they
+    /// want to inject a chord WITHOUT going through the TUI's
+    /// crossterm-event layer. The shape matches what `App.apply` does
+    /// internally for keyboard input, minus the App-side surface
+    /// state (picker overlay, completion popup, snippet active,
+    /// terminal modes) that defaults to "not active" for the
+    /// programmatic-dispatch case.
+    ///
+    /// ## Multi-chord sequences
+    ///
+    /// `partial_chord` is mutated to track in-progress multi-key
+    /// sequences (`gg`, `dw`, `<C-w>gd`, `]e`, ...). Callers
+    /// dispatching a sequence pass the same `&mut Vec<KeyChord>`
+    /// through each call:
+    ///
+    /// ```ignore
+    /// let mut partial = Vec::new();
+    /// editor.dispatch_chord(KeyChord::char('g'), &mut partial);
+    /// editor.dispatch_chord(KeyChord::char('g'), &mut partial);
+    /// // cursor now at line 0 (gg)
+    /// ```
+    ///
+    /// `partial_chord` is updated per the host's existing partial-
+    /// chord lifecycle (see `handle_action`'s line ~1395 comment):
+    /// `Action::AbsorbPartialChord(c)` pushes; resolving / aborting
+    /// actions clear; `Action::PushDigit(_)` and
+    /// `Action::EnsureCursorVisible` are intentionally exempt
+    /// (count accumulation between chord steps; renderer
+    /// housekeeping).
+    ///
+    /// ## Return value
+    ///
+    /// Returns the [`Action`] that `translate` produced. Host-side
+    /// actions (`Invoke`, fold ops, visual mode, scroll, paste,
+    /// undo/redo, etc.) are already applied to `self` by the
+    /// internal `handle_action` call. App-only variants (e.g.
+    /// `PickerAccept`, `TerminalInput`, `LspWorkspaceSymbolRequest`)
+    /// are returned for the caller to handle if needed.
+    ///
+    /// ## Extensibility
+    ///
+    /// Public per the standing extensibility principle: all
+    /// keymap-grammar functionality should be backed by APIs
+    /// usable from plugins / `init.rs`. The chord-dispatch path
+    /// is one such API — both the TUI's input layer and any
+    /// programmatic caller funnel into the same `translate` +
+    /// `handle_action` pipeline; `dispatch_chord` is the
+    /// affordance for the programmatic case.
+    pub fn dispatch_chord(
+        &mut self,
+        chord: crate::chord::KeyChord,
+        partial_chord: &mut Vec<crate::chord::KeyChord>,
+    ) -> Action {
+        let active_buffer_id = self.active_buffer_id();
+        let active_minors: Vec<lattice_mode::ModeId> = self
+            .active_modes
+            .get(&active_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+
+        let ctx = crate::input::TranslateContext {
+            modal: self.modal,
+            builtins: &self.builtins,
+            pending_count: 0,
+            op_count: 0,
+            recording_macro: self.macro_recording.is_some(),
+            active_buffer: self.active_buffer,
+            completion_open: false,
+            chord_capture: self.auto_submit_after_chord,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: self.active_snippet.is_some(),
+            terminal_insert_active: false,
+            terminal_esc_exits: false,
+            terminal_app_cursor_keys: false,
+            terminal_insert_exit_pending: false,
+            terminal_visual_active: false,
+            keymap: &self.keymap,
+            partial_chord,
+            active_minor_modes: &active_minors,
+        };
+
+        let action = crate::input::translate(ctx, chord);
+
+        // Partial-chord lifecycle (mirrors App.apply at
+        // crates/lattice-ui-tui/src/input.rs:1652-1653): push on
+        // AbsorbPartialChord, clear on resolving / aborting,
+        // exempt PushDigit (count accumulation between chord
+        // steps) and EnsureCursorVisible (renderer housekeeping,
+        // per the 2026-05-22 investigation fix at
+        // handle_action:1395).
+        match &action {
+            Action::AbsorbPartialChord(c) => {
+                partial_chord.push(*c);
+            }
+            Action::PushDigit(_) | Action::EnsureCursorVisible => {
+                // Exempt — leave partial_chord intact.
+            }
+            _ => {
+                partial_chord.clear();
+            }
+        }
+
+        // Route the action through the host-side handler so
+        // host-managed mutations (Invoke → run_invocation, fold
+        // ops, visual mode entry, scroll, paste, undo/redo, ...)
+        // fire. App-only variants land in handle_action's
+        // wildcard arms as no-ops; callers receive the action
+        // back to handle them.
+        //
+        // Drain `out.next_actions` to closure. Several chord
+        // paths (notably `Action::Invoke(action:enter-visual-*)`,
+        // text-object operators, fold ops, history walks) run
+        // their command via `run_invocation`, which produces
+        // `AppEffect::EnterVisual` / `AppEffect::OpenFold` / ...
+        // and queues the resulting `Action` in `out.next_actions`
+        // rather than re-entering dispatch synchronously. The
+        // TUI's apply loop drains this queue between key events;
+        // for programmatic dispatch we drain here so a single
+        // `dispatch_chord` call has the same observable end state
+        // as the TUI's per-key cycle.
+        let mut out = DispatchOutcome::default();
+        handle_action(self, action.clone(), &mut out);
+        loop {
+            let pending: Vec<Action> = std::mem::take(&mut out.next_actions);
+            if pending.is_empty() {
+                break;
+            }
+            for next in pending {
+                handle_action(self, next, &mut out);
+            }
+        }
+
+        action
+    }
+
     /// 5.5.G.23.cmdline: true when the cmdline cursor sits on an
     /// `ArgKind::Chord` arg slot. Drives the input layer's
     /// chord-capture overlay.

@@ -25,24 +25,16 @@
 //!   tests that document the contract each upcoming slice
 //!   will satisfy.
 //!
-//! **Deferred (K.4.1.b, follow-up slice):** motion / visual /
-//! insert chord tests. The slice plan envisioned these as
-//! `dispatch_chord(editor, KeyChord::char('j'))` helpers, but
-//! `Editor::dispatch_blocking` takes a `CommandInvocation`,
-//! not a `KeyChord` — full chord translation requires building
-//! a `TranslateContext` (active modes, partial-chord state,
-//! binding-mode resolution, picker overlay gating, etc.) that's
-//! several hundred LOC of test scaffolding. The TUI's input
-//! layer (`lattice-ui-tui::input`) is the only production
-//! caller that wires this end-to-end; a host-side helper would
-//! be a useful follow-up (`Editor::dispatch_chord` perhaps)
-//! that K.4.1.b would land alongside the motion tests.
-//!
-//! Until K.4.1.b, the chord-dispatch tests stay as commented
-//! intent in this file's `KeyChord -> CommandInvocation`
-//! marker block — they document what should fire and let
-//! readers see the verification gap without pretending it's
-//! closed.
+//! **K.4.1.b — chord-dispatch tests:** the `Editor::dispatch_chord`
+//! public API (added 2026-06-02) closes the verification gap.
+//! Motion (`j`, `k`, `gg`, `G`, `w`), visual mode (`v`), and the
+//! partial-chord lifecycle are now exercised end-to-end on a
+//! multibuffer view. The API builds a `TranslateContext` from
+//! Editor state, calls host `translate`, manages `partial_chord`,
+//! and routes through `handle_action` — same pipeline the TUI's
+//! input layer uses, minus App-only surface state (picker
+//! overlay, completion popup, snippet, terminal) which defaults
+//! to "not active" for programmatic dispatch.
 
 #![allow(clippy::unwrap_used)]
 
@@ -158,28 +150,139 @@ fn active_buffer_is_multibuffer_after_activation() {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  K.4.1.b — chord-dispatch tests (deferred — see module doc)
+//  K.4.1.b — chord-dispatch tests via Editor::dispatch_chord
 // ─────────────────────────────────────────────────────────────
 //
-// The slice plan listed 5 motion + 2 modal-state tests using
-// a `dispatch_chord(editor, KeyChord)` helper. That helper
-// requires a host-side chord-translation entry point that
-// doesn't exist yet (`Editor::dispatch_blocking` takes a
-// `CommandInvocation`, not a `KeyChord`; the chord-to-
-// invocation translation is wired through the TUI's input
-// layer today). K.4.1.b will land the helper + these tests:
-//
-// - `motion_j_advances_cursor`
-// - `motion_k_retreats_cursor`
-// - `motion_gg_jumps_to_top`
-// - `motion_G_jumps_to_bottom`
-// - `motion_w_advances_word`
-// - `motion_excerpt_next_advances_to_next_excerpt` (`]e`)
-// - `visual_mode_enter_works`
-// - `insert_mode_blocked_when_readonly`
-//
-// Until K.4.1.b lands, the K.4.2/3/4 fixes' end-to-end
-// verification rests on manual testing + user reports.
+// Uses the public Editor::dispatch_chord API (added 2026-06-02)
+// which builds a TranslateContext from editor state, calls
+// host translate, manages the partial-chord buffer, and routes
+// the resulting Action through handle_action. Same path the
+// TUI's input layer uses, minus App-only surface state.
+
+use lattice_protocol::KeyChord;
+
+/// Dispatch a chord through the host's public API, maintaining
+/// a partial-chord buffer for multi-chord sequences (gg, dw,
+/// ]e, etc.).
+fn dispatch_chord(editor: &mut Editor, chord: KeyChord, partial: &mut Vec<KeyChord>) {
+    let _ = editor.dispatch_chord(chord, partial);
+}
+
+#[test]
+fn motion_j_advances_cursor() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    let start = editor.cursor.line;
+    dispatch_chord(&mut editor, KeyChord::char('j'), &mut partial);
+    assert_eq!(
+        editor.cursor.line,
+        start + 1,
+        "`j` on a multibuffer view must advance cursor.line by one \
+         (cursor: {:?})",
+        editor.cursor
+    );
+}
+
+#[test]
+fn motion_k_retreats_cursor() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    dispatch_chord(&mut editor, KeyChord::char('j'), &mut partial);
+    dispatch_chord(&mut editor, KeyChord::char('j'), &mut partial);
+    let before_k = editor.cursor.line;
+    dispatch_chord(&mut editor, KeyChord::char('k'), &mut partial);
+    assert_eq!(
+        editor.cursor.line,
+        before_k - 1,
+        "`k` on a multibuffer view must retreat cursor.line by one"
+    );
+}
+
+#[test]
+fn motion_gg_jumps_to_top() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    for _ in 0..3 {
+        dispatch_chord(&mut editor, KeyChord::char('j'), &mut partial);
+    }
+    // First `g` returns Partial → AbsorbPartialChord; second
+    // `g` matches `[g, g]` → motion:goto-first-line.
+    dispatch_chord(&mut editor, KeyChord::char('g'), &mut partial);
+    assert_eq!(partial.len(), 1, "first `g` should absorb into partial");
+    dispatch_chord(&mut editor, KeyChord::char('g'), &mut partial);
+    assert!(partial.is_empty(), "second `g` should resolve `gg` and clear");
+    assert_eq!(
+        editor.cursor.line, 0,
+        "`gg` on a multibuffer view must land cursor.line at 0"
+    );
+}
+
+#[test]
+fn motion_capital_g_jumps_to_bottom() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    dispatch_chord(&mut editor, KeyChord::char('G'), &mut partial);
+    assert!(
+        editor.cursor.line > 0,
+        "`G` on a multibuffer view must advance cursor past 0 \
+         (cursor: {:?})",
+        editor.cursor
+    );
+}
+
+#[test]
+fn motion_w_advances_word() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    let start_byte = editor.cursor.byte;
+    let start_line = editor.cursor.line;
+    dispatch_chord(&mut editor, KeyChord::char('w'), &mut partial);
+    assert!(
+        editor.cursor.byte != start_byte || editor.cursor.line != start_line,
+        "`w` must advance the cursor (start byte {start_byte}, line \
+         {start_line}; current cursor {:?})",
+        editor.cursor
+    );
+}
+
+#[test]
+fn visual_mode_enter_works() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    dispatch_chord(&mut editor, KeyChord::char('v'), &mut partial);
+    assert!(
+        matches!(
+            editor.modal,
+            lattice_grammar::ModalState::Visual(_)
+        ),
+        "pressing `v` on a multibuffer view must enter Visual \
+         modal state (modal is {:?})",
+        editor.modal
+    );
+}
+
+#[test]
+fn partial_chord_resets_on_unbound_follow_up() {
+    // First `g` absorbs into partial. `!` has no `[g, !]`
+    // binding in Normal, so partial must clear and cursor must
+    // not move. Guards the partial-chord lifecycle on the
+    // dispatch_chord path.
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+    let start = editor.cursor;
+    dispatch_chord(&mut editor, KeyChord::char('g'), &mut partial);
+    assert_eq!(partial.len(), 1, "`g` should absorb");
+    dispatch_chord(&mut editor, KeyChord::char('!'), &mut partial);
+    assert!(partial.is_empty(), "unbound follow-up must clear partial");
+    assert_eq!(editor.cursor, start, "unbound `g!` should not move cursor");
+}
 
 // ─────────────────────────────────────────────────────────────
 //  K.4.5 / K.4.6 / K.4.7 dependencies (ignored markers)

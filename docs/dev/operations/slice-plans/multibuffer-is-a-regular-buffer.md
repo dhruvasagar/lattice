@@ -76,9 +76,31 @@ K.4.1 is the test, not the fix.
   excerpts; helper to drive a chord through
   `run_invocation` + read back `cursor` / `active_buffer` /
   matrices.
-- **K.4.1.b** Motion tests (`j`, `k`, `gg`, `G`, `w`,
-  `]e`, `[e`).
-- **K.4.1.c** Visual + insert mode tests.
+- **K.4.1.b** Motion tests (`j`, `k`, `gg`, `G`, `w`)
+  + Visual mode (`v`) + partial-chord lifecycle ✅
+  (commit pending). Backed by a new public
+  `Editor::dispatch_chord(chord, &mut partial_chord) -> Action`
+  API in `lattice-host` — programmatic chord dispatch
+  that builds a `TranslateContext` from editor state,
+  calls host `translate`, manages the partial-chord
+  buffer (push on `AbsorbPartialChord`, exempt
+  `PushDigit` / `EnsureCursorVisible`, clear otherwise),
+  routes the action through `handle_action`, and drains
+  `out.next_actions` to closure so deferred `AppEffect`s
+  (notably `EnterVisual` via `action:enter-visual-*`)
+  land synchronously. Same pipeline as the TUI's input
+  layer, minus App-only surface state (picker, snippet,
+  terminal modes default to "not active"). Public per
+  the extensibility principle — plugins / `init.rs` /
+  scripted automation get the same affordance the TUI
+  uses. `]e` / `[e` excerpt-boundary motions deferred
+  to K.4.6 (excerpt-header virtual-row pipeline is the
+  prerequisite for `MultibufferDocumentHandle` to know
+  where excerpt boundaries are in matrix-row terms).
+- **K.4.1.c** Visual + insert mode tests — Visual now
+  covered by K.4.1.b; Insert mode tests deferred to a
+  follow-up if/when an Insert-on-multibuffer policy
+  lands (today excerpts are read-only).
 - **K.4.1.d** Render-state tests (cells / virtual-row
   matrix population, excerpt headers in matrix, per-
   excerpt syntax spans).

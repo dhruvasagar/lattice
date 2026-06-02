@@ -27,7 +27,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use lattice_config::{OptionOverrideSet, overrides};
+use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId};
 use lattice_grammar::CommandRegistry;
 use lattice_mode::{
@@ -425,9 +425,20 @@ impl Mode for ProjectSearchMultibufferMode {
         ModeKind::Minor
     }
     fn options(&self) -> OptionOverrideSet {
-        overrides! {
-            lattice_config::ReadOnly = true,
-        }
+        // 2026-06-02: search-result multibuffer is EDITABLE. The
+        // M.3 substrate (MultibufferDocumentHandle::apply_edit)
+        // translates composed-coordinate edits to source coords
+        // and forwards to the source documents — the user typing
+        // in the multibuffer refactors every matched file
+        // in-place. Differentiating UX vs vim quickfix
+        // (read-only) and consistent with Zed-style
+        // "search-and-replace across project" workflow. The
+        // major mode already dropped ReadOnly in M.3; this
+        // minor previously layered `ReadOnly = true` for the
+        // M.6.0 read-only milestone. Dropped now per
+        // paramount-#2 — substrate supports it, honor the
+        // substrate's intent.
+        OptionOverrideSet::new()
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()

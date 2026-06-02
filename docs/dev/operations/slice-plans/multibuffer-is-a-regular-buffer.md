@@ -167,28 +167,46 @@ source-coordinate translation per M.3).
 Contained kind branch — the only one in
 `dispatch_blocking`. Architectural follow-up = K.4.11.
 
-### K.4.5 — Visual-mode highlight rendering 🗒
+### K.4.5 — Visual-mode highlight rendering ✅ (commit pending)
 
-**New finding (2026-06-01 user testing).** Visual mode
-enters (selection state on `self.selection`), but the
-visual-highlight cells don't paint on a multibuffer
-view. Suspected pattern: another renderer kind-gate
-analogous to K.4.3.
+**Root cause was NOT a renderer kind-gate.** Investigation
+ruled out the suspected matcher-extension shape. The real
+issue lived at the multibuffer's `Document::set_selections`
+impl: it returned `Pending::ready(Err(RuntimeError::ReadOnly))`,
+which left the multibuffer snapshot's `selections` permanently
+at `SelectionSet::default()`. `Editor::visual_selection_range`
+reads `self.document.selections().primary()` uniformly across
+BufferKinds (paramount-#3 — no kind-special-casing); when the
+multibuffer's primary selection stayed pinned at `(0,0)`,
+visual-mode painting got a degenerate `(0,0)..(0,1)` range
+and rendered as a single-cell highlight at the top-left.
 
-**Investigation steps:**
+**Fix:** make `MultibufferDocumentHandle::set_selections`
+properly store the SelectionSet in `MultibufferState` and
+republish the snapshot. `compose_snapshot` gained a
+`selections: Arc<SelectionSet>` parameter; every recompose
+path threads `state.selections.clone()` so excerpt
+mutations preserve the user's selection across recomposes.
 
-1. Locate the visual-selection painting path (likely
-   `lattice-ui-tui/src/cells_render.rs` or `render.rs`'s
-   per-cell attribute application).
-2. Search for `BufferKind::Document` gates that filter
-   selection drawing.
-3. Extend matcher to `Document | Messages | Multibuffer`
-   (same shape as K.4.2 / K.4.3).
-4. Add `visual_selection_renders` assertion to K.4.1 once
-   harness lands.
+**Lesson:** the slice plan's "likely small fix, single matcher
+extension" hypothesis was wrong, but the correct fix was
+ultimately just as small (~30 LOC change) AND honoured the
+paramount-#3 "no buffer-kind-special logic" principle in a way
+a matcher extension would NOT have. Renderer-side matcher
+extensions would have entrenched the BufferKind branch
+([[feedback_buffers_no_special_case]]); fixing the Document
+trait impl makes Multibuffer behave uniformly with Document.
 
-**Likely-small fix** (single matcher extension); listed
-separately to keep test gate honest.
+**Tests:**
+- `lattice-multibuffer::tests::set_selections_stores_composed_selections_post_k_4_5`
+  — unit test: set_selections → snapshot reflects → recompose
+  preserves.
+- `lattice-host::tests::multibuffer_is_a_regular_buffer::visual_selection_renders_for_multibuffer`
+  — integration test: Visual + `lll j` on multibuffer view →
+  `visual_selection_range` returns a non-degenerate range.
+- Updated `save_and_set_selections_still_rejected_post_m3` →
+  `save_still_rejected_post_m3` (save remains ReadOnly;
+  set_selections drops out of the rejected-paths list).
 
 ### K.4.6 — Excerpt-header virtual-row pipeline 🗒 architectural
 

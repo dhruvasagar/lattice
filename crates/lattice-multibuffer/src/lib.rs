@@ -266,6 +266,18 @@ impl Drop for MultibufferInner {
 struct MultibufferState {
     sources: HashMap<BufferId, Arc<dyn Document>>,
     excerpts: Vec<Excerpt>,
+    /// K.4.5 (2026-06-02): composed-coordinate selection set
+    /// for the view. Multibuffers don't propagate selections to
+    /// their source buffers (M.3 design — composed coordinates
+    /// don't map cleanly back through edits / excerpts), but
+    /// the view itself IS a buffer and carries its own
+    /// selection state. Visual-mode highlight painting
+    /// (`Editor::visual_selection_range` → renderer) reads
+    /// these via `snapshot.selections`. Updated by
+    /// `set_selections` (Document trait); rebuilt-but-preserved
+    /// by every recompose path so excerpt mutations don't
+    /// clobber the user's selection.
+    selections: Arc<SelectionSet>,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -373,14 +385,23 @@ impl MultibufferDocumentHandle {
         let id = next_multibuffer_document_id();
         let buffer_id = BufferId::next();
         let row_translation = RowTranslation::build(&excerpts);
-        let composed = compose_snapshot(id, &sources, &excerpts);
+        let composed = compose_snapshot(
+            id,
+            &sources,
+            &excerpts,
+            Arc::new(SelectionSet::default()),
+        );
         let snapshot_cell = Arc::new(PublishedSnapshot::new(composed));
 
         Ok(Self {
             inner: Arc::new(MultibufferInner {
                 id,
                 buffer_id,
-                state: std::sync::Mutex::new(MultibufferState { sources, excerpts }),
+                state: std::sync::Mutex::new(MultibufferState {
+                    sources,
+                    excerpts,
+                    selections: Arc::new(SelectionSet::default()),
+                }),
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
@@ -508,7 +529,12 @@ impl MultibufferDocumentHandle {
         state.excerpts[idx].start_line = new_start as u32;
         state.excerpts[idx].end_line = new_end as u32;
 
-        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let snapshot = compose_snapshot(
+            self.inner.id,
+            &state.sources,
+            &state.excerpts,
+            state.selections.clone(),
+        );
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         self.inner.snapshot_cell.store(snapshot);
@@ -536,7 +562,12 @@ impl MultibufferDocumentHandle {
             }
             state.excerpts.push(ex);
         }
-        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let snapshot = compose_snapshot(
+            self.inner.id,
+            &state.sources,
+            &state.excerpts,
+            state.selections.clone(),
+        );
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         self.inner.snapshot_cell.store(snapshot);
@@ -563,7 +594,12 @@ impl MultibufferDocumentHandle {
         let mut state = self.lock_state();
         state.sources = sources;
         state.excerpts = excerpts;
-        let snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let snapshot = compose_snapshot(
+            self.inner.id,
+            &state.sources,
+            &state.excerpts,
+            state.selections.clone(),
+        );
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         self.inner.snapshot_cell.store(snapshot);
@@ -590,7 +626,12 @@ impl MultibufferDocumentHandle {
     /// the Mutex.
     pub fn recompose(&self) {
         let state = self.lock_state();
-        let new_snapshot = compose_snapshot(self.inner.id, &state.sources, &state.excerpts);
+        let new_snapshot = compose_snapshot(
+            self.inner.id,
+            &state.sources,
+            &state.excerpts,
+            state.selections.clone(),
+        );
         let new_translation = RowTranslation::build(&state.excerpts);
         drop(state);
         self.inner.snapshot_cell.store(new_snapshot);
@@ -802,7 +843,12 @@ fn recompose_inner(inner: &Arc<MultibufferInner>) {
     let Ok(state) = inner.state.lock() else {
         return;
     };
-    let new_snapshot = compose_snapshot(inner.id, &state.sources, &state.excerpts);
+    let new_snapshot = compose_snapshot(
+        inner.id,
+        &state.sources,
+        &state.excerpts,
+        state.selections.clone(),
+    );
     let new_translation = RowTranslation::build(&state.excerpts);
     drop(state);
     inner.snapshot_cell.store(new_snapshot);
@@ -933,12 +979,38 @@ impl Document for MultibufferDocumentHandle {
         Pending::ready(Err(RuntimeError::ReadOnly))
     }
 
-    fn set_selections(&self, _selections: SelectionSet) -> Pending<()> {
-        // Selections are view-owned in the composed coordinate
-        // space; M.3 doesn't propagate them to sources. The
-        // host's pane manages composed-side selections directly
-        // (renderer reads them off the snapshot).
-        Pending::ready(Err(RuntimeError::ReadOnly))
+    fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
+        // K.4.5 (2026-06-02): selections ARE view-owned in the
+        // composed coordinate space (M.3 design — they don't
+        // propagate to sources). Prior shape returned
+        // `Err(ReadOnly)` which left the snapshot's selections
+        // at `SelectionSet::default()`, breaking Visual-mode
+        // highlight painting on multibuffer views
+        // (`Editor::visual_selection_range` reads
+        // `self.document.selections().primary()` uniformly
+        // across BufferKinds — the right fix is for the
+        // Document impl to honour the call, not for callers
+        // to special-case multibuffer).
+        //
+        // Store the new selection set in `state.selections`
+        // and rebuild the snapshot so the next snapshot read
+        // sees the updated selections. Synchronous (Mutex-
+        // routed write + ArcSwap publish) so
+        // `set_selections_blocking` callers see the change
+        // immediately. See [[feedback_buffers_no_special_case]].
+        let selections = Arc::new(selections);
+        let snapshot = {
+            let mut state = self.lock_state();
+            state.selections = Arc::clone(&selections);
+            compose_snapshot(
+                self.inner.id,
+                &state.sources,
+                &state.excerpts,
+                selections,
+            )
+        };
+        self.inner.snapshot_cell.store(snapshot);
+        Pending::ready(Ok(()))
     }
 
     fn dispatch_with_cancel(
@@ -1170,6 +1242,7 @@ fn compose_snapshot(
     id: DocumentId,
     sources: &HashMap<BufferId, Arc<dyn Document>>,
     excerpts: &[Excerpt],
+    selections: Arc<SelectionSet>,
 ) -> DocumentSnapshot {
     let mut composed_text = String::new();
     let mut composed_version: u64 = 0;
@@ -1199,7 +1272,12 @@ fn compose_snapshot(
         buffer: Buffer::from_text(&composed_text),
         path: None,
         dirty: false,
-        selections: Arc::new(SelectionSet::default()),
+        // K.4.5 (2026-06-02): selections come from
+        // `MultibufferState`, preserved across recomposes so
+        // excerpt mutations (append / replace / clip) don't
+        // clobber the user's Visual selection. Updated via
+        // `set_selections` (Document trait).
+        selections,
     }
 }
 
@@ -1252,22 +1330,72 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn save_and_set_selections_still_rejected_post_m3() {
+    async fn save_still_rejected_post_m3() {
         // M.3 (2026-06-01): apply_edit / undo / redo now
-        // propagate; save / save_as / set_selections /
-        // dispatch_with_cancel stay rejected per the design
-        // comments in `impl Document` (`:w` is no-op until a
-        // provider attaches save semantics; selections are
-        // view-owned; grammar dispatch runs at the host layer).
+        // propagate. K.4.5 (2026-06-02): set_selections now
+        // stores composed-coordinate selections (see
+        // `set_selections_stores_composed_selections_post_k_4_5`).
+        // save / save_as / dispatch_with_cancel still stay
+        // rejected per the design comments in `impl Document`
+        // (`:w` is no-op until a provider attaches save
+        // semantics; grammar dispatch runs at the host layer).
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
 
         assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
-        assert!(matches!(
-            mb.set_selections(SelectionSet::default()).await,
-            Err(RuntimeError::ReadOnly)
-        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_selections_stores_composed_selections_post_k_4_5() {
+        // K.4.5 (2026-06-02): selections are view-owned in
+        // composed coordinate space. set_selections now
+        // stores the SelectionSet on `MultibufferState` and
+        // republishes the snapshot, so
+        // `Editor::visual_selection_range` reading
+        // `self.document.selections().primary()` sees the
+        // updated anchor / head — Visual-mode highlights
+        // paint uniformly across BufferKinds.
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, VisualMode};
+
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+
+        // Initial snapshot: default empty selection set.
+        let initial = mb.snapshot();
+        assert_eq!(initial.selections.all().len(), 1);
+        assert_eq!(initial.selections.primary().anchor, Position::new(0, 0));
+        assert_eq!(initial.selections.primary().head, Position::new(0, 0));
+
+        // Set a Visual-mode selection spanning the composed view.
+        let sel = Selection {
+            anchor: Position::new(0, 0),
+            head: Position::new(1, 3),
+            visual: Some(VisualMode::Charwise),
+        };
+        let set = SelectionSet::single(sel);
+        mb.set_selections(set.clone()).await.expect("ok");
+
+        // Snapshot now reflects the new selection.
+        let after = mb.snapshot();
+        assert_eq!(after.selections.primary().anchor, Position::new(0, 0));
+        assert_eq!(after.selections.primary().head, Position::new(1, 3));
+        assert_eq!(
+            after.selections.primary().visual,
+            Some(VisualMode::Charwise)
+        );
+
+        // Recompose preserves the selection (excerpt-mutation
+        // paths read state.selections through compose_snapshot).
+        mb.recompose();
+        let recomposed = mb.snapshot();
+        assert_eq!(
+            recomposed.selections.primary().head,
+            Position::new(1, 3),
+            "recompose must preserve composed-coordinate selections"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

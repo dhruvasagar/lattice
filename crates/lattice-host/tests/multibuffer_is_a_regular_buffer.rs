@@ -299,15 +299,38 @@ fn partial_chord_resets_on_unbound_follow_up() {
 // in and become real assertions.
 
 #[test]
-#[ignore = "K.4.5 dependency — visual highlights for multibuffer not yet wired"]
 fn visual_selection_renders_for_multibuffer() {
-    // K.4.5 contract: after entering Visual mode + extending
-    // the selection on a multibuffer view, the published
-    // render state's `visual_range` should be `Some` covering
-    // the selected range (OR the per-cell paint should mark
-    // the selected cells as highlighted — exact shape TBD by
-    // K.4.5's chosen fix).
-    panic!("K.4.5 unimplemented — visual highlights don't render on multibuffer views");
+    // K.4.5 (2026-06-02): after entering Visual mode +
+    // extending the selection on a multibuffer view, the
+    // editor's `visual_selection_range()` must return Some
+    // range whose head reflects the user's motion. Before
+    // K.4.5 the multibuffer's `set_selections` was a
+    // ReadOnly no-op, so the snapshot's selections stayed at
+    // `SelectionSet::default()` and visual_selection_range
+    // returned a degenerate `(0,0)..(0,1)` range regardless
+    // of the actual cursor position.
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+    let mut partial = Vec::new();
+
+    // Enter Visual mode at row 0.
+    dispatch_chord(&mut editor, KeyChord::char('v'), &mut partial);
+    // Extend the selection: 3 × `l` (right) followed by `j`
+    // (down). After K.4.5 the snapshot's selection follows.
+    for _ in 0..3 {
+        dispatch_chord(&mut editor, KeyChord::char('l'), &mut partial);
+    }
+    dispatch_chord(&mut editor, KeyChord::char('j'), &mut partial);
+
+    let range = editor
+        .visual_selection_range()
+        .expect("Visual mode active → visual_selection_range must be Some");
+    assert!(
+        range.end.line >= 1 || range.end.byte >= 3,
+        "K.4.5: extended Visual on multibuffer must surface a non-degenerate range \
+         (got {range:?}); pre-fix the multibuffer's set_selections no-op left this \
+         pinned at the origin"
+    );
 }
 
 #[test]

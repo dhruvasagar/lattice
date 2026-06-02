@@ -2696,6 +2696,12 @@ fn draw_inactive_document(
     };
     let snap = handle.snapshot();
     let total_lines = snap.buffer.line_count();
+    // 2026-06-02: per-pane composed→source row map. Loaded once
+    // per inactive draw so the gutter shows source line numbers
+    // for a multibuffer pane even when that pane is inactive.
+    // Regular Documents return None (identity numbering).
+    let inactive_display_line_numbers: Option<std::sync::Arc<[u32]>> =
+        handle.display_line_numbers();
     let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
@@ -2827,7 +2833,13 @@ fn draw_inactive_document(
             break;
         }
         let line_text = snap.buffer.line(buf_line).unwrap_or_default();
-        let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
+        let gutter = render_gutter_for_inactive(
+            &view,
+            pane.cursor.line,
+            buf_line,
+            gutter_w,
+            inactive_display_line_numbers.as_deref(),
+        );
         let spans = highlights.get((i - 1) as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
         // M.7.3.b: whitespace decoration pre-pass for inactive
@@ -2891,6 +2903,7 @@ fn render_gutter_for_inactive(
     cursor_line: u32,
     line_idx: u32,
     gutter_w: u32,
+    display_line_numbers: Option<&[u32]>,
 ) -> Span<'static> {
     // Inactive panes don't carry their own fold state today (folds
     // live on the active App), so we format an empty glyph slot --
@@ -2902,8 +2915,20 @@ fn render_gutter_for_inactive(
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
-    let n = if !view.relative_line_numbers || line_idx == cursor_line {
-        (line_idx + 1).to_string()
+    // 2026-06-02: mirror the active path's composed→source
+    // mapping for inactive panes. Without this an inactive
+    // multibuffer pane would show 1,2,3,… instead of the source
+    // line numbers from each excerpt. Per "active-state only
+    // affects the active pane": map and cursor are sourced from
+    // the inactive pane's own handle + pane state, not `app.ad()`.
+    let display_line_idx: u32 = if let Some(map) = display_line_numbers {
+        *map.get(line_idx as usize).unwrap_or(&line_idx)
+    } else {
+        line_idx
+    };
+    let multibuffer_mode = display_line_numbers.is_some();
+    let n = if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
+        (display_line_idx + 1).to_string()
     } else {
         line_idx.abs_diff(cursor_line).to_string()
     };
@@ -3520,6 +3545,12 @@ fn compose_visible_lines_inner(
             })
     };
     let body_col_width = buffer_w;
+    // Active-pane composed→source row map. Cloned once per frame
+    // (Arc bump). The active path is the only place that reads
+    // `app.ad().display_line_numbers` — inactive panes get their
+    // own per-pane mapping via `handle.display_line_numbers()`.
+    let active_display_line_numbers = app.ad().display_line_numbers.clone();
+    let active_cursor_line = app.ad().cursor.line;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {
@@ -3551,7 +3582,13 @@ fn compose_visible_lines_inner(
         // Pull just this line's text (O(log n) lookup +
         // O(line_len) materialisation).
         let line_text = snap.buffer.line(line_idx).unwrap_or_default();
-        let gutter = render_gutter_for(view, line_idx, gutter_w);
+        let gutter = render_gutter_for(
+            view,
+            line_idx,
+            gutter_w,
+            active_cursor_line,
+            active_display_line_numbers.as_deref(),
+        );
         // Highlight slot is keyed by buffer-line offset from
         // `scroll`, NOT by viewport row -- once closed folds skip
         // interior lines, viewport row `i` no longer corresponds
@@ -3598,20 +3635,35 @@ fn compose_visible_lines_inner(
             // cell-grid.
             let rs_load = view.app.render_state.load();
             let matrix = rs_load.cells.matrix.load();
-            if let Some(cell_row) = matrix.row_at_source_line(line_idx) {
-                let spans = crate::cells_render::cell_row_to_source_spans(cell_row);
-                truncate_spans_to_width(spans, buffer_w)
-            } else {
-                // Empty-matrix fallback: plain line text, no
-                // styling. Hits only on the first frame at boot
-                // (before the cell-builder's first publish) or
-                // during a buffer switch's brief window. The
-                // overlays below paint correctly against plain
-                // text — the byte-position contract still holds.
+            // 2026-06-02: two empty-spans paths fall through to
+            // plain `line_text`:
+            //   1. matrix has no row at `line_idx` (boot frames,
+            //      doc-switch gap, line out-of-range for the
+            //      builder's current viewport),
+            //   2. matrix has a row but every cell is INLAY —
+            //      `cell_row_to_source_spans` filters those, so
+            //      the resulting Vec is empty even though
+            //      `line_text` has content.
+            // Case (2) is the bug that left multibuffer composed
+            // row 0 blank when active: the row existed but its
+            // source bytes hadn't been processed yet, so the
+            // cells path produced [] and the rope contents were
+            // dropped. Falling back to `Span::raw(line_text)`
+            // when spans is empty but the rope line isn't keeps
+            // the source-byte overlays correct (visual /
+            // hlsearch / current-match all index by source byte
+            // and only need a body that spans the line's bytes).
+            let spans = match matrix.row_at_source_line(line_idx) {
+                Some(cell_row) => crate::cells_render::cell_row_to_source_spans(cell_row),
+                None => Vec::new(),
+            };
+            if spans.is_empty() && !line_text.is_empty() {
                 truncate_spans_to_width(
                     vec![Span::raw(line_text.clone())],
                     buffer_w,
                 )
+            } else {
+                truncate_spans_to_width(spans, buffer_w)
             }
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
@@ -4367,7 +4419,13 @@ fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static
     )
 }
 
-fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'static> {
+fn render_gutter_for(
+    view: &FrameView<'_>,
+    line_idx: u32,
+    width: u32,
+    cursor_line: u32,
+    display_line_numbers: Option<&[u32]>,
+) -> Span<'static> {
     let glyph = fold_glyph_for(view, line_idx);
     if !view.show_line_numbers {
         // No-numbers gutter: glyph (or empty) at the inner edge,
@@ -4386,9 +4444,15 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
     // return None (their composed row IS their source line).
     // Substrate-aligned per [[feedback_buffers_no_special_case]]
     // — the renderer checks the published mapping, not BufferKind.
-    let app = view.app;
-    let active = app.ad();
-    let display_line_idx: u32 = if let Some(map) = active.display_line_numbers.as_ref() {
+    //
+    // 2026-06-02 follow-up: `cursor_line` + `display_line_numbers`
+    // are now passed by the caller (per-pane state) so this fn
+    // works correctly for inactive panes too. Active path passes
+    // `app.ad().cursor.line` + `app.ad().display_line_numbers`;
+    // inactive path passes `pane.cursor.line` + the inactive
+    // handle's own `display_line_numbers()`. No more `app.ad()`
+    // reads — the gutter stays per-pane consistent.
+    let display_line_idx: u32 = if let Some(map) = display_line_numbers {
         // Multibuffer: composed_row → source line. Out-of-bounds
         // is theoretically possible during transient renders
         // mid-recompose; fall back to identity rather than
@@ -4397,14 +4461,10 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
     } else {
         line_idx
     };
-    // Slice 3c.extension.fold-rs: use view.relative_line_numbers
-    // (cached at frame entry) instead of app.relative_line_numbers()
-    // — this gutter function runs once per visible line.
-    let cursor_line = active.cursor.line;
     // K.4.6 follow-up (2026-06-02): suppress relativenumber on
     // multibuffer views — relative distance across non-
     // contiguous source rows is meaningless. Matches Zed.
-    let multibuffer_mode = active.display_line_numbers.is_some();
+    let multibuffer_mode = display_line_numbers.is_some();
     if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
         return render_gutter(display_line_idx, width, glyph);
     }

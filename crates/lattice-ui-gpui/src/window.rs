@@ -1036,16 +1036,24 @@ impl EditorView {
         // reference buffers different from `editor.document`; the
         // registry clone on `rs_guard.buffers` shares the editor's
         // `Arc<Mutex<...>>` so the lookup sees the latest state.
-        let snapshot_opt = rs_guard
-            .buffers
-            .registry
-            .document_handle(pane.buffer_id)
-            .map(|h| h.snapshot());
-        let Some(snapshot) = snapshot_opt else {
+        // 2026-06-02: pull both the snapshot AND the per-pane
+        // `display_line_numbers` mapping from the SAME handle.
+        // Previously the gutter meta below cloned
+        // `rs_guard.active_document.display_line_numbers`, which
+        // gave inactive multibuffer panes the active doc's
+        // mapping (None for regular files → identity numbering
+        // 1,2,3 instead of source line numbers). Per "active
+        // state only affects the active pane" — TUI/GPUI parity
+        // [[feedback_tui_gpui_parity]].
+        let handle_opt = rs_guard.buffers.registry.document_handle(pane.buffer_id);
+        let Some(handle) = handle_opt else {
             return div()
                 .p_3()
                 .child(format!("(buffer {:?} unavailable)", pane.buffer_id));
         };
+        let snapshot = handle.snapshot();
+        let pane_display_line_numbers: Option<std::sync::Arc<[u32]>> =
+            handle.display_line_numbers();
         // Stage A.1 [DONE]: full `snapshot.text()` + `split('\n')`
         // materialisation removed; visible rows are pulled from the
         // rope below. The 3c.atomic.L timing scaffold that surrounded
@@ -1199,8 +1207,11 @@ impl EditorView {
         // file. Substrate-published via the Document trait
         // method; renderer just consumes. TUI/GPUI parity per
         // [[feedback_tui_gpui_parity]].
-        let display_line_numbers_for_meta =
-            rs_guard.active_document.display_line_numbers.clone();
+        // 2026-06-02: per-pane mapping, not active-doc mapping.
+        // Loaded above from the same handle that backed
+        // `snapshot`. None for regular Documents (gutter shows
+        // composed-row identity); Some(arr) for Multibuffer.
+        let display_line_numbers_for_meta = pane_display_line_numbers.clone();
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {

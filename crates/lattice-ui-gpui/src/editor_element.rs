@@ -895,10 +895,15 @@ impl Element for EditorElement {
                 // boot frames / out-of-matrix lines fall through
                 // to the legacy `shape_row` walk over
                 // `visible_spans`.
+                // 2026-06-02: parity with TUI cells-empty fallback.
+                // A cell row may exist but have zero cells (transient
+                // state during doc-switch / new-buffer publish race);
+                // in that case the rope line is the source of truth.
                 let cell_row = self
                     .cell_matrix
                     .as_ref()
-                    .and_then(|m| m.row_at_source_line(line_idx as u32));
+                    .and_then(|m| m.row_at_source_line(line_idx as u32))
+                    .filter(|row| !row.cells.is_empty() || line.is_empty());
                 let (shaped, inlay_offsets) = if let Some(row) = cell_row {
                     shape_row_from_cells(row, window)
                 } else {
@@ -969,10 +974,12 @@ impl Element for EditorElement {
                 // the boot frame before the cell-builder's first
                 // publish or during the buffer-switch gap, when
                 // the legacy `shape_row` path takes over.
+                // 2026-06-02: parity with TUI cells-empty fallback.
                 let cell_row = self
                     .cell_matrix
                     .as_ref()
-                    .and_then(|m| m.row_at_source_line(meta.line_idx));
+                    .and_then(|m| m.row_at_source_line(meta.line_idx))
+                    .filter(|row| !row.cells.is_empty() || line.is_empty());
                 let (shaped, inlay_offsets) = if let Some(row) = cell_row {
                     shape_row_from_cells(row, window)
                 } else {

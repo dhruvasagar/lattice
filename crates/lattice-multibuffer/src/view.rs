@@ -34,7 +34,7 @@ use lattice_mode::{BufferStoreHandle, ModeActivator};
 use lattice_runtime::{Document, EventBus};
 
 use crate::registry::MultibufferRegistryHandle;
-use crate::{Excerpt, MultibufferDocumentHandle};
+use crate::{Excerpt, MultibufferDocumentHandle, MultibufferHeaderProvider};
 
 /// Atomic insert + activate-major for a multibuffer view. Returns
 /// the freshly-allocated view `BufferId`. After this call:
@@ -134,8 +134,28 @@ pub fn create_multibuffer_view(
 
     // Step 4: buffer-registry insert via H.1's primitive method.
     // Upcast to `Arc<dyn Document>`.
-    let dyn_handle: Arc<dyn Document> = typed_handle;
+    let dyn_handle: Arc<dyn Document> = typed_handle.clone();
     buffer_store.insert_document_buffer(buffer_id, BufferKind::Multibuffer, dyn_handle, flags, name);
+
+    // K.4.6 (2026-06-02): register the excerpt-header provider so
+    // the virtual-rows worker emits one VirtualRow per excerpt
+    // (anchored Above the excerpt's first composed row, content
+    // = excerpt header label). MultibufferHeaderProvider holds a
+    // cheap clone of the typed handle and reads excerpts on each
+    // collect() call; the worker picks it up on its next wake.
+    // Default ModeActivator impl returns false (no-op test
+    // activators); Editor's override forwards to
+    // virtual_row_providers.register().
+    let header_provider =
+        Arc::new(MultibufferHeaderProvider::new((*typed_handle).clone()));
+    let registered = activator.register_virtual_row_provider(buffer_id, header_provider);
+    if !registered {
+        tracing::debug!(
+            buffer = ?buffer_id,
+            "create_multibuffer_view: header provider not registered \
+             (test activator with default impl, or duplicate ProviderId)"
+        );
+    }
 
     // Step 5: activate the major via H.2's kind dispatch. The
     // activator's impl runs the full cascade (default minor +

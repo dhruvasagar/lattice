@@ -37,4 +37,21 @@ impl ModeActivator for Editor {
     fn services(&self) -> Arc<ServiceRegistry> {
         Arc::clone(&self.services)
     }
+
+    /// K.4.6 (2026-06-02): forward to the editor's
+    /// `VirtualRowProviderRegistry`. The virtual-rows worker
+    /// (`crate::virtual_rows_worker`) picks up new providers on
+    /// its next wake; the registry itself is already shared
+    /// (`Arc<VirtualRowProviderRegistry>`), so registration is
+    /// observable to the worker without further plumbing.
+    /// Returns `false` if a provider with the same `ProviderId`
+    /// already exists in `buffer`'s scope — matches the
+    /// underlying registry's no-replacement contract.
+    fn register_virtual_row_provider(
+        &mut self,
+        buffer: BufferId,
+        provider: Arc<dyn lattice_cells::VirtualRowProvider>,
+    ) -> bool {
+        self.virtual_row_providers.register(buffer, provider)
+    }
 }

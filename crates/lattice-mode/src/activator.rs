@@ -57,4 +57,36 @@ pub trait ModeActivator {
     /// fighting the borrow checker against the `&mut Self`
     /// activator borrow.
     fn services(&self) -> Arc<ServiceRegistry>;
+
+    /// K.4.6 (2026-06-02): register a virtual-row provider against
+    /// `buffer`. Used by extension crates that contribute virtual
+    /// rows for their own buffer kinds (multibuffer excerpt
+    /// headers — `MultibufferHeaderProvider`; future fold-range
+    /// providers, diff-hunk overlays, LSP code-lens, ...). The
+    /// host-side impl forwards to
+    /// `Editor::virtual_row_providers.register(buffer, provider)`;
+    /// the worker picks the provider up on its next wake.
+    ///
+    /// Returns `true` on registration, `false` if a provider with
+    /// the same `ProviderId` was already registered in the same
+    /// buffer scope (no replacement — caller `unregister`s first
+    /// via the existing registry handle). The default impl
+    /// returns `false` so test activators that don't wire the
+    /// virtual-row pipeline behave as no-ops; production impls
+    /// (Editor) override.
+    ///
+    /// Paramount-#2 anchor: every mode contributing to a buffer
+    /// registers its own virtual rows via this seam, matching
+    /// the mode-owns-its-surface principle (keymaps via
+    /// `register_<mode>_keymap`, virtual rows via this method,
+    /// future status-line items via similar). WIT plugin path
+    /// inherits the trait surface.
+    fn register_virtual_row_provider(
+        &mut self,
+        buffer: lattice_core::BufferId,
+        provider: Arc<dyn lattice_cells::VirtualRowProvider>,
+    ) -> bool {
+        let _ = (buffer, provider);
+        false
+    }
 }

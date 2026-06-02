@@ -2777,7 +2777,25 @@ fn draw_inactive_document(
     // showing the same document as the active pane reads
     // identically (deletion blocks land at the same anchor
     // positions).
-    let virtual_rows_matrix = app.render_state.load().virtual_rows.matrix.clone();
+    //
+    // K.4.6 c.ii (2026-06-02): prefer the per-pane matrix for
+    // the active pane (sourced from
+    // `Editor::virtual_rows_matrix_for(active_buffer_id)` at
+    // publish time) so multibuffer / messages / future
+    // synthetic kinds see their own virtual rows. Fallback to
+    // the single-cell `virtual_rows.matrix` (boot-seeded to
+    // the original Document) covers transient races during
+    // pane teardown / before the worker's first publish for a
+    // newly-activated pane. Intentional fallback — see K.4.0
+    // audit-comment convention.
+    let virtual_rows_matrix = {
+        let rs = app.render_state.load();
+        let active_pane_id = app.panes().tree.active().id;
+        rs.virtual_rows
+            .matrix_for_pane(active_pane_id)
+            .map(|cell| cell.load_full())
+            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+    };
     let inactive_body_col_width = buffer_w;
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
     let mut i: u32 = 0;
@@ -3475,7 +3493,19 @@ fn compose_visible_lines_inner(
     // so we can interleave Above / Below rows around document
     // lines. Lock-free `Arc` clone; the matrix lives on the
     // RenderState snapshot already loaded by callers.
-    let virtual_rows_matrix = view.app.render_state.load().virtual_rows.matrix.clone();
+    //
+    // K.4.6 c.ii (2026-06-02): prefer per-pane matrix from
+    // pane_matrices keyed on the active pane id. See
+    // draw_inactive_document for the K.4.6 audit-comment
+    // explaining the active-pane-only resolution.
+    let virtual_rows_matrix = {
+        let rs = view.app.render_state.load();
+        let active_pane_id = view.app.panes().tree.active().id;
+        rs.virtual_rows
+            .matrix_for_pane(active_pane_id)
+            .map(|cell| cell.load_full())
+            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+    };
     let body_col_width = buffer_w;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     let mut visible_idx: usize = 0;
@@ -5089,7 +5119,17 @@ fn buffer_line_to_visible_row_with(
     // anchored virtual rows around each doc row, the cursor
     // visually landed on the wrong row whenever a deletion
     // block sat between the scroll and the cursor.
-    let virtual_rows_matrix = view.app.render_state.load().virtual_rows.matrix.clone();
+    //
+    // K.4.6 c.ii (2026-06-02): per-pane matrix lookup. Same
+    // pattern as compose_visible_lines_inner.
+    let virtual_rows_matrix = {
+        let rs = view.app.render_state.load();
+        let active_pane_id = view.app.panes().tree.active().id;
+        rs.virtual_rows
+            .matrix_for_pane(active_pane_id)
+            .map(|cell| cell.load_full())
+            .unwrap_or_else(|| rs.virtual_rows.matrix.clone())
+    };
     let total_lines = snap.buffer.line_count();
     let mut buf_line = scroll;
     let mut row: u32 = 0;

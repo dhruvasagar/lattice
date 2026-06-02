@@ -43,6 +43,15 @@ lattice-runtime = { path = "../lattice-runtime" }
 # (lattice-ui-tui) and registered into `ServiceRegistry` at boot.
 # Direct dep on lattice-core for BufferId / BufferFlags.
 lattice-core = { path = "../lattice-core" }
+# K.4.6 (2026-06-02): `ModeActivator::register_virtual_row_provider`
+# accepts `Arc<dyn VirtualRowProvider>`. The trait lives in
+# `lattice-cells` (zero-dep substrate crate — no transitive
+# heavy deps inherited). Lets mode crates (multibuffer header
+# provider, future fold-range / diff-hunk providers) contribute
+# virtual rows without depending on `lattice-host`. Anchored on
+# paramount-#2 (every mode self-sufficient for its full surface)
+# per the mode-owns-its-surface principle.
+lattice-cells = { path = "../lattice-cells" }
 # M-async.2: `ModeEvent` registered as a typed event via
 # `register_event!` so the dispatcher publishes lifecycle
 # transitions through the typed event bus. `register_event!`

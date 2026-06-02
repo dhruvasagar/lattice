@@ -486,16 +486,37 @@ impl Mode for ProjectSearchMultibufferMode {
                                     id
                                 };
 
-                                let excerpts: Vec<Excerpt> = fh
-                                    .rows
-                                    .iter()
-                                    .map(|&row| {
-                                        Excerpt::new(source_id, row, row).with_header(
+                                // K.4.6 follow-up (2026-06-02): emit ONE
+                                // excerpt per file covering the hit range
+                                // (min..=max of fh.rows), not one excerpt
+                                // per hit. Pre-fix each hit became its
+                                // own excerpt, producing one excerpt
+                                // header per HIT instead of one per file
+                                // — wrong UX (Zed/VSCode convention is
+                                // one section per file in project-search
+                                // results).
+                                //
+                                // Cross-batch dedup (a file whose hits
+                                // arrive in multiple batches) still
+                                // produces multiple excerpts per file —
+                                // the line-445 comment ("file with hits
+                                // split across batches loads twice")
+                                // applies here too. M.6 follow-up: track
+                                // the existing per-file excerpt + extend
+                                // its range when new hits arrive,
+                                // instead of appending a fresh one.
+                                let (excerpts, batch_hit_count): (Vec<Excerpt>, usize) =
+                                    if fh.rows.is_empty() {
+                                        (Vec::new(), 0)
+                                    } else {
+                                        let start = *fh.rows.iter().min().unwrap();
+                                        let end = *fh.rows.iter().max().unwrap();
+                                        let ex = Excerpt::new(source_id, start, end).with_header(
                                             ExcerptHeader::new(format!("{}", path.display())),
-                                        )
-                                    })
-                                    .collect();
-                                hit_count_in_batch += excerpts.len();
+                                        );
+                                        (vec![ex], fh.rows.len())
+                                    };
+                                hit_count_in_batch += batch_hit_count;
                                 view.append_excerpts(excerpts);
                             }
 

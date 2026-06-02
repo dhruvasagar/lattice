@@ -3529,6 +3529,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "internment",
+ "lattice-cells",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

@@ -336,15 +336,59 @@ fn visual_selection_renders_for_multibuffer() {
 }
 
 #[test]
-#[ignore = "K.4.6 dependency — excerpt-header virtual rows not yet wired"]
 fn virtual_row_matrix_carries_excerpt_headers() {
-    // K.4.6 contract: the virtual-row matrix for a multibuffer
-    // view should contain one header row per excerpt
-    // (`AnchorPosition::Above` of each excerpt's first row).
-    // Two-excerpt synthetic view → two header rows in the
-    // matrix, whose text matches the excerpts' source path
-    // labels.
-    panic!("K.4.6 unimplemented — excerpt-header pipeline not in place");
+    // K.4.6 (2026-06-02): MultibufferHeaderProvider is
+    // registered against the multibuffer's BufferId in
+    // `create_multibuffer_view` via the ModeActivator trait's
+    // new `register_virtual_row_provider` method. The provider
+    // emits one VirtualRow per excerpt at AnchorPosition::Above
+    // of the excerpt's first composed row, content = excerpt
+    // header label (default rendering: `── <title> ──`).
+    //
+    // This test verifies the provider is registered + its
+    // `collect()` output is correct. The worker's async wake +
+    // publish path is not exercised here (the test runtime
+    // doesn't drive the editor actor's tokio runtime); the
+    // pure-function `collect()` is sufficient to verify the
+    // K.4.6 contract — that excerpt headers are present in the
+    // matrix the worker would publish.
+    let (mut editor, view_id) = boot_with_multibuffer();
+    activate_pane(&mut editor, view_id);
+
+    // After create_multibuffer_view, the header provider
+    // should be registered against view_id. Confirm via the
+    // public snapshot API.
+    let providers = editor.virtual_row_providers.snapshot(view_id);
+    assert_eq!(
+        providers.len(),
+        1,
+        "create_multibuffer_view should have registered \
+         exactly one virtual-row provider (the multibuffer \
+         header provider) — got {}",
+        providers.len()
+    );
+
+    // The provider's collect() emits one VirtualRow per excerpt.
+    // The test's synthetic multibuffer has two excerpts so
+    // exactly two header rows should land in the matrix.
+    let rows = providers[0].collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "two-excerpt multibuffer should produce two header rows \
+         (got {})",
+        rows.len()
+    );
+
+    // Each header row is anchored Above its excerpt's first
+    // composed row. With 5-row excerpts (Excerpt::new(_, 0, 4)
+    // is inclusive on both ends, so 0..=4 = 5 rows), the
+    // anchors land at composed lines 0 and 5.
+    use lattice_cells::AnchorPosition;
+    assert_eq!(rows[0].anchor_line, 0);
+    assert!(matches!(rows[0].position, AnchorPosition::Above));
+    assert_eq!(rows[1].anchor_line, 5);
+    assert!(matches!(rows[1].position, AnchorPosition::Above));
 }
 
 #[test]

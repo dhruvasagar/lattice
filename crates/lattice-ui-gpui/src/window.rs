@@ -1575,7 +1575,22 @@ impl EditorView {
             // row matrix from RenderState — the prepaint walk
             // interleaves Above- and Below-anchored virtual
             // rows around each visible doc line.
-            virtual_rows: rs_guard.virtual_rows.matrix.clone(),
+            //
+            // K.4.6 c.ii (2026-06-02): prefer per-pane matrix
+            // from pane_matrices keyed on pane.id (mirrors the
+            // TUI peer's lookup in render.rs). Falls back to
+            // the single-cell virtual_rows.matrix (boot-seeded
+            // to the original Document) when the pane isn't
+            // in pane_matrices — non-Document leaf or transient
+            // race during pane teardown. Intentional fallback;
+            // matches the K.4.0 audit-comment enumeration
+            // convention. TUI/GPUI parity per the
+            // [[feedback_tui_gpui_parity]] standing rule.
+            virtual_rows: rs_guard
+                .virtual_rows
+                .matrix_for_pane(pane.id)
+                .map(|cell| cell.load_full())
+                .unwrap_or_else(|| rs_guard.virtual_rows.matrix.clone()),
             scroll: pane_scroll,
             viewport_height,
             gutter: gutter_meta,

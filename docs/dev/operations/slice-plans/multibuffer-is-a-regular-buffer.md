@@ -208,7 +208,77 @@ trait impl makes Multibuffer behave uniformly with Document.
   `save_still_rejected_post_m3` (save remains ReadOnly;
   set_selections drops out of the rejected-paths list).
 
-### K.4.6 — Excerpt-header virtual-row pipeline 🗒 architectural
+### K.4.6 — Excerpt-header virtual-row pipeline ✅ (commit pending)
+
+**Landed via heuristic-mapped option (b.i + c.ii) confirmed
+against CLAUDE.md's heuristic-mapping rule:**
+
+- **(a) `MultibufferHeaderProvider`:** was already in place in
+  `lattice-multibuffer/src/lib.rs:1217` (M.2.b leftover). The
+  K.4.6 work just wires it into the pipeline.
+- **(b.i) `ModeActivator::register_virtual_row_provider`:**
+  Added to the trait in `lattice-mode/src/activator.rs` with
+  a default-`false` impl. `lattice-mode` gains a dep on
+  `lattice-cells` (zero-dep substrate crate; no transitive
+  heavy deps). Editor's override
+  (`lattice-host/src/activator.rs`) forwards to
+  `self.virtual_row_providers.register(buffer, provider)`.
+  `create_multibuffer_view` calls this immediately after
+  the buffer-registry insert, before major-mode activation.
+  Anchored on paramount-#2 (every mode contributes its own
+  surface — keymaps, virtual rows, future status-line items)
+  + mode-owns-its-surface convention.
+- **(c.ii) Renderer per-pane matrix lookup:** Three sites
+  in `lattice-ui-tui/src/render.rs` (`draw_inactive_document`,
+  `compose_visible_lines_inner`, `buffer_line_to_visible_row_with`)
+  replaced `app.render_state.load().virtual_rows.matrix.clone()`
+  with a `matrix_for_pane(active_pane_id).map(load_full)
+  .unwrap_or_else(|| matrix.clone())` lookup. Same in
+  `lattice-ui-gpui/src/window.rs:1578` per
+  [[feedback_tui_gpui_parity]]. Audit-comment names the
+  fallback per K.4.0 enumeration convention.
+
+**Search-provider per-file polish (commit pending):**
+User feedback during interactive testing: "I see the virtual
+line for every line, instead it should be 1 per file." Root
+cause was in the SEARCH PROVIDER (not multibuffer substrate):
+`providers/search.rs:489` emitted one Excerpt per HIT row
+(`fh.rows.iter().map(|&row| Excerpt::new(source_id, row, row))`),
+so a file with N hits produced N excerpts and N headers.
+Fix: collapse `fh.rows` into ONE excerpt per file spanning
+`min(rows)..=max(rows)`. Matches Zed/VSCode convention for
+project-search multibuffer UX.
+
+**Provider ownership principle (codified):** the multibuffer
+substrate stays generic — `compose_header_rows` emits one
+VirtualRow per excerpt; that's its contract. Per-provider
+hit-clustering policy (1 per file, 1 per hit cluster with
+context, 1 per cluster of contiguous lines, …) lives in
+the provider's own crate. Each upcoming provider (LSP refs,
+diagnostics-as-multibuffer, future tree-sitter symbol
+search) picks its own clustering shape without touching
+multibuffer code.
+
+**Tests:**
+- `virtual_row_matrix_carries_excerpt_headers` (was
+  `#[ignore]`'d K.4.6 marker; now active) — verifies
+  `create_multibuffer_view` registers the header provider
+  + the provider's `collect()` emits one VirtualRow per
+  excerpt with `AnchorPosition::Above` at the correct
+  composed-row anchor.
+
+**Cross-batch dedup deferred (M.6 follow-up):** when a
+file's hits arrive across multiple scanner batches, the
+per-file collapse only applies within each batch. So the
+file still produces multiple excerpts (one per batch).
+Documented at `providers/search.rs:445` (pre-existing
+comment); the K.4.6 polish doesn't make it worse but
+doesn't close it either. Proper M.6 follow-up: track each
+file's existing per-file excerpt and extend its
+`start_line..=end_line` range when new hits arrive in
+later batches.
+
+### K.4.6 — Excerpt-header virtual-row pipeline — original plan ARCHIVED below 🗒 architectural
 
 **Bigger than a single matcher extension.** Data IS
 attached (`ExcerptHeader::new(format!("{}", path.display()))`

@@ -24,3 +24,7 @@ Cargo.lock.bak
 # interactive bug investigation; not part of the repo.
 logs.txt
 *.log
+# Ad-hoc screenshots / scratch assets for bug investigation.
+# Not part of the repo; lives in assets/tmp/ for ergonomic
+# `Read` access during diagnosis.
+assets/tmp/

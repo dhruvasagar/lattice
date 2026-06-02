@@ -2066,6 +2066,19 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
 pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut DispatchOutcome) {
     match effect {
         Effect::None => {}
+        Effect::RecordJump => {
+            // M.10.3 (2026-06-03): record the current cursor +
+            // active buffer onto the position-history ring as an
+            // AutoJump entry. Used by mode-contributed jump
+            // actions (search `<CR>`, lsp-references `<CR>`,
+            // future project-diff `<CR>`) so `<C-o>` walks the
+            // user back to the pre-jump location. Producers
+            // emit this as the FIRST sub-effect of an
+            // `Effect::Many` that also opens a new buffer —
+            // capturing must happen before `OpenBuffer` changes
+            // `editor.cursor` / `editor.active_buffer_id()`.
+            editor.push_position_history(editor.cursor, PositionSource::AutoJump);
+        }
         Effect::ClearSearchHighlight => {
             // `:nohlsearch` -- drop the current-match highlight and
             // the cached match set. The next `/` / `?` rebuilds both.
@@ -23585,6 +23598,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
+        | Effect::RecordJump
         | Effect::AppAction(_) => false,
     }
 }
@@ -23680,6 +23694,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
+        | Effect::RecordJump
         | Effect::AppAction(_) => false,
     }
 }

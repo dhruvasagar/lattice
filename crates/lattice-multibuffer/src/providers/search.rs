@@ -551,14 +551,30 @@ impl Mode for ProjectSearchMultibufferMode {
                             let search_svc = search_svc_for_handler.as_ref()?;
                             let path =
                                 search_svc.source_path(view_id_for_handler, source_buffer_id)?;
-                            // Return the two-step Effect: open
-                            // the source file, then position the
-                            // cursor. `Effect::Many` applies
-                            // sub-effects in order; after
-                            // `OpenBuffer` the active doc is the
-                            // source file, so `SelectionChange`
-                            // lands on it.
+                            // Return the three-step Effect:
+                            // (1) record the current
+                            //     multibuffer-view cursor +
+                            //     buffer-id onto the jump-list
+                            //     so `<C-o>` walks the user
+                            //     back to where they were before
+                            //     they hit `<CR>` (matches
+                            //     vim's "big motion" jump-list
+                            //     semantics for `gd` / `*` /
+                            //     `<C-]>` / etc.);
+                            // (2) open the source file;
+                            // (3) position the cursor in the
+                            //     newly-active source doc.
+                            //
+                            // `Effect::Many` applies sub-effects
+                            // in order. `RecordJump` MUST come
+                            // first because it captures the
+                            // editor's CURRENT cursor +
+                            // active-buffer-id; after
+                            // `OpenBuffer` the cursor lives in
+                            // the new doc and recording would
+                            // capture the wrong location.
                             Some(lattice_grammar::Effect::Many(vec![
+                                lattice_grammar::Effect::RecordJump,
                                 lattice_grammar::Effect::OpenBuffer {
                                     path: Some(path),
                                     force: false,

@@ -1007,7 +1007,8 @@ impl GpuiApp {
             | Effect::DescribeCommand { .. }
             | Effect::Apropos { .. }
             | Effect::DescribeKey { .. }
-            | Effect::AppAction(_) => {}
+            | Effect::AppAction(_)
+            | Effect::RecordJump => {}
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force } => self.mutate_editor(move |e| e.do_quit(force)),
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),

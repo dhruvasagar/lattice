@@ -849,6 +849,7 @@ impl App {
             | Effect::ListDiagnostics
             | Effect::DeleteCurrentLine
             | Effect::Substitute { .. }
+            | Effect::RecordJump
             | Effect::Edits(_) => {}
             // 5.5.E.7.7: `Edits` migrated to `Editor::handle_effect`;
             // routed through the grouped no-op above. `handle_edits`
@@ -1145,7 +1146,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::RecordJump => false,
     }
 }
 
@@ -1239,7 +1241,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::RecordJump => false,
     }
 }
 

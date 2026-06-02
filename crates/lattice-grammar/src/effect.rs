@@ -614,6 +614,20 @@ pub enum Effect {
     /// `docs/dev/notes/8i-approach.md`.
     AppAction(AppEffect),
 
+    /// M.10.3 (2026-06-03): record the editor's CURRENT cursor +
+    /// active buffer onto the position-history ring as an
+    /// `AutoJump` entry — vim's jump-list semantics for "big
+    /// motions" (gg, G, /, *, mark jumps, ...). Used by
+    /// mode-contributed jump actions (search `<CR>`,
+    /// lsp-references `<CR>`, future project-diff `<CR>`) so
+    /// `<C-o>` walks the user back to where they were before
+    /// the jump. Must be the FIRST sub-effect inside an
+    /// `Effect::Many` that also opens a new buffer — the host
+    /// reads the cursor/active-buffer state at apply time, so
+    /// after `OpenBuffer` lands the recorded entry would be the
+    /// new doc's start, not the pre-jump location.
+    RecordJump,
+
     Many(Vec<Effect>),
 }
 

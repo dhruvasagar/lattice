@@ -62,3 +62,14 @@ pub use crate::target::Target;
 
 /// Re-export the protocol's CommandId so callers don't need a second import.
 pub use lattice_protocol::ids::CommandId;
+
+/// M.10.3 (2026-06-03): typed handle for `ServiceRegistry`
+/// registration + lookup. Boot wraps the `CommandRegistry` in
+/// an `Arc<CommandRegistry>` and registers it under this alias;
+/// mode crates pull it via
+/// `ctx.service::<CommandRegistryHandle>()` to look up
+/// CommandIds by action name (`id_by_name("action:...")`) at
+/// `on_activate` time. Same shape as
+/// `lattice_mode::ActionHandlerRegistryHandle` per
+/// `feedback_servicesregistry_arc_typeid`.
+pub type CommandRegistryHandle = std::sync::Arc<CommandRegistry>;

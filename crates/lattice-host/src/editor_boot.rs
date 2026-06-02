@@ -906,6 +906,16 @@ impl Editor {
                 s.register::<lattice_mode::ActionHandlerRegistryHandle>(
                     action_handlers.clone(),
                 );
+                // M.10.3 (2026-06-03): expose the CommandRegistry
+                // as a service so mode handlers (registered via
+                // M.10.1.b ActionHandlerRegistry) can look up
+                // CommandIds by action name at `on_activate`
+                // time — e.g.
+                // `cmd_registry.id_by_name("action:search-jump-to-source")`
+                // — without depending on host-internal types.
+                // Same `Arc<X>` alias pattern as
+                // ActionHandlerRegistryHandle.
+                s.register::<lattice_grammar::CommandRegistryHandle>(registry.clone());
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

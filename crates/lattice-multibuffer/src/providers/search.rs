@@ -29,10 +29,11 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId};
-use lattice_grammar::CommandRegistry;
+use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
-    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId,
-    ModeKind, ModeRegistry, ServiceRegistry, keymap_entry,
+    ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, CapabilitySet, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
+    ModeRegistry, ServiceRegistry, keymap_entry,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 use tokio::sync::mpsc;
@@ -402,6 +403,12 @@ pub struct ProjectSearchMultibufferModeGuard {
     forwarder: Option<tokio::task::JoinHandle<()>>,
     subs: Vec<lattice_runtime::SubscriptionId>,
     bus: Arc<EventBus>,
+    /// M.10.3 (2026-06-03): RAII tokens for action-handler
+    /// registrations made in `on_activate`. Dropping the Guard
+    /// drops these, which in turn unregister the closures from
+    /// `ActionHandlerRegistry`. Currently: `<CR>` jump-to-source.
+    /// M.10.5 will add `gr` refresh to this Vec.
+    _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
 
 impl Drop for ProjectSearchMultibufferModeGuard {
@@ -412,6 +419,10 @@ impl Drop for ProjectSearchMultibufferModeGuard {
         for id in self.subs.drain(..) {
             let _ = self.bus.unsubscribe(id);
         }
+        // `_action_handler_registrations` drops in field order;
+        // each registration's `Drop` impl unregisters its handler
+        // from the ActionHandlerRegistry. No explicit work
+        // needed here.
     }
 }
 
@@ -486,6 +497,85 @@ impl Mode for ProjectSearchMultibufferMode {
             // is registered; we tolerate it being missing (test
             // paths) by skipping the record.
             let search_svc_arc = ctx.service::<ProjectSearchServiceHandle>();
+
+            // M.10.3 (2026-06-03): register `<CR>` jump-to-source
+            // handler on the ActionHandlerRegistry. The handler
+            // closure captures the mb_registry + search_svc +
+            // view_id, computes the source target on every fire
+            // via `translate_composed_to_source` (M.10.2), and
+            // returns an `Effect::Many([OpenBuffer,
+            // SelectionChange])` that the host applies through
+            // the existing apply-effect pipeline. Replaces the
+            // pre-M.10.3 `Editor::do_search_jump_to_source` path
+            // that lived in `lattice-host::dispatch`.
+            //
+            // The chord `<CR>` is already bound to the action
+            // name `action:search-jump-to-source` via
+            // `project_search_keymap_entries()`. Here we resolve
+            // that name to its CommandId and register the
+            // handler under that key.
+            //
+            // Per `feedback_mode_owns_its_surface` +
+            // `mode-architecture.md` §5.3: mode owns chord
+            // choice (already done) AND handler body (this
+            // registration). The host owns the generic
+            // chord-dispatch + effect-apply machinery and
+            // nothing provider-specific.
+            let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();
+            if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
+                ctx.service::<CommandRegistryHandle>(),
+                ctx.service::<ActionHandlerRegistryHandle>(),
+            ) {
+                let cmd_registry: &CommandRegistry = &**cmd_registry_arc;
+                if let Some(jump_command_id) =
+                    cmd_registry.id_by_name("action:search-jump-to-source")
+                {
+                    let action_handlers: ActionHandlerRegistryHandle =
+                        (*action_handlers_arc).clone();
+                    let mb_registry_for_handler = mb_registry.clone();
+                    let search_svc_for_handler: Option<ProjectSearchServiceHandle> =
+                        search_svc_arc.as_ref().map(|s| (**s).clone());
+                    let view_id_for_handler = view_id;
+                    let handler: lattice_mode::ActionHandler = Arc::new(
+                        move |ctx: &ActionContext<'_>| -> Option<lattice_grammar::Effect> {
+                            // Look up the view from the registry.
+                            let view = mb_registry_for_handler.handle(view_id_for_handler)?;
+                            // Translate composed cursor → source.
+                            let (source_buffer_id, source_position) =
+                                view.translate_composed_to_source(ctx.cursor)?;
+                            // Resolve source path. v1 uses the
+                            // search service's per-view map; if
+                            // the service isn't registered (test
+                            // harness without boot wiring), the
+                            // handler no-ops.
+                            let search_svc = search_svc_for_handler.as_ref()?;
+                            let path =
+                                search_svc.source_path(view_id_for_handler, source_buffer_id)?;
+                            // Return the two-step Effect: open
+                            // the source file, then position the
+                            // cursor. `Effect::Many` applies
+                            // sub-effects in order; after
+                            // `OpenBuffer` the active doc is the
+                            // source file, so `SelectionChange`
+                            // lands on it.
+                            Some(lattice_grammar::Effect::Many(vec![
+                                lattice_grammar::Effect::OpenBuffer {
+                                    path: Some(path),
+                                    force: false,
+                                },
+                                lattice_grammar::Effect::SelectionChange(
+                                    lattice_protocol::SelectionSet::single(
+                                        lattice_protocol::selection::Selection::cursor(
+                                            source_position,
+                                        ),
+                                    ),
+                                ),
+                            ]))
+                        },
+                    );
+                    action_registrations.push(action_handlers.register(jump_command_id, handler));
+                }
+            }
 
             let mb_for_task = mb_registry.clone();
             let view_id_for_task = view_id;
@@ -647,6 +737,7 @@ impl Mode for ProjectSearchMultibufferMode {
                 forwarder: Some(forwarder),
                 subs,
                 bus,
+                _action_handler_registrations: action_registrations,
             })
         })
     }

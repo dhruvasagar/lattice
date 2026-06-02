@@ -902,8 +902,22 @@ impl Document for MultibufferDocumentHandle {
         };
         let source_edit = build_source_edit(&target, &edit);
         let source_handle = target.source_handle.clone();
+        // 2026-06-02 cursor-jump fix: the row offset between
+        // composed coords (what the host's cursor lives in) and
+        // source coords (what `source_handle.apply_edit` produces
+        // in the returned `AppliedEdit`). Without translating
+        // back, the host's insert-mode path reads
+        // `applied.inserted_range.end` (dispatch.rs:5422) and
+        // sets `editor.cursor = source_row` — cursor jumps to
+        // composed row 429 (or wherever the source row lands)
+        // and subsequent inserts go off into a void.
+        let row_delta = target.composed_start.line as i64 - target.source_start.line as i64;
         drop(state);
-        source_handle.apply_edit(source_edit)
+        let pending = source_handle.apply_edit(source_edit);
+        Pending::spawn(async move {
+            let applied = pending.await?;
+            Ok(translate_applied_to_composed(applied, row_delta))
+        })
     }
 
     /// M.3 (2026-06-01): translate + forward each edit to its
@@ -915,22 +929,29 @@ impl Document for MultibufferDocumentHandle {
     /// later refinement once a consumer needs it.
     fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
         // Translate up-front (cheap, requires the state lock).
+        // 2026-06-02 cursor-jump fix: keep `row_delta` per call
+        // so the per-result `AppliedEdit` can be translated back
+        // to composed coords (same fix as single `apply_edit`).
         let state = self.lock_state();
-        let mut calls: Vec<(Arc<dyn Document>, Edit)> = Vec::with_capacity(edits.len());
+        let mut calls: Vec<(Arc<dyn Document>, Edit, i64)> = Vec::with_capacity(edits.len());
         for edit in edits {
             if let Some(target) = resolve_edit_target(&state, edit.range.start) {
                 let source_edit = build_source_edit(&target, &edit);
                 let handle = target.source_handle.clone();
-                calls.push((handle, source_edit));
+                let row_delta =
+                    target.composed_start.line as i64 - target.source_start.line as i64;
+                calls.push((handle, source_edit, row_delta));
             }
         }
         drop(state);
 
         Pending::spawn(async move {
             let mut results = Vec::with_capacity(calls.len());
-            for (handle, edit) in calls {
+            for (handle, edit, row_delta) in calls {
                 match handle.apply_edit(edit).await {
-                    Ok(applied) => results.push(applied),
+                    Ok(applied) => {
+                        results.push(translate_applied_to_composed(applied, row_delta))
+                    }
                     Err(RuntimeError::ReadOnly) => continue,
                     Err(e) => return Err(e),
                 }
@@ -1187,6 +1208,53 @@ fn build_source_edit(target: &EditTarget, edit: &Edit) -> Edit {
             end: source_end,
         },
         kind: edit.kind.clone(),
+    }
+}
+
+/// 2026-06-02 cursor-jump fix: translate a source-coord
+/// [`AppliedEdit`] back to composed coords by shifting every
+/// `Position`'s `.line` by `row_delta` (composed_row -
+/// source_row at the excerpt's start). The host's insert path
+/// (`dispatch.rs:5422`) sets the cursor from
+/// `applied.inserted_range.end`; without this translation the
+/// cursor jumps to source row N (e.g. 429 for an excerpt
+/// pointing at line 429 of foo.rs) instead of staying at
+/// composed row M (e.g. 0 — the first composed row of the
+/// multibuffer view).
+///
+/// The byte fields (`start_byte` / `old_end_byte` /
+/// `new_end_byte`) are tree-sitter incremental-edit hints
+/// keyed to the SOURCE rope's byte axis. The multibuffer
+/// doesn't run its own tree-sitter parse against the composed
+/// rope (composed Lang is `Plain`), so no downstream consumer
+/// needs these in composed-byte coords. Leaving them as
+/// source-byte values: inert for the multibuffer's consumers,
+/// still correct for any subsystem that joins back through
+/// the source handle.
+fn translate_applied_to_composed(applied: AppliedEdit, row_delta: i64) -> AppliedEdit {
+    let shift = |p: Position| -> Position {
+        let line = (p.line as i64 + row_delta).max(0) as u32;
+        Position { line, byte: p.byte }
+    };
+    let shift_range = |r: lattice_protocol::position::Range| {
+        lattice_protocol::position::Range {
+            start: shift(r.start),
+            end: shift(r.end),
+        }
+    };
+    AppliedEdit {
+        original_range: shift_range(applied.original_range),
+        inserted_range: shift_range(applied.inserted_range),
+        replaced_text: applied.replaced_text,
+        inserted_text: applied.inserted_text,
+        delta: lattice_protocol::edit::EditDelta {
+            start_byte: applied.delta.start_byte,
+            old_end_byte: applied.delta.old_end_byte,
+            new_end_byte: applied.delta.new_end_byte,
+            start_position: shift(applied.delta.start_position),
+            old_end_position: shift(applied.delta.old_end_position),
+            new_end_position: shift(applied.delta.new_end_position),
+        },
     }
 }
 
@@ -1608,6 +1676,98 @@ mod tests {
         // After "<" at (0,0): "<alpha\nbeta\ngamma\n"
         // After ">" at composed (2,5) = source (2,5): "<alpha\nbeta\ngamma>\n"
         assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\ngamma>\n");
+    }
+
+    /// 2026-06-02 cursor-jump regression: an excerpt that
+    /// covers SOURCE rows 5..=7 maps to COMPOSED rows 0..=2.
+    /// An insert at composed (0, 5) hits source (5, 5). The
+    /// host's insert-mode path
+    /// (`lattice-host::dispatch::do_insert_str_blocking`)
+    /// reads `applied.inserted_range.end.line` and sets the
+    /// cursor — if `apply_edit` returned the source's
+    /// inserted_range.end (line 5) instead of the composed
+    /// equivalent (line 0), the cursor would jump to line 5
+    /// of the composed view, which renders the wrong text and
+    /// breaks every subsequent insert. Verify the translation
+    /// happens.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_apply_edit_returns_composed_coords() {
+        let (sources, ids) = make_sources(&["a\nb\nc\nd\ne\nf\ng\nh\n"]);
+        // Excerpt covers source rows 5..=7 → composed rows
+        // 0..=2.
+        let excerpts = vec![Excerpt::new(ids[0], 5, 7)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Insert "X" at composed (0, 0). In source coords
+        // that's (5, 0). The host's cursor advance reads
+        // `applied.inserted_range.end`; pre-fix that returned
+        // `Position { line: 5, byte: 1 }` (source coords),
+        // jumping the cursor to composed row 5 — past the
+        // multibuffer's three composed rows.
+        let applied = mb
+            .apply_edit(Edit::insert(Position::new(0, 0), "X"))
+            .await
+            .expect("edit ok");
+
+        assert_eq!(
+            applied.inserted_range.start,
+            Position::new(0, 0),
+            "start must be composed (0,0), not source (5,0)"
+        );
+        assert_eq!(
+            applied.inserted_range.end,
+            Position::new(0, 1),
+            "end must be composed (0,1), not source (5,1) — \
+             this is the cursor-jump bug"
+        );
+        assert_eq!(applied.original_range.start, Position::new(0, 0));
+        assert_eq!(applied.original_range.end, Position::new(0, 0));
+        // EditDelta positions also translated.
+        assert_eq!(applied.delta.start_position, Position::new(0, 0));
+        assert_eq!(applied.delta.new_end_position, Position::new(0, 1));
+    }
+
+    /// Same property for `apply_edit_batch` — each result in
+    /// the batch must carry composed coords for that edit's
+    /// excerpt.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m3_apply_edit_batch_returns_composed_coords() {
+        // Two excerpts: source rows 5..=5 (composed 0..=0) and
+        // source rows 10..=10 (composed 1..=1).
+        let (sources, ids) = make_sources(&[
+            "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\nA\nB\n",
+        ]);
+        let excerpts = vec![
+            Excerpt::new(ids[0], 5, 5),
+            Excerpt::new(ids[0], 10, 10),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        let results = mb
+            .apply_edit_batch(vec![
+                Edit::insert(Position::new(0, 0), "X"),
+                Edit::insert(Position::new(1, 0), "Y"),
+            ])
+            .await
+            .expect("batch ok");
+
+        assert_eq!(results.len(), 2);
+        // First result: composed row 0 (was source row 5).
+        assert_eq!(
+            results[0].inserted_range.end,
+            Position::new(0, 1),
+            "first batch result must be composed (0,1)"
+        );
+        // Second result: composed row 1 (was source row 10).
+        // Note: the second edit's actual source row after the
+        // first edit lands is 10 (the first insert was at
+        // source col 0 of row 5, only widening that row's
+        // bytes — row indices unchanged). Composed row 1.
+        assert_eq!(
+            results[1].inserted_range.end,
+            Position::new(1, 1),
+            "second batch result must be composed (1,1)"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────

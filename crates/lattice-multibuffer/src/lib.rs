@@ -634,14 +634,37 @@ impl MultibufferDocumentHandle {
             }
             state.excerpts.push(ex);
         }
-        let snapshot = compose_snapshot(
+        // M.11 (2026-06-02): rebuild composed_doc from sources
+        // so user edits (which apply to composed_doc) target a
+        // rope that reflects the current excerpts. Without this,
+        // the search provider constructs an EMPTY multibuffer
+        // then streams hits via append_excerpts — the published
+        // snapshot reflects the hits (via compose below) but
+        // composed_doc stays empty. When the user enters insert
+        // mode + types, composed_doc.apply_edit either fails
+        // out-of-range or no-ops on the empty rope, and
+        // do_insert_text silently returns. This was the root
+        // cause of "typing does nothing." Rebuild keeps the two
+        // in sync. CLOBBERS any local edits present at the time
+        // — acceptable for v1 since the search provider's
+        // streaming phase precedes user editing.
+        let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
+        let new_composed_doc = lattice_core::Document::from_text(composed_text);
+        let snapshot = snapshot_from_composed_doc(
+            &new_composed_doc,
             self.inner.id,
-            &state.sources,
-            &state.excerpts,
             state.selections.clone(),
         );
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
+        {
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            *doc = new_composed_doc;
+        }
         self.inner.snapshot_cell.store(snapshot);
         self.inner.row_translation.store(Arc::new(translation));
     }
@@ -666,14 +689,26 @@ impl MultibufferDocumentHandle {
         let mut state = self.lock_state();
         state.sources = sources;
         state.excerpts = excerpts;
-        let snapshot = compose_snapshot(
+        // M.11 (2026-06-02): same rebuild as `append_excerpts` —
+        // keep composed_doc in sync with the new excerpt set so
+        // user edits land on a rope reflecting current content.
+        let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
+        let new_composed_doc = lattice_core::Document::from_text(composed_text);
+        let snapshot = snapshot_from_composed_doc(
+            &new_composed_doc,
             self.inner.id,
-            &state.sources,
-            &state.excerpts,
             state.selections.clone(),
         );
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
+        {
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            *doc = new_composed_doc;
+        }
         self.inner.snapshot_cell.store(snapshot);
         self.inner.row_translation.store(Arc::new(translation));
     }
@@ -1931,6 +1966,47 @@ mod tests {
             "hello!\n",
             "composed snapshot must reflect the new content; \
              the renderer reads this on the next frame"
+        );
+    }
+
+    /// M.11 (2026-06-02): the search provider's exact flow —
+    /// construct an empty multibuffer, then stream excerpts via
+    /// `append_excerpts`, then type. Pre-fix the composed_doc
+    /// stayed empty (only state.excerpts + the published
+    /// snapshot reflected the stream), so user inserts hit an
+    /// empty rope and silently no-op'd through
+    /// do_insert_text's `let Ok(applied) = … else { return };`.
+    /// This was the root cause of "typing does nothing" the
+    /// user reported after M.11 first landed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn m11_streamed_excerpts_keep_composed_doc_in_sync_for_insert() {
+        // Empty construction — exactly what
+        // `project_search → create_multibuffer_view` does for
+        // an in-progress scan.
+        let (sources, ids) = make_sources(&["zero\none\ntwo\nthree\nfour\n"]);
+        let mb = MultibufferDocumentHandle::new(sources, vec![], empty_registry()).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "");
+
+        // Stream an excerpt (the search hit).
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 2, 2)]);
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "two\n",
+            "snapshot must reflect the streamed excerpt"
+        );
+
+        // Now type — insert at the end of the line.
+        let applied = mb
+            .apply_edit(Edit::insert(Position::new(0, 3), "X"))
+            .await
+            .expect("post-stream insert must succeed (pre-fix this Err'd silently)");
+        assert_eq!(applied.inserted_range.end, Position::new(0, 4));
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "twoX\n",
+            "composed snapshot must reflect the insert; \
+             pre-fix the snapshot stayed at \"two\\n\" because \
+             composed_doc was empty and apply_edit no-op'd"
         );
     }
 

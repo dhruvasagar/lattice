@@ -10945,8 +10945,26 @@ impl Editor {
             );
             return;
         }
-        let options =
-            lattice_multibuffer::providers::search::ProjectSearchOptions::default();
+        // K.4.6 follow-up (2026-06-02): resolve the
+        // `search.context_size` typed option from the active
+        // buffer's resolved options. Default `0` (just matched
+        // lines); user sets via `:set search.context_size=N`.
+        // Falls back to 0 when the option hasn't been resolved
+        // yet (e.g. during boot before the active buffer's
+        // option cascade completes) — matches the typed-option
+        // default.
+        // The typed option is i64 (lattice-config's canonical
+        // numeric); clamp non-negative before narrowing to u32
+        // (negative values would wrap-cast otherwise —
+        // defensive).
+        let raw = *self.resolved_option::<
+            lattice_multibuffer::providers::search::SearchContextSize,
+        >(self.active_pane_buffer_id());
+        let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
+        let options = lattice_multibuffer::providers::search::ProjectSearchOptions {
+            context_lines,
+            ..lattice_multibuffer::providers::search::ProjectSearchOptions::default()
+        };
         let query_for_echo = query.clone();
         tracing::info!(query = %query_for_echo, "do_search: triggering project_search");
         let registry_for_search = self.registry.clone();

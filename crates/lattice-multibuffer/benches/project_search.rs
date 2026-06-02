@@ -147,6 +147,7 @@ fn bench_first_batch(c: &mut Criterion) {
                     max_files: None,
                     max_hits_per_file: 100,
                     regex: false,
+                    context_lines: 0,
                 };
                 let registry = Arc::new(lattice_grammar::CommandRegistry::new());
                 let _view = project_search(

@@ -73,6 +73,7 @@ fn one_iter(root: &PathBuf) -> Duration {
         max_files: None,
         max_hits_per_file: 100,
         regex: false,
+        context_lines: 0,
     };
     service.set_state(
         view,

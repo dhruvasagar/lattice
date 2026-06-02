@@ -226,6 +226,17 @@ impl OptionGroup for Terminal {
     const DOC: &'static str = "PTY-backed terminal buffer.";
 }
 
+/// Project-search options (`:search`, project-search multibuffer,
+/// future LSP-references etc. as those settle). K.4.6 follow-up
+/// (2026-06-02): `search.context_size` added by
+/// `ProjectSearchMultibufferMode` in `lattice-multibuffer`.
+pub struct Search;
+impl OptionGroup for Search {
+    const NAME: &'static str = "search";
+    const DOC: &'static str =
+        "Project-search options: `:search` clustering, context lines, scan limits.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -276,6 +287,9 @@ static TABLINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_grou
 static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
     &OptionGroupMetadata::for_group::<Terminal>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Search>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -294,6 +308,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Help::NAME));
     assert!(!ends_with_mode_suffix(Appearance::NAME));
     assert!(!ends_with_mode_suffix(Terminal::NAME));
+    assert!(!ends_with_mode_suffix(Search::NAME));
 };
 
 #[cfg(test)]

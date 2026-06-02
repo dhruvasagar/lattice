@@ -126,7 +126,7 @@ pub use core_options::{
 pub use erased::ErasedOption;
 pub use group::{
     Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Messages,
-    Oil, OptionGroup, OptionGroupMetadata, Picker, Tabline, Terminal, ends_with_mode_suffix,
+    Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Tabline, Terminal, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,

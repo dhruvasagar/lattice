@@ -45,6 +45,37 @@ use crate::{Excerpt, ExcerptHeader, HeaderlineStatus};
 // Public state types
 // ─────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────
+// Typed options (defined by ProjectSearchMultibufferMode)
+// K.4.6 follow-up (2026-06-02): per
+// [[feedback_mode_owns_its_surface]] the project-search minor
+// mode owns its options. Bound to the `search` group registered
+// in `lattice-config::group`; user customizes via
+// `:set search.context_size=3` or `:customize search`.
+// ─────────────────────────────────────────────────────────────────
+
+lattice_config::options! {
+    group = lattice_config::Search;
+
+    /// Number of context lines to show above and below each
+    /// matched line in `:search` results. Default `0` (no
+    /// context — only matched lines appear, matching the
+    /// "1 line per hit, 1 header per file" UX).
+    ///
+    /// Mirrors grep's `-C N` convention
+    /// ([[feedback_convention_first]]): `:set search.context_size=3`
+    /// yields ±3 lines of context per hit, with adjacent
+    /// clusters merged when ranges overlap or touch — the
+    /// same shape grep / ripgrep / ag produce.
+    ///
+    /// The substrate's `compose_header_rows` dedupes consecutive
+    /// same-source excerpts to a single header regardless of
+    /// `context_size`, so increasing this widens the windows
+    /// under each file's header rather than adding new headers.
+    #[name("search.context_size")]
+    pub SearchContextSize: i64 = 0;
+}
+
 /// User-supplied scan parameters.
 #[derive(Debug, Clone)]
 pub struct ProjectSearchOptions {
@@ -66,6 +97,13 @@ pub struct ProjectSearchOptions {
     /// Case-sensitivity layered on via an injected `(?i)` flag
     /// when `case_sensitive == false`.
     pub regex: bool,
+    /// K.4.6 follow-up (2026-06-02): number of context lines to
+    /// show above and below each matched line. Resolved from
+    /// the `search.context_size` typed option at `:search`
+    /// dispatch time. `0` = no context (one excerpt per match
+    /// row); `N > 0` = ±N lines around each match, with
+    /// adjacent clusters merged when ranges overlap or touch.
+    pub context_lines: u32,
 }
 
 impl Default for ProjectSearchOptions {
@@ -76,6 +114,7 @@ impl Default for ProjectSearchOptions {
             max_files: None,
             max_hits_per_file: 100,
             regex: false,
+            context_lines: 0,
         }
     }
 }
@@ -250,6 +289,15 @@ impl ProjectSearchService for InMemoryProjectSearchService {
 pub struct ProjectSearchBatchReady {
     pub view: BufferId,
     pub files: Vec<FileHits>,
+    /// K.4.6 follow-up (2026-06-02): per-batch context-lines
+    /// value resolved from `search.context_size` at scan
+    /// dispatch time. The forwarder reads this off each batch
+    /// (it isn't part of the forwarder's persistent state)
+    /// because the forwarder runs in the mode's activation
+    /// scope, not the scan's. Mirroring the option onto each
+    /// batch is cheaper than wiring a side channel for one
+    /// `u32` and keeps each batch self-describing.
+    pub context_lines: u32,
 }
 
 lattice_protocol::register_event!(
@@ -486,35 +534,70 @@ impl Mode for ProjectSearchMultibufferMode {
                                     id
                                 };
 
-                                // K.4.6 follow-up v3 (2026-06-02):
-                                // emit ONE excerpt per matched row
-                                // (single-row range `row..=row`), no
-                                // context. The substrate's
-                                // `compose_header_rows` (lib.rs)
-                                // dedupes consecutive same-source
-                                // excerpts to a single header, so
-                                // the user sees ONE header per file +
-                                // N single-line excerpts (one per
-                                // match) under it. Default matches
-                                // user expectation: "just the matched
-                                // lines."
+                                // K.4.6 follow-up v4 (2026-06-02):
+                                // emit excerpts driven by
+                                // `options.context_lines` (resolved
+                                // from the `search.context_size`
+                                // typed option, defined by
+                                // `ProjectSearchMultibufferMode`).
                                 //
-                                // Context lines (e.g. grep `-C 3`) are
-                                // a FUTURE typed-option polish
-                                // (`g:project_search_context: usize`,
-                                // default 0). Pre-v3 v2 hardcoded ±3
-                                // as default, which the user
-                                // explicitly rejected.
-                                let excerpts: Vec<Excerpt> = fh
-                                    .rows
-                                    .iter()
-                                    .map(|&row| {
-                                        Excerpt::new(source_id, row, row).with_header(
-                                            ExcerptHeader::new(format!("{}", path.display())),
-                                        )
-                                    })
-                                    .collect();
-                                hit_count_in_batch += excerpts.len();
+                                // - context_lines == 0 (default):
+                                //   one single-row excerpt per
+                                //   matched line (row..=row). The
+                                //   substrate's `compose_header_rows`
+                                //   (lib.rs) dedupes consecutive
+                                //   same-source excerpts so the user
+                                //   sees ONE header per file + one
+                                //   row per match.
+                                //
+                                // - context_lines > 0 (e.g.
+                                //   `:set search.context_size=3`):
+                                //   one excerpt per hit cluster,
+                                //   each hit expanded to ±N context
+                                //   lines, adjacent clusters merged
+                                //   when ranges overlap or touch.
+                                //   Mirrors grep `-C N`.
+                                let context_lines = batch.context_lines;
+                                let excerpts: Vec<Excerpt> = if fh.rows.is_empty() {
+                                    Vec::new()
+                                } else if context_lines == 0 {
+                                    fh.rows
+                                        .iter()
+                                        .map(|&row| {
+                                            Excerpt::new(source_id, row, row).with_header(
+                                                ExcerptHeader::new(format!("{}", path.display())),
+                                            )
+                                        })
+                                        .collect()
+                                } else {
+                                    let mut sorted_rows = fh.rows.clone();
+                                    sorted_rows.sort_unstable();
+                                    let mut clusters: Vec<(u32, u32)> = Vec::new();
+                                    for &row in &sorted_rows {
+                                        let start = row.saturating_sub(context_lines);
+                                        let end = row.saturating_add(context_lines);
+                                        match clusters.last_mut() {
+                                            // Merge if the new
+                                            // cluster's start touches
+                                            // or overlaps the previous
+                                            // cluster's end (+1 =
+                                            // "touches, no gap").
+                                            Some(last) if start <= last.1.saturating_add(1) => {
+                                                last.1 = last.1.max(end);
+                                            }
+                                            _ => clusters.push((start, end)),
+                                        }
+                                    }
+                                    clusters
+                                        .into_iter()
+                                        .map(|(start, end)| {
+                                            Excerpt::new(source_id, start, end).with_header(
+                                                ExcerptHeader::new(format!("{}", path.display())),
+                                            )
+                                        })
+                                        .collect()
+                                };
+                                hit_count_in_batch += fh.rows.len();
                                 view.append_excerpts(excerpts);
                             }
 
@@ -745,6 +828,7 @@ fn run_scan_blocking(
             events.publish_typed(ProjectSearchBatchReady {
                 view,
                 files: std::mem::take(&mut batch),
+                context_lines: options.context_lines,
             });
         }
         if files_scanned % progress_interval == 0 {
@@ -755,7 +839,11 @@ fn run_scan_blocking(
     if !batch.is_empty() {
         let add: usize = batch.iter().map(|f| f.rows.len()).sum();
         service.add_hits(view, add);
-        events.publish_typed(ProjectSearchBatchReady { view, files: batch });
+        events.publish_typed(ProjectSearchBatchReady {
+            view,
+            files: batch,
+            context_lines: options.context_lines,
+        });
     }
     service.set_status(view, SearchStatus::Done { total_hits });
     events.publish_typed(ProjectSearchCompleted {

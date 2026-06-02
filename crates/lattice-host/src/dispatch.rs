@@ -21138,14 +21138,22 @@ impl Editor {
         let tree_count = self.buffers.file_tree_ids_sorted().len();
         let help_count = self.buffers.help_ids_sorted().len();
         let msg_count = self.buffers.messages_ids_sorted().len();
+        // K.4.8 (2026-06-02): Multibuffer counted separately from
+        // Messages now that the per-kind listing row distinguishes
+        // `msg` from `mb`. The summary line reflects this so users
+        // see at a glance how many multibuffer views are open
+        // (project-search results, LSP-references views, future
+        // diff multibuffers per multibuffer-views.md §A).
+        let mb_count = self.buffers.multibuffer_ids_sorted().len();
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
-            "{} open buffer(s) ({} document, {} tree, {} help, {} message):",
+            "{} open buffer(s) ({} document, {} tree, {} help, {} message, {} multibuffer):",
             ids.len(),
             doc_count,
             tree_count,
             help_count,
             msg_count,
+            mb_count,
         ));
         lines.push(String::new());
         // Snapshot every entry under one lock acquire. Per-line
@@ -21242,11 +21250,27 @@ impl Editor {
                         id.0
                     ));
                 }
-                BufferKind::Messages | BufferKind::Multibuffer => {
+                // K.4.8 (2026-06-02): split Messages + Multibuffer
+                // into distinct arms. Pre-K.4.8 both folded into the
+                // same row with `msg` label + `*messages*` default
+                // name — a user with a project-search results
+                // multibuffer would see it labeled `*messages*` in
+                // `:ls` which is wrong and confusing. Each kind now
+                // gets its own row matching the per-kind `kind_label`
+                // mapping at `picker_buffer_entry_for` (see lines
+                // ~23440–23475 for the picker-source rendering).
+                BufferKind::Messages => {
                     let label = row.name.clone().unwrap_or_else(|| "*messages*".to_string());
                     let dirty = if row.doc_dirty { "[+]" } else { "   " };
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} msg  {dirty} {label}",
+                        id.0
+                    ));
+                }
+                BufferKind::Multibuffer => {
+                    let label = row.name.clone().unwrap_or_else(|| "*multibuffer*".to_string());
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} mb       {label}",
                         id.0
                     ));
                 }

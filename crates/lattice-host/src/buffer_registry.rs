@@ -586,6 +586,23 @@ impl BufferRegistry {
         ids
     }
 
+    /// K.4.8 (2026-06-02): Multibuffer-kind buffers, sorted by id.
+    /// Symmetric with [`Self::messages_ids_sorted`] /
+    /// [`Self::document_ids_sorted`]. Used by `:ls` to count the
+    /// Multibuffer entries separately from Messages now that
+    /// Multibuffer has its own listing row.
+    pub fn multibuffer_ids_sorted(&self) -> Vec<BufferId> {
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
+            .by_id
+            .iter()
+            .filter(|(_, e)| matches!(e.data, BufferData::Multibuffer(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// File-tree buffers only, sorted by id.
     pub fn file_tree_ids_sorted(&self) -> Vec<BufferId> {
         let inner = lock_inner(&self.inner);

@@ -1074,7 +1074,15 @@ impl Element for EditorElement {
                         // document snapshot and passes it via
                         // `CursorState.line_text`.
                         let line: &str = c.line_text.as_str();
-                        let byte = (c.byte as usize).min(line.len());
+                        // Floor to a char boundary: a cursor byte that
+                        // lands inside a multi-byte char (em-dash etc.)
+                        // would panic the `line[byte..]` slice below.
+                        // The cursor sits ON the char containing this
+                        // byte, so the char's start is the right anchor.
+                        let mut byte = (c.byte as usize).min(line.len());
+                        while byte > 0 && !line.is_char_boundary(byte) {
+                            byte -= 1;
+                        }
                         // Slice X3.full.4: remap byte → combined col
                         // via the cursor row's inlay offsets so the
                         // block cursor stays under the right glyph
@@ -1330,6 +1338,18 @@ impl Element for EditorElement {
 /// Saturating: `byte >= line.len()` returns the line's char count
 /// plus the sum of every inlay's `char_width`.
 pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)]) -> usize {
+    // Defensive (2026-06-03): a `byte` that lands inside a
+    // multi-byte char (e.g. an em-dash `—`, 3 bytes) would panic
+    // the `line[..byte]` slice below. Floor to the containing
+    // char's start — the column of the char this byte belongs
+    // to. Never panic on the paint hot path (CLAUDE.md).
+    let byte = {
+        let mut b = byte.min(line.len());
+        while b > 0 && !line.is_char_boundary(b) {
+            b -= 1;
+        }
+        b
+    };
     let base = if byte >= line.len() {
         line.chars().count()
     } else {

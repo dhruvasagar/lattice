@@ -1343,10 +1343,12 @@ impl EditorView {
                             // D.6.f (2026-05-31): three-way Conflict.
                             DiffSignKind::Conflict => host_theme.diff_conflict_sign_style,
                         };
-                        let fg = style
-                            .fg
-                            .map(|c| c.to_rgb_u32(0))
-                            .unwrap_or(host_theme.foreground.to_rgb_u32(0));
+                        // Diff-sign default styles always set `fg`;
+                        // this fallback is a safety net. Use the
+                        // Catppuccin text default the gutter uses
+                        // elsewhere (the host `Theme` has no general
+                        // foreground slot to read here).
+                        let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
                         let glyph = match kind {
                             DiffSignKind::Add => '+',
                             DiffSignKind::Change => '~',

@@ -513,20 +513,18 @@ fn paint_candidate_row(
     // annotation absurdly far in maximized windows). `+ 2`
     // leaves a small gap between the longest display and the
     // annotation column.
-    // MARG.1 (2026-06-03): annotations are typed
-    // (`Vec<Annotation>`). For GPUI this slice does the
-    // minimum to keep the renderer compiling — flatten each
-    // annotation's display text and paint with the existing
-    // single `marginalia_fg` colour. MARG.3 lands per-variant
-    // colouring (parity with the TUI peer's
-    // `annotation_color`), driven by theme slots, in a
-    // separate slice per [[feedback_tui_gpui_parity]].
-    let annotation_text = cand
-        .annotations
-        .iter()
-        .map(|a| a.display_text().into_owned())
-        .collect::<Vec<_>>()
-        .join("  ");
+    // MARG.3 (2026-06-03): per-variant annotation rendering —
+    // each annotation gets its own child div coloured by its
+    // category. Catppuccin palette below matches the design's
+    // intent (yellow for keybinding, cyan for doc, etc.); the
+    // TUI peer uses ratatui named colours for the same five
+    // categories, palette parity. See
+    // `docs/dev/architecture/marginalia.md` §5. Theme-driven
+    // slot lookup remains a queued follow-up (same slice as
+    // the matcher-highlight theme TODO at the top of
+    // `lattice-ui-tui::render::candidate_to_line`); for now
+    // each peer hardcodes its own palette tuned to its
+    // baseline (Catppuccin here, ratatui 16-colour there).
     let mut row = div().flex().flex_row().w_full();
     if padded {
         row = row.px_2();
@@ -539,7 +537,7 @@ fn paint_candidate_row(
     row = row
         .child(div().text_color(marginalia_fg).flex_shrink_0().child(kind_glyph))
         .child(display_div.flex_shrink_0());
-    if !annotation_text.is_empty() {
+    if !cand.annotations.is_empty() {
         // Pad spaces so this row's annotation lands at the same
         // column as every other row. `+ 2` leaves a small gap.
         let display_chars = display.chars().count();
@@ -554,14 +552,71 @@ fn paint_candidate_row(
                     .child(" ".repeat(pad_chars)),
             );
         }
-        row = row.child(
-            div()
-                .text_color(marginalia_fg)
-                .flex_shrink_0()
-                .child(annotation_text),
-        );
+        // One child div per annotation, coloured per-variant.
+        // Two spaces of `marginalia_fg`-coloured separator
+        // between consecutive annotations (matches the TUI
+        // peer's `"  "` join — separator inherits the row
+        // background by virtue of having no `bg` override).
+        for (i, ann) in cand.annotations.iter().enumerate() {
+            if i > 0 {
+                row = row.child(
+                    div()
+                        .text_color(marginalia_fg)
+                        .flex_shrink_0()
+                        .child("  "),
+                );
+            }
+            let fg = rgb(annotation_color_rgb(ann, selected));
+            row = row.child(
+                div()
+                    .text_color(fg)
+                    .flex_shrink_0()
+                    .child(ann.display_text().into_owned()),
+            );
+        }
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
+}
+
+/// MARG.3 (2026-06-03): map each [`lattice_completion::Annotation`]
+/// variant to a Catppuccin-palette `0xRRGGBB`. `selected` lifts the
+/// shade so it stays legible against the selected-row background
+/// (`theme.status_background`). Mirrors the TUI peer's
+/// `annotation_color` helper; the two peers maintain palette parity
+/// even though one uses ratatui named colours and the other uses
+/// concrete RGB. Theme-slot lookup is the queued follow-up that
+/// would unify both.
+///
+/// Palette intent (matches `docs/dev/architecture/marginalia.md` §5):
+/// - kind        → overlay2 grey (subtle, doesn't compete)
+/// - doc snippet → sky (cyan family)
+/// - keybinding  → yellow (Catppuccin Yellow; matches help-mode
+///   chord highlight)
+/// - source      → mauve (purple/magenta)
+/// - custom      → blue (fallback for plugin annotations)
+fn annotation_color_rgb(ann: &lattice_completion::Annotation, selected: bool) -> u32 {
+    use lattice_completion::Annotation;
+    match ann {
+        Annotation::Kind(_) => {
+            if selected { 0xcdd6f4 } else { 0x9399b2 }
+        }
+        Annotation::DocSnippet(_) => {
+            if selected { 0xbfeaf5 } else { 0x89dceb }
+        }
+        Annotation::Keybinding(_) => {
+            if selected { 0xfff0b8 } else { 0xf9e2af }
+        }
+        Annotation::Source(_) => {
+            if selected { 0xe2cfff } else { 0xcba6f7 }
+        }
+        // Plugin / extension fallback. Unknown `slot` strings
+        // all resolve to this colour pre-Phase-4; the typed
+        // theme registry that resolves slot keys to colours
+        // lands with the WASM plugin host.
+        Annotation::Custom { .. } => {
+            if selected { 0xb6d3ff } else { 0x89b4fa }
+        }
+    }
 }
 
 /// Resolve the diagnostic gutter glyph + colour for a severity by

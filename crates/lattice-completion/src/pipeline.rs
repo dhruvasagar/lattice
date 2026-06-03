@@ -256,11 +256,16 @@ mod tests {
     }
 
     /// Annotator that appends the candidate's text length as an
-    /// annotation. Tests `annotate()` runs.
+    /// annotation. Tests `annotate()` runs. MARG.1: uses the
+    /// `Custom` escape hatch with a placeholder slot — the
+    /// pipeline tests don't exercise theming, just plumbing.
     struct LengthAnno;
     impl CandidateAnnotator for LengthAnno {
         fn annotate(&self, c: &mut RenderedCandidate) {
-            c.annotations.push(format!("{} chars", c.raw.text.len()));
+            c.annotations.push(crate::candidate::Annotation::Custom {
+                text: std::sync::Arc::from(format!("{} chars", c.raw.text.len())),
+                slot: std::sync::Arc::from("annotation_test_length"),
+            });
         }
     }
 
@@ -296,7 +301,7 @@ mod tests {
         // Only "alpha" and "alphabet" match `alph`.
         assert_eq!(result.len(), 2);
         // Annotator appended length.
-        assert!(result[0].annotations[0].contains("chars"));
+        assert!(result[0].annotations[0].display_text().contains("chars"));
     }
 
     #[test]

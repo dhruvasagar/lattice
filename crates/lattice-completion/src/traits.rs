@@ -88,8 +88,17 @@ pub trait CandidateRanker: Send + Sync {
 /// Decorates a candidate with display metadata (right-side text in
 /// the popup -- marginalia's role). Multiple annotators are active
 /// simultaneously; they run in registration order, each appending
-/// to `candidate.annotations`. The renderer joins them with `  ` (two
-/// spaces) by default.
+/// a typed [`crate::Annotation`] to `candidate.annotations`. The
+/// renderer paints each annotation with the style its category
+/// resolves to and joins consecutive annotations with two spaces.
+///
+/// MARG.1 (2026-06-03): annotation payload is now typed
+/// (`Vec<Annotation>`, not `Vec<String>`). Annotators choose the
+/// variant that matches the semantic — `Annotation::Kind` for
+/// category labels, `Annotation::DocSnippet` for inline docs,
+/// `Annotation::Keybinding` for bound chords (MARG.2), etc. The
+/// `Custom { text, slot }` escape hatch covers extensions that
+/// don't fit a built-in variant.
 ///
 /// Run order is registration order in v1. A future `priority: i32`
 /// field will allow plugins to slot themselves between built-in

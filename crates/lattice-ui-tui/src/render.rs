@@ -1120,11 +1120,16 @@ fn candidate_to_line<'a>(
 
     // Annotations column-aligned. Pad so this row's annotation
     // starts at `prefix + kind_glyph + display_col_chars + 2`
-    // chars in — same x across the visible batch. Use a fg
-    // that contrasts with the row bg (`DarkGray` fg would
-    // vanish into the selected-row `DarkGray` bg).
-    let annotations = c.annotations.join("  ");
-    if !annotations.is_empty() {
+    // chars in — same x across the visible batch. MARG.1
+    // (2026-06-03): annotations are typed
+    // (`Vec<Annotation>`); paint each with the color its
+    // category resolves to instead of one undifferentiated
+    // grey. Hardcoded ratatui palette here matches the defaults
+    // documented in `docs/dev/architecture/marginalia.md` §5;
+    // theme-driven slot lookup is a queued follow-up slice
+    // (same as the matcher highlight TODO at the top of this
+    // function).
+    if !c.annotations.is_empty() {
         let kind_prefix_len = prefix.len() + 2; // glyph + " "
         let target_col = display_col_chars
             .saturating_add(kind_prefix_len)
@@ -1134,14 +1139,71 @@ fn candidate_to_line<'a>(
         if pad > 0 {
             spans.push(Span::styled(" ".repeat(pad), row_style));
         }
-        let annotation_fg = if selected {
-            Color::Gray
-        } else {
-            Color::DarkGray
-        };
-        spans.push(Span::styled(annotations, row_style.fg(annotation_fg)));
+        for (i, ann) in c.annotations.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("  ", row_style));
+            }
+            let fg = annotation_color(ann, selected);
+            spans.push(Span::styled(
+                ann.display_text().into_owned(),
+                row_style.fg(fg),
+            ));
+        }
     }
     Line::from(spans)
+}
+
+/// MARG.1 (2026-06-03): pick a foreground colour per
+/// annotation variant. `selected` flips between the dim
+/// (unselected row bg) and bright (selected row's
+/// `DarkGray` bg) shade so contrast holds in both states.
+/// Defaults documented in
+/// `docs/dev/architecture/marginalia.md` §5; will move to
+/// theme-slot reads when the queued theme-through-renderer
+/// slice lands.
+fn annotation_color(ann: &lattice_completion::Annotation, selected: bool) -> Color {
+    use lattice_completion::Annotation;
+    match ann {
+        Annotation::Kind(_) => {
+            if selected {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            }
+        }
+        Annotation::DocSnippet(_) => {
+            if selected {
+                Color::LightCyan
+            } else {
+                Color::Cyan
+            }
+        }
+        Annotation::Keybinding(_) => {
+            if selected {
+                Color::LightYellow
+            } else {
+                Color::Yellow
+            }
+        }
+        Annotation::Source(_) => {
+            if selected {
+                Color::LightMagenta
+            } else {
+                Color::Magenta
+            }
+        }
+        // Plugin / extension fallback. Unknown `slot` strings
+        // all resolve to this colour pre-Phase-4; the typed
+        // theme registry that resolves slot keys to colours
+        // lands with the WASM plugin host.
+        Annotation::Custom { .. } => {
+            if selected {
+                Color::LightBlue
+            } else {
+                Color::Blue
+            }
+        }
+    }
 }
 
 /// Draw the help buffer (DESIGN.md §5.11) as a centred popup. Popup

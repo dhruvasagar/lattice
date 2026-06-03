@@ -10,17 +10,21 @@
 //!   the byte ranges the matcher considered "matched" (vertico's
 //!   match-face highlights these).
 //! - [`RenderedCandidate`] -- after annotators: above + a vec of
-//!   right-side annotation strings.
+//!   typed [`Annotation`]s the renderer paints to the right of each
+//!   candidate (MARG.1, see `docs/dev/architecture/marginalia.md`).
 //!
 //! Three shapes (not one with optional fields) so the type system
 //! enforces stage ordering: a generator produces only `RawCandidate`s;
 //! a matcher produces only `ScoredCandidate`s; annotators only mutate
 //! `RenderedCandidate`s. Pipeline order can't accidentally invert.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lattice_grammar::source::SourceLocation;
+use lattice_protocol::KeyChord;
 
 /// What kind of thing this candidate is. Drives icon / colour /
 /// grouping in the popup, and (for CommandKind) hints at the
@@ -237,15 +241,122 @@ pub struct ScoredCandidate {
     pub match_ranges: Vec<Range<usize>>,
 }
 
-/// What the renderer paints. Annotators append to `annotations`; the
-/// renderer joins them with two spaces (or whatever style the popup
-/// renderer chooses).
+/// One annotation attached to a completion candidate.
+///
+/// MARG.1 (2026-06-03): replaces the previous untyped
+/// `annotations: Vec<String>` with a tagged enum so the
+/// renderer can color-code each annotation by category. The
+/// payload preserves semantic info (e.g. `Keybinding` keeps
+/// the chord list for future affordances like "show conflicts"
+/// or "click to edit binding"); display-time formatting is the
+/// renderer's job via [`Annotation::display_text`].
+///
+/// Variants are open-by-versioning: adding a variant is a
+/// minor-version bump; removing one is breaking. The `Custom`
+/// variant is the escape hatch for in-tree extension crates
+/// (and future WASM plugins) that don't fit any built-in
+/// variant — payload includes a `slot` string the renderer
+/// resolves against the theme.
+///
+/// `Severity` variant is intentionally omitted in MARG.1 —
+/// no consumer yet (diagnostic-suggestion candidates land in
+/// a later slice). Adding it when needed is non-breaking.
+///
+/// See `docs/dev/architecture/marginalia.md` for the data-model
+/// rationale and the rejected `String + style` and pre-styled-
+/// spans alternatives.
+#[derive(Debug, Clone)]
+pub enum Annotation {
+    /// Category label like `(motion)`, `(command)`, `(file)`.
+    /// Emitted by `KindLabelAnnotator`. Renderer styles with
+    /// the kind-annotation slot.
+    Kind(Arc<str>),
+
+    /// First line of a command's doc string. Emitted by
+    /// `DocSnippetAnnotator`. Renderer styles with the doc
+    /// annotation slot.
+    DocSnippet(Arc<str>),
+
+    /// Chord(s) bound to this candidate's command. Emitted by
+    /// the keybinding annotator (MARG.2). The renderer formats
+    /// chords via [`KeyChord`]'s `Display` impl and styles with
+    /// the keybinding annotation slot. Empty vec is invalid —
+    /// annotators should not emit this variant when no chord
+    /// binds. Most candidates have 0-1 chords; the rare
+    /// multi-binding case uses `Vec` rather than `SmallVec` to
+    /// avoid an extra crate dep pre-v1 — perf-driven storage
+    /// swap deferred until a bench shows it matters.
+    Keybinding(Vec<KeyChord>),
+
+    /// Provenance: which crate / mode / user-config defined
+    /// this command. `Arc<str>` because most candidates share
+    /// the same source label (`"builtin"`, `"lsp"`,
+    /// `"user-init"`); copy-by-reference is cheaper than
+    /// cloning the string per-candidate.
+    Source(Arc<str>),
+
+    /// Escape hatch for plugin-contributed annotations that
+    /// don't fit any built-in variant. The annotator
+    /// pre-formats `text`; `slot` names a theme slot the
+    /// renderer resolves (unknown slot falls back to the
+    /// plugin-annotation default).
+    Custom { text: Arc<str>, slot: Arc<str> },
+}
+
+impl Annotation {
+    /// Borrow-or-format the annotation's text for paint. String-
+    /// payload variants return a borrowed `Cow`; structured
+    /// variants (`Keybinding`) format on demand.
+    pub fn display_text(&self) -> Cow<'_, str> {
+        match self {
+            Self::Kind(s) | Self::DocSnippet(s) | Self::Source(s) => Cow::Borrowed(s.as_ref()),
+            Self::Custom { text, .. } => Cow::Borrowed(text.as_ref()),
+            Self::Keybinding(chords) => {
+                if chords.is_empty() {
+                    Cow::Borrowed("")
+                } else {
+                    let mut buf = String::with_capacity(chords.len() * 4);
+                    for (i, c) in chords.iter().enumerate() {
+                        if i > 0 {
+                            buf.push(' ');
+                        }
+                        use std::fmt::Write;
+                        let _ = write!(&mut buf, "{c}");
+                    }
+                    Cow::Owned(buf)
+                }
+            }
+        }
+    }
+
+    /// Stable category key the renderer pattern-matches on to
+    /// pick a theme slot. Variant names mirror the theme slot
+    /// suffix (`annotation_kind`, `annotation_doc`, ...).
+    /// `Custom` returns its `slot` field; unknown slots fall
+    /// back to `annotation_plugin` at paint time.
+    pub fn category(&self) -> &str {
+        match self {
+            Self::Kind(_) => "kind",
+            Self::DocSnippet(_) => "doc",
+            Self::Keybinding(_) => "keybinding",
+            Self::Source(_) => "source",
+            Self::Custom { slot, .. } => slot.as_ref(),
+        }
+    }
+}
+
+/// What the renderer paints. Annotators append to `annotations`;
+/// the renderer paints each typed [`Annotation`] with the style
+/// that category resolves to, joined by two spaces of row-styled
+/// padding. MARG.1 (2026-06-03): replaced `Vec<String>` with
+/// `Vec<Annotation>` so annotation category survives into the
+/// paint path.
 #[derive(Debug, Clone)]
 pub struct RenderedCandidate {
     pub raw: RawCandidate,
     pub score: MatchScore,
     pub match_ranges: Vec<Range<usize>>,
-    pub annotations: Vec<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 impl RenderedCandidate {

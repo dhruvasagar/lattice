@@ -513,7 +513,20 @@ fn paint_candidate_row(
     // annotation absurdly far in maximized windows). `+ 2`
     // leaves a small gap between the longest display and the
     // annotation column.
-    let annotation_text = cand.annotations.join("  ");
+    // MARG.1 (2026-06-03): annotations are typed
+    // (`Vec<Annotation>`). For GPUI this slice does the
+    // minimum to keep the renderer compiling — flatten each
+    // annotation's display text and paint with the existing
+    // single `marginalia_fg` colour. MARG.3 lands per-variant
+    // colouring (parity with the TUI peer's
+    // `annotation_color`), driven by theme slots, in a
+    // separate slice per [[feedback_tui_gpui_parity]].
+    let annotation_text = cand
+        .annotations
+        .iter()
+        .map(|a| a.display_text().into_owned())
+        .collect::<Vec<_>>()
+        .join("  ");
     let mut row = div().flex().flex_row().w_full();
     if padded {
         row = row.px_2();

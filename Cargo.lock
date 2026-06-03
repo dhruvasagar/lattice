@@ -3691,7 +3691,6 @@ dependencies = [
  "lattice-host",
  "lattice-lsp",
  "lattice-mode",
- "lattice-protocol",
  "lattice-syntax",
  "lattice-terminal",
  "tokio",

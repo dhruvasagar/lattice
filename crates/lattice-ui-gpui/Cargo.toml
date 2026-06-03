@@ -34,12 +34,6 @@ lattice-completion = { path = "../lattice-completion" }
 # field-typed Editor fields name the type internally and don't
 # require it in scope. Stays minimal: one type, named once.
 lattice-grammar = { path = "../lattice-grammar" }
-# M.10.3 bug fix (2026-06-03): `Effect::OpenBufferAt`'s arm in
-# `apply_effect_gpui` constructs `SelectionSet::single(...)`
-# from `lattice_protocol`. The TUI peer already had this dep
-# via `lattice-protocol` transitively through `lattice-host`;
-# GPUI needs it direct to name the type.
-lattice-protocol = { path = "../lattice-protocol" }
 # 5.7.B.10: `RendererSignal::DisplayBuffer` carries a
 # `lattice_help::HelpContent`; the GPUI peer renders its text
 # in a popup overlay, so naming the type requires this dep.

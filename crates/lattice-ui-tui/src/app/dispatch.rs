@@ -874,11 +874,7 @@ impl App {
             Effect::OpenBufferAt { path, position, force } => {
                 self.do_edit(path, force);
                 self.mutate_editor_with(move |e| {
-                    e.set_selections_blocking(
-                        lattice_protocol::SelectionSet::single(
-                            lattice_protocol::selection::Selection::cursor(position),
-                        ),
-                    );
+                    e.set_cursor(position);
                 });
             }
             // 5.5.E.7.5: `Substitute` migrated to

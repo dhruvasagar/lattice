@@ -1017,11 +1017,7 @@ impl GpuiApp {
             Effect::OpenBufferAt { path, position, force } => {
                 self.apply_open_buffer(path, force);
                 self.mutate_editor(move |e| {
-                    e.set_selections_blocking(
-                        lattice_protocol::SelectionSet::single(
-                            lattice_protocol::selection::Selection::cursor(position),
-                        ),
-                    );
+                    e.set_cursor(position);
                 });
             }
             // Phase 5.8.AD.3: `:w` save with full LSP fan-out

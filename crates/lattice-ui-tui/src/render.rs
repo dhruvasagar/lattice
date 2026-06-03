@@ -1058,7 +1058,13 @@ fn candidate_to_line<'a>(
     selected: bool,
     display_col_chars: usize,
 ) -> Line<'a> {
-    let prefix = if selected { "▶ " } else { "  " };
+    // 2026-06-03: the `▶ ` selection-glyph prefix was
+    // redundant — the row-background colour on the selected
+    // row already conveys focus. Dropping it both halves the
+    // left-margin width and matches the GPUI peer's shape
+    // (which never carried a selection-glyph). Empty prefix:
+    // candidate text starts at the kind glyph.
+    let prefix = "";
     let row_style = if selected {
         TuiStyle::default()
             .bg(Color::DarkGray)

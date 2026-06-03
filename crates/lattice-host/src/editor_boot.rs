@@ -1018,7 +1018,18 @@ impl Editor {
                     "Append the chord(s) bound to a command in Normal mode (e.g. `<C-w>v` next to `:split-pane-vertical`).",
                     kb_anno,
                 );
-                completion_registry.default_annotators.push(kb_anno_id);
+                // 2026-06-03 placement fix: insert at position
+                // 0 so the keybinding renders LEFTMOST in the
+                // annotation column — immediately to the right
+                // of the command name where the user's eye
+                // already is. The previous `.push(...)` placed
+                // it last, after kind + doc snippet; user
+                // reported it was "too far away to notice."
+                // Column alignment for the kind / doc labels
+                // is sacrificed (keybinding is inherently
+                // variable-width) but proximity to the command
+                // is the higher-value scan affordance.
+                completion_registry.default_annotators.insert(0, kb_anno_id);
                 h
             },
             completion_registry,

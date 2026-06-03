@@ -377,7 +377,7 @@ async fn worker_main(
                     .is_ok();
             if intermediate_ok {
                 snapshot_for_intermediate.store(Arc::new(syntax.snapshot_owned()));
-                syntax.reparse_with_cached_tree();
+                syntax.reparse_with_cached_tree(from_version);
             } else {
                 syntax.parse_at(&text, text_version);
             }

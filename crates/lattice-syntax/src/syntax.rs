@@ -118,6 +118,20 @@ pub struct SyntaxSnapshot {
     /// async path uses this to skip republishing identical
     /// state.
     text_version: u64,
+    /// H.2 (2026-06-04): inclusive source-line ranges whose syntax tree
+    /// differs from the snapshot this one was reparsed FROM
+    /// (`reparsed_from_version`), via `Tree::changed_ranges`. `None` =
+    /// full parse / unknown → consumers must treat the whole file as
+    /// dirty. `Some(empty)` = nothing changed. The cells worker uses this
+    /// to rebuild only the dirty rows on a reparse-completion republish —
+    /// but ONLY when its cached matrix's syntax version equals
+    /// `reparsed_from_version` (else the delta doesn't apply and it
+    /// full-rebuilds).
+    changed_lines: Option<Vec<(u32, u32)>>,
+    /// The `text_version` this snapshot's tree was reparsed FROM — i.e.
+    /// the version `changed_lines` is the delta against. Meaningful only
+    /// when `changed_lines` is `Some`.
+    reparsed_from_version: u64,
 }
 
 impl std::fmt::Debug for SyntaxSnapshot {
@@ -192,6 +206,8 @@ impl Syntax {
                 source: Arc::from(Vec::<u8>::new()),
                 tree: None,
                 text_version: 0,
+                changed_lines: None,
+                reparsed_from_version: 0,
             },
         }))
     }
@@ -306,6 +322,10 @@ impl Syntax {
         self.inner.source = Arc::from(bytes.to_vec());
         self.inner.tree = new_tree;
         self.inner.text_version = text_version;
+        // H.2: a full reparse has no incremental old-vs-new diff, so the
+        // whole file is considered dirty (`None` ⇒ consumers full-rebuild).
+        self.inner.changed_lines = None;
+        self.inner.reparsed_from_version = text_version;
     }
 
     /// Incremental reparse: apply `edits` to the cached tree (sync
@@ -329,7 +349,7 @@ impl Syntax {
         edits: &[EditDelta],
     ) {
         match self.try_apply_intermediate(source, text_version, from_version, edits) {
-            Ok(_) => self.reparse_with_cached_tree(),
+            Ok(_) => self.reparse_with_cached_tree(from_version),
             Err(_) => self.parse_at(source, text_version),
         }
     }
@@ -410,13 +430,28 @@ impl Syntax {
     /// Pairs with `try_apply_intermediate`: the worker calls
     /// `try_apply_intermediate` (fast), publishes the intermediate
     /// snapshot, then calls this to run the actual parse (slow).
-    pub fn reparse_with_cached_tree(&mut self) {
+    pub fn reparse_with_cached_tree(&mut self, reparsed_from: u64) {
         let bytes = self.inner.source.clone();
-        let old_tree_ref = self.inner.tree.as_ref();
+        // Own the old tree so we can diff it against the new one after the
+        // parse (tree-sitter `Tree` is cheap to clone — internally Arc'd).
+        let old_tree = self.inner.tree.clone();
         let new_tree = self
             .parser
-            .parse(&*bytes, old_tree_ref)
+            .parse(&*bytes, old_tree.as_ref())
             .or_else(|| self.inner.tree.take());
+        // H.2: `old.changed_ranges(new)` gives exactly the byte ranges whose
+        // tree differs; the Range points carry rows, so map to inclusive
+        // source-line ranges. Only valid when both trees exist (else the
+        // whole file is dirty → `None`).
+        self.inner.changed_lines = match (&old_tree, &new_tree) {
+            (Some(old), Some(new)) => Some(
+                old.changed_ranges(new)
+                    .map(|r| (r.start_point.row as u32, r.end_point.row as u32))
+                    .collect(),
+            ),
+            _ => None,
+        };
+        self.inner.reparsed_from_version = reparsed_from;
         self.inner.tree = new_tree;
     }
 }
@@ -450,6 +485,23 @@ impl SyntaxSnapshot {
     /// against a `DocumentSnapshot::text_version`.
     pub fn text_version(&self) -> u64 {
         self.text_version
+    }
+
+    /// H.2 (2026-06-04): inclusive source-line ranges whose syntax tree
+    /// changed between [`Self::reparsed_from_version`] and this snapshot,
+    /// from `Tree::changed_ranges`. `None` ⇒ full parse / unknown (treat
+    /// the whole file as dirty). The cells worker rebuilds only the
+    /// intersecting rows on a reparse-completion republish, gated on its
+    /// cached matrix's syntax version matching `reparsed_from_version`.
+    pub fn changed_lines(&self) -> Option<&[(u32, u32)]> {
+        self.changed_lines.as_deref()
+    }
+
+    /// The `text_version` this snapshot's tree was reparsed FROM — the
+    /// baseline [`Self::changed_lines`] is the delta against. Meaningful
+    /// only when `changed_lines()` is `Some`.
+    pub fn reparsed_from_version(&self) -> u64 {
+        self.reparsed_from_version
     }
 
     /// True when the byte position `cursor_byte` falls inside a
@@ -1431,6 +1483,34 @@ const MAX: i32 = 10;\n\
         );
     }
 
+    /// H.2 (2026-06-04): an incremental reparse must publish
+    /// `changed_lines` covering the edited line (so the cells worker can
+    /// rebuild only dirty rows on reparse-completion), with
+    /// `reparsed_from_version` set to the baseline it diffed against.
+    #[test]
+    fn changed_lines_covers_the_edited_line() {
+        let src_a = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n";
+        // Insert 'X' after "fn b" on line 1 → "fn bX() {}".
+        let (src_b, delta) = delta_for_edit(src_a, 13, 13, "X");
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at(src_a, 1);
+        s.parse_at_with_edits(&src_b, 2, 1, &[delta]);
+
+        assert_eq!(
+            s.snapshot().reparsed_from_version(),
+            1,
+            "changed_lines baseline must be the from_version"
+        );
+        let changed = s
+            .snapshot()
+            .changed_lines()
+            .expect("an incremental reparse must yield Some(changed_lines)");
+        assert!(
+            changed.iter().any(|&(lo, hi)| lo <= 1 && 1 <= hi),
+            "changed_lines must cover the edited line 1, got {changed:?}"
+        );
+    }
+
     /// Diagnostic (2026-06-04): does an UNCHANGED line carrying inline
     /// injection content (a `code span` + a [link]) keep IDENTICAL
     /// highlight spans across a reparse triggered by editing a
@@ -2132,7 +2212,7 @@ const MAX: i32 = 10;\n\
         split
             .try_apply_intermediate("fn aX() {}", 2, 1, &[edit])
             .unwrap();
-        split.reparse_with_cached_tree();
+        split.reparse_with_cached_tree(1);
 
         let mut combined = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         combined.parse_at("fn a() {}", 1);

@@ -444,29 +444,27 @@ fn try_incremental_build(
     let pre_hi = edit.pre_edit_end_line();
     let net = edit.net_delta();
 
-    // Build inputs once for the affected-zone rebuild path.
     let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
-    let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+    let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
+    let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
+    // H.1 (2026-06-04): highlight only the line range a rebuild actually
+    // touches, not the whole file. Returns spans indexed RELATIVE to `lo`
+    // (so the `ChunkInputs.spans_base` for the build is `lo`). `None` ⇒
+    // syntax stale/absent → rows fall back to default fg. This is what keeps
+    // per-keystroke highlight O(edit) instead of O(file) — and collapses the
+    // compose `cells_stale` plain-text window that read as a flicker.
+    let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        if hi <= lo {
+            return Some(Vec::new());
+        }
         pane.syntax_handle.as_deref().and_then(|h| {
             let snap = h.snapshot();
             if snap.text_version() < snapshot.text_version {
                 return None;
             }
-            snap.highlight_lines(0, new_line_count).ok()
-        });
-    let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
-    let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
-    let inputs = ChunkInputs {
-        snapshot,
-        per_line_spans: per_line_spans.as_ref(),
-        inlays_by_line: &inlays_by_line,
-        fold_index: &fold_index,
-        theme,
-        default_fg,
-        default_flags,
-        inlay_fg,
-        whitespace,
+            snap.highlight_lines(lo, hi).ok()
+        })
     };
 
     if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
@@ -484,6 +482,19 @@ fn try_incremental_build(
         // keeps their colours through the window; only the edited
         // line(s) recolour. See `feedback_decorations_update_in_place`.
         let Some(prior) = published.chunks.first() else {
+            let spans = highlight_range(0, new_line_count);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: 0,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
             let rows = build_chunk_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, new_version));
             return Some(CellMatrix::whole_doc(chunk, new_line_count));
@@ -509,7 +520,21 @@ fn try_incremental_build(
                 .filter(|r| r.source_line < edit_lo)
                 .cloned(),
         );
-        // Affected zone: rebuilt (the only lines that recolour).
+        // Affected zone: rebuilt (the only lines that recolour) — highlight
+        // scoped to exactly this range (H.1).
+        let spans = highlight_range(edit_lo, affected_hi);
+        let inputs = ChunkInputs {
+            snapshot,
+            per_line_spans: spans.as_ref(),
+            spans_base: edit_lo,
+            inlays_by_line: &inlays_by_line,
+            fold_index: &fold_index,
+            theme,
+            default_fg,
+            default_flags,
+            inlay_fg,
+            whitespace,
+        };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
         // Suffix: lines past the edit — reuse with shifted source line.
         rows.extend(
@@ -583,6 +608,21 @@ fn try_incremental_build(
     // chunk-aligned start by `net != 0`). The matrix invariant is
     // contiguous ordered chunks, not uniform sizing — the renderer
     // walks via `chunk.rows.iter()` so any ragged tail is fine.
+    // H.1: highlight scoped to the rebuild zone [rebuild_lo, rebuild_hi),
+    // indexed relative to `rebuild_lo` — not the whole file.
+    let spans = highlight_range(rebuild_lo, rebuild_hi);
+    let inputs = ChunkInputs {
+        snapshot,
+        per_line_spans: spans.as_ref(),
+        spans_base: rebuild_lo,
+        inlays_by_line: &inlays_by_line,
+        fold_index: &fold_index,
+        theme,
+        default_fg,
+        default_flags,
+        inlay_fg,
+        whitespace,
+    };
     let mut cur = rebuild_lo;
     while cur < rebuild_hi {
         let end = cur.saturating_add(chunk_size).min(rebuild_hi);
@@ -679,6 +719,9 @@ fn build_matrix(
     let inputs = ChunkInputs {
         snapshot,
         per_line_spans: per_line_spans.as_ref(),
+        // Full rebuild highlights the whole file (base 0). H.3 will scope
+        // this to the viewport window for large-file O(viewport) builds.
+        spans_base: 0,
         inlays_by_line: &inlays_by_line,
         fold_index: &fold_index,
         theme,
@@ -757,7 +800,14 @@ fn next_power_of_two(n: u32) -> u32 {
 /// repeatedly without cloning.
 struct ChunkInputs<'a> {
     snapshot: &'a lattice_runtime::DocumentSnapshot,
+    /// Per-line highlight spans for the range `[spans_base, spans_base + len)`,
+    /// indexed RELATIVE to `spans_base` (H.1, 2026-06-04). The highlight is
+    /// scoped to exactly the range a rebuild touches — whole-file no longer —
+    /// so `build_chunk_rows` looks up `per_line_spans[line_idx - spans_base]`.
+    /// `None` ⇒ syntax unavailable/stale; every row falls back to default fg.
     per_line_spans: Option<&'a Vec<Vec<lattice_syntax::StyledSpan>>>,
+    /// Absolute source line that `per_line_spans[0]` corresponds to.
+    spans_base: u32,
     inlays_by_line: &'a [Vec<(u32, &'a str)>],
     fold_index: &'a crate::folds::FoldIndex,
     theme: &'a crate::ui::theme::Theme,
@@ -786,7 +836,10 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
         let text = inputs.snapshot.buffer.line(line_idx).unwrap_or_default();
         let line_spans: &[lattice_syntax::StyledSpan] = inputs
             .per_line_spans
-            .and_then(|v| v.get(line_idx as usize))
+            .and_then(|v| {
+                let rel = line_idx.checked_sub(inputs.spans_base)?;
+                v.get(rel as usize)
+            })
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let line_inlays = inputs
@@ -2183,6 +2236,82 @@ mod tests {
         assert!(
             Arc::ptr_eq(&bb_pre, &m2.row_at_source_line(2).unwrap().cells),
             "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior cells Arc — keeps its colours"
+        );
+    }
+
+    /// H.1 (2026-06-04): the range-scoped highlight must colour the
+    /// EDITED line correctly — i.e. `spans_base` relative indexing lands
+    /// the scoped spans on the right line. Edits line 1 in place to
+    /// introduce a Rust `fn` keyword, with the syntax snapshot parsed at
+    /// the post-edit version; the incremental rebuild highlights only
+    /// `[edit_lo, affected_hi)` (base = edit_lo), so a base/index slip
+    /// would either miscolour or skip the keyword.
+    #[tokio::test]
+    async fn h1_scoped_highlight_colours_the_edited_line() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let keyword_fg = resolve_style(&theme, lattice_syntax::Style::Keyword).0;
+
+        // v1: plain seed (no syntax handle) → prior whole-doc matrix.
+        let snap1 = snap_of_versioned("let a = 1;\nlet b = 2;\nlet c = 3;\n", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+
+        // v2: edit line 1 in place → introduces `fn`. Rust syntax parsed
+        // at v2 + seeded so the scoped highlight has fresh spans.
+        let text2 = "let a = 1;\nfn b() {}\nlet c = 3;\n";
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .unwrap();
+        s.parse_at(text2, 2);
+        let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+            s,
+            &tokio::runtime::Handle::current(),
+            None,
+        ));
+        let snap2 = snap_of_versioned(text2, 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(1, 1, 1); // in-place edit of line 1
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            Some(handle),
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+
+        let m = matrix_cell.load_full();
+        let line1 = m.row_at_source_line(1).expect("line 1 row present");
+        assert!(
+            line1.cells.iter().any(|c| c.fg == keyword_fg),
+            "the scoped highlight (base = edit_lo) must colour the edited line's \
+             `fn` keyword — guards `spans_base` relative indexing"
         );
     }
 

@@ -81,6 +81,7 @@ fn rs_for(
     version: MatrixVersion,
     last_edit: Option<EditDelta>,
     matrix_cell: Arc<ArcSwap<CellMatrix>>,
+    syntax: Option<Arc<lattice_syntax::SyntaxHandle>>,
 ) -> ArcSwap<RenderState> {
     use lattice_core::BufferId;
     use lattice_core::ui::pane::PaneId;
@@ -94,7 +95,7 @@ fn rs_for(
         virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty())),
         version,
         snapshot: Some(snapshot.clone()),
-        syntax_handle: None,
+        syntax_handle: syntax.clone(),
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,
@@ -112,7 +113,7 @@ fn rs_for(
         matrix: matrix_cell,
         version,
         snapshot: Some(snapshot),
-        syntax_handle: None,
+        syntax_handle: syntax,
         inlay_hints,
         folds,
         viewport_height: VIEWPORT_HEIGHT,
@@ -150,7 +151,7 @@ fn bench_full_build(c: &mut Criterion) {
                     // check always fails the cache and forces
                     // build_matrix.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell);
+                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell, None);
                     let decision = recompute(&rs);
                     black_box(decision);
                 });
@@ -178,7 +179,7 @@ fn bench_incremental_build(c: &mut Criterion) {
         // clone its Arc as the starting point for each iter so
         // the prefix-reuse path is exercised.
         let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs0 = rs_for(snapshot.clone(), v1, None, initial_matrix_cell.clone());
+        let rs0 = rs_for(snapshot.clone(), v1, None, initial_matrix_cell.clone(), None);
         recompute(&rs0);
         let baseline_matrix = initial_matrix_cell.load_full();
 
@@ -200,7 +201,7 @@ fn bench_incremental_build(c: &mut Criterion) {
                     // matrix and the same edit delta.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> =
                         Arc::new(ArcSwap::from_pointee((**baseline).clone()));
-                    let rs = rs_for(snap.clone(), *ver, Some(*ed), matrix_cell);
+                    let rs = rs_for(snap.clone(), *ver, Some(*ed), matrix_cell, None);
                     let decision = recompute(&rs);
                     black_box(decision);
                 });
@@ -225,10 +226,10 @@ fn bench_cache_hit(c: &mut Criterion) {
         // version match and return CacheHit without touching
         // build_matrix or try_incremental_build.
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs_full = rs_for(snapshot.clone(), version, None, matrix_cell.clone());
+        let rs_full = rs_for(snapshot.clone(), version, None, matrix_cell.clone(), None);
         recompute(&rs_full);
 
-        let rs = rs_for(snapshot, version, None, matrix_cell.clone());
+        let rs = rs_for(snapshot, version, None, matrix_cell.clone(), None);
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
@@ -244,10 +245,82 @@ fn bench_cache_hit(c: &mut Criterion) {
     group.finish();
 }
 
+/// H.1 (2026-06-04): incremental rebuild WITH a live syntax handle, so the
+/// per-keystroke **highlight** cost is in the measurement (the other benches
+/// pass `syntax: None` and measure cell-build only). After H.1 the rebuild
+/// highlights only the edited line range, so this should stay roughly flat as
+/// `line_count` grows; a regression to whole-file highlight shows up here as
+/// cost scaling with file size. Recorded in `docs/dev/operations/benchmarks.md`.
+fn bench_incremental_build_highlighted(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cells_worker_incremental_highlighted");
+    for &line_count in &[100usize, 1_000, 5_000] {
+        let doc = synthetic_rust_doc(line_count);
+        let text = doc.text();
+        let snapshot = Arc::new(DocumentSnapshot::__bench_from_document(&doc));
+        let v1 = MatrixVersion {
+            text: 1,
+            ..MatrixVersion::ZERO
+        };
+        let v2 = MatrixVersion {
+            text: 2,
+            ..MatrixVersion::ZERO
+        };
+
+        // Rust syntax parsed at the doc version so the scoped highlight has
+        // fresh spans. `seeded` retains the snapshot without a runtime (the
+        // reparse worker is dropped) — fine for a one-shot bench rebuild.
+        let mut syn = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .unwrap();
+        syn.parse_at(&text, 2);
+        let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(syn));
+
+        let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let rs0 = rs_for(
+            snapshot.clone(),
+            v1,
+            None,
+            initial_matrix_cell.clone(),
+            Some(handle.clone()),
+        );
+        recompute(&rs0);
+        let baseline_matrix = initial_matrix_cell.load_full();
+
+        // In-place edit of the middle line (removed == added == 1).
+        let edit = EditDelta {
+            start_line: (line_count / 2) as u32,
+            lines_removed: 1,
+            lines_added: 1,
+        };
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{line_count}_lines")),
+            &(snapshot, baseline_matrix, v2, edit, handle),
+            |b, (snap, baseline, ver, ed, handle)| {
+                b.iter(|| {
+                    let matrix_cell: Arc<ArcSwap<CellMatrix>> =
+                        Arc::new(ArcSwap::from_pointee((**baseline).clone()));
+                    let rs = rs_for(
+                        snap.clone(),
+                        *ver,
+                        Some(*ed),
+                        matrix_cell,
+                        Some(handle.clone()),
+                    );
+                    let decision = recompute(&rs);
+                    black_box(decision);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_full_build,
     bench_incremental_build,
+    bench_incremental_build_highlighted,
     bench_cache_hit
 );
 criterion_main!(benches);

@@ -69,6 +69,35 @@ target rather than just a slower number.
 
 ---
 
+## H.1 — range-scoped rebuild highlight (2026-06-04)
+
+Incremental highlight initiative, slice H.1 (design:
+`../architecture/incremental-highlight.md`). The cells worker now highlights
+only the line range a rebuild touches (`highlight_lines(edit_lo, affected_hi)`)
+instead of the whole file every keystroke.
+
+New bench `cells_worker_incremental_highlighted` — incremental rebuild **with a
+live syntax handle** so the per-keystroke highlight cost is measured (the
+pre-existing `cells_worker_incremental_build` passes `syntax: None` and measures
+cell-build only; the *delta* between the two at the same line count isolates the
+highlight cost).
+
+| line_count | incremental_highlighted (median) |
+|------------|----------------------------------|
+| 100        | ~19.7 µs                         |
+| 1000       | ~1.08 ms                         |
+| 5000       | ~1.28 ms                         |
+
+**Caveat (read before trusting the absolute numbers):** each iter clones the
+whole baseline matrix (`(**baseline).clone()`, O(file)) as setup — the same
+artifact `cells_worker_incremental_build` has — so the 1000/5000 figures are
+dominated by that clone, not the highlight. The H.1 win (scoped highlight) is
+the *flatness of the delta* vs the `None`-syntax bench, and is pinned by the
+correctness test `h1_scoped_highlight_colours_the_edited_line`. A regression to
+whole-file highlight would show this bench's delta-over-clone scaling with file
+size. H.3 (viewport-scoped) will add the headline large-file (100k) number with
+a clone-free harness.
+
 ## MARG.4 — annotation pipeline benches (2026-06-03)
 
 Bench file: `crates/lattice-completion/benches/annotation_pipeline.rs`.

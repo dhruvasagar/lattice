@@ -8152,8 +8152,20 @@ impl Editor {
         self.visual_anchor = None;
         self.replace_history.clear();
         self.folds.clear();
-        self.position_history.clear();
-        self.position_history_cursor = 0;
+        // M.10.3.fix1 (2026-06-03): do NOT clear `position_history`
+        // here. The jump list is a SESSION-wide construct that
+        // walks across files (vim's `<C-o>` after `gd`, `*`,
+        // `gf`, `:e other.rs`, search-multibuffer `<CR>`, LSP
+        // go-to-def, ...). Clearing on every fresh-file open
+        // breaks the cross-buffer walk: e.g., search `<CR>`
+        // pushes an entry via `Effect::RecordJump` and then the
+        // immediately-following `do_edit(source_path)` lands
+        // here and wipes it — `<C-o>` reports "no jumps."
+        // Stale entries (entry's `buffer_id` not in the
+        // registry) are skipped by the `reachable()` filter in
+        // [`Editor::do_walk_history`], so leaving the ring
+        // populated is safe even when buffers are closed via
+        // `:bd`. POSITION_HISTORY_CAP bounds growth.
         self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
         let signals = self.activate_buffer_state();

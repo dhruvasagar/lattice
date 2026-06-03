@@ -2026,18 +2026,33 @@ mod tests {
     }
 
     #[test]
-    fn first_chord_after_arming_auto_submits() {
+    fn chord_capture_appends_without_submitting() {
+        // K.3.5.fix (2026-06-03): chord arguments are SEQUENCES,
+        // not single chords. The user types the full chord text
+        // (any number of chord tokens) and submits with `<CR>`.
+        // Single-key chord (`j`) and multi-key chord (`gg`)
+        // share the same flow.
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
+        // Prompt armed: chord-capture overlay active, cmdline
+        // pre-filled, but no auto-submit on next chord.
         assert!(a.editor.auto_submit_after_chord);
-        // The first chord token captured should auto-fire submit;
-        // the cmdline should clear and we land back in Normal.
-        a.apply(Action::CommandLineAppendChord("j".into()));
-        assert!(!a.editor.auto_submit_after_chord);
+        assert_eq!(a.editor.command_line, "describe-key ");
+        // Single chord token gets appended; we stay in Command
+        // mode awaiting more chord tokens or `<CR>`.
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        assert!(matches!(a.editor.modal, ModalState::Command));
+        assert_eq!(a.editor.command_line, "describe-key g");
+        // Multi-key chord: second token appends, still in
+        // Command mode, no submit fired.
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        assert!(matches!(a.editor.modal, ModalState::Command));
+        assert_eq!(a.editor.command_line, "describe-key gg");
+        // Explicit `<CR>` submits.
+        a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.editor.modal, ModalState::Normal));
-        // The submitted line was `describe-key j` -- which opens
-        // a help buffer for chord `j`. Smoke check that some
-        // help got produced.
+        // The submitted line was `describe-key gg`, which opens
+        // a help buffer for the `gg` chord. Smoke check.
         assert!(a.editor.popup_buffer.is_some());
     }
 

@@ -508,12 +508,26 @@ pub struct Editor {
     /// first Up so Down can return to it after walking
     /// through history.
     pub command_history_pending: Option<String>,
-    /// One-shot "auto-submit on next chord" flag. Set when
-    /// the user submitted a Chord-arg-required command with
-    /// no value (`:describe-key<CR>`); the cmdline pre-fills
-    /// with the command word + space, and the very next
-    /// captured chord auto-fires `Action::CommandLineSubmit`
-    /// without an explicit `<CR>`. Reset on cancel / submit.
+    /// Chord-capture overlay flag. Set when the user submitted
+    /// a Chord-arg-required command with no value
+    /// (`:describe-key<CR>` or the K.3.2 `<C-h>k` binding); the
+    /// cmdline pre-fills with the command word + space and
+    /// translation routes every key through
+    /// `translate_command_chord_capture` so plain letters
+    /// appear as chord tokens (`g` → `g`, `<C-c>` → `<C-c>`,
+    /// `<Up>` → `<Up>`, ...). The renderer reads this through
+    /// `auto_submit_hint` to draw the chord-capture cmdline
+    /// hint. Reset on cancel / submit.
+    ///
+    /// K.3.5.fix (2026-06-03): the field's original purpose
+    /// also included auto-submitting on the FIRST captured
+    /// chord token — that auto-submit was dropped because
+    /// chord arguments are sequences (`gg`, `<C-w>v`, `]e`,
+    /// `<leader>fz`), not single chords. The user now types
+    /// the full chord text and submits with `<CR>`. Field name
+    /// kept for backward compat across the renderer / context
+    /// boundaries; behavior is "chord-capture mode active,"
+    /// no longer "auto-submit on chord."
     pub auto_submit_after_chord: bool,
     /// Tree-sitter language registry. Services the document
     /// buffer's `Syntax` and every `HelpBuffer` constructed

@@ -4430,16 +4430,27 @@ impl Editor {
     /// candidates for chord input). When the cmdline was armed by a
     /// missing-arg prompt, the very next chord token also fires
     /// submit (one-shot auto-submit).
-    pub fn do_command_line_append_chord(&mut self, token: String, out: &mut DispatchOutcome) {
+    pub fn do_command_line_append_chord(&mut self, token: String, _out: &mut DispatchOutcome) {
         if !matches!(self.modal, ModalState::Command) {
             return;
         }
         self.command_line.push_str(&token);
         self.completion_state = None;
-        if self.auto_submit_after_chord {
-            self.auto_submit_after_chord = false;
-            self.do_command_line_submit(out);
-        }
+        // K.3.5.fix (2026-06-03): auto-submit-after-chord dropped.
+        // The original K.3.5 design auto-submitted on the first
+        // captured chord token so `<C-h>k j` was one keypress
+        // for the user. But chord arguments are SEQUENCES, not
+        // single chords: vim's grammar binds multi-key chords
+        // (`gg`, `<C-w>v`, `]e`, `<leader>fz`, ...) and the
+        // user can't describe any of them when the cmdline
+        // submits after the first `g`. The chord-capture overlay
+        // (translation of plain letters to chord tokens, drawn
+        // hint in the cmdline) STAYS — driven by
+        // `auto_submit_after_chord` via the `chord_capture` ctx
+        // flag and the renderer's `auto_submit_hint` read — but
+        // the explicit `<CR>` is now required to submit. Single-
+        // key chord case is still one chord-keystroke + `<CR>`;
+        // multi-key chord case works identically.
     }
 
     /// 5.5.G.23.cmdline: `<Tab>` — open the popup if closed, advance

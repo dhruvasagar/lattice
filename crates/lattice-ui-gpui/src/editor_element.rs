@@ -935,7 +935,21 @@ impl Element for EditorElement {
             // entry via `doc_to_shaped_row_local` so the cursor
             // lookup below remaps from doc-row index (position
             // in self.gutter) to shaped_text row.
-            for meta in &self.gutter {
+            // 2026-06-03: cap interleaved (doc + virtual) display
+            // rows at `viewport_height`, mirroring the TUI's
+            // `compose_visible_lines_inner` `while out.len() <
+            // height` loop. Without this, the gutter walk emits
+            // `viewport_height` DOC rows and then stacks virtual
+            // rows (excerpt headers) on top, overflowing the pane
+            // and painting the surplus behind the modeline. The
+            // host's `bottom_anchored_scroll` keeps the cursor
+            // within this budget, so the cap only ever drops rows
+            // below the cursor that wouldn't fit anyway. Parity
+            // with the TUI peer per [[feedback_tui_gpui_parity]].
+            'rows: for meta in &self.gutter {
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
+                }
                 let line_idx = meta.line_idx as usize;
                 let rel = line_idx.saturating_sub(self.scroll as usize);
                 // 2026-05-26: raw_lines indexed by visible-row
@@ -948,6 +962,9 @@ impl Element for EditorElement {
                     meta.line_idx,
                     lattice_cells::AnchorPosition::Above,
                 ) {
+                    if shaped_text.len() as u32 >= self.viewport_height {
+                        break 'rows;
+                    }
                     push_virtual_row(
                         vrow,
                         self.gutter_width,
@@ -963,6 +980,14 @@ impl Element for EditorElement {
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
                     );
+                }
+                // The doc row itself must also respect the budget:
+                // if Above-rows just filled the viewport, stop
+                // before pushing it (and its gutter entry) so the
+                // per-row vecs stay 1:1 and nothing paints past the
+                // pane.
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
                 }
                 // Record the shaped_text row index of this
                 // doc row for the cursor remap below.
@@ -1016,6 +1041,9 @@ impl Element for EditorElement {
                     meta.line_idx,
                     lattice_cells::AnchorPosition::Below,
                 ) {
+                    if shaped_text.len() as u32 >= self.viewport_height {
+                        break 'rows;
+                    }
                     push_virtual_row(
                         vrow,
                         self.gutter_width,

@@ -50,8 +50,8 @@ pub use cell::{flags as cell_flags, Cell};
 pub use chunk::CellChunk;
 pub use edit_delta::EditDelta;
 pub use matrix::{
-	CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice, DisplaySliceIter,
-	CHUNK_SIZE_WHOLE_DOC,
+	wrap_segments, CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice,
+	DisplaySliceIter, CHUNK_SIZE_WHOLE_DOC,
 };
 pub use row::{CellRow, InlayOffset};
 pub use version::MatrixVersion;

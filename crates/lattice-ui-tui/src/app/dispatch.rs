@@ -1692,6 +1692,44 @@ mod tests {
         assert!(a.editor.partial_chord.is_empty());
     }
 
+    /// Regression (2026-06-03, `gjcg` → `gg` bug): an UNBOUND chord
+    /// continuation translates to `Action::None`, and that must
+    /// CLEAR the pending prefix — otherwise `[g]` stays latched and
+    /// every following non-`g`-continuation key is swallowed until a
+    /// valid one completes (e.g. `gg`). `Action::None` was wrongly
+    /// exempted as renderer-housekeeping; it is not.
+    #[test]
+    fn unbound_continuation_clears_partial_chord() {
+        let mut a = app_with("abc", 10);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'g',
+        )));
+        assert_eq!(a.editor.partial_chord.len(), 1, "`g` latched the prefix");
+        // `gj` is unbound ⇒ translate returns `Action::None`.
+        a.apply(Action::None);
+        assert!(
+            a.editor.partial_chord.is_empty(),
+            "an unbound continuation must cancel the pending prefix"
+        );
+    }
+
+    /// The complement: genuine renderer-housekeeping actions that
+    /// fire BETWEEN keystrokes must NOT clear a pending prefix
+    /// (the 2026-05-22 fix this must not regress).
+    #[test]
+    fn housekeeping_preserves_partial_chord() {
+        let mut a = app_with("abc", 10);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'g',
+        )));
+        a.apply(Action::EnsureCursorVisible);
+        assert_eq!(
+            a.editor.partial_chord.len(),
+            1,
+            "per-frame EnsureCursorVisible must not drop the pending `g`"
+        );
+    }
+
     #[test]
     fn entering_insert_mode_does_not_move_cursor() {
         let mut a = app_with("abc", 10);

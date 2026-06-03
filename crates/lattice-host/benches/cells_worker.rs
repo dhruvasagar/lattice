@@ -98,6 +98,8 @@ fn rs_for(
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,
+        viewport_width: 0,
+        wrap: false,
         foldenable: false,
         last_edit,
     };

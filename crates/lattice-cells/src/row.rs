@@ -90,6 +90,29 @@ impl CellRow {
         self.cells.len() as u32
     }
 
+    /// Soft-wrap (W.2/A2): the cell sub-slice for display segment
+    /// `seg` when this row is wrapped at `width` columns. Segment 0
+    /// covers columns `[0, width)`, segment 1 `[width, 2·width)`,
+    /// and so on. The last segment is short when `col_count` isn't a
+    /// multiple of `width`; out-of-range segments return an empty
+    /// slice.
+    ///
+    /// `width == 0` means wrapping is off: segment 0 is the whole
+    /// row, every other segment is empty. Pure borrow — no
+    /// allocation, and the cells (with their resolved syntax
+    /// colours/flags) are untouched, so highlighting is preserved
+    /// verbatim. Shared by both renderers so segment geometry is
+    /// defined in one place.
+    pub fn segment(&self, seg: u32, width: u32) -> &[Cell] {
+        if width == 0 {
+            return if seg == 0 { &self.cells } else { &[] };
+        }
+        let len = self.cells.len();
+        let start = (seg as usize).saturating_mul(width as usize).min(len);
+        let end = start.saturating_add(width as usize).min(len);
+        &self.cells[start..end]
+    }
+
     /// `true` when the row has no cells. Visually-empty source
     /// lines produce empty rows.
     pub fn is_empty(&self) -> bool {
@@ -141,6 +164,25 @@ mod tests {
         assert!(r.is_empty());
         assert_eq!(r.col_count(), 0);
         assert!(r.inlay_offsets.is_empty());
+    }
+
+    #[test]
+    fn segment_slices_at_width() {
+        let cells: Vec<Cell> = (0..10u8).map(|i| ascii(b'0' + i)).collect();
+        let r = CellRow::new(cells, 0, Vec::<InlayOffset>::new());
+        // Wrap off ⇒ seg 0 is the whole row, others empty.
+        assert_eq!(r.segment(0, 0).len(), 10);
+        assert_eq!(r.segment(1, 0).len(), 0);
+        // Wrap at 4 ⇒ segments [0,4), [4,8), [8,10) (short last).
+        assert_eq!(r.segment(0, 4).len(), 4);
+        assert_eq!(r.segment(0, 4)[0].codepoint, b'0' as u32);
+        assert_eq!(r.segment(1, 4).len(), 4);
+        assert_eq!(r.segment(1, 4)[0].codepoint, b'4' as u32);
+        assert_eq!(r.segment(2, 4).len(), 2);
+        assert_eq!(r.segment(2, 4)[0].codepoint, b'8' as u32);
+        // Out-of-range segment ⇒ empty, no panic.
+        assert_eq!(r.segment(3, 4).len(), 0);
+        assert_eq!(r.segment(99, 4).len(), 0);
     }
 
     #[test]

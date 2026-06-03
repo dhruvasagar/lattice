@@ -233,6 +233,29 @@ impl VirtualRowMatrix {
 		let idx = (line as usize).min(self.line_index.len().saturating_sub(1));
 		self.line_index[idx]
 	}
+
+	/// Number of virtual rows whose anchor sits in the inclusive
+	/// document-line range `[lo, hi]`, regardless of
+	/// [`AnchorPosition`]. Returns `0` when `lo > hi`.
+	///
+	/// O(1) — two [`Self::first_row_at_or_after`] lookups. This is
+	/// the geometry primitive the host's scroll model uses to
+	/// answer "how many *display* rows does the document-line span
+	/// `[lo, hi]` occupy", since each interleaved virtual row
+	/// consumes a display row without being a document line. The
+	/// count is position-agnostic on purpose: a bottom-anchored
+	/// scroll over-reserves by at most the cursor line's own
+	/// `Below` rows, which is the safe direction (the last line is
+	/// guaranteed clear of the modeline rather than flush against
+	/// it).
+	pub fn virtual_rows_in_line_range(&self, lo: u32, hi: u32) -> u32 {
+		if lo > hi {
+			return 0;
+		}
+		let end = self.first_row_at_or_after(hi.saturating_add(1));
+		let start = self.first_row_at_or_after(lo);
+		end.saturating_sub(start)
+	}
 }
 
 /// Sort-order helper: `Above` < `Below` at the same anchor
@@ -375,6 +398,38 @@ mod tests {
 		// (10).
 		assert_eq!(m.rows[0].anchor_line, 5);
 		assert_eq!(m.rows[1].anchor_line, 10);
+	}
+
+	#[test]
+	fn virtual_rows_in_line_range_counts_inclusive() {
+		// anchors at lines 2 (x2), 5, 7.
+		let rows = vec![
+			row(2, AnchorPosition::Above),
+			row(2, AnchorPosition::Below),
+			row(5, AnchorPosition::Above),
+			row(7, AnchorPosition::Below),
+		];
+		let m = VirtualRowMatrix::build(rows, 10, VirtualRowVersion(1));
+
+		// Empty / inverted ranges.
+		assert_eq!(m.virtual_rows_in_line_range(3, 2), 0);
+		// Range below every anchor.
+		assert_eq!(m.virtual_rows_in_line_range(0, 1), 0);
+		// Inclusive of both endpoints: [2, 7] covers all four.
+		assert_eq!(m.virtual_rows_in_line_range(2, 7), 4);
+		// Endpoint inclusivity: [2, 2] captures both line-2 rows.
+		assert_eq!(m.virtual_rows_in_line_range(2, 2), 2);
+		// Mid-range: [3, 5] captures only the line-5 row.
+		assert_eq!(m.virtual_rows_in_line_range(3, 5), 1);
+		// [6, 7] captures only the line-7 row.
+		assert_eq!(m.virtual_rows_in_line_range(6, 7), 1);
+		// Range past EOF is clamped, never panics.
+		assert_eq!(m.virtual_rows_in_line_range(8, u32::MAX), 0);
+		// The empty matrix reports zero for any range.
+		assert_eq!(
+			VirtualRowMatrix::empty().virtual_rows_in_line_range(0, u32::MAX),
+			0
+		);
 	}
 
 	#[test]

@@ -1837,6 +1837,65 @@ fn manually_wrap_lines(lines: Vec<Line<'static>>, inner_width: usize) -> Vec<Lin
     out
 }
 
+/// Soft-wrap (W.4): gutter continuation marker for wrapped-line
+/// segments after the first. `↩`-style left arrow (U+21AA) is a
+/// plain BMP glyph that renders in every terminal font, so unlike
+/// nerd-font icons it needs no palette fallback
+/// (`feedback_icon_palette` governs nerd-font surfaces).
+const WRAP_CONT_MARKER: &str = "↪";
+
+/// Soft-wrap (W.4): split a fully-overlaid body row into display
+/// segments of `width` columns each, preserving every span's style.
+/// One column == one char (the cell-grid's ASCII design target,
+/// where char == byte == display column; wide chars are an explicit
+/// approximation shared with the cells layer). `width == 0` (wrap
+/// off) or a body that fits returns a single segment, so the caller
+/// can treat the result uniformly.
+///
+/// Segment boundaries match the host's
+/// `CellMatrix::segment_count(line) = ⌈col_count / width⌉`, so the
+/// scroll model and the renderer agree on how many display rows a
+/// source line occupies. The continuation marker lives in the
+/// gutter (see the compose loop), not in the body, so every segment
+/// uses the full content width.
+fn split_body_into_segments(
+    body: Vec<Span<'static>>,
+    width: usize,
+) -> Vec<Vec<Span<'static>>> {
+    if width == 0 {
+        return vec![body];
+    }
+    let total_cols: usize = body.iter().map(|s| s.content.chars().count()).sum();
+    if total_cols <= width {
+        return vec![body];
+    }
+    let mut segments: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut used: usize = 0; // columns filled in the current segment
+    for span in body {
+        let style = span.style;
+        let mut chunk = String::new();
+        for ch in span.content.chars() {
+            if used == width {
+                if !chunk.is_empty() {
+                    current.push(Span::styled(std::mem::take(&mut chunk), style));
+                }
+                segments.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            chunk.push(ch);
+            used += 1;
+        }
+        if !chunk.is_empty() {
+            current.push(Span::styled(chunk, style));
+        }
+    }
+    if !current.is_empty() || segments.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
 /// Walk back from `at` to the nearest UTF-8 char boundary so
 /// `s.split_at(at)` doesn't panic. Returns 0 when `at == 0`.
 fn clamp_to_char_boundary(s: &str, at: usize) -> usize {
@@ -3665,6 +3724,13 @@ fn compose_visible_lines_inner(
             })
     };
     let body_col_width = buffer_w;
+    // W.4 (soft-wrap): `:set wrap`. When on, the per-line body is
+    // kept at full width (truncation below is skipped) so
+    // `split_body_into_segments` can wrap it into `body_col_width`
+    // columns; when off, the body is clipped to the viewport
+    // (horizontal-scroll behaviour, unchanged).
+    let wrap_on = app.ad().option_cache.wrap_lines;
+    let body_trunc_w = if wrap_on { u32::MAX } else { buffer_w };
     // Active-pane composed→source row map. Cloned once per frame
     // (Arc bump). The active path is the only place that reads
     // `app.ad().display_line_numbers` — inactive panes get their
@@ -3723,6 +3789,14 @@ fn compose_visible_lines_inner(
         // ratatui `Vec<Span<'static>>` directly. Lines that
         // don't match the format render plain (e.g. blank
         // lines at the end of the rope).
+        // W.4.t: tracks whether `body` came from the cells matrix
+        // (already whitespace-decorated + tab-expanded by the
+        // builder) vs the raw-text fallback. The compose-loop
+        // whitespace pass below must NOT re-decorate a cell-derived
+        // body — doing so re-classifies the tab's expanded fill
+        // spaces and desyncs (cell spans no longer align 1:1 with
+        // source bytes once tabs/markers expand).
+        let mut body_from_cells = false;
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
@@ -3802,10 +3876,11 @@ fn compose_visible_lines_inner(
             if spans.is_empty() && !line_text.is_empty() {
                 truncate_spans_to_width(
                     vec![Span::raw(line_text.clone())],
-                    buffer_w,
+                    body_trunc_w,
                 )
             } else {
-                truncate_spans_to_width(spans, buffer_w)
+                body_from_cells = !spans.is_empty();
+                truncate_spans_to_width(spans, body_trunc_w)
             }
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
@@ -3813,7 +3888,13 @@ fn compose_visible_lines_inner(
         // on, walks each rendered span and substitutes glyphs
         // for tab / trailing / leading / space / EOL per the
         // typed `display.whitespace.*` options.
-        if app.ad().option_cache.show_whitespace {
+        //
+        // W.4.t: skip the cell-derived path — the cells builder
+        // already decorated whitespace (and expanded tabs to their
+        // display width), so re-running here would double-decorate
+        // and desync against source bytes. Only the raw-text
+        // fallback (cells stale / absent) needs decoration here.
+        if app.ad().option_cache.show_whitespace && !body_from_cells {
             let decoration = WhitespaceDecoration::from_app(app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -4169,11 +4250,43 @@ fn compose_visible_lines_inner(
             Some(bg) => apply_diff_tint(body, bg),
             None => body,
         };
-        out.push(combine_prefixed(
-            vec![severity_cell, diff_sign_cell],
-            gutter,
-            body,
-        ));
+        // W.4 (soft-wrap): split the fully-overlaid body into
+        // display segments of `body_col_width` columns when `:set
+        // wrap` is on. Segment 0 carries the real prefix + gutter
+        // (line number / fold / diagnostic); continuation segments
+        // get a blank severity/diff prefix and a `↪` gutter. Wrap
+        // off ⇒ one segment ⇒ byte-identical to the prior single
+        // push. The height cap stops mid-line if the viewport
+        // fills (matches the pre-wrap truncation behaviour).
+        let segments = if wrap_on {
+            split_body_into_segments(body, body_col_width as usize)
+        } else {
+            vec![body]
+        };
+        let mut seg_iter = segments.into_iter();
+        if let Some(seg0) = seg_iter.next() {
+            out.push(combine_prefixed(
+                vec![severity_cell, diff_sign_cell],
+                gutter,
+                seg0,
+            ));
+        }
+        for seg in seg_iter {
+            if (out.len() as u32) >= height {
+                break;
+            }
+            let cont_gutter = Span::styled(
+                format_gutter_cell(WRAP_CONT_MARKER, gutter_w, None),
+                TuiStyle::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            );
+            out.push(combine_prefixed(
+                vec![Span::raw(" "), Span::raw(" ")],
+                cont_gutter,
+                seg,
+            ));
+        }
         // D.3.b.1: emit Below-anchored virtual rows for this
         // document line, then continue to the next visible
         // document line.
@@ -5341,10 +5454,32 @@ fn buffer_line_to_visible_row_with(
     target: u32,
     viewport_height: u32,
     scroll: u32,
+    // W.4.t cursor-fix: columns a wrapped line is broken at, or `0`
+    // when `:set wrap` is off. Each doc line then contributes
+    // `segment_count` display rows (not 1) to the walk, so the
+    // cursor row stays correct when a wrapped line sits above it.
+    // Composes with the existing virtual-row + fold accounting:
+    // every kind of virtual textual height is summed here, matching
+    // what `compose_visible_lines_inner` paints.
+    wrap_width: u32,
 ) -> Option<u32> {
     if target < scroll {
         return None;
     }
+    // Cells matrix for per-line display width (tab-expanded cell
+    // count == what the renderer paints). Stale / missing rows fall
+    // back to the rope line's char count.
+    let cells_matrix = view.app.render_state.load().cells.matrix.load_full();
+    let segment_rows = |line: u32| -> u32 {
+        if wrap_width == 0 {
+            return 1;
+        }
+        let width = cells_matrix
+            .row_at_source_line(line)
+            .map(|r| r.col_count())
+            .unwrap_or_else(|| snap.buffer.line(line).map(|s| s.chars().count() as u32).unwrap_or(0));
+        lattice_cells::wrap_segments(width, wrap_width)
+    };
     // D.3.b.1.cursor-fix (2026-05-29): account for virtual
     // rows the renderer interleaves between document rows.
     // Without this, the cursor was painted at the doc-row
@@ -5424,8 +5559,10 @@ fn buffer_line_to_visible_row_with(
         )
         .count() as u32;
         row += below_count;
+        // W.4.t: the doc line occupies `segment_count` display rows
+        // under wrap (1 when wrap is off), not a flat 1.
+        row += segment_rows(buf_line);
         buf_line = next_buf_line;
-        row += 1;
     }
     None
 }
@@ -5469,13 +5606,37 @@ fn cursor_screen_position_at(
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
-    let row_in_view =
-        buffer_line_to_visible_row_with(view, snap, cursor.line, area.height as u32, scroll)?;
     let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
     };
+    // W.4.t: body content width = the columns a wrapped line is
+    // broken at. Must match `compose_visible_lines_inner`'s
+    // `buffer_w` exactly so the cursor row/col agree with what is
+    // painted. `0` when `:set wrap` is off (no wrapping).
+    let wrap_width = if view.app.ad().option_cache.wrap_lines {
+        (area.width as u32)
+            .saturating_sub(gutter_w)
+            .saturating_sub(DIAG_GUTTER_WIDTH)
+            .saturating_sub(DIFF_SIGN_GUTTER_WIDTH)
+            .max(1)
+    } else {
+        0
+    };
+    // Map the buffer cursor line to the visible row, accounting for
+    // virtual rows + folds (existing) AND wrap-segment height
+    // (W.4.t) of every line above it. This is the first display row
+    // of the cursor's line; the cursor's own wrap segment is added
+    // below from its display column.
+    let row_in_view = buffer_line_to_visible_row_with(
+        view,
+        snap,
+        cursor.line,
+        area.height as u32,
+        scroll,
+        wrap_width,
+    )?;
     // `cursor.byte` is a UTF-8 byte offset into the line; the
     // terminal places glyphs by display width, not byte count. A
     // line containing `§` (2 bytes / 1 cell) or a CJK glyph (3
@@ -5495,14 +5656,32 @@ fn cursor_screen_position_at(
     // glyph it logically points at.
     let rs_st = view.app.render_state.load();
     let inlay_hints = &rs_st.syntax.inlay_hints;
-    let col = DIAG_GUTTER_WIDTH
-        + DIFF_SIGN_GUTTER_WIDTH
-        + gutter_w
-        + display_col_for_byte(&snap.buffer, cursor, inlay_hints);
+    // Display column of the cursor within its (unwrapped) line —
+    // tab-expanded + inlay-shifted.
+    let display_col = display_col_for_byte(
+        &snap.buffer,
+        cursor,
+        inlay_hints,
+        view.app.ad().option_cache.tabstop,
+    );
+    // W.4.t: split that column across wrap segments. The cursor's
+    // own segment index (`display_col / wrap_width`) adds to the
+    // row; the remainder (`display_col % wrap_width`) is the column
+    // within the segment. This is the exact inverse of
+    // `split_body_into_segments` (which breaks the body every
+    // `wrap_width` columns), so it stays correct for a line that
+    // wraps into any number of visual rows, not just two. Wrap off
+    // (`wrap_width == 0`) ⇒ the whole column, no extra row.
+    let (own_segment, body_col) = if wrap_width > 0 {
+        (display_col / wrap_width, display_col % wrap_width)
+    } else {
+        (0, display_col)
+    };
+    let col = DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH + gutter_w + body_col;
+    let row = row_in_view.saturating_add(own_segment);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
-        area.y
-            .saturating_add(row_in_view.try_into().unwrap_or(u16::MAX)),
+        area.y.saturating_add(row.try_into().unwrap_or(u16::MAX)),
     ))
 }
 
@@ -5523,8 +5702,9 @@ fn display_col_for_byte(
     buffer: &lattice_core::Buffer,
     pos: lattice_protocol::Position,
     inlay_hints: &[lattice_host::render_state::InlayHintRow],
+    tabstop: u32,
 ) -> u32 {
-    use unicode_width::UnicodeWidthStr;
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
     let line = match buffer.line(pos.line) {
         Some(s) => s,
@@ -5540,7 +5720,19 @@ fn display_col_for_byte(
     while byte > 0 && !line.is_char_boundary(byte) {
         byte -= 1;
     }
-    let base = UnicodeWidthStr::width(&line[..byte]) as u32;
+    // W.4.t: tab-aware prefix width. The cells builder expands each
+    // `\t` to the next multiple of `tabstop` columns, so the cursor
+    // must advance the same way (plain `UnicodeWidthStr` treats a
+    // tab as ~0 and would land the cursor inside the expanded tab).
+    let ts = tabstop.max(1);
+    let mut base = 0u32;
+    for ch in line[..byte].chars() {
+        if ch == '\t' {
+            base += ts - (base % ts);
+        } else {
+            base += UnicodeWidthChar::width(ch).unwrap_or(0) as u32;
+        }
+    }
     // Inlay shift: cumulative display width of every hint on
     // `pos.line` with `hint.byte <= cursor.byte`. The `<=`
     // matches the splice site (`splice_virtual_text_into_spans`
@@ -5633,6 +5825,41 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // ---- W.4: body wrap segment splitting ----
+
+    #[test]
+    fn split_body_wrap_off_or_fits_is_single_segment() {
+        let body = vec![Span::raw("hello world")];
+        // width 0 ⇒ wrap off.
+        assert_eq!(split_body_into_segments(body.clone(), 0).len(), 1);
+        // fits within width ⇒ single segment.
+        assert_eq!(split_body_into_segments(body, 80).len(), 1);
+    }
+
+    #[test]
+    fn split_body_breaks_at_width_preserving_styles() {
+        // Two styled spans: "abcd" + "efghij" = 10 cols, width 4 ⇒
+        // segments [abcd][efgh][ij]. Styles must survive the split.
+        let red = TuiStyle::default().fg(Color::Red);
+        let blue = TuiStyle::default().fg(Color::Blue);
+        let body = vec![Span::styled("abcd", red), Span::styled("efghij", blue)];
+        let segs = split_body_into_segments(body, 4);
+        assert_eq!(segs.len(), 3);
+        let text = |s: &[Span<'static>]| -> String {
+            s.iter().map(|sp| sp.content.as_ref()).collect()
+        };
+        assert_eq!(text(&segs[0]), "abcd");
+        assert_eq!(text(&segs[1]), "efgh");
+        assert_eq!(text(&segs[2]), "ij");
+        // Segment 0 is fully red; segment 1 spans the red→blue
+        // boundary ("e" was blue, but so is the rest of seg1).
+        assert_eq!(segs[0][0].style.fg, Some(Color::Red));
+        assert_eq!(segs[1][0].style.fg, Some(Color::Blue));
+        // Total column count matches ⌈10/4⌉ = 3 segments — the
+        // host's `CellMatrix::segment_count` agrees.
+        assert_eq!(segs.len(), lattice_cells::wrap_segments(10, 4) as usize);
     }
 
     // ---- M.7.3.b: whitespace decoration pre-pass ----
@@ -5929,6 +6156,43 @@ mod tests {
     }
 
     #[test]
+    fn compose_wraps_long_line_when_wrap_on() {
+        // 36-char single line; narrow total width forces wrapping.
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut app = app_with(long, 10);
+        app.editor.option_cache.wrap_lines = true;
+        // `ad()` reads the published render-state snapshot, not the
+        // live editor field, so publish after flipping wrap.
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 10, 20);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        // Wrapping produces ↪ continuation gutters …
+        assert!(
+            texts.iter().any(|t| t.contains('↪')),
+            "expected a ↪ continuation row, got {texts:?}"
+        );
+        // … and the tail of the long line still renders (not clipped
+        // away as it was with horizontal-scroll truncation). The
+        // final segment carries the end of the line.
+        assert!(
+            texts.iter().any(|t| t.contains("23456789")),
+            "wrapped tail must render in a continuation segment, got {texts:?}"
+        );
+    }
+
+    #[test]
+    fn compose_does_not_wrap_when_wrap_off() {
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let app = app_with(long, 10); // wrap defaults off
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 10, 20);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            !texts.iter().any(|t| t.contains('↪')),
+            "wrap off ⇒ no continuation rows, got {texts:?}"
+        );
+    }
+
+    #[test]
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.editor.set_scroll(2);
@@ -5979,6 +6243,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 4),
             &inlays,
+            4,
         );
         assert_eq!(before, 4, "shift must not apply before inlay anchor");
         // Cursor at the inlay anchor: shift applies (splice is
@@ -5987,6 +6252,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 5),
             &inlays,
+            4,
         );
         assert_eq!(at, 5 + 5, "shift applies at the inlay anchor");
         // Cursor past the inlay anchor (e.g. `$` to last byte):
@@ -5995,6 +6261,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &inlays,
+            4,
         );
         assert_eq!(eol, 9 + 5, "shift carries through to EOL");
         // Empty inlay slice: behaviour matches the pre-inlay path.
@@ -6002,8 +6269,71 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &[],
+            4,
         );
         assert_eq!(no_inlay, 9);
+    }
+
+    #[test]
+    fn cursor_row_accounts_for_multi_segment_wrap_above_and_within() {
+        // W.4.t: a line wrapping into 3 visual rows must shift the
+        // cursor row of lines below by 3 (not 1), and the cursor on
+        // that wrapped line must land on its own segment. This is
+        // the `dd`-deletes-wrong-line bug + the N-segment
+        // generalisation.
+        //
+        // Widths: gutter_width(n) = digits + 3 (lead+sep+glyph);
+        // DIAG + DIFF = 2. With width 40 and ≤9 lines ⇒ gutter 4 ⇒
+        // body_w = 40 - 4 - 2 = 34. line 1 is 69 chars ⇒ ⌈69/34⌉ = 3
+        // segments.
+        let body_w = 34usize;
+        let long = "x".repeat(2 * body_w + 1); // 69 ⇒ 3 segments
+        let text = format!("a\n{long}\nb\n");
+        let mut app = app_with(&text, 20);
+        app.editor.option_cache.wrap_lines = true;
+        app.editor.publish_render_state();
+        let area = Rect::new(0, 0, 40, 20);
+        let snap = app.ad().snapshot.clone();
+        let view = FrameView::from_app(&app);
+
+        // Cursor on line 2 ("b"), below the 3-row wrap of line 1.
+        // Display rows: line0 seg0 = 0; line1 segs = 1,2,3; line2 = 4.
+        let below = cursor_screen_position_at(
+            &view,
+            &snap,
+            area,
+            lattice_protocol::Position::new(2, 0),
+            0,
+        )
+        .unwrap();
+        assert_eq!(below.1, 4, "line below a 3-row wrap sits at display row 4");
+
+        // Cursor within the wrapped line, in its 3rd segment (byte
+        // 68 ⇒ 68/34 = segment 2). Rows: line0=0; line1 seg0=1,
+        // seg1=2, seg2=3.
+        let within = cursor_screen_position_at(
+            &view,
+            &snap,
+            area,
+            lattice_protocol::Position::new(1, 68),
+            0,
+        )
+        .unwrap();
+        assert_eq!(within.1, 3, "cursor in the 3rd wrap segment sits at display row 3");
+    }
+
+    #[test]
+    fn display_col_for_byte_expands_tabs_to_tabstop() {
+        // W.4.t: a leading tab advances the cursor to the next
+        // tab-stop, matching the cells builder's expansion.
+        let app = app_with("\tab", 5);
+        let buf = &app.ad().snapshot.buffer;
+        let col = |byte: u32| {
+            display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], 4)
+        };
+        assert_eq!(col(0), 0, "cursor on the tab sits at its start column");
+        assert_eq!(col(1), 4, "'a' after a tab lands at column tabstop");
+        assert_eq!(col(2), 5, "'b' follows at column tabstop+1");
     }
 
     #[test]

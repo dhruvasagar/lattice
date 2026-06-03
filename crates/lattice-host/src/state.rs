@@ -92,7 +92,7 @@ impl Default for OptionCache {
             relative_line_numbers: false,
             wrap_lines: false,
             ignorecase: false,
-            tabstop: 8,
+            tabstop: 4,
             foldenable: true,
             foldmethod: FoldMethod::Manual,
             scrolloff: 0,

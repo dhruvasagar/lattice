@@ -1167,16 +1167,16 @@ mod tests {
     #[test]
     fn load_persistent_config_applies_scalar_override_from_project_toml() {
         let ws = fresh_workspace("scalar-override");
-        write_workspace_config(&ws, "tabstop = 4\n");
+        write_workspace_config(&ws, "tabstop = 2\n");
         let mut a = app_with("", 5);
-        // tabstop default is 8; override should land before
-        // first frame.
+        // tabstop default is 4; a non-default override (2) should
+        // land before the first frame.
         assert_eq!(
             *a.editor
                 .config
                 .get_typed::<lattice_config::Tabstop>()
                 .unwrap(),
-            8
+            4
         );
         a.load_persistent_config(Some(&ws));
         assert_eq!(
@@ -1184,7 +1184,7 @@ mod tests {
                 .config
                 .get_typed::<lattice_config::Tabstop>()
                 .unwrap(),
-            4
+            2
         );
     }
 

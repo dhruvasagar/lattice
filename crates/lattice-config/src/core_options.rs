@@ -145,10 +145,13 @@ crate::options! {
     #[name("ignorecase")]
     pub IgnoreCase: bool = false;
 
-    /// Number of spaces a hard tab character renders as.
+    /// Number of columns a hard tab character renders as. The
+    /// cells builder expands each `\t` to the next multiple of this
+    /// width (W.4.t). Default 4 (Lattice's house style; vim's
+    /// historical default is 8).
     #[aliases("ts")]
     #[validate(validate_tabstop)]
-    pub Tabstop: i64 = 8;
+    pub Tabstop: i64 = 4;
 
     /// Whether the buffer is read-only (mutating operators
     /// reject; `:w` still permits explicit writes if a path
@@ -637,7 +640,7 @@ mod tests {
     fn type_keyed_reads_after_init_from_linkme() {
         let r = ConfigRegistry::new();
         r.init_from_linkme();
-        assert_eq!(*r.get_typed::<Tabstop>().unwrap(), 8);
+        assert_eq!(*r.get_typed::<Tabstop>().unwrap(), 4);
         assert!(*r.get_typed::<Number>().unwrap());
         assert!(!*r.get_typed::<RelativeNumber>().unwrap());
         assert!(!*r.get_typed::<Wrap>().unwrap());

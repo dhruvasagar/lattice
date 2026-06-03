@@ -93,6 +93,14 @@ pub struct WhitespaceConfig {
     pub leading: Option<char>,
     pub space: Option<char>,
     pub eol: Option<char>,
+    /// W.4.t: columns a hard tab expands to. The builder advances
+    /// each `\t` to the next multiple of this width, emitting that
+    /// many cells (a marker glyph + space fill when `show`, plain
+    /// spaces otherwise) so the cell grid models a tab at its true
+    /// display width — one width model the host scroll model and
+    /// both renderers share. `0` (the `Default`) is treated as `1`
+    /// (legacy one-cell tabs) so test fixtures need no change.
+    pub tabstop: u32,
 }
 
 /// Recompute decision the worker takes on a wake. Visible for
@@ -290,28 +298,40 @@ pub fn recompute_pane(
         return WorkerDecision::Clear;
     };
 
+    // W.2 (A2): effective wrap width. `0` ⇒ wrapping off (one
+    // display row per source line). Stamped onto every matrix this
+    // function publishes so consumers (host scroll model + both
+    // renderers) derive display geometry from it. Wrap geometry is
+    // versioned directly here rather than through `MatrixVersion`:
+    // a wrap toggle / pane-width change leaves the content version
+    // unchanged (A2 keeps identical rows) but must still re-stamp
+    // the matrix, so the cache-hit check below compares
+    // `wrap_width` alongside the version.
+    let effective_wrap = if pane.wrap { pane.viewport_width } else { 0 };
+
     // Cache hit: this pane's published matrix already
     // reflects the inputs (and the registry cell was just
     // written by an earlier pane in this same tick sharing
     // the same buffer, or by an earlier tick whose inputs
     // didn't drift).
     let existing = pane.matrix.load_full();
-    if !pane.version.differs_from(&existing.version) {
+    if !pane.version.differs_from(&existing.version) && existing.wrap_width == effective_wrap {
         return WorkerDecision::CacheHit;
     }
 
     // S2.4.b: try the incremental rebuild path. Eligibility
     // is checked inside `try_incremental_build`; on `None` we
     // fall through to the full rebuild.
-    if let Some(matrix) =
+    if let Some(mut matrix) =
         try_incremental_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
     {
+        matrix.wrap_width = effective_wrap;
         pane.matrix.store(Arc::new(matrix));
         return WorkerDecision::RecomputedIncremental;
     }
 
     // Full rebuild fallback.
-    let matrix = build_matrix(
+    let mut matrix = build_matrix(
         snapshot.as_ref(),
         pane.syntax_handle.as_deref(),
         theme,
@@ -322,6 +342,7 @@ pub fn recompute_pane(
         pane.version,
         whitespace,
     );
+    matrix.wrap_width = effective_wrap;
     pane.matrix.store(Arc::new(matrix));
     WorkerDecision::Recomputed
 }
@@ -839,42 +860,62 @@ fn build_row_cells(
         // through to the verbatim emit when ws is off or no glyph
         // is configured for the position.
         let mut emitted = false;
-        if ws.show {
+        // W.4.t: a hard tab ALWAYS expands to its display width (the
+        // next multiple of `tabstop`), so no literal `\t` ever
+        // reaches the renderers and the cell grid models the tab at
+        // full width — one width model the host scroll model and
+        // both renderers share. Respects `display.whitespace.tab`:
+        // when whitespace is shown and a tab glyph is configured the
+        // first column is that marker (WS_MARKER) and the remaining
+        // columns are space fill; otherwise the whole run is plain
+        // spaces. `tabstop == 0` (the `WhitespaceConfig::default`)
+        // falls back to `1`, i.e. the legacy one-cell tab.
+        if ch == '\t' {
+            let tabstop = ws.tabstop.max(1);
+            let col = cells.len() as u32;
+            let fill = tabstop - (col % tabstop); // 1..=tabstop
+            let is_trailing = byte >= trailing_start_byte;
+            let marker = ws.show && ws.tab.is_some();
+            let cell_fg = if marker && is_trailing { trailing_fg } else { fg };
+            let flags = if marker {
+                mods | lattice_cells::cell_flags::WS_MARKER
+            } else {
+                mods
+            };
+            let first = if marker { ws.tab.unwrap_or(' ') } else { ' ' };
+            cells.push(Cell::new(first as u32, cell_fg, 0, flags));
+            for _ in 1..fill {
+                cells.push(Cell::new(' ' as u32, cell_fg, 0, flags));
+            }
+            // Record the 1-source-byte → `fill`-cell expansion so
+            // byte↔column mapping (`byte_to_combined_col`, used by
+            // overlays + the GPUI cursor) shifts bytes AFTER the tab
+            // by the `fill - 1` extra columns.
+            if fill > 1 {
+                inlay_offsets.push((byte as u32 + 1, fill - 1));
+            }
+            emitted = true;
+        } else if ws.show {
             let is_trailing = byte >= trailing_start_byte;
             let is_leading = byte < leading_end_byte;
-            match ch {
-                '\t' => {
-                    if let Some(g) = ws.tab {
-                        let cell_fg = if is_trailing { trailing_fg } else { fg };
-                        cells.push(Cell::new(
-                            g as u32,
-                            cell_fg,
-                            0,
-                            mods | lattice_cells::cell_flags::WS_MARKER,
-                        ));
-                        emitted = true;
-                    }
+            if ch == ' ' {
+                let glyph = if is_trailing {
+                    ws.trailing
+                } else if is_leading {
+                    ws.leading.or(ws.space)
+                } else {
+                    ws.space
+                };
+                if let Some(g) = glyph {
+                    let cell_fg = if is_trailing { trailing_fg } else { fg };
+                    cells.push(Cell::new(
+                        g as u32,
+                        cell_fg,
+                        0,
+                        mods | lattice_cells::cell_flags::WS_MARKER,
+                    ));
+                    emitted = true;
                 }
-                ' ' => {
-                    let glyph = if is_trailing {
-                        ws.trailing
-                    } else if is_leading {
-                        ws.leading.or(ws.space)
-                    } else {
-                        ws.space
-                    };
-                    if let Some(g) = glyph {
-                        let cell_fg = if is_trailing { trailing_fg } else { fg };
-                        cells.push(Cell::new(
-                            g as u32,
-                            cell_fg,
-                            0,
-                            mods | lattice_cells::cell_flags::WS_MARKER,
-                        ));
-                        emitted = true;
-                    }
-                }
-                _ => {}
             }
         }
         if !emitted {
@@ -1130,6 +1171,8 @@ mod tests {
             inlay_hints: inlay_hints_arc.clone(),
             folds: folds_arc.clone(),
             viewport_height,
+            viewport_width: 0,
+            wrap: false,
             foldenable,
             last_edit,
         };
@@ -2647,6 +2690,8 @@ mod tests {
                         ),
                         folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
                         viewport_height: 5,
+                        viewport_width: 0,
+                        wrap: false,
                         foldenable: true,
                         last_edit,
                     };
@@ -2785,6 +2830,8 @@ mod tests {
                 ),
                 folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
                 viewport_height: 5,
+                viewport_width: 0,
+                wrap: false,
                 foldenable: true,
                 last_edit: None,
             };
@@ -2862,6 +2909,8 @@ mod tests {
             ),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height,
+            viewport_width: 0,
+            wrap: false,
             foldenable: true,
             last_edit: None,
         }
@@ -2879,6 +2928,96 @@ mod tests {
             cells: Arc::new(cells),
             ..RenderState::default()
         })
+    }
+
+    /// W.2 (A2): the worker stamps `CellMatrix.wrap_width` from the
+    /// pane's effective wrap width, and a wrap toggle invalidates
+    /// the cache even when the content version is unchanged.
+    #[test]
+    fn recompute_pane_stamps_wrap_width_and_invalidates_on_toggle() {
+        let snap = snap_of("a line that is clearly wider than the wrap width\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let theme = crate::ui::theme::Theme::default();
+        let ws = WhitespaceConfig::default();
+
+        // Wrap off ⇒ stamped width 0 (one display row per line).
+        let mut p = pane_inputs(matrix_cell.clone(), Some(snap), v(1), 10);
+        let _ = recompute_pane(&p, &theme, &ws);
+        assert_eq!(matrix_cell.load().wrap_width, 0);
+        assert_eq!(matrix_cell.load().segment_count(0), 1);
+
+        // Wrap on at width 8 — same content version v(1), so only
+        // the wrap_width differs. The cache-hit guard must still
+        // force a rebuild that re-stamps the new width, and the
+        // long line now spans multiple display segments.
+        p.wrap = true;
+        p.viewport_width = 8;
+        let decision = recompute_pane(&p, &theme, &ws);
+        assert!(
+            matches!(
+                decision,
+                WorkerDecision::Recomputed | WorkerDecision::RecomputedIncremental
+            ),
+            "wrap toggle at unchanged version must rebuild, got {decision:?}"
+        );
+        let m = matrix_cell.load();
+        assert_eq!(m.wrap_width, 8);
+        assert!(m.segment_count(0) > 1, "long line wraps into multiple segments");
+    }
+
+    /// W.4.t: a hard tab expands to `tabstop` columns of cells, so
+    /// `col_count` reflects the true display width (one width model
+    /// for host scroll + renderers). Whitespace off ⇒ plain spaces;
+    /// whitespace on with a tab glyph ⇒ the marker leads, spaces
+    /// fill (respects `display.whitespace.tab`).
+    #[test]
+    fn recompute_pane_expands_tabs_to_tabstop_width() {
+        let snap = snap_of("\tab");
+        let theme = crate::ui::theme::Theme::default();
+
+        // Whitespace off, tabstop 4 ⇒ leading tab → 4 space cells,
+        // then `ab` ⇒ col_count 6. No WS_MARKER, no literal `\t`.
+        let plain = WhitespaceConfig {
+            tabstop: 4,
+            ..Default::default()
+        };
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let p = pane_inputs(matrix_cell.clone(), Some(snap.clone()), v(1), 10);
+        let _ = recompute_pane(&p, &theme, &plain);
+        let m = matrix_cell.load();
+        let row = m.row_at_source_line(0).expect("row 0");
+        assert_eq!(row.col_count(), 6, "tab(4) + 'ab'(2)");
+        assert!(
+            row.cells[..4].iter().all(|c| c.codepoint == ' ' as u32),
+            "leading tab expands to 4 spaces"
+        );
+        assert!(
+            row.cells[..4]
+                .iter()
+                .all(|c| !c.is_ws_marker()),
+            "whitespace off ⇒ no marker flag"
+        );
+
+        // Whitespace on with a tab glyph ⇒ first column is the
+        // marker, the next 3 are space fill, all WS_MARKER.
+        let marked = WhitespaceConfig {
+            show: true,
+            tab: Some('→'),
+            tabstop: 4,
+            ..Default::default()
+        };
+        let matrix_cell2 = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let p2 = pane_inputs(matrix_cell2.clone(), Some(snap), v(1), 10);
+        let _ = recompute_pane(&p2, &theme, &marked);
+        let m2 = matrix_cell2.load();
+        let row2 = m2.row_at_source_line(0).expect("row 0");
+        assert_eq!(row2.col_count(), 6);
+        assert_eq!(row2.cells[0].codepoint, '→' as u32, "marker leads the tab");
+        assert!(row2.cells[0].is_ws_marker());
+        assert!(
+            row2.cells[1..4].iter().all(|c| c.codepoint == ' ' as u32),
+            "fill columns are spaces"
+        );
     }
 
     /// Two visible Document panes with distinct buffers (distinct

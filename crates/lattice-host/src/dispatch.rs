@@ -1000,6 +1000,8 @@ impl Editor {
                         leading: oc.whitespace_leading,
                         space: oc.whitespace_space,
                         eol: oc.whitespace_eol,
+                        // W.4.t: tab expansion width.
+                        tabstop: oc.tabstop,
                     }
                 },
                 version: lattice_cells::MatrixVersion {
@@ -1037,6 +1039,10 @@ impl Editor {
                         oc.whitespace_leading.hash(&mut h);
                         oc.whitespace_space.hash(&mut h);
                         oc.whitespace_eol.hash(&mut h);
+                        // W.4.t: tab width affects cell emission;
+                        // keep in sync with the per-pane hash so the
+                        // top-level and per-pane versions match.
+                        oc.tabstop.hash(&mut h);
                         h.finish()
                     },
                 },
@@ -1377,6 +1383,16 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // (per-frame or per-tick), so they must not reset the chord
     // stack. Other actions remain in the clear path so they
     // correctly resolve / abort multi-key sequences.
+    // NOTE: `Action::None` is deliberately NOT exempt. An unbound
+    // chord continuation (e.g. `gj` — `g` is a partial prefix, `j`
+    // has no `g`-child) translates to `Action::None`, and that MUST
+    // clear the pending `partial_chord` (vim cancels the prefix on an
+    // invalid continuation). The renderer's per-frame bookkeeping
+    // dispatches the explicit actions below (never bare `None` — TUI
+    // `runtime.rs` only applies `None` from `translate(key)`, GPUI's
+    // per-frame path dispatches `EnsureCursorVisible` & friends), so
+    // exempting `None` here would leak the prefix and swallow input
+    // until a valid continuation (the `gjcg` → `gg` bug, 2026-06-03).
     let is_renderer_housekeeping = matches!(
         action,
         Action::EnsureCursorVisible
@@ -1384,7 +1400,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             | Action::SetViewportHeight(_)
             | Action::SetTerminalWidth(_)
             | Action::AcknowledgeRedraw
-            | Action::None
     );
     if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_))
         && !is_renderer_housekeeping
@@ -3945,13 +3960,109 @@ impl Editor {
         if self.viewport_height == 0 {
             return;
         }
-        if self.cursor.line < self.scroll {
-            self.scroll = self.cursor.line;
+        // `scrolloff`: keep this many DOCUMENT lines of context
+        // above and below the cursor. Clamped to half the viewport
+        // so the two margins can't fight — vim's behaviour once
+        // `scrolloff >= height/2` is to keep the cursor centred,
+        // which `(viewport_height - 1) / 2` reproduces.
+        let scrolloff = self
+            .option_cache
+            .scrolloff
+            .min(self.viewport_height.saturating_sub(1) / 2);
+
+        // Top margin: at least `scrolloff` lines visible above the
+        // cursor (clamped at BOF). Doc-line space on purpose —
+        // scrolloff is *document* context, and interleaved virtual
+        // rows only add visible rows above the cursor, never remove
+        // context. With `scrolloff == 0` this is the classic
+        // `cursor.line < scroll` top clamp.
+        let top_limit = self.cursor.line.saturating_sub(scrolloff);
+        if top_limit < self.scroll {
+            self.scroll = top_limit;
         }
-        let bottom = self.scroll + self.viewport_height - 1;
-        if self.cursor.line > bottom {
-            self.scroll = self.cursor.line + 1 - self.viewport_height;
+
+        // Bottom margin: at least `scrolloff` lines visible below
+        // the cursor, in *display-row* space so excerpt headers
+        // (virtual rows) don't push the margin — or the cursor
+        // itself — behind the modeline (the `G` / bottom-scroll bug
+        // in multibuffer views). The target clamps to the last
+        // addressable line so EOF reserves no phantom space (vim:
+        // `G` puts the last line flush at the bottom). With
+        // `scrolloff == 0` and an empty virtual-row matrix this
+        // reduces exactly to the historical
+        // `scroll = cursor.line + 1 - viewport_height`.
+        let last = last_addressable_line(&self.active_text());
+        let bottom_target = self.cursor.line.saturating_add(scrolloff).min(last);
+        let min_scroll = self.bottom_anchored_scroll(bottom_target, self.viewport_height);
+        if self.scroll < min_scroll {
+            self.scroll = min_scroll;
         }
+    }
+
+    /// The top-most `scroll` (smallest document line) such that the
+    /// display window from `scroll` down to and including
+    /// `target_line` occupies at most `budget` *display* rows.
+    ///
+    /// A display row is a document row OR an interleaved virtual
+    /// row. The display height of the span is
+    /// `Σ_{line ∈ [scroll, target]} ( 1 + virtual_rows_at(line) )`.
+    /// The `1`-per-document-line term is the single seam where
+    /// soft-wrap will contribute `wrap_segments(line)` once body
+    /// wrapping lands (B.3). Today `:set wrap` is plumbed but the
+    /// v1 renderer horizontal-scrolls, so every document line is
+    /// exactly one display row and the term is a constant `1`.
+    ///
+    /// Reads the *active buffer's* virtual-row matrix (the same Arc
+    /// the renderers and worker share), so the result tracks the
+    /// pane the cursor lives in. Empty matrix ⇒ zero virtual rows
+    /// ⇒ byte-identical to the historical doc-line arithmetic for
+    /// regular buffers.
+    ///
+    /// O(1) amortised: the refinement loop makes at most two
+    /// passes. Jumping the top down by the current overflow
+    /// strictly shrinks the window — `doc_rows` drops by the
+    /// overflow while the virtual-row count can only stay equal or
+    /// shrink — so the second pass is guaranteed within budget.
+    fn bottom_anchored_scroll(&self, target_line: u32, budget: u32) -> u32 {
+        let budget = budget.max(1);
+        let buffer_id = self.active_buffer_id();
+        let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
+        let cells = self.cells_matrix_for(buffer_id).load_full();
+        // Display rows a single source `line` occupies:
+        //   segment_count(line) + virtual_rows_anchored_at(line)
+        // W.3 (soft-wrap): `segment_count` is the published wrap
+        // geometry (⌈col_count / wrap_width⌉, or `1` when
+        // `wrap_width == 0`). The virtual-row term is the `M.V`
+        // excerpt-header fix. With wrap off and no virtual rows
+        // every line costs exactly `1`, so the result is
+        // byte-identical to the historical doc-line clamp.
+        let line_cost = |line: u32| -> u32 {
+            cells
+                .segment_count(line)
+                .saturating_add(vrows.virtual_rows_in_line_range(line, line))
+        };
+        // Walk UP from `target_line`, accumulating display rows,
+        // and stop at the topmost line that still fits in `budget`.
+        // A single accumulation pass finds the *minimal* scroll
+        // (window as full as possible, cursor as low as possible) —
+        // a fixed `+overflow` jump would overshoot whenever a line
+        // occupies more than one display row (wrap segments /
+        // virtual rows). If `target_line` alone exceeds the budget
+        // (a line taller than the viewport), `scroll` stays at
+        // `target_line` and the line overflows below — matching
+        // vim.
+        let mut scroll = target_line;
+        let mut used = line_cost(target_line);
+        while scroll > 0 {
+            let cand = scroll - 1;
+            let cost = line_cost(cand);
+            if used.saturating_add(cost) > budget {
+                break;
+            }
+            used = used.saturating_add(cost);
+            scroll = cand;
+        }
+        scroll
     }
 
     /// What `:bn` / `:bp` consider the "current" buffer for stepping.
@@ -8896,6 +9007,10 @@ impl Editor {
             oc.whitespace_leading.hash(&mut h);
             oc.whitespace_space.hash(&mut h);
             oc.whitespace_eol.hash(&mut h);
+            // W.4.t: tab width affects cell emission (tabs expand to
+            // `tabstop` columns), so a `:set tabstop=N` change must
+            // invalidate the cached matrix.
+            oc.tabstop.hash(&mut h);
             h.finish()
         };
 
@@ -9004,6 +9119,13 @@ impl Editor {
                 inlay_hints,
                 folds: folds_arc,
                 viewport_height: leaf.viewport_height,
+                viewport_width: leaf.viewport_width,
+                // W.2: `:set wrap` resolved for the active buffer.
+                // Per-buffer wrap divergence across panes is a
+                // later refinement; the option-cache value is the
+                // established per-publish source (mirrors
+                // `foldenable` above).
+                wrap: self.option_cache.wrap_lines,
                 foldenable,
                 last_edit: if is_active_pane {
                     last_edit_active
@@ -12614,9 +12736,17 @@ impl Editor {
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             lattice_grammar::ScrollPos::Top => self.cursor.line,
+            // `zz`: cursor at the vertical centre. Doc-line math is
+            // tolerable here because centring leaves ~half a screen
+            // of slack below the cursor, so interleaved virtual rows
+            // can't push it off-screen.
             lattice_grammar::ScrollPos::Center => self.cursor.line.saturating_sub(height / 2),
+            // `zb`: cursor at the bottom row — the same display-row
+            // accounting as `ensure_cursor_visible`'s bottom clamp,
+            // or excerpt headers push the cursor line behind the
+            // modeline (no slack to absorb them, unlike `zz`).
             lattice_grammar::ScrollPos::Bottom => {
-                self.cursor.line.saturating_sub(height.saturating_sub(1))
+                self.bottom_anchored_scroll(self.cursor.line, height)
             }
         };
     }
@@ -26363,6 +26493,215 @@ mod tests {
             !std::sync::Arc::ptr_eq(&first, &other_cell),
             "different buffers must get distinct virtual-rows cells"
         );
+    }
+
+    // ── Virtual-row-aware bottom scroll (G / zb) ─────────────
+
+    /// Build a `VirtualRowMatrix` with `Above`-anchored rows
+    /// (excerpt-header shape) at the given document lines and
+    /// store it as the editor's active-buffer matrix.
+    fn seed_headers(editor: &crate::editor::Editor, anchors: &[u32], source_line_count: u32) {
+        let rows: Vec<lattice_cells::VirtualRow> = anchors
+            .iter()
+            .map(|&anchor_line| lattice_cells::VirtualRow {
+                anchor_line,
+                position: lattice_cells::AnchorPosition::Above,
+                cells: std::sync::Arc::from([] as [lattice_cells::Cell; 0]),
+                height: 1,
+                kind: lattice_cells::VirtualRowKind::Generic,
+            })
+            .collect();
+        let matrix = lattice_cells::VirtualRowMatrix::build(
+            rows,
+            source_line_count,
+            lattice_cells::VirtualRowVersion(1),
+        );
+        editor
+            .virtual_rows_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(matrix));
+    }
+
+    /// A document with `n` non-empty lines (so
+    /// `last_addressable_line` == `n - 1`).
+    fn doc_with_lines(n: u32) -> lattice_core::Document {
+        let text: String = (0..n).map(|i| format!("line {i}\n")).collect();
+        lattice_core::Document::from_text(&text)
+    }
+
+    /// With no virtual rows and `scrolloff == 0` (a regular
+    /// buffer), the bottom clamp must be byte-identical to the
+    /// historical doc-line arithmetic:
+    /// `scroll = cursor.line + 1 - viewport_height`.
+    #[test]
+    fn ensure_cursor_visible_regular_buffer_unchanged() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(200));
+        editor.viewport_height = 10;
+        editor.scroll = 0;
+        editor.cursor = lattice_protocol::position::Position::new(100, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 91, "empty matrix + scrolloff 0 ⇒ classic clamp");
+    }
+
+    /// The reported `G` bug: cursor on the last line of a
+    /// multibuffer whose excerpt headers sit above it. The
+    /// doc-line-only clamp would leave `scroll = 2` (window
+    /// `[2,11]` = 10 doc rows + 2 headers = 12 display rows > 10),
+    /// hiding the last line behind the modeline. The fix pushes
+    /// `scroll` down so the window fits the viewport in
+    /// display-row space.
+    #[test]
+    fn ensure_cursor_visible_accounts_for_excerpt_headers() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 10;
+        editor.scroll = 0;
+        // 12-line composed doc; headers above excerpts at 0, 5, 10.
+        seed_headers(&editor, &[0, 5, 10], 12);
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        // Headers at 5 and 10 fall inside the final window, so the
+        // last line needs scroll = 4: rows 4..=11 (8 doc) + 2
+        // headers = exactly 10 display rows.
+        assert_eq!(editor.scroll, 4);
+        // The last line is now within budget.
+        let display = (11 - editor.scroll + 1)
+            + editor
+                .virtual_rows_matrix_for(editor.active_buffer_id())
+                .load()
+                .virtual_rows_in_line_range(editor.scroll, 11);
+        assert!(display <= editor.viewport_height, "last line clears the modeline");
+    }
+
+    /// `ensure_cursor_visible` must never scroll *up* when the
+    /// cursor is already comfortably visible mid-window.
+    #[test]
+    fn ensure_cursor_visible_no_upward_scroll_when_visible() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(40));
+        editor.viewport_height = 20;
+        editor.scroll = 5;
+        seed_headers(&editor, &[6], 40);
+        editor.cursor = lattice_protocol::position::Position::new(8, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 5, "cursor already visible ⇒ no scroll change");
+    }
+
+    /// `zb` (`ScrollPos::Bottom`) shares the bottom clamp — the
+    /// latent twin of the `G` bug — so it must also account for
+    /// headers. `zz` (`Center`) keeps its doc-line slack math.
+    #[test]
+    fn scroll_cursor_to_bottom_accounts_for_headers() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 10;
+        seed_headers(&editor, &[0, 5, 10], 12);
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+
+        editor.do_scroll_cursor_to(lattice_grammar::ScrollPos::Bottom);
+        assert_eq!(editor.scroll, 4, "zb is virtual-row-aware");
+
+        // zz unchanged: doc-line centre (slack absorbs headers).
+        editor.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        assert_eq!(editor.scroll, 11 - 5, "zz keeps doc-line centring");
+
+        // zt unchanged: cursor at top.
+        editor.do_scroll_cursor_to(lattice_grammar::ScrollPos::Top);
+        assert_eq!(editor.scroll, 11, "zt keeps cursor-at-top");
+    }
+
+    /// `scrolloff` keeps N document lines below the cursor visible
+    /// mid-buffer. cursor=50, vh=20, scrolloff=5 ⇒ the window must
+    /// extend to line 55, so `scroll = 55 + 1 - 20 = 36`.
+    #[test]
+    fn scrolloff_keeps_margin_below_cursor() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(200));
+        editor.viewport_height = 20;
+        editor.option_cache.scrolloff = 5;
+        editor.scroll = 0;
+        editor.cursor = lattice_protocol::position::Position::new(50, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 36, "5 lines of context kept below the cursor");
+    }
+
+    /// `scrolloff` keeps N lines above the cursor: moving up to
+    /// line 40 from a low window must pull `scroll` to `40 - 5`.
+    #[test]
+    fn scrolloff_keeps_margin_above_cursor() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(200));
+        editor.viewport_height = 20;
+        editor.option_cache.scrolloff = 5;
+        editor.scroll = 40;
+        editor.cursor = lattice_protocol::position::Position::new(40, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 35, "5 lines of context kept above the cursor");
+    }
+
+    /// Near EOF the bottom margin clamps to the last line — vim's
+    /// `G` puts the last line flush at the bottom, reserving no
+    /// phantom space below it even with scrolloff set.
+    #[test]
+    fn scrolloff_does_not_reserve_phantom_space_past_eof() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(30));
+        editor.viewport_height = 10;
+        editor.option_cache.scrolloff = 5;
+        editor.scroll = 0;
+        // Last addressable line is 29.
+        editor.cursor = lattice_protocol::position::Position::new(29, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 20, "last line flush at bottom (29 + 1 - 10)");
+    }
+
+    /// scrolloff and excerpt headers compose: the bottom margin is
+    /// measured in display rows, so headers below the cursor eat
+    /// into the scroll the same way the cursor line does.
+    #[test]
+    fn scrolloff_composes_with_headers() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(40));
+        editor.viewport_height = 10;
+        editor.option_cache.scrolloff = 2;
+        editor.scroll = 0;
+        // Header above line 25 sits between the cursor and its
+        // bottom margin.
+        seed_headers(&editor, &[25], 40);
+        editor.cursor = lattice_protocol::position::Position::new(24, 0);
+        editor.ensure_cursor_visible();
+        // bottom_target = 24 + 2 = 26. Window [s, 26] must be ≤ 10
+        // display rows; the header at 25 is inside it, so one row
+        // is virtual: 26 - s + 1 + 1 ≤ 10 ⇒ s = 18.
+        assert_eq!(editor.scroll, 18);
+    }
+
+    /// W.3: with `:set wrap` on, the bottom clamp counts *display*
+    /// rows (wrap segments), not source lines. A 12-line buffer
+    /// where every line wraps into 2 display rows fits 5 lines in a
+    /// 10-row viewport, so `G` on the last line scrolls to 7.
+    #[test]
+    fn ensure_cursor_visible_accounts_for_wrapped_lines() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 10;
+        editor.scroll = 0;
+        // Seed a cells matrix: 12 source lines × 8 columns, wrapped
+        // at width 4 ⇒ segment_count == 2 per line.
+        let rows: Vec<lattice_cells::CellRow> = (0..12u32)
+            .map(|l| {
+                lattice_cells::CellRow::new(
+                    vec![lattice_cells::Cell::with_codepoint(b'x' as u32); 8],
+                    l,
+                    Vec::<lattice_cells::InlayOffset>::new(),
+                )
+            })
+            .collect();
+        let chunk = std::sync::Arc::new(lattice_cells::CellChunk::new(
+            0,
+            rows,
+            lattice_cells::MatrixVersion::ZERO,
+        ));
+        let mut matrix = lattice_cells::CellMatrix::whole_doc(chunk, 12);
+        matrix.wrap_width = 4;
+        editor
+            .cells_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(matrix));
+
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 7, "5 wrapped lines (×2 rows) fill the 10-row viewport");
     }
 
     // ── D.4.d.3.a: :diffthis + two-pane :diffoff ──────────────

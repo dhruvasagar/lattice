@@ -21,6 +21,19 @@ use crate::virtual_rows::{AnchorPosition, VirtualRow, VirtualRowMatrix};
 /// uses whole-doc mode (see chunking policy in the design doc).
 pub const CHUNK_SIZE_WHOLE_DOC: u32 = 0;
 
+/// Soft-wrap (W.2, A2): number of display rows a row of `col_count`
+/// columns occupies when wrapped at `wrap_width` columns. Floored at
+/// `1` (an empty row still occupies one display row) and at `1` when
+/// `wrap_width == 0` (wrapping off). Shared by the host scroll model
+/// and both renderers so segment arithmetic is defined in exactly one
+/// place.
+pub fn wrap_segments(col_count: u32, wrap_width: u32) -> u32 {
+    if wrap_width == 0 {
+        return 1;
+    }
+    col_count.div_ceil(wrap_width).max(1)
+}
+
 /// The published cell matrix for a single buffer.
 ///
 /// Immutable once built; cell-builder replaces the published Arc
@@ -39,6 +52,16 @@ pub struct CellMatrix {
     pub visible_line_count: u32,
     /// Component-wise maximum of all chunks' captured versions.
     pub version: MatrixVersion,
+    /// Soft-wrap (W.2, A2): the column width each source line is
+    /// wrapped at when `:set wrap` is on, or `0` when wrapping is
+    /// off (the historical default — every source line is exactly
+    /// one display row). The cells worker stamps this from the
+    /// pane's `viewport_width`; consumers derive display geometry
+    /// via [`Self::segment_count`] without the matrix storing
+    /// per-line segment data. One `CellRow` per source line is
+    /// preserved either way — see
+    /// `docs/dev/architecture/soft-wrap.md` (A2).
+    pub wrap_width: u32,
 }
 
 impl Default for CellMatrix {
@@ -60,6 +83,7 @@ impl CellMatrix {
             source_line_count: 0,
             visible_line_count: 0,
             version: MatrixVersion::ZERO,
+            wrap_width: 0,
         }
     }
 
@@ -89,6 +113,7 @@ impl CellMatrix {
             source_line_count,
             visible_line_count,
             version,
+            wrap_width: 0,
         }
     }
 
@@ -102,6 +127,7 @@ impl CellMatrix {
             source_line_count,
             visible_line_count,
             version,
+            wrap_width: 0,
         }
     }
 
@@ -114,6 +140,26 @@ impl CellMatrix {
     /// `true` when no chunks/rows are present.
     pub fn is_empty(&self) -> bool {
         self.visible_line_count == 0
+    }
+
+    /// Soft-wrap (W.2, A2): how many *display* rows the source line
+    /// `target` occupies. `1` when wrapping is off (`wrap_width ==
+    /// 0`) or the line is missing/folded; otherwise
+    /// `⌈col_count / wrap_width⌉`, floored at `1` (an empty line
+    /// still occupies one display row).
+    ///
+    /// This is the published geometry the host scroll model
+    /// (`bottom_anchored_scroll`) and both renderers read to expand
+    /// a source line into wrap segments — no per-line segment data
+    /// is stored on the matrix.
+    pub fn segment_count(&self, target: u32) -> u32 {
+        if self.wrap_width == 0 {
+            return 1;
+        }
+        match self.row_at_source_line(target) {
+            Some(row) => wrap_segments(row.col_count(), self.wrap_width),
+            None => 1,
+        }
     }
 
     /// S3.c.0 (2026-05-26): look up the row whose logical source
@@ -490,6 +536,34 @@ mod tests {
 
     fn chunk(start: u32, rows: Vec<CellRow>) -> Arc<CellChunk> {
         Arc::new(CellChunk::new(start, rows, MatrixVersion::ZERO))
+    }
+
+    #[test]
+    fn wrap_segments_arithmetic() {
+        // Wrap off ⇒ always one display row.
+        assert_eq!(wrap_segments(0, 0), 1);
+        assert_eq!(wrap_segments(200, 0), 1);
+        // Empty / short rows ⇒ one row.
+        assert_eq!(wrap_segments(0, 80), 1);
+        assert_eq!(wrap_segments(1, 80), 1);
+        assert_eq!(wrap_segments(80, 80), 1);
+        // Exact multiples + remainders.
+        assert_eq!(wrap_segments(81, 80), 2);
+        assert_eq!(wrap_segments(160, 80), 2);
+        assert_eq!(wrap_segments(161, 80), 3);
+    }
+
+    #[test]
+    fn segment_count_reads_wrap_width() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let mut m = CellMatrix::whole_doc(c, 2);
+        // Wrap off ⇒ 1 per line regardless of content.
+        assert_eq!(m.segment_count(0), 1);
+        // Turn wrap on at width 1: each 1-cell row is exactly one
+        // segment; a missing line is neutral (1).
+        m.wrap_width = 1;
+        assert_eq!(m.segment_count(0), 1);
+        assert_eq!(m.segment_count(99), 1);
     }
 
     #[test]

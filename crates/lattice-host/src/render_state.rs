@@ -1060,6 +1060,18 @@ pub struct PaneCellsInputs {
     /// `PaneState.viewport_height` (Issue #25). Drives the
     /// worker's chunked-mode threshold.
     pub viewport_height: u32,
+    /// Pane-local visible-buffer width in columns. Sourced from
+    /// `PaneState.viewport_width`. Soft-wrap (W.1): the cells
+    /// worker stamps `CellMatrix.wrap_width` from this when `wrap`
+    /// is on (W.2). `0` means "not yet laid out".
+    pub viewport_width: u32,
+    /// Soft-wrap (W.2): `:set wrap` resolved for this pane's
+    /// buffer. When `true` (and `viewport_width > 0`) the cells
+    /// worker stamps the published matrix's `wrap_width` so
+    /// consumers expand each source line into `⌈col/width⌉`
+    /// display rows. `false` ⇒ `wrap_width` stays `0` (one
+    /// display row per source line — the historical default).
+    pub wrap: bool,
     /// Per-pane foldenable. Global today (no per-buffer
     /// setting); kept here so a future per-buffer
     /// `foldenable` doesn't require a substate reshape.

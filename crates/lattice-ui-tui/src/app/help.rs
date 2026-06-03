@@ -1526,7 +1526,7 @@ mod tests {
         assert!(body.contains("number"), "missing number\n{body}");
         // Doc lines indented under each row.
         assert!(
-            body.contains("Number of spaces a hard tab"),
+            body.contains("Number of columns a hard tab"),
             "tabstop doc not rendered\n{body}",
         );
     }
@@ -1644,9 +1644,9 @@ mod tests {
         a.editor.cursor.line = link.range.start.line;
         a.editor.cursor.byte = link.range.start.byte;
         a.do_help_follow_link();
-        // Cmdline should be prefilled with `set tabstop=8`
+        // Cmdline should be prefilled with `set tabstop=4`
         // (default value).
-        assert_eq!(a.editor.command_line, "set tabstop=8");
+        assert_eq!(a.editor.command_line, "set tabstop=4");
         assert_eq!(a.editor.modal, ModalState::Command);
     }
 

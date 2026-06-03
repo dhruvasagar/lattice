@@ -368,7 +368,7 @@ mod tests {
     fn event_bus_publishes_option_changed_on_set_assign() {
         let mut a = app_with("xx", 10);
         let mut rx = subscribe_all_events(&a);
-        a.editor.command_line = "set tabstop=4".into();
+        a.editor.command_line = "set tabstop=8".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let mut found_opt = None;
@@ -378,10 +378,11 @@ mod tests {
                 break;
             }
         }
-        let (name, old, new) = found_opt.expect("OptionChanged should fire on :set tabstop=4");
+        let (name, old, new) = found_opt.expect("OptionChanged should fire on :set tabstop=8");
         assert_eq!(name, "tabstop");
-        assert_eq!(old.as_deref(), Some("8"));
-        assert_eq!(new, "4");
+        // Default is 4 (W.4.t); :set tabstop=8 is a real change.
+        assert_eq!(old.as_deref(), Some("4"));
+        assert_eq!(new, "8");
     }
 
     #[test]
@@ -695,9 +696,9 @@ mod tests {
             "missing display section\n{body}"
         );
         // Each option's doc string is included alongside the row.
-        // `tabstop`'s doc starts with "Number of spaces a hard tab".
+        // `tabstop`'s doc starts with "Number of columns a hard tab".
         assert!(
-            body.contains("Number of spaces a hard tab"),
+            body.contains("Number of columns a hard tab"),
             "tabstop doc not rendered\n{body}",
         );
         // Aliases are surfaced in the option header (`tabstop [ts]`,
@@ -766,7 +767,7 @@ mod tests {
         let buf = a.editor.document_buffer_id;
         a.recompute_options_for_buffer(buf);
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 8);
+        assert_eq!(*v, 4);
         let n = a.resolved_option::<lattice_config::Number>(buf);
         assert!(*n);
     }
@@ -851,7 +852,7 @@ mod tests {
         let a = app_with("hi", 5);
         let buf = a.editor.document_buffer_id;
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 8);
+        assert_eq!(*v, 4);
     }
 
     #[test]

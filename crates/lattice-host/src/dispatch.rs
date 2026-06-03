@@ -8058,14 +8058,43 @@ impl Editor {
                     );
                     return DoEditOutcome::Failed;
                 }
-                // M.0 (2026-05-31): slot-replacement model.
-                // The current buffer's content reload becomes
-                // "open a fresh buffer from disk and swap the
-                // active slot to it." The previous buffer
-                // remains in `BufferRegistry` (reachable via
-                // `:bn` / `:b N` / `:ls`); its actor task
-                // terminates when no one holds its handle.
-                return self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload);
+                // M.0 (2026-05-31): slot-replacement model — a
+                // reload opens a fresh buffer from disk and swaps the
+                // active slot to it. 2026-06-03 fix: under that model
+                // the OLD buffer lingered in the registry, so every
+                // `:e!` left a duplicate of the same file in `:ls` /
+                // `:b`. Reload is a *refresh*, not a new listing, so
+                // remove the abandoned old buffer after the swap —
+                // unless another pane still shows it (then it's a
+                // live buffer and dropping it would orphan that pane).
+                let old_id = self.document_buffer_id;
+                // 2026-06-03: `:e!` is a refresh, not a jump — preserve
+                // the cursor (and scroll, so the row keeps its screen
+                // position). `open_fresh_into_active_slot` resets both to
+                // ZERO for the brand-new-file case; capture here and
+                // restore after the swap, clamped to the freshly-loaded
+                // content (the file may have shrunk on disk).
+                let saved_cursor = self.cursor;
+                let saved_scroll = self.scroll;
+                let outcome = self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload);
+                if old_id != self.document_buffer_id {
+                    self.cursor = saved_cursor;
+                    self.clamp_cursor_to_active_buffer();
+                    self.scroll = saved_scroll;
+                    self.ensure_cursor_visible();
+                }
+                let still_referenced = self
+                    .pane_tree
+                    .leaves()
+                    .iter()
+                    .any(|l| l.buffer_id == old_id);
+                if old_id != self.document_buffer_id && !still_referenced {
+                    self.buffers.remove(old_id);
+                    self.active_modes.remove(&old_id);
+                    self.buffer_locals.remove(&old_id);
+                    self.resolved_options.remove(&old_id);
+                }
+                return outcome;
             }
             // Already-open different buffer: switch to it.
             let activated_full = self.activate_document(existing_id);
@@ -27394,6 +27423,60 @@ mod tests {
         assert_eq!(
             editor.virtual_row_providers.snapshot(current_buffer).len(),
             1
+        );
+    }
+
+    /// `:e!` is a refresh, not a jump: reloading the current
+    /// buffer from disk must keep the cursor where it was rather
+    /// than snapping back to the top. (2026-06-03 regression —
+    /// the M.0 slot-replacement model resets cursor/scroll to ZERO
+    /// for the brand-new-file case; the reload branch restores
+    /// them.)
+    #[tokio::test]
+    async fn edit_bang_preserves_cursor_position() {
+        let file = write_temp("line0\nline1\nline2\nline3\nline4\nline5\nline6\n", "ebang-keep");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.viewport_height = 5;
+        // Open the file into the active slot.
+        editor.do_edit(Some(file.0.clone()), false);
+        // Park the cursor mid-buffer and scroll down a row.
+        editor.cursor.line = 5;
+        editor.cursor.byte = 3;
+        editor.scroll = 2;
+        // `:e!` — reload from disk (force, no path).
+        editor.do_edit(None, true);
+        assert_eq!(
+            editor.cursor.line, 5,
+            "`:e!` must keep the cursor on its line, not jump to the top"
+        );
+        assert_eq!(
+            editor.cursor.byte, 3,
+            "`:e!` must keep the cursor column"
+        );
+        assert!(
+            editor.scroll <= 5 && editor.cursor.line >= editor.scroll,
+            "cursor must stay visible after reload (scroll={}, line={})",
+            editor.scroll,
+            editor.cursor.line
+        );
+    }
+
+    /// `:e!` cursor restore is clamped to the freshly-loaded
+    /// content: if the file shrank on disk, the cursor lands on
+    /// the last addressable line instead of pointing past EOF.
+    #[tokio::test]
+    async fn edit_bang_clamps_cursor_when_file_shrank() {
+        let file = write_temp("a\nb\nc\nd\ne\nf\ng\nh\n", "ebang-clamp");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.viewport_height = 5;
+        editor.do_edit(Some(file.0.clone()), false);
+        editor.cursor.line = 7;
+        // Shrink the file on disk, then reload.
+        std::fs::write(&file.0, "x\ny\nz\n").expect("rewrite temp file");
+        editor.do_edit(None, true);
+        assert_eq!(
+            editor.cursor.line, 2,
+            "cursor must clamp to the last line of the shrunk file (0-indexed 2)"
         );
     }
 

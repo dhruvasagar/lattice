@@ -1,3 +1,8 @@
+---
+summary: "Major + minor modes: what they are, how :<mode-name> toggles work, major-mode swaps, auto-activation hooks, the option-resolution model."
+related: [mode]
+---
+
 # Modes
 
 Lattice's mode system has two orthogonal axes:

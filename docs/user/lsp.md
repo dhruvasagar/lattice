@@ -1,3 +1,8 @@
+---
+summary: "LSP integration: servers, capabilities, attach lifecycle, diagnostics, every :lsp-* command in context."
+related: [lsp, diagnostic]
+---
+
 # Language Server Protocol (LSP)
 
 LSP integration brings IDE features — go-to-definition, hover,

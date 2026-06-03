@@ -1,3 +1,8 @@
+---
+summary: "Buffers, panes, splits, file tree, navigation, theme customization."
+related: [buffer, tree, split, pane, ex:e, ex:b]
+---
+
 # Buffers and panes
 
 A *buffer* in lattice is anything you can navigate with motions:

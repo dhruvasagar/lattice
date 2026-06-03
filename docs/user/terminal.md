@@ -1,3 +1,8 @@
+---
+summary: "Terminal"
+related: [terminal, tnew, tabterminal]
+---
+
 # Terminal Mode
 
 Lattice embeds a real shell inside the editor as a buffer.

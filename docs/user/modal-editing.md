@@ -1,3 +1,8 @@
+---
+summary: "Modal editing: Normal / Insert / Visual / Command / Search / Replace, the vim grammar (operators + motions + text objects + counts), and registers / marks / macros."
+related: [operator:, motion:, text-object:, register, mark, macro]
+---
+
 # Modal editing
 
 Lattice is a **modal** editor. Different keystrokes do different

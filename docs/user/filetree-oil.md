@@ -1,3 +1,8 @@
+---
+summary: "File tree (read-only browse) and Oil (writable directory listing): edit the buffer, :w runs the diff as filesystem ops (rename / create / delete)."
+related: [filetree, tree, oil, ex:Tree, ex:Oil]
+---
+
 # File tree & Oil
 
 Lattice ships two ways to browse and edit your project's filesystem from

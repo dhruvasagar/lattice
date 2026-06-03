@@ -1,3 +1,8 @@
+---
+summary: "Manual + computed folds, fold operators, navigation, auto-open on search."
+related: [fold, foldmethod]
+---
+
 # Folding
 
 Folds collapse a contiguous range of buffer lines into a single

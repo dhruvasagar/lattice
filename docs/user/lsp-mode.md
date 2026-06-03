@@ -1,3 +1,8 @@
+---
+summary: "Per-buffer gate that controls whether LSP features run (auto-activation, toggle, what's gated, programmatic API)."
+related: [lsp]
+---
+
 # `lsp-mode`
 
 `lsp-mode` is the per-buffer gate that controls whether LSP

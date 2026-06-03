@@ -1,3 +1,8 @@
+---
+summary: "Typed configuration: :set syntax, layered resolution (defaults / TOML / runtime / mode contributions / per-buffer), groups, and how to find every registered option."
+related: [set, option, customize]
+---
+
 # Options
 
 Options are lattice's **typed configuration knobs**. Every

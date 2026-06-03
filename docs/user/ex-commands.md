@@ -1,3 +1,8 @@
+---
+summary: "The : line: built-in commands, arg schemas, tab completion, ranges, aliases, :g / :v / :s with live preview."
+related: [ex:, substitute, global]
+---
+
 # Ex-commands
 
 The `:` line. Type `:` from Normal mode to enter the cmdline,

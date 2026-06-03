@@ -1,3 +1,8 @@
+---
+summary: "Insert-mode completion: triggers, sources, popup keymap, configuration, troubleshooting."
+related: [complete, completion, snippet, ex:complete]
+---
+
 # Insert-mode completion
 
 Completion in lattice surfaces inside Insert mode as a popup

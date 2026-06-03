@@ -1,3 +1,8 @@
+---
+summary: "Bundled languages, coverage roadmap, and how to add a new language (tree-sitter or otherwise)."
+related: [language, syntax]
+---
+
 # Languages
 
 Lattice's syntax features (highlighting, folding, indent, navigation

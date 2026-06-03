@@ -2,7 +2,7 @@
 
 **Design:** [marginalia.md](../../architecture/marginalia.md).
 
-**Status:** ✅ closed (2026-06-03). All four sub-slices landed; design fragment + bench + per-renderer tests + per-renderer color palette ship together per CLAUDE.md heuristic #5.
+**Status:** ✅ closed (2026-06-03). Five sub-slices landed (MARG.1–4 typed-annotation substrate + keybinding column + GPUI parity + bench; MARG.5 cross-row column alignment); design fragment + bench + per-renderer tests + per-renderer color palette ship together per CLAUDE.md heuristic #5.
 
 **Why:** Today `RenderedCandidate.annotations: Vec<String>` is untyped; every annotation renders in one of two hardcoded colors (`Gray` if row selected, `DarkGray` otherwise) regardless of meaning. The user wants a keybinding column on `:` line command completion (vertico+marginalia style) AND color-coding by category. The MARG series lands the typed-annotation substrate first, then layers the keybinding annotator on top, then closes the GPUI render gap so peer renderers stay at parity.
 
@@ -79,6 +79,21 @@ Changes:
 4. Status flip: MARG slice plan moves to ✅; cross-reference updated in the design fragment.
 
 Acceptance: bench passes; plugin escape hatch verified; slice series closed.
+
+### MARG.5 — Cross-row column alignment ✅
+
+Polish slice. User-reported: with the keybinding column live (MARG.2), candidates *without* a keybinding shifted their kind/doc annotations left to fill the gap, so the columns no longer lined up vertically — the keybinding cells of bound commands sat at one x, the kind labels of unbound commands at another. The fix renders annotations as fixed *category columns* rather than a per-row free-flowing list: every row reserves a cell (blank if absent) for every category present in the visible batch, so when a keybinding is missing it's an empty column and the remaining columns stay aligned.
+
+Changes:
+
+1. `crates/lattice-completion/src/candidate.rs` — new `AnnotationColumns` type. `from_visible(candidates)` computes one `(category, max_width)` per category present in the visible set, ordered by a fixed display rank (`category_order`: `keybinding → kind → doc → source → custom`). `iter()` walks columns in display order; `is_empty()` reports no-annotations-anywhere. Width math centralised here (not in the renderer crates) so both peer renderers compute identical geometry. Exported from `lib.rs`.
+2. `crates/lattice-ui-tui/src/render.rs` — `candidate_to_line` takes `&AnnotationColumns`; each call site (`draw_completion_popup`, `draw_picker_candidates`, `draw_picker_overlay`, `draw_completion_overlay`) builds the column layout from its visible slice and threads it in. Per column: paint this row's matching annotation padded to the column width, or a blank cell of that width.
+3. `crates/lattice-ui-gpui/src/window.rs` — same shape in `paint_candidate_row` (lockstep peer per `feedback_tui_gpui_parity`); all five GPUI call sites build `AnnotationColumns` from their visible window and thread it in. Blank cells emit a `marginalia_fg` space div of the column width.
+4. Tests: `candidate.rs` — `columns_width_is_max_across_visible`, `columns_ordered_keybinding_first`, `columns_empty_when_no_annotations`, `columns_include_category_missing_from_some_rows` (the alignment-fix scenario: one row with a keybinding, one without — both keep their kind column aligned), `columns_custom_slots_sort_after_builtins`.
+
+Acceptance: columns align vertically when some rows have keybindings and others don't; no annotation column at all when no candidate carries one. Both renderers updated in the same patch. Bisect-friendly: one commit.
+
+No bench: the column build is O(visible-rows × annotations-per-row) over the *visible* batch only (≤ popup height, typically ≤ 20 rows), off the per-keystroke document hot path — the MARG.4 pipeline bench already covers annotation production cost.
 
 ## Cross-references
 

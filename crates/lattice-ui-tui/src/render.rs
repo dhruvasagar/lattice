@@ -1033,13 +1033,20 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
         .map(|c| c.raw.display.chars().count())
         .max()
         .unwrap_or(0);
+    // MARG.5 (2026-06-03): per-category column layout across
+    // the visible candidate set. Each row's annotation cells
+    // render against this so columns align vertically even
+    // when some rows have keybindings and others don't.
+    let columns = lattice_completion::AnnotationColumns::from_visible(
+        state.candidates.iter().skip(scroll).take(visible_count),
+    );
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -1057,6 +1064,7 @@ fn candidate_to_line<'a>(
     c: &'a lattice_completion::RenderedCandidate,
     selected: bool,
     display_col_chars: usize,
+    columns: &lattice_completion::AnnotationColumns,
 ) -> Line<'a> {
     // 2026-06-03: the `▶ ` selection-glyph prefix was
     // redundant — the row-background colour on the selected
@@ -1124,18 +1132,21 @@ fn candidate_to_line<'a>(
         spans.push(Span::styled(text[cursor..].to_string(), row_style));
     }
 
-    // Annotations column-aligned. Pad so this row's annotation
-    // starts at `prefix + kind_glyph + display_col_chars + 2`
-    // chars in — same x across the visible batch. MARG.1
-    // (2026-06-03): annotations are typed
-    // (`Vec<Annotation>`); paint each with the color its
-    // category resolves to instead of one undifferentiated
-    // grey. Hardcoded ratatui palette here matches the defaults
-    // documented in `docs/dev/architecture/marginalia.md` §5;
-    // theme-driven slot lookup is a queued follow-up slice
-    // (same as the matcher highlight TODO at the top of this
-    // function).
-    if !c.annotations.is_empty() {
+    // MARG.5 (2026-06-03): per-category column-aligned
+    // annotations. Walk `columns` (pre-computed per-visible-
+    // set max widths) in display order; for each column,
+    // either render this candidate's matching annotation
+    // (padded to column width) or render a blank cell of the
+    // same column width. Keeps every row's annotation cells
+    // lined up vertically even when some rows have a
+    // keybinding and others don't.
+    //
+    // The pad-to-display_col_chars run before the first
+    // column stays — it's what lifts the annotation column
+    // off the variable-width candidate text. Per-variant
+    // colours from `annotation_color` (MARG.1) still apply
+    // per-cell; blank cells inherit the row style only.
+    if !columns.is_empty() {
         let kind_prefix_len = prefix.len() + 2; // glyph + " "
         let target_col = display_col_chars
             .saturating_add(kind_prefix_len)
@@ -1145,15 +1156,35 @@ fn candidate_to_line<'a>(
         if pad > 0 {
             spans.push(Span::styled(" ".repeat(pad), row_style));
         }
-        for (i, ann) in c.annotations.iter().enumerate() {
+        for (i, (category, col_width)) in columns.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("  ", row_style));
             }
-            let fg = annotation_color(ann, selected);
-            spans.push(Span::styled(
-                ann.display_text().into_owned(),
-                row_style.fg(fg),
-            ));
+            // Find this row's annotation for the column's
+            // category. None ⇒ blank cell of the full width.
+            let ann_for_col = c
+                .annotations
+                .iter()
+                .find(|a| a.category() == category);
+            match ann_for_col {
+                Some(ann) => {
+                    let text = ann.display_text();
+                    let text_chars = text.chars().count();
+                    let cell_pad = col_width.saturating_sub(text_chars);
+                    let fg = annotation_color(ann, selected);
+                    spans.push(Span::styled(text.into_owned(), row_style.fg(fg)));
+                    if cell_pad > 0 {
+                        spans.push(Span::styled(" ".repeat(cell_pad), row_style));
+                    }
+                }
+                None => {
+                    // Blank cell — keeps downstream columns
+                    // aligned vertically across rows.
+                    if col_width > 0 {
+                        spans.push(Span::styled(" ".repeat(col_width), row_style));
+                    }
+                }
+            }
         }
     }
     Line::from(spans)
@@ -1291,13 +1322,20 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
         .map(|c| c.raw.display.chars().count())
         .max()
         .unwrap_or(0);
+    // MARG.5 (2026-06-03): per-category column layout across
+    // the visible candidate set. Each row's annotation cells
+    // render against this so columns align vertically even
+    // when some rows have keybindings and others don't.
+    let columns = lattice_completion::AnnotationColumns::from_visible(
+        p.candidates.iter().skip(scroll).take(visible_count),
+    );
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, area);
@@ -1428,13 +1466,20 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .map(|c| c.raw.display.chars().count())
         .max()
         .unwrap_or(0);
+    // MARG.5 (2026-06-03): per-category column layout across
+    // the visible candidate set. Each row's annotation cells
+    // render against this so columns align vertically even
+    // when some rows have keybindings and others don't.
+    let columns = lattice_completion::AnnotationColumns::from_visible(
+        p.candidates.iter().skip(scroll).take(visible_count),
+    );
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, cand_area);
@@ -1492,13 +1537,20 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .map(|c| c.raw.display.chars().count())
         .max()
         .unwrap_or(0);
+    // MARG.5 (2026-06-03): per-category column layout across
+    // the visible candidate set. Each row's annotation cells
+    // render against this so columns align vertically even
+    // when some rows have keybindings and others don't.
+    let columns = lattice_completion::AnnotationColumns::from_visible(
+        state.candidates.iter().skip(scroll).take(visible_count),
+    );
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);

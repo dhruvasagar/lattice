@@ -345,6 +345,102 @@ impl Annotation {
     }
 }
 
+/// MARG.5 (2026-06-03): pre-computed per-category column
+/// layout for the picker / completion annotation column.
+/// The renderer builds one of these from the visible
+/// candidate set, then renders each row against it — every
+/// row's annotation cells line up vertically because each
+/// column width is the max across visible candidates and
+/// rows that don't have a particular category render a
+/// blank cell of the same width.
+///
+/// Why this lives in `lattice-completion` rather than the
+/// renderer crates: both peer renderers (TUI + GPUI) need
+/// identical column-width math; centralising avoids two
+/// implementations drifting apart. The layout is data, not
+/// paint — peers consume it differently (ratatui spans vs.
+/// GPUI element-tree), but the column widths are universal.
+///
+/// Display order is variant-fixed via `category_order`:
+/// keybinding -> kind -> doc -> source -> custom (custom
+/// slots come last, grouped at the end). Order matches the
+/// `default_annotators` order in editor_boot post-`4ed7bf0`
+/// (keybinding-first placement fix), so the visible layout
+/// matches the registration order.
+#[derive(Debug, Clone, Default)]
+pub struct AnnotationColumns {
+    /// (category_key, max display width in `chars`)
+    /// ordered by display order.
+    cols: Vec<(String, usize)>,
+}
+
+impl AnnotationColumns {
+    /// Build the column layout from a borrowed iterator over
+    /// the visible candidates. `chars().count()` is used for
+    /// width — matches what `display_text()` yields and what
+    /// monospace terminals draw. (Combining-char / wide-glyph
+    /// edge cases are not handled here for parity with the
+    /// existing `display_col_chars` calculation in the picker
+    /// caller; a future Unicode-width pass would land in both
+    /// sites at once.)
+    pub fn from_visible<'a, I>(candidates: I) -> Self
+    where
+        I: IntoIterator<Item = &'a RenderedCandidate>,
+    {
+        let mut widths: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for c in candidates {
+            for a in &c.annotations {
+                let cat = a.category().to_string();
+                let w = a.display_text().chars().count();
+                let e = widths.entry(cat).or_insert(0);
+                *e = (*e).max(w);
+            }
+        }
+        let mut cols: Vec<(String, usize)> = widths.into_iter().collect();
+        cols.sort_by(|(a, _), (b, _)| {
+            category_order(a)
+                .cmp(&category_order(b))
+                .then_with(|| a.cmp(b))
+        });
+        Self { cols }
+    }
+
+    /// Iterate `(category_key, column_width)` pairs in
+    /// display order. Renderers walk this once per row; for
+    /// each column they either render the candidate's
+    /// matching annotation (padded to `column_width`) or a
+    /// blank cell of `column_width` spaces.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.cols.iter().map(|(k, w)| (k.as_str(), *w))
+    }
+
+    /// True when no visible candidate carries any annotation.
+    /// Renderers skip the annotation-column rendering
+    /// entirely (including the leading pad-to-display_col
+    /// spacing) when this is true.
+    pub fn is_empty(&self) -> bool {
+        self.cols.is_empty()
+    }
+}
+
+/// Display-order rank for an annotation `category()` key.
+/// Lower values render leftmost. Keybinding leads because
+/// the user's eye is on the command name and chord
+/// proximity is the high-value scan affordance (per the
+/// MARG.2 placement-fix discussion). Unknown categories
+/// (typically `Custom` `slot` strings) get the rank reserved
+/// for plugin-supplied annotations.
+fn category_order(category: &str) -> u8 {
+    match category {
+        "keybinding" => 0,
+        "kind" => 1,
+        "doc" => 2,
+        "source" => 3,
+        _ => 4,
+    }
+}
+
 /// What the renderer paints. Annotators append to `annotations`;
 /// the renderer paints each typed [`Annotation`] with the style
 /// that category resolves to, joined by two spaces of row-styled
@@ -418,5 +514,91 @@ mod tests {
     fn cache_key_round_trips() {
         let k = CacheKey::new("commands:v1");
         assert_eq!(k.0, "commands:v1");
+    }
+
+    /// Build a `RenderedCandidate` carrying the given annotations
+    /// for `AnnotationColumns` layout tests.
+    fn candidate_with(annotations: Vec<Annotation>) -> RenderedCandidate {
+        let scored = ScoredCandidate {
+            raw: RawCandidate::plain("cmd", CandidateKind::Plain),
+            score: MatchScore::PERFECT,
+            match_ranges: vec![],
+        };
+        let mut c = RenderedCandidate::from_scored(scored);
+        c.annotations = annotations;
+        c
+    }
+
+    #[test]
+    fn columns_width_is_max_across_visible() {
+        // Two candidates, same category, different widths — the
+        // column width is the max so every row's cell lines up.
+        let cands = vec![
+            candidate_with(vec![Annotation::Kind("motion".into())]),
+            candidate_with(vec![Annotation::Kind("ex".into())]),
+        ];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        let kind = cols.iter().find(|(c, _)| *c == "kind").unwrap();
+        assert_eq!(kind.1, "motion".chars().count());
+    }
+
+    #[test]
+    fn columns_ordered_keybinding_first() {
+        // Registration / display order: keybinding -> kind ->
+        // doc -> source -> custom. The HashMap build is
+        // unordered; `category_order` re-imposes the fixed rank.
+        let cands = vec![candidate_with(vec![
+            Annotation::DocSnippet("docs".into()),
+            Annotation::Source("builtin".into()),
+            Annotation::Kind("ex".into()),
+            Annotation::Keybinding(vec![]),
+        ])];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        let order: Vec<&str> = cols.iter().map(|(c, _)| c).collect();
+        assert_eq!(order, vec!["keybinding", "kind", "doc", "source"]);
+    }
+
+    #[test]
+    fn columns_empty_when_no_annotations() {
+        let cands = vec![candidate_with(vec![]), candidate_with(vec![])];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        assert!(cols.is_empty());
+        assert_eq!(cols.iter().count(), 0);
+    }
+
+    #[test]
+    fn columns_include_category_missing_from_some_rows() {
+        // The whole point of the alignment fix: one row has a
+        // keybinding, the other doesn't. The keybinding column
+        // still exists (width from the row that has it) so the
+        // row without one renders a blank cell of that width and
+        // the kind column stays aligned across both rows.
+        let cands = vec![
+            candidate_with(vec![
+                Annotation::Keybinding(vec![]),
+                Annotation::Kind("ex".into()),
+            ]),
+            candidate_with(vec![Annotation::Kind("motion".into())]),
+        ];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        let keys: Vec<&str> = cols.iter().map(|(c, _)| c).collect();
+        assert_eq!(keys, vec!["keybinding", "kind"]);
+        // kind width is the max across both rows.
+        let kind = cols.iter().find(|(c, _)| *c == "kind").unwrap();
+        assert_eq!(kind.1, "motion".chars().count());
+    }
+
+    #[test]
+    fn columns_custom_slots_sort_after_builtins() {
+        let cands = vec![candidate_with(vec![
+            Annotation::Custom {
+                text: "plug".into(),
+                slot: "annotation_plugin".into(),
+            },
+            Annotation::Kind("ex".into()),
+        ])];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        let order: Vec<&str> = cols.iter().map(|(c, _)| c).collect();
+        assert_eq!(order, vec!["kind", "annotation_plugin"]);
     }
 }

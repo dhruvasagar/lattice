@@ -449,6 +449,7 @@ fn paint_candidate_row(
     theme: &GpuiTheme,
     padded: bool,
     display_col_chars: usize,
+    columns: &lattice_completion::AnnotationColumns,
 ) -> gpui::Div {
     // Issue #35 (2026-05-22): match highlight now uses
     // `picker_match_highlight` (Catppuccin peach by default,
@@ -537,9 +538,16 @@ fn paint_candidate_row(
     row = row
         .child(div().text_color(marginalia_fg).flex_shrink_0().child(kind_glyph))
         .child(display_div.flex_shrink_0());
-    if !cand.annotations.is_empty() {
-        // Pad spaces so this row's annotation lands at the same
-        // column as every other row. `+ 2` leaves a small gap.
+    // MARG.5 (2026-06-03): per-category column-aligned
+    // annotations. Walk `columns` (pre-computed per-visible-
+    // set max widths) in display order; render this
+    // candidate's matching annotation per column or a blank
+    // cell of the column width. Mirrors the TUI peer's
+    // shape (`candidate_to_line`).
+    if !columns.is_empty() {
+        // Pad spaces so the first annotation column lands at
+        // the same x as every other row. `+ 2` leaves a small
+        // gap between candidate text and the column band.
         let display_chars = display.chars().count();
         let pad_chars = display_col_chars
             .saturating_sub(display_chars)
@@ -552,12 +560,7 @@ fn paint_candidate_row(
                     .child(" ".repeat(pad_chars)),
             );
         }
-        // One child div per annotation, coloured per-variant.
-        // Two spaces of `marginalia_fg`-coloured separator
-        // between consecutive annotations (matches the TUI
-        // peer's `"  "` join — separator inherits the row
-        // background by virtue of having no `bg` override).
-        for (i, ann) in cand.annotations.iter().enumerate() {
+        for (i, (category, col_width)) in columns.iter().enumerate() {
             if i > 0 {
                 row = row.child(
                     div()
@@ -566,13 +569,44 @@ fn paint_candidate_row(
                         .child("  "),
                 );
             }
-            let fg = rgb(annotation_color_rgb(ann, selected));
-            row = row.child(
-                div()
-                    .text_color(fg)
-                    .flex_shrink_0()
-                    .child(ann.display_text().into_owned()),
-            );
+            let ann_for_col = cand
+                .annotations
+                .iter()
+                .find(|a| a.category() == category);
+            match ann_for_col {
+                Some(ann) => {
+                    let text = ann.display_text().into_owned();
+                    let text_chars = text.chars().count();
+                    let cell_pad = col_width.saturating_sub(text_chars);
+                    let fg = rgb(annotation_color_rgb(ann, selected));
+                    row = row.child(
+                        div()
+                            .text_color(fg)
+                            .flex_shrink_0()
+                            .child(text),
+                    );
+                    if cell_pad > 0 {
+                        row = row.child(
+                            div()
+                                .text_color(marginalia_fg)
+                                .flex_shrink_0()
+                                .child(" ".repeat(cell_pad)),
+                        );
+                    }
+                }
+                None => {
+                    // Blank cell — keeps downstream columns
+                    // aligned vertically across rows.
+                    if col_width > 0 {
+                        row = row.child(
+                            div()
+                                .text_color(marginalia_fg)
+                                .flex_shrink_0()
+                                .child(" ".repeat(col_width)),
+                        );
+                    }
+                }
+            }
         }
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
@@ -2651,6 +2685,14 @@ impl Render for EditorView {
                     .map(|c| c.raw.display.chars().count())
                     .max()
                     .unwrap_or(0);
+                // MARG.5: per-category column layout across the
+                // visible candidate set — each row's annotation
+                // cells render against this so columns align
+                // vertically even when some rows have keybindings
+                // and others don't.
+                let columns = lattice_completion::AnnotationColumns::from_visible(
+                    ic.rendered[window_start..window_end].iter(),
+                );
                 let visible: Vec<gpui::Div> = ic.rendered[window_start..window_end]
                     .iter()
                     .enumerate()
@@ -2661,7 +2703,7 @@ impl Render for EditorView {
                             abs_idx == ic.selected,
                             &theme,
                             false,
-                            display_col_chars,
+                            display_col_chars, &columns,
                         )
                     })
                     .collect();
@@ -2756,6 +2798,11 @@ impl Render for EditorView {
                 .map(|c| c.raw.display.chars().count())
                 .max()
                 .unwrap_or(0);
+            // MARG.5: per-category column layout — see the
+            // first call site upstream for full rationale.
+            let columns = lattice_completion::AnnotationColumns::from_visible(
+                picker.candidates[window_start..window_end].iter(),
+            );
             let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
                 .iter()
                 .enumerate()
@@ -2766,7 +2813,7 @@ impl Render for EditorView {
                         abs_idx == picker.selected,
                         &theme,
                         false,
-                        display_col_chars,
+                        display_col_chars, &columns,
                     )
                 })
                 .collect();
@@ -2868,6 +2915,11 @@ impl Render for EditorView {
                         .map(|c| c.raw.display.chars().count())
                         .max()
                         .unwrap_or(0);
+                    // MARG.5: per-category column layout — see the
+                    // first call site upstream for full rationale.
+                    let columns = lattice_completion::AnnotationColumns::from_visible(
+                        picker.candidates[scroll..window_end].iter(),
+                    );
                     picker.candidates[scroll..window_end]
                         .iter()
                         .enumerate()
@@ -2878,7 +2930,7 @@ impl Render for EditorView {
                                 abs_idx == picker.selected,
                                 &theme,
                                 true,
-                                display_col_chars,
+                                display_col_chars, &columns,
                             )
                         })
                         .collect()
@@ -2958,6 +3010,11 @@ impl Render for EditorView {
                     .map(|c| c.raw.display.chars().count())
                     .max()
                     .unwrap_or(0);
+                // MARG.5: per-category column layout — see the
+                // first call site upstream for full rationale.
+                let columns = lattice_completion::AnnotationColumns::from_visible(
+                    state.candidates[scroll..window_end].iter(),
+                );
                 let cand_rows: Vec<gpui::Div> = state.candidates[scroll..window_end]
                     .iter()
                     .enumerate()
@@ -2968,7 +3025,7 @@ impl Render for EditorView {
                             abs_idx == state.selected,
                             &theme,
                             true,
-                            display_col_chars,
+                            display_col_chars, &columns,
                         )
                     })
                     .collect();
@@ -3003,6 +3060,11 @@ impl Render for EditorView {
                     .map(|c| c.raw.display.chars().count())
                     .max()
                     .unwrap_or(0);
+                // MARG.5: per-category column layout — see the
+                // first call site upstream for full rationale.
+                let columns = lattice_completion::AnnotationColumns::from_visible(
+                    state.candidates[window_start..window_end].iter(),
+                );
                 let visible_candidates: Vec<gpui::Div> = state.candidates[window_start..window_end]
                     .iter()
                     .enumerate()
@@ -3013,7 +3075,7 @@ impl Render for EditorView {
                             abs_idx == state.selected,
                             &theme,
                             false,
-                            display_col_chars,
+                            display_col_chars, &columns,
                         )
                     })
                     .collect();

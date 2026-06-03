@@ -42,8 +42,8 @@ pub use crate::builtins::rankers::{AlphabeticalRanker, MruRanker, ScoreRanker};
 pub use crate::builtins::{CompletionBuiltins, populate};
 pub use crate::cache::GeneratorCache;
 pub use crate::candidate::{
-    Annotation, CacheKey, CandidateData, CandidateKind, MatchScore, RawCandidate,
-    RenderedCandidate, ScoredCandidate,
+    Annotation, AnnotationColumns, CacheKey, CandidateData, CandidateKind, MatchScore,
+    RawCandidate, RenderedCandidate, ScoredCandidate,
 };
 pub use crate::insert::{
     BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,

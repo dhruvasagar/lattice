@@ -106,6 +106,8 @@ The renderer is the only consumer of the variant tags. Per annotation:
 
 Multiple annotations on one candidate are joined with two spaces (current behavior, preserved). Each span carries its own style; the joiner spaces inherit the row style (selected vs. unselected background).
 
+**Column alignment across rows (MARG.5).** Annotations render in *category columns*, not as a per-row free-flowing list. Before painting the visible batch, the renderer builds a `lattice_completion::AnnotationColumns` from the visible candidate set: one column per category present in any visible row, each column's width = the max `display_text().chars().count()` across visible rows that carry that category. Columns are ordered by a fixed display rank (`keybinding → kind → doc → source → custom`, matching the registered annotator order). Each row then walks the columns in order: for a column whose category the row has, it paints the annotation padded to the column width; for a column the row *lacks*, it paints a blank cell of the column width. The result: a candidate with no keybinding renders an empty keybinding cell so its kind/doc columns stay vertically aligned with rows that do have a keybinding. The width math lives in `lattice-completion` (not the renderer crates) so the two peer renderers — TUI ratatui spans and GPUI element-tree — compute identical column geometry from one source. When no visible candidate carries any annotation, `AnnotationColumns::is_empty()` is true and the renderer skips the annotation column (including the leading pad) entirely.
+
 ## 5. Theme integration
 
 New theme slots under `theme.completion.annotation_*`:

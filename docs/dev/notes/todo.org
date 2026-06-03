@@ -2,8 +2,10 @@
 - [ ] diagnostics under cursor
 - [X] Terminal
 - [ ] ligatures
+- [ ] variable size fonts in GUI, first consumer markdown
 - [ ] diffing
 - [ ] Narrow mode
+- [ ] digraphs & emoji's with picker
 - [ ] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
 - [ ] :! shell execution
@@ -99,6 +101,7 @@
   may need a peer-level opacity / palette-darken pass.
 - [X] visual block mode does not work
 - [X] marginalia columns alignment
+- [ ] `scrolloff` not respected properly
 
 * Documentation
 - [ ] lattice-tutor

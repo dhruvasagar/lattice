@@ -26,6 +26,47 @@ target rather than just a slower number.
 > criterion's median estimate. Each row's outer `[low high]`
 > bracket is the 95% confidence interval; we report the median.
 
+> ⚠️ **Hardware caveat — read before quoting these numbers.**
+> Every row in this document was measured on the primary
+> development box: AMD Ryzen 7 9700X (Zen 5, 8C/16T, ~5 GHz
+> boost), 16 GB RAM, WSL2 / Linux 6.6. This is high-end
+> desktop hardware as of 2026 and is NOT representative of
+> the machines most users will run lattice on.
+>
+> Concrete implications:
+>
+> 1. **The numbers here are a best case.** Typical 2020-2024
+>    ultrabook / Macbook Air baselines run 2-5× slower on
+>    single-thread CPU work (tree-sitter parse, fuzzy match,
+>    annotator pipeline, ropey edits). Older or low-power
+>    hardware can be 5-10× slower. A bench showing 1 µs on
+>    the dev box could be 5-10 µs in the wild.
+>
+> 2. **Paramount goal #1's budgets apply to user hardware,
+>    not the dev box.** The §8.2 commitments (keystroke →
+>    glyph ≤ 8 ms at 120 Hz, ≤ 16 ms at 60 Hz; per-call
+>    WASM overhead < 500 ns p99; grammar-extension round-trip
+>    < 5 µs p99) are commitments we make to USERS. A bench
+>    that fits the budget on the dev box but consumes more
+>    than ~25% of it (the rough cross-hardware safety margin)
+>    is at risk of overshooting on slower machines.
+>    Headroom matters more than the absolute number does.
+>
+> 3. **Regression detection stays valid.** Comparing
+>    pre-vs-post-slice numbers ON THE SAME HARDWARE is the
+>    point of these benches and is unaffected by the dev-box
+>    issue. A 2× regression flagged here would also flag on
+>    slower hardware. Don't avoid running benches because of
+>    this caveat — just don't quote the absolute numbers as
+>    "this is what users see."
+>
+> 4. **A cheaper baseline machine is on the wish list.**
+>    Cross-validating budget-sensitive rows (frame-budget
+>    bench, host-call bench, per-keystroke hot paths) on a
+>    representative low-end laptop would let us catch the
+>    cases where dev-box numbers mislead. Tracked as a
+>    follow-up; not blocking individual benches.
+
 ---
 
 ## M.2.c — multibuffer motion + compose benches (2026-06-01)

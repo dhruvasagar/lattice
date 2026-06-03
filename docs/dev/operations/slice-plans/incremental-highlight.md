@@ -22,16 +22,37 @@ sessions (per the CI perf-budget gate).
   whole-file-highlight baseline.
 - Impact: `cells_worker.rs` only.
 
-## H.2 — changed-ranges invalidation  🗒
+## H.2 — changed-ranges invalidation
 
-- `lattice-syntax`: after a reparse, compute `old_tree.changed_ranges(&new)`;
-  publish affected line ranges on `SyntaxSnapshot` (new field).
-- `cells_worker.rs`: on the reparse-completion wake (no edit delta), rebuild
-  only rows intersecting the dirty ranges instead of full-rebuilding.
-- Tests: local edit → one row rebuilt; unclosed-fence edit → all re-spanned
-  rows rebuilt; no whole-file recolour.
-- Bench: reparse-completion rebuild cost vs full-rebuild baseline.
-- Impact: `lattice-syntax` (snapshot + worker), `cells_worker.rs`.
+### H.2a — publish changed line ranges  ✅ (commit `4ae04ac`)
+
+- `lattice-syntax`: `reparse_with_cached_tree(from)` computes
+  `old.changed_ranges(new)` → `SyntaxSnapshot.changed_lines` (inclusive line
+  ranges) + `reparsed_from_version`. Full reparse → `changed_lines = None`.
+  Accessors `changed_lines()` / `reparsed_from_version()`.
+- Test: `changed_lines_covers_the_edited_line`. No behaviour change (data only).
+
+### H.2b — cells worker consumes it  🗒 (RE-EVALUATED — likely fold into / defer behind H.3)
+
+**Re-evaluation (2026-06-04):** the original motive "kills the whole-file
+recolour *flip* on reparse" is **moot** — `markdown_inline_spans_stable_across_unrelated_edit`
+proved the highlight is deterministic across reparses (no flip; the
+reparse-completion full rebuild produces identical colours). So H.2b's value is
+**pure perf** (avoid the whole-file highlight on reparse-completion), which
+**overlaps H.3**: once the matrix is viewport-windowed, the full rebuild is
+already viewport-bounded and cheap on large files. H.2b's only distinct win is
+chunked/large-file reparse cost — exactly H.3's domain.
+
+Decision pending: either (a) skip H.2b, go straight to H.3, and let H.3's
+window-refresh consume `changed_lines` (H.2a) to know which visible rows to
+re-highlight; or (b) a minimal whole-doc H.2b only if a concrete need appears.
+`changed_lines` (H.2a) is published and ready for whichever path.
+
+- Sketch if pursued: on reparse-completion (no edit delta) with
+  `existing.version.syntax == snapshot.reparsed_from_version` (coherence gate)
+  and `changed_lines = Some`, rebuild the bounding line range of the dirty
+  ranges, reuse prior rows elsewhere (H.1 whole-doc row-reuse, net=0); else
+  full rebuild. Chunked: reuse non-dirty chunks.
 
 ## H.3 — viewport-scoped highlighting  🗒
 

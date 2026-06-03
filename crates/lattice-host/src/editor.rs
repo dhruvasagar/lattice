@@ -1356,6 +1356,28 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>>,
     pub pending_inlay_hint_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspInlayHintRefresh>>,
+    /// 2026-06-03: buffers whose server sent
+    /// `workspace/inlayHint/refresh` since their hints were last
+    /// requested. `drain_inlay_hint_refresh` marks here instead of
+    /// wiping `lsp_inlay_hints_cache`, so the previously-resolved
+    /// hints stay rendered until the refetch lands (no
+    /// disappear-then-reappear flicker — `feedback_decorations_update_in_place`).
+    /// `maybe_request_inlay_hint` consults this to force a refetch
+    /// even when the document version is unchanged, and clears the
+    /// entry once it issues the request.
+    pub inlay_refresh_pending: std::collections::HashSet<lattice_core::BufferId>,
+    /// 2026-06-03: same shape as [`Self::inlay_refresh_pending`] for
+    /// `workspace/semanticTokens/refresh`. The semantic-token colour
+    /// overlay renders directly from `lsp_semantic_tokens_cache` every
+    /// frame, so wiping the cache on refresh blanked all LSP colouring
+    /// until the refetch landed (whole-viewport flicker per keystroke).
+    /// `drain_semantic_tokens_refresh` marks here instead; the prior
+    /// tokens keep rendering and `maybe_request_semantic_tokens` forces
+    /// a refetch (delta from the retained `result_id`) that swaps them
+    /// in place. (Pull diagnostics render from the persistent
+    /// `DiagnosticsLayer` and code lenses are picker-only, so neither
+    /// needs this — audited 2026-06-03.)
+    pub semantic_tokens_refresh_pending: std::collections::HashSet<lattice_core::BufferId>,
     pub pending_semantic_tokens_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
     pub pending_lsp_detach_rx:

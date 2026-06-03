@@ -1121,6 +1121,8 @@ impl Editor {
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
+            inlay_refresh_pending: std::collections::HashSet::new(),
+            semantic_tokens_refresh_pending: std::collections::HashSet::new(),
             pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
             pending_code_lens_refresh_rx: Some(lsp_code_lens_refresh_rx),
             pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),

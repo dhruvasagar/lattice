@@ -8601,8 +8601,16 @@ impl Editor {
         let prior = self
             .lsp_semantic_tokens_cache
             .get_for(self.document_buffer_id);
+        // 2026-06-03: a server `workspace/semanticTokens/refresh`
+        // (drained into `semantic_tokens_refresh_pending`) forces a
+        // refetch even when the document version is unchanged — the old
+        // tokens keep rendering meanwhile (see
+        // `drain_semantic_tokens_refresh`).
         if let Some(cache) = prior.as_ref()
             && cache.document_version == version
+            && !self
+                .semantic_tokens_refresh_pending
+                .contains(&self.document_buffer_id)
         {
             return;
         }
@@ -8614,6 +8622,10 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
+        // Committing to a refetch — clear the refresh-pending mark so we
+        // don't re-request every tick. The response's `insert_for`
+        // reseats the cache and swaps the displayed tokens in place.
+        self.semantic_tokens_refresh_pending.remove(&buffer_id);
         let token = lattice_protocol::CancellationToken::new();
         self.pending_semantic_tokens_token = Some(token.clone());
         let lsp = self.lsp.clone();
@@ -8693,7 +8705,8 @@ impl Editor {
                             &token_modifiers,
                         );
                     }
-                    _ => {
+                    Ok(_) => {
+                        // Authoritative empty (`Ok(None)`): clear.
                         cache_slot.insert_for(
                             buffer_id,
                             lattice_lsp::cache::LspSemanticTokensCache {
@@ -8703,6 +8716,12 @@ impl Editor {
                                 tokens: Vec::new(),
                             },
                         );
+                    }
+                    Err(_) => {
+                        // 2026-06-03: cancelled (superseded by a newer
+                        // request) or transient error — keep the prior
+                        // tokens rather than blanking the colour overlay.
+                        // See `feedback_decorations_update_in_place`.
                     }
                 }
                 return;
@@ -8729,7 +8748,9 @@ impl Editor {
                         },
                     );
                 }
-                _ => {
+                Ok(_) => {
+                    // Authoritative empty (`Ok(None)` / partial result):
+                    // clear the overlay.
                     cache_slot.insert_for(
                         buffer_id,
                         lattice_lsp::cache::LspSemanticTokensCache {
@@ -8739,6 +8760,12 @@ impl Editor {
                             tokens: Vec::new(),
                         },
                     );
+                }
+                Err(_) => {
+                    // 2026-06-03: cancelled (superseded by a newer
+                    // request) or transient error — keep the prior
+                    // tokens rather than blanking the colour overlay.
+                    // See `feedback_decorations_update_in_place`.
                 }
             }
         });
@@ -9042,8 +9069,13 @@ impl Editor {
         let requested_last = viewport_last
             .saturating_add(OVERSCAN_LINES)
             .min(last_buffer_line);
+        // 2026-06-03: a server `workspace/inlayHint/refresh` (drained
+        // into `inlay_refresh_pending`) forces a refetch even when the
+        // document version and viewport are unchanged — the old hints
+        // stay rendered meanwhile (see `drain_inlay_hint_refresh`).
         if let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
+            && !self.inlay_refresh_pending.contains(&self.document_buffer_id)
             && viewport_first >= cache.requested_first_line
             && viewport_last <= cache.requested_last_line
         {
@@ -9056,6 +9088,11 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
+        // We are committing to a refetch for this buffer; clear the
+        // refresh-pending mark so we don't re-request every tick. The
+        // response's `insert_for` reseats the cache at the current
+        // version, swapping the displayed hints in place.
+        self.inlay_refresh_pending.remove(&buffer_id);
         let range = lattice_lsp::lsp_types::Range {
             start: lattice_lsp::lsp_types::Position {
                 line: requested_first,
@@ -9107,7 +9144,10 @@ impl Editor {
                         },
                     );
                 }
-                _ => {
+                Ok(_) => {
+                    // Authoritative empty (`Ok(None)` / `Ok(Some([]))`):
+                    // the server says there are no hints in this range,
+                    // so clearing is correct.
                     cache_slot.insert_for(
                         buffer_id,
                         lattice_lsp::cache::LspInlayHintCache {
@@ -9117,6 +9157,15 @@ impl Editor {
                             requested_last_line: requested_last,
                         },
                     );
+                }
+                Err(_) => {
+                    // 2026-06-03: a cancelled request (superseded by a
+                    // newer one when typing fast) or a transient server
+                    // error must NOT clobber the displayed hints with
+                    // empty — that caused a one-frame whole-viewport
+                    // blank that read as occasional flicker. Keep the
+                    // prior hints; the superseding request reseats the
+                    // cache. See `feedback_decorations_update_in_place`.
                 }
             }
         });
@@ -9727,8 +9776,16 @@ impl Editor {
             })
             .collect();
         for buffer_id in buffer_ids {
-            use crate::per_buffer_cache::PerBufferCacheExt;
-            self.lsp_inlay_hints_cache.remove_for(buffer_id);
+            // 2026-06-03: do NOT wipe the cache here. Removing the
+            // entry blanks every inlay hint in the viewport until the
+            // refetch round-trips, which reads as the whole view
+            // flickering on each keystroke (rust-analyzer fires
+            // `workspace/inlayHint/refresh` after it reprocesses every
+            // edit). Instead mark the buffer refresh-pending so the
+            // prior hints keep rendering and `maybe_request_inlay_hint`
+            // forces a refetch that swaps them in place once it lands.
+            // See `feedback_decorations_update_in_place`.
+            self.inlay_refresh_pending.insert(buffer_id);
         }
     }
 
@@ -9760,8 +9817,16 @@ impl Editor {
             })
             .collect();
         for buffer_id in buffer_ids {
-            use crate::per_buffer_cache::PerBufferCacheExt;
-            self.lsp_semantic_tokens_cache.remove_for(buffer_id);
+            // 2026-06-03: do NOT wipe the cache here — the semantic-token
+            // colour overlay renders straight from this cache every
+            // frame, so removing the entry blanks all LSP colouring
+            // until the refetch lands (whole-viewport flicker on each
+            // keystroke; rust-analyzer fires the refresh after every
+            // edit). Mark refresh-pending instead so the prior tokens
+            // keep rendering and `maybe_request_semantic_tokens` forces
+            // a refetch (delta from the retained `result_id`) that swaps
+            // them in place. See `feedback_decorations_update_in_place`.
+            self.semantic_tokens_refresh_pending.insert(buffer_id);
         }
     }
 

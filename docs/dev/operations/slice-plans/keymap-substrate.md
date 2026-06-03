@@ -2,10 +2,13 @@
 
 **Design:** [keymap-architecture.md §11](../../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap).
 
-**Status:** 🚧 in progress. K.2.1 / K.2.2 / K.2.3 landed
-(2026-06-01); K.2.4 (host translation pass) is the active
-sub-slice. Critical path: blocks MO.1–MO.4 cleanup and the
-`multibuffer_keymap.rs` deletion.
+**Status:** ✅ closed (2026-06-01 → 2026-06-02). All
+sub-slices K.2.1–K.2.7 landed (see the sub-arc summary table
+at the bottom for commit hashes). The only deferred item is
+the single-mode-translation BENCHMARKS row, held for a
+measured profiling sweep (a stub without measured data would
+mislead). Substrate is in place; the MO.1–MO.4 + MO.x
+mode-ownership cleanups it was blocking are now unblocked.
 
 **Why:** `Mode::keymap()` exists on the trait
 (`crates/lattice-mode/src/mode.rs:178`) but returns a
@@ -162,7 +165,7 @@ benchmarks block on the polish arc landing first because the
 describe-key tightening (K.2.4.A.1-A.4) churns the same code
 path.
 
-### K.2.4.A — Tighten `:describe-key` output 🚧
+### K.2.4.A — Tighten `:describe-key` output ✅
 
 User-testing surfaced that `:describe-key`'s current output
 enumerates all sources but doesn't make the layered-keymap-
@@ -173,7 +176,7 @@ multibuffer / project-search migration consumes the polished
 output and the unified catalog/registry presentation, so the
 polish has to land first.
 
-#### K.2.4.A.0 — `keymap_entry!` substrate consolidation 🚧
+#### K.2.4.A.0 — `keymap_entry!` substrate consolidation ✅
 
 K.2.1's substrate-floor move stopped at the chord primitives;
 `KeymapEntry` and `keymap_entry!` stayed in host. K.2.4.A.0
@@ -224,12 +227,13 @@ Composed of five sub-slices:
   composability case proving both paths land at the same
   `MinorMode(mode_id)` layer. Shape K.2.5's multibuffer
   migration will adopt.
-- **K.2.4.A.0.5 🚧** — docs (this slice): `keymap-architecture.md`
-  §11.2.2 entry-form contribution; this slice plan +
-  ledger refresh; brief mention in user docs deferred to
-  K.2.4.A.5 alongside the describe-key user-docs arc.
+- **K.2.4.A.0.5 ✅ (commit `f9a15cd`)** — docs:
+  `keymap-architecture.md` §11.2.2 entry-form contribution;
+  slice plan + ledger refresh; brief mention in user docs
+  carried through K.2.4.A.5 alongside the describe-key
+  user-docs arc.
 
-#### K.2.4.A.1 — Resolved-binding indicator 🗒
+#### K.2.4.A.1 — Resolved-binding indicator ✅ (commit `174cffd`)
 
 Add a "Resolved binding (under current active modes)" line
 at the top of `:describe-key` output per binding-mode where
@@ -242,7 +246,7 @@ layer fires (chord bound only in inactive minors):
 `"Not resolved here — bound in {inactive minor list}"`.
 ~80 LOC + tests.
 
-#### K.2.4.A.2 — Friendly layer labels 🗒
+#### K.2.4.A.2 — Friendly layer labels ✅ (commit `90be78c`)
 
 Replace `{layer:?}` debug formatting in the runtime-registry
 section with a labeller: `Built-in` / `Major: {major_name}`
@@ -251,14 +255,14 @@ Reuse the existing `KeymapHandle::layer_label(LayerId)` where
 informative; fall back to the layer-kind name + mode-id
 where not. ~30 LOC + tests.
 
-#### K.2.4.A.3 — Source rendering via `as_link()` 🗒
+#### K.2.4.A.3 — Source rendering via `as_link()` ✅ (commit `9e01634`)
 
 Replace `format!("{source:?}")` with `source.as_link()` so
 file:line entries render as clickable markdown links in the
 help buffer. `SourceLocation::as_link()` already exists; the
 follow-link handler routes `file:` links. ~15 LOC + tests.
 
-#### K.2.4.A.4 — Catalog/registry unification 🗒
+#### K.2.4.A.4 — Catalog/registry unification ✅ (commit `28562c5`)
 
 After K.2.4.A.0 lands, the static catalog
 (`lattice_mode::keymap_entry::default_keymap()`) is the same
@@ -269,7 +273,7 @@ users see today (the same `j` showing twice — once from the
 informational catalog, once from the registry). ~50 LOC +
 tests.
 
-#### K.2.4.A.5 — User docs + bench row 🗒
+#### K.2.4.A.5 — User docs + bench row ✅ docs (commit `3764c7d`); 🗒 bench row deferred
 
 Now that the polish (.A.1-.A.4) makes the layered resolution
 visible, write the user-doc section in `docs/user/modes.md`

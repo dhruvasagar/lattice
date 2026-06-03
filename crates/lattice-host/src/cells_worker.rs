@@ -470,12 +470,54 @@ fn try_incremental_build(
     };
 
     if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
-        // Whole-doc mode is one chunk — the affected range always
-        // intersects the only chunk we have. Rebuild that chunk
-        // wholesale; this is still cheaper than the full path
-        // because we skip the chunked iteration scaffolding, but
-        // there is no chunk-level reuse to exploit here.
-        let rows = build_chunk_rows(&inputs, 0, new_line_count);
+        // Whole-doc mode is one chunk. 2026-06-04: reuse the prior
+        // chunk's ROWS for unchanged lines (prefix + suffix), rebuilding
+        // only the affected range — the row-level analogue of the
+        // chunked prefix/suffix reuse below. A wholesale
+        // `build_chunk_rows(0, count)` here recoloured EVERY line from
+        // `per_line_spans`, which lags right after an edit (the async
+        // reparse hasn't landed → stale gate returns `None` → colourless
+        // cells). So a small file (whole-doc mode) blanked its whole
+        // viewport on each keystroke until syntax caught up — invisible
+        // for fast single-layer grammars (Rust) but a visible stutter
+        // for markdown's slower injection reparse. Reusing prior rows
+        // keeps their colours through the window; only the edited
+        // line(s) recolour. See `feedback_decorations_update_in_place`.
+        let Some(prior) = published.chunks.first() else {
+            let rows = build_chunk_rows(&inputs, 0, new_line_count);
+            let chunk = Arc::new(CellChunk::new(0, rows, new_version));
+            return Some(CellMatrix::whole_doc(chunk, new_line_count));
+        };
+        let prior_rows = &prior.rows;
+        // Affected upper bound = the first suffix row's POST-edit start
+        // (mirrors the chunked `rebuild_hi`). Computed from the actual
+        // first prior row at/after `pre_hi` so folds (non-contiguous
+        // source lines) don't throw off the boundary; `None` ⇒ the edit
+        // reached EOF and the rebuild zone runs to `new_line_count`.
+        let affected_hi = prior_rows
+            .iter()
+            .map(|r| r.source_line)
+            .find(|&l| l >= pre_hi)
+            .map(|l| (l as i64 + net as i64).max(edit_lo as i64) as u32)
+            .unwrap_or(new_line_count)
+            .min(new_line_count);
+        let mut rows: Vec<CellRow> = Vec::with_capacity(prior_rows.len() + 2);
+        // Prefix: unchanged lines before the edit — reuse verbatim.
+        rows.extend(
+            prior_rows
+                .iter()
+                .filter(|r| r.source_line < edit_lo)
+                .cloned(),
+        );
+        // Affected zone: rebuilt (the only lines that recolour).
+        rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
+        // Suffix: lines past the edit — reuse with shifted source line.
+        rows.extend(
+            prior_rows
+                .iter()
+                .filter(|r| r.source_line >= pre_hi)
+                .map(|r| r.with_source_line((r.source_line as i64 + net as i64).max(0) as u32)),
+        );
         let chunk = Arc::new(CellChunk::new(0, rows, new_version));
         return Some(CellMatrix::whole_doc(chunk, new_line_count));
     }
@@ -2076,6 +2118,72 @@ mod tests {
             })
             .collect();
         assert_eq!(row_texts, vec!["aa", "NEW", "bb", "cc"]);
+    }
+
+    /// 2026-06-04: whole-doc incremental rebuild must REUSE the prior
+    /// chunk's rows for unchanged lines (same `cells` Arc), not rebuild
+    /// them — that reuse is what keeps their syntax colours through the
+    /// post-edit window when `per_line_spans` lags (the markdown
+    /// whole-viewport stutter). Asserts Arc identity of an unchanged
+    /// prefix row and a shifted suffix row across the edit.
+    #[test]
+    fn whole_doc_incremental_reuses_unchanged_rows() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // whole-doc
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let m1 = matrix_cell.load_full();
+        let aa_pre = Arc::clone(&m1.row_at_source_line(0).unwrap().cells);
+        let bb_pre = Arc::clone(&m1.row_at_source_line(1).unwrap().cells);
+
+        // Insert a line at line 1 → "aa\nNEW\nbb\ncc".
+        let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(1, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let m2 = matrix_cell.load_full();
+        assert!(
+            Arc::ptr_eq(&aa_pre, &m2.row_at_source_line(0).unwrap().cells),
+            "unchanged prefix row (line 0) must reuse the prior cells Arc — keeps its colours"
+        );
+        assert!(
+            Arc::ptr_eq(&bb_pre, &m2.row_at_source_line(2).unwrap().cells),
+            "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior cells Arc — keeps its colours"
+        );
     }
 
     /// Chunked mode + single-edit reuses prefix chunks (by `Arc`

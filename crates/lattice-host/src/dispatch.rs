@@ -8279,6 +8279,10 @@ impl Editor {
                     Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
                         s,
                         lattice_runtime::runtime::lsp_runtime().handle(),
+                        // Slice B.1: wake the actor on idle reparse so
+                        // freshly-opened/reloaded buffers repaint when
+                        // syntax lands without a keystroke.
+                        Some(self.async_landed.clone()),
                     ))
                 }
                 _ => None,
@@ -26489,6 +26493,7 @@ mod tests {
         let handle = lattice_syntax::SyntaxHandle::seeded_with_runtime(
             s,
             lattice_runtime::runtime::lsp_runtime().handle(),
+            None,
         );
         editor.syntax = Some(handle);
         let doc_v = editor.document.text_version();

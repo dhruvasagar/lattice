@@ -573,7 +573,29 @@ async fn run_actor(
     mut cmd_rx: mpsc::UnboundedReceiver<EditorCommand>,
     signal_tx: mpsc::UnboundedSender<RendererSignal>,
 ) {
-    while let Some(cmd) = cmd_rx.recv().await {
+    // Slice B.1 (2026-06-03): the loop wakes on EITHER an incoming
+    // command OR `async_landed` — fired by async completions (today
+    // the syntax reparse worker on publish) that produce
+    // render-relevant state with no keystroke in flight. On that wake
+    // we run the tick aggregator + re-publish, so e.g. an idle markdown
+    // reparse repaints without waiting for the next key. Runs on the
+    // single-writer actor thread, not the UI thread (paramount #1).
+    let async_landed = editor.async_landed.clone();
+    loop {
+        let cmd = tokio::select! {
+            maybe_cmd = cmd_rx.recv() => match maybe_cmd {
+                Some(cmd) => cmd,
+                None => break,
+            },
+            _ = async_landed.notified() => {
+                let signals = editor.run_tick_pending();
+                editor.publish_render_state();
+                for sig in signals {
+                    let _ = signal_tx.send(sig);
+                }
+                continue;
+            }
+        };
         match cmd {
             EditorCommand::Apply(action) => {
                 let outcome = editor.dispatch(action);

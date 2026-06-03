@@ -586,11 +586,19 @@ impl Editor {
         // `ArcSwap`.
         let initial_text = document.text();
         let initial_text_version = document.text_version();
+        // Slice B.1: created here (before the syntax handle) so it can
+        // be handed to the reparse worker as its `on_publish` wake; it
+        // also seats the `Editor::async_landed` field below.
+        let async_landed: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
         let syntax: Option<SyntaxHandle> =
             match Syntax::for_language_with_registry(lang, lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
-                    Some(SyntaxHandle::seeded_with_runtime(s, &runtime_handle))
+                    Some(SyntaxHandle::seeded_with_runtime(
+                        s,
+                        &runtime_handle,
+                        Some(async_landed.clone()),
+                    ))
                 }
                 _ => None,
             };
@@ -1086,6 +1094,10 @@ impl Editor {
             syntax_visible_rows_cell,
             syntax_static_overlay_quads_cell,
             paint_request,
+            // Slice B.1: same Notify the initial document's reparse
+            // worker fires on publish (handed in above); the actor
+            // loop awaits it to re-publish on idle reparse completion.
+            async_landed,
             // S2.2 (2026-05-26): same-Arc-identity values for the
             // cell-builder worker. Overrides `..Editor::default()`
             // so the matrix the worker `.store()`s into is the

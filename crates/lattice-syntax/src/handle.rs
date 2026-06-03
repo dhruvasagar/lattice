@@ -66,7 +66,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use lattice_core::Buffer;
 use lattice_protocol::edit::EditDelta;
@@ -154,7 +154,7 @@ impl SyntaxHandle {
         let snapshot_for_task = snapshot.clone();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
-                handle.spawn(worker_main(syntax, cmd_rx, snapshot_for_task));
+                handle.spawn(worker_main(syntax, cmd_rx, snapshot_for_task, None));
             }
             Err(_) => {
                 drop(cmd_rx);
@@ -181,11 +181,22 @@ impl SyntaxHandle {
     /// symptom is "syntax highlighting is stuck to byte positions and
     /// never tracks document edits" -- which was the bug originally
     /// reported against indent (`>>`) and backspace flows.
-    pub fn seeded_with_runtime(syntax: Syntax, runtime: &tokio::runtime::Handle) -> Self {
+    /// `on_publish`, when `Some`, is fired (`notify_one`) after every
+    /// snapshot publish (both the intermediate edit-shift and the final
+    /// reparse). Production passes the host's `async_landed` Notify so
+    /// the editor actor wakes and re-publishes render state when a
+    /// reparse lands with no keystroke in flight — otherwise idle
+    /// reparses (e.g. markdown, whose parse loses the race against the
+    /// edit) never repaint until the next key. Tests pass `None`.
+    pub fn seeded_with_runtime(
+        syntax: Syntax,
+        runtime: &tokio::runtime::Handle,
+        on_publish: Option<Arc<Notify>>,
+    ) -> Self {
         let snapshot = Arc::new(ArcSwap::from_pointee(syntax.snapshot_owned()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ReparseRequest>();
         let snapshot_for_task = snapshot.clone();
-        runtime.spawn(worker_main(syntax, cmd_rx, snapshot_for_task));
+        runtime.spawn(worker_main(syntax, cmd_rx, snapshot_for_task, on_publish));
         Self { snapshot, cmd_tx }
     }
 
@@ -285,6 +296,7 @@ async fn worker_main(
     mut syntax: Syntax,
     mut cmd_rx: mpsc::UnboundedReceiver<ReparseRequest>,
     snapshot: Arc<ArcSwap<SyntaxSnapshot>>,
+    on_publish: Option<Arc<Notify>>,
 ) {
     while let Some(mut req) = cmd_rx.recv().await {
         // Coalesce queued requests: accumulate edits in order,
@@ -388,5 +400,58 @@ async fn worker_main(
         };
         snapshot.store(Arc::new(next.snapshot_owned()));
         syntax = next;
+        // 2026-06-03 (slice B.1): wake the host so the editor actor
+        // re-publishes render state now that fresh syntax is
+        // available — without this, an idle reparse (no keystroke in
+        // flight) wouldn't repaint until the next key. Reached by both
+        // the incremental and full-reparse paths (single fire point).
+        // The intermediate publish above already advanced the snapshot
+        // version, so one wake here suffices.
+        if let Some(wake) = on_publish.as_ref() {
+            wake.notify_one();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lang::Lang;
+    use crate::syntax::Syntax;
+    use std::time::Duration;
+
+    /// Slice B.1 (2026-06-03): a reparse publish must fire the
+    /// `on_publish` wake so the editor actor can re-publish render
+    /// state on idle reparse completion. Without this, an idle reparse
+    /// (no keystroke in flight) never repaints — the markdown
+    /// "highlighting never comes back" symptom's idle half.
+    #[tokio::test]
+    async fn reparse_publish_fires_on_publish_wake() {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn main() {}\n", 1);
+        let wake = Arc::new(Notify::new());
+        let handle = SyntaxHandle::seeded_with_runtime(
+            s,
+            &tokio::runtime::Handle::current(),
+            Some(wake.clone()),
+        );
+
+        // Full reparse (empty edits) to version 2.
+        handle.request_reparse(
+            1,
+            2,
+            Buffer::from_text("fn main() {}\n// new\n"),
+            Vec::<EditDelta>::new(),
+        );
+
+        // The worker must fire the wake after publishing.
+        tokio::time::timeout(Duration::from_secs(2), wake.notified())
+            .await
+            .expect("on_publish wake must fire after a reparse publish");
+        assert_eq!(
+            handle.snapshot().text_version(),
+            2,
+            "snapshot must reflect the reparsed version once the wake fires"
+        );
     }
 }

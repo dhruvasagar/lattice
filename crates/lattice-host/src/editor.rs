@@ -1256,6 +1256,17 @@ pub struct Editor {
     /// executor future that awaits this Notify and calls
     /// `cx.notify()` to schedule a render.
     pub paint_request: std::sync::Arc<tokio::sync::Notify>,
+    /// Slice B.1 (2026-06-03): "async work landed" wake. Fired by
+    /// async completions that produce render-relevant state with no
+    /// keystroke in flight — today the syntax reparse worker (via the
+    /// `on_publish` Notify handed to each `SyntaxHandle`). The editor
+    /// actor's loop `select!`s on this and runs `run_tick_pending` +
+    /// `publish_render_state`, so an idle reparse repaints without
+    /// waiting for the next key (closes the X1b idle-arrival gap for
+    /// syntax; LSP-response tasks can fire the same Notify as a
+    /// follow-up). Distinct from `paint_request`, which is the
+    /// downstream UI-redraw signal fired after a worker publishes.
+    pub async_landed: std::sync::Arc<tokio::sync::Notify>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

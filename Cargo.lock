@@ -3365,6 +3365,7 @@ dependencies = [
 name = "lattice-completion"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "lattice-core",
  "lattice-grammar",
  "lattice-protocol",

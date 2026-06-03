@@ -12,5 +12,16 @@ lattice-grammar = { path = "../lattice-grammar" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 
+[dev-dependencies]
+# MARG.4 (2026-06-03): annotation-pipeline bench harness.
+# Same workspace criterion as the rest of the bench crates
+# (`lattice-config`, `lattice-core`, `lattice-cells`,
+# `lattice-host`); not pulled into release builds.
+criterion = { workspace = true }
+
+[[bench]]
+name = "annotation_pipeline"
+harness = false
+
 [lints]
 workspace = true

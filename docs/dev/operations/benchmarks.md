@@ -69,6 +69,85 @@ target rather than just a slower number.
 
 ---
 
+## MARG.4 — annotation pipeline benches (2026-06-03)
+
+Bench file: `crates/lattice-completion/benches/annotation_pipeline.rs`.
+Run: `cargo bench -p lattice-completion --bench annotation_pipeline`.
+
+Measures the typed-annotation pipeline (MARG.1) + the
+keybinding annotator's reverse-cache lookup (MARG.2). The
+cmdline popup runs this on every keystroke that re-filters
+the candidate list; budget headroom matters per
+paramount-#1.
+
+### Pipeline throughput
+
+`--quick` (criterion 100-sample mode), dev box.
+
+| Bench / shape                       | Median time | Per-candidate | Notes |
+|-------------------------------------|------------|---------------|-------|
+| `annotate_pipeline_1000_3stage`     | ~167 µs    | ~167 ns       | Full pipeline (kind + doc + keybinding) on 1000 candidates. ~half resolve to a bound chord, rest hit the empty-vec branch. |
+| `keybinding_annotator_1000`         | ~59 µs     | ~59 ns        | Keybinding annotator only. HashMap probe + Vec clone on the bound subset. |
+
+**Envelope for future regressions:** the full 3-stage
+pipeline on 1000 candidates uses ~167 µs on the dev box.
+Applying the hardware-caveat 5× headroom for typical
+ultrabook hardware, the user-facing cost is ~835 µs —
+~10% of the 8 ms keystroke-to-glyph budget at 120 Hz. That
+leaves ~7.2 ms for the rest of the frame (cell-grid build,
+text shaping, GPU draw), which is the desired profile:
+annotators are a minor cost, not a budget-eater. Any future
+change that pushes the 1000-candidate case past ~300 µs on
+the dev box (or ~1.5 ms after 5× scaling) should be
+reviewed against the §8.2 commitment.
+
+The realistic-popup case (~50 visible candidates) costs
+~50 × 167 ns ≈ 8.4 µs — well under any per-keystroke
+budget regardless of hardware.
+
+### Display-text format cost
+
+Per-variant `Annotation::display_text()` cost. Renderer
+calls this once per visible row × annotation; cheap by
+design (`Cow::Borrowed` for string variants, structured
+format only for `Keybinding`).
+
+| Variant                       | Median time |
+|-------------------------------|------------|
+| `kind`                        | ~1.5 ns    |
+| `doc`                         | ~1.5 ns    |
+| `keybinding` (2 chords)       | ~28.7 ns   |
+| `source`                      | ~1.7 ns    |
+| `custom`                      | ~1.6 ns    |
+
+The keybinding variant is ~20× slower than the string
+variants because it allocates a String via fmt::Write to
+join the chord display forms. At 50 visible rows × 2
+keybindings (max) = 100 calls × 28.7 ns = ~2.9 µs per
+paint — negligible. The string variants are
+indistinguishable from each other; `Cow::Borrowed` is
+basically free.
+
+**Regression envelope for display_text:** any variant
+crossing 100 ns (or `Keybinding` crossing 200 ns) suggests
+an unintended allocation has crept in — the contract is
+"borrow when possible, format only when structured."
+
+### What this bench does NOT cover
+
+- **Reverse-cache build cost** at trie-rebuild time
+  (`KeymapRegistry::rebuild_reverse_cache` per MARG.2).
+  Trie rebuild happens at startup + on every `:map` /
+  `:unmap`; not on the per-keystroke path. Bench deferred
+  unless trie-rebuild latency becomes a complaint.
+- **Renderer paint cost** with N styled spans per row vs.
+  the previous joined-string single-span shape. The TUI
+  (ratatui) and GPUI peers both have separate frame-budget
+  benches that include picker / popup paint; this is where
+  paint-side regressions would surface.
+
+---
+
 ## M.2.c — multibuffer motion + compose benches (2026-06-01)
 
 Bench files: `crates/lattice-multibuffer/benches/multibuffer_motion.rs`

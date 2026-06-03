@@ -2,7 +2,7 @@
 
 **Design:** [marginalia.md](../../architecture/marginalia.md).
 
-**Status:** 🗒 planned. No code yet. Recommended sequencing below.
+**Status:** ✅ closed (2026-06-03). All four sub-slices landed; design fragment + bench + per-renderer tests + per-renderer color palette ship together per CLAUDE.md heuristic #5.
 
 **Why:** Today `RenderedCandidate.annotations: Vec<String>` is untyped; every annotation renders in one of two hardcoded colors (`Gray` if row selected, `DarkGray` otherwise) regardless of meaning. The user wants a keybinding column on `:` line command completion (vertico+marginalia style) AND color-coding by category. The MARG series lands the typed-annotation substrate first, then layers the keybinding annotator on top, then closes the GPUI render gap so peer renderers stay at parity.
 
@@ -10,7 +10,7 @@ Critical-path coupling: MARG.1 unblocks MARG.2 (keybinding annotator needs the `
 
 ## Sequencing
 
-### MARG.1 — Typed `Annotation` enum + theme slots + migrate existing annotators 🗒
+### MARG.1 — Typed `Annotation` enum + theme slots + migrate existing annotators ✅
 
 Substrate slice. No new feature visible to the user. Touches the completion-pipeline + theme + TUI renderer in lockstep.
 
@@ -26,7 +26,7 @@ Acceptance: workspace check + tests green. Visible diff: existing annotations no
 
 Risk: tests that grep stdout for annotation text by exact string formatting may break if the variant's formatter differs (e.g., the joiner). Bisect-friendly: one commit.
 
-### MARG.2 — `KeybindingAnnotator` + reverse keymap-cache 🗒
+### MARG.2 — `KeybindingAnnotator` + reverse keymap-cache ✅
 
 Feature slice. Depends on MARG.1.
 
@@ -41,7 +41,7 @@ Acceptance: keybinding visible in `:` line popup for bound commands. Bisect-frie
 
 Risk: the reverse-cache build cost on trie rebuild needs a smoke benchmark — sub-ms for typical keymaps per §6 design, but worth verifying once. Land the bench in MARG.4 or here, mark with `#[cfg(bench)]`.
 
-### MARG.3 — GPUI parity for annotation column 🗒
+### MARG.3 — GPUI parity for annotation column ✅
 
 Closes the GPUI render gap noted in `completion-pipeline-unification.md` ("Annotations: only in cmdline; GPUI render gap"). Required by `feedback_tui_gpui_parity` — peer renderers track in lockstep with the TUI; this slice was on the deferred list and MARG triggers landing it.
 
@@ -53,7 +53,21 @@ Changes:
 
 Acceptance: GPUI cmdline-completion popup shows the same color-coded annotations as the TUI. Both renderers paint the keybinding column. Bisect-friendly: one commit.
 
-### MARG.4 — Bench + plugin-extensibility readiness 🗒
+### MARG.4 — Bench + plugin-extensibility readiness ✅ (commit pending)
+
+Bench landed at `crates/lattice-completion/benches/annotation_pipeline.rs`; numbers captured in `docs/dev/operations/benchmarks.md` "MARG.4 — annotation pipeline benches (2026-06-03)". Three measurements:
+
+- `annotate_pipeline_1000_3stage` — full pipeline (kind + doc + keybinding) on 1000 candidates. Median ~167 µs on dev box; ~10% of 8 ms keystroke-to-glyph budget at 5× hardware scaling.
+- `keybinding_annotator_1000` — keybinding-only, ~59 µs (HashMap probe + Vec clone). Isolates the reverse-cache cost so regressions surface here without pipeline noise.
+- `annotation_display_text/*` — per-variant format cost. String variants ~1.5 ns (Cow::Borrowed). Keybinding ~28.7 ns (allocates a String via fmt::Write).
+
+Placement fix landed mid-series in `4ed7bf0`: keybinding renders FIRST in the annotation column (immediately right of the command name) per user-reported scan affordance. Default annotator order is now `[keybinding, kind, doc]`.
+
+Plugin escape-hatch (`Annotation::Custom { text, slot }`) verified reachable from the bench harness (constructed inline in `annotation_display_text/custom`) and from the annotator tests at MARG.1 (`custom_annotation_passes_slot_through`). Reachability is at-the-type-level — any external crate that names `lattice_completion::Annotation` can construct the variant.
+
+Slice plan status flip to ✅ across the board:
+
+Original plan above:
 
 Closes the slice series. Discipline per CLAUDE.md decision-making heuristic #5: "Non-trivial design changes ship four artefacts together" — code (MARG.1-3), doc (this fragment), tests (in each slice), and bench (here).
 

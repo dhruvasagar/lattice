@@ -485,6 +485,7 @@ mod tests {
             ),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 10,
+            scroll: 0,
             viewport_width: 0,
             wrap: false,
             foldenable: false,

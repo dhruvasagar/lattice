@@ -1060,6 +1060,16 @@ pub struct PaneCellsInputs {
     /// `PaneState.viewport_height` (Issue #25). Drives the
     /// worker's chunked-mode threshold.
     pub viewport_height: u32,
+    /// Pane-local first visible source line. For the active pane this
+    /// is `Editor::scroll`; inactive panes carry their stashed
+    /// `PaneState.scroll`. H.3 (2026-06-04): the cells worker windows
+    /// the chunked-mode matrix around `[scroll, scroll +
+    /// viewport_height)` (plus overscan) rather than building the
+    /// whole document, so large-file build + rebuild are O(viewport)
+    /// not O(file). H.3a plumbs the field; H.3b makes the worker read
+    /// it. Mirrors the long-standing `SyntaxRenderState.scroll`
+    /// precedent for the legacy windowed-highlight path.
+    pub scroll: u32,
     /// Pane-local visible-buffer width in columns. Sourced from
     /// `PaneState.viewport_width`. Soft-wrap (W.1): the cells
     /// worker stamps `CellMatrix.wrap_width` from this when `wrap`

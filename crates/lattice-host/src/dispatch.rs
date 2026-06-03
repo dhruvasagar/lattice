@@ -9151,6 +9151,14 @@ impl Editor {
                 inlay_hints,
                 folds: folds_arc,
                 viewport_height: leaf.viewport_height,
+                // H.3 (2026-06-04): window anchor. Active pane's live
+                // scroll is `self.scroll` (the hot-path field);
+                // inactive panes use the stashed `leaf.scroll`, which
+                // may lag the active field until the next group sync
+                // but is the correct per-pane anchor for a non-focused
+                // view. Mirrors how `viewport_height` is taken
+                // per-leaf above.
+                scroll: if is_active_pane { self.scroll } else { leaf.scroll },
                 viewport_width: leaf.viewport_width,
                 // W.2: `:set wrap` resolved for the active buffer.
                 // Per-buffer wrap divergence across panes is a

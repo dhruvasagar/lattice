@@ -34,6 +34,9 @@ pub mod source;
 pub mod source_registration;
 pub mod traits;
 
+pub use crate::builtins::annotators::{
+    DocSnippetAnnotator, KeybindingAnnotator, KeymapReverseLookup, KindLabelAnnotator,
+};
 pub use crate::builtins::matchers::{FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher};
 pub use crate::builtins::rankers::{AlphabeticalRanker, MruRanker, ScoreRanker};
 pub use crate::builtins::{CompletionBuiltins, populate};

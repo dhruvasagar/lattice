@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
-use lattice_grammar::{CommandInvocation, SourceLocation};
+use lattice_grammar::{CommandId, CommandInvocation, CommandRegistry, SourceLocation};
 use lattice_mode::mode::ModeId;
 
 use crate::chord::{ChordParseError, KeyChord, parse_chord_sequence};
@@ -284,6 +284,35 @@ pub struct KeymapRegistry {
     /// [`KeymapHandle::lookup_with_context`]. Rebuilt by
     /// writers alongside `merged`.
     minor_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
+    /// MARG.2 (2026-06-03): reverse cache for the keybinding
+    /// annotator surface. Indexes Normal-mode bindings by
+    /// [`CommandId`] so `:` line command completion can show
+    /// `<C-w>v` next to `:split-pane-vertical` (see
+    /// `docs/dev/architecture/marginalia.md` §6). Rebuilt
+    /// alongside `merged` at every bind / unbind / push /
+    /// pop. Wait-free read.
+    ///
+    /// Coverage limits (v1):
+    /// - **Normal mode only.** The `:` line completion picker
+    ///   surfaces "what keybinding fires this command" — the
+    ///   useful answer is Normal-mode chord (where operators /
+    ///   motions / window commands live). Insert-mode
+    ///   bindings (`<C-x><C-o>` etc.) get their own annotator
+    ///   slice if/when needed.
+    /// - **Literal-only paths.** Bindings whose chord path
+    ///   contains `ChordPattern::CharLiteral` (e.g.
+    ///   `f<char>`, `m<char>`) are skipped: the marginalia
+    ///   column wants a clean chord-only sequence, not a
+    ///   placeholder. Such commands still show in
+    ///   `:describe-command`; the annotator just doesn't
+    ///   prepend the chord.
+    /// - **First-binding-wins.** When multiple chords bind
+    ///   the same command, the first one encountered during
+    ///   the trie walk is stored. Alternates remain
+    ///   reachable via `:describe-command`. MRU-influenced
+    ///   "pick the chord the user actually uses" is a
+    ///   post-v1 follow-up flagged in marginalia.md §8.
+    reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<KeyChord>>>>,
 }
 
 impl KeymapRegistry {
@@ -292,7 +321,18 @@ impl KeymapRegistry {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         })
+    }
+
+    /// MARG.2 (2026-06-03): rebuild + store the Normal-mode
+    /// reverse cache. Called by every write site after the
+    /// `merged` ArcSwap has been stored. Cheap: walks the
+    /// Normal-mode trie once (O(N) over bound chords).
+    fn rebuild_reverse_cache(&self) {
+        let merged = self.merged.load();
+        let cache = build_reverse_cache_from_merged(&merged);
+        self.reverse_cache.store(Arc::new(cache));
     }
 }
 
@@ -305,7 +345,63 @@ impl Default for KeymapRegistry {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
+    }
+}
+
+/// MARG.2 (2026-06-03): walk the merged Normal-mode trie and
+/// produce a `CommandId → Vec<KeyChord>` map for the
+/// keybinding annotator. Skips bindings whose chord path
+/// contains `ChordPattern::CharLiteral` (wildcard) since the
+/// marginalia column wants a clean chord-only sequence.
+/// First-binding-wins on collisions.
+fn build_reverse_cache_from_merged(merged: &MergedKeymap) -> HashMap<CommandId, Vec<KeyChord>> {
+    let mut out: HashMap<CommandId, Vec<KeyChord>> = HashMap::new();
+    let Some(trie) = merged.by_mode.get(&BindingMode::Normal) else {
+        return out;
+    };
+    trie.walk_bindings(|path, bound| {
+        let mut chords: Vec<KeyChord> = Vec::with_capacity(path.len());
+        for seg in path {
+            match seg {
+                ChordPattern::Literal(c) => chords.push(*c),
+                // Skip the whole binding when any segment is
+                // a wildcard. Returning from the closure
+                // skips THIS binding; the walker continues
+                // with the next one.
+                ChordPattern::CharLiteral => return,
+            }
+        }
+        if chords.is_empty() {
+            return;
+        }
+        out.entry(bound.command.command).or_insert(chords);
+    });
+    out
+}
+
+/// MARG.2 (2026-06-03): adapter that implements
+/// [`lattice_completion::KeymapReverseLookup`] over a
+/// [`KeymapRegistry`]'s reverse cache + a [`CommandRegistry`]
+/// for the canonical-name → [`CommandId`] resolution. Editor
+/// boot constructs one and passes it to
+/// [`lattice_completion::KeybindingAnnotator::new`].
+///
+/// The adapter holds Arc clones of both registries; cache
+/// loads are wait-free via `ArcSwap::load`.
+pub struct KeymapReverseLookupHandle {
+    reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<KeyChord>>>>,
+    command_registry: Arc<CommandRegistry>,
+}
+
+impl lattice_completion::KeymapReverseLookup for KeymapReverseLookupHandle {
+    fn chords_for(&self, command_name: &str) -> Vec<KeyChord> {
+        let Some(id) = self.command_registry.id_by_name(command_name) else {
+            return Vec::new();
+        };
+        let cache = self.reverse_cache.load();
+        cache.get(&id).cloned().unwrap_or_default()
     }
 }
 
@@ -339,6 +435,30 @@ impl KeymapHandle {
         Self {
             registry: KeymapRegistry::new(),
         }
+    }
+
+    /// MARG.2 (2026-06-03): construct a
+    /// [`KeymapReverseLookupHandle`] that implements
+    /// [`lattice_completion::KeymapReverseLookup`] over this
+    /// registry's reverse cache. Editor boot calls this once,
+    /// wraps the result in `Arc<dyn KeymapReverseLookup>`,
+    /// and hands it to
+    /// [`lattice_completion::KeybindingAnnotator::new`].
+    ///
+    /// The returned handle holds Arc clones of the reverse
+    /// cache (wait-free read) and the command registry
+    /// (for `name → CommandId` resolution at lookup time).
+    /// It tracks the registry's cache updates automatically
+    /// via the shared `ArcSwap` — no rewiring needed when
+    /// `:map` / `:unmap` mutate the trie.
+    pub fn reverse_lookup_handle(
+        &self,
+        command_registry: Arc<CommandRegistry>,
+    ) -> Arc<KeymapReverseLookupHandle> {
+        Arc::new(KeymapReverseLookupHandle {
+            reverse_cache: Arc::clone(&self.registry.reverse_cache),
+            command_registry,
+        })
     }
 
     /// Look up the typed binding for `chords` in `mode`.
@@ -470,6 +590,12 @@ impl KeymapHandle {
         };
         self.registry.merged.store(Arc::new(merged));
         self.registry.minor_mode_tries.store(Arc::new(minors));
+        // MARG.2: keep the reverse-cache in lockstep with the
+        // merged trie. Every site that stores `merged` /
+        // `minor_mode_tries` must also rebuild the reverse
+        // cache or the keybinding annotator will surface
+        // stale chord text.
+        self.registry.rebuild_reverse_cache();
     }
 
     /// Remove the binding at `(layer, mode, path)`. No-op if
@@ -496,6 +622,12 @@ impl KeymapHandle {
         };
         self.registry.merged.store(Arc::new(merged));
         self.registry.minor_mode_tries.store(Arc::new(minors));
+        // MARG.2: keep the reverse-cache in lockstep with the
+        // merged trie. Every site that stores `merged` /
+        // `minor_mode_tries` must also rebuild the reverse
+        // cache or the keybinding annotator will surface
+        // stale chord text.
+        self.registry.rebuild_reverse_cache();
         dropped
     }
 
@@ -569,6 +701,12 @@ impl KeymapHandle {
         };
         self.registry.merged.store(Arc::new(merged));
         self.registry.minor_mode_tries.store(Arc::new(minors));
+        // MARG.2: keep the reverse-cache in lockstep with the
+        // merged trie. Every site that stores `merged` /
+        // `minor_mode_tries` must also rebuild the reverse
+        // cache or the keybinding annotator will surface
+        // stale chord text.
+        self.registry.rebuild_reverse_cache();
         id
     }
 
@@ -589,6 +727,12 @@ impl KeymapHandle {
         };
         self.registry.merged.store(Arc::new(merged));
         self.registry.minor_mode_tries.store(Arc::new(minors));
+        // MARG.2: keep the reverse-cache in lockstep with the
+        // merged trie. Every site that stores `merged` /
+        // `minor_mode_tries` must also rebuild the reverse
+        // cache or the keybinding annotator will surface
+        // stale chord text.
+        self.registry.rebuild_reverse_cache();
     }
 
     /// Total binding count across all layers. Telemetry +
@@ -771,6 +915,12 @@ impl KeymapHandle {
         };
         self.registry.merged.store(Arc::new(merged));
         self.registry.minor_mode_tries.store(Arc::new(minors));
+        // MARG.2: keep the reverse-cache in lockstep with the
+        // merged trie. Every site that stores `merged` /
+        // `minor_mode_tries` must also rebuild the reverse
+        // cache or the keybinding annotator will surface
+        // stale chord text.
+        self.registry.rebuild_reverse_cache();
         removed
     }
 }

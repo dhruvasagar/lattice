@@ -7,8 +7,31 @@
 
 use std::sync::Arc;
 
+use lattice_protocol::KeyChord;
+
 use crate::candidate::{Annotation, CandidateData, CandidateKind, RenderedCandidate};
 use crate::traits::CandidateAnnotator;
+
+/// Reverse-lookup contract the keybinding annotator depends on:
+/// given a command's canonical name, return the chord
+/// sequence(s) bound to it. Empty vec means "no binding."
+///
+/// MARG.2 (2026-06-03): the lattice-host side maintains the
+/// reverse cache (built alongside the merged keymap trie on
+/// every `bind` / `unbind`) and supplies an implementor at
+/// boot. Keeping the trait in `lattice-completion` lets the
+/// annotator type live with the other annotators while leaving
+/// the cache-build / invalidation logic in the host crate where
+/// the trie lives.
+///
+/// The empty-vec contract is important: `KeybindingAnnotator`
+/// short-circuits on empty results so commands without a bound
+/// chord don't get a misleading empty annotation. Implementors
+/// should NOT return `vec![]` to mean "lookup failed" — return
+/// it to mean "no binding," same thing semantically.
+pub trait KeymapReverseLookup: Send + Sync {
+    fn chords_for(&self, command_name: &str) -> Vec<KeyChord>;
+}
 
 /// `anno:kind-label`. Tags every candidate with `(command)`,
 /// `(file)`, `(motion)`, etc. -- the kind label. Pushes
@@ -75,6 +98,56 @@ impl CandidateAnnotator for DocSnippetAnnotator {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").to_string()
+}
+
+/// `anno:keybinding`. For `CandidateData::Command` candidates,
+/// looks up the chord(s) bound to the command and pushes
+/// [`Annotation::Keybinding`] so the renderer styles it with
+/// the keybinding theme slot. Skips silently for
+/// non-command candidates and for commands with no binding.
+///
+/// MARG.2 (2026-06-03): see
+/// `docs/dev/architecture/marginalia.md` §6.
+///
+/// The reverse-lookup source is supplied at construction time
+/// — typically the lattice-host's keymap registry, which
+/// rebuilds the reverse cache atomically alongside the merged
+/// trie on every `bind` / `unbind`. The annotator does NOT
+/// cache the result internally; each call hits the lookup
+/// fresh so changes (e.g. user `:map`) take effect on the
+/// next popup open without restart.
+pub struct KeybindingAnnotator {
+    reverse: Arc<dyn KeymapReverseLookup>,
+}
+
+impl KeybindingAnnotator {
+    pub fn new(reverse: Arc<dyn KeymapReverseLookup>) -> Self {
+        Self { reverse }
+    }
+}
+
+impl CandidateAnnotator for KeybindingAnnotator {
+    fn annotate(&self, c: &mut RenderedCandidate) {
+        // Resolve the command name carried by command-kind
+        // candidates. Non-command candidates fall through —
+        // future surfaces (file → "open in split", option →
+        // "set option") could grow their own annotators
+        // against their own reverse maps; this one is
+        // command-only by contract.
+        let name = match (&c.raw.kind, &c.raw.data) {
+            (CandidateKind::Command, CandidateData::Command { name, .. }) => name.as_str(),
+            _ => return,
+        };
+        let chords = self.reverse.chords_for(name);
+        if chords.is_empty() {
+            // No binding registered for this command in any
+            // currently-active layer. Don't push an empty
+            // annotation — the renderer would still paint a
+            // zero-width styled span.
+            return;
+        }
+        c.annotations.push(Annotation::Keybinding(chords));
+    }
 }
 
 #[cfg(test)]
@@ -330,5 +403,108 @@ mod tests {
         };
         assert_eq!(ann.display_text(), "[lsp]");
         assert_eq!(ann.category(), "annotation_lsp");
+    }
+
+    /// In-memory `KeymapReverseLookup` impl for testing
+    /// `KeybindingAnnotator` without standing up a real keymap
+    /// registry. Real impl lives in `lattice-host`.
+    struct FakeLookup(std::collections::HashMap<String, Vec<KeyChord>>);
+
+    impl KeymapReverseLookup for FakeLookup {
+        fn chords_for(&self, name: &str) -> Vec<KeyChord> {
+            self.0.get(name).cloned().unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn keybinding_annotator_pushes_chord_for_bound_command() {
+        let mut lookup_map = std::collections::HashMap::new();
+        lookup_map.insert(
+            "ex:write".into(),
+            vec![KeyChord::ctrl('s')],
+        );
+        let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(lookup_map)));
+        let mut c = rendered(
+            "ex:write",
+            CandidateKind::Command,
+            CandidateData::Command {
+                name: "ex:write".into(),
+                doc: "Write the buffer.".into(),
+                kind_label: "ex-command".into(),
+                source: SourceLocation::synthetic("test"),
+            },
+        );
+        annot.annotate(&mut c);
+        assert_eq!(c.annotations.len(), 1);
+        assert_eq!(c.annotations[0].category(), "keybinding");
+        assert_eq!(c.annotations[0].display_text(), "<C-s>");
+    }
+
+    #[test]
+    fn keybinding_annotator_skips_unbound_command() {
+        let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(
+            std::collections::HashMap::new(),
+        )));
+        let mut c = rendered(
+            "ex:write",
+            CandidateKind::Command,
+            CandidateData::Command {
+                name: "ex:write".into(),
+                doc: "".into(),
+                kind_label: "ex-command".into(),
+                source: SourceLocation::synthetic("test"),
+            },
+        );
+        annot.annotate(&mut c);
+        // No binding ⇒ no annotation. Critical: an empty
+        // annotation would still paint a styled span with
+        // zero-width text, which would print a stray
+        // background-only blank in the popup.
+        assert!(c.annotations.is_empty());
+    }
+
+    #[test]
+    fn keybinding_annotator_skips_non_command_candidates() {
+        let mut lookup_map = std::collections::HashMap::new();
+        // Even if a name happens to match a file's text, the
+        // annotator must not synthesize a keybinding for it.
+        lookup_map.insert(
+            "file.rs".into(),
+            vec![KeyChord::char('q')],
+        );
+        let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(lookup_map)));
+        let mut c = rendered(
+            "file.rs",
+            CandidateKind::File,
+            CandidateData::File {
+                path: "/tmp/file.rs".into(),
+                is_dir: false,
+                size: None,
+            },
+        );
+        annot.annotate(&mut c);
+        assert!(c.annotations.is_empty());
+    }
+
+    #[test]
+    fn keybinding_annotator_renders_multi_key_chord_sequence() {
+        let mut lookup_map = std::collections::HashMap::new();
+        lookup_map.insert(
+            "ex:split-pane-vertical".into(),
+            vec![KeyChord::ctrl('w'), KeyChord::char('v')],
+        );
+        let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(lookup_map)));
+        let mut c = rendered(
+            "ex:split-pane-vertical",
+            CandidateKind::Command,
+            CandidateData::Command {
+                name: "ex:split-pane-vertical".into(),
+                doc: "".into(),
+                kind_label: "ex-command".into(),
+                source: SourceLocation::synthetic("test"),
+            },
+        );
+        annot.annotate(&mut c);
+        assert_eq!(c.annotations[0].display_text(), "<C-w> v");
     }
 }

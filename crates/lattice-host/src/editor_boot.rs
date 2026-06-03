@@ -995,6 +995,30 @@ impl Editor {
                     &mode_registry,
                     &registry,
                 );
+                // MARG.2 (2026-06-03): now that every layer's
+                // bindings are registered, the reverse cache
+                // reflects the full Normal-mode keymap. Build
+                // the keybinding annotator against the
+                // registry's reverse-cache adapter and
+                // register it into the completion pipeline so
+                // command-completion candidates surface their
+                // chord. Subsequent `:map` / `:unmap` rebuild
+                // the cache automatically (see the
+                // `rebuild_reverse_cache` call in every
+                // KeymapRegistry mutation site); the
+                // annotator references the cache through an
+                // `Arc<ArcSwap<_>>` so it always reads the
+                // current snapshot. See
+                // `docs/dev/architecture/marginalia.md` §6.
+                let kb_anno = lattice_completion::KeybindingAnnotator::new(
+                    h.reverse_lookup_handle(registry.clone()),
+                );
+                let kb_anno_id = completion_registry.register_annotator(
+                    "anno:keybinding",
+                    "Append the chord(s) bound to a command in Normal mode (e.g. `<C-w>v` next to `:split-pane-vertical`).",
+                    kb_anno,
+                );
+                completion_registry.default_annotators.push(kb_anno_id);
                 h
             },
             completion_registry,

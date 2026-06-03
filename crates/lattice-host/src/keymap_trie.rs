@@ -282,6 +282,45 @@ impl KeymapTrie {
     pub fn binding_count(&self) -> usize {
         count_node(&self.root)
     }
+
+    /// MARG.2 (2026-06-03): walk every terminal binding,
+    /// invoking `f` with the chord path that reaches it and
+    /// the `Arc<BoundCommand>` at that path. Used by the
+    /// reverse-keymap-cache builder in `KeymapRegistry` to
+    /// produce a `command_name → Vec<KeyChord>` map for the
+    /// keybinding annotator (see
+    /// `docs/dev/architecture/marginalia.md` §6).
+    ///
+    /// Path slice is borrowed; the closure must capture-by-
+    /// clone if it wants to retain the chord sequence. O(N)
+    /// over the bound-chord count — same cost class as
+    /// [`Self::binding_count`], not on the hot path.
+    pub fn walk_bindings<F>(&self, mut f: F)
+    where
+        F: FnMut(&[ChordPattern], &Arc<BoundCommand>),
+    {
+        let mut path: Vec<ChordPattern> = Vec::new();
+        walk_node(&self.root, &mut path, &mut f);
+    }
+}
+
+fn walk_node<F>(node: &TrieNode, path: &mut Vec<ChordPattern>, f: &mut F)
+where
+    F: FnMut(&[ChordPattern], &Arc<BoundCommand>),
+{
+    if let Some(b) = node.binding.as_ref() {
+        f(path.as_slice(), b);
+    }
+    for (chord, child) in &node.children {
+        path.push(ChordPattern::Literal(*chord));
+        walk_node(child, path, f);
+        path.pop();
+    }
+    if let Some(wild) = node.char_wildcard.as_deref() {
+        path.push(ChordPattern::CharLiteral);
+        walk_node(wild, path, f);
+        path.pop();
+    }
 }
 
 fn merge_node(dst: &mut TrieNode, src: &TrieNode) {

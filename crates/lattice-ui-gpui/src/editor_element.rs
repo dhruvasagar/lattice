@@ -1228,26 +1228,48 @@ impl Element for EditorElement {
             let line_y = bounds.origin.y + line_height * (i as f32);
             let origin = point(text_origin_x, line_y);
             let painted_via_cells = if use_paint_cells {
-                let line_idx_opt = prepaint.row_meta.get(i).map(|(idx, _)| *idx);
-                match (self.cell_matrix.as_ref(), line_idx_opt) {
-                    (Some(matrix), Some(line_idx)) => match matrix.row_at_source_line(line_idx) {
-                        Some(cell_row) => {
-                            crate::paint_cells::paint_cells_row(
-                                cell_row,
-                                origin,
-                                prepaint.glyph_advance,
-                                line_height,
-                                prepaint.text_ascent,
-                                &prepaint.font,
-                                prepaint.font_size,
-                                self.theme.foreground,
-                                &self.glyph_resolver,
-                                window,
-                            );
-                            true
+                let row_meta_entry = prepaint.row_meta.get(i);
+                match (self.cell_matrix.as_ref(), row_meta_entry) {
+                    (Some(matrix), Some((line_idx, line_text))) => {
+                        match matrix.row_at_source_line(*line_idx) {
+                            // 2026-06-03 fix: mirror prepaint's
+                            // cell-row filter
+                            // (`!cells.is_empty() || line.is_empty()`).
+                            // An empty cells row over a NON-empty line
+                            // means the cells worker hasn't produced
+                            // content for this composed row yet (the
+                            // multibuffer search view's composed lines
+                            // sit empty in the matrix until covered).
+                            // prepaint already built the correct legacy
+                            // `ShapedLine` for it; painting the empty
+                            // cells row here draws zero glyphs AND sets
+                            // `painted_via_cells = true`, suppressing
+                            // that ShapedLine — which blanked the first
+                            // match line on the active pane (inactive
+                            // panes have `cell_matrix == None`, so they
+                            // always took the ShapedLine path and looked
+                            // correct). Fall through to ShapedLine when
+                            // the cells row can't cover the line.
+                            Some(cell_row)
+                                if !cell_row.cells.is_empty() || line_text.is_empty() =>
+                            {
+                                crate::paint_cells::paint_cells_row(
+                                    cell_row,
+                                    origin,
+                                    prepaint.glyph_advance,
+                                    line_height,
+                                    prepaint.text_ascent,
+                                    &prepaint.font,
+                                    prepaint.font_size,
+                                    self.theme.foreground,
+                                    &self.glyph_resolver,
+                                    window,
+                                );
+                                true
+                            }
+                            _ => false,
                         }
-                        None => false,
-                    },
+                    }
                     _ => false,
                 }
             } else {

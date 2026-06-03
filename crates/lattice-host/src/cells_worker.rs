@@ -309,13 +309,36 @@ pub fn recompute_pane(
     // `wrap_width` alongside the version.
     let effective_wrap = if pane.wrap { pane.viewport_width } else { 0 };
 
+    // H.3 (2026-06-04): the source-line range the renderer needs
+    // covered this tick. For a windowed large-file matrix the
+    // cache-hit gate must also confirm the published matrix still
+    // covers this range — otherwise a pure scroll past the window
+    // edge (no version change) would wrongly short-circuit and leave
+    // the new viewport painting plain-text fallback forever.
+    //
+    // Clamp the upper bound to the doc's line count: a viewport taller
+    // than the file (short buffers, big terminals) needs coverage only
+    // through EOF, not past it — otherwise `covers` would spuriously
+    // fail against a whole-doc matrix whose `covered_end_line` is the
+    // (smaller) line count and reject valid cache hits / incremental
+    // results.
+    let coverage_line_count = snapshot.buffer.line_count();
+    let visible_lo = pane.scroll.min(coverage_line_count);
+    let visible_hi = pane
+        .scroll
+        .saturating_add(pane.viewport_height)
+        .min(coverage_line_count);
+
     // Cache hit: this pane's published matrix already
     // reflects the inputs (and the registry cell was just
     // written by an earlier pane in this same tick sharing
     // the same buffer, or by an earlier tick whose inputs
-    // didn't drift).
+    // didn't drift) AND still covers the viewport (H.3).
     let existing = pane.matrix.load_full();
-    if !pane.version.differs_from(&existing.version) && existing.wrap_width == effective_wrap {
+    if !pane.version.differs_from(&existing.version)
+        && existing.wrap_width == effective_wrap
+        && existing.covers(visible_lo, visible_hi)
+    {
         return WorkerDecision::CacheHit;
     }
 
@@ -326,11 +349,19 @@ pub fn recompute_pane(
         try_incremental_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
     {
         matrix.wrap_width = effective_wrap;
-        pane.matrix.store(Arc::new(matrix));
-        return WorkerDecision::RecomputedIncremental;
+        // H.3: accept the incremental result only if it still covers
+        // the viewport. An edit normally keeps the cursor (and the
+        // viewport) inside the prior window; but if a same-tick scroll
+        // jumped the viewport past the window edge, fall through to a
+        // full windowed rebuild that recentres on the new scroll.
+        if matrix.covers(visible_lo, visible_hi) {
+            pane.matrix.store(Arc::new(matrix));
+            return WorkerDecision::RecomputedIncremental;
+        }
     }
 
-    // Full rebuild fallback.
+    // Full rebuild fallback — windowed around `pane.scroll` in
+    // chunked mode (H.3).
     let mut matrix = build_matrix(
         snapshot.as_ref(),
         pane.syntax_handle.as_deref(),
@@ -339,6 +370,7 @@ pub fn recompute_pane(
         &pane.folds,
         pane.foldenable,
         pane.viewport_height,
+        pane.scroll,
         pane.version,
         whitespace,
     );
@@ -687,6 +719,7 @@ fn build_matrix(
     folds: &[lattice_core::Fold],
     foldenable: bool,
     viewport_height: u32,
+    scroll: u32,
     version: MatrixVersion,
     whitespace: &WhitespaceConfig,
 ) -> CellMatrix {
@@ -698,51 +731,78 @@ fn build_matrix(
     let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
 
-    // Resolve per-line styled spans when a current syntax snapshot
-    // is available. `highlight_lines` returns one Vec<StyledSpan>
-    // per line in [0, line_count); spans are line-relative byte
-    // offsets.
-    let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
-        syntax_handle.and_then(|h| {
-            let snap = h.snapshot();
-            // Stale snapshot — don't paint with mismatched offsets.
-            // Worker will rebuild when the syntax catches up.
-            if snap.text_version() < snapshot.text_version {
-                return None;
-            }
-            snap.highlight_lines(0, line_count).ok()
-        });
-
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
 
-    let inputs = ChunkInputs {
-        snapshot,
-        per_line_spans: per_line_spans.as_ref(),
-        // Full rebuild highlights the whole file (base 0). H.3 will scope
-        // this to the viewport window for large-file O(viewport) builds.
-        spans_base: 0,
-        inlays_by_line: &inlays_by_line,
-        fold_index: &fold_index,
-        theme,
-        default_fg,
-        default_flags,
-        inlay_fg,
-        whitespace,
+    // H.3 (2026-06-04): highlight only the line range a build actually
+    // covers — the whole file in whole-doc mode, the viewport window in
+    // chunked mode — not the whole file unconditionally. Mirrors the
+    // `highlight_range` closure in `try_incremental_build`. Returns spans
+    // indexed RELATIVE to `lo` (so the build's `spans_base` is `lo`).
+    // `None` ⇒ syntax stale/absent → rows fall back to default fg, and the
+    // matrix rebuilds when the syntax catches up (the cascade bumps
+    // `MatrixVersion::syntax`).
+    let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        if hi <= lo {
+            return Some(Vec::new());
+        }
+        syntax_handle.and_then(|h| {
+            let snap = h.snapshot();
+            // Stale snapshot — don't paint with mismatched offsets.
+            if snap.text_version() < snapshot.text_version {
+                return None;
+            }
+            snap.highlight_lines(lo, hi).ok()
+        })
     };
 
     match pick_chunk_size(viewport_height, line_count) {
         ChunkMode::WholeDoc => {
+            let spans = highlight_range(0, line_count);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: 0,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
             let rows = build_chunk_rows(&inputs, 0, line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, version));
             CellMatrix::whole_doc(chunk, line_count)
         }
         ChunkMode::Chunked(chunk_size) => {
+            // H.3: window the chunked build around the viewport (above
+            // `WINDOW_CAP_LINES`; full coverage at/below it). Highlight +
+            // row materialisation are scoped to `[win_lo, win_hi)`, so the
+            // build is O(window) on large files. `source_line_count` stays
+            // the true doc count so `row_at_source_line` bounds + scroll
+            // geometry are unchanged; off-window lines simply have no chunk
+            // → `None` → the renderers' existing plain-text/legacy-span
+            // fallback.
+            let (win_lo, win_hi) = window_bounds(scroll, viewport_height, line_count, chunk_size);
+            let spans = highlight_range(win_lo, win_hi);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: win_lo,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
             let mut chunks: Vec<Arc<CellChunk>> =
-                Vec::with_capacity(((line_count + chunk_size - 1) / chunk_size) as usize);
-            let mut start = 0u32;
-            while start < line_count {
-                let end = start.saturating_add(chunk_size).min(line_count);
+                Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
+            let mut start = win_lo;
+            while start < win_hi {
+                let end = start.saturating_add(chunk_size).min(win_hi);
                 let rows = build_chunk_rows(&inputs, start, end);
                 chunks.push(Arc::new(CellChunk::new(start, rows, version)));
                 start = end;
@@ -793,6 +853,59 @@ fn next_power_of_two(n: u32) -> u32 {
     } else {
         1u32 << (32 - leading)
     }
+}
+
+/// H.3 (2026-06-04): line-count cap above which a chunked-mode
+/// matrix is *windowed* around the viewport rather than covering
+/// the whole document.
+///
+/// Below the cap a full-residency chunked build is cheap (~2K lines
+/// of cells is a couple of MB) and — crucially — avoids paying a
+/// window rebuild every time the user scrolls past the covered
+/// range, which on a small doc is pure waste. Above the cap, the
+/// matrix tracks `[scroll − overscan, scroll + viewport + overscan)`
+/// so build, rebuild, and memory all stay O(viewport) on large
+/// files (paramount goal #1) — the headline large-file win.
+///
+/// The cap sits well above any realistic "small file" yet below the
+/// 10k+-line scale where an O(file) cell build visibly stutters. All
+/// pre-H.3 chunked-mode tests use docs far below it, so they keep
+/// the full-coverage behaviour they assert.
+const WINDOW_CAP_LINES: u32 = 2048;
+
+/// H.3: the source-line range a chunked build covers for a given
+/// `scroll` / `viewport_height`. Returns the whole document
+/// `(0, line_count)` at or below [`WINDOW_CAP_LINES`] (full
+/// residency); above it, a `chunk_size`-aligned window
+/// `[scroll − overscan, scroll + viewport_height + overscan)` clamped
+/// to `[0, line_count)`.
+///
+/// Overscan is one `viewport_height` on each side: combined with the
+/// chunk-aligned bounds, line-by-line scrolling stays inside the
+/// covered range (worker returns `CacheHit`); only a jump that
+/// crosses the window edge triggers a rebuild, and that rebuild is
+/// O(window). `chunk_size` is `> 0` here (chunked mode only;
+/// whole-doc mode never calls this).
+fn window_bounds(scroll: u32, viewport_height: u32, line_count: u32, chunk_size: u32) -> (u32, u32) {
+    if line_count <= WINDOW_CAP_LINES {
+        return (0, line_count);
+    }
+    let overscan = viewport_height;
+    let raw_lo = scroll.saturating_sub(overscan);
+    let raw_hi = scroll
+        .saturating_add(viewport_height)
+        .saturating_add(overscan)
+        .min(line_count);
+    // Align lo down and hi up to chunk boundaries so chunks stay
+    // chunk-aligned (matching the full-coverage build) and a small
+    // scroll lands inside the already-built window.
+    let lo = (raw_lo / chunk_size) * chunk_size;
+    let hi = raw_hi
+        .saturating_add(chunk_size - 1)
+        .saturating_div(chunk_size)
+        .saturating_mul(chunk_size)
+        .min(line_count);
+    (lo, hi)
 }
 
 /// Inputs shared across all chunks of a single matrix build. Held
@@ -1929,6 +2042,141 @@ mod tests {
         let m = matrix_cell.load();
         assert!(!m.is_whole_doc(), "post-shrink must be chunked");
         assert_eq!(m.chunk_size, 16);
+    }
+
+    // ---- H.3 — viewport-scoped (windowed) chunked matrix ----
+
+    /// Build a snapshot of `line_count` short lines at version 1.
+    fn big_snap(line_count: u32) -> Arc<DocumentSnapshot> {
+        let text: String = (0..line_count)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        snap_of_versioned(&text, 1)
+    }
+
+    /// `window_bounds` is full-coverage at/below the cap and a
+    /// chunk-aligned window above it.
+    #[test]
+    fn window_bounds_full_below_cap_windowed_above() {
+        let cs = 128;
+        // At/below cap → whole doc regardless of scroll.
+        assert_eq!(window_bounds(0, 50, WINDOW_CAP_LINES, cs), (0, WINDOW_CAP_LINES));
+        assert_eq!(
+            window_bounds(900, 50, WINDOW_CAP_LINES, cs),
+            (0, WINDOW_CAP_LINES)
+        );
+        // Above cap → window around the viewport, aligned to chunks.
+        // scroll=2500, vh=50, overscan=50 ⇒ raw [2450, 2600);
+        // align lo down to 2432 (19·128), hi up to 2688 (21·128).
+        let (lo, hi) = window_bounds(2500, 50, 5000, cs);
+        assert_eq!(lo % cs, 0, "lo chunk-aligned");
+        assert_eq!(hi % cs, 0, "hi chunk-aligned");
+        assert!(lo <= 2450 && hi >= 2600, "window brackets the viewport+overscan");
+        assert!(hi - lo < 5000, "window is a strict subset of the doc");
+        // Window never exceeds the document.
+        let (_, hi_eof) = window_bounds(4990, 50, 5000, cs);
+        assert!(hi_eof <= 5000);
+    }
+
+    /// A large doc (> `WINDOW_CAP_LINES`) builds a matrix that covers
+    /// only the viewport window, not the whole document. Off-window
+    /// source lines have no row (the renderers fall back to plain
+    /// text / legacy spans for those).
+    #[test]
+    fn windowed_matrix_covers_viewport_not_whole_doc() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
+        pane.scroll = 2500;
+        let theme = crate::ui::theme::Theme::default();
+        let ws = WhitespaceConfig::default();
+
+        assert_eq!(
+            recompute_pane(&pane, &theme, &ws),
+            WorkerDecision::Recomputed
+        );
+        let m = matrix_cell.load();
+        assert!(!m.is_whole_doc(), "large doc is chunked");
+        assert_eq!(m.source_line_count, 5000, "true doc line count preserved");
+        // Covered range is a small window around the viewport, NOT the
+        // whole 5000-line document — this is the O(viewport) win.
+        assert!(m.covered_start_line() <= 2500);
+        assert!(m.covered_end_line() >= 2550);
+        assert!(
+            m.covered_end_line() - m.covered_start_line() < 1000,
+            "covered span bounded (got {}..{})",
+            m.covered_start_line(),
+            m.covered_end_line()
+        );
+        assert!(m.covers(2500, 2550), "viewport is covered");
+        // In-window line has a row; far off-window lines do not.
+        assert!(m.row_at_source_line(2500).is_some());
+        assert!(
+            m.row_at_source_line(10).is_none(),
+            "line far above the window has no row"
+        );
+        assert!(
+            m.row_at_source_line(4990).is_none(),
+            "line far below the window has no row"
+        );
+    }
+
+    /// Scrolling the viewport past the covered window (no version
+    /// change) forces a rebuild that recentres the window on the new
+    /// scroll — the old region is no longer covered.
+    #[test]
+    fn scroll_past_window_triggers_rebuild() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let theme = crate::ui::theme::Theme::default();
+        let ws = WhitespaceConfig::default();
+
+        // First build at the top.
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
+        pane.scroll = 0;
+        assert_eq!(
+            recompute_pane(&pane, &theme, &ws),
+            WorkerDecision::Recomputed
+        );
+        assert!(matrix_cell.load().row_at_source_line(0).is_some());
+
+        // Same version, jump far down. Pure-scroll past the window must
+        // rebuild (not CacheHit) and recentre.
+        pane.scroll = 3000;
+        assert_eq!(
+            recompute_pane(&pane, &theme, &ws),
+            WorkerDecision::Recomputed,
+            "scroll past window rebuilds despite unchanged version"
+        );
+        let m = matrix_cell.load();
+        assert!(m.covers(3000, 3050), "new viewport covered");
+        assert!(m.row_at_source_line(3000).is_some());
+        assert!(
+            m.row_at_source_line(0).is_none(),
+            "window moved off the original top"
+        );
+    }
+
+    /// Scrolling within the covered window (overscan slack) is a
+    /// cache hit — no rebuild on line-by-line scrolling.
+    #[test]
+    fn in_window_scroll_is_cache_hit() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let theme = crate::ui::theme::Theme::default();
+        let ws = WhitespaceConfig::default();
+
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
+        pane.scroll = 2500;
+        assert_eq!(
+            recompute_pane(&pane, &theme, &ws),
+            WorkerDecision::Recomputed
+        );
+        // A few lines of scroll stays inside the overscan window.
+        pane.scroll = 2510;
+        assert_eq!(
+            recompute_pane(&pane, &theme, &ws),
+            WorkerDecision::CacheHit,
+            "small in-window scroll does not rebuild"
+        );
     }
 
     // ---- S2.3.c — fold elision ----

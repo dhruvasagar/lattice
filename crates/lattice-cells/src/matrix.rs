@@ -194,6 +194,54 @@ impl CellMatrix {
         None
     }
 
+    /// H.3 (2026-06-04): first source line this matrix's chunks were
+    /// built to cover. `0` for whole-doc mode and full-coverage
+    /// chunked mode; the window's lower bound for a windowed
+    /// large-file matrix. Derived from the first chunk's
+    /// `start_source_line` (exact — chunks are ordered).
+    pub fn covered_start_line(&self) -> u32 {
+        self.chunks
+            .first()
+            .map(|c| c.start_source_line)
+            .unwrap_or(0)
+    }
+
+    /// H.3: exclusive upper bound of the source-line range this
+    /// matrix's chunks were built to cover. `source_line_count` in
+    /// whole-doc mode; otherwise the last chunk's
+    /// `start_source_line + chunk_size`, clamped to
+    /// `source_line_count`. Robust against fold elision (a fully
+    /// folded tail chunk still reports the source span it was built
+    /// over) and against a window that ends mid-`chunk_size`
+    /// (`build_matrix` aligns the window up to `chunk_size`, so the
+    /// last chunk's nominal end equals the window's upper bound).
+    pub fn covered_end_line(&self) -> u32 {
+        if self.is_whole_doc() {
+            return self.source_line_count;
+        }
+        self.chunks
+            .last()
+            .map(|c| {
+                c.start_source_line
+                    .saturating_add(self.chunk_size)
+                    .min(self.source_line_count)
+            })
+            .unwrap_or(0)
+    }
+
+    /// H.3: does this matrix cover the entire source-line range
+    /// `[lo, hi)`? The cells worker's cache-hit gate uses this to
+    /// keep a windowed large-file matrix from serving a viewport
+    /// that has scrolled past its covered range — when it returns
+    /// `false`, the worker rebuilds the window around the new
+    /// scroll. An empty matrix (no chunks) covers nothing.
+    pub fn covers(&self, lo: u32, hi: u32) -> bool {
+        if self.chunks.is_empty() {
+            return false;
+        }
+        self.covered_start_line() <= lo && hi <= self.covered_end_line()
+    }
+
     /// Borrow the visible rows starting at matrix-row index
     /// `scroll`, up to `height` rows. Returns a [`CellSlice`] that
     /// iterates `&CellRow` references without allocating.

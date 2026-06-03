@@ -399,8 +399,10 @@ fn try_incremental_build(
     let new_version = pane.version;
     let pub_v = published.version;
 
-    // Only text / syntax axes may differ. text and syntax both
-    // stamp `text_version`, so they should bump together.
+    // Only text / syntax axes may differ here. The text axis is the
+    // document version; the syntax axis is the syntax-snapshot version
+    // (2026-06-03) — they bump independently, because the async reparse
+    // can land after the edit and must invalidate the cache on its own.
     if new_version.inlay_hints != pub_v.inlay_hints
         || new_version.folds != pub_v.folds
         || new_version.theme != pub_v.theme

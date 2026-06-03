@@ -1396,6 +1396,41 @@ const MAX: i32 = 10;\n\
         );
     }
 
+    /// Reproduction (2026-06-03): markdown highlighting must survive
+    /// an incremental edit. The `parity_*` tests only compare TREE
+    /// SHAPE (`to_sexp`); this compares the actual HIGHLIGHT SPANS
+    /// produced incremental-after-edit vs a full reparse of the final
+    /// text — the untested gap behind "markdown highlighting never
+    /// comes back after an edit". If this fails, the reparse/highlight
+    /// path drops markdown styling on a keystroke.
+    #[test]
+    fn markdown_highlight_survives_incremental_edit() {
+        let src_a = "# Heading\n\nHello world\n";
+        // Type a character inside the paragraph (byte 16 sits in
+        // "Hello world").
+        let (src_b, delta) = delta_for_edit(src_a, 16, 16, "X");
+        let lc = src_b.split('\n').count() as u32;
+
+        let mut s_inc = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s_inc.parse_at(src_a, 1);
+        s_inc.parse_at_with_edits(&src_b, 2, 1, &[delta]);
+        let inc = s_inc.highlight_lines(0, lc).unwrap();
+
+        let mut s_full = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s_full.parse_at(&src_b, 1);
+        let full = s_full.highlight_lines(0, lc).unwrap();
+
+        assert_eq!(
+            inc, full,
+            "markdown highlight spans diverge incremental vs full after edit"
+        );
+        assert!(
+            inc[0].iter().any(|sp| sp.style == Style::Heading1),
+            "heading highlight lost after incremental edit: {:?}",
+            inc[0]
+        );
+    }
+
     // ---- Slice B.2: incremental reparse parity tests -----------
     //
     // Tree-sitter's failure mode for a malformed `InputEdit` is a

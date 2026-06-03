@@ -1006,7 +1006,26 @@ impl Editor {
                 },
                 version: lattice_cells::MatrixVersion {
                     text: self.document.text_version(),
-                    syntax: self.document.text_version(),
+                    // 2026-06-03: the syntax axis tracks the SYNTAX
+                    // SNAPSHOT's version, not the document version.
+                    // The async reparse can lag the edit; when the
+                    // cells worker rebuilds on the edit it reads a
+                    // stale syntax snapshot (stale gate → no spans →
+                    // colourless cells). Stamping this axis from the
+                    // document version meant that once the reparse
+                    // landed the version no longer differed, so the
+                    // worker never rebuilt and colours never came back
+                    // (markdown, whose reparse loses the race). Keying
+                    // off the snapshot version means the later reparse
+                    // bumps this axis → the next publish invalidates the
+                    // cache → cells rebuild with fresh syntax. Falls
+                    // back to the doc version when the buffer has no
+                    // syntax handle (nothing to colour anyway).
+                    syntax: self
+                        .syntax
+                        .as_ref()
+                        .map(|h| h.snapshot().text_version())
+                        .unwrap_or_else(|| self.document.text_version()),
                     inlay_hints: inlay_version_val,
                     // S2.3.c (2026-05-26): the cells fold axis also
                     // captures `foldenable`. `compute_fold_hash`
@@ -9095,7 +9114,16 @@ impl Editor {
 
             let version = lattice_cells::MatrixVersion {
                 text: text_version,
-                syntax: text_version,
+                // 2026-06-03: syntax axis = this pane's syntax-snapshot
+                // version (not the doc version), so a reparse that lands
+                // after the edit invalidates the cache and the cells
+                // rebuild with fresh colours. See the matching comment
+                // in `build_render_state`. Falls back to the doc version
+                // when the buffer has no syntax handle.
+                syntax: syntax_handle
+                    .as_ref()
+                    .map(|h| h.snapshot().text_version())
+                    .unwrap_or(text_version),
                 inlay_hints: inlay_version,
                 folds: if foldenable { folds_hash } else { !folds_hash },
                 theme: theme_hash,
@@ -26438,6 +26466,46 @@ mod tests {
         assert!(
             !std::sync::Arc::ptr_eq(&first, &other_cell),
             "different buffers must get distinct cells"
+        );
+    }
+
+    /// Part 1 of the markdown-highlight-recovery fix (2026-06-03):
+    /// the published cells `version.syntax` axis must track the
+    /// SYNTAX SNAPSHOT's version, not the document version. Otherwise
+    /// an async reparse that lands after the edit can never invalidate
+    /// the (colourless) cached matrix — the cells worker sees an
+    /// unchanged syntax axis and short-circuits, so highlighting never
+    /// comes back. Here the syntax snapshot sits at a distinctive
+    /// version (99) decoupled from the document version; the stamped
+    /// axis must follow the snapshot.
+    #[tokio::test]
+    async fn cells_version_syntax_axis_tracks_syntax_snapshot_not_doc() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(3));
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .unwrap();
+        // Park the syntax snapshot at a version unrelated to the doc.
+        s.parse_at("fn main() {}\n", 99);
+        let handle = lattice_syntax::SyntaxHandle::seeded_with_runtime(
+            s,
+            lattice_runtime::runtime::lsp_runtime().handle(),
+        );
+        editor.syntax = Some(handle);
+        let doc_v = editor.document.text_version();
+        assert_ne!(
+            doc_v, 99,
+            "precondition: doc version must differ from the syntax snapshot version"
+        );
+
+        let panes = editor.build_cells_panes(None);
+        let active = panes
+            .iter()
+            .find(|p| p.buffer_id == editor.document_buffer_id)
+            .expect("active document pane present");
+        assert_eq!(
+            active.version.syntax, 99,
+            "cells version.syntax must track the syntax snapshot version (99), \
+             not the document version ({doc_v})"
         );
     }
 

@@ -862,6 +862,25 @@ impl App {
             Effect::SaveBuffer { path } => self.do_write(path),
             Effect::QuitEditor { force } => self.do_quit(force),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
+            // M.10.3 bug fix (2026-06-03): atomic open-and-position.
+            // `do_edit` first (active doc switches to the file),
+            // THEN set selections (cursor lands at the matched
+            // row/byte in the new active doc on the next render).
+            // Splitting the two through `OpenBuffer` +
+            // `SelectionChange` failed because the host-side
+            // SelectionChange arm runs synchronously against the
+            // still-active multibuffer; this variant performs
+            // both writes against the post-do_edit active doc.
+            Effect::OpenBufferAt { path, position, force } => {
+                self.do_edit(path, force);
+                self.mutate_editor_with(move |e| {
+                    e.set_selections_blocking(
+                        lattice_protocol::SelectionSet::single(
+                            lattice_protocol::selection::Selection::cursor(position),
+                        ),
+                    );
+                });
+            }
             // 5.5.E.7.5: `Substitute` migrated to
             // `Editor::handle_effect`; routed through the grouped
             // no-op above.
@@ -1067,6 +1086,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::SaveBuffer { .. }
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
+        | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
@@ -1162,6 +1182,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::SaveBuffer { .. }
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
+        | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }

@@ -23464,6 +23464,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
         | Effect::RecordJump
+        | Effect::OpenBufferAt { .. }
         | Effect::AppAction(_) => false,
     }
 }
@@ -23560,6 +23561,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
         | Effect::RecordJump
+        | Effect::OpenBufferAt { .. }
         | Effect::AppAction(_) => false,
     }
 }

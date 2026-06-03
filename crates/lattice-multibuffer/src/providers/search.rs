@@ -575,19 +575,30 @@ impl Mode for ProjectSearchMultibufferMode {
                             // `OpenBuffer` the cursor lives in
                             // the new doc and recording would
                             // capture the wrong location.
+                            // M.10.3 bug fix (2026-06-03): use the
+                            // atomic `OpenBufferAt` instead of
+                            // splitting `OpenBuffer` +
+                            // `SelectionChange`. The host's
+                            // SelectionChange arm runs synchronously
+                            // against the still-active multibuffer,
+                            // BEFORE the TUI processes the
+                            // OpenBuffer (which switches the active
+                            // doc to the source file). Splitting
+                            // landed cursor at (0, 0) of the
+                            // freshly-opened buffer on first visit;
+                            // subsequent visits hit the cached
+                            // active-doc cursor preserved from the
+                            // earlier (broken) write. `OpenBufferAt`
+                            // performs do_edit + set_selections
+                            // atomically against the post-do_edit
+                            // active doc.
                             Some(lattice_grammar::Effect::Many(vec![
                                 lattice_grammar::Effect::RecordJump,
-                                lattice_grammar::Effect::OpenBuffer {
+                                lattice_grammar::Effect::OpenBufferAt {
                                     path: Some(path),
+                                    position: source_position,
                                     force: false,
                                 },
-                                lattice_grammar::Effect::SelectionChange(
-                                    lattice_protocol::SelectionSet::single(
-                                        lattice_protocol::selection::Selection::cursor(
-                                            source_position,
-                                        ),
-                                    ),
-                                ),
                             ]))
                         },
                     );

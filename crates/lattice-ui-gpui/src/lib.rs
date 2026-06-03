@@ -1012,6 +1012,18 @@ impl GpuiApp {
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force } => self.mutate_editor(move |e| e.do_quit(force)),
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
+            // M.10.3 bug fix (2026-06-03): atomic open-and-position.
+            // GPUI parity with TUI per [[feedback_tui_gpui_parity]].
+            Effect::OpenBufferAt { path, position, force } => {
+                self.apply_open_buffer(path, force);
+                self.mutate_editor(move |e| {
+                    e.set_selections_blocking(
+                        lattice_protocol::SelectionSet::single(
+                            lattice_protocol::selection::Selection::cursor(position),
+                        ),
+                    );
+                });
+            }
             // Phase 5.8.AD.3: `:w` save with full LSP fan-out
             // (BeforeSave / willSave / willSaveWaitUntil /
             // didSave / didCreateFiles) is now host-resident.

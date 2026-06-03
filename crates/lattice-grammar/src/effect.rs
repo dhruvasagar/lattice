@@ -121,6 +121,32 @@ pub enum Effect {
         path: Option<PathBuf>,
         force: bool,
     },
+    /// M.10.3 bug fix (2026-06-03): atomic "open file + position
+    /// cursor." Used by mode-contributed jump handlers (search
+    /// `<CR>`, lsp-references `<CR>`, future project-diff `<CR>`)
+    /// so the cursor lands at the matched (row, byte) inside
+    /// the newly-opened buffer on the FIRST render.
+    ///
+    /// Necessary because `Effect::SelectionChange` runs
+    /// synchronously in the host's `handle_effect` (writes to
+    /// `editor.cursor` against whatever buffer is active at
+    /// that moment), while `Effect::OpenBuffer` is renderer-
+    /// coupled — applied LATER by the TUI/GPUI peers via
+    /// `do_edit`. The two can't be ordered to land cursor on
+    /// the new buffer without an atomic step. The peer
+    /// renderer's arm for this variant calls `do_edit` THEN
+    /// `set_selections_blocking` in a single atomic block.
+    ///
+    /// Pre-fix, `<CR>` on a search hit opened the file but
+    /// landed at (0,0) because the host's SelectionChange ran
+    /// first (against the still-active multibuffer) and the
+    /// later `do_edit` reset cursor for the freshly-loaded
+    /// document.
+    OpenBufferAt {
+        path: Option<PathBuf>,
+        position: lattice_protocol::position::Position,
+        force: bool,
+    },
     /// `:set <option>` -- the host parses the option spec; the closure
     /// just hands the raw text through.
     SetOption {

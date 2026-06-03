@@ -713,11 +713,25 @@ mod tests {
         let mut a = app_with("aaa\nbbb\nccc", 10);
         a.editor.cursor = Position::new(2, 1);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
-        // Now position_history has an entry.
-        assert!(!a.editor.position_history.is_empty());
+        // The goto_first_line motion pushed a jump entry.
+        let history_pre = a.editor.position_history.len();
+        assert!(history_pre > 0);
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
-        assert!(a.editor.position_history.is_empty());
+        // M.10.3.fix1 (2026-06-03): position_history is
+        // session-wide, NOT per-document. `:e <new-file>` does
+        // NOT clear the jump list — vim semantics require
+        // `<C-o>` to walk back into the previous buffer after
+        // a fresh-file open. The entry pushed in the previous
+        // buffer survives; activate_buffer additionally pushes
+        // an entry for the cross-buffer hop (dedups against
+        // the pre-existing one if identical fields).
+        assert!(
+            a.editor.position_history.len() >= history_pre,
+            "position_history must survive fresh-file open (jump list is session-wide)"
+        );
+        // The other per-document state (cursor) DOES reset —
+        // fresh file starts at (0, 0).
         assert_eq!(a.editor.cursor, Position::ZERO);
         std::fs::remove_dir_all(&dir).ok();
     }

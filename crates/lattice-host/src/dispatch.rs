@@ -24351,7 +24351,21 @@ impl Editor {
                     events: &self.event_bus,
                 };
                 if let Some(effect) = handler(&ctx) {
-                    handle_effect(self, effect, out);
+                    // M.10.x bug fix (2026-06-03): route through
+                    // `apply_effect_host`, NOT `handle_effect`.
+                    // `apply_effect_host` flattens `Effect::Many`
+                    // AND pushes each leaf onto `out.effects` so
+                    // the TUI's apply_effect cycle handles
+                    // renderer-coupled variants (`OpenBuffer`
+                    // calls `do_edit`, `OpenFileTree`,
+                    // `OpenPicker`, ...). Calling
+                    // `handle_effect` alone runs only the
+                    // host-side state mutations and drops the
+                    // renderer-coupled effects on the floor —
+                    // which is why `<CR>`'s
+                    // `Effect::Many([RecordJump, OpenBuffer,
+                    // SelectionChange])` silently no-op'd post-M.10.3.
+                    apply_effect_host(self, effect, out);
                 }
                 return;
             }

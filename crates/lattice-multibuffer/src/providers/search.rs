@@ -812,7 +812,21 @@ impl Mode for ProjectSearchMultibufferMode {
                                     done.files_scanned,
                                 ),
                             });
-                            break;
+                            // M.10.5 bug fix (2026-06-03): do NOT
+                            // break here. Pre-fix the forwarder
+                            // exited on Done, so any subsequent
+                            // `gr` refresh spawned a new scan but
+                            // had no subscriber for its batches —
+                            // the buffer stayed blank forever.
+                            // Now the forwarder stays subscribed
+                            // through refresh cycles; the only
+                            // exit path is via the mode's Guard
+                            // drop (deactivation), which aborts
+                            // this task. `continue` re-enters
+                            // `select!` for the next batch /
+                            // progress / done event from a
+                            // future scan.
+                            continue;
                         }
                         else => break,
                     }

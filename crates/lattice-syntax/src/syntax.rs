@@ -1431,6 +1431,35 @@ const MAX: i32 = 10;\n\
         );
     }
 
+    /// Diagnostic (2026-06-04): does an UNCHANGED line carrying inline
+    /// injection content (a `code span` + a [link]) keep IDENTICAL
+    /// highlight spans across a reparse triggered by editing a
+    /// DIFFERENT line? If not, markdown's inline injection is
+    /// non-deterministic across reparses — which is why those lines
+    /// flicker on every keystroke (B.1 full-rebuilds on reparse and the
+    /// inline colours flip).
+    #[test]
+    fn markdown_inline_spans_stable_across_unrelated_edit() {
+        let src_a = "# H\n\nUse `code` and [link](http://x)\n\ntail\n";
+        // Edit "tail" (line 4), well away from the inline-content line 2.
+        let (src_b, delta) = delta_for_edit(src_a, 42, 42, "X");
+
+        let mut s1 = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s1.parse_at(src_a, 1);
+        let line2_v1 = s1.highlight_lines(2, 3).unwrap().remove(0);
+
+        let mut s2 = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s2.parse_at(src_a, 1);
+        s2.parse_at_with_edits(&src_b, 2, 1, &[delta]);
+        let line2_v2 = s2.highlight_lines(2, 3).unwrap().remove(0);
+
+        assert_eq!(
+            line2_v1, line2_v2,
+            "inline-content line 2 must keep identical spans across an unrelated edit \
+             (v1 = full parse, v2 = incremental reparse after editing line 4)"
+        );
+    }
+
     // ---- Slice B.2: incremental reparse parity tests -----------
     //
     // Tree-sitter's failure mode for a malformed `InputEdit` is a

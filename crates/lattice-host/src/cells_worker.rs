@@ -287,13 +287,25 @@ pub fn recompute_pane(
     let Some(snapshot) = pane.snapshot.as_ref() else {
         // No snapshot — buffer closed mid-publish, or no
         // active document for this pane. Clear this pane's
-        // matrix if it isn't already empty; idempotent on
-        // repeat clears so the second call doesn't churn the
-        // Arc.
-        let existing = pane.matrix.load();
-        if existing.is_empty() && existing.version == MatrixVersion::ZERO {
+        // matrices if not already empty; idempotent on repeat
+        // clears so the second call doesn't churn the Arcs.
+        // B2.2: the `DisplayMatrix` is canonical; clear it and the
+        // projected cell grid together. Idempotent only when BOTH are
+        // already empty (a fresh display cell with a stale projected
+        // cell, or vice versa, must still clear the non-empty one).
+        let display_empty = {
+            let e = pane.display_matrix.load();
+            e.is_empty() && e.version == MatrixVersion::ZERO
+        };
+        let cell_empty = {
+            let e = pane.matrix.load();
+            e.is_empty() && e.version == MatrixVersion::ZERO
+        };
+        if display_empty && cell_empty {
             return WorkerDecision::Clear;
         }
+        pane.display_matrix
+            .store(Arc::new(crate::display_matrix::DisplayMatrix::empty()));
         pane.matrix.store(Arc::new(CellMatrix::empty()));
         return WorkerDecision::Clear;
     };
@@ -329,12 +341,18 @@ pub fn recompute_pane(
         .saturating_add(pane.viewport_height)
         .min(coverage_line_count);
 
-    // Cache hit: this pane's published matrix already
-    // reflects the inputs (and the registry cell was just
-    // written by an earlier pane in this same tick sharing
-    // the same buffer, or by an earlier tick whose inputs
-    // didn't drift) AND still covers the viewport (H.3).
-    let existing = pane.matrix.load_full();
+    // B2.2 (2026-06-04): the `DisplayMatrix` is now the canonical
+    // build; the `CellMatrix` is a projection of it
+    // (`display_matrix_to_cell_matrix`) feeding the not-yet-cut-over
+    // renderers (GPU until B3) until B4 deletes the cell path. Cache
+    // hit / incremental / full all gate on the canonical matrix; the
+    // projection runs only when the canonical matrix is rebuilt.
+    //
+    // Cache hit: the published canonical matrix already reflects the
+    // inputs AND still covers the viewport (H.3). The cell projection
+    // from the prior tick is still valid (nothing changed), so we
+    // touch neither cell.
+    let existing = pane.display_matrix.load_full();
     if !pane.version.differs_from(&existing.version)
         && existing.wrap_width == effective_wrap
         && existing.covers(visible_lo, visible_hi)
@@ -342,41 +360,49 @@ pub fn recompute_pane(
         return WorkerDecision::CacheHit;
     }
 
-    // S2.4.b: try the incremental rebuild path. Eligibility
-    // is checked inside `try_incremental_build`; on `None` we
-    // fall through to the full rebuild.
-    if let Some(mut matrix) =
-        try_incremental_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
-    {
-        matrix.wrap_width = effective_wrap;
-        // H.3: accept the incremental result only if it still covers
-        // the viewport. An edit normally keeps the cursor (and the
-        // viewport) inside the prior window; but if a same-tick scroll
-        // jumped the viewport past the window edge, fall through to a
-        // full windowed rebuild that recentres on the new scroll.
-        if matrix.covers(visible_lo, visible_hi) {
-            pane.matrix.store(Arc::new(matrix));
-            return WorkerDecision::RecomputedIncremental;
-        }
-    }
+    // Incremental rebuild (S2.4.b semantics, DisplayLine payload).
+    // Eligibility is checked inside `try_incremental_display_build`;
+    // `None` falls through to a full windowed rebuild.
+    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
+        .and_then(|mut dm| {
+            dm.wrap_width = effective_wrap;
+            // H.3: accept the incremental result only if it still
+            // covers the viewport; a same-tick scroll past the window
+            // edge falls through to a recentred full rebuild.
+            dm.covers(visible_lo, visible_hi)
+                .then_some((dm, WorkerDecision::RecomputedIncremental))
+        });
 
-    // Full rebuild fallback — windowed around `pane.scroll` in
-    // chunked mode (H.3).
-    let mut matrix = build_matrix(
-        snapshot.as_ref(),
-        pane.syntax_handle.as_deref(),
-        theme,
-        &pane.inlay_hints,
-        &pane.folds,
-        pane.foldenable,
-        pane.viewport_height,
-        pane.scroll,
-        pane.version,
-        whitespace,
-    );
-    matrix.wrap_width = effective_wrap;
-    pane.matrix.store(Arc::new(matrix));
-    WorkerDecision::Recomputed
+    let (matrix, decision) = match rebuilt {
+        Some((dm, decision)) => (dm, decision),
+        None => {
+            // Full rebuild fallback — windowed around `pane.scroll`
+            // in chunked mode (H.3).
+            let mut dm = build_display_matrix(
+                snapshot.as_ref(),
+                pane.syntax_handle.as_deref(),
+                theme,
+                &pane.inlay_hints,
+                &pane.folds,
+                pane.foldenable,
+                pane.viewport_height,
+                pane.scroll,
+                pane.version,
+                whitespace,
+            );
+            dm.wrap_width = effective_wrap;
+            (dm, WorkerDecision::Recomputed)
+        }
+    };
+
+    // Project the canonical matrix to the cell grid (the transient
+    // B2→B4 bridge), then publish both. Store the cell projection
+    // first so a renderer reading `pane.matrix` after seeing the new
+    // `pane.display_matrix` never observes a stale cell grid.
+    let cells = display_matrix_to_cell_matrix(&matrix, theme);
+    pane.matrix.store(Arc::new(cells));
+    pane.display_matrix.store(Arc::new(matrix));
+    decision
 }
 
 /// S2.4.b: attempt an incremental rebuild from the previously-
@@ -416,6 +442,9 @@ pub fn recompute_pane(
 /// this implementation rebuilds any chunk whose covered range
 /// touches the affected range to keep the logic simple and
 /// correct.
+// B2.2 (2026-06-04): superseded by `try_incremental_display_build`;
+// kept as the cell-path parity oracle, deleted in B4.
+#[allow(dead_code)]
 fn try_incremental_build(
     published: &CellMatrix,
     snapshot: &lattice_runtime::DocumentSnapshot,
@@ -710,6 +739,10 @@ fn try_incremental_build(
 /// case. The matrix rebuilds again when the syntax catches up
 /// (the cascade bumps `MatrixVersion::syntax`, which equals the
 /// document's `text_version` at publish time).
+// B2.2 (2026-06-04): superseded in production by `build_display_matrix`
+// + `display_matrix_to_cell_matrix`. Retained as the parity oracle for
+// the projection tests; deleted with the cell path in B4.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn build_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
@@ -940,6 +973,9 @@ struct ChunkInputs<'a> {
 /// `[start_line, end_line)`. Folded interior lines are skipped
 /// (see `line_inside_closed_fold`); surviving rows keep their
 /// logical `source_line`.
+// B2.2: cell-path row builder; superseded by `build_display_rows`
+// (+ projection). Kept as a parity oracle; deleted in B4.
+#[allow(dead_code)]
 fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec<CellRow> {
     let mut rows: Vec<CellRow> = Vec::with_capacity((end_line - start_line) as usize);
     for line_idx in start_line..end_line {
@@ -985,6 +1021,10 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
 /// Trailing inlays at or past EOL splice at end-of-line — matches
 /// the existing `highlights_worker::weave_row` contract so S3
 /// renderers can switch substrates without semantic drift.
+// B2.2: cell-path per-row builder; superseded by `build_display_row`
+// (+ `display_line_to_cell_row`). Kept as the parity oracle the
+// `display_build_parity_*` tests compare against; deleted in B4.
+#[allow(dead_code)]
 fn build_row_cells(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
@@ -1166,10 +1206,8 @@ fn build_row_cells(
 /// drift. `flags` carries only the non-style bits (`INLAY` / `WS_MARKER`)
 /// — modifiers (bold/italic/…) are derived from `style` by the renderer,
 /// exactly as the cell projection does.
-// B1: exercised by `display_build_parity_with_cells_ws_off` and by
-// `build_display_rows`; dead in a non-test build until the worker
-// produces a `DisplayMatrix` in B2.
-#[allow(dead_code)]
+// B2.2: live — the canonical per-row builder behind
+// `build_display_rows` → `build_display_matrix` → `recompute_pane`.
 fn build_display_row(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
@@ -1245,7 +1283,15 @@ fn build_display_row(
             let tabstop = ws.tabstop.max(1);
             let fill = tabstop - (col % tabstop);
             let marker = ws.show && ws.tab.is_some();
-            let flags = if marker { cell_flags::WS_MARKER } else { 0 };
+            // WS_TRAILING mirrors the cell path's `marker && is_trailing`
+            // condition for trailing-fg resolution (build_row_cells).
+            let is_trailing = byte >= trailing_start_byte;
+            let flags = if marker {
+                cell_flags::WS_MARKER
+                    | if is_trailing { cell_flags::WS_TRAILING } else { 0 }
+            } else {
+                0
+            };
             let first = if marker { ws.tab.unwrap_or(' ') } else { ' ' };
             push(&mut out, &mut runs, first.encode_utf8(&mut tmp), style, flags);
             for _ in 1..fill {
@@ -1267,12 +1313,16 @@ fn build_display_row(
                 ws.space
             };
             if let Some(g) = glyph {
+                // Space markers take trailing-fg iff trailing (the cell
+                // path keys trailing-fg on `is_trailing` for spaces).
+                let flags = cell_flags::WS_MARKER
+                    | if is_trailing { cell_flags::WS_TRAILING } else { 0 };
                 push(
                     &mut out,
                     &mut runs,
                     g.encode_utf8(&mut tmp),
                     style,
-                    cell_flags::WS_MARKER,
+                    flags,
                 );
                 col += 1;
                 emitted = true;
@@ -1299,9 +1349,8 @@ fn build_display_row(
 /// `line_inside_closed_fold` semantics); surviving rows keep their
 /// logical `source_line`. Highlight spans are looked up relative to
 /// `inputs.spans_base` exactly as the cell path does (H.1).
-// B1: wired into the worker's recompute (producing a `DisplayMatrix`)
-// in B2; dead until then.
-#[allow(dead_code)]
+// B2.2: live — called by `build_display_matrix` /
+// `try_incremental_display_build`.
 fn build_display_rows(
     inputs: &ChunkInputs,
     start_line: u32,
@@ -1342,6 +1391,378 @@ fn build_display_rows(
         });
     }
     rows
+}
+
+/// B2.2 (2026-06-04): build a [`crate::display_matrix::DisplayMatrix`]
+/// — the `DisplayLine` analogue of [`build_matrix`]. Identical mode
+/// selection ([`pick_chunk_size`]), windowing ([`window_bounds`]), and
+/// highlight scoping (H.1/H.3); only the per-row payload differs
+/// ([`build_display_rows`] instead of [`build_chunk_rows`]). This is the
+/// *canonical* build once B2.2b flips `recompute_pane` over; the
+/// `CellMatrix` is then a projection ([`display_matrix_to_cell_matrix`]).
+#[allow(clippy::too_many_arguments)]
+fn build_display_matrix(
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
+    theme: &crate::ui::theme::Theme,
+    inlay_hints: &[crate::render_state::InlayHintRow],
+    folds: &[lattice_core::Fold],
+    foldenable: bool,
+    viewport_height: u32,
+    scroll: u32,
+    version: MatrixVersion,
+    whitespace: &WhitespaceConfig,
+) -> crate::display_matrix::DisplayMatrix {
+    use crate::display_matrix::{DisplayChunk, DisplayMatrix};
+    let line_count = snapshot.buffer.line_count();
+    if line_count == 0 {
+        return DisplayMatrix::empty();
+    }
+
+    // `default_*` / `inlay_fg` are required to construct `ChunkInputs`
+    // (shared with the cell path) even though `build_display_rows` reads
+    // only the snapshot / spans / inlays / folds / whitespace fields.
+    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let inlay_fg = inlay_hint_fg();
+    let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
+    let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
+
+    let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        if hi <= lo {
+            return Some(Vec::new());
+        }
+        syntax_handle.and_then(|h| {
+            let snap = h.snapshot();
+            if snap.text_version() < snapshot.text_version {
+                return None;
+            }
+            snap.highlight_lines(lo, hi).ok()
+        })
+    };
+
+    match pick_chunk_size(viewport_height, line_count) {
+        ChunkMode::WholeDoc => {
+            let spans = highlight_range(0, line_count);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: 0,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
+            let rows = build_display_rows(&inputs, 0, line_count);
+            let chunk = Arc::new(DisplayChunk::new(0, rows, version));
+            DisplayMatrix::whole_doc(chunk, line_count)
+        }
+        ChunkMode::Chunked(chunk_size) => {
+            let (win_lo, win_hi) = window_bounds(scroll, viewport_height, line_count, chunk_size);
+            let spans = highlight_range(win_lo, win_hi);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: win_lo,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
+            let mut chunks: Vec<Arc<DisplayChunk>> =
+                Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
+            let mut start = win_lo;
+            while start < win_hi {
+                let end = start.saturating_add(chunk_size).min(win_hi);
+                let rows = build_display_rows(&inputs, start, end);
+                chunks.push(Arc::new(DisplayChunk::new(start, rows, version)));
+                start = end;
+            }
+            DisplayMatrix::chunked(chunks, chunk_size, line_count, version)
+        }
+    }
+}
+
+/// B2.2 (2026-06-04): incremental `DisplayMatrix` rebuild — the
+/// `DisplayLine` analogue of [`try_incremental_build`]. Same eligibility
+/// gates (single edit, only text/syntax axes differ, line-count
+/// consistency, unchanged chunked-mode shape) and the same
+/// prefix-reuse / rebuild-zone / suffix-shift partition; only the
+/// payload + matrix/chunk types differ. Unchanged `DisplayLine`s are
+/// `Arc`-reused byte-identical (pixel-stable; only the edited line
+/// recolours), exactly as the cell path does.
+fn try_incremental_display_build(
+    published: &crate::display_matrix::DisplayMatrix,
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    pane: &crate::render_state::PaneCellsInputs,
+    theme: &crate::ui::theme::Theme,
+    whitespace: &WhitespaceConfig,
+) -> Option<crate::display_matrix::DisplayMatrix> {
+    use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix};
+    let edit = pane.last_edit?;
+    if published.chunks.is_empty() {
+        return None;
+    }
+
+    let new_version = pane.version;
+    let pub_v = published.version;
+    if new_version.inlay_hints != pub_v.inlay_hints
+        || new_version.folds != pub_v.folds
+        || new_version.theme != pub_v.theme
+    {
+        return None;
+    }
+    if new_version.text == pub_v.text && new_version.syntax == pub_v.syntax {
+        return None;
+    }
+
+    let new_line_count = snapshot.buffer.line_count();
+    let pre_count = published.source_line_count as i64;
+    let expected_new = pre_count + edit.net_delta() as i64;
+    if expected_new < 0 || expected_new as u32 != new_line_count {
+        return None;
+    }
+
+    let new_mode = pick_chunk_size(pane.viewport_height, new_line_count);
+    let new_chunk_size = match new_mode {
+        ChunkMode::WholeDoc => CHUNK_SIZE_WHOLE_DOC,
+        ChunkMode::Chunked(n) => n,
+    };
+    if new_chunk_size != published.chunk_size {
+        return None;
+    }
+
+    let edit_lo = edit.start_line;
+    let pre_hi = edit.pre_edit_end_line();
+    let net = edit.net_delta();
+
+    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let inlay_fg = inlay_hint_fg();
+    let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
+    let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
+    let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        if hi <= lo {
+            return Some(Vec::new());
+        }
+        pane.syntax_handle.as_deref().and_then(|h| {
+            let snap = h.snapshot();
+            if snap.text_version() < snapshot.text_version {
+                return None;
+            }
+            snap.highlight_lines(lo, hi).ok()
+        })
+    };
+
+    if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
+        let Some(prior) = published.chunks.first() else {
+            let spans = highlight_range(0, new_line_count);
+            let inputs = ChunkInputs {
+                snapshot,
+                per_line_spans: spans.as_ref(),
+                spans_base: 0,
+                inlays_by_line: &inlays_by_line,
+                fold_index: &fold_index,
+                theme,
+                default_fg,
+                default_flags,
+                inlay_fg,
+                whitespace,
+            };
+            let rows = build_display_rows(&inputs, 0, new_line_count);
+            let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
+            return Some(DisplayMatrix::whole_doc(chunk, new_line_count));
+        };
+        let prior_rows = &prior.rows;
+        let affected_hi = prior_rows
+            .iter()
+            .map(|r| r.source_line)
+            .find(|&l| l >= pre_hi)
+            .map(|l| (l as i64 + net as i64).max(edit_lo as i64) as u32)
+            .unwrap_or(new_line_count)
+            .min(new_line_count);
+        let mut rows: Vec<DisplayLine> = Vec::with_capacity(prior_rows.len() + 2);
+        rows.extend(
+            prior_rows
+                .iter()
+                .filter(|r| r.source_line < edit_lo)
+                .cloned(),
+        );
+        let spans = highlight_range(edit_lo, affected_hi);
+        let inputs = ChunkInputs {
+            snapshot,
+            per_line_spans: spans.as_ref(),
+            spans_base: edit_lo,
+            inlays_by_line: &inlays_by_line,
+            fold_index: &fold_index,
+            theme,
+            default_fg,
+            default_flags,
+            inlay_fg,
+            whitespace,
+        };
+        rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
+        rows.extend(
+            prior_rows
+                .iter()
+                .filter(|r| r.source_line >= pre_hi)
+                .map(|r| r.with_source_line((r.source_line as i64 + net as i64).max(0) as u32)),
+        );
+        let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
+        return Some(DisplayMatrix::whole_doc(chunk, new_line_count));
+    }
+
+    let chunk_size = new_chunk_size;
+    let mut new_chunks: Vec<Arc<DisplayChunk>> = Vec::with_capacity(published.chunks.len() + 2);
+
+    // Step 1: prefix-reuse.
+    let mut rebuild_lo: u32 = 0;
+    for chunk in published.chunks.iter() {
+        let chunk_end = chunk.start_source_line.saturating_add(published.chunk_size);
+        if chunk_end <= edit_lo {
+            new_chunks.push(Arc::clone(chunk));
+            rebuild_lo = chunk_end;
+        } else {
+            break;
+        }
+    }
+
+    // Step 2: suffix-shift.
+    let mut suffix_chunks: Vec<Arc<DisplayChunk>> = Vec::new();
+    for chunk in published.chunks.iter() {
+        if chunk.start_source_line >= pre_hi {
+            suffix_chunks.push(Arc::new(chunk.shifted_by(net, new_version)));
+        }
+    }
+    let rebuild_hi = suffix_chunks
+        .first()
+        .map(|c| c.start_source_line)
+        .unwrap_or(new_line_count);
+
+    // Step 3: rebuild zone.
+    let spans = highlight_range(rebuild_lo, rebuild_hi);
+    let inputs = ChunkInputs {
+        snapshot,
+        per_line_spans: spans.as_ref(),
+        spans_base: rebuild_lo,
+        inlays_by_line: &inlays_by_line,
+        fold_index: &fold_index,
+        theme,
+        default_fg,
+        default_flags,
+        inlay_fg,
+        whitespace,
+    };
+    let mut cur = rebuild_lo;
+    while cur < rebuild_hi {
+        let end = cur.saturating_add(chunk_size).min(rebuild_hi);
+        let rows = build_display_rows(&inputs, cur, end);
+        new_chunks.push(Arc::new(DisplayChunk::new(cur, rows, new_version)));
+        cur = end;
+    }
+
+    new_chunks.extend(suffix_chunks);
+
+    Some(DisplayMatrix::chunked(
+        new_chunks,
+        chunk_size,
+        new_line_count,
+        new_version,
+    ))
+}
+
+/// B2.2 (2026-06-04): project one [`crate::display_matrix::DisplayLine`]
+/// to a [`CellRow`] — the temporary bridge that keeps the not-yet-cut-
+/// over renderers (GPU until B3) painting off the cell grid while the
+/// `DisplayMatrix` is canonical. Reproduces [`build_row_cells`]
+/// byte-for-byte: per run, resolve `style → (fg, mods)` (inlay runs
+/// take `inlay_fg` + `INLAY` only; trailing markers take the theme's
+/// trailing-whitespace fg via the `WS_TRAILING` provenance bit); emit
+/// one cell per char. `col_map` IS the cell path's `inlay_offsets`
+/// (the B1 parity test pins this), so it transfers verbatim. The
+/// `WS_TRAILING` bit is DisplayRun-only provenance — it is stripped
+/// from the projected cell's flags so the result matches the cell
+/// path, which bakes trailing-fg into `fg` instead. Deleted with the
+/// cell path in B4.
+fn display_line_to_cell_row(
+    line: &crate::display_matrix::DisplayLine,
+    theme: &crate::ui::theme::Theme,
+    default_fg: u32,
+    default_flags: u16,
+    inlay_fg: u32,
+) -> CellRow {
+    use lattice_cells::cell_flags;
+    let trailing_fg = theme
+        .whitespace_trailing_style
+        .fg
+        .map(|c| c.to_rgb_u32(default_fg))
+        .unwrap_or(default_fg);
+    let mut cells: Vec<Cell> = Vec::with_capacity(line.col_count as usize);
+    let mut byte_off = 0usize;
+    for run in line.runs.iter() {
+        let run_len = run.len as usize;
+        let slice = &line.text[byte_off..byte_off + run_len];
+        byte_off += run_len;
+        let is_inlay = run.flags & cell_flags::INLAY != 0;
+        let is_ws_marker = run.flags & cell_flags::WS_MARKER != 0;
+        let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
+        let (style_fg, mods) = if matches!(run.style, lattice_syntax::Style::Default) {
+            (default_fg, default_flags)
+        } else {
+            resolve_style(theme, run.style)
+        };
+        let (fg, flags) = if is_inlay {
+            (inlay_fg, cell_flags::INLAY)
+        } else if is_ws_marker {
+            let f = if is_trailing { trailing_fg } else { style_fg };
+            (f, mods | cell_flags::WS_MARKER)
+        } else {
+            (style_fg, mods)
+        };
+        for ch in slice.chars() {
+            cells.push(Cell::new(ch as u32, fg, 0, flags));
+        }
+    }
+    CellRow::new(cells, line.source_line, line.col_map.to_vec())
+}
+
+/// B2.2 (2026-06-04): project a whole [`crate::display_matrix::DisplayMatrix`]
+/// to a [`CellMatrix`], preserving chunk structure, per-chunk versions,
+/// mode (whole-doc vs chunked), and `wrap_width`. The bridge feeding the
+/// cell renderers until their cutover (B2.4 TUI, B3 GPU); deleted in B4.
+fn display_matrix_to_cell_matrix(
+    dm: &crate::display_matrix::DisplayMatrix,
+    theme: &crate::ui::theme::Theme,
+) -> CellMatrix {
+    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let inlay_fg = inlay_hint_fg();
+    if dm.chunks.is_empty() {
+        return CellMatrix::empty();
+    }
+    let chunks: Vec<Arc<CellChunk>> = dm
+        .chunks
+        .iter()
+        .map(|dc| {
+            let rows: Vec<CellRow> = dc
+                .rows
+                .iter()
+                .map(|dl| display_line_to_cell_row(dl, theme, default_fg, default_flags, inlay_fg))
+                .collect();
+            Arc::new(CellChunk::new(dc.start_source_line, rows, dc.version))
+        })
+        .collect();
+    let mut cm = if dm.is_whole_doc() {
+        // Whole-doc mode is exactly one chunk (guaranteed non-empty here).
+        CellMatrix::whole_doc(chunks.into_iter().next().unwrap(), dm.source_line_count)
+    } else {
+        CellMatrix::chunked(chunks, dm.chunk_size, dm.source_line_count, dm.version)
+    };
+    cm.wrap_width = dm.wrap_width;
+    cm
 }
 
 /// Bucket a flat inlay-hints list by line into per-line slices of
@@ -1557,6 +1978,46 @@ mod tests {
     /// touching the matrix — every pre-d.1.b test expects the
     /// matrix to receive a fresh build.
     #[allow(clippy::too_many_arguments)]
+    /// B2.2 test shim: the worker now persists its canonical state in
+    /// `display_matrix`, so multi-publish tests that thread a shared
+    /// `matrix_cell` need the matching display cell to persist too.
+    /// Pair a per-thread display cell with each `matrix_cell` keyed by
+    /// its Arc pointer, so the same `matrix_cell` always yields the
+    /// same display cell (mirroring how `matrix_cell` itself persists),
+    /// while a fresh `Arc::default()` gets a fresh display cell. The
+    /// `Weak` guard pins the keyed address (a live `Weak` keeps the
+    /// allocation reserved) so a freed+reused address can never leak a
+    /// prior test's display cell into a later one.
+    fn display_cell_for(
+        matrix_cell: &Arc<ArcSwap<CellMatrix>>,
+    ) -> Arc<ArcSwap<crate::display_matrix::DisplayMatrix>> {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::sync::Weak;
+        type DisplayCell = Arc<ArcSwap<crate::display_matrix::DisplayMatrix>>;
+        thread_local! {
+            static MAP: RefCell<HashMap<usize, (Weak<ArcSwap<CellMatrix>>, DisplayCell)>> =
+                RefCell::new(HashMap::new());
+        }
+        let key = Arc::as_ptr(matrix_cell) as usize;
+        MAP.with(|m| {
+            let mut map = m.borrow_mut();
+            if let Some((weak, disp)) = map.get(&key) {
+                if weak
+                    .upgrade()
+                    .is_some_and(|a| Arc::ptr_eq(&a, matrix_cell))
+                {
+                    return disp.clone();
+                }
+            }
+            let disp: DisplayCell = Arc::new(ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            ));
+            map.insert(key, (Arc::downgrade(matrix_cell), disp.clone()));
+            disp
+        })
+    }
+
     fn rs_with_everything(
         snapshot: Option<Arc<DocumentSnapshot>>,
         version: MatrixVersion,
@@ -1572,13 +2033,14 @@ mod tests {
         let inlay_hints_arc: Arc<[crate::render_state::InlayHintRow]> =
             Arc::from(inlay_hints.into_boxed_slice());
         let folds_arc: Arc<[lattice_core::Fold]> = Arc::from(folds.into_boxed_slice());
+        // Canonical display cell persisted alongside the shared
+        // `matrix_cell` (see `display_cell_for`).
+        let display_cell = display_cell_for(&matrix_cell);
         let pane_entry = crate::render_state::PaneCellsInputs {
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
-            display_matrix: Arc::new(ArcSwap::from_pointee(
-                crate::display_matrix::DisplayMatrix::empty(),
-            )),
+            display_matrix: display_cell.clone(),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
             )),
@@ -1599,6 +2061,11 @@ mod tests {
             m.insert(pane_entry.pane_id, pane_entry.matrix.clone());
             Arc::new(m)
         };
+        let display_pane_matrices = {
+            let mut m = std::collections::HashMap::new();
+            m.insert(pane_entry.pane_id, pane_entry.display_matrix.clone());
+            Arc::new(m)
+        };
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
@@ -1613,10 +2080,8 @@ mod tests {
             whitespace: WhitespaceConfig::default(),
             panes: Arc::from(vec![pane_entry].into_boxed_slice()),
             pane_matrices,
-            display_matrix: Arc::new(ArcSwap::from_pointee(
-                crate::display_matrix::DisplayMatrix::empty(),
-            )),
-            display_pane_matrices: Arc::new(std::collections::HashMap::new()),
+            display_matrix: display_cell,
+            display_pane_matrices,
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -2466,6 +2931,95 @@ mod tests {
         );
     }
 
+    /// B2.2: the full `DisplayMatrix → CellMatrix` projection must equal
+    /// the cell builder byte-for-byte across the hard cases the
+    /// projection has to reconstruct from runs alone — whitespace ON
+    /// (leading / interior / trailing markers), tab expansion, AND an
+    /// inlay splice. The trailing case is the load-bearing one: the
+    /// default theme's trailing-whitespace fg is red, so a trailing
+    /// marker's cell fg differs from a non-trailing one — the projection
+    /// recovers that only via the `WS_TRAILING` run flag. A regression in
+    /// either builder (or a missing `WS_TRAILING`) makes the projected
+    /// cells diverge from `build_matrix` and fails here.
+    #[test]
+    fn projection_parity_ws_on_trailing_tab_inlay() {
+        let theme = crate::ui::theme::Theme::default();
+        // The default theme paints trailing whitespace red — assert that
+        // so the parity check below genuinely exercises `WS_TRAILING`.
+        let (default_fg, _) = resolve_style(&theme, lattice_syntax::Style::Default);
+        let trailing_fg = theme
+            .whitespace_trailing_style
+            .fg
+            .map(|c| c.to_rgb_u32(default_fg))
+            .unwrap_or(default_fg);
+        assert_ne!(
+            trailing_fg, default_fg,
+            "test premise: default theme trailing fg must differ from default fg"
+        );
+
+        let ws = WhitespaceConfig {
+            show: true,
+            tab: Some('→'),
+            trailing: Some('·'),
+            leading: Some('▏'),
+            space: Some('•'),
+            eol: None,
+            tabstop: 4,
+        };
+        // line 0: leading tab, "ab", two trailing spaces.
+        // line 1: all-blank (every cell trailing).
+        // line 2: "xy" + an inlay spliced after byte 1.
+        let snap = snap_of_versioned("\tab  \n   \nxy", 1);
+        let inlays = vec![inlay(2, 1, ": T")];
+
+        let cm = build_matrix(
+            snap.as_ref(),
+            None,
+            &theme,
+            &inlays,
+            &[],
+            true,
+            5, // whole-doc
+            0,
+            v(1),
+            &ws,
+        );
+        let dm = build_display_matrix(
+            snap.as_ref(),
+            None,
+            &theme,
+            &inlays,
+            &[],
+            true,
+            5,
+            0,
+            v(1),
+            &ws,
+        );
+        let projected = display_matrix_to_cell_matrix(&dm, &theme);
+
+        assert_eq!(projected.source_line_count, cm.source_line_count);
+        assert_eq!(projected.is_whole_doc(), cm.is_whole_doc());
+        let mut saw_trailing = false;
+        for line in 0..cm.source_line_count {
+            let a = cm.row_at_source_line(line).expect("cell row");
+            let b = projected.row_at_source_line(line).expect("projected row");
+            assert_eq!(
+                a.cells, b.cells,
+                "projected cells for line {line} must equal build_matrix"
+            );
+            assert_eq!(
+                a.inlay_offsets, b.inlay_offsets,
+                "projected inlay_offsets for line {line} must equal build_matrix"
+            );
+            saw_trailing |= b.cells.iter().any(|c| c.fg == trailing_fg);
+        }
+        assert!(
+            saw_trailing,
+            "scenario must produce trailing-fg cells (WS_TRAILING projection path)"
+        );
+    }
+
     // ---- S2.3.c — fold elision ----
 
     fn closed_fold(start: u32, end: u32) -> lattice_core::Fold {
@@ -2710,11 +3264,13 @@ mod tests {
     }
 
     /// 2026-06-04: whole-doc incremental rebuild must REUSE the prior
-    /// chunk's rows for unchanged lines (same `cells` Arc), not rebuild
-    /// them — that reuse is what keeps their syntax colours through the
-    /// post-edit window when `per_line_spans` lags (the markdown
-    /// whole-viewport stutter). Asserts Arc identity of an unchanged
-    /// prefix row and a shifted suffix row across the edit.
+    /// chunk's `DisplayLine`s for unchanged lines (same `text` Arc),
+    /// not rebuild them — that reuse is what keeps their syntax colours
+    /// through the post-edit window when `per_line_spans` lags (the
+    /// markdown whole-viewport stutter). Asserts Arc identity of an
+    /// unchanged prefix row and a shifted suffix row across the edit.
+    /// B2.2: the reuse guarantee moved from the cell grid (now
+    /// re-projected each rebuild) to the canonical `DisplayMatrix`.
     #[test]
     fn whole_doc_incremental_reuses_unchanged_rows() {
         let theme = crate::ui::theme::Theme::default();
@@ -2739,9 +3295,16 @@ mod tests {
             5, // whole-doc
         );
         assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
-        let m1 = matrix_cell.load_full();
-        let aa_pre = Arc::clone(&m1.row_at_source_line(0).unwrap().cells);
-        let bb_pre = Arc::clone(&m1.row_at_source_line(1).unwrap().cells);
+        // B2.2: the row-reuse guarantee lives on the canonical
+        // `DisplayMatrix` now (the cell grid is re-projected each
+        // rebuild, so cell-row Arcs intentionally differ). Assert the
+        // unchanged `DisplayLine`s reuse their `text` Arc across the
+        // edit — that reuse is what keeps their colours through the
+        // post-edit window.
+        let dm_cell = display_cell_for(&matrix_cell);
+        let d1 = dm_cell.load_full();
+        let aa_pre = Arc::clone(&d1.row_at_source_line(0).unwrap().text);
+        let bb_pre = Arc::clone(&d1.row_at_source_line(1).unwrap().text);
 
         // Insert a line at line 1 → "aa\nNEW\nbb\ncc".
         let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
@@ -2764,14 +3327,14 @@ mod tests {
             5,
         );
         assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
-        let m2 = matrix_cell.load_full();
+        let d2 = dm_cell.load_full();
         assert!(
-            Arc::ptr_eq(&aa_pre, &m2.row_at_source_line(0).unwrap().cells),
-            "unchanged prefix row (line 0) must reuse the prior cells Arc — keeps its colours"
+            Arc::ptr_eq(&aa_pre, &d2.row_at_source_line(0).unwrap().text),
+            "unchanged prefix row (line 0) must reuse the prior DisplayLine text Arc — keeps its colours"
         );
         assert!(
-            Arc::ptr_eq(&bb_pre, &m2.row_at_source_line(2).unwrap().cells),
-            "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior cells Arc — keeps its colours"
+            Arc::ptr_eq(&bb_pre, &d2.row_at_source_line(2).unwrap().text),
+            "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior DisplayLine text Arc — keeps its colours"
         );
     }
 
@@ -2888,10 +3451,17 @@ mod tests {
         let m1 = matrix_cell.load();
         assert_eq!(m1.chunk_size, 16);
         assert_eq!(m1.chunks.len(), 2);
-        // Hold an `Arc` clone of chunk 1 so we can compare
-        // identity post-edit. Crate forbids `unsafe`; cloning the
-        // Arc is the clean way to keep the value alive.
+        // Hold an `Arc` clone of cell chunk 1 for the post-edit
+        // identity check (the projected cell chunk is rebuilt, so it
+        // must be a NEW Arc). B2.2: the payload-sharing guarantee now
+        // lives on the canonical `DisplayMatrix`, so also capture its
+        // suffix chunk's `DisplayLine` `text` Arcs to assert reuse.
         let chunk1_pre: Arc<CellChunk> = Arc::clone(&m1.chunks[1]);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let d1 = dm_cell.load_full();
+        assert_eq!(d1.chunks.len(), 2, "display matrix mirrors cell chunking");
+        let disp_chunk1_pre: Vec<Arc<str>> =
+            d1.chunks[1].rows.iter().map(|r| Arc::clone(&r.text)).collect();
 
         // Insert one line at line 2.
         let text2: String = {
@@ -2947,21 +3517,30 @@ mod tests {
             "suffix chunk rows must be the same as before but shifted by +1"
         );
 
-        // The shifted chunk is a new Arc<CellChunk> (because we
-        // rebuilt row source_lines) — but the rows' inner cell
-        // arcs are shared.
+        // The projected cell chunk is always a fresh Arc (cells are
+        // re-projected each rebuild), so it differs from the pre-edit
+        // one — the payload-sharing guarantee lives on the display
+        // matrix now, asserted below.
         assert!(
             !Arc::ptr_eq(&chunk1_pre, &m2.chunks[2]),
-            "post-shift chunk must be a new Arc<CellChunk>"
+            "post-shift projected cell chunk is a new Arc<CellChunk>"
         );
 
-        // Cell payload sharing across the shift: cells Arcs in
-        // surviving rows MUST be shared by ptr_eq with the
-        // pre-edit equivalents.
-        for (pre_row, post_row) in chunk1_pre.rows.iter().zip(m2.chunks[2].rows.iter()) {
+        // B2.2: DisplayLine payload sharing across the shift — the
+        // canonical guarantee. The suffix chunk's surviving
+        // `DisplayLine`s reuse their `text` Arc (shifted source_line,
+        // shared payload), which is what keeps their colours stable.
+        let d2 = dm_cell.load_full();
+        let disp_suffix = d2
+            .chunks
+            .iter()
+            .find(|c| c.start_source_line == 17)
+            .expect("display matrix has the shifted suffix chunk at start 17");
+        assert_eq!(disp_suffix.rows.len(), disp_chunk1_pre.len());
+        for (pre_text, post_row) in disp_chunk1_pre.iter().zip(disp_suffix.rows.iter()) {
             assert!(
-                Arc::ptr_eq(&pre_row.cells, &post_row.cells),
-                "row's cell Arc must be shared across shift"
+                Arc::ptr_eq(pre_text, &post_row.text),
+                "DisplayLine text Arc must be shared across the suffix shift"
             );
         }
     }

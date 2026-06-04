@@ -39,6 +39,15 @@ pub mod flags {
     /// Text-attribute modifier — reverse video (swap fg/bg).
     /// From `host::Theme::syntax_style(style).modifiers.reverse`.
     pub const REVERSE: u16 = 1 << 6;
+    /// B2.2 (2026-06-04): trailing-whitespace marker. Set in
+    /// addition to [`WS_MARKER`] when the marker glyph stands in for
+    /// whitespace *after* the last non-blank char on the line (or on
+    /// an all-blank line). Lets a consumer resolve the
+    /// trailing-whitespace foreground (`theme.whitespace_trailing_style`)
+    /// from the run/cell alone — the `DisplayLine` model carries no
+    /// byte positions, so without this bit a `DisplayLine → CellMatrix`
+    /// projection could not reproduce the cell path's trailing-red.
+    pub const WS_TRAILING: u16 = 1 << 7;
 }
 
 /// One renderable cell. Exactly 16 bytes: codepoint (4) + fg (4) +
@@ -264,6 +273,7 @@ mod tests {
             flags::UNDERLINE,
             flags::DIM,
             flags::REVERSE,
+            flags::WS_TRAILING,
         ];
         let mut seen: u16 = 0;
         for f in all {

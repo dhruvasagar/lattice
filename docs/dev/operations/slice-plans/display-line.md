@@ -82,18 +82,35 @@ Mirror `cells_matrix_cell`: `Editor` per-buffer registry + `display_matrix_for`
 sites the `scroll` field did in H.3a (render_state default, dispatch publisher,
 virtual_rows_worker, three cells_worker test helpers, the bench) — update all.
 
-### B2.2 — worker produces `DisplayMatrix`  🗒
+### B2.2 — worker produces `DisplayMatrix`  ✅ (2026-06-04)
 
-`recompute_pane` produces the `DisplayMatrix` via `build_display_rows` reusing
-the existing windowing (`window_bounds`) + incremental (`rebuild_zone_rows`) +
-cache-hit machinery. **Single source of truth:** also emit a `DisplayMatrix →
-CellMatrix` projection (`display_line_to_cell_row`, resolving style+flags→fg via
-the theme, incl. the `WS_MARKER`/trailing-fg case) into the existing
-`cells_matrix` cell so the not-yet-cut-over renderers (GPU until B3) keep
-working off the derived cells. The projection is the temporary bridge; B4
-deletes it with the cell path. (Avoids duplicating the recompute machinery for
-two payloads — the cell grid becomes a projection of the canonical
-`DisplayMatrix`.)
+`recompute_pane` now produces the `DisplayMatrix` canonically via
+`build_display_matrix` + `try_incremental_display_build` (mirrors of
+`build_matrix` / `try_incremental_build`, reusing `pick_chunk_size` /
+`window_bounds` / the prefix-reuse + suffix-shift partition; rows from
+`build_display_rows`). **Single source of truth:** the cell grid is now a
+projection (`display_matrix_to_cell_matrix` / `display_line_to_cell_row`) of the
+canonical `DisplayMatrix`, written into the existing `cells_matrix` cell so the
+not-yet-cut-over renderers (TUI until B2.4, GPU until B3) keep painting off the
+derived cells. The four cell builders (`build_matrix`, `try_incremental_build`,
+`build_chunk_rows`, `build_row_cells`) are `#[allow(dead_code)]` parity oracles
+until B4 deletes them with the cell path.
+
+Landed with:
+- **`WS_TRAILING` cell flag** (`lattice-cells`): the `DisplayLine` model carries
+  no byte positions, so a `DisplayRun` self-describes trailing-whitespace via
+  this provenance bit; the projection (and the future renderers) resolve it →
+  `theme.whitespace_trailing_style` fg, reproducing the cell path's trailing-red.
+  The bit is stripped from the projected cell's flags (the cell path bakes
+  trailing-fg into `fg` instead) so the projection stays byte-identical.
+- **Per-keystroke reuse moved to `DisplayLine`**: unchanged `DisplayLine`s
+  Arc-reuse their `text`/`runs`; the projected cell grid is rebuilt each tick
+  (O(window), off-thread) — fine until B4 deletes it. The two `*_reuses_*` tests
+  now assert `DisplayLine` Arc reuse on the canonical matrix.
+- **Tests**: `projection_parity_ws_on_trailing_tab_inlay` (whole-matrix
+  projection == `build_matrix` across ws-on / leading / interior / trailing /
+  tab-expansion / inlay-splice). All 53 cells_worker + 686 host-lib tests green;
+  TUI + GPUI libs compile.
 
 ### B2.3 — synchronous always-current rebuild + edit-path bench  🗒
 

@@ -80,6 +80,10 @@ pub mod pane_group;
 // `Editor::cells_matrix_cell`. See
 // `docs/dev/architecture/cell-grid-renderer.md`.
 pub mod cells_worker;
+// B1 (2026-06-04): per-line display cache — the substrate that
+// retires the per-character `CellMatrix`. See
+// docs/dev/architecture/display-line.md.
+pub mod display_matrix;
 // D.0a.1 (2026-05-29): virtual-rows worker. Sibling of
 // `cells_worker`; owns the `VirtualRowMatrix` rebuild path,
 // polls registered `VirtualRowProvider`s on wake, publishes

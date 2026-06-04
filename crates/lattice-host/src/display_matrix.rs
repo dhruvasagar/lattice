@@ -98,6 +98,27 @@ impl DisplayLine {
             fold: self.fold,
         }
     }
+
+    /// Map a source byte (already char-resolved) → combined display
+    /// column for this line. Returns the column *after* any inlay /
+    /// tab-expansion columns inserted at or before `byte`. The
+    /// `DisplayLine` analogue of `CellRow::byte_to_combined_col`; both
+    /// walk the same `(orig_byte, extra_cols)` breakpoint list
+    /// (`col_map` here, `inlay_offsets` there), so overlay / cursor
+    /// positioning is identical across the cell and display substrates.
+    /// `col_map` is sorted ascending by `orig_byte` (build invariant),
+    /// so the walk can stop at the first breakpoint past `byte`.
+    pub fn byte_to_combined_col(&self, byte: u32) -> u32 {
+        let mut col = byte;
+        for (orig_byte, width) in self.col_map.iter() {
+            if *orig_byte <= byte {
+                col = col.saturating_add(*width);
+            } else {
+                break;
+            }
+        }
+        col
+    }
 }
 
 /// Contiguous range of display rows covering a slice of the buffer.
@@ -402,6 +423,23 @@ mod tests {
         assert_eq!(shifted.text.as_ref(), "hello");
         assert!(Arc::ptr_eq(&l.text, &shifted.text));
         assert!(Arc::ptr_eq(&l.runs, &shifted.runs));
+    }
+
+    #[test]
+    fn byte_to_combined_col_shifts_by_colmap_widths_at_or_before_byte() {
+        // Two breakpoints: an inlay of width 3 at byte 2, a tab
+        // expansion of +3 cols at byte 5. Mirrors `CellRow`'s test.
+        let mut l = line(0, "ignored");
+        l.col_map = Arc::from(vec![(2u32, 3u32), (5u32, 3u32)].into_boxed_slice());
+        // No breakpoint at/before byte 1 → col == byte.
+        assert_eq!(l.byte_to_combined_col(1), 1);
+        // Breakpoint at byte 2 (orig_byte <= byte) shifts by +3.
+        assert_eq!(l.byte_to_combined_col(2), 5);
+        // Both breakpoints (2 and 5) apply at byte 6 → +6.
+        assert_eq!(l.byte_to_combined_col(6), 12);
+        // Empty col_map → identity.
+        let plain = line(0, "abc");
+        assert_eq!(plain.byte_to_combined_col(3), 3);
     }
 
     #[test]

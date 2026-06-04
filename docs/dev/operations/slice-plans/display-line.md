@@ -147,12 +147,43 @@ Landed with:
   `sync_rebuild_skips_non_edit_publish`, `worker_projects_lagging_cells_after_sync_rebuild`.
   56 cells_worker + 689 host-lib tests green; TUI + GPUI libs compile.
 
-### B2.4 — TUI cutover  🗒
+### B2.4 — TUI cutover  🚧
 
-TUI body consumes `DisplayMatrix` (`text` + `runs` → ratatui cells, resolve
-tag→colour); move `byte_to_combined_col` / `segment_count` onto `DisplayLine`;
-**delete the TUI `cells_stale` guard** + the cell→span path. The flicker dies on
-TUI here. (GPU still on the projected cells until B3.)
+Carved into B2.4a (cutover — the flicker fix) + B2.4b (delete the now-dead
+cell→span path). B2.4a lands the user-visible win green; B2.4b is pure dead-code
+removal with zero behaviour change.
+
+#### B2.4a — TUI consumes `DisplayMatrix`  ✅ (2026-06-04)
+
+The TUI document body reads `rs.cells.display_matrix` directly and resolves each
+`DisplayLine`'s style-tagged `runs` → ratatui via the host theme at paint
+(`cells_render::display_line_to_source_spans`, the `DisplayLine` analogue of
+`cell_row_to_source_spans`). Resolution is byte-identical to the worker's
+`display_line_to_cell_row` projection the TUI consumed pre-B2.4 (style→fg via
+`theme.syntax_style`, `WS_TRAILING`→`whitespace_trailing_style` fg, fg `0`→pane
+default, runs grouped by resolved style), so the cutover is visually invisible.
+
+**The flicker dies here.** The old per-keystroke whole-viewport stale-guard fired
+every keystroke because the async-projected cell grid lagged the snapshot by a
+frame. The guard now reads the canonical `DisplayMatrix`, which B2.3 makes
+text-current synchronously in the publish tail — so on a single-keystroke edit
+`version.text == snap.text_version` and the guard does NOT fire. It remains (now
+rarely firing) only for publishes the sync path skips (multi-edit batch, doc
+switch), where plain current text beats stale styled text for a frame.
+
+Also: the cursor-row wrap walk reads `DisplayMatrix::segment_count` /
+`DisplayLine.col_count` (was `CellMatrix`/`CellRow`); added
+`DisplayLine::byte_to_combined_col` (the `CellRow` analogue, forward-prep for the
+B3 GPU cutover). Tests: 5 `display_*` resolver tests in `cells_render`; 46
+cells_render + 1475 TUI + 7 display_matrix host tests green; GPU lib compiles.
+
+#### B2.4b — delete the TUI cell→span path  🗒
+
+Delete `cell_row_to_source_spans` / `cell_row_to_combined_spans` / `cells_to_spans`
+/ `cell_to_style` (now unused — the TUI cut over in B2.4a; the GPU has its own
+cell reader until B3) and re-house the S3.c overlay-pipeline tests onto direct /
+display-derived `Vec<Span>` bodies (they test renderer-generic overlay functions,
+not cell provenance). `rgb_u32_to_color` stays (used by the new resolver).
 
 ## B3 — GPU cutover  🗒
 

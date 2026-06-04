@@ -58,6 +58,128 @@ pub fn cell_row_to_source_spans(row: &CellRow) -> Vec<Span<'static>> {
     cells_to_spans(row.cells.iter().filter(|c| !c.is_inlay()))
 }
 
+/// B2.4 (2026-06-04): the `DisplayLine` analogue of
+/// [`cell_row_to_source_spans`] — the TUI's source of document-body
+/// spans once it consumes the canonical `DisplayMatrix` directly
+/// instead of the projected cell grid. Walks `line.runs`, drops
+/// `INLAY` runs (so the spans cover source bytes one-to-one with the
+/// rope line — overlays positioned by source byte work unchanged), and
+/// resolves each run's syntax `style` + flags → a ratatui [`Style`] via
+/// the host theme.
+///
+/// **Resolution parity.** This reproduces the worker's
+/// `display_line_to_cell_row` projection byte-for-byte so the cutover is
+/// visually invisible: `style → fg` via `theme.syntax_style(..).fg`
+/// (→ `to_rgb_u32`); a `WS_TRAILING` marker run takes
+/// `theme.whitespace_trailing_style` fg; modifiers come from the host
+/// theme's per-style `Modifiers`. fg `0` maps to `None` (pane default),
+/// exactly as the cell path's `fg == 0`. Runs are grouped by the
+/// *resolved* ratatui style, so two runs with distinct syntax tags but
+/// identical resolved colour merge — matching the cell path, which
+/// grouped on resolved `(fg, bg, mods)`.
+///
+/// Returns an empty `Vec` for an empty line or one that is entirely
+/// inlay runs.
+pub fn display_line_to_source_spans(
+    line: &lattice_host::display_matrix::DisplayLine,
+    theme: &lattice_host::ui::theme::Theme,
+) -> Vec<Span<'static>> {
+    use lattice_cells::cell_flags;
+    // Resolve the default + trailing fg once (mirrors the worker's
+    // `display_line_to_cell_row`). `default_fg` is the trailing fg's
+    // fallback, exactly as in the projection.
+    let default_fg = theme
+        .syntax_style(lattice_syntax::Style::Default)
+        .fg
+        .map(|c| c.to_rgb_u32(0))
+        .unwrap_or(0);
+    let trailing_fg = theme
+        .whitespace_trailing_style
+        .fg
+        .map(|c| c.to_rgb_u32(default_fg))
+        .unwrap_or(default_fg);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_style: Option<Style> = None;
+    let mut byte_off = 0usize;
+    for run in line.runs.iter() {
+        let end = byte_off + run.len as usize;
+        let slice = &line.text[byte_off..end];
+        byte_off = end;
+        // Source spans exclude inlay runs.
+        if run.flags & cell_flags::INLAY != 0 {
+            continue;
+        }
+        let style = display_run_to_style(run, theme, trailing_fg);
+        if current_style == Some(style) {
+            current_text.push_str(slice);
+        } else {
+            if !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style.unwrap_or_default(),
+                ));
+            }
+            current_text.push_str(slice);
+            current_style = Some(style);
+        }
+    }
+    if !current_text.is_empty() {
+        spans.push(Span::styled(current_text, current_style.unwrap_or_default()));
+    }
+    spans
+}
+
+/// Resolve one `DisplayRun` (non-inlay) to a ratatui [`Style`] via the
+/// host theme. Mirrors `display_line_to_cell_row`'s per-run resolution:
+/// a `WS_TRAILING` marker run takes `trailing_fg`; otherwise the syntax
+/// style's fg. fg `0` ⇒ leave unset (pane default). Modifier bits come
+/// from the host theme's per-style `Modifiers`.
+fn display_run_to_style(
+    run: &lattice_host::display_matrix::DisplayRun,
+    theme: &lattice_host::ui::theme::Theme,
+    trailing_fg: u32,
+) -> Style {
+    use lattice_cells::cell_flags;
+    let is_ws_marker = run.flags & cell_flags::WS_MARKER != 0;
+    let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
+    let host = theme.syntax_style(run.style);
+    // For `Style::Default` this is the theme's default fg — the same
+    // value `default_fg` resolves to — so no special-case is needed.
+    let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
+    let fg = if is_ws_marker && is_trailing {
+        trailing_fg
+    } else {
+        style_fg
+    };
+    let mut style = Style::default();
+    if fg != 0 {
+        style = style.fg(rgb_u32_to_color(fg));
+    }
+    let m = &host.modifiers;
+    let mut mods = Modifier::empty();
+    if m.bold {
+        mods |= Modifier::BOLD;
+    }
+    if m.italic {
+        mods |= Modifier::ITALIC;
+    }
+    if m.underline {
+        mods |= Modifier::UNDERLINED;
+    }
+    if m.dim {
+        mods |= Modifier::DIM;
+    }
+    if m.reverse {
+        mods |= Modifier::REVERSED;
+    }
+    if !mods.is_empty() {
+        style = style.add_modifier(mods);
+    }
+    style
+}
+
 /// Walk a stream of `&Cell` references, group consecutive cells
 /// with the same `(fg, bg, modifier_bits)` into one span, and
 /// emit. Internal helper for both public converters above.
@@ -384,6 +506,142 @@ mod tests {
         assert_eq!(spans[2].content.as_ref(), "main");
         assert!(!spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[3].content.as_ref(), "(");
+    }
+
+    // ---- B2.4 — DisplayMatrix → source spans ----
+    //
+    // `display_line_to_source_spans` is the TUI's cutover from the
+    // projected cell grid to the canonical `DisplayMatrix`. These pin
+    // its resolution parity (style→theme fg, inlay drop, trailing fg,
+    // merge-across-dropped-inlay) so it stays byte-identical to the
+    // worker's `display_line_to_cell_row` projection the cell path used.
+
+    use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+    use lattice_host::ui::theme::Theme as HostTheme;
+
+    /// Build a `DisplayLine` from `(text, style, flags)` run specs.
+    fn dline(specs: &[(&str, lattice_syntax::Style, u16)]) -> DisplayLine {
+        let mut text = String::new();
+        let mut runs = Vec::new();
+        for (s, style, flags) in specs {
+            runs.push(DisplayRun {
+                len: s.len() as u32,
+                style: *style,
+                flags: *flags,
+            });
+            text.push_str(s);
+        }
+        let col_count = text.chars().count() as u32;
+        DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text.as_str()),
+            runs: std::sync::Arc::from(runs.into_boxed_slice()),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count,
+            fold: None,
+        }
+    }
+
+    /// Expected ratatui colour for a `0xRRGGBB` fg: `None` when `0`
+    /// (pane default), else `Color::Rgb`. Mirrors the resolver.
+    fn expect_color(rgb: u32) -> Option<Color> {
+        if rgb == 0 {
+            None
+        } else {
+            Some(Color::Rgb(
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            ))
+        }
+    }
+
+    /// A keyword run resolves to the host theme's keyword fg (+ bold if
+    /// the theme sets it), exactly as the projection did.
+    #[test]
+    fn display_keyword_run_takes_theme_keyword_fg() {
+        let theme = HostTheme::default();
+        let kw_fg = theme
+            .syntax_style(lattice_syntax::Style::Keyword)
+            .fg
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let line = dline(&[
+            ("fn", lattice_syntax::Style::Keyword, 0),
+            (" x", lattice_syntax::Style::Default, 0),
+        ]);
+        let spans = display_line_to_source_spans(&line, &theme);
+        assert_eq!(spans[0].content.as_ref(), "fn");
+        assert_eq!(spans[0].style.fg, expect_color(kw_fg));
+    }
+
+    /// Inlay runs are dropped from the source-span output (overlays
+    /// position by source byte, so inlay text must not appear here).
+    #[test]
+    fn display_source_spans_drop_inlay_runs() {
+        let theme = HostTheme::default();
+        let line = dline(&[
+            ("hi", lattice_syntax::Style::Default, 0),
+            (": i32", lattice_syntax::Style::Default, cell_flags::INLAY),
+        ]);
+        let text: String = display_line_to_source_spans(&line, &theme)
+            .iter()
+            .map(|s| s.content.as_ref().to_string())
+            .collect();
+        assert_eq!(text, "hi");
+    }
+
+    /// A `WS_TRAILING` marker run takes the theme's trailing-whitespace
+    /// fg (the cell path baked this into the cell `fg`).
+    #[test]
+    fn display_trailing_ws_run_takes_trailing_fg() {
+        let theme = HostTheme::default();
+        let default_fg = theme
+            .syntax_style(lattice_syntax::Style::Default)
+            .fg
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let trailing_fg = theme
+            .whitespace_trailing_style
+            .fg
+            .map(|c| c.to_rgb_u32(default_fg))
+            .unwrap_or(default_fg);
+        let line = dline(&[
+            ("x", lattice_syntax::Style::Default, 0),
+            (
+                "·",
+                lattice_syntax::Style::Default,
+                cell_flags::WS_MARKER | cell_flags::WS_TRAILING,
+            ),
+        ]);
+        let spans = display_line_to_source_spans(&line, &theme);
+        let last = spans.last().unwrap();
+        assert_eq!(last.content.as_ref(), "·");
+        assert_eq!(last.style.fg, expect_color(trailing_fg));
+    }
+
+    /// Two same-style source runs separated by a dropped inlay merge
+    /// into one span — matches the cell path, which grouped on the
+    /// resolved style across the inlay-filtered cell stream.
+    #[test]
+    fn display_same_style_runs_merge_across_dropped_inlay() {
+        let theme = HostTheme::default();
+        let line = dline(&[
+            ("ab", lattice_syntax::Style::Default, 0),
+            ("INLAY", lattice_syntax::Style::Default, cell_flags::INLAY),
+            ("cd", lattice_syntax::Style::Default, 0),
+        ]);
+        let spans = display_line_to_source_spans(&line, &theme);
+        assert_eq!(spans.len(), 1, "same-style runs merge across a dropped inlay");
+        assert_eq!(spans[0].content.as_ref(), "abcd");
+    }
+
+    /// A line of only inlay runs yields no source spans.
+    #[test]
+    fn display_all_inlay_line_yields_no_source_spans() {
+        let theme = HostTheme::default();
+        let line = dline(&[(": T", lattice_syntax::Style::Default, cell_flags::INLAY)]);
+        assert!(display_line_to_source_spans(&line, &theme).is_empty());
     }
 
     // ---- S3.c.1 — whitespace decoration on cell-derived bodies ----

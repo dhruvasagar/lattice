@@ -3828,48 +3828,39 @@ fn compose_visible_lines_inner(
             // `compose_visible_lines_inner` is cut over to the
             // cell-grid.
             let rs_load = view.app.render_state.load();
-            let matrix = rs_load.cells.matrix.load();
-            // 2026-06-02 (extended): three paths fall through to
-            // plain `line_text`:
-            //   1. matrix has no row at `line_idx` (boot frames,
-            //      doc-switch gap, line out-of-range for the
-            //      builder's current viewport),
-            //   2. matrix has a row but every cell is INLAY —
-            //      `cell_row_to_source_spans` filters those, so
-            //      the resulting Vec is empty even though
-            //      `line_text` has content.
-            //   3. **matrix is STALE relative to the snapshot** —
-            //      `matrix.version.text != snap.text_version`. The
-            //      cells worker is async; after `apply_edit`
-            //      publishes a new snapshot, the worker wakes via
-            //      `highlight_wake.notify_one()` and rebuilds the
-            //      matrix on a background task. Until it finishes,
-            //      the matrix has cells matching the PRE-edit
-            //      content. Reading from the stale matrix paints
-            //      the OLD body, which manifests as
-            //      "typing has no visible effect for a frame"
-            //      (sometimes multiple frames for the multibuffer's
-            //      compose-heavy rebuilds). User-reported
-            //      2026-06-02: "after adding one character in
-            //      insert mode … I suddenly see changes" later
-            //      was this stale-matrix window.
-            //
-            //      Comparing version.text against snap.text_version
-            //      detects the lag and forces the line_text path
-            //      until cells catch up. Costs one u64 compare per
-            //      row; negligible.
-            //
-            // Case (3) implies the user temporarily loses syntax
-            // styling for the affected frames — acceptable since
-            // (i) it lasts only as long as the cells worker takes
-            // to rebuild, and (ii) the alternative is showing
-            // PRE-edit content which is much worse.
-            let cells_stale = matrix.version.text != snap.text_version;
-            let spans = if cells_stale {
+            // B2.4 (2026-06-04): consume the canonical `DisplayMatrix`
+            // directly — its style-tagged runs resolve to ratatui via the
+            // host theme at paint (`display_line_to_source_spans`). Pre-B2.4
+            // the TUI read the projected cell grid here; the projection (and
+            // the whole cell path) is deleted in B4.
+            let matrix = rs_load.cells.display_matrix.load();
+            // Three paths fall through to plain `line_text`:
+            //   1. matrix has no row at `line_idx` (boot frames before the
+            //      first build, doc-switch gap, or off-window on a large
+            //      file — the windowed build covers only the viewport),
+            //   2. matrix has a row but it is entirely INLAY runs —
+            //      `display_line_to_source_spans` drops those, so the Vec is
+            //      empty even though `line_text` has content,
+            //   3. matrix text lags the snapshot
+            //      (`version.text != snap.text_version`). B2.3 rebuilds the
+            //      edited region's `DisplayMatrix` SYNCHRONOUSLY in the
+            //      publish tail, so a single-keystroke edit is already
+            //      text-current here and this guard does NOT fire — that is
+            //      what retired the per-keystroke whole-viewport flicker
+            //      (user-reported 2026-06-02: "after adding one character …
+            //      I suddenly see changes" was the old async-lag window).
+            //      It still fires for the rare publish the sync path skips
+            //      (multi-edit batch, doc switch); painting current
+            //      plain-text for a frame beats painting PRE-edit content,
+            //      and the async worker recolours within a frame or two.
+            let display_stale = matrix.version.text != snap.text_version;
+            let spans = if display_stale {
                 Vec::new()
             } else {
                 match matrix.row_at_source_line(line_idx) {
-                    Some(cell_row) => crate::cells_render::cell_row_to_source_spans(cell_row),
+                    Some(line) => {
+                        crate::cells_render::display_line_to_source_spans(line, &rs_load.cells.theme)
+                    }
                     None => Vec::new(),
                 }
             };
@@ -5466,17 +5457,17 @@ fn buffer_line_to_visible_row_with(
     if target < scroll {
         return None;
     }
-    // Cells matrix for per-line display width (tab-expanded cell
-    // count == what the renderer paints). Stale / missing rows fall
-    // back to the rope line's char count.
-    let cells_matrix = view.app.render_state.load().cells.matrix.load_full();
+    // B2.4: per-line display width from the canonical `DisplayMatrix`
+    // (tab-expanded col_count == what the renderer paints). Stale /
+    // missing rows fall back to the rope line's char count.
+    let display_matrix = view.app.render_state.load().cells.display_matrix.load_full();
     let segment_rows = |line: u32| -> u32 {
         if wrap_width == 0 {
             return 1;
         }
-        let width = cells_matrix
+        let width = display_matrix
             .row_at_source_line(line)
-            .map(|r| r.col_count())
+            .map(|r| r.col_count)
             .unwrap_or_else(|| snap.buffer.line(line).map(|s| s.chars().count() as u32).unwrap_or(0));
         lattice_cells::wrap_segments(width, wrap_width)
     };

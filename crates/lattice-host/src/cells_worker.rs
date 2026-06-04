@@ -1151,6 +1151,199 @@ fn build_row_cells(
     (cells, inlay_offsets)
 }
 
+/// B1 (2026-06-04): the canonical per-line builder for the
+/// [`crate::display_matrix::DisplayMatrix`] — the substrate that
+/// retires the per-character cell grid. Same display resolution as
+/// [`build_row_cells`] (inlay splice, tab expansion to display width,
+/// whitespace markers; fold elision is the caller's), but emits
+/// style-*tagged* runs over a display string instead of theme-resolved
+/// per-character cells. The renderer resolves each run's `style` +
+/// `flags` → colour at paint (GPU shapes the string once; no un-bake).
+///
+/// Returns `(display_text, runs, col_map, col_count)`. `build_row_cells`
+/// (the cell path) is deleted in B4; until then both exist and the
+/// `display_build_parity_*` tests guard their equivalence so they can't
+/// drift. `flags` carries only the non-style bits (`INLAY` / `WS_MARKER`)
+/// — modifiers (bold/italic/…) are derived from `style` by the renderer,
+/// exactly as the cell projection does.
+// B1: exercised by `display_build_parity_with_cells_ws_off` and by
+// `build_display_rows`; dead in a non-test build until the worker
+// produces a `DisplayMatrix` in B2.
+#[allow(dead_code)]
+fn build_display_row(
+    text: &str,
+    line_spans: &[lattice_syntax::StyledSpan],
+    line_inlays: &[(u32, &str)],
+    ws: &WhitespaceConfig,
+) -> (
+    Box<str>,
+    Vec<crate::display_matrix::DisplayRun>,
+    Vec<(u32, u32)>,
+    u32,
+) {
+    use crate::display_matrix::DisplayRun;
+    use lattice_cells::cell_flags;
+
+    /// Append `s` under one `(style, flags)`; merge with the last run.
+    fn push(
+        out: &mut String,
+        runs: &mut Vec<DisplayRun>,
+        s: &str,
+        style: lattice_syntax::Style,
+        flags: u16,
+    ) {
+        if s.is_empty() {
+            return;
+        }
+        let len = s.len() as u32;
+        out.push_str(s);
+        match runs.last_mut() {
+            Some(last) if last.style == style && last.flags == flags => last.len += len,
+            _ => runs.push(DisplayRun { len, style, flags }),
+        }
+    }
+
+    let inlay_total: usize = line_inlays.iter().map(|(_, t)| t.len()).sum();
+    let mut out = String::with_capacity(text.len() + inlay_total);
+    let mut runs: Vec<DisplayRun> = Vec::new();
+    let mut col_map: Vec<(u32, u32)> = Vec::with_capacity(line_inlays.len());
+    // Display columns emitted so far (== char count == cell count in the
+    // old grid). Drives tab fill the same way `cells.len()` did.
+    let mut col: u32 = 0;
+    let mut tmp = [0u8; 4];
+
+    // Leading/trailing prescan for whitespace markers (mirrors
+    // `build_row_cells`).
+    let mut leading_end_byte = text.len();
+    let mut trailing_start_byte = 0;
+    if ws.show {
+        for (b, c) in text.char_indices() {
+            if c != ' ' && c != '\t' {
+                if leading_end_byte == text.len() {
+                    leading_end_byte = b;
+                }
+                trailing_start_byte = b + c.len_utf8();
+            }
+        }
+        if leading_end_byte == text.len() {
+            trailing_start_byte = 0;
+        }
+    }
+
+    let mut inlay_idx = 0usize;
+    for (byte, ch) in text.char_indices() {
+        while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
+            let (orig_byte, t) = line_inlays[inlay_idx];
+            col_map.push((orig_byte, t.chars().count() as u32));
+            push(&mut out, &mut runs, t, lattice_syntax::Style::Default, cell_flags::INLAY);
+            col += t.chars().count() as u32;
+            inlay_idx += 1;
+        }
+        let style = style_at_byte(line_spans, byte);
+        let mut emitted = false;
+        if ch == '\t' {
+            let tabstop = ws.tabstop.max(1);
+            let fill = tabstop - (col % tabstop);
+            let marker = ws.show && ws.tab.is_some();
+            let flags = if marker { cell_flags::WS_MARKER } else { 0 };
+            let first = if marker { ws.tab.unwrap_or(' ') } else { ' ' };
+            push(&mut out, &mut runs, first.encode_utf8(&mut tmp), style, flags);
+            for _ in 1..fill {
+                push(&mut out, &mut runs, " ", style, flags);
+            }
+            if fill > 1 {
+                col_map.push((byte as u32 + 1, fill - 1));
+            }
+            col += fill;
+            emitted = true;
+        } else if ws.show && ch == ' ' {
+            let is_trailing = byte >= trailing_start_byte;
+            let is_leading = byte < leading_end_byte;
+            let glyph = if is_trailing {
+                ws.trailing
+            } else if is_leading {
+                ws.leading.or(ws.space)
+            } else {
+                ws.space
+            };
+            if let Some(g) = glyph {
+                push(
+                    &mut out,
+                    &mut runs,
+                    g.encode_utf8(&mut tmp),
+                    style,
+                    cell_flags::WS_MARKER,
+                );
+                col += 1;
+                emitted = true;
+            }
+        }
+        if !emitted {
+            push(&mut out, &mut runs, ch.encode_utf8(&mut tmp), style, 0);
+            col += 1;
+        }
+    }
+    while inlay_idx < line_inlays.len() {
+        let (orig_byte, t) = line_inlays[inlay_idx];
+        col_map.push((orig_byte, t.chars().count() as u32));
+        push(&mut out, &mut runs, t, lattice_syntax::Style::Default, cell_flags::INLAY);
+        col += t.chars().count() as u32;
+        inlay_idx += 1;
+    }
+
+    (out.into_boxed_str(), runs, col_map, col)
+}
+
+/// B1: per-chunk display-row build — the `DisplayLine` analogue of
+/// [`build_chunk_rows`]. Folded interior lines are skipped (same
+/// `line_inside_closed_fold` semantics); surviving rows keep their
+/// logical `source_line`. Highlight spans are looked up relative to
+/// `inputs.spans_base` exactly as the cell path does (H.1).
+// B1: wired into the worker's recompute (producing a `DisplayMatrix`)
+// in B2; dead until then.
+#[allow(dead_code)]
+fn build_display_rows(
+    inputs: &ChunkInputs,
+    start_line: u32,
+    end_line: u32,
+) -> Vec<crate::display_matrix::DisplayLine> {
+    use crate::display_matrix::DisplayLine;
+    let mut rows: Vec<DisplayLine> = Vec::with_capacity((end_line - start_line) as usize);
+    for line_idx in start_line..end_line {
+        if inputs.fold_index.line_inside_closed_fold(line_idx) {
+            continue;
+        }
+        let text = inputs.snapshot.buffer.line(line_idx).unwrap_or_default();
+        let line_spans: &[lattice_syntax::StyledSpan] = inputs
+            .per_line_spans
+            .and_then(|v| {
+                let rel = line_idx.checked_sub(inputs.spans_base)?;
+                v.get(rel as usize)
+            })
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let line_inlays = inputs
+            .inlays_by_line
+            .get(&line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let (text, runs, col_map, col_count) =
+            build_display_row(&text, line_spans, line_inlays, inputs.whitespace);
+        rows.push(DisplayLine {
+            source_line: line_idx,
+            text: Arc::from(text),
+            runs: Arc::from(runs.into_boxed_slice()),
+            col_map: Arc::from(col_map.into_boxed_slice()),
+            col_count,
+            // Fold-head metadata is wired when the renderers consume
+            // `DisplayMatrix` (B2); the cell path carried no fold info
+            // on the row either (the renderer computes the fold suffix).
+            fold: None,
+        });
+    }
+    rows
+}
+
 /// Bucket a flat inlay-hints list by line into per-line slices of
 /// `(orig_byte, text)`, each bucket sorted ascending by `orig_byte`.
 /// Output length is `line_count` so callers can index by line
@@ -2187,6 +2380,82 @@ mod tests {
             recompute_pane(&pane, &theme, &ws),
             WorkerDecision::CacheHit,
             "small in-window scroll does not rebuild"
+        );
+    }
+
+    // ---- B1: display-builder parity with the cell builder ----
+
+    /// The canonical `build_display_row` must reproduce the exact
+    /// content `build_row_cells` produces (whitespace off): projecting
+    /// the `DisplayLine` runs back to cells yields the same codepoints +
+    /// resolved fg + flags, and `col_map` equals `inlay_offsets`. Guards
+    /// against drift while both builders coexist (B1→B4).
+    #[test]
+    fn display_build_parity_with_cells_ws_off() {
+        use lattice_cells::cell_flags;
+        let theme = crate::ui::theme::Theme::default();
+        let (default_fg, default_flags) = resolve_style(&theme, lattice_syntax::Style::Default);
+        let inlay_fg = inlay_hint_fg();
+        let ws = WhitespaceConfig::default(); // show: false
+
+        // "let\tx" — `let` styled as Keyword, a tab (expands), and an
+        // inlay ": T" spliced after byte 5 (EOL).
+        let text = "let\tx";
+        let spans = vec![lattice_syntax::StyledSpan {
+            start: 0,
+            end: 3,
+            style: lattice_syntax::Style::Keyword,
+        }];
+        let inlays: Vec<(u32, &str)> = vec![(5, ": T")];
+
+        let (cells, inlay_offsets) = build_row_cells(
+            text,
+            &spans,
+            &inlays,
+            &theme,
+            default_fg,
+            default_flags,
+            inlay_fg,
+            &ws,
+        );
+        let (dtext, runs, col_map, col_count) = build_display_row(text, &spans, &inlays, &ws);
+
+        // Project display runs → cells (the ws-off resolution path).
+        let mut projected: Vec<Cell> = Vec::new();
+        let mut byte = 0usize;
+        for run in &runs {
+            let s = &dtext[byte..byte + run.len as usize];
+            for ch in s.chars() {
+                let (fg, flags) = if run.flags & cell_flags::INLAY != 0 {
+                    (inlay_fg, cell_flags::INLAY)
+                } else if matches!(run.style, lattice_syntax::Style::Default) {
+                    (default_fg, default_flags)
+                } else {
+                    resolve_style(&theme, run.style)
+                };
+                projected.push(Cell::new(ch as u32, fg, 0, flags));
+            }
+            byte += run.len as usize;
+        }
+
+        assert_eq!(
+            projected, cells,
+            "display→cells projection must equal build_row_cells output"
+        );
+        assert_eq!(col_map, inlay_offsets, "col_map must equal inlay_offsets");
+        assert_eq!(
+            col_count,
+            cells.len() as u32,
+            "col_count must equal the display cell count"
+        );
+        assert!(
+            runs.iter()
+                .any(|r| matches!(r.style, lattice_syntax::Style::Keyword)),
+            "the `let` keyword run must carry the Keyword style tag"
+        );
+        assert!(
+            runs.iter().any(|r| r.flags & cell_flags::INLAY != 0),
+            "the inlay must produce an INLAY-flagged run"
         );
     }
 

@@ -35,8 +35,21 @@
 use std::sync::Arc;
 
 use lattice_cells::{CHUNK_SIZE_WHOLE_DOC, MatrixVersion, wrap_segments};
+use lattice_syntax::Style;
 
-use crate::render_state::RowRun;
+/// A style-tagged run within a [`DisplayLine`]'s `text` — the per-line
+/// analogue of a `Cell`, one per contiguous run instead of per char.
+/// The renderer resolves `style` → foreground colour + modifiers via
+/// the per-frame theme; `flags` carries the non-style bits the cell
+/// model baked: [`lattice_cells::cell_flags::INLAY`] for spliced inlay
+/// text, `WS_MARKER` for a whitespace-marker glyph. Run lengths
+/// (`len`, utf-8 bytes) sum to `text.len()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayRun {
+    pub len: u32,
+    pub style: Style,
+    pub flags: u16,
+}
 
 /// Closed-fold head marker carried by the first visible line of a
 /// folded region. `folded_lines` is how many source lines the fold
@@ -57,10 +70,8 @@ pub struct DisplayLine {
     /// width, whitespace markers substituted.
     pub text: Arc<str>,
     /// Style-tagged byte runs partitioning `text` left-to-right.
-    /// `RowRun::Source` carries the tree-sitter style tag (resolved to
-    /// colour by the renderer); `RowRun::Inlay` marks spliced virtual
-    /// text. Run lengths sum to `text.len()`.
-    pub runs: Arc<[RowRun]>,
+    /// Run lengths sum to `text.len()`. See [`DisplayRun`].
+    pub runs: Arc<[DisplayRun]>,
     /// `(source_byte, extra_display_cols)` breakpoints: at each source
     /// byte, how many extra display columns were inserted ahead of it
     /// (inlay text + tab expansion). Drives source-byte ↔ display-col
@@ -312,9 +323,10 @@ mod tests {
             source_line,
             text: Arc::from(text),
             runs: Arc::from(
-                vec![RowRun::Source {
+                vec![DisplayRun {
                     len: text.len() as u32,
-                    style: lattice_syntax::Style::Default,
+                    style: Style::Default,
+                    flags: 0,
                 }]
                 .into_boxed_slice(),
             ),

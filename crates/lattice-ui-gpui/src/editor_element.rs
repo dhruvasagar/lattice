@@ -70,11 +70,12 @@ use gpui::{
 };
 use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
+use lattice_host::display_matrix::DisplayMatrix;
 use lattice_host::render_state::VisibleSpans;
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
-use crate::cells_paint::cell_row_to_text_runs;
+use crate::cells_paint::display_line_to_text_runs;
 use crate::glyph_resolver::GlyphResolver;
 
 /// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
@@ -322,6 +323,23 @@ pub(crate) struct EditorElement {
     /// publishes `visible_rows` for TUI markdown / help /
     /// messages bodies in other render functions.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
+    /// B3 (2026-06-04): canonical `DisplayMatrix` snapshot — the GPU's
+    /// primary shaping source. Populated from
+    /// `render_state.cells.display_matrix` for the active pane (guarded on
+    /// `version.text == snapshot.text_version`, like `cell_matrix`),
+    /// `None` for inactive panes. `prepaint` shapes each covered row via
+    /// `display_line_to_text_runs` (style-tagged runs → resolved
+    /// `TextRun`s); folded / out-of-window / stale rows fall through to the
+    /// legacy `shape_row`. B2.3 makes this text-current synchronously, so
+    /// the stale guard no longer fires per keystroke — that retires the
+    /// GPU whole-viewport flicker. `cell_matrix` now feeds only the
+    /// experimental per-glyph `paint_cells` path until B4.
+    pub(crate) display_matrix: Option<Arc<DisplayMatrix>>,
+    /// B3 (2026-06-04): host theme (a `Copy` struct) for resolving
+    /// `DisplayRun` syntax-style tags → `TextRun` colours at shape time
+    /// (`display_line_to_text_runs`). The cell path baked resolved colours
+    /// into cells; the display path resolves per-run here.
+    pub(crate) host_theme: lattice_host::ui::theme::Theme,
     /// S4.final.b (2026-05-27): per-window glyph-id cache. When
     /// the runtime toggle `LATTICE_PAINT_CELLS=1` is set,
     /// `EditorElement::paint`'s body loop uses
@@ -586,12 +604,18 @@ impl Element for EditorElement {
         // at S4.1 (matches legacy parity); S4.2 propagates BOLD /
         // ITALIC into the run's font weight/style and adds
         // UNDERLINE / DIM / REVERSE.
-        let shape_row_from_cells =
-            |row: &lattice_cells::CellRow,
+        // B3 (2026-06-04): canonical `DisplayMatrix` fast path. When the
+        // worker has published a `DisplayLine` for `source_line`, the
+        // (combined_text, runs, inlay_offsets) triple comes from
+        // `display_line_to_text_runs` (style-tagged runs resolved →
+        // `TextRun`s via the host theme). Replaces `shape_row_from_cells`
+        // (deleted with the cell→TextRun path); same `shape_line` call.
+        let shape_row_from_display =
+            |line: &lattice_host::display_matrix::DisplayLine,
              window: &mut Window|
              -> (ShapedLine, Vec<(u32, u32)>) {
                 let (combined, runs, inlay_offsets) =
-                    cell_row_to_text_runs(row, &font);
+                    display_line_to_text_runs(line, &self.host_theme, &font);
                 let shaped = window.text_system().shape_line(
                     SharedString::from(combined),
                     font_size,
@@ -899,13 +923,13 @@ impl Element for EditorElement {
                 // A cell row may exist but have zero cells (transient
                 // state during doc-switch / new-buffer publish race);
                 // in that case the rope line is the source of truth.
-                let cell_row = self
-                    .cell_matrix
+                let display_row = self
+                    .display_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(line_idx as u32))
-                    .filter(|row| !row.cells.is_empty() || line.is_empty());
-                let (shaped, inlay_offsets) = if let Some(row) = cell_row {
-                    shape_row_from_cells(row, window)
+                    .filter(|dl| !dl.text.is_empty() || line.is_empty());
+                let (shaped, inlay_offsets) = if let Some(dl) = display_row {
+                    shape_row_from_display(dl, window)
                 } else {
                     let line_spans: &[StyledSpan] = self
                         .visible_spans
@@ -1000,13 +1024,13 @@ impl Element for EditorElement {
                 // publish or during the buffer-switch gap, when
                 // the legacy `shape_row` path takes over.
                 // 2026-06-02: parity with TUI cells-empty fallback.
-                let cell_row = self
-                    .cell_matrix
+                let display_row = self
+                    .display_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(meta.line_idx))
-                    .filter(|row| !row.cells.is_empty() || line.is_empty());
-                let (shaped, inlay_offsets) = if let Some(row) = cell_row {
-                    shape_row_from_cells(row, window)
+                    .filter(|dl| !dl.text.is_empty() || line.is_empty());
+                let (shaped, inlay_offsets) = if let Some(dl) = display_row {
+                    shape_row_from_display(dl, window)
                 } else {
                     let line_spans: &[StyledSpan] = self
                         .visible_spans

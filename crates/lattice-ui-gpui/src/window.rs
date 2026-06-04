@@ -1772,6 +1772,28 @@ impl EditorView {
             } else {
                 None
             },
+            // B3 (2026-06-04): the canonical DisplayMatrix is the GPU's
+            // primary shaping source (cell_matrix above now feeds only the
+            // experimental per-glyph paint_cells path). Same active-pane +
+            // stale guard as cell_matrix; B2.3 rebuilds version.text
+            // synchronously in the publish tail, so on a single-keystroke
+            // edit it is already current and the guard does NOT fire — that
+            // retires the GPU whole-viewport flicker. The guard still fires
+            // for publishes the sync path skips (multi-edit, doc switch),
+            // where EditorElement falls back to the legacy shape_row path.
+            display_matrix: if render_active {
+                let m = rs_guard.cells.display_matrix.load_full();
+                if m.version.text == snapshot.text_version {
+                    Some(m)
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
+            // B3: host theme (Copy) for resolving DisplayRun style tags →
+            // TextRun colours at shape time (display_line_to_text_runs).
+            host_theme,
             // S4.final.b (2026-05-27): per-window glyph-id
             // cache. Always carries the shared resolver from
             // `EditorView`; consumption is gated on

@@ -191,12 +191,32 @@ provenance). `rgb_u32_to_color` stays (used by the new resolver). 33 cells_rende
 1467 TUI tests green. The cells_render module is now display-only; only `CellMatrix`
 (worker projection + GPU reader) survives, deleted in B3/B4.
 
-## B3 — GPU cutover  🗒
+## B3 — GPU cutover  ✅ (2026-06-04)
 
-- GPUI consumes `DisplayMatrix`: build `TextRun`s over `combined`, one
-  `shape_line` (LineLayoutCache-cached). **Delete the GPU `version.text` guard**
-  and `shape_row_from_cells`.
-- The flicker dies on GPU here.
+`EditorElement` now carries `display_matrix: Option<Arc<DisplayMatrix>>` (the
+primary shaping source) + `host_theme` (a `Copy` struct, for per-run style→colour
+resolution). The two prepaint shaping sites read `display_matrix.row_at_source_line`
+and shape via the new `cells_paint::display_line_to_text_runs` (style-tagged runs →
+`TextRun`s, resolving exactly as the worker's `display_line_to_cell_row` projection
+— `reverse`/`dim`/bg/inlay-fg all reproduced by building a synthetic `Cell` per run
+and reusing `cell_to_text_run`). `shape_row_from_cells` is deleted; `cell_row_to_text_runs`
+is now used only by its own tests (deleted in B4).
+
+**The flicker dies on GPU here**: the stale guard now reads the canonical
+`DisplayMatrix`, which B2.3 keeps text-current synchronously, so it no longer fires
+per keystroke.
+
+Deviation from the original plan ("delete the version.text guard"): the guard is
+**kept**, pointed at the display matrix. Deleting it would paint stale (pre-edit)
+display rows on the rare publishes the sync path skips (multi-edit batch, doc
+switch); keeping it falls those frames back to the legacy `shape_row` (current rope
+text, syntax catches up next frame) — identical to the TUI's B2.4a decision and the
+correct UX. The guard firing per-*keystroke* was the flicker; B2.3 stopped that.
+
+`cell_matrix` is retained for the experimental env-gated `paint_cells` per-glyph
+path only (still reads the worker's cell projection); it + the projection die in B4.
+99 GPU + 19 cells_paint tests green; `cargo build --features gui -p lattice-cli`
+links.
 
 ## B4 — delete legacy  🗒
 

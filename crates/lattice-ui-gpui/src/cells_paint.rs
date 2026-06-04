@@ -64,6 +64,7 @@
 
 use gpui::{Font, FontStyle, FontWeight, TextRun, UnderlineStyle, px, rgb};
 use lattice_cells::{Cell, CellRow, cell_flags};
+use lattice_host::display_matrix::{DisplayLine, DisplayRun};
 
 /// Bits in [`Cell::flags`] that drive run grouping + styling.
 /// `INLAY` and `WS_MARKER` are intentionally excluded — they
@@ -138,6 +139,116 @@ pub fn cell_row_to_text_runs(
 
     let inlay_offsets: Vec<(u32, u32)> = row.inlay_offsets.iter().copied().collect();
     (combined, runs, inlay_offsets)
+}
+
+/// B3 (2026-06-04): the `DisplayLine` analogue of
+/// [`cell_row_to_text_runs`] — the GPU's converter once it consumes the
+/// canonical `DisplayMatrix` directly instead of the projected cell grid.
+///
+/// A `DisplayLine` carries style-*tagged* runs (a `lattice_syntax::Style`
+/// + non-style flag bits), not resolved colours. This resolves each run to
+/// the exact `(fg, bg, flags)` the worker's `display_line_to_cell_row`
+/// projection produced (style → `theme.syntax_style(..).fg`; a
+/// `WS_TRAILING` marker run → `whitespace_trailing_style` fg; an `INLAY`
+/// run → the inlay-hint fg, no syntax modifiers), builds a synthetic
+/// [`Cell`] from it, and reuses [`cell_to_text_run`] + [`style_key`] run
+/// grouping — so the shaped output is byte-identical to the projected-cell
+/// path the GPU consumed pre-B3 (`reverse`/`dim`/bg handling included).
+///
+/// Returns `(combined_text, runs, inlay_offsets)` over `line.text` (inlays
+/// are inline in the display text, unlike the TUI's source-span path which
+/// drops them); `inlay_offsets` is `line.col_map` verbatim.
+pub fn display_line_to_text_runs(
+    line: &DisplayLine,
+    theme: &lattice_host::ui::theme::Theme,
+    font: &Font,
+) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
+    let default_fg = theme
+        .syntax_style(lattice_syntax::Style::Default)
+        .fg
+        .map(|c| c.to_rgb_u32(0))
+        .unwrap_or(0);
+    let trailing_fg = theme
+        .whitespace_trailing_style
+        .fg
+        .map(|c| c.to_rgb_u32(default_fg))
+        .unwrap_or(default_fg);
+    // Inlay-hint fg: resolved the same way the worker's `inlay_hint_fg`
+    // does (host theme `DarkGray`), so inlays render at the colour the
+    // projected cells carried. Tracks the worker until the dedicated
+    // `inlay_hint_style` theme slot lands (then both read that slot).
+    let inlay_fg = lattice_host::ui::theme::Color::Named(
+        lattice_host::ui::theme::NamedColor::DarkGray,
+    )
+    .to_rgb_u32(0);
+
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut current: Option<(Cell, usize)> = None;
+    for run in line.runs.iter() {
+        let run_len = run.len as usize;
+        let cell = display_run_to_synthetic_cell(run, theme, trailing_fg, inlay_fg);
+        match &mut current {
+            Some((sample, len)) if style_key(sample) == style_key(&cell) => {
+                *len += run_len;
+            }
+            _ => {
+                if let Some((sample, len)) = current.take() {
+                    runs.push(cell_to_text_run(&sample, len, font));
+                }
+                current = Some((cell, run_len));
+            }
+        }
+    }
+    if let Some((sample, len)) = current {
+        runs.push(cell_to_text_run(&sample, len, font));
+    }
+
+    let inlay_offsets: Vec<(u32, u32)> = line.col_map.iter().copied().collect();
+    (line.text.to_string(), runs, inlay_offsets)
+}
+
+/// Resolve one [`DisplayRun`] to the synthetic [`Cell`] the worker's
+/// `display_line_to_cell_row` projection would have produced — same
+/// fg/flag rules — so [`cell_to_text_run`] yields identical styling. The
+/// codepoint is irrelevant (`cell_to_text_run` reads only fg/bg/flags).
+fn display_run_to_synthetic_cell(
+    run: &DisplayRun,
+    theme: &lattice_host::ui::theme::Theme,
+    trailing_fg: u32,
+    inlay_fg: u32,
+) -> Cell {
+    let host = theme.syntax_style(run.style);
+    let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
+    let mut mods: u16 = 0;
+    let m = &host.modifiers;
+    if m.bold {
+        mods |= cell_flags::BOLD;
+    }
+    if m.italic {
+        mods |= cell_flags::ITALIC;
+    }
+    if m.underline {
+        mods |= cell_flags::UNDERLINE;
+    }
+    if m.dim {
+        mods |= cell_flags::DIM;
+    }
+    if m.reverse {
+        mods |= cell_flags::REVERSE;
+    }
+    let is_inlay = run.flags & cell_flags::INLAY != 0;
+    let is_ws = run.flags & cell_flags::WS_MARKER != 0;
+    let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
+    if is_inlay {
+        // Inlay runs take the inlay fg with NO syntax modifiers — exactly
+        // what `display_line_to_cell_row` emits.
+        Cell::new(0, inlay_fg, 0, cell_flags::INLAY)
+    } else if is_ws {
+        let fg = if is_trailing { trailing_fg } else { style_fg };
+        Cell::new(0, fg, 0, mods | cell_flags::WS_MARKER)
+    } else {
+        Cell::new(0, style_fg, 0, mods)
+    }
 }
 
 /// Run-grouping key. Consecutive cells with the same key merge
@@ -244,6 +355,56 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len, 1);
         assert!(offsets.is_empty());
+    }
+
+    /// B3: the display path (`display_line_to_text_runs`) resolves a
+    /// keyword run to the theme's keyword fg and an INLAY run to the
+    /// inlay-hint fg, over the combined display text, with `col_map` →
+    /// `inlay_offsets` verbatim — matching the projected-cell path.
+    #[test]
+    fn display_line_resolves_keyword_and_inlay_runs() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{Color, NamedColor, Theme};
+        let theme = Theme::default();
+        let kw_fg = theme
+            .syntax_style(lattice_syntax::Style::Keyword)
+            .fg
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let inlay_fg = Color::Named(NamedColor::DarkGray).to_rgb_u32(0);
+        // "fn" (Keyword) followed by ": i32" (inlay-spliced virtual text).
+        let text = "fn: i32";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun {
+                        len: 2,
+                        style: lattice_syntax::Style::Keyword,
+                        flags: 0,
+                    },
+                    DisplayRun {
+                        len: 5,
+                        style: lattice_syntax::Style::Default,
+                        flags: cell_flags::INLAY,
+                    },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([(2u32, 5u32)] as [(u32, u32); 1]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (combined, runs, offsets) =
+            display_line_to_text_runs(&line, &theme, &font("monospace"));
+        assert_eq!(combined, "fn: i32");
+        assert_eq!(runs.len(), 2, "keyword + inlay → two runs");
+        assert_eq!(runs[0].len, 2);
+        assert_eq!(runs[0].color, rgb(kw_fg).into(), "keyword run takes theme keyword fg");
+        assert_eq!(runs[1].len, 5);
+        assert_eq!(runs[1].color, rgb(inlay_fg).into(), "inlay run takes the inlay-hint fg");
+        assert_eq!(offsets, vec![(2, 5)], "col_map transfers as inlay_offsets");
     }
 
     /// Adjacent same-fg cells merge into one run — the collapse

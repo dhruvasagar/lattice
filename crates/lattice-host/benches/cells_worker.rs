@@ -99,6 +99,11 @@ fn rs_for(
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,
+        // H.3: window anchor. The existing benches build at the top
+        // (scroll 0); the windowed bench relies on this too — at
+        // scroll 0 a large doc windows to its first ~chunk regardless
+        // of total size, which is exactly the O(viewport) measurement.
+        scroll: 0,
         viewport_width: 0,
         wrap: false,
         foldenable: false,
@@ -316,11 +321,66 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
     group.finish();
 }
 
+/// H.3 (2026-06-04): the headline large-file win. A full (cold) build
+/// at a FIXED viewport over docs from 5k to 100k lines, WITH a live
+/// syntax handle so highlight + cell materialisation are both measured.
+///
+/// Above `WINDOW_CAP_LINES` the chunked matrix is windowed to the
+/// viewport (`build_matrix` builds + highlights only `[scroll−overscan,
+/// scroll+viewport+overscan)`), so build latency must stay ~flat as
+/// `line_count` grows — O(viewport), not O(file). A regression to
+/// whole-file builds shows here as cost scaling with `line_count`.
+///
+/// Clone-free harness: a fresh `matrix_cell` per iter forces
+/// `build_matrix` (no incremental reuse), and `rs_for` only Arc-clones
+/// the shared snapshot + syntax handle (O(1)) — there is NO per-iter
+/// O(file) baseline-matrix clone (the pitfall the H.1 incremental
+/// benches carry). The synthetic doc + tree-sitter parse happen once
+/// per size, outside the timed loop. Recorded in
+/// `docs/dev/operations/benchmarks.md`.
+fn bench_windowed_build(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cells_worker_windowed_build");
+    for &line_count in &[5_000usize, 20_000, 50_000, 100_000] {
+        let doc = synthetic_rust_doc(line_count);
+        let text = doc.text();
+        let snap_version = doc.text_version();
+        let snapshot = Arc::new(DocumentSnapshot::__bench_from_document(&doc));
+        let version = MatrixVersion {
+            text: 1,
+            ..MatrixVersion::ZERO
+        };
+
+        // Parse the whole doc once at the snapshot's version so the
+        // build's scoped `highlight_lines` has fresh (non-stale) spans.
+        let mut syn = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .unwrap();
+        syn.parse_at(&text, snap_version);
+        let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(syn));
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{line_count}_lines")),
+            &(snapshot, version, handle),
+            |b, (snap, ver, handle)| {
+                b.iter(|| {
+                    // Fresh cell so the version check misses → full
+                    // (windowed) build_matrix runs.
+                    let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell, Some(handle.clone()));
+                    black_box(recompute(&rs));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_full_build,
     bench_incremental_build,
     bench_incremental_build_highlighted,
+    bench_windowed_build,
     bench_cache_hit
 );
 criterion_main!(benches);

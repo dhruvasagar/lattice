@@ -921,7 +921,7 @@ struct ChunkInputs<'a> {
     per_line_spans: Option<&'a Vec<Vec<lattice_syntax::StyledSpan>>>,
     /// Absolute source line that `per_line_spans[0]` corresponds to.
     spans_base: u32,
-    inlays_by_line: &'a [Vec<(u32, &'a str)>],
+    inlays_by_line: &'a std::collections::HashMap<u32, Vec<(u32, &'a str)>>,
     fold_index: &'a crate::folds::FoldIndex,
     theme: &'a crate::ui::theme::Theme,
     default_fg: u32,
@@ -957,7 +957,7 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
             .unwrap_or(&[]);
         let line_inlays = inputs
             .inlays_by_line
-            .get(line_idx as usize)
+            .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let (cells, inlay_offsets) = build_row_cells(
@@ -1159,17 +1159,28 @@ fn build_row_cells(
 fn bucket_inlays_by_line<'a>(
     inlay_hints: &'a [crate::render_state::InlayHintRow],
     line_count: u32,
-) -> Vec<Vec<(u32, &'a str)>> {
-    let mut buckets: Vec<Vec<(u32, &'a str)>> = vec![Vec::new(); line_count as usize];
-    if inlay_hints.is_empty() {
-        return buckets;
-    }
+) -> std::collections::HashMap<u32, Vec<(u32, &'a str)>> {
+    // H.3 (2026-06-04): keyed by absolute source line rather than a
+    // dense `Vec<Vec<_>>` of length `line_count`. The dense form was
+    // O(file) — it allocated and zeroed one slot per *document* line
+    // even when the build only touches a viewport window (and even
+    // when there are no inlays at all), which the
+    // `cells_worker_windowed_build` bench exposed as build cost
+    // scaling with `line_count`. A `HashMap` is O(inlays): empty when
+    // inlay mode is off, and base-agnostic so the whole-doc, windowed,
+    // and incremental builds all share one lookup without threading a
+    // window offset.
+    let mut buckets: std::collections::HashMap<u32, Vec<(u32, &'a str)>> =
+        std::collections::HashMap::new();
     for h in inlay_hints {
         if h.line < line_count {
-            buckets[h.line as usize].push((h.byte, h.text.as_str()));
+            buckets
+                .entry(h.line)
+                .or_default()
+                .push((h.byte, h.text.as_str()));
         }
     }
-    for b in &mut buckets {
+    for b in buckets.values_mut() {
         b.sort_by_key(|(off, _)| *off);
     }
     buckets

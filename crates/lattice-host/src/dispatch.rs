@@ -585,6 +585,21 @@ impl Editor {
                 .map(|p| (p.pane_id, p.virtual_rows_matrix.clone()))
                 .collect(),
         );
+        // B2.1 (2026-06-04): PaneId → display-matrix lookup, derived
+        // from the same `cells_panes` slice. Mirror of
+        // `cells_pane_matrices`; read via
+        // `CellsRenderState::display_matrix_for_pane`.
+        let display_pane_matrices: std::sync::Arc<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+            >,
+        > = std::sync::Arc::new(
+            cells_panes
+                .iter()
+                .map(|p| (p.pane_id, p.display_matrix.clone()))
+                .collect(),
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1097,6 +1112,12 @@ impl Editor {
                 // D.4.d.1.c (2026-05-29): PaneId → matrix lookup,
                 // derived once at publish time from `panes`.
                 pane_matrices: cells_pane_matrices,
+                // B2.1 (2026-06-04): active-pane display matrix +
+                // PaneId → display-matrix lookup. Active doc resolves
+                // through the registry (boot-seeded to share Arc with
+                // `display_matrix_cell`).
+                display_matrix: self.display_matrix_for(self.document_buffer_id),
+                display_pane_matrices,
             }),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session
@@ -9138,6 +9159,11 @@ impl Editor {
                 pane_id: leaf.id,
                 buffer_id,
                 matrix: self.cells_matrix_for(buffer_id),
+                // B2.1 (2026-06-04): per-line display-matrix cell for
+                // this pane's buffer. Active-pane entry shares Arc
+                // identity with `Editor::display_matrix_cell` (boot
+                // seed). No-op until the B2.2 worker writes through it.
+                display_matrix: self.display_matrix_for(buffer_id),
                 // D.4.d.2.1.b (2026-05-29): pre-attach the
                 // per-buffer virtual-rows cell at publish time.
                 // Active-pane entry shares Arc identity with

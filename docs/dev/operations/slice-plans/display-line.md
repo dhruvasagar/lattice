@@ -41,15 +41,75 @@ EditDelta, CHUNK_SIZE_WHOLE_DOC, wrap_segments}` until B4.
   as the current `CellRow`.
 - NOT consumed by renderers yet. Both caches coexist this slice.
 
-## B2 — always-current + TUI cutover  🗒
+## B2 — always-current + TUI cutover  🚧
 
-- Actor runs the synchronous incremental `DisplayMatrix` rebuild of the edited
-  region before publishing render state → `version.text` never lags the
-  snapshot. Async worker retained for reparse-recolour / theme / fold.
-- TUI body consumes `DisplayMatrix`; move `byte_to_combined_col` /
-  `segment_count` onto `DisplayLine`; **delete the TUI `cells_stale` guard** and
-  the cell→span path.
-- The flicker dies on TUI here.
+The flicker is the per-keystroke whole-viewport stale-guard fallback: the async
+worker leaves the matrix one frame behind the snapshot, both renderers detect
+`matrix.version.text != snapshot.text_version` and abandon the whole viewport.
+B2 makes the matrix **always text-current** so the guard is unnecessary, then
+cuts the TUI over and deletes its guard. Split into four green sub-slices.
+
+### Threading guarantee (HARD constraint on every B2 sub-slice)
+
+The UI thread **blocks on the actor per edit** (`mutate_blocking_with` /
+`ApplyAndReply` → `dispatch` applies the edit + publishes in its tail, *then*
+replies — editor_actor.rs:600-611). So the edit-critical (blocking) path must do
+only **O(edit-size) work**:
+
+- **ALLOWED in the sync edit path:** rebuild the edited line(s)' display *text* +
+  structure (prefix-reuse + edited-line text rebuild + suffix `shifted_by` —
+  Arc refcount bumps, O(window)). On a keystroke the syntax snapshot is stale,
+  so `highlight_range` returns `None` and the rebuild does **zero highlighting**
+  — it is microseconds, dominated by the rope edit + render-state build the
+  actor already does per keystroke.
+- **FORBIDDEN in the sync edit path:** any `highlight_lines` call; any
+  synchronous tree-sitter reparse (reparse stays on its existing async path);
+  any O(viewport)/O(file) work beyond the windowed Arc reuse.
+- **Heavy work stays async** on the worker: full highlight (`highlight_lines`),
+  reparse-completion recolour, theme/fold rebuilds. Syntax colour is eventual
+  (edited line keeps prior/default colour for a frame or two — within the
+  keystroke UX contract).
+- **Enforced, not asserted:** B2.3 adds an edit-path bench asserting a hard bound
+  (target < ~200µs for a typing keystroke on a 100k-line file). Exceeding it is
+  a failing bench, not a shipped regression.
+
+### B2.1 — per-pane `DisplayMatrix` output cell  ✅ (2026-06-04)
+
+Mirror `cells_matrix_cell`: `Editor` per-buffer registry + `display_matrix_for`
++ boot seed (Arc identity), a `PaneCellsInputs.display_matrix` field, a
+`CellsRenderState` field + `pane_matrices`-style map. No-op plumb (nothing builds
+/ reads it yet). NOTE: the new `PaneCellsInputs` field hits the ~7 construction
+sites the `scroll` field did in H.3a (render_state default, dispatch publisher,
+virtual_rows_worker, three cells_worker test helpers, the bench) — update all.
+
+### B2.2 — worker produces `DisplayMatrix`  🗒
+
+`recompute_pane` produces the `DisplayMatrix` via `build_display_rows` reusing
+the existing windowing (`window_bounds`) + incremental (`rebuild_zone_rows`) +
+cache-hit machinery. **Single source of truth:** also emit a `DisplayMatrix →
+CellMatrix` projection (`display_line_to_cell_row`, resolving style+flags→fg via
+the theme, incl. the `WS_MARKER`/trailing-fg case) into the existing
+`cells_matrix` cell so the not-yet-cut-over renderers (GPU until B3) keep
+working off the derived cells. The projection is the temporary bridge; B4
+deletes it with the cell path. (Avoids duplicating the recompute machinery for
+two payloads — the cell grid becomes a projection of the canonical
+`DisplayMatrix`.)
+
+### B2.3 — synchronous always-current rebuild + edit-path bench  🗒
+
+Actor runs the windowed incremental `DisplayMatrix` rebuild of the edited region
+**before publishing** (in `dispatch`'s tail / publish), honouring the threading
+guarantee above (text/structure only; stale-syntax → no highlight). Result:
+`version.text` never lags the snapshot. Async worker retained for the
+reparse-completion recolour. Add `display_edit_path` bench + record the bound in
+`benchmarks.md`.
+
+### B2.4 — TUI cutover  🗒
+
+TUI body consumes `DisplayMatrix` (`text` + `runs` → ratatui cells, resolve
+tag→colour); move `byte_to_combined_col` / `segment_count` onto `DisplayLine`;
+**delete the TUI `cells_stale` guard** + the cell→span path. The flicker dies on
+TUI here. (GPU still on the projected cells until B3.)
 
 ## B3 — GPU cutover  🗒
 

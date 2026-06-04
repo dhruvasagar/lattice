@@ -476,6 +476,9 @@ mod tests {
             pane_id: PaneId::next(),
             buffer_id,
             matrix: Arc::new(ArcSwap::from_pointee(lattice_cells::CellMatrix::empty())),
+            display_matrix: Arc::new(ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            )),
             virtual_rows_matrix: vr_matrix,
             version: lattice_cells::MatrixVersion::ZERO,
             snapshot,

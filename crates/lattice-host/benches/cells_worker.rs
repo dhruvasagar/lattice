@@ -92,6 +92,9 @@ fn rs_for(
         pane_id: PaneId::default(),
         buffer_id: BufferId::default(),
         matrix: matrix_cell.clone(),
+        display_matrix: Arc::new(ArcSwap::from_pointee(
+            lattice_host::display_matrix::DisplayMatrix::empty(),
+        )),
         virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty())),
         version,
         snapshot: Some(snapshot.clone()),
@@ -128,6 +131,10 @@ fn rs_for(
         whitespace: WhitespaceConfig::default(),
         panes: Arc::from(vec![pane_entry].into_boxed_slice()),
         pane_matrices,
+        display_matrix: Arc::new(ArcSwap::from_pointee(
+            lattice_host::display_matrix::DisplayMatrix::empty(),
+        )),
+        display_pane_matrices: Arc::new(std::collections::HashMap::new()),
     };
     let rs = RenderState {
         cells: Arc::new(cells),

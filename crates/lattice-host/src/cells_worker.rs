@@ -1576,6 +1576,9 @@ mod tests {
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
+            display_matrix: Arc::new(ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            )),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
             )),
@@ -1610,6 +1613,10 @@ mod tests {
             whitespace: WhitespaceConfig::default(),
             panes: Arc::from(vec![pane_entry].into_boxed_slice()),
             pane_matrices,
+            display_matrix: Arc::new(ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            )),
+            display_pane_matrices: Arc::new(std::collections::HashMap::new()),
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -3447,6 +3454,9 @@ mod tests {
                         pane_id: lattice_core::ui::pane::PaneId::default(),
                         buffer_id: lattice_core::BufferId::default(),
                         matrix: matrix_cell.clone(),
+                        display_matrix: Arc::new(ArcSwap::from_pointee(
+                            crate::display_matrix::DisplayMatrix::empty(),
+                        )),
                         virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                             lattice_cells::VirtualRowMatrix::empty(),
                         )),
@@ -3484,6 +3494,10 @@ mod tests {
                             m.insert(inputs.pane_id, inputs.matrix);
                             Arc::new(m)
                         },
+                        display_matrix: Arc::new(ArcSwap::from_pointee(
+                            crate::display_matrix::DisplayMatrix::empty(),
+                        )),
+                        display_pane_matrices: Arc::new(std::collections::HashMap::new()),
                     };
                     let rs = RenderState {
                         cells: Arc::new(cells),
@@ -3588,6 +3602,9 @@ mod tests {
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
                 matrix: matrix_cell.clone(),
+                display_matrix: Arc::new(ArcSwap::from_pointee(
+                    crate::display_matrix::DisplayMatrix::empty(),
+                )),
                 virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                     lattice_cells::VirtualRowMatrix::empty(),
                 )),
@@ -3625,6 +3642,10 @@ mod tests {
                     m.insert(inputs.pane_id, inputs.matrix);
                     Arc::new(m)
                 },
+                display_matrix: Arc::new(ArcSwap::from_pointee(
+                    crate::display_matrix::DisplayMatrix::empty(),
+                )),
+                display_pane_matrices: Arc::new(std::collections::HashMap::new()),
             };
             render_state.store(Arc::new(RenderState {
                 cells: Arc::new(cells),
@@ -3668,6 +3689,9 @@ mod tests {
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix,
+            display_matrix: Arc::new(ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            )),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
             )),

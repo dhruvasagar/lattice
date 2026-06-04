@@ -752,6 +752,28 @@ impl Editor {
             map.insert(document_buffer_id, cells_matrix_cell.clone());
             std::sync::Arc::new(std::sync::Mutex::new(map))
         };
+        // B2.1 (2026-06-04): per-line display-cache output cell +
+        // per-document registry. Same Arc-identity discipline as the
+        // cells seed above: the active document's registry entry
+        // shares its Arc with `display_matrix_cell` so the worker's
+        // future `.store()` (B2.2) and the renderer's read land on
+        // the same cell. Subsequent buffers lazy-insert via
+        // `Editor::display_matrix_for`.
+        let display_matrix_cell: std::sync::Arc<
+            arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>,
+        > = std::sync::Arc::default();
+        let display_matrices: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    lattice_core::BufferId,
+                    std::sync::Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+                >,
+            >,
+        > = {
+            let mut map = std::collections::HashMap::new();
+            map.insert(document_buffer_id, display_matrix_cell.clone());
+            std::sync::Arc::new(std::sync::Mutex::new(map))
+        };
         // D.4.d.1.b (2026-05-29): the worker now writes per
         // pane via `cells.panes[i].matrix` (each entry's cell
         // comes from `Editor::cells_matrix_for`), so the
@@ -1105,6 +1127,10 @@ impl Editor {
             cells_wake,
             cells_matrix_cell,
             cells_matrices,
+            // B2.1 (2026-06-04): same-Arc-identity values for the
+            // per-line display cache; active doc seeded above.
+            display_matrix_cell,
+            display_matrices,
             // D.0a.1 (2026-05-29): the worker's three Arcs +
             // wake match the cells pattern — same identities
             // here as the `runtime_handle.spawn(...)` above.

@@ -1141,6 +1141,31 @@ pub struct Editor {
             >,
         >,
     >,
+    /// B2.1 (2026-06-04): per-line display-cache output cell — the
+    /// substrate that retires `cells_matrix_cell`. Same stability
+    /// pattern: the Arc identity lives on `Editor` so the publisher
+    /// clones it into every snapshot; the worker (B2.2) holds a
+    /// sibling clone and writes via `cell.store(new_matrix)`. Empty
+    /// `DisplayMatrix` until the worker build path lands.
+    /// See `docs/dev/architecture/display-line.md`.
+    pub display_matrix_cell:
+        std::sync::Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+    /// B2.1 (2026-06-04): per-document display-matrix registry.
+    /// Mirror of [`Self::cells_matrices`] for the per-line cache.
+    /// Each visible buffer gets its own `Arc<ArcSwap<DisplayMatrix>>`
+    /// so the worker can rebuild per buffer and the renderer can pull
+    /// the matrix matching each pane's buffer at paint time. The
+    /// active-document entry is boot-seeded to share its Arc identity
+    /// with [`Self::display_matrix_cell`]; other entries are inserted
+    /// lazily via [`Self::display_matrix_for`].
+    pub display_matrices: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                lattice_core::BufferId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+            >,
+        >,
+    >,
     /// D.2.d (2026-05-29): diff subsystem instance. Holds the
     /// per-buffer `DiffSession` registry, the routing inverse
     /// index, and the per-session lazy debouncer. Reads through
@@ -1498,6 +1523,29 @@ impl Editor {
             .cells_matrices
             .lock()
             .expect("cells_matrices mutex poisoned");
+        map.entry(buffer_id)
+            .or_insert_with(std::sync::Arc::default)
+            .clone()
+    }
+
+    /// B2.1 (2026-06-04): lazy port into the per-document
+    /// [`Self::display_matrices`] registry. Mirror of
+    /// [`Self::cells_matrix_for`] for the per-line display cache.
+    /// Returns the matrix cell for `buffer_id`, inserting an empty
+    /// `Arc<ArcSwap<DisplayMatrix>>` on first ask.
+    ///
+    /// Idempotent: every call for the same `buffer_id` returns the
+    /// same `Arc` identity so renderer reads and worker writes stay
+    /// coherent. The active document's entry is boot-seeded to share
+    /// its `Arc` with [`Self::display_matrix_cell`].
+    pub fn display_matrix_for(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> std::sync::Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>> {
+        let mut map = self
+            .display_matrices
+            .lock()
+            .expect("display_matrices mutex poisoned");
         map.entry(buffer_id)
             .or_insert_with(std::sync::Arc::default)
             .clone()

@@ -973,9 +973,38 @@ pub struct CellsRenderState {
             Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
         >,
     >,
+
+    /// B2.1 (2026-06-04): active-pane per-line display matrix.
+    /// Clone of `Editor::display_matrix_cell` (stable Arc identity so
+    /// the worker's writes survive subsequent publishes) — the
+    /// per-line analogue of [`Self::matrix`]. Empty until the B2.2
+    /// worker build path writes through it. See
+    /// `docs/dev/architecture/display-line.md`.
+    pub display_matrix: Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+
+    /// B2.1 (2026-06-04): `PaneId → display matrix` lookup, the
+    /// per-line analogue of [`Self::pane_matrices`]. One entry per
+    /// visible Document leaf; derived at publish time from
+    /// [`Self::panes`]. Read via [`Self::display_matrix_for_pane`].
+    pub display_pane_matrices: Arc<
+        std::collections::HashMap<
+            lattice_core::ui::pane::PaneId,
+            Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+        >,
+    >,
 }
 
 impl CellsRenderState {
+    /// B2.1 (2026-06-04): look up the per-line display matrix for
+    /// `pane_id`. `None` when the pane is not a Document leaf (same
+    /// semantics as [`Self::matrix_for_pane`]).
+    pub fn display_matrix_for_pane(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> Option<&Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>> {
+        self.display_pane_matrices.get(&pane_id)
+    }
+
     /// D.4.d.1.c: look up the cell matrix for `pane_id`.
     /// Returns `None` when the pane is not a Document leaf
     /// (file tree / help / messages / oil / terminal panes
@@ -1021,6 +1050,12 @@ pub struct PaneCellsInputs {
     /// entries share Arc identity with
     /// [`CellsRenderState::matrix`].
     pub matrix: Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// B2.1 (2026-06-04): per-pane per-line display-matrix output
+    /// cell. Cloned from `Editor::display_matrix_for(buffer_id)` so
+    /// worker writes via `cell.store(...)` are visible through every
+    /// later `render_state.load_full()`. Active-pane entries share
+    /// Arc identity with [`CellsRenderState::display_matrix`].
+    pub display_matrix: Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
     /// D.4.d.2.1.b (2026-05-29): per-pane virtual-rows matrix
     /// output cell. Cloned from
     /// `Editor::virtual_rows_matrix_for(buffer_id)` so the
@@ -1111,6 +1146,10 @@ impl Default for CellsRenderState {
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
             panes: Arc::from(Vec::<PaneCellsInputs>::new().into_boxed_slice()),
             pane_matrices: Arc::new(std::collections::HashMap::new()),
+            display_matrix: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::display_matrix::DisplayMatrix::empty(),
+            )),
+            display_pane_matrices: Arc::new(std::collections::HashMap::new()),
         }
     }
 }

@@ -47,10 +47,22 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 use lattice_cells::{CellMatrix, EditDelta, MatrixVersion, VirtualRowMatrix};
 use lattice_core::Document;
 use lattice_host::cells_worker::WhitespaceConfig;
-use lattice_host::cells_worker::recompute;
+use lattice_host::cells_worker::{recompute, sync_rebuild_pane_on_edit};
+use lattice_host::display_matrix::DisplayMatrix;
 use lattice_host::render_state::{CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState};
 use lattice_host::ui::theme::Theme;
 use lattice_runtime::DocumentSnapshot;
+
+/// A fresh empty display-matrix cell (boot / cold-start state).
+fn empty_display() -> Arc<ArcSwap<DisplayMatrix>> {
+    Arc::new(ArcSwap::from_pointee(DisplayMatrix::empty()))
+}
+
+/// A display-matrix cell pre-seeded with `dm` — the prior-tick baseline
+/// the incremental + sync edit paths reuse from.
+fn seeded_display(dm: &DisplayMatrix) -> Arc<ArcSwap<DisplayMatrix>> {
+    Arc::new(ArcSwap::from_pointee(dm.clone()))
+}
 
 /// Fixed viewport height. Sized to a typical editing window;
 /// chunked mode kicks in for `line_count > 4 * 60 = 240`.
@@ -82,6 +94,7 @@ fn rs_for(
     last_edit: Option<EditDelta>,
     matrix_cell: Arc<ArcSwap<CellMatrix>>,
     syntax: Option<Arc<lattice_syntax::SyntaxHandle>>,
+    display_cell: Arc<ArcSwap<DisplayMatrix>>,
 ) -> ArcSwap<RenderState> {
     use lattice_core::BufferId;
     use lattice_core::ui::pane::PaneId;
@@ -92,9 +105,12 @@ fn rs_for(
         pane_id: PaneId::default(),
         buffer_id: BufferId::default(),
         matrix: matrix_cell.clone(),
-        display_matrix: Arc::new(ArcSwap::from_pointee(
-            lattice_host::display_matrix::DisplayMatrix::empty(),
-        )),
+        // B2.3: the canonical `DisplayMatrix` cell — `recompute` reads it
+        // for the prior-tick baseline (incremental reuse) and writes the
+        // rebuilt matrix; `sync_rebuild_pane_on_edit` reads + writes it on
+        // the actor thread. Sharing the caller's cell lets a bench seed a
+        // baseline so the incremental / sync paths are actually exercised.
+        display_matrix: display_cell.clone(),
         virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty())),
         version,
         snapshot: Some(snapshot.clone()),
@@ -117,6 +133,11 @@ fn rs_for(
         m.insert(pane_entry.pane_id, pane_entry.matrix.clone());
         Arc::new(m)
     };
+    let display_pane_matrices = {
+        let mut m = std::collections::HashMap::new();
+        m.insert(pane_entry.pane_id, pane_entry.display_matrix.clone());
+        Arc::new(m)
+    };
     let cells = CellsRenderState {
         matrix: matrix_cell,
         version,
@@ -131,10 +152,8 @@ fn rs_for(
         whitespace: WhitespaceConfig::default(),
         panes: Arc::from(vec![pane_entry].into_boxed_slice()),
         pane_matrices,
-        display_matrix: Arc::new(ArcSwap::from_pointee(
-            lattice_host::display_matrix::DisplayMatrix::empty(),
-        )),
-        display_pane_matrices: Arc::new(std::collections::HashMap::new()),
+        display_matrix: display_cell,
+        display_pane_matrices,
     };
     let rs = RenderState {
         cells: Arc::new(cells),
@@ -163,7 +182,7 @@ fn bench_full_build(c: &mut Criterion) {
                     // check always fails the cache and forces
                     // build_matrix.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell, None);
+                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell, None, empty_display());
                     let decision = recompute(&rs);
                     black_box(decision);
                 });
@@ -187,13 +206,25 @@ fn bench_incremental_build(c: &mut Criterion) {
             ..MatrixVersion::ZERO
         };
 
-        // Build the prior matrix once. The bench loop will
-        // clone its Arc as the starting point for each iter so
-        // the prefix-reuse path is exercised.
+        // Build the prior matrices once. The bench loop will clone their
+        // Arcs as the starting point for each iter so the prefix-reuse path
+        // is exercised. B2.3: the canonical baseline is the DISPLAY matrix
+        // (`recompute` reuses it incrementally); the cell baseline is the
+        // projection. Seed BOTH per iter, else `recompute` finds an empty
+        // display cell and silently does a full build, not incremental.
         let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs0 = rs_for(snapshot.clone(), v1, None, initial_matrix_cell.clone(), None);
+        let initial_display_cell = empty_display();
+        let rs0 = rs_for(
+            snapshot.clone(),
+            v1,
+            None,
+            initial_matrix_cell.clone(),
+            None,
+            initial_display_cell.clone(),
+        );
         recompute(&rs0);
         let baseline_matrix = initial_matrix_cell.load_full();
+        let baseline_display = initial_display_cell.load_full();
 
         // Single-line edit on line line_count/2 — touches the
         // middle of the document so prefix reuse + suffix
@@ -206,14 +237,21 @@ fn bench_incremental_build(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
-            &(snapshot, baseline_matrix, v2, edit),
-            |b, (snap, baseline, ver, ed)| {
+            &(snapshot, baseline_matrix, baseline_display, v2, edit),
+            |b, (snap, baseline, baseline_dm, ver, ed)| {
                 b.iter(|| {
                     // Each iter starts from the same baseline
-                    // matrix and the same edit delta.
+                    // matrices and the same edit delta.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> =
                         Arc::new(ArcSwap::from_pointee((**baseline).clone()));
-                    let rs = rs_for(snap.clone(), *ver, Some(*ed), matrix_cell, None);
+                    let rs = rs_for(
+                        snap.clone(),
+                        *ver,
+                        Some(*ed),
+                        matrix_cell,
+                        None,
+                        seeded_display(baseline_dm),
+                    );
                     let decision = recompute(&rs);
                     black_box(decision);
                 });
@@ -233,15 +271,24 @@ fn bench_cache_hit(c: &mut Criterion) {
             ..MatrixVersion::ZERO
         };
 
-        // Pre-populate matrix_cell at the same version
-        // rs.cells.version carries — recompute should see the
-        // version match and return CacheHit without touching
-        // build_matrix or try_incremental_build.
+        // Pre-populate matrix_cell + display_cell at the same version
+        // rs.cells.version carries — recompute should see the version match
+        // (display current) and the projection current, returning CacheHit
+        // without building. The measured `rs` must SHARE both cells so the
+        // populated baseline is visible.
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs_full = rs_for(snapshot.clone(), version, None, matrix_cell.clone(), None);
+        let display_cell = empty_display();
+        let rs_full = rs_for(
+            snapshot.clone(),
+            version,
+            None,
+            matrix_cell.clone(),
+            None,
+            display_cell.clone(),
+        );
         recompute(&rs_full);
 
-        let rs = rs_for(snapshot, version, None, matrix_cell.clone(), None);
+        let rs = rs_for(snapshot, version, None, matrix_cell.clone(), None, display_cell);
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
@@ -288,15 +335,18 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
         let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(syn));
 
         let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let initial_display_cell = empty_display();
         let rs0 = rs_for(
             snapshot.clone(),
             v1,
             None,
             initial_matrix_cell.clone(),
             Some(handle.clone()),
+            initial_display_cell.clone(),
         );
         recompute(&rs0);
         let baseline_matrix = initial_matrix_cell.load_full();
+        let baseline_display = initial_display_cell.load_full();
 
         // In-place edit of the middle line (removed == added == 1).
         let edit = EditDelta {
@@ -307,8 +357,8 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
-            &(snapshot, baseline_matrix, v2, edit, handle),
-            |b, (snap, baseline, ver, ed, handle)| {
+            &(snapshot, baseline_matrix, baseline_display, v2, edit, handle),
+            |b, (snap, baseline, baseline_dm, ver, ed, handle)| {
                 b.iter(|| {
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> =
                         Arc::new(ArcSwap::from_pointee((**baseline).clone()));
@@ -318,6 +368,7 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
                         Some(*ed),
                         matrix_cell,
                         Some(handle.clone()),
+                        seeded_display(baseline_dm),
                     );
                     let decision = recompute(&rs);
                     black_box(decision);
@@ -373,8 +424,98 @@ fn bench_windowed_build(c: &mut Criterion) {
                     // Fresh cell so the version check misses → full
                     // (windowed) build_matrix runs.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell, Some(handle.clone()));
+                    let rs = rs_for(
+                        snap.clone(),
+                        *ver,
+                        None,
+                        matrix_cell,
+                        Some(handle.clone()),
+                        empty_display(),
+                    );
                     black_box(recompute(&rs));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// B2.3 (2026-06-04): the synchronous edit-path cost the ACTOR pays in the
+/// publish tail (`sync_rebuild_pane_on_edit`) on every keystroke, BEFORE it
+/// replies to the UI thread — so this latency is directly on the
+/// keystroke→glyph budget (paramount goal #1: ≤ 8ms at 120Hz).
+///
+/// The sync path does ONLY the windowed incremental `DisplayMatrix` rebuild
+/// with highlight forced off: prefix/suffix `DisplayLine` (whole-doc) or
+/// whole-`DisplayChunk` (chunked) `Arc`-reuse + the edited line's text
+/// rebuild. No `highlight_lines`, no reparse, no cell projection (that stays
+/// on the async worker). It must stay well under ~200µs even on a 100k-line
+/// file — and roughly FLAT across `line_count` in chunked mode, since the
+/// rebuild touches O(window), not O(file). A regression to O(file) shows up
+/// here as cost scaling with size. Recorded in
+/// `docs/dev/operations/benchmarks.md`.
+fn bench_display_edit_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("display_edit_path");
+    for &line_count in &[100usize, 5_000, 100_000] {
+        let doc = synthetic_rust_doc(line_count);
+        let snapshot = Arc::new(DocumentSnapshot::__bench_from_document(&doc));
+        let v1 = MatrixVersion {
+            text: 1,
+            ..MatrixVersion::ZERO
+        };
+        let v2 = MatrixVersion {
+            text: 2,
+            ..MatrixVersion::ZERO
+        };
+
+        // Baseline display matrix once (the prior published tick). No syntax
+        // handle: the sync path forces highlight off regardless, and Arc
+        // reuse cost is colour-independent.
+        let initial_display_cell = empty_display();
+        let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let rs0 = rs_for(
+            snapshot.clone(),
+            v1,
+            None,
+            initial_matrix_cell,
+            None,
+            initial_display_cell.clone(),
+        );
+        recompute(&rs0);
+        let baseline_display = initial_display_cell.load_full();
+
+        // In-place edit of the middle line (removed == added == 1) so prefix
+        // reuse + suffix shift both have work to do.
+        let edit = EditDelta {
+            start_line: (line_count / 2) as u32,
+            lines_removed: 1,
+            lines_added: 1,
+        };
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{line_count}_lines")),
+            &(snapshot, baseline_display, v2, edit),
+            |b, (snap, baseline_dm, ver, ed)| {
+                b.iter(|| {
+                    // Fresh seeded display cell per iter (same baseline every
+                    // time); a throwaway matrix cell to satisfy `rs_for`.
+                    let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+                    let rs = rs_for(
+                        snap.clone(),
+                        *ver,
+                        Some(*ed),
+                        matrix_cell,
+                        None,
+                        seeded_display(baseline_dm),
+                    );
+                    let loaded = rs.load_full();
+                    let pane = &loaded.cells.panes[0];
+                    let did = sync_rebuild_pane_on_edit(
+                        pane,
+                        &loaded.cells.theme,
+                        &loaded.cells.whitespace,
+                    );
+                    black_box(did);
                 });
             },
         );
@@ -388,6 +529,7 @@ criterion_group!(
     bench_incremental_build,
     bench_incremental_build_highlighted,
     bench_windowed_build,
-    bench_cache_hit
+    bench_cache_hit,
+    bench_display_edit_path
 );
 criterion_main!(benches);

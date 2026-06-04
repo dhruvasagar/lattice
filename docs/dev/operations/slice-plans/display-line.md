@@ -112,14 +112,40 @@ Landed with:
   tab-expansion / inlay-splice). All 53 cells_worker + 686 host-lib tests green;
   TUI + GPUI libs compile.
 
-### B2.3 — synchronous always-current rebuild + edit-path bench  🗒
+### B2.3 — synchronous always-current rebuild + edit-path bench  ✅ (2026-06-04)
 
-Actor runs the windowed incremental `DisplayMatrix` rebuild of the edited region
-**before publishing** (in `dispatch`'s tail / publish), honouring the threading
-guarantee above (text/structure only; stale-syntax → no highlight). Result:
-`version.text` never lags the snapshot. Async worker retained for the
-reparse-completion recolour. Add `display_edit_path` bench + record the bound in
-`benchmarks.md`.
+`dispatch::publish_render_state` now runs `cells_worker::sync_rebuild_pane_on_edit`
+for each pane **before** `render_state.store` — so the published canonical
+`DisplayMatrix` is text-current the instant the renderer paints; `version.text`
+never lags the snapshot. The sync path attempts ONLY
+`try_incremental_display_build` with a new `allow_highlight: false` flag (no
+`highlight_lines` call ever lands on the edit-critical actor thread — enforced,
+not incidental); ineligible publishes (no single edit, doc switch, chunk-shape
+change, same-tick window miss) no-op and defer to the async worker. It
+deliberately does NOT project to the cell grid — that O(window) projection stays
+on the async worker, which `recompute_pane` now runs on a display-cache-hit when
+the projected cells lag (so cells-consumers stay one worker-tick behind until the
+TUI/GPU cutovers, B2.4/B3). The async worker keeps `allow_highlight: true` (full
+colour); the edited line shows default fg for a frame or two until the reparse
+lands and a later publish (syntax axis bumped, no `last_edit`) drives the worker's
+highlighted rebuild.
+
+Landed with:
+- **Bench `display_edit_path`** + recorded in `benchmarks.md`: the sync path is
+  **~4 µs flat across 5k→100k lines** (O(window)), ~45× under the 200 µs target.
+- **O(file) bug the bench caught + fixed**: the chunked incremental rebuild's
+  `rebuild_hi` defaulted to `new_line_count` when no suffix chunk remained (edit
+  in the last covered chunk of a *windowed* matrix), rebuilding every row to EOF
+  — 57 ms/keystroke on a 100k-line file. Now bounded to the published window's
+  `covered_end_line()` shifted by `net`, in both
+  `try_incremental_display_build` and its cell-path oracle.
+- **Bench harness fix**: `rs_for` now threads a display-matrix cell so the
+  incremental benches seed the *display* baseline (post-B2.2 the canonical build
+  is the display matrix); previously they silently measured a full build.
+- **Tests**: `sync_rebuild_on_edit_is_text_current_and_unhighlighted` (text-current
+  + all-default runs despite a current syntax handle + prefix Arc-reuse),
+  `sync_rebuild_skips_non_edit_publish`, `worker_projects_lagging_cells_after_sync_rebuild`.
+  56 cells_worker + 689 host-lib tests green; TUI + GPUI libs compile.
 
 ### B2.4 — TUI cutover  🗒
 

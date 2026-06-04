@@ -69,6 +69,52 @@ target rather than just a slower number.
 
 ---
 
+## B2.3 — synchronous edit-path display rebuild (2026-06-04)
+
+Display-line migration, slice B2.3 (design:
+`../architecture/display-line.md`; slice plan:
+`slice-plans/display-line.md`). The actor now rebuilds the edited region's
+canonical `DisplayMatrix` **synchronously in the publish tail**
+(`sync_rebuild_pane_on_edit`) BEFORE replying to the UI thread, so
+`version.text` never lags the snapshot — that lag was the per-keystroke
+whole-viewport stale-guard flicker. This latency sits directly on the
+keystroke→glyph budget (§8.2: ≤ 8 ms at 120 Hz), so it has a hard bound.
+
+New bench `display_edit_path` — times `sync_rebuild_pane_on_edit` for an
+in-place single-line edit at the middle of the document, across whole-doc
+(100) and windowed-chunked (5k, 100k) sizes. The sync path does ONLY the
+windowed incremental rebuild with highlight forced off (prefix/suffix
+`Arc`-reuse + edited-line text rebuild); no `highlight_lines`, no reparse,
+no cell projection (that stays on the async worker).
+
+| line_count | display_edit_path (median) |
+|------------|----------------------------|
+| 100        | ~7.9 µs (whole-doc)        |
+| 5000       | ~4.4 µs (windowed)         |
+| 100000     | ~4.3 µs (windowed)         |
+
+**Flat at ~4 µs in chunked mode regardless of file size** — O(window), not
+O(file) — and ~45× under the 200 µs target. (Whole-doc 100-line is slightly
+higher because it rebuilds the small file's full suffix via
+`with_source_line`; still trivial.)
+
+**Bug this bench caught.** The first run measured 2.5 ms at 5k and **57 ms at
+100k** — O(file). The incremental rebuild's `rebuild_hi` defaulted to
+`new_line_count` when no suffix chunk remained (edit in the last covered
+chunk of a *windowed* matrix), so it materialised every row to EOF even
+though the full build is windowed (H.3). Editing near the top of a 100k-line
+file would have frozen the editor for 57 ms per keystroke. Fixed by bounding
+`rebuild_hi` to the published window's `covered_end_line()` shifted by `net`
+(`try_incremental_display_build` + its cell-path oracle). This is exactly the
+"enforced, not asserted" guarantee the slice plan mandated the bench for.
+
+Note: the pre-existing `cells_worker_incremental_build` / `_highlighted`
+benches were also updated this slice to seed the **display** baseline (not
+just the cell baseline) so they exercise the real incremental path post-B2.2;
+the 1000-line figure (~213 µs) reflects its full-coverage cell *projection*
+(O(covered), ≤ window-cap), which runs on the async worker — off the
+edit-critical thread — and is deleted with the cell path in B4.
+
 ## H.1 — range-scoped rebuild highlight (2026-06-04)
 
 Incremental highlight initiative, slice H.1 (design:

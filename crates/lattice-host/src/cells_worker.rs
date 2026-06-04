@@ -357,13 +357,37 @@ pub fn recompute_pane(
         && existing.wrap_width == effective_wrap
         && existing.covers(visible_lo, visible_hi)
     {
-        return WorkerDecision::CacheHit;
+        // B2.3 (2026-06-04): the canonical `DisplayMatrix` is already
+        // current for these inputs — typically because the actor rebuilt
+        // it synchronously in the publish tail
+        // ([`sync_rebuild_pane_on_edit`]) so `version.text` never lags the
+        // snapshot. That sync path deliberately does NOT project to the
+        // cell grid (the O(window) projection stays off the edit-critical
+        // actor thread per the B2 threading guarantee), so the projected
+        // cells may still be a frame behind. Reconcile them here, off the
+        // actor thread, for the not-yet-cut-over cell renderers (GPU until
+        // B3). When the projection already matches, it is a true cache hit
+        // and no paint wake fires.
+        let cells_current = {
+            let cm = pane.matrix.load();
+            cm.version == existing.version
+                && cm.wrap_width == existing.wrap_width
+                && cm.covers(visible_lo, visible_hi)
+        };
+        if cells_current {
+            return WorkerDecision::CacheHit;
+        }
+        let cells = display_matrix_to_cell_matrix(&existing, theme);
+        pane.matrix.store(Arc::new(cells));
+        return WorkerDecision::Recomputed;
     }
 
     // Incremental rebuild (S2.4.b semantics, DisplayLine payload).
     // Eligibility is checked inside `try_incremental_display_build`;
-    // `None` falls through to a full windowed rebuild.
-    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
+    // `None` falls through to a full windowed rebuild. The worker path
+    // keeps full syntax colour (`allow_highlight: true`); the sync edit
+    // path forces it off.
+    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, true)
         .and_then(|mut dm| {
             dm.wrap_width = effective_wrap;
             // H.3: accept the incremental result only if it still
@@ -403,6 +427,72 @@ pub fn recompute_pane(
     pane.matrix.store(Arc::new(cells));
     pane.display_matrix.store(Arc::new(matrix));
     decision
+}
+
+/// B2.3 (2026-06-04): the synchronous, edit-path-only `DisplayMatrix`
+/// rebuild the actor runs in the publish tail
+/// ([`crate::dispatch`]'s `publish_render_state`) **before** the render
+/// state is stored, so the published `display_matrix` is text-current the
+/// instant the renderer paints — `version.text` never lags the snapshot,
+/// which is what retires the per-keystroke whole-viewport stale-guard
+/// flicker.
+///
+/// Honours the B2 threading guarantee (CLAUDE.md / the slice plan): the
+/// edit-critical thread does ONLY O(window) text + structure work —
+/// prefix/suffix `DisplayLine` `Arc`-reuse plus the edited line(s)' text
+/// rebuild — and never a `highlight_lines` call, reparse, or full O(file)
+/// build. Concretely it attempts ONLY [`try_incremental_display_build`]
+/// with `allow_highlight: false`:
+///
+/// - **Eligible** (single text edit, unchanged inlay/fold/theme axes,
+///   line-count consistent, stable chunk shape, result still covers the
+///   viewport) → store the rebuilt matrix into `pane.display_matrix` and
+///   return `true`. The edited line shows default fg until the async
+///   worker recolours it; unchanged lines keep their colour via `Arc`
+///   reuse.
+/// - **Ineligible** (non-edit publish, doc switch, chunk-shape change,
+///   same-tick window miss) → leave `pane.display_matrix` untouched and
+///   return `false`. The async worker performs the full / highlighted
+///   build off-thread.
+///
+/// Deliberately does NOT project to the cell grid: that O(window)
+/// projection stays on the async worker ([`recompute_pane`] reconciles the
+/// lagging cells on its next wake). Cells therefore trail the display
+/// matrix by one worker tick until the renderers cut over to
+/// `DisplayMatrix` (TUI B2.4, GPU B3) and the cell path is deleted (B4).
+pub fn sync_rebuild_pane_on_edit(
+    pane: &crate::render_state::PaneCellsInputs,
+    theme: &crate::ui::theme::Theme,
+    whitespace: &WhitespaceConfig,
+) -> bool {
+    let Some(snapshot) = pane.snapshot.as_ref() else {
+        return false;
+    };
+    // Match `recompute_pane`'s wrap + coverage model so an accepted sync
+    // result is one the worker treats as a cache hit (no redundant
+    // rebuild) on its following wake.
+    let effective_wrap = if pane.wrap { pane.viewport_width } else { 0 };
+    let coverage_line_count = snapshot.buffer.line_count();
+    let visible_lo = pane.scroll.min(coverage_line_count);
+    let visible_hi = pane
+        .scroll
+        .saturating_add(pane.viewport_height)
+        .min(coverage_line_count);
+
+    let existing = pane.display_matrix.load_full();
+    let Some(mut matrix) =
+        try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, false)
+    else {
+        return false;
+    };
+    matrix.wrap_width = effective_wrap;
+    if !matrix.covers(visible_lo, visible_hi) {
+        // Same-tick scroll past the window edge — let the async worker do
+        // the recentred (windowed) full rebuild off-thread.
+        return false;
+    }
+    pane.display_matrix.store(Arc::new(matrix));
+    true
 }
 
 /// S2.4.b: attempt an incremental rebuild from the previously-
@@ -653,13 +743,17 @@ fn try_incremental_build(
             suffix_chunks.push(Arc::new(chunk.shifted_by(net, new_version)));
         }
     }
-    // First suffix chunk's post-edit start anchors the upper bound
-    // of the rebuild zone. If no suffix chunks remain (edit reached
-    // EOF), the rebuild zone extends to `new_line_count`.
-    let rebuild_hi = suffix_chunks
-        .first()
-        .map(|c| c.start_source_line)
-        .unwrap_or(new_line_count);
+    // First suffix chunk's post-edit start anchors the upper bound of the
+    // rebuild zone. When no suffix chunks remain (the edit fell in the last
+    // covered chunk) the zone stops at the published window's covered end
+    // shifted by `net`, NOT `new_line_count` — otherwise a windowed
+    // large-file matrix rebuilds O(file) rows on an edit near the top. See
+    // the matching fix + rationale in `try_incremental_display_build`. (Dead
+    // parity oracle; mirrored to stay honest until B4 deletes the cell path.)
+    let rebuild_hi = suffix_chunks.first().map(|c| c.start_source_line).unwrap_or_else(|| {
+        ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
+            .min(new_line_count)
+    });
 
     // --- Step 3: rebuild zone ---
     // Carve [rebuild_lo, rebuild_hi) into `chunk_size`-aligned
@@ -1496,12 +1590,23 @@ fn build_display_matrix(
 /// payload + matrix/chunk types differ. Unchanged `DisplayLine`s are
 /// `Arc`-reused byte-identical (pixel-stable; only the edited line
 /// recolours), exactly as the cell path does.
+///
+/// B2.3 (2026-06-04): `allow_highlight` gates whether the rebuild zone
+/// is syntax-highlighted. The async worker passes `true` (full colour).
+/// The synchronous actor path ([`sync_rebuild_pane_on_edit`]) passes
+/// `false` so the rebuild does ZERO `highlight_lines` work on the
+/// edit-critical thread — the B2 threading guarantee, enforced rather
+/// than relying on the syntax snapshot happening to be stale. The
+/// edited line keeps default fg until the async worker recolours it a
+/// frame or two later (eventual consistency, within the keystroke UX
+/// contract); unchanged lines `Arc`-reuse their prior colour.
 fn try_incremental_display_build(
     published: &crate::display_matrix::DisplayMatrix,
     snapshot: &lattice_runtime::DocumentSnapshot,
     pane: &crate::render_state::PaneCellsInputs,
     theme: &crate::ui::theme::Theme,
     whitespace: &WhitespaceConfig,
+    allow_highlight: bool,
 ) -> Option<crate::display_matrix::DisplayMatrix> {
     use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix};
     let edit = pane.last_edit?;
@@ -1546,6 +1651,11 @@ fn try_incremental_display_build(
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        // B2.3: sync edit path forces highlight off — no `highlight_lines`
+        // call ever lands on the edit-critical actor thread.
+        if !allow_highlight {
+            return None;
+        }
         if hi <= lo {
             return Some(Vec::new());
         }
@@ -1638,10 +1748,22 @@ fn try_incremental_display_build(
             suffix_chunks.push(Arc::new(chunk.shifted_by(net, new_version)));
         }
     }
-    let rebuild_hi = suffix_chunks
-        .first()
-        .map(|c| c.start_source_line)
-        .unwrap_or(new_line_count);
+    // H.3 windowing (2026-06-04, found by the B2.3 `display_edit_path`
+    // bench): when no suffix chunk remains — the edit fell in the LAST
+    // covered chunk of a *windowed* large-file matrix — the rebuild zone
+    // must stop at the published window's covered end (shifted by `net`),
+    // NOT `new_line_count`. The full build is windowed to O(viewport)
+    // (H.3); without this bound the incremental rebuild instead
+    // materialised every row from the edit to EOF — O(file) — so typing
+    // near the top of a 100k-line file cost ~57ms per keystroke, blowing
+    // the sync edit path's O(window) guarantee. The matrix preserves its
+    // windowed coverage here; a scroll past the window then fails the
+    // `covers` gate in `recompute_pane` and triggers a recentred (windowed)
+    // full rebuild.
+    let rebuild_hi = suffix_chunks.first().map(|c| c.start_source_line).unwrap_or_else(|| {
+        ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
+            .min(new_line_count)
+    });
 
     // Step 3: rebuild zone.
     let spans = highlight_range(rebuild_lo, rebuild_hi);
@@ -3336,6 +3458,257 @@ mod tests {
             Arc::ptr_eq(&bb_pre, &d2.row_at_source_line(2).unwrap().text),
             "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior DisplayLine text Arc — keeps its colours"
         );
+    }
+
+    /// B2.3 (2026-06-04): the synchronous edit-path rebuild
+    /// (`sync_rebuild_pane_on_edit`) makes the canonical `DisplayMatrix`
+    /// text-current (`version.text` == the post-edit snapshot) WITHOUT
+    /// highlighting — even with a *current* syntax handle attached the
+    /// rebuilt line's runs are all `Style::Default`, proving the
+    /// `allow_highlight: false` path keeps `highlight_lines` off the
+    /// edit-critical actor thread. Unchanged lines `Arc`-reuse their prior
+    /// `DisplayLine` (keeping whatever colour they had).
+    #[tokio::test]
+    async fn sync_rebuild_on_edit_is_text_current_and_unhighlighted() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // v1: plain seed (no handle) → prior whole-doc display matrix.
+        let snap1 = snap_of_versioned("let a = 1;\nlet b = 2;\nlet c = 3;\n", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let row0_pre = Arc::clone(&dm_cell.load_full().row_at_source_line(0).unwrap().text);
+
+        // v2: edit line 1 in place → introduces `fn`. Attach a Rust handle
+        // parsed + seeded at v2 so syntax IS available and current — the
+        // sync path must STILL not colour the rebuilt line.
+        let text2 = "let a = 1;\nfn b() {}\nlet c = 3;\n";
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .unwrap();
+        s.parse_at(text2, 2);
+        let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+            s,
+            &tokio::runtime::Handle::current(),
+            None,
+        ));
+        let snap2 = snap_of_versioned(text2, 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(1, 1, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            Some(handle),
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        let loaded = rs2.load_full();
+        let pane = &loaded.cells.panes[0];
+        assert!(
+            sync_rebuild_pane_on_edit(pane, &loaded.cells.theme, &loaded.cells.whitespace),
+            "single in-place edit is eligible for the sync rebuild"
+        );
+
+        let dm = dm_cell.load_full();
+        assert_eq!(
+            dm.version.text, 2,
+            "display matrix is text-current after the sync rebuild"
+        );
+        let row1 = dm.row_at_source_line(1).unwrap();
+        assert_eq!(&*row1.text, "fn b() {}");
+        assert!(
+            row1.runs
+                .iter()
+                .all(|r| matches!(r.style, lattice_syntax::Style::Default)),
+            "sync rebuild must NOT highlight — all runs default-styled despite a current syntax handle"
+        );
+        assert!(
+            Arc::ptr_eq(&row0_pre, &dm.row_at_source_line(0).unwrap().text),
+            "unchanged prefix row reuses its prior DisplayLine (keeps its colour)"
+        );
+    }
+
+    /// B2.3: a non-edit publish (no `last_edit`) is ineligible for the
+    /// sync rebuild — it returns `false` and leaves `display_matrix`
+    /// untouched, deferring to the async worker's full/highlighted build.
+    #[test]
+    fn sync_rebuild_skips_non_edit_publish() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let before = Arc::as_ptr(&dm_cell.load_full());
+
+        // A theme-only republish (no last_edit): bump the theme axis,
+        // keep text/snapshot identical.
+        let snap2 = snap_of_versioned("aa\nbb\ncc", 1);
+        let v2 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            theme: 99,
+            ..MatrixVersion::ZERO
+        };
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        let loaded = rs2.load_full();
+        let pane = &loaded.cells.panes[0];
+        assert!(
+            !sync_rebuild_pane_on_edit(pane, &loaded.cells.theme, &loaded.cells.whitespace),
+            "non-edit publish is ineligible for the sync rebuild"
+        );
+        assert_eq!(
+            before,
+            Arc::as_ptr(&dm_cell.load_full()),
+            "ineligible sync rebuild must not touch display_matrix"
+        );
+    }
+
+    /// B2.3: after the actor's sync rebuild makes `display_matrix`
+    /// text-current but leaves the projected cell grid a frame behind (the
+    /// projection stays off the actor thread per the threading guarantee),
+    /// the async worker's next `recompute` reconciles the lagging cells —
+    /// projecting the current display matrix into `pane.matrix` and
+    /// reporting `Recomputed` so the cell renderers repaint current content.
+    #[test]
+    fn worker_projects_lagging_cells_after_sync_rebuild() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        assert_eq!(matrix_cell.load().version.text, 1);
+
+        // Edit: insert a line. Build rs2 and run ONLY the sync rebuild
+        // (mimicking the actor publish tail) — it updates display_matrix
+        // but deliberately not the cell grid. `syntax: 1` mirrors reality:
+        // the reparse hasn't landed at edit-publish time.
+        let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(1, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme.clone(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        {
+            let loaded = rs2.load_full();
+            let pane = &loaded.cells.panes[0];
+            assert!(sync_rebuild_pane_on_edit(
+                pane,
+                &loaded.cells.theme,
+                &loaded.cells.whitespace
+            ));
+        }
+        let dm_cell = display_cell_for(&matrix_cell);
+        assert_eq!(
+            dm_cell.load().version.text,
+            2,
+            "display matrix is current after sync"
+        );
+        assert_eq!(
+            matrix_cell.load().version.text,
+            1,
+            "cell grid still lags (sync deliberately did not project)"
+        );
+
+        // The async worker reconciles the lagging cells on its next wake.
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
+        let cm = matrix_cell.load();
+        assert_eq!(
+            cm.version.text, 2,
+            "worker projected the current display matrix into the cells"
+        );
+        let row1: String = cm
+            .slice(0, 10)
+            .iter()
+            .nth(1)
+            .unwrap()
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
+            .collect();
+        assert_eq!(row1, "NEW");
     }
 
     /// H.1 (2026-06-04): the range-scoped highlight must colour the

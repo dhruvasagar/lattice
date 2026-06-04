@@ -1232,6 +1232,23 @@ impl Editor {
         // plus one mapper call).
         self.propagate_pane_group_scroll();
         let next = self.build_render_state();
+        // B2.3 (2026-06-04): bring each pane's canonical `DisplayMatrix`
+        // text-current synchronously BEFORE publishing, so the renderer
+        // never paints a frame where `display_matrix.version.text` lags the
+        // snapshot — that lag is the per-keystroke whole-viewport stale-guard
+        // flicker the display-line migration retires. Edit-path only and
+        // highlight-free, so the actor thread does O(window) text+structure
+        // work and no `highlight_lines` / reparse / O(file) build; ineligible
+        // panes no-op here and the async cells worker handles them off-thread.
+        // See the threading guarantee in
+        // docs/dev/operations/slice-plans/display-line.md.
+        for pane in next.cells.panes.iter() {
+            crate::cells_worker::sync_rebuild_pane_on_edit(
+                pane,
+                &next.cells.theme,
+                &next.cells.whitespace,
+            );
+        }
         self.render_state.store(std::sync::Arc::new(next));
         // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
         // `Notify::notify_one` is "permit-style" — if no one is

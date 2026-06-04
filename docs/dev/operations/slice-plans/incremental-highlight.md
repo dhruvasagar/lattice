@@ -54,23 +54,44 @@ re-highlight; or (b) a minimal whole-doc H.2b only if a concrete need appears.
   ranges, reuse prior rows elsewhere (H.1 whole-doc row-reuse, net=0); else
   full rebuild. Chunked: reuse non-dirty chunks.
 
-## H.3 — viewport-scoped highlighting  🗒
+## H.3 — viewport-scoped highlighting  ✅ (2026-06-04)
 
-- Active matrix covers visible + overscan, extended incrementally on scroll.
-- `row_at_source_line` outside the window → `None`; compose graceful
-  plain-text fallback for the transient off-window case.
-- Both renderers: confirm TUI + GPUI handle a windowed matrix (off-window
-  rows fall back identically).
-- Tests: window covers viewport±overscan; scroll extends; off-window
-  fallback.
-- Bench: **headline** — synthetic 100k-line file, highlight + rebuild latency
-  independent of file size (O(viewport)). Record in `benchmarks.md`.
-- Impact: cells inputs (viewport range — already plumbed via
-  `viewport_height/width`), `cells_worker.rs` windowing, compose fallback
-  (`lattice-ui-tui` + `lattice-ui-gpui`).
+Landed in four sub-slices. **Renderer discovery:** the planned "compose
+graceful plain-text fallback in both renderers" was already in place —
+`row_at_source_line → None` falls back to rope text (TUI) / legacy
+windowed `visible_spans` with syntax (GPUI). All production consumers use
+`row_at_source_line`/`segment_count` (absolute-coordinate, windowing-safe);
+no `.slice()`/`.display_slice()` caller exists in either renderer. So H.3
+touched **no renderer code** — the cross-renderer parity patch was a no-op.
+
+- **H.3a ✅ `dccded9`** — plumb `PaneCellsInputs.scroll` (active pane = live
+  `Editor::scroll`, inactive = stashed `PaneState.scroll`). No-op plumb.
+- **H.3b ✅ `0355c3f`** — window the chunked `build_matrix` to
+  `[scroll−overscan, scroll+viewport+overscan)` **above `WINDOW_CAP_LINES`
+  (2048)**; full residency at/below the cap (small docs gain nothing from
+  windowing and would pay needless scroll-rebuilds — the cap is the correct
+  cost model, not the easy one). `CellMatrix::{covered_start_line,
+  covered_end_line,covers}` (derived from chunk spans, no new fields).
+  `recompute_pane` cache-hit + incremental-result acceptance now require the
+  matrix to cover the viewport (clamped to EOF), so a scroll past the window
+  rebuilds + recentres. `source_line_count` stays the true count → off-window
+  lines have no chunk → existing renderer fallback. Tests: window covers
+  viewport-not-whole-doc + off-window `→ None`; scroll-past rebuilds; in-window
+  scroll = cache hit; `window_bounds` cap + alignment.
+- **H.3c ✅** — headline `cells_worker_windowed_build` bench (5k→100k,
+  clone-free) + `bucket_inlays_by_line` moved to a `HashMap` (O(inlays) not
+  the O(file) dense `vec![_; line_count]`).
+- **H.3d ✅** — the bench revealed the residual O(file) term was **not** in
+  the cells layer but in `lattice-syntax`: `highlight_lines_via_query`
+  rescanned the whole source (`compute_line_starts`) on every call.
+  Memoized `SyntaxSnapshot.line_starts` (recomputed once per source mutation
+  via `set_source_bytes`). Result: windowed build flat at ~1 ms across
+  5k→100k lines (was 3.84 ms at 100k) — **O(viewport) achieved**. Numbers in
+  `benchmarks.md`.
 
 ## Sequencing
 
-H.1 → H.2 → H.3. Each green + committed + benched before the next. H.1 also
-resolves the user-reported markdown inline-content flicker (the whole-file
-highlight lengthening the compose `cells_stale` plain-text window).
+H.1 → H.2 → H.3 (all ✅). Each green + committed + benched before the next.
+H.1 also resolves the user-reported markdown inline-content flicker (the
+whole-file highlight lengthening the compose `cells_stale` plain-text
+window).

@@ -1598,6 +1598,48 @@ retired the env-var toggle).
 
 Numbers captured: 2026-05-27, S5 first run.
 
+### H.3 — viewport-scoped (windowed) chunked matrix (2026-06-04)
+
+Anchor: `../architecture/incremental-highlight.md` + slice plan
+`slice-plans/incremental-highlight.md`. Goal: highlight +
+cell-matrix build O(viewport), never O(file), so large files stay
+within the keystroke/paint budget.
+
+Above `WINDOW_CAP_LINES` (2048) the chunked matrix is built only
+over `[scroll − overscan, scroll + viewport + overscan)` instead of
+the whole document. New headline bench `cells_worker_windowed_build`
+— a full (cold) build at a fixed 60-line viewport over docs from
+5k to 100k lines, **with a live syntax handle** (highlight + cell
+materialisation both measured), clone-free harness:
+
+| `cells_worker_windowed_build` | 5 000 | 20 000 | 50 000 | 100 000 |
+| ----------------------------- | ----- | ------ | ------ | ------- |
+| before H.3d (line-start rescan) | 1.17 ms | 1.60 ms | 2.46 ms | 3.84 ms |
+| after H.3d (memoized)           | ~1.0 ms | 1.02 ms | 1.03 ms | 1.07 ms |
+
+**Flat across file size = O(viewport) achieved.** The bench is the
+artefact that earned its keep here: after H.3b windowed the cell
+matrix, the build was *still* scaling with `line_count`
+(1.17→3.84 ms). Root cause was **not** the cells layer — it was
+`lattice-syntax::highlight_lines_via_query` calling
+`compute_line_starts(&self.source)` on every call (two full O(source)
+passes to rebuild the line→byte table). H.3d memoizes that table on
+`SyntaxSnapshot` (recomputed once per source mutation), collapsing
+the curve to flat ~1 ms regardless of size. (`bucket_inlays_by_line`
+was also moved from a dense `Vec<Vec<_>>` of length `line_count` to a
+`HashMap` — O(inlays) not O(file) — though it was not the dominant
+term here.)
+
+**Stale rows above:** the `cells_worker_full_build` /
+`cells_worker_incremental_build` **5 000-line** figures (~1.9 ms /
+~103 µs) are *pre-H.3* — at 5 000 > 2048 the matrix now windows, so
+the real post-H.3 cold-build cost at 5 000 lines is the windowed
+~1 ms (see table above), and incremental likewise touches only the
+windowed chunk set. The 100/1 000-line rows are unaffected (below
+the cap → full residency, unchanged).
+
+Numbers captured: 2026-06-04 (`--measurement-time 4`).
+
 ---
 
 ## "Performance has regressed" warnings

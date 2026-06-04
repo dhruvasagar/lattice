@@ -110,6 +110,17 @@ pub struct SyntaxSnapshot {
     /// Last-parsed source bytes. `Arc<[u8]>` so cloning a
     /// snapshot doesn't copy the buffer.
     source: Arc<[u8]>,
+    /// H.3d (2026-06-04): memoized line→byte start table for
+    /// `source` (`line_starts[i]` = byte offset of line `i`; final
+    /// entry = `source.len()`). Recomputed once per source mutation
+    /// (via [`Self::set_source_bytes`]) instead of on every
+    /// `highlight_lines` call. The per-call rescan was an O(file)
+    /// term that defeated viewport-scoped highlight on large files
+    /// (it ran two full passes over the whole source even when the
+    /// query only needed a viewport window) — caught by the
+    /// `cells_worker_windowed_build` bench. `Arc<[usize]>` so cloning
+    /// a snapshot stays cheap.
+    line_starts: Arc<[usize]>,
     /// Latest parse result. `None` until the first parse has
     /// run. `Tree` is internally Arc'd by tree-sitter, so
     /// cloning is cheap.
@@ -204,6 +215,8 @@ impl Syntax {
                 lang,
                 registry,
                 source: Arc::from(Vec::<u8>::new()),
+                // H.3d: line table for the (empty) initial source.
+                line_starts: Arc::from(compute_line_starts(&[])),
                 tree: None,
                 text_version: 0,
                 changed_lines: None,
@@ -319,7 +332,7 @@ impl Syntax {
             .parser
             .parse(bytes, None)
             .or_else(|| self.inner.tree.take());
-        self.inner.source = Arc::from(bytes.to_vec());
+        self.inner.set_source_bytes(bytes);
         self.inner.tree = new_tree;
         self.inner.text_version = text_version;
         // H.2: a full reparse has no incremental old-vs-new diff, so the
@@ -417,7 +430,7 @@ impl Syntax {
                 tree.edit(&edit_delta_to_input_edit(*d));
             }
         }
-        self.inner.source = Arc::from(bytes.to_vec());
+        self.inner.set_source_bytes(bytes);
         self.inner.text_version = text_version;
         Ok(())
     }
@@ -457,6 +470,17 @@ impl Syntax {
 }
 
 impl SyntaxSnapshot {
+    /// H.3d (2026-06-04): set `source` and recompute the memoized
+    /// `line_starts` together so the two never drift. Every source
+    /// mutation (full parse, incremental intermediate apply) routes
+    /// through here; `highlight_lines_via_query` then reads
+    /// `self.line_starts` instead of rescanning the whole source per
+    /// call (the O(file) term the windowed-build bench exposed).
+    fn set_source_bytes(&mut self, bytes: &[u8]) {
+        self.source = Arc::from(bytes.to_vec());
+        self.line_starts = Arc::from(compute_line_starts(&self.source));
+    }
+
     /// The document language this snapshot was built for.
     pub fn lang(&self) -> Lang {
         self.lang
@@ -844,7 +868,11 @@ impl SyntaxSnapshot {
         let Some(tree) = self.tree.as_ref() else {
             return Ok((0..(end_line - start_line)).map(|_| Vec::new()).collect());
         };
-        let line_starts = compute_line_starts(&self.source);
+        // H.3d: read the memoized line table (recomputed once per
+        // source mutation) instead of rescanning the whole source on
+        // every call — this is what keeps highlight O(window) on
+        // large files.
+        let line_starts: &[usize] = &self.line_starts;
         let total_lines = line_starts.len().saturating_sub(1).max(1) as u32;
         let end_line = end_line.min(total_lines + 1);
         if start_line >= end_line {
@@ -989,7 +1017,7 @@ impl SyntaxSnapshot {
                 window_start + i,
                 window_start + j,
                 style,
-                &line_starts,
+                line_starts,
                 start_line,
                 end_line,
                 &mut result,

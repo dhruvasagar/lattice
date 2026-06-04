@@ -177,13 +177,19 @@ Also: the cursor-row wrap walk reads `DisplayMatrix::segment_count` /
 B3 GPU cutover). Tests: 5 `display_*` resolver tests in `cells_render`; 46
 cells_render + 1475 TUI + 7 display_matrix host tests green; GPU lib compiles.
 
-#### B2.4b — delete the TUI cell→span path  🗒
+#### B2.4b — delete the TUI cell→span path  ✅ (2026-06-04)
 
-Delete `cell_row_to_source_spans` / `cell_row_to_combined_spans` / `cells_to_spans`
-/ `cell_to_style` (now unused — the TUI cut over in B2.4a; the GPU has its own
-cell reader until B3) and re-house the S3.c overlay-pipeline tests onto direct /
-display-derived `Vec<Span>` bodies (they test renderer-generic overlay functions,
-not cell provenance). `rgb_u32_to_color` stays (used by the new resolver).
+Deleted `cell_row_to_source_spans` / `cell_row_to_combined_spans` / `cells_to_spans`
+/ `cell_to_style` (unused after the B2.4a cutover; the GPU has its own cell reader
+until B3) and dropped the `lattice_cells::{Cell, CellRow}` import. The 13 Group-A
+cell-conversion unit tests are deleted (their coverage moved to the `display_*`
+resolver tests); the ~20 S3.c overlay-pipeline tests are re-housed onto a cell-free
+`body(&[(text, fg)])` builder (the overlay functions —
+`apply_whitespace_decoration` / `apply_*_overlay` / `splice_virtual_text_into_spans`
+— are renderer-generic over `Vec<Span>`, so the bodies need no cell/display
+provenance). `rgb_u32_to_color` stays (used by the new resolver). 33 cells_render +
+1467 TUI tests green. The cells_render module is now display-only; only `CellMatrix`
+(worker projection + GPU reader) survives, deleted in B3/B4.
 
 ## B3 — GPU cutover  🗒
 

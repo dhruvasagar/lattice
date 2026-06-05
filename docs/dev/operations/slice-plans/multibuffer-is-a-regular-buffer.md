@@ -2,10 +2,9 @@
 
 **Design:** [multibuffer-is-a-regular-buffer.md](../../architecture/multibuffer-is-a-regular-buffer.md).
 
-**Status:** 🚧 in progress. Audit + round-1 fixes landed
-(commit `8bc77e4` — K.4.0 / K.4.2 / K.4.3 / K.4.4). New
-sub-slices added from user-testing findings between K.4.0
-and 2026-06-01 wrap-up.
+**Status:** 🚧 in progress. K.4.0–K.4.6 + K.4.8–K.4.11 all
+landed. Only K.4.7 (per-excerpt syntax highlighting —
+design slice) remains open.
 
 **Why:** M.2.b shipped declaring Multibuffer integration but
 no test exercised end-to-end behavior. Four latent failures
@@ -27,7 +26,7 @@ Renderer `lattice-ui-tui` has zero `BufferKind::Multibuffer`
 mentions → silent integration failures (the design
 fragment §3 calls this out as the danger pattern).
 
-### K.4.1 — Integration test scaffold 🗒
+### K.4.1 — Integration test scaffold ✅ (commits `6a14732`, `83d3daa`; K.4.7 test still ignored)
 
 `crates/lattice-host/tests/multibuffer_is_a_regular_buffer.rs`
 (new). Drives a real `Editor` (built via `Editor::boot`)
@@ -167,7 +166,7 @@ source-coordinate translation per M.3).
 Contained kind branch — the only one in
 `dispatch_blocking`. Architectural follow-up = K.4.11.
 
-### K.4.5 — Visual-mode highlight rendering ✅ (commit pending)
+### K.4.5 — Visual-mode highlight rendering ✅ (commit `f45256e`)
 
 **Root cause was NOT a renderer kind-gate.** Investigation
 ruled out the suspected matcher-extension shape. The real
@@ -208,7 +207,7 @@ trait impl makes Multibuffer behave uniformly with Document.
   `save_still_rejected_post_m3` (save remains ReadOnly;
   set_selections drops out of the rejected-paths list).
 
-### K.4.6 — Excerpt-header virtual-row pipeline ✅ (commit pending)
+### K.4.6 — Excerpt-header virtual-row pipeline ✅ (commit `07acd33` + follow-ons)
 
 **Landed via heuristic-mapped option (b.i + c.ii) confirmed
 against CLAUDE.md's heuristic-mapping rule:**
@@ -484,7 +483,7 @@ incomplete.'"
 Reference: K.4.5 (audit-comment pass) in earlier memory text
 corrected to K.4.9 (the actual slice number per this plan).
 
-### K.4.11 — `dispatch_with_cancel` proper impl on `MultibufferDocumentHandle` ✅ (commit pending)
+### K.4.11 — `dispatch_with_cancel` proper impl on `MultibufferDocumentHandle` ✅ (commits `d05348d`, `f598a72`)
 
 **Locked recommendation (b) re-evaluated and overturned per the
 heuristic-mapping rule (CLAUDE.md).** The original "Recommend (b)

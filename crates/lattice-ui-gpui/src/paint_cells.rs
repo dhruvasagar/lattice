@@ -43,7 +43,7 @@
 use std::sync::Mutex;
 
 use gpui::{Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, Point, Window, fill, point, px, rgb, size};
-use lattice_cells::{Cell, CellRow};
+use lattice_cells::Cell;
 
 use crate::glyph_resolver::GlyphResolver;
 
@@ -128,8 +128,15 @@ pub(crate) fn cell_font_variant(base: &Font, cell: &Cell) -> Font {
 
 /// Paint a single document-body row by emitting per-cell
 /// background quads and glyphs. Used by `EditorElement::paint`
-/// when [`paint_cells_enabled`] is on; otherwise the row goes
+/// for active-pane document bodies; otherwise the row goes
 /// through `ShapedLine::paint`.
+///
+/// W.5 (soft-wrap): takes a `&[Cell]` slice rather than the whole
+/// `CellRow` so the caller can pass `CellRow::segment(seg, width)`
+/// — one wrapped display segment's columns — and the `idx`-based
+/// `cell_x` positions the slice at the row's local column 0. With
+/// wrapping off the caller passes the full row (`segment(0, 0)`),
+/// so behaviour is identical to the pre-W.5 whole-row paint.
 ///
 /// Returns the number of glyphs actually drawn (background
 /// quads not counted). Useful for diagnostics / bench (S5)
@@ -150,7 +157,7 @@ pub(crate) fn cell_font_variant(base: &Font, cell: &Cell) -> Font {
 /// the per-glyph overhead minimal.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_cells_row(
-    row: &CellRow,
+    cells: &[Cell],
     line_origin: Point<Pixels>,
     advance: Pixels,
     line_height: Pixels,
@@ -178,7 +185,7 @@ pub fn paint_cells_row(
         }
     };
 
-    for (idx, cell) in row.cells.iter().enumerate() {
+    for (idx, cell) in cells.iter().enumerate() {
         let cell_x = line_origin.x + advance * (idx as f32);
 
         // S4.final.d: REVERSE + DIM applied first so subsequent

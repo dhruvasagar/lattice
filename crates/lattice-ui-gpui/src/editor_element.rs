@@ -385,6 +385,13 @@ pub(crate) struct EditorElementPrepaintState {
     /// without re-splitting `self.text` on the hot path.
     /// One entry per row; length matches `shaped_text`.
     row_meta: Vec<(u32, String)>,
+    /// W.5 (soft-wrap): per-display-row wrap-segment index. `0` for
+    /// the first display row of a source line (and for every row when
+    /// wrapping is off); `1, 2, …` for continuation rows. `paint`
+    /// reads this with `wrap_width` to paint the cell sub-slice
+    /// (`CellRow::segment(seg, wrap_width)`) for the active pane.
+    /// Length matches `shaped_text`.
+    row_segment: Vec<u32>,
     /// Per-visible-row inlay-hint metadata (slice X3.full.4).
     /// Each row carries a sorted `Vec<(orig_byte, char_width)>`:
     /// orig_byte is the utf-8 byte offset INTO THE ORIGINAL LINE
@@ -440,6 +447,14 @@ pub(crate) struct EditorElementPrepaintState {
     /// its origin as the *baseline*; `paint_cells_row` derives
     /// the baseline from `line_y + text_ascent`.
     text_ascent: Pixels,
+    /// W.5 (soft-wrap): the active matrix's wrap column width (`0`
+    /// when wrapping is off / inactive pane / no matrix). `paint`
+    /// uses it with `row_segment[i]` to slice the cell row
+    /// (`CellRow::segment`) so each display row paints only its
+    /// segment's columns. Read once from `display_matrix` /
+    /// `cell_matrix` so the renderer and the host scroll model
+    /// (which counts `segment_count`) agree on segment geometry.
+    wrap_width: u32,
 }
 
 impl IntoElement for EditorElement {
@@ -536,6 +551,10 @@ impl Element for EditorElement {
         let mut shaped_text = Vec::with_capacity(row_capacity);
         let mut shaped_gutter = Vec::with_capacity(self.gutter.len());
         let mut row_meta: Vec<(u32, String)> = Vec::with_capacity(row_capacity);
+        // W.5 (soft-wrap): per-display-row wrap-segment index, 1:1 with
+        // `shaped_text`. `paint` reads it with `wrap_width` to paint
+        // the right cell sub-slice for each display row.
+        let mut row_segment: Vec<u32> = Vec::with_capacity(row_capacity);
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
@@ -557,73 +576,68 @@ impl Element for EditorElement {
         let mut sorted_inlays: Vec<&InlayHintRow> = self.inlay_hints.iter().collect();
         sorted_inlays.sort_by_key(|h| (h.line, h.byte));
 
-        let shape_row =
+        // W.5 (soft-wrap): build a source line's (combined, runs,
+        // inlay_offsets) WITHOUT shaping — `push_wrapped_doc_row`
+        // shapes per wrap segment. Prefers the canonical
+        // `DisplayMatrix` row (style-tagged runs resolved → `TextRun`s
+        // via the host theme, replacing the retired
+        // `shape_row_from_cells`); folded / out-of-window / stale rows
+        // fall through to the legacy `build_line_with_inlays` walk
+        // over `visible_spans` + LSP inlay hints. (For the active pane
+        // the body glyphs come from `paint_cells_row`; this shape is
+        // the fallback for inactive panes / boot frames / folded
+        // rows. The `visible_rows` highlight publishing stays — it
+        // feeds TUI markdown / help / messages bodies elsewhere.)
+        let build_runs =
             |line: &str,
-             line_spans: &[StyledSpan],
-             line_idx: u32,
-             window: &mut Window|
-             -> (ShapedLine, Vec<(u32, u32)>) {
-                let inlays_on_line: Vec<(usize, &str)> = sorted_inlays
-                    .iter()
-                    .filter(|h| h.line == line_idx)
-                    .map(|h| (h.byte as usize, h.text.as_str()))
-                    .collect();
-                let (combined, runs, inlay_offsets) = build_line_with_inlays(
-                    line,
-                    line_spans,
-                    &inlays_on_line,
-                    &font,
-                    self.inlay_color,
-                );
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(combined),
-                    font_size,
-                    &runs,
-                    None,
-                );
-                (shaped, inlay_offsets)
+             rel: usize,
+             line_idx: u32|
+             -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
+                // 2026-06-02: parity with TUI cells-empty fallback. A
+                // display row may exist but be empty (transient
+                // doc-switch / new-buffer publish race); in that case
+                // the rope line is the source of truth.
+                let display_row = self
+                    .display_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(line_idx))
+                    .filter(|dl| !dl.text.is_empty() || line.is_empty());
+                if let Some(dl) = display_row {
+                    display_line_to_text_runs(dl, &self.host_theme, &font)
+                } else {
+                    let line_spans: &[StyledSpan] = self
+                        .visible_spans
+                        .spans
+                        .get(rel)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let inlays_on_line: Vec<(usize, &str)> = sorted_inlays
+                        .iter()
+                        .filter(|h| h.line == line_idx)
+                        .map(|h| (h.byte as usize, h.text.as_str()))
+                        .collect();
+                    build_line_with_inlays(
+                        line,
+                        line_spans,
+                        &inlays_on_line,
+                        &font,
+                        self.inlay_color,
+                    )
+                }
             };
 
-        // S4.3 (2026-05-27): the legacy prepaint fast path
-        // (`shape_row_from_prepaint`) retired. The cells path
-        // covers the active pane unconditionally and the legacy
-        // `shape_row` is the only remaining fallback for folded
-        // rows / boot frames / out-of-matrix lines / inactive
-        // panes. The highlights worker's `visible_rows`
-        // publishing stays — it still feeds TUI markdown / help
-        // / messages bodies through other render functions.
-
-        // S4.1 (2026-05-27): cell-grid fast path. When the cells
-        // worker has published a row for `source_line`, the
-        // (combined_text, runs, inlay_offsets) triple comes
-        // straight out of the matrix via `cell_row_to_text_runs`.
-        // Same `shape_line` call shape as the other two paths; the
-        // win is upstream — runs come from the worker's
-        // pre-collapsed cell groups instead of being recomputed
-        // per frame from spans/inlays. Modifier coverage is fg-only
-        // at S4.1 (matches legacy parity); S4.2 propagates BOLD /
-        // ITALIC into the run's font weight/style and adds
-        // UNDERLINE / DIM / REVERSE.
-        // B3 (2026-06-04): canonical `DisplayMatrix` fast path. When the
-        // worker has published a `DisplayLine` for `source_line`, the
-        // (combined_text, runs, inlay_offsets) triple comes from
-        // `display_line_to_text_runs` (style-tagged runs resolved →
-        // `TextRun`s via the host theme). Replaces `shape_row_from_cells`
-        // (deleted with the cell→TextRun path); same `shape_line` call.
-        let shape_row_from_display =
-            |line: &lattice_host::display_matrix::DisplayLine,
-             window: &mut Window|
-             -> (ShapedLine, Vec<(u32, u32)>) {
-                let (combined, runs, inlay_offsets) =
-                    display_line_to_text_runs(line, &self.host_theme, &font);
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(combined),
-                    font_size,
-                    &runs,
-                    None,
-                );
-                (shaped, inlay_offsets)
-            };
+        // W.5: the active matrix's wrap column width (0 = wrapping
+        // off / inactive pane / no matrix → every line is one segment,
+        // a byte-identical non-wrapping render). Read from the
+        // canonical `DisplayMatrix` first, then the `CellMatrix`, so
+        // the renderer and the host scroll model (which counts
+        // `segment_count`) agree on display-row geometry.
+        let wrap_width: u32 = self
+            .display_matrix
+            .as_ref()
+            .map(|m| m.wrap_width)
+            .or_else(|| self.cell_matrix.as_ref().map(|m| m.wrap_width))
+            .unwrap_or(0);
 
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,
@@ -906,46 +920,64 @@ impl Element for EditorElement {
                 .saturating_add(self.viewport_height.max(1) as usize)
                 .min(raw_lines.len());
             for line_idx in visible_start..visible_end {
+                // W.5: respect the height cap (wrapped lines can fill
+                // the viewport mid-window).
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
+                }
                 let rel = line_idx.saturating_sub(self.scroll as usize);
                 // 2026-05-26: `self.text` carries the visible-window
                 // text (slice A.4 + cursor-line fix follow-up), so
                 // raw_lines is indexed by visible-row offset, not
                 // by absolute line.
                 let line = raw_lines.get(rel).copied().unwrap_or("");
-                // S4.3: cells → legacy fallback. Active pane
-                // gets cells coverage from
-                // `CellMatrix::row_at_source_line`; inactive
-                // panes (cell_matrix == None) and folded rows /
-                // boot frames / out-of-matrix lines fall through
-                // to the legacy `shape_row` walk over
-                // `visible_spans`.
-                // 2026-06-02: parity with TUI cells-empty fallback.
-                // A cell row may exist but have zero cells (transient
-                // state during doc-switch / new-buffer publish race);
-                // in that case the rope line is the source of truth.
-                let display_row = self
-                    .display_matrix
+                let (combined, runs, inlay_offsets) =
+                    build_runs(line, rel, line_idx as u32);
+                let full_diag =
+                    diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
+                let full_overlay =
+                    overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
+                // W.5: source line → `seg_count` display rows. Take the
+                // larger of the cell-row and combined column counts so
+                // neither the active-pane cells paint nor the
+                // ShapedLine fallback drops a trailing segment if the
+                // two column models differ (e.g. inlay edge cases).
+                let cell_cols = self
+                    .cell_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(line_idx as u32))
-                    .filter(|dl| !dl.text.is_empty() || line.is_empty());
-                let (shaped, inlay_offsets) = if let Some(dl) = display_row {
-                    shape_row_from_display(dl, window)
+                    .map(|r| r.col_count())
+                    .unwrap_or(0);
+                let body_cols = cell_cols.max(combined.chars().count() as u32);
+                let seg_count = if wrap_width == 0 {
+                    1
                 } else {
-                    let line_spans: &[StyledSpan] = self
-                        .visible_spans
-                        .spans
-                        .get(rel)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
-                    shape_row(line, line_spans, line_idx as u32, window)
+                    lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let diag_segs = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
-                let overlay_quads = overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
-                shaped_text.push(shaped);
-                row_meta.push((line_idx as u32, line.to_string()));
-                inlay_offsets_per_row.push(inlay_offsets);
-                diagnostic_segments_per_row.push(diag_segs);
-                overlay_quads_per_row.push(overlay_quads);
+                push_wrapped_doc_row(
+                    line_idx as u32,
+                    line,
+                    &combined,
+                    &runs,
+                    inlay_offsets,
+                    &full_diag,
+                    &full_overlay,
+                    seg_count,
+                    wrap_width,
+                    None,
+                    self.gutter_width,
+                    &font,
+                    font_size,
+                    self.viewport_height,
+                    window,
+                    &mut shaped_text,
+                    &mut shaped_gutter,
+                    &mut row_meta,
+                    &mut row_segment,
+                    &mut inlay_offsets_per_row,
+                    &mut diagnostic_segments_per_row,
+                    &mut overlay_quads_per_row,
+                );
             }
         } else {
             // Gutter-driven walk: caller already pre-filtered the
@@ -1000,6 +1032,7 @@ impl Element for EditorElement {
                         &mut shaped_text,
                         &mut shaped_gutter,
                         &mut row_meta,
+                        &mut row_segment,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1013,41 +1046,35 @@ impl Element for EditorElement {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
                 }
-                // Record the shaped_text row index of this
-                // doc row for the cursor remap below.
+                // Record the shaped_text row index of this doc row's
+                // FIRST display segment for the cursor remap below.
+                // The cursor adds its own segment index on top.
                 doc_to_shaped_row_local.push(shaped_text.len() as u32);
-                // S4.3: cells → legacy fallback. Gutter-driven
-                // walk already pre-filters folded lines, so
-                // `row_at_source_line` is asked only about
-                // visible rows; it returns `None` only during
-                // the boot frame before the cell-builder's first
-                // publish or during the buffer-switch gap, when
-                // the legacy `shape_row` path takes over.
-                // 2026-06-02: parity with TUI cells-empty fallback.
-                let display_row = self
-                    .display_matrix
+                // W.5: build the line's (combined, runs, inlay_offsets)
+                // un-shaped (see `build_runs`), its full-width overlay /
+                // diagnostic quads, and the gutter for segment 0, then
+                // expand into `seg_count` display rows via
+                // `push_wrapped_doc_row`. The gutter-driven walk already
+                // pre-filters folded lines, so coverage gaps only occur
+                // on boot / buffer-switch (handled inside `build_runs`).
+                let (combined, runs, inlay_offsets) =
+                    build_runs(line, rel, meta.line_idx);
+                let full_diag =
+                    diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
+                let full_overlay =
+                    overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
+                let cell_cols = self
+                    .cell_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(meta.line_idx))
-                    .filter(|dl| !dl.text.is_empty() || line.is_empty());
-                let (shaped, inlay_offsets) = if let Some(dl) = display_row {
-                    shape_row_from_display(dl, window)
+                    .map(|r| r.col_count())
+                    .unwrap_or(0);
+                let body_cols = cell_cols.max(combined.chars().count() as u32);
+                let seg_count = if wrap_width == 0 {
+                    1
                 } else {
-                    let line_spans: &[StyledSpan] = self
-                        .visible_spans
-                        .spans
-                        .get(rel)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
-                    shape_row(line, line_spans, meta.line_idx, window)
+                    lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let diag_segs = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
-                let overlay_quads = overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
-                shaped_text.push(shaped);
-                row_meta.push((meta.line_idx, line.to_string()));
-                inlay_offsets_per_row.push(inlay_offsets);
-                diagnostic_segments_per_row.push(diag_segs);
-                overlay_quads_per_row.push(overlay_quads);
-
                 let gutter_text = format_gutter_text(meta, self.gutter_width);
                 let gutter_runs = build_gutter_runs(&gutter_text, meta, font.clone());
                 let shaped_g = window.text_system().shape_line(
@@ -1056,7 +1083,33 @@ impl Element for EditorElement {
                     &gutter_runs,
                     None,
                 );
-                shaped_gutter.push(shaped_g);
+                let capped = push_wrapped_doc_row(
+                    meta.line_idx,
+                    line,
+                    &combined,
+                    &runs,
+                    inlay_offsets,
+                    &full_diag,
+                    &full_overlay,
+                    seg_count,
+                    wrap_width,
+                    Some(shaped_g),
+                    self.gutter_width,
+                    &font,
+                    font_size,
+                    self.viewport_height,
+                    window,
+                    &mut shaped_text,
+                    &mut shaped_gutter,
+                    &mut row_meta,
+                    &mut row_segment,
+                    &mut inlay_offsets_per_row,
+                    &mut diagnostic_segments_per_row,
+                    &mut overlay_quads_per_row,
+                );
+                if capped {
+                    break 'rows;
+                }
 
                 // D.3.b.1.gpui: emit Below-anchored virtual
                 // rows after the doc row.
@@ -1079,6 +1132,7 @@ impl Element for EditorElement {
                         &mut shaped_text,
                         &mut shaped_gutter,
                         &mut row_meta,
+                        &mut row_segment,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1145,27 +1199,54 @@ impl Element for EditorElement {
                             .unwrap_or(&[]);
                         let char_col =
                             byte_to_combined_col(line, byte, cursor_row_inlays) as u32;
-                        let shaped = if matches!(c.shape, CursorShape::Block) && byte < line.len() {
-                            let rest = &line[byte..];
-                            let ch = rest.chars().next().unwrap_or(' ');
-                            let runs = vec![TextRun {
-                                len: ch.len_utf8(),
-                                font: font.clone(),
-                                color: rgb(self.theme.cursor_foreground).into(),
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            }];
-                            Some(window.text_system().shape_line(
-                                SharedString::from(ch.to_string()),
-                                font_size,
-                                &runs,
-                                None,
-                            ))
+                        // W.5 (soft-wrap): the combined column splits
+                        // into a segment index (which display row of the
+                        // wrapped line the cursor sits on) and the column
+                        // within that segment. `row` is the line's first
+                        // display segment (recorded in
+                        // `doc_to_shaped_row_local`); the cursor adds its
+                        // own segment. `wrap_width == 0` ⇒ the whole
+                        // column, no extra row (pre-W.5 behaviour). This
+                        // mirrors the TUI peer's
+                        // `display_col / wrap_width` + `% wrap_width`.
+                        let (own_segment, body_col) = if wrap_width > 0 {
+                            (char_col / wrap_width, char_col % wrap_width)
                         } else {
-                            None
+                            (0, char_col)
                         };
-                        (Some((char_col, row)), shaped)
+                        let cursor_row = row + own_segment;
+                        if cursor_row >= self.viewport_height {
+                            // The cursor's wrapped segment fell past the
+                            // viewport budget (its continuation rows were
+                            // capped). Treat as off-screen — the host
+                            // scroll model keeps the cursor in budget, so
+                            // this only guards the transient overflow.
+                            (None, None)
+                        } else {
+                            let shaped = if matches!(c.shape, CursorShape::Block)
+                                && byte < line.len()
+                            {
+                                let rest = &line[byte..];
+                                let ch = rest.chars().next().unwrap_or(' ');
+                                let runs = vec![TextRun {
+                                    len: ch.len_utf8(),
+                                    font: font.clone(),
+                                    color: rgb(self.theme.cursor_foreground).into(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                }];
+                                Some(window.text_system().shape_line(
+                                    SharedString::from(ch.to_string()),
+                                    font_size,
+                                    &runs,
+                                    None,
+                                ))
+                            } else {
+                                None
+                            };
+                            (Some((body_col, cursor_row)), shaped)
+                        }
                     }
                 }
             }
@@ -1180,12 +1261,14 @@ impl Element for EditorElement {
             glyph_advance,
             gutter_width_px,
             row_meta,
+            row_segment,
             inlay_offsets_per_row,
             diagnostic_segments_per_row,
             overlay_quads_per_row,
             font: font.clone(),
             font_size,
             text_ascent,
+            wrap_width,
         }
     }
 
@@ -1305,19 +1388,42 @@ impl Element for EditorElement {
                             Some(cell_row)
                                 if !cell_row.cells.is_empty() || line_text.is_empty() =>
                             {
-                                crate::paint_cells::paint_cells_row(
-                                    cell_row,
-                                    origin,
-                                    prepaint.glyph_advance,
-                                    line_height,
-                                    prepaint.text_ascent,
-                                    &prepaint.font,
-                                    prepaint.font_size,
-                                    self.theme.foreground,
-                                    &self.glyph_resolver,
-                                    window,
-                                );
-                                true
+                                // W.5 (soft-wrap): paint only this
+                                // display row's wrap segment. `segment`
+                                // slices `[seg·w, (seg+1)·w)`; with
+                                // `wrap_width == 0` segment 0 is the
+                                // whole row (byte-identical to pre-W.5).
+                                let seg = prepaint
+                                    .row_segment
+                                    .get(i)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let seg_cells =
+                                    cell_row.segment(seg, prepaint.wrap_width);
+                                // A continuation segment with no cells but
+                                // whose fallback ShapedLine carries text
+                                // (column models diverged) falls through so
+                                // the ShapedLine segment paints it.
+                                if seg_cells.is_empty()
+                                    && seg > 0
+                                    && !line_text.is_empty()
+                                {
+                                    false
+                                } else {
+                                    crate::paint_cells::paint_cells_row(
+                                        seg_cells,
+                                        origin,
+                                        prepaint.glyph_advance,
+                                        line_height,
+                                        prepaint.text_ascent,
+                                        &prepaint.font,
+                                        prepaint.font_size,
+                                        self.theme.foreground,
+                                        &self.glyph_resolver,
+                                        window,
+                                    );
+                                    true
+                                }
                             }
                             _ => false,
                         }
@@ -1622,6 +1728,222 @@ const FOLD_MARKER_COLOR: u32 = 0xfab387;
 /// Fold-start glyph (right-pointing triangle).
 const FOLD_MARKER_GLYPH: char = '►';
 
+/// W.5 (soft-wrap): continuation-row gutter marker. U+21AA
+/// (rightwards arrow with hook); no Nerd-Font dependency, so it
+/// renders in any monospace font. Matches the TUI peer's
+/// `WRAP_CONT_MARKER` for cross-renderer parity.
+const WRAP_CONT_MARKER: &str = "↪";
+/// W.5: dim colour for the continuation marker (Catppuccin Mocha
+/// surface2). Reads as "this row continues the line above" without
+/// competing with the real line numbers.
+const WRAP_CONT_GUTTER_COLOR: u32 = 0x585b70;
+
+/// W.5 (soft-wrap): char range `[start, end)` of display segment
+/// `seg` for a line of `total_chars` columns wrapped at `wrap_width`.
+/// `wrap_width == 0` (wrapping off) returns the whole line on segment
+/// 0. Segment boundaries match `lattice_cells::wrap_segments`, so the
+/// renderer and the host scroll model agree on display-row counts.
+fn segment_char_range(total_chars: usize, seg: u32, wrap_width: u32) -> (usize, usize) {
+    if wrap_width == 0 {
+        return (0, total_chars);
+    }
+    let w = wrap_width as usize;
+    let start = (seg as usize).saturating_mul(w).min(total_chars);
+    let end = start.saturating_add(w).min(total_chars);
+    (start, end)
+}
+
+/// W.5 (soft-wrap): slice a shaped line's `(combined, runs)` to the
+/// char range `[char_start, char_end)` for one wrap segment,
+/// preserving each run's style. `runs` are byte-length-keyed and
+/// contiguous over `combined`; the slice keeps the per-run overlap
+/// with the segment's byte window. Returns `(segment_text,
+/// segment_runs)` whose run lengths sum to `segment_text.len()`,
+/// ready for `shape_line`.
+fn slice_runs_to_char_range(
+    combined: &str,
+    runs: &[TextRun],
+    char_start: usize,
+    char_end: usize,
+) -> (String, Vec<TextRun>) {
+    let byte_start = combined
+        .char_indices()
+        .nth(char_start)
+        .map(|(b, _)| b)
+        .unwrap_or(combined.len());
+    let byte_end = combined
+        .char_indices()
+        .nth(char_end)
+        .map(|(b, _)| b)
+        .unwrap_or(combined.len());
+    let seg_text = combined.get(byte_start..byte_end).unwrap_or("").to_string();
+    let mut out: Vec<TextRun> = Vec::new();
+    let mut pos = 0usize;
+    for r in runs {
+        let r_start = pos;
+        let r_end = pos + r.len;
+        pos = r_end;
+        let lo = r_start.max(byte_start);
+        let hi = r_end.min(byte_end);
+        if hi > lo {
+            let mut nr = r.clone();
+            nr.len = hi - lo;
+            out.push(nr);
+        }
+    }
+    (seg_text, out)
+}
+
+/// W.5 (soft-wrap): project a source line's full-width column quads
+/// (overlay backgrounds / diagnostic underlines, in combined-column
+/// space) onto one wrap segment's local column window `[lo, hi)`. A
+/// quad `[cs, ce)` is intersected with the window and re-based to the
+/// segment's column 0. GPUI paints these as positioned `paint_quad`s
+/// (unlike the TUI, which bakes overlay styles into the spans it
+/// splits), so the renderer must re-bucket the quads per segment.
+fn quads_for_segment(full: &[(u32, u32, u32)], lo: u32, hi: u32) -> Vec<(u32, u32, u32)> {
+    full.iter()
+        .filter_map(|&(cs, ce, color)| {
+            let s = cs.max(lo);
+            let e = ce.min(hi);
+            // Lazy `then` (not `then_some`): the subtraction must not
+            // be evaluated when the quad doesn't overlap the segment
+            // (`e` may be < `lo`, which would underflow `e - lo`).
+            (e > s).then(|| (s - lo, e - lo, color))
+        })
+        .collect()
+}
+
+/// W.5 (soft-wrap): shape the gutter for a wrapped continuation row —
+/// a dim `↪` right-aligned in the line-number column, with the
+/// fold / severity / diff columns blank. Same total width as
+/// `format_gutter_text` (`gutter_width + 4`) so continuation rows
+/// align with their source line's gutter.
+fn shaped_continuation_gutter(
+    gutter_width: usize,
+    font: &gpui::Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> ShapedLine {
+    // 3 leading blanks (fold + severity + diff) + right-aligned
+    // marker in the number column + 1 trailing space.
+    let text = format!("   {WRAP_CONT_MARKER:>gutter_width$} ");
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: rgb(WRAP_CONT_GUTTER_COLOR).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text), font_size, &[run], None)
+}
+
+/// W.5 (soft-wrap): push one source line as `seg_count` display rows.
+/// Segment 0 carries the real gutter (`gutter_seg0`); continuation
+/// rows get a dim `↪`. The body text and the overlay / diagnostic
+/// quads are sliced to each segment's local column window, and every
+/// parallel per-row array is pushed so the row participates in paint.
+/// Returns `true` if the viewport-height cap was hit mid-line (the
+/// caller should stop emitting further rows for the viewport).
+///
+/// `gutter_seg0 == None` selects the gutter-less fallback (the
+/// `self.gutter.is_empty()` path): no `shaped_gutter` entries are
+/// pushed, matching the pre-W.5 behaviour.
+///
+/// `seg_count <= 1` or `wrap_width == 0` (wrapping off, or the line
+/// fits) pushes the full `combined` / `runs` / quads verbatim, so a
+/// non-wrapping render is byte-identical to the pre-W.5 single push.
+#[allow(clippy::too_many_arguments)]
+fn push_wrapped_doc_row(
+    line_idx: u32,
+    line_text: &str,
+    combined: &str,
+    runs: &[TextRun],
+    inlay_offsets: Vec<(u32, u32)>,
+    full_diag: &[(u32, u32, u32)],
+    full_overlay: &[(u32, u32, u32)],
+    seg_count: u32,
+    wrap_width: u32,
+    gutter_seg0: Option<ShapedLine>,
+    gutter_width: usize,
+    font: &gpui::Font,
+    font_size: Pixels,
+    viewport_height: u32,
+    window: &mut Window,
+    shaped_text: &mut Vec<ShapedLine>,
+    shaped_gutter: &mut Vec<ShapedLine>,
+    row_meta: &mut Vec<(u32, String)>,
+    row_segment: &mut Vec<u32>,
+    inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
+    diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+    overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+) -> bool {
+    let total_chars = combined.chars().count();
+    let single = seg_count <= 1 || wrap_width == 0;
+    let has_gutter = gutter_seg0.is_some();
+    let mut gutter_seg0 = gutter_seg0;
+    for seg in 0..seg_count.max(1) {
+        // Segment 0 always fits (the caller checked the budget before
+        // calling); continuations stop at the height cap so the
+        // per-row vecs stay 1:1 and nothing paints past the pane.
+        if seg > 0 && shaped_text.len() as u32 >= viewport_height {
+            return true;
+        }
+        let (seg_text, seg_runs) = if single {
+            (combined.to_string(), runs.to_vec())
+        } else {
+            let (lo, hi) = segment_char_range(total_chars, seg, wrap_width);
+            slice_runs_to_char_range(combined, runs, lo, hi)
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(seg_text),
+            font_size,
+            &seg_runs,
+            None,
+        );
+        shaped_text.push(shaped);
+        if has_gutter {
+            if seg == 0 {
+                shaped_gutter.push(
+                    gutter_seg0
+                        .take()
+                        .expect("gutter_seg0 present on segment 0"),
+                );
+            } else {
+                shaped_gutter.push(shaped_continuation_gutter(
+                    gutter_width,
+                    font,
+                    font_size,
+                    window,
+                ));
+            }
+        }
+        row_meta.push((line_idx, line_text.to_string()));
+        row_segment.push(seg);
+        // The full inlay offsets live on segment 0 (the cursor
+        // base-row lookup reads them there); continuations don't need
+        // them (their overlay/diag quads are already pre-bucketed).
+        inlay_offsets_per_row.push(if seg == 0 {
+            inlay_offsets.clone()
+        } else {
+            Vec::new()
+        });
+        if single {
+            diagnostic_segments_per_row.push(full_diag.to_vec());
+            overlay_quads_per_row.push(full_overlay.to_vec());
+        } else {
+            let lo = seg.saturating_mul(wrap_width);
+            let hi = lo.saturating_add(wrap_width);
+            diagnostic_segments_per_row.push(quads_for_segment(full_diag, lo, hi));
+            overlay_quads_per_row.push(quads_for_segment(full_overlay, lo, hi));
+        }
+    }
+    false
+}
+
 /// Format a gutter row's text content: 1 char fold marker + 1
 /// char severity sign + N-char right-aligned line number + 1
 /// space. Total width = `2 + gutter_width + 1`.
@@ -1660,6 +1982,7 @@ fn push_virtual_row(
     shaped_text: &mut Vec<ShapedLine>,
     shaped_gutter: &mut Vec<ShapedLine>,
     row_meta: &mut Vec<(u32, String)>,
+    row_segment: &mut Vec<u32>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -1768,6 +2091,8 @@ fn push_virtual_row(
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
     row_meta.push((u32::MAX, String::new()));
+    // W.5: virtual rows are a single display row each (segment 0).
+    row_segment.push(0);
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);
@@ -1877,6 +2202,78 @@ fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ----- W.5 soft-wrap segment helpers -----
+
+    #[test]
+    fn w5_segment_char_range_splits_on_wrap_width() {
+        // Wrap off → the whole line lands on segment 0.
+        assert_eq!(segment_char_range(10, 0, 0), (0, 10));
+        assert_eq!(segment_char_range(10, 5, 0), (0, 10));
+        // Width 4 over 10 chars → [0,4) [4,8) [8,10).
+        assert_eq!(segment_char_range(10, 0, 4), (0, 4));
+        assert_eq!(segment_char_range(10, 1, 4), (4, 8));
+        assert_eq!(segment_char_range(10, 2, 4), (8, 10));
+        // Out-of-range segment clamps to the end (empty).
+        assert_eq!(segment_char_range(10, 3, 4), (10, 10));
+    }
+
+    #[test]
+    fn w5_quads_for_segment_rebuckets_into_local_columns() {
+        // A full-line quad spanning cols [2, 9), wrapped at width 4.
+        let full = vec![(2u32, 9u32, 0xff0000u32)];
+        // Segment 0 covers [0,4): overlap [2,4) → local [2,4).
+        assert_eq!(quads_for_segment(&full, 0, 4), vec![(2, 4, 0xff0000)]);
+        // Segment 1 covers [4,8): overlap [4,8) → local [0,4).
+        assert_eq!(quads_for_segment(&full, 4, 8), vec![(0, 4, 0xff0000)]);
+        // Segment 2 covers [8,12): overlap [8,9) → local [0,1).
+        assert_eq!(quads_for_segment(&full, 8, 12), vec![(0, 1, 0xff0000)]);
+        // A segment with no overlap drops the quad.
+        assert!(quads_for_segment(&full, 12, 16).is_empty());
+    }
+
+    #[test]
+    fn w5_slice_runs_to_char_range_preserves_styles_per_segment() {
+        let font = gpui::font("monospace");
+        // "aabbbb" — run A (red, 2 chars) + run B (green, 4 chars).
+        let combined = "aabbbb";
+        let runs = vec![
+            make_run_with_color(0xff0000, 2, &font),
+            make_run_with_color(0x00ff00, 4, &font),
+        ];
+        // Segment 0 = chars [0,4) = "aabb": run A full (2) + run B partial (2).
+        let (text0, runs0) = slice_runs_to_char_range(combined, &runs, 0, 4);
+        assert_eq!(text0, "aabb");
+        assert_eq!(runs0.len(), 2);
+        assert_eq!(runs0[0].len, 2);
+        assert_eq!(runs0[1].len, 2);
+        let red: gpui::Hsla = rgb(0xff0000).into();
+        let green: gpui::Hsla = rgb(0x00ff00).into();
+        assert_eq!(runs0[0].color, red);
+        assert_eq!(runs0[1].color, green);
+        // Run lengths sum to the segment byte length (ascii: 1 byte/char).
+        assert_eq!(runs0.iter().map(|r| r.len).sum::<usize>(), text0.len());
+        // Segment 1 = chars [4,6) = "bb": only run B (green, 2 chars).
+        let (text1, runs1) = slice_runs_to_char_range(combined, &runs, 4, 6);
+        assert_eq!(text1, "bb");
+        assert_eq!(runs1.len(), 1);
+        assert_eq!(runs1[0].len, 2);
+        assert_eq!(runs1[0].color, green);
+    }
+
+    #[test]
+    fn w5_slice_runs_to_char_range_cuts_on_char_boundaries() {
+        let font = gpui::font("monospace");
+        // "→→ab" — 2 arrows (3 bytes each) + 2 ascii, one run over all.
+        let combined = "→→ab";
+        let runs = vec![make_run_with_color(0x123456, combined.len(), &font)];
+        // Chars [0,2) = "→→" (6 bytes) — must not split a codepoint.
+        let (text, sliced) = slice_runs_to_char_range(combined, &runs, 0, 2);
+        assert_eq!(text, "→→");
+        assert_eq!(sliced.len(), 1);
+        assert_eq!(sliced[0].len, "→→".len());
+        assert_eq!(sliced[0].len, text.len());
+    }
 
     #[test]
     fn text_runs_no_spans_one_default_run() {

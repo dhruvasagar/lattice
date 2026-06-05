@@ -242,7 +242,10 @@ pub async fn run(
 /// renderer reads them per pane in D.4.d.1.c.
 pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
     let rs = render_state.load_full();
-    let cells = &rs.cells;
+    // I.5.2: `cells` is an inner `ArcSwap` so the keystroke fast path
+    // can republish it without reswapping the monolith. Load the
+    // current cells snapshot once for this recompute pass.
+    let cells = rs.cells.load();
     if cells.panes.is_empty() {
         return WorkerDecision::CacheHit;
     }
@@ -2301,7 +2304,7 @@ mod tests {
             display_pane_matrices,
         };
         let rs = RenderState {
-            cells: Arc::new(cells),
+            cells: Arc::new(ArcSwap::from_pointee(cells)),
             ..RenderState::default()
         };
         ArcSwap::from_pointee(rs)
@@ -3712,9 +3715,10 @@ mod tests {
             5,
         );
         let loaded = rs2.load_full();
-        let pane = &loaded.cells.panes[0];
+        let cells = loaded.cells.load();
+        let pane = &cells.panes[0];
         assert!(
-            sync_rebuild_pane_on_edit(pane, &loaded.cells.theme, &loaded.cells.whitespace),
+            sync_rebuild_pane_on_edit(pane, &cells.theme, &cells.whitespace),
             "single in-place edit is eligible for the sync rebuild"
         );
 
@@ -3788,9 +3792,10 @@ mod tests {
             5,
         );
         let loaded = rs2.load_full();
-        let pane = &loaded.cells.panes[0];
+        let cells = loaded.cells.load();
+        let pane = &cells.panes[0];
         assert!(
-            !sync_rebuild_pane_on_edit(pane, &loaded.cells.theme, &loaded.cells.whitespace),
+            !sync_rebuild_pane_on_edit(pane, &cells.theme, &cells.whitespace),
             "non-edit publish is ineligible for the sync rebuild"
         );
         assert_eq!(
@@ -3856,11 +3861,12 @@ mod tests {
         );
         {
             let loaded = rs2.load_full();
-            let pane = &loaded.cells.panes[0];
+            let cells = loaded.cells.load();
+            let pane = &cells.panes[0];
             assert!(sync_rebuild_pane_on_edit(
                 pane,
-                &loaded.cells.theme,
-                &loaded.cells.whitespace
+                &cells.theme,
+                &cells.whitespace
             ));
         }
         let dm_cell = display_cell_for(&matrix_cell);
@@ -4749,7 +4755,7 @@ mod tests {
                         display_pane_matrices: Arc::new(std::collections::HashMap::new()),
                     };
                     let rs = RenderState {
-                        cells: Arc::new(cells),
+                        cells: Arc::new(ArcSwap::from_pointee(cells)),
                         ..RenderState::default()
                     };
                     render_state.store(Arc::new(rs));
@@ -4897,7 +4903,7 @@ mod tests {
                 display_pane_matrices: Arc::new(std::collections::HashMap::new()),
             };
             render_state.store(Arc::new(RenderState {
-                cells: Arc::new(cells),
+                cells: Arc::new(ArcSwap::from_pointee(cells)),
                 ..RenderState::default()
             }));
             for _ in 0..10 {
@@ -4969,7 +4975,7 @@ mod tests {
             ..CellsRenderState::default()
         };
         ArcSwap::from_pointee(RenderState {
-            cells: Arc::new(cells),
+            cells: Arc::new(ArcSwap::from_pointee(cells)),
             ..RenderState::default()
         })
     }

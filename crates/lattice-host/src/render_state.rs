@@ -124,7 +124,12 @@ pub struct RenderState {
     /// cell-builder worker (S2.2+) reads to rebuild. See
     /// [`CellsRenderState`] and
     /// `docs/dev/architecture/cell-grid-renderer.md`.
-    pub cells: Arc<CellsRenderState>,
+    ///
+    /// I.5.2: inner `ArcSwap` so the keystroke fast path can
+    /// republish the cells substate WITHOUT reswapping the whole
+    /// monolith (I.5.3). Mirrors [`active_document`](Self::active_document).
+    /// Readers go through `.cells.load()`.
+    pub cells: Arc<arc_swap::ArcSwap<CellsRenderState>>,
     /// D.3.d.1 (2026-05-29): inline-diff overlay render state.
     /// Carries the active document's `DiffSignMap` for the
     /// gutter-sign column. Renderers read via
@@ -164,7 +169,9 @@ impl Default for RenderState {
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
             theme: crate::ui::theme::Theme::default(),
-            cells: Arc::new(CellsRenderState::default()),
+            cells: Arc::new(arc_swap::ArcSwap::from_pointee(
+                CellsRenderState::default(),
+            )),
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
         }
@@ -2780,25 +2787,27 @@ mod tests {
         editor.viewport_height = 24;
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
+        // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once.
+        let rsc = rs.cells.load();
         // Matrix Arc identity matches the registry's active
         // cell (so the worker's writes via that cell are
         // visible through the published RS without a republish
         // round-trip).
         let registry_cell = editor.cells_matrix_for(editor.document_buffer_id);
         assert!(
-            std::sync::Arc::ptr_eq(&rs.cells.matrix, &registry_cell),
+            std::sync::Arc::ptr_eq(&rsc.matrix, &registry_cell),
             "cells.matrix must come from cells_matrix_for(active_buffer)"
         );
         // No worker yet → matrix stays empty.
-        let m = rs.cells.matrix.load();
+        let m = rsc.matrix.load();
         assert!(m.is_empty(), "matrix is empty until S2.2 worker lands");
         // viewport_height + text version surface through to the
         // worker via the same RS path.
-        assert_eq!(rs.cells.viewport_height, 24);
-        assert_eq!(rs.cells.version.text, editor.document.text_version());
+        assert_eq!(rsc.viewport_height, 24);
+        assert_eq!(rsc.version.text, editor.document.text_version());
         // Snapshot is populated (the cell-builder reads it
         // line-by-line in S2.2+).
-        assert!(rs.cells.snapshot.is_some());
+        assert!(rsc.snapshot.is_some());
     }
 
     /// The matrix Arc identity persists across publishes. This is
@@ -2813,12 +2822,12 @@ mod tests {
         let mut editor = Editor::default();
         editor.publish_render_state();
         let rs1 = editor.render_state.load_full();
-        let cell1 = rs1.cells.matrix.clone();
+        let cell1 = rs1.cells.load().matrix.clone();
         editor.publish_render_state();
         editor.publish_render_state();
         let rs2 = editor.render_state.load_full();
         assert!(
-            std::sync::Arc::ptr_eq(&cell1, &rs2.cells.matrix),
+            std::sync::Arc::ptr_eq(&cell1, &rs2.cells.load().matrix),
             "cells.matrix Arc identity must persist across publishes"
         );
     }
@@ -2844,12 +2853,13 @@ mod tests {
         let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
+        let rsc = rs.cells.load();
         assert_eq!(
-            rs.cells.panes.len(),
+            rsc.panes.len(),
             1,
             "default single Document leaf produces one panes entry"
         );
-        let entry = &rs.cells.panes[0];
+        let entry = &rsc.panes[0];
         assert_eq!(entry.buffer_id, editor.document_buffer_id);
         assert_eq!(entry.pane_id, editor.pane_tree.active().id);
         assert!(
@@ -2863,7 +2873,7 @@ mod tests {
         );
         // Active pane's version must match the top-level cells
         // version — same hashes, same inputs.
-        assert_eq!(entry.version, rs.cells.version);
+        assert_eq!(entry.version, rsc.version);
     }
 
     /// D.4.d.1.a: a vsplit produces two Document leaves; each
@@ -2878,13 +2888,13 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 2, "two Document leaves expected");
+        assert_eq!(rs.cells.load().panes.len(), 2, "two Document leaves expected");
         assert_ne!(
-            rs.cells.panes[0].pane_id, rs.cells.panes[1].pane_id,
+            rs.cells.load().panes[0].pane_id, rs.cells.load().panes[1].pane_id,
             "leaves must surface with distinct pane ids"
         );
         let shared_cell = editor.cells_matrix_for(editor.document_buffer_id);
-        for entry in rs.cells.panes.iter() {
+        for entry in rs.cells.load().panes.iter() {
             assert_eq!(entry.buffer_id, editor.document_buffer_id);
             assert!(
                 std::sync::Arc::ptr_eq(&entry.matrix, &shared_cell),
@@ -2915,8 +2925,9 @@ mod tests {
         let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 1);
-        let entry = &rs.cells.panes[0];
+        let rsc = rs.cells.load();
+        assert_eq!(rsc.panes.len(), 1);
+        let entry = &rsc.panes[0];
         let registry_cell = editor.virtual_rows_matrix_for(entry.buffer_id);
         assert!(
             std::sync::Arc::ptr_eq(&entry.virtual_rows_matrix, &registry_cell),
@@ -2942,9 +2953,9 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 2, "two Document leaves expected");
+        assert_eq!(rs.cells.load().panes.len(), 2, "two Document leaves expected");
         let shared_cell = editor.virtual_rows_matrix_for(editor.document_buffer_id);
-        for entry in rs.cells.panes.iter() {
+        for entry in rs.cells.load().panes.iter() {
             assert_eq!(entry.buffer_id, editor.document_buffer_id);
             assert!(
                 std::sync::Arc::ptr_eq(&entry.virtual_rows_matrix, &shared_cell),
@@ -2972,11 +2983,11 @@ mod tests {
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert_eq!(
-            rs.cells.panes.len(),
+            rs.cells.load().panes.len(),
             1,
             "non-Document leaves must be filtered out of panes"
         );
-        assert_eq!(rs.cells.panes[0].buffer_id, editor.document_buffer_id);
+        assert_eq!(rs.cells.load().panes[0].buffer_id, editor.document_buffer_id);
     }
 
     /// D.4.d.1.a: the active pane's entry carries the
@@ -3002,9 +3013,9 @@ mod tests {
         });
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 2);
-        let active_entry = rs
-            .cells
+        let rsc = rs.cells.load();
+        assert_eq!(rsc.panes.len(), 2);
+        let active_entry = rsc
             .panes
             .iter()
             .find(|p| p.pane_id == active_pane_id)
@@ -3013,8 +3024,7 @@ mod tests {
             active_entry.last_edit.is_some(),
             "active pane entry must carry the consumed delta"
         );
-        let other_entry = rs
-            .cells
+        let other_entry = rsc
             .panes
             .iter()
             .find(|p| p.pane_id != active_pane_id)
@@ -3026,7 +3036,7 @@ mod tests {
         // Slot drained — next publish sees None on every entry.
         editor.publish_render_state();
         let rs2 = editor.render_state.load_full();
-        assert!(rs2.cells.panes.iter().all(|p| p.last_edit.is_none()));
+        assert!(rs2.cells.load().panes.iter().all(|p| p.last_edit.is_none()));
     }
 
     // ---- D.4.d.1.c (per-pane matrix lookup) ----
@@ -3042,11 +3052,11 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 2);
-        assert_eq!(rs.cells.pane_matrices.len(), 2);
-        for entry in rs.cells.panes.iter() {
-            let lookup = rs
-                .cells
+        let rsc = rs.cells.load();
+        assert_eq!(rsc.panes.len(), 2);
+        assert_eq!(rsc.pane_matrices.len(), 2);
+        for entry in rsc.panes.iter() {
+            let lookup = rsc
                 .pane_matrices
                 .get(&entry.pane_id)
                 .expect("every pane must appear in pane_matrices");
@@ -3066,18 +3076,18 @@ mod tests {
         let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
+        let rsc = rs.cells.load();
         let active_pane_id = editor.pane_tree.active().id;
-        let cell = rs
-            .cells
+        let cell = rsc
             .matrix_for_pane(active_pane_id)
             .expect("active Document pane must resolve through matrix_for_pane");
         assert!(
-            std::sync::Arc::ptr_eq(cell, &rs.cells.matrix),
+            std::sync::Arc::ptr_eq(cell, &rsc.matrix),
             "active pane's matrix_for_pane lookup must match top-level cells.matrix"
         );
         // Unknown id returns None.
         let unknown = lattice_core::ui::pane::PaneId(u32::MAX);
-        assert!(rs.cells.matrix_for_pane(unknown).is_none());
+        assert!(rsc.matrix_for_pane(unknown).is_none());
     }
 
     /// D.4.d.1.c: non-Document leaves are absent from
@@ -3097,8 +3107,8 @@ mod tests {
         };
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.pane_matrices.len(), 1);
-        assert!(rs.cells.matrix_for_pane(non_doc_pane_id).is_none());
+        assert_eq!(rs.cells.load().pane_matrices.len(), 1);
+        assert!(rs.cells.load().matrix_for_pane(non_doc_pane_id).is_none());
     }
 
     // ---- D.4.d.2.1.d (per-pane virtual-rows matrix lookup) ----
@@ -3117,9 +3127,9 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.panes.len(), 2);
+        assert_eq!(rs.cells.load().panes.len(), 2);
         assert_eq!(rs.virtual_rows.pane_matrices.len(), 2);
-        for entry in rs.cells.panes.iter() {
+        for entry in rs.cells.load().panes.iter() {
             let lookup = rs
                 .virtual_rows
                 .pane_matrices

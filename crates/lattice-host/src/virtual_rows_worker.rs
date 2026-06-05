@@ -274,12 +274,14 @@ pub fn recompute(
     providers: &VirtualRowProviderRegistry,
 ) -> WorkerDecision {
     let rs = render_state.load_full();
-    if rs.cells.panes.is_empty() {
+    // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once.
+    let cells = rs.cells.load();
+    if cells.panes.is_empty() {
         return WorkerDecision::CacheHit;
     }
     let mut any_recomputed = false;
     let mut any_cleared = false;
-    for pane in rs.cells.panes.iter() {
+    for pane in cells.panes.iter() {
         match recompute_pane(pane, state, providers) {
             WorkerDecision::CacheHit => {}
             WorkerDecision::Clear => any_cleared = true,
@@ -509,7 +511,7 @@ mod tests {
             ..crate::render_state::CellsRenderState::default()
         };
         let rs = RenderState {
-            cells: Arc::new(cells),
+            cells: Arc::new(ArcSwap::from_pointee(cells)),
             ..RenderState::default()
         };
         Arc::new(ArcSwap::from_pointee(rs))

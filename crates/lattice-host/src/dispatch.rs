@@ -1130,7 +1130,7 @@ impl Editor {
             // `theme` axis is `hash(self.host_theme) as u64` —
             // theme changes are rare so an aggressive whole-doc
             // rebuild is acceptable per the design doc.
-            cells: std::sync::Arc::new(CellsRenderState {
+            cells: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(CellsRenderState {
                 // D.4.d.1.b (2026-05-29): top-level `matrix`
                 // now resolves through the per-document
                 // registry so the active pane's cell IS the
@@ -1261,7 +1261,7 @@ impl Editor {
                 // `display_matrix_cell`).
                 display_matrix: self.display_matrix_for(self.document_buffer_id),
                 display_pane_matrices,
-            }),
+            })),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session
             // is open). Renderer-side reads go through
@@ -1404,11 +1404,14 @@ impl Editor {
         // panes no-op here and the async cells worker handles them off-thread.
         // See the threading guarantee in
         // docs/dev/operations/slice-plans/display-line.md.
-        for pane in next.cells.panes.iter() {
+        // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once
+        // for the B2.3 sync edit-path rebuild.
+        let next_cells = next.cells.load();
+        for pane in next_cells.panes.iter() {
             crate::cells_worker::sync_rebuild_pane_on_edit(
                 pane,
-                &next.cells.theme,
-                &next.cells.whitespace,
+                &next_cells.theme,
+                &next_cells.whitespace,
             );
         }
         self.render_state.store(std::sync::Arc::new(next));

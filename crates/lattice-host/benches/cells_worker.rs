@@ -157,7 +157,7 @@ fn rs_for(
         display_pane_matrices,
     };
     let rs = RenderState {
-        cells: Arc::new(cells),
+        cells: Arc::new(ArcSwap::from_pointee(cells)),
         ..RenderState::default()
     };
     ArcSwap::from_pointee(rs)
@@ -510,11 +510,12 @@ fn bench_display_edit_path(c: &mut Criterion) {
                         seeded_display(baseline_dm),
                     );
                     let loaded = rs.load_full();
-                    let pane = &loaded.cells.panes[0];
+                    let cells_snap = loaded.cells.load();
+                    let pane = &cells_snap.panes[0];
                     let did = sync_rebuild_pane_on_edit(
                         pane,
-                        &loaded.cells.theme,
-                        &loaded.cells.whitespace,
+                        &cells_snap.theme,
+                        &cells_snap.whitespace,
                     );
                     black_box(did);
                 });

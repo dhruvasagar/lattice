@@ -1764,7 +1764,7 @@ impl EditorView {
             // the new char immediately, syntax styling catches
             // up next frame.
             cell_matrix: if render_active {
-                let m = rs_guard.cells.matrix.load_full();
+                let m = rs_guard.cells.load().matrix.load_full();
                 if m.version.text == snapshot.text_version {
                     Some(m)
                 } else {
@@ -1783,7 +1783,7 @@ impl EditorView {
             // for publishes the sync path skips (multi-edit, doc switch),
             // where EditorElement falls back to the legacy shape_row path.
             display_matrix: if render_active {
-                let m = rs_guard.cells.display_matrix.load_full();
+                let m = rs_guard.cells.load().display_matrix.load_full();
                 if m.version.text == snapshot.text_version {
                     Some(m)
                 } else {

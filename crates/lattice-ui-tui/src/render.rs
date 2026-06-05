@@ -3828,12 +3828,14 @@ fn compose_visible_lines_inner(
             // `compose_visible_lines_inner` is cut over to the
             // cell-grid.
             let rs_load = view.app.render_state.load();
+            // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once.
+            let cells_rs = rs_load.cells.load();
             // B2.4 (2026-06-04): consume the canonical `DisplayMatrix`
             // directly — its style-tagged runs resolve to ratatui via the
             // host theme at paint (`display_line_to_source_spans`). Pre-B2.4
             // the TUI read the projected cell grid here; the projection (and
             // the whole cell path) is deleted in B4.
-            let matrix = rs_load.cells.display_matrix.load();
+            let matrix = cells_rs.display_matrix.load();
             // Three paths fall through to plain `line_text`:
             //   1. matrix has no row at `line_idx` (boot frames before the
             //      first build, doc-switch gap, or off-window on a large
@@ -3859,7 +3861,7 @@ fn compose_visible_lines_inner(
             } else {
                 match matrix.row_at_source_line(line_idx) {
                     Some(line) => {
-                        crate::cells_render::display_line_to_source_spans(line, &rs_load.cells.theme)
+                        crate::cells_render::display_line_to_source_spans(line, &cells_rs.theme)
                     }
                     None => Vec::new(),
                 }
@@ -5460,7 +5462,7 @@ fn buffer_line_to_visible_row_with(
     // B2.4: per-line display width from the canonical `DisplayMatrix`
     // (tab-expanded col_count == what the renderer paints). Stale /
     // missing rows fall back to the rope line's char count.
-    let display_matrix = view.app.render_state.load().cells.display_matrix.load_full();
+    let display_matrix = view.app.render_state.load().cells.load().display_matrix.load_full();
     let segment_rows = |line: u32| -> u32 {
         if wrap_width == 0 {
             return 1;

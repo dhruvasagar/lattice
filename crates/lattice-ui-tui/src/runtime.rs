@@ -5,7 +5,8 @@
 //! Everything else is pure and unit-tested.
 
 use std::io::Stdout;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::cursor::SetCursorStyle;
@@ -23,6 +24,41 @@ use lattice_core::Document;
 use crate::app::{Action, App};
 use crate::input::{TranslateContext, translate};
 use crate::render::draw_frame;
+
+/// Perf instrumentation (paired with `LATTICE_PERF_INPUT`): counts bytes
+/// written to the terminal so the input timer can report **per-frame write
+/// volume**. This is the real driver of terminal present time on a slow pty:
+/// `terminal.draw()` returns as soon as the diff lands in the pty buffer, but
+/// the terminal emulator then spends time parsing + presenting those bytes —
+/// time our `input→glyph` timer can't see. vim writes a few bytes per
+/// keystroke; if we write kilobytes (a whole-viewport rewrite) the same
+/// terminal that renders vim instantly will visibly lag on us. Reset before
+/// each `draw()`, read after.
+static PERF_FRAME_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Wraps the terminal writer and tallies bytes into [`PERF_FRAME_BYTES`].
+/// Forwards everything to the inner writer; the relaxed atomic add is
+/// negligible. Always wired (so the byte count is available whenever
+/// `LATTICE_PERF_INPUT` is set) — the only cost when the env is unset is the
+/// add itself, which is in the noise next to the syscall it accompanies.
+struct CountingWriter<W> {
+    inner: W,
+}
+
+impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        PERF_FRAME_BYTES.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// The concrete terminal backend type, now wrapped in the byte counter.
+type TermBackend = CrosstermBackend<CountingWriter<Stdout>>;
 
 pub fn run(document: Document) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
@@ -69,7 +105,7 @@ pub fn run(document: Document) -> Result<()> {
 // helpers that haven't migrated yet.
 pub use lattice_runtime::runtime::spawn_on_lsp_runtime;
 
-fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup() -> Result<Terminal<TermBackend>> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
@@ -82,11 +118,11 @@ fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     // raw key events -- which Normal mode then interprets as commands
     // and the user gets unexpected behaviour instead of a paste.
     execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(CountingWriter { inner: stdout });
     Terminal::new(backend).context("create terminal")
 }
 
-fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+fn teardown(terminal: &mut Terminal<TermBackend>) -> Result<()> {
     // Restore the user's default cursor shape before tearing down the
     // alt screen -- otherwise the shell prompt inherits whatever the
     // editor was rendering.
@@ -133,7 +169,7 @@ fn popup_height_for(candidate_count: usize) -> usize {
     candidate_count.min(MAX_ROWS).max(1)
 }
 
-fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
+fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // Terminal-mode T2.b (2026-05-25): cursor-style cache now keys
     // off `(modal, terminal_insert_active)` since TerminalInsert is
     // a minor mode that doesn't flip `ModalState`. Without the
@@ -141,6 +177,26 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
     // Terminal-Insert wouldn't re-push the cursor style and the
     // user would see a stale block where a bar belongs.
     let mut last_cursor_inputs: Option<(ModalState, bool)> = None;
+    // Diff cache for the per-frame terminal-width dispatch (see loop body):
+    // the width only changes on a resize, so we dispatch only on change
+    // rather than every frame.
+    let mut last_terminal_width: Option<u16> = None;
+    // Diff cache for the per-frame viewport-height push. `set_viewport_height`
+    // was dispatched UNCONDITIONALLY every iteration → a publish (+ both worker
+    // wakes) per loop tick even when nothing changed — the idle/per-keystroke
+    // publish storm. Push only when the resolved height actually changes.
+    let mut last_viewport_height: Option<u32> = None;
+    // Opt-in keystroke→glyph timer (set env `LATTICE_PERF_INPUT=1`). Measures
+    // OUR input-to-draw latency only — from the instant an input event was
+    // applied to the instant `terminal.draw()` returns (i.e. we've written the
+    // frame's diff to stdout). It does NOT include the terminal emulator /
+    // pty / compositor present time, which on WSL2 is outside our process.
+    // So: a tiny number here + felt lag ⇒ the lag is the WSL2 terminal, not us;
+    // a large number here ⇒ the lag is our draw. Writes one clean line per
+    // rendered keystroke straight to stderr (bypasses tracing, so it does not
+    // add to the debug-log flood). Off by default — zero cost when unset.
+    let perf_input = std::env::var_os("LATTICE_PERF_INPUT").is_some();
+    let mut last_input_at: Option<Instant> = None;
     // Slice 3c.final.B (group 6): lifecycle read via published
     // substate. `should_quit` flips from inside dispatch (`:q`,
     // `:wq`, `:qa!`) which republishes at its tail, so the next
@@ -189,7 +245,14 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             .height
             .saturating_sub(2)
             .saturating_sub(extra_rows as u16) as u32;
-        app.set_viewport_height(app.active_pane_content_height(buffer_height));
+        // Diff-then-push: only dispatch when the resolved viewport height
+        // changed. Unconditional dispatch here was publishing (+ waking both
+        // cells/virtual-rows workers) every loop iteration.
+        let vh = app.active_pane_content_height(buffer_height);
+        if last_viewport_height != Some(vh) {
+            app.set_viewport_height(vh);
+            last_viewport_height = Some(vh);
+        }
         // 2026-05-27: fire `set_pane_viewport(idx, rows, cols)` per
         // leaf so the host writes the per-pane geometry onto
         // `PaneState` AND, for terminal panes, resizes alacritty +
@@ -231,8 +294,16 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                 app.set_pane_viewport(*idx, rows, cols);
             }
         }
-        // Slice 3c.final.C: terminal_width via Action.
-        app.apply(lattice_host::action::Action::SetTerminalWidth(size.width));
+        // Slice 3c.final.C: terminal_width via Action. Diff-then-send
+        // (mirrors the pane-viewport loop above): the width only changes
+        // on a terminal resize, so dispatching every frame meant a blocking
+        // actor RPC + a full `publish_render_state` on every frame (hence on
+        // every keystroke's draw) for a no-op field write. Cache the
+        // last-sent width UI-side; dispatch only on change.
+        if last_terminal_width != Some(size.width) {
+            app.apply(lattice_host::action::Action::SetTerminalWidth(size.width));
+            last_terminal_width = Some(size.width);
+        }
         // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it
         // by clearing the terminal buffer so the next draw repaints
         // every cell instead of letting ratatui's diff engine
@@ -259,7 +330,11 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // frame on scroll cache miss (tree-sitter walk on UI
         // thread); post-X2: zero UI-thread parse cost. Goal #1
         // violation B1 closed for the TUI peer.
-        app.refresh_pane_highlights();
+        // B4: disabled. This per-frame UI-thread `highlight_lines` recompute
+        // (itself a goal-#1 violation) only fed inactive-pane `pane_highlights`;
+        // the active body now reads the canonical `DisplayMatrix`. B4 migrates
+        // the inactive-pane consumer onto DisplayMatrix, then deletes this.
+        // app.refresh_pane_highlights();
 
         // Push the cursor shape only when the inputs change --
         // terminals accept these every frame, but emitting on every
@@ -287,72 +362,115 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // published `ad().snapshot` mirror (Arc-bump clone off the
         // same source as `snapshot_cache.load_arc()`).
         let frame_snap = app.ad().snapshot.clone();
+        let draw_t0 = if perf_input {
+            // Reset the per-frame byte tally so we count only THIS draw's
+            // write (the cursor-style execute! above already happened).
+            PERF_FRAME_BYTES.store(0, Ordering::Relaxed);
+            Some(Instant::now())
+        } else {
+            None
+        };
         terminal
             .draw(|frame| draw_frame(frame, &app, &frame_snap))
             .context("draw frame")?;
+        // Perf timer: this draw is the one that renders the keystroke applied
+        // at the end of the PREVIOUS iteration. Report input→glyph (our side),
+        // the bare draw duration, AND the bytes written to the terminal — the
+        // last is the real driver of present time on a slow pty (vim writes a
+        // handful; a whole-viewport rewrite is kilobytes). Clear so we only log
+        // frames that actually rendered fresh input (not async repaints).
+        if perf_input {
+            if let (Some(input_at), Some(t0)) = (last_input_at.take(), draw_t0) {
+                let done = Instant::now();
+                eprintln!(
+                    "[perf] input→glyph {:>7.3}ms  (draw {:>7.3}ms, {} bytes)",
+                    done.duration_since(input_at).as_secs_f64() * 1e3,
+                    done.duration_since(t0).as_secs_f64() * 1e3,
+                    PERF_FRAME_BYTES.load(Ordering::Relaxed),
+                );
+            }
+        }
 
-        // 100ms poll keeps the loop responsive to terminal resizes without
-        // spinning. We only consume KeyEvents; resizes naturally re-render
-        // on the next iteration.
+        // Slice I.1 — input coalescing. The 100ms poll waits for the FIRST
+        // event (keeps the loop responsive to resizes without spinning;
+        // Slice I.3 makes this fully event-driven). Once an event is ready
+        // we drain EVERY currently-buffered event before looping back to
+        // draw: a typing burst of N queued keys collapses to N cheap
+        // `apply`s + ONE draw instead of N full draw cycles, so the
+        // displayed text never trails the keystrokes (the keystroke UX
+        // contract). The translate context is rebuilt per event because
+        // applying one event can change the modal state / mode stack that
+        // governs how the next event translates. See
+        // docs/dev/architecture/input-pipeline.md.
         if event::poll(Duration::from_millis(100)).context("poll events")? {
-            match event::read().context("read event")? {
-                Event::Key(k) => {
-                    // Slice 3c.final.B (group 5): translator
-                    // inputs read through `rs.translator` instead
-                    // of `&app.editor.{builtins,keymap,partial_chord}`.
-                    // The Arc-bound substate keeps the borrows
-                    // valid for the duration of the translate call
-                    // without tying them to `Editor`'s lifetime —
-                    // sets up the slice-E thread split.
-                    let ad = app.ad();
-                    // Slice 3c.final.E.4: via App-cached render_state.
-                    let translator = app.render_state.load().translator.clone();
-                    // Investigation 2026-05-22: trace partial_chord
-                    // observed by ctx-build. Pairs with the
-                    // ABSORB/CLEAR traces in handle_action — the
-                    // three together show the full chord-stack
-                    // lifecycle across keystrokes.
-                    tracing::info!(
-                        "[chord-trace] KEY {:?} partial_chord_from_rs={:?}",
-                        k.code,
-                        translator.partial_chord,
-                    );
-                    let ctx = TranslateContext {
-                        modal: ad.modal,
-                        builtins: &translator.builtins,
-                        pending_count: ad.pending_count,
-                        op_count: ad.op_count,
-                        recording_macro: ad.macro_recording,
-                        active_buffer: ad.buffer_kind,
-                        completion_open: ad.completion_open,
-                        chord_capture: app.chord_capture_active(),
-                        picker_open: ad.picker_open,
-                        insert_completion_open: app.completion_popup_active(),
-                        snippet_active: ad.snippet_active,
-                        terminal_insert_active: ad.terminal_insert_active,
-                        terminal_esc_exits: ad.terminal_esc_exits,
-                        terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
-                        terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
-                        terminal_visual_active: ad.terminal_visual_active,
-                        keymap: &translator.keymap,
-                        partial_chord: &translator.partial_chord,
-                        active_minor_modes: &translator.active_minor_modes,
-                    };
-                    let action = translate(ctx, k);
-                    app.apply(action);
+            loop {
+                match event::read().context("read event")? {
+                    Event::Key(k) => {
+                        // Slice 3c.final.B (group 5): translator
+                        // inputs read through `rs.translator` instead
+                        // of `&app.editor.{builtins,keymap,partial_chord}`.
+                        // The Arc-bound substate keeps the borrows
+                        // valid for the duration of the translate call
+                        // without tying them to `Editor`'s lifetime —
+                        // sets up the slice-E thread split.
+                        let ad = app.ad();
+                        // Slice 3c.final.E.4: via App-cached render_state.
+                        let translator = app.render_state.load().translator.clone();
+                        let ctx = TranslateContext {
+                            modal: ad.modal,
+                            builtins: &translator.builtins,
+                            pending_count: ad.pending_count,
+                            op_count: ad.op_count,
+                            recording_macro: ad.macro_recording,
+                            active_buffer: ad.buffer_kind,
+                            completion_open: ad.completion_open,
+                            chord_capture: app.chord_capture_active(),
+                            picker_open: ad.picker_open,
+                            insert_completion_open: app.completion_popup_active(),
+                            snippet_active: ad.snippet_active,
+                            terminal_insert_active: ad.terminal_insert_active,
+                            terminal_esc_exits: ad.terminal_esc_exits,
+                            terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                            terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+                            terminal_visual_active: ad.terminal_visual_active,
+                            keymap: &translator.keymap,
+                            partial_chord: &translator.partial_chord,
+                            active_minor_modes: &translator.active_minor_modes,
+                        };
+                        let action = translate(ctx, k);
+                        app.apply(action);
+                        if perf_input {
+                            last_input_at = Some(Instant::now());
+                        }
+                    }
+                    Event::Paste(text) => {
+                        // Real bracketed-paste burst from the terminal's
+                        // clipboard shortcut. Hand the payload to the app
+                        // as a single edit; Ctrl+V keystrokes (the binding
+                        // for blockwise visual) still arrive as Event::Key
+                        // because they're not the terminal's paste path.
+                        app.apply(Action::PasteText(text));
+                        if perf_input {
+                            last_input_at = Some(Instant::now());
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        // next iteration handles the new size
+                    }
+                    _ => {}
                 }
-                Event::Paste(text) => {
-                    // Real bracketed-paste burst from the terminal's
-                    // clipboard shortcut. Hand the payload to the app
-                    // as a single edit; Ctrl+V keystrokes (the binding
-                    // for blockwise visual) still arrive as Event::Key
-                    // because they're not the terminal's paste path.
-                    app.apply(Action::PasteText(text));
+                // Stop draining the instant a quit lands: don't apply later
+                // buffered keys against a tearing-down app, and let the outer
+                // `while !should_quit` exit without a final draw.
+                if app.render_state.load().lifecycle.should_quit {
+                    break;
                 }
-                Event::Resize(_, _) => {
-                    // next iteration handles the new size
+                // Drain only what is ALREADY buffered (zero-timeout poll).
+                // When the queue empties, fall through to a single redraw
+                // showing the coalesced final state.
+                if !event::poll(Duration::ZERO).context("poll events")? {
+                    break;
                 }
-                _ => {}
             }
         }
     }

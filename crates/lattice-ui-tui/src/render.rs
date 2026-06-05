@@ -8020,35 +8020,34 @@ mod tests {
         );
     }
 
-    /// Slice 3c.final.X.cleanup: `App::apply(Action::None)` is the
+    /// Slice 3c.final.X.cleanup → I.7: `App::apply(Action::None)` is the
     /// keystroke entry point's minimum-work path. It MUST go
     /// through the actor seam — the dispatch itself is a mutation —
     /// but extra RPCs there stack up at typing rate. This test
     /// caps the count so future additions surface as a red bar.
     ///
-    /// Post-X.cleanup baseline: 5 RPCs per `Action::None` keystroke.
-    /// Sources, all on the apply tail:
+    /// Pre-I.7 baseline was 5 RPCs per `Action::None` keystroke
+    /// (`dispatch` + a four-op tail each its own `mutate_editor*`
+    /// crossing). Slice I.7 fused the deterministic tail into the
+    /// dispatch round-trip via [`Editor::dispatch_fused`]: when the
+    /// dispatch produces no renderer-coupled work and no popup is up
+    /// (the hot typing path — `Action::None` qualifies),
+    /// `ensure_cursor_visible` / `maybe_reparse_syntax` /
+    /// `sync_keymap_overlays` / `run_tick_pending` all run IN-actor in
+    /// the same crossing.
     ///
-    ///   1. `mutate_editor_with(|e| e.dispatch(action))`
-    ///      — the unavoidable command-dispatch into the actor.
-    ///   2. `ensure_cursor_visible()`
-    ///      — clamps scroll to keep cursor in viewport.
-    ///   3. `maybe_reparse_syntax()`
-    ///      — tree-sitter incremental reparse gate.
-    ///   4. `sync_keymap_overlays()`
-    ///      — Insert-mode minor-mode keymap layer sync.
-    ///   5. `mutate_editor_with(|e| e.run_tick_pending())`
-    ///      — drains LSP / event / mode-lifecycle results.
+    /// Post-I.7 baseline: **1** RPC per `Action::None` keystroke —
+    /// `mutate_editor_with(|e| e.dispatch_fused(..))`, the single
+    /// unavoidable command-dispatch into the actor. Everything else on
+    /// the apply path (`ad()`, `cursor()`, `popup()`, the tick-signal
+    /// fan-out) is a wait-free published read. On WSL2 ~0.5ms/crossing,
+    /// so this is the ~6× felt-latency drop I.7 set out to deliver.
     ///
-    /// Each is ~94µs through the actor mailbox; 5 × 94µs ≈ 470µs
-    /// per keystroke ≈ 6% of the 8ms-at-120Hz budget. Not great,
-    /// not yet a fire — items 2/3/4 are wait-free-checkable and
-    /// could become "check via RS, mutate-only-on-change" in a
-    /// follow-up `3c.extension.apply-tail-rs` slice.
-    ///
-    /// Bound: ≤ 6 gives one slot of headroom for a future
-    /// addition; if a change pushes it past 6 the right move is
-    /// to lift the new read to RS, not to raise the bound.
+    /// Bound: ≤ 2 gives one slot of headroom. If a change pushes it
+    /// past 2 the right move is to lift the new read to RS (or fold the
+    /// new mutation into `dispatch_fused`'s in-actor tail), NOT to raise
+    /// the bound. See docs/dev/operations/slice-plans/input-latency.md
+    /// § I.7.
     #[test]
     fn apply_noop_action_makes_bounded_actor_calls() {
         let mut app = app_with("a\nb\n", 10);
@@ -8059,13 +8058,13 @@ mod tests {
         let after = crate::actor_call_counter::snapshot();
         let delta = after - before;
         assert!(
-            delta <= 6,
+            delta <= 2,
             "App::apply(Action::None) made {delta} actor-seam calls; \
-             keystroke entry path must stay <= 6 (baseline 5). \
+             keystroke entry path must stay <= 2 (baseline 1 since I.7). \
              If you need to raise this you've added a per-keystroke \
-             RPC — consider RS-lifting first. See slice \
-             3c.final.X.cleanup for the convention and the apply-tail \
-             RPC inventory.",
+             RPC — consider RS-lifting first, or fold the mutation into \
+             Editor::dispatch_fused's in-actor tail. See slice I.7 \
+             (docs/dev/operations/slice-plans/input-latency.md).",
         );
     }
 }

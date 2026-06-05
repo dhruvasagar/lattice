@@ -1587,6 +1587,21 @@ pub struct PublishCache {
     /// The composite is encoded into one `u64` via a small fold so
     /// the cache slot shape stays uniform with the other entries.
     pub tabs: Option<(u64, std::sync::Arc<TabsRenderState>)>,
+    /// Slice I.4 (publish coalescing): depth of the in-flight
+    /// `dispatch` / `handle_effect` batch. While `> 0`, intermediate
+    /// `publish_render_state()` calls (from chained setters,
+    /// `ensure_cursor_visible`, `maybe_reparse_syntax`, …) suppress
+    /// their build/store/wake and instead set `publish_pending`; the
+    /// single real publish fires once when the outermost batch
+    /// unwinds. Collapses ~6 whole-world publishes per keystroke to 1
+    /// (and 12 worker wakes to 2). Lives here (not on `Editor`) because
+    /// `PublishCache` is `Default`-derived and already the actor's
+    /// single publish-side lock — no new `Editor` construction churn,
+    /// and `build_render_state` already takes this lock.
+    pub publish_batch_depth: u32,
+    /// A suppressed publish occurred during the current batch; flushed
+    /// once when the batch depth returns to 0.
+    pub publish_pending: bool,
 }
 
 impl PublishCache {

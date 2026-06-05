@@ -154,8 +154,44 @@ impl App {
         // can own its copy (needed for `Send + 'static`) while
         // the outer `match action {}` at the tail still has access.
         let action_for_dispatch = action.clone();
-        let mut outcome =
-            self.mutate_editor_with(move |e| e.dispatch(action_for_dispatch));
+        // Slice I.7: collapse the keystroke's actor round-trips. Before
+        // I.7 the keystroke path cost SIX blocking actor crossings —
+        // `completion_popup_active` (translate ctx) + `dispatch` + the
+        // four-op tail (`ensure_cursor_visible` / `maybe_reparse_syntax` /
+        // `sync_keymap_overlays` / `run_tick_pending`), each a separate
+        // `mutate_editor*` mailbox crossing (~0.5ms on WSL2 → the ~3.5ms
+        // felt typing lag). `dispatch_fused` runs `dispatch` PLUS the
+        // whole tail inside ONE round-trip whenever the dispatch produced
+        // no renderer-coupled work and no popup is up (the hot typing
+        // path). `popup_up` is a published read (no RPC); when a popup is
+        // shown we decline the fuse so the App-side State-A hover-dismiss
+        // machine below runs unchanged. See
+        // docs/dev/operations/slice-plans/input-latency.md § I.7.
+        let popup_up = self.popup().buffer_id.is_some();
+        let pre_active_for_closure = pre_active;
+        let fused = self.mutate_editor_with(move |e| {
+            e.dispatch_fused(action_for_dispatch, pre_active_for_closure, popup_up)
+        });
+        let mut outcome = fused.outcome;
+        if let Some(tail_signals) = fused.tail_signals {
+            // FUSED FAST PATH: the deterministic tail already ran in-actor
+            // (ensure_cursor_visible / maybe_reparse_syntax /
+            // sync_keymap_overlays / run_tick_pending). The `match action`
+            // body below is a grouped no-op for every fuseable (host-
+            // handled) action, and State-A hover-dismiss is impossible
+            // here (the fuse requires no popup), so the only work left is
+            // surfacing the tick signals (e.g. `ThemeChanged`) UI-side.
+            for signal in tail_signals {
+                self.handle_renderer_signal(signal);
+            }
+            return;
+        }
+        // LEGACY MULTI-RPC PATH: the dispatch carried renderer-coupled
+        // effects / signals / next_actions, or `consumed` the action, or a
+        // popup is up. The App-side drains + tail below preserve the
+        // original ordering exactly (effects' `do_*` handlers must run
+        // before the tail so e.g. `OpenBufferAt`'s active-doc switch lands
+        // before `ensure_cursor_visible` clamps).
         // 5.5.G.23: drain any effects the host queued (e.g. from
         // host-side `Editor::run_invocation` producing
         // `Effect::SaveBuffer` / `Effect::OpenBuffer` / etc.). The host

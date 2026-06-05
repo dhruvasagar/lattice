@@ -135,6 +135,34 @@ pub struct DispatchOutcome {
     pub next_actions: Vec<crate::action::Action>,
 }
 
+/// Slice I.7 — result of [`Editor::dispatch_fused`], the one-round-trip
+/// keystroke apply.
+///
+/// `outcome` is the dispatch's [`DispatchOutcome`] (effects / signals /
+/// next_actions / consumed), exactly as `dispatch` returns it.
+///
+/// `tail_signals` is `Some(signals)` when the deterministic post-dispatch
+/// tail — `ensure_cursor_visible` → `maybe_reparse_syntax` →
+/// `sync_keymap_overlays` → `run_tick_pending` — ran IN-actor because the
+/// dispatch produced no renderer-coupled work (empty effects / signals /
+/// next_actions, not `consumed`) and no popup was up. In that case the
+/// signals are `run_tick_pending`'s output and the renderer only has to
+/// run its UI-side `handle_renderer_signal` over them.
+///
+/// `tail_signals` is `None` when the caller must run the legacy multi-RPC
+/// tail itself: the dispatch carried renderer-coupled effects / signals /
+/// next_actions (whose App-side `do_*` handlers + recursive `apply` must
+/// run BEFORE the tail so effect ordering holds), or it `consumed` the
+/// action (renderer bails before the tail), or a popup was up (the
+/// State-A hover-dismiss state machine lives App-side for the legacy
+/// path). Those keystrokes are the rare ones (file open, LSP, picker,
+/// hover) where the typing-contract latency is not the concern.
+#[derive(Debug)]
+pub struct FusedDispatch {
+    pub outcome: DispatchOutcome,
+    pub tail_signals: Option<Vec<RendererSignal>>,
+}
+
 /// Host-to-renderer side-effect signal.
 ///
 /// **v1 scope is deliberately small** (see
@@ -275,6 +303,14 @@ impl Editor {
     /// }
     /// ```
     pub fn dispatch(&mut self, action: Action) -> DispatchOutcome {
+        // Slice I.4 (publish coalescing): open a publish batch so every
+        // intermediate `publish_render_state()` during this dispatch (and any
+        // nested dispatch via cascaded effects/actions) collapses into one
+        // flush at the tail. Depth-counted so nesting is correct.
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth += 1;
         // Issue #20 (2026-05-22): floating-popup auto-dismiss on
         // cursor motion. State-A semantics: popup shown,
         // hover-mode active on the popup buffer, focus still on
@@ -320,8 +356,104 @@ impl Editor {
         // Arc allocation per sub-state (10) plus one for the
         // top-level -- well below the 100µs budget today since
         // every sub-state body is empty except diagnostics.
+        // Slice I.4: close the publish batch, then flush. At the top level
+        // depth returns to 0 so this `publish_render_state()` does the single
+        // real build/store/wake for the whole dispatch; nested dispatches stay
+        // suppressed (depth still > 0) and defer to their outer flush.
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth -= 1;
         self.publish_render_state();
         out
+    }
+
+    /// Slice I.7 — one-round-trip keystroke apply.
+    ///
+    /// `dispatch` plus its deterministic post-dispatch tail used to cost
+    /// the renderer **five** blocking actor round-trips per keystroke
+    /// (`dispatch`, then `ensure_cursor_visible`, `maybe_reparse_syntax`,
+    /// `sync_keymap_overlays`, `run_tick_pending` — each a separate
+    /// `mutate_editor*` mailbox crossing). On WSL2 each crossing is
+    /// ~0.5ms (futex/scheduler), so the tail alone was the ~3.5ms felt
+    /// typing lag. All four tail ops are pure-host `Editor` methods (the
+    /// actor's own `async_landed` arm already calls `run_tick_pending`
+    /// in-actor), so fusing them into the dispatch round-trip is the
+    /// correct shape, not a hot-path hack.
+    ///
+    /// The fuse is **conditional**: the tail runs in-actor only when the
+    /// dispatch produced no renderer-coupled work (the overwhelmingly
+    /// common case — every plain `Insert`, motion, and operator that
+    /// doesn't open a buffer / fire an LSP request) and no popup was up.
+    /// When the dispatch carries effects / signals / next_actions (whose
+    /// App-side `do_*` handlers must run BEFORE the tail so effect
+    /// ordering holds — e.g. `OpenBufferAt` switches the active doc, then
+    /// `ensure_cursor_visible` must clamp against the *new* doc), or
+    /// `consumed` it, or a popup is up (the App-side State-A hover-dismiss
+    /// state machine owns that path), `tail_signals` is `None` and the
+    /// renderer runs the legacy multi-RPC tail with the original ordering.
+    ///
+    /// Publishes coalesce: this opens an outer publish batch around the
+    /// whole sequence, so `dispatch`'s tail flush plus each tail op's
+    /// flush are suppressed (depth > 0) and the single real publish is
+    /// the one the actor's `mutate_*` wrapper fires after this returns
+    /// (the batch is left at depth 0 with `publish_pending` set, but not
+    /// flushed here — the wrapper's `publish_render_state()` does it once).
+    ///
+    /// `pre_active` is the renderer's pre-dispatch active `BufferKind`,
+    /// passed in so the in-actor tail can replicate App::apply's
+    /// `popup_dismissed` skip (don't `ensure_cursor_visible` on a
+    /// Help→Document dismiss, whose viewport height is still the popup's
+    /// stale inner height). `popup_up` is whether a popup buffer is
+    /// shown; when true the fuse is declined so the App-side popup logic
+    /// runs unchanged.
+    pub fn dispatch_fused(
+        &mut self,
+        action: Action,
+        pre_active: BufferKind,
+        popup_up: bool,
+    ) -> FusedDispatch {
+        // Open an outer publish batch so `dispatch`'s tail flush and the
+        // four tail ops' flushes all coalesce. We deliberately leave the
+        // single real flush to the actor's `mutate_*` wrapper, which
+        // calls `publish_render_state()` once after this returns: decrement
+        // back to 0 below WITHOUT flushing, so `publish_pending` stays set
+        // and the wrapper's flush does the one real build/store/wake.
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth += 1;
+        let outcome = self.dispatch(action);
+        let can_fuse = !outcome.consumed
+            && outcome.effects.is_empty()
+            && outcome.renderer_signals.is_empty()
+            && outcome.next_actions.is_empty()
+            && !popup_up;
+        let tail_signals = if can_fuse {
+            // Replicates App::apply's tail exactly. `popup_dismissed`
+            // can only be true when a Help buffer was active and is now
+            // Document; with `popup_up == false` an *overlay* popup can't
+            // be involved, but an in-pane Help→Document transition still
+            // could, so keep the skip rather than assuming it away.
+            let popup_dismissed = matches!(pre_active, BufferKind::Help)
+                && matches!(self.active_buffer, BufferKind::Document);
+            if !popup_dismissed {
+                self.ensure_cursor_visible();
+            }
+            self.maybe_reparse_syntax();
+            self.sync_keymap_overlays();
+            Some(self.run_tick_pending())
+        } else {
+            None
+        };
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth -= 1;
+        FusedDispatch {
+            outcome,
+            tail_signals,
+        }
     }
 
     /// Renderer-neutral entry point for `lattice_grammar::Effect`
@@ -346,12 +478,21 @@ impl Editor {
     ///
     /// [app-apply-effect]: ../../lattice_ui_tui/app/dispatch/struct.App.html#method.apply_effect
     pub fn handle_effect(&mut self, effect: Effect) -> DispatchOutcome {
+        // Slice I.4 (publish coalescing): same batch discipline as `dispatch`.
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth += 1;
         let mut out = DispatchOutcome::default();
         handle_effect(self, effect, &mut out);
         // Phase 5.8.AF.5 / Slice 3a: parallel publication path
         // for the alternate entry. Keeps the renderer's read
         // contract fresh regardless of whether mutation arrives
         // through `dispatch` or `handle_effect`.
+        self.publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth -= 1;
         self.publish_render_state();
         out
     }
@@ -1216,6 +1357,25 @@ impl Editor {
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
     pub fn publish_render_state(&mut self) {
+        // Slice I.4 (publish coalescing): while a `dispatch` / `handle_effect`
+        // batch is in flight (depth > 0), suppress this publish — mark it
+        // pending and return. The single real publish fires when the outermost
+        // batch unwinds (see `dispatch`/`handle_effect` tails), collapsing the
+        // ~6 whole-world publishes a keystroke used to trigger into 1 (and 12
+        // worker wakes into 2). The lock is scoped + released here because the
+        // real body's `build_render_state` takes the same lock (std `Mutex` is
+        // not reentrant).
+        {
+            let mut c = self
+                .publish_cache
+                .lock()
+                .expect("publish_cache mutex poisoned");
+            if c.publish_batch_depth > 0 {
+                c.publish_pending = true;
+                return;
+            }
+            c.publish_pending = false;
+        }
         // D.5.a (2026-05-30): apply any diff-mode toggles
         // queued by the `DiffSubsystem` since the previous
         // tick. Must run before `build_render_state` reads
@@ -1259,7 +1419,11 @@ impl Editor {
         // `render_state.load_full()` regardless of how many publishes
         // it missed during the burst. Cheap (~10ns) on the
         // dispatch tail; doesn't block.
-        self.highlight_wake.0.notify_one();
+        // B4: disabled. The legacy highlights worker now only feeds
+        // inactive-pane `visible_rows`/`pane_highlights`; the active body
+        // reads the canonical `DisplayMatrix`. B4 migrates the inactive-pane
+        // consumer onto DisplayMatrix, then deletes the worker + this wake.
+        // self.highlight_wake.0.notify_one();
         // S2.1 (2026-05-26): wake the cell-builder worker (S2.2+).
         // Same permit-style coalescing as the highlights wake.
         // Currently no consumer (worker lands in S2.2), so this is
@@ -1430,9 +1594,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // `dispatch_action(EnsureCursorVisible)`); without exempting it,
     // partial_chord is cleared between keystrokes and EVERY
     // multi-key chord (gg, dw, zz, zt, zb, ci{, df,, etc.) breaks.
-    // User-reported 2026-05-22 regression; root cause traced via
-    // the `[chord-trace]` info! lines added in commit c2d4ffe +
-    // d828990.
+    // User-reported 2026-05-22 regression; the `is_renderer_housekeeping`
+    // exemption below is the fix. (The `[chord-trace]` info! lines used to
+    // diagnose it were removed once the fix proved stable.)
     //
     // The exempt set is "actions the renderer fires for its own
     // bookkeeping that DON'T represent user-initiated chord
@@ -1461,23 +1625,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_))
         && !is_renderer_housekeeping
     {
-        // Investigation 2026-05-22: trace clears so we can see if
-        // partial_chord gets reset between keystrokes when it
-        // shouldn't. info! so it lands in *messages* without
-        // setting RUST_LOG. Removable once the fix above is
-        // proven stable.
-        if !editor.partial_chord.is_empty() {
-            let dbg = format!("{action:?}");
-            let name: String = dbg
-                .chars()
-                .take_while(|c| !matches!(c, '(' | ' ' | '{' | ','))
-                .collect();
-            tracing::info!(
-                "[chord-trace] CLEAR partial_chord={:?} on action={}",
-                editor.partial_chord,
-                name,
-            );
-        }
         editor.partial_chord.clear();
     }
     // 5.5.D: read-only-help guard. When a help buffer holds focus
@@ -1549,15 +1696,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // next keystroke runs through `dispatch_normal` with
             // this stack as prefix.
             editor.partial_chord.push(chord);
-            // Investigation 2026-05-22: trace absorbs so we can
-            // verify the partial_chord stack grows as expected
-            // across multi-key sequences (gg/dw/zz/etc.).
-            // info! so it lands in *messages* without setting RUST_LOG.
-            tracing::info!(
-                "[chord-trace] ABSORB chord={:?} partial_chord={:?}",
-                chord,
-                editor.partial_chord,
-            );
         }
         Action::PushDigit(d) => {
             // Accumulate one decimal digit into the pending count.

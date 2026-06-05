@@ -152,7 +152,31 @@ impl App {
     /// the user is typing in; v1 has a single
     /// `self.document_buffer_id()`.
     pub fn completion_popup_active(&self) -> bool {
-        self.completion_popup_mode_active_for(self.document_buffer_id())
+        // Slice I.7: RPC-free. This is read once per keystroke in the
+        // translate context (runtime.rs) BEFORE dispatch, to gate the
+        // insert-completion keymap layer. Routing through
+        // `completion_popup_mode_active_for` → `minor_mode_enabled_for`
+        // → `read_editor` cost a blocking actor round-trip on every
+        // keystroke; read the published `modes()` map instead (the
+        // popup mode's activation is established by the prior keystroke's
+        // `sync_keymap_overlays`, which publishes — so the published map
+        // is the right pre-dispatch state). Mirrors
+        // `lsp_diagnostics_mode_enabled_for`'s published-read shape.
+        // cfg(test) escape hatch reads the editor directly so tests that
+        // mutate modes without publishing keep working (see `cursor()`).
+        #[cfg(test)]
+        {
+            self.completion_popup_mode_active_for(self.document_buffer_id())
+        }
+        #[cfg(not(test))]
+        {
+            let buffer_id = self.document_buffer_id();
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_mode::CompletionPopupMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// M.6.0: is `lsp-completion-mode` active on `buffer_id`? Read

@@ -1896,6 +1896,41 @@ fn split_body_into_segments(
     segments
 }
 
+/// W.4.t.1: char-count column of source `byte` within the
+/// tab-expanded cell body — the column model
+/// [`split_body_into_segments`] slices by: one column per char, with
+/// a `\t` filling to the next `tabstop` multiple (mirroring the cells
+/// builder's `cells.len()`-based expansion). Identity for ASCII
+/// without tabs (`byte == col`), so overlays on plain code are
+/// unchanged. Char-count (not display-width) is deliberate — it
+/// matches how the body is segmented and how the cells were laid out.
+fn source_byte_to_body_col(line: &str, byte: usize, tabstop: u32) -> usize {
+    let ts = (tabstop.max(1)) as usize;
+    let mut col = 0usize;
+    let mut b = 0usize;
+    for ch in line.chars() {
+        if b >= byte {
+            break;
+        }
+        if ch == '\t' {
+            col += ts - (col % ts);
+        } else {
+            col += 1;
+        }
+        b += ch.len_utf8();
+    }
+    col
+}
+
+/// W.4.t.1: byte offset of the `col`-th char (0-based char index) in
+/// `s`, clamped to `s.len()`. Maps a body column (from
+/// [`source_byte_to_body_col`]) back onto the expanded cell-body's
+/// byte index so the byte-slicing overlay appliers cut at the right
+/// cell. `col` past the end clamps to the body end (EOL overlays).
+fn nth_char_byte(s: &str, col: usize) -> usize {
+    s.char_indices().nth(col).map(|(b, _)| b).unwrap_or(s.len())
+}
+
 /// Walk back from `at` to the nearest UTF-8 char boundary so
 /// `s.split_at(at)` doesn't panic. Returns 0 when `at == 0`.
 fn clamp_to_char_boundary(s: &str, at: usize) -> usize {
@@ -3892,6 +3927,34 @@ fn compose_visible_lines_inner(
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
         let line_len = line_text.len();
+        // W.4.t.1: the overlay ranges below carry SOURCE-byte offsets,
+        // but the cell-derived `body` has tabs expanded to their display
+        // width (and may carry multi-byte whitespace markers), so source
+        // bytes no longer index it — selection / search / diagnostic /
+        // semantic / document-highlight overlays drift on tab-indented
+        // lines. Map each overlay endpoint: source byte → body column
+        // (the char-count model `split_body_into_segments` slices by) →
+        // body byte. Identity on the plain-text fallback
+        // (`!body_from_cells`), where body bytes already equal source
+        // bytes, so plain ASCII code is unchanged. Inlays splice AFTER
+        // the overlays, so the body carries no inlay runs here — the
+        // column model is tab-only (empty-inlay equivalent).
+        let overlay_tabstop = app.ad().option_cache.tabstop;
+        let body_concat: String = if body_from_cells {
+            body.iter().map(|s| s.content.as_ref()).collect()
+        } else {
+            String::new()
+        };
+        let map_ob = |src: usize| -> usize {
+            if body_from_cells {
+                nth_char_byte(
+                    &body_concat,
+                    source_byte_to_body_col(&line_text, src, overlay_tabstop),
+                )
+            } else {
+                src
+            }
+        };
         // Whether this line begins a closed fold. Used to append the
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
@@ -3948,8 +4011,8 @@ fn compose_visible_lines_inner(
                 mods.insert(style_with_mods.add_modifier);
                 body = apply_semantic_token_overlay(
                     body,
-                    start,
-                    end,
+                    map_ob(start),
+                    map_ob(end),
                     semantic_token_color(&tok.token_type),
                     mods,
                 );
@@ -3964,13 +4027,14 @@ fn compose_visible_lines_inner(
             let start = (b.start_col as usize).min(line_len);
             let end = ((b.end_col as usize) + 1).min(line_len);
             if start < end {
-                body = apply_match_overlay(body, start, end, visual_style());
+                body = apply_match_overlay(body, map_ob(start), map_ob(end), visual_style());
             }
         } else if let Some(range) = visual_range
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
-            body = apply_match_overlay(body, overlay_start, overlay_end, visual_style());
+            body =
+                apply_match_overlay(body, map_ob(overlay_start), map_ob(overlay_end), visual_style());
         }
         // Perf plan B.2 slice B.2.b: hlsearch (`all_matches`) overlay
         // now reads from the worker's per-row bucket. The bucket is
@@ -3990,7 +4054,8 @@ fn compose_visible_lines_inner(
                     let start = (q.source_byte_start as usize).min(line_len);
                     let end = (q.source_byte_end as usize).min(line_len);
                     if start < end {
-                        body = apply_match_overlay(body, start, end, hlsearch_style());
+                        body =
+                            apply_match_overlay(body, map_ob(start), map_ob(end), hlsearch_style());
                     }
                 }
             }
@@ -3999,8 +4064,12 @@ fn compose_visible_lines_inner(
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx, line_len)
                 {
-                    body =
-                        apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                    body = apply_match_overlay(
+                        body,
+                        map_ob(overlay_start),
+                        map_ob(overlay_end),
+                        hlsearch_style(),
+                    );
                 }
             }
         }
@@ -4008,7 +4077,8 @@ fn compose_visible_lines_inner(
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
-            body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+            body =
+                apply_match_overlay(body, map_ob(overlay_start), map_ob(overlay_end), match_style());
         }
         // LSP diagnostic underline overlay (Phase 4.1.d.iii):
         // for each diagnostic touching this line, underline the
@@ -4037,7 +4107,7 @@ fn compose_visible_lines_inner(
                 Some(DiagnosticSeverity::HINT) => Color::DarkGray,
                 _ => Color::Blue,
             };
-            body = apply_underline_overlay(body, start, end, color);
+            body = apply_underline_overlay(body, map_ob(start), map_ob(end), color);
         }
         // 4.4.e: `documentHighlight` soft overlay. Reads from
         // the App's per-buffer cache (populated by the per-tick
@@ -4078,7 +4148,8 @@ fn compose_visible_lines_inner(
                 if start >= end {
                     continue;
                 }
-                body = apply_match_overlay(body, start, end, document_highlight_style(h.kind));
+                body =
+                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind));
             }
         }
         // Perf plan A.2 slice A.2b.2: `inlayHint` virtual-text
@@ -4110,7 +4181,7 @@ fn compose_visible_lines_inner(
             for h in on_line {
                 body = splice_virtual_text_into_spans(
                     body,
-                    (h.byte as usize).min(line_len),
+                    map_ob((h.byte as usize).min(line_len)),
                     h.text.clone(),
                     inlay_hint_style(),
                 );
@@ -4132,8 +4203,8 @@ fn compose_visible_lines_inner(
                     if start < end {
                         body = apply_match_overlay(
                             body,
-                            start,
-                            end,
+                            map_ob(start),
+                            map_ob(end),
                             substitute_preview_style(),
                         );
                         found_any = true;
@@ -4151,8 +4222,8 @@ fn compose_visible_lines_inner(
                 {
                     body = apply_match_overlay(
                         body,
-                        overlay_start,
-                        overlay_end,
+                        map_ob(overlay_start),
+                        map_ob(overlay_end),
                         substitute_preview_style(),
                     );
                 }
@@ -5829,6 +5900,30 @@ mod tests {
         assert_eq!(split_body_into_segments(body.clone(), 0).len(), 1);
         // fits within width ⇒ single segment.
         assert_eq!(split_body_into_segments(body, 80).len(), 1);
+    }
+
+    #[test]
+    fn w4t1_source_byte_maps_to_expanded_body_position() {
+        // W.4.t.1: overlays carry SOURCE bytes, but the cell body has
+        // tabs expanded; the mapping must land them on the right cell.
+        // tabstop 4. "\tfoo": tab fills col 0→4, then "foo".
+        let line = "\tfoo";
+        assert_eq!(source_byte_to_body_col(line, 0, 4), 0); // before the tab
+        assert_eq!(source_byte_to_body_col(line, 1, 4), 4); // after tab → col 4 ('f')
+        assert_eq!(source_byte_to_body_col(line, 4, 4), 7); // after "foo" → col 7 (EOL)
+        // Mid-line tab "a\tb": 'a' at 0, tab fills 1→4, 'b' at col 4.
+        let line2 = "a\tb";
+        assert_eq!(source_byte_to_body_col(line2, 1, 4), 1); // after 'a'
+        assert_eq!(source_byte_to_body_col(line2, 2, 4), 4); // after tab
+        assert_eq!(source_byte_to_body_col(line2, 3, 4), 5); // after 'b'
+        // ASCII without tabs: identity (col == byte) ⇒ plain code unchanged.
+        assert_eq!(source_byte_to_body_col("hello", 3, 4), 3);
+        // nth_char_byte walks the expanded body "    foo" by char index.
+        let body = "    foo";
+        assert_eq!(nth_char_byte(body, 4), 4); // 4th char = 'f'
+        assert_eq!(nth_char_byte(body, 7), body.len()); // past end clamps to EOL
+        // Composed: source byte 1 of "\tfoo" → body byte 4 (start of "foo").
+        assert_eq!(nth_char_byte(body, source_byte_to_body_col(line, 1, 4)), 4);
     }
 
     #[test]

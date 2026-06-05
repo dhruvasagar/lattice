@@ -16,14 +16,14 @@ for free because wrapping slices already-decorated cells.
 | **W.1**  | ✅ `viewport_width` plumbed into `PaneCellsInputs` from `PaneState.viewport_width` (production site `dispatch.rs`; all test/bench fixtures updated). No behaviour change — width accepted, unused until W.2. 666 host tests green. (build_matrix/build_chunk_rows threading moves to W.2 where it's consumed.) | ✅ |
 | **W.2**  | ✅ A2 data model. `lattice_cells::wrap_segments(col, width)` + `CellMatrix.wrap_width` field + `CellMatrix::segment_count(line)`. Worker (`recompute_pane`) stamps `wrap_width = pane.wrap ? viewport_width : 0` onto every published matrix; wrap/width change invalidates via a direct `existing.wrap_width` compare in the cache-hit guard (no `MatrixVersion` axis churn). `PaneCellsInputs.wrap` plumbed from `option_cache.wrap_lines`. 1 `CellRow`/line preserved. Tests: cells `wrap_segments_arithmetic` + `segment_count_reads_wrap_width`; host `recompute_pane_stamps_wrap_width_and_invalidates_on_toggle`. 667 host + 62 cells green. **Wrap-on build bench dropped as moot** — under A2 the build does identical work wrap on/off (only stamps a field); the new cost is render-side slicing, benched in W.4/W.5. | ✅ |
 | **W.3**  | ✅ Host scroll seam filled. `bottom_anchored_scroll` rewritten as an upward accumulation summing `segment_count(line) + virtual_rows_at(line)` per source line (reads the active buffer's published `CellMatrix`). Replaced the `+overflow` jump (which overshot when a line spans >1 display row) with a single minimal-scroll pass; reproduces every M.V/scrolloff result exactly and handles wrap + lines-taller-than-viewport. Test `ensure_cursor_visible_accounts_for_wrapped_lines` (12 lines ×2 segments fit 5 in a 10-row viewport ⇒ scroll 7). 668 host tests green. | ✅ |
-| **W.4**  | 🚧 TUI render **landed + verified**. `CellRow::segment(seg,width)`; `split_body_into_segments` (style-preserving, geometry == host `wrap_segments`); compose push-site splits each source line into segments — gutter number/fold/diag on segment 0, dim `↪` (U+21AA, no nerd-font dep) on continuations, height-capped. **Truncation fix (2026-06-03):** the body was clipped to `buffer_w` *before* the split, so `:set wrap` showed nothing; now truncation is skipped when wrap is on (`body_trunc_w = u32::MAX`) so the splitter sees the full line. Tests: `split_body_*`, `compose_wraps_long_line_when_wrap_on` (wraps into `↪` segments, tail renders), `compose_does_not_wrap_when_wrap_off`; wrap-off byte-identical (1471 TUI + 63 cells green). Resize re-wraps live (compose splits at current area width per frame). **Remaining: cursor screen-position mapping** under wrap in `cursor_screen_position_at` — `row += Σ(segment_count-1 of visible lines above cursor, fold-aware) + cursor_seg`; `body_col = display_col % wrap_width`. Safe interim — `wrap` off by default (zero change); with wrap on, lines render wrapped + scroll is wrap-correct (W.3), only the cursor glyph isn't yet segment-adjusted. | 🚧 |
+| **W.4**  | 🚧 TUI render **landed + verified**. `CellRow::segment(seg,width)`; `split_body_into_segments` (style-preserving, geometry == host `wrap_segments`); compose push-site splits each source line into segments — gutter number/fold/diag on segment 0, dim `↪` (U+21AA, no nerd-font dep) on continuations, height-capped. **Truncation fix (2026-06-03):** the body was clipped to `buffer_w` *before* the split, so `:set wrap` showed nothing; now truncation is skipped when wrap is on (`body_trunc_w = u32::MAX`) so the splitter sees the full line. Tests: `split_body_*`, `compose_wraps_long_line_when_wrap_on` (wraps into `↪` segments, tail renders), `compose_does_not_wrap_when_wrap_off`; wrap-off byte-identical (1471 TUI + 63 cells green). Resize re-wraps live (compose splits at current area width per frame). **Remaining: cursor screen-position mapping** under wrap in `cursor_screen_position_at` — `row += Σ(segment_count-1 of visible lines above cursor, fold-aware) + cursor_seg`; `body_col = display_col % wrap_width`. Cursor screen-position mapping landed (see W.4.t "Cursor display-position") and overlays align in cell-column space (W.4.t.1, 2026-06-05); TUI document wrap is feature-complete pending W.5 (GPUI parity) + W.6/W.7. | ✅ |
 | **W.5**  | GPUI render: same gutter + cursor-segment mapping in prepaint (lockstep parity) | 🗒 |
 | **W.6**  | `gj` / `gk` display-line motions + wrap-aware `g0` / `g$` in `lattice-grammar` | 🗒 |
 | **W.7**  | Width-change debounced rebuild wiring + `:set wrap` flips it on end-to-end; `↪` icon-palette fallback; four-artefact close | 🗒 |
 
 ## W.4.t — Tab display width in the cell grid (Option A)
 
-**Status:** 🚧 core landed + tested 2026-06-03; overlay-alignment follow-up open.
+**Status:** ✅ core landed + tested 2026-06-03; overlay-alignment (W.4.t.1) landed 2026-06-05.
 
 Surfaced from W.4: a literal `\t` in the body rendered at terminal
 tab-stop width while the cell model counted it as 1 column, so
@@ -79,16 +79,30 @@ correct for a line wrapping into any number of visual rows (test
 `display_col_for_byte` (inlay shift) + `byte_to_combined_col` (GPUI);
 tabs flow through the same display-column path (W.4.t).
 
-**Open follow-up (overlay alignment — needs the overlay rework):**
-the TUI overlay appliers (`apply_match_overlay` et al. — visual,
-hlsearch, diagnostics, semantic tokens, document highlights) map
-**source-byte ranges directly onto body byte positions**, assuming
-`body bytes == source bytes`. Tab expansion (and the pre-existing
-multi-byte `→` marker) break that, so highlights sit a few cells off
-on tab-indented lines. Correct fix: apply overlays in **cell-column
-space** via `byte_to_combined_col` (the same mapping the cursor/GPUI
-use), not raw body byte offsets. Visual-correctness work → verify
-with the TUI running. Tracked as **W.4.t.1**.
+**W.4.t.1 — overlay alignment ✅ (2026-06-05; manual visual check pending).**
+The TUI overlay appliers (`apply_match_overlay`, `apply_semantic_token_overlay`,
+`apply_underline_overlay`) mapped **source-byte ranges directly onto body byte
+positions**, assuming `body bytes == source bytes`. Tab expansion (and multi-byte
+`→`/whitespace markers) broke that, so the visual / hlsearch / current-match /
+diagnostics / semantic / document-highlight overlays (and the inlay splice) sat a
+few cells off on tab-indented lines.
+
+**Fix:** in `compose_visible_lines_inner`, map each overlay endpoint **source byte →
+body column → body byte** (`map_ob` closure) before applying, gated on `body_from_cells`
+(identity on the plain-text fallback, so plain ASCII is unchanged).
+
+**Mechanism note (deviates from the original "use `byte_to_combined_col`" plan, on
+merit):** the body's column model is **char-count** — what `split_body_into_segments`
+slices by, matching the cells builder's `cells.len()` tab expansion — so the mapping uses
+a dedicated char-count `source_byte_to_body_col` + `nth_char_byte`, **not** the
+width-based `display_col_for_byte` and **not** the cell-row `byte_to_combined_col`. Two
+reasons: (1) the TUI compose path reads the **display** matrix, which doesn't carry the
+cell row's `inlay_offsets` table that `byte_to_combined_col` relies on for tab expansion;
+(2) char-count (not display-width) is what the body is actually segmented by, so it also
+fixes wide-char lines and stays identity for ASCII. Unit test
+`w4t1_source_byte_maps_to_expanded_body_position`; wrap-off / non-tab lines byte-identical
+(full TUI suite 1470 green). Visual confirmation (highlights land on the glyph on
+tab-indented lines) is a manual TUI check.
 
 ## Sequencing
 

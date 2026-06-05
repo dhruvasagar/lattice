@@ -944,7 +944,6 @@ mod tests {
                     Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
                 ),
                 static_overlay_version: 0,
-                pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
@@ -1044,7 +1043,6 @@ mod tests {
                     Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
                 ),
                 static_overlay_version: 0,
-                pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
@@ -1765,7 +1763,6 @@ mod tests {
                     Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
                 ),
                 static_overlay_version: 0,
-                pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };

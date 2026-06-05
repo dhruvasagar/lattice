@@ -654,11 +654,6 @@ pub enum Action {
     /// pane. Idempotent: no-op when the cursor is already on
     /// screen.
     EnsureCursorVisible,
-    /// Recompute the per-pane highlight cache for inactive
-    /// Document panes whose buffer differs from the active. The
-    /// host's body is gated on per-pane buffer change so most
-    /// ticks are a cheap no-op.
-    RefreshPaneHighlights,
     /// Dismiss the active popup (closes `popup_buffer`, restores
     /// the previous pane focus). No-op when no popup is open.
     DismissPopup,

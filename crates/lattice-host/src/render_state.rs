@@ -824,15 +824,11 @@ pub struct SyntaxRenderState {
     /// [`static_overlay_state_version`] so the hash stays
     /// byte-aligned with the published list.
     pub static_overlay_version: u64,
-    /// Slice 3c.final.B.8: per-pane span cache published as
-    /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
-    /// Outer Arc is the per-publish handle (cheap clone); inner
-    /// `Arc<Vec<...>>` so a per-pane lookup is one more Arc bump
-    /// without cloning the spans. The cache is owner-streamed by
-    /// `refresh_pane_highlights` — the publish step here just
-    /// surfaces the current snapshot to renderer threads.
-    pub pane_highlights:
-        Arc<std::collections::HashMap<usize, Arc<Vec<Vec<lattice_syntax::StyledSpan>>>>>,
+    // DR.2 (decoration-retention): the per-pane `pane_highlights` span
+    // cache was retired from the published syntax sub-state. Inactive
+    // panes read their own retained per-pane `DisplayMatrix` (via
+    // `CellsRenderState::display_matrix_for_pane`), the same canonical
+    // producer the active pane uses.
 }
 
 impl Default for SyntaxRenderState {
@@ -855,7 +851,6 @@ impl Default for SyntaxRenderState {
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
             ),
             static_overlay_version: 0,
-            pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -1555,13 +1550,11 @@ pub fn static_overlay_state_version(
 ///   `buffer_locals.entry(...).or_default()` / `.insert` / `.remove`
 ///   sites; otherwise stable. Largest savings because the per-entry
 ///   clone deep-walks the typed-map.
-/// - `pane_highlights_map` — INNER `Arc<HashMap<...>>` of the
-///   syntax sub-state. The outer `SyntaxRenderState` Arc rebuilds
-///   every publish (its other fields churn per-frame), but the
-///   per-pane spans map can be reused.
 /// - `lsp_progress` — INNER `Arc<HashMap<...>>` of the `lsp`
-///   sub-state. Same shape as `pane_highlights_map`; saves the
-///   HashMap clone when no `$/progress` event fired.
+///   sub-state. The outer `LspRenderState` Arc rebuilds every publish,
+///   but the inner progress map is reused; saves the HashMap clone
+///   when no `$/progress` event fired. (DR.2 retired the sibling
+///   `pane_highlights_map` inner-Arc cache.)
 ///
 /// B.4.b (3 subs):
 ///
@@ -1582,12 +1575,8 @@ pub struct PublishCache {
     pub panes: Option<(u64, std::sync::Arc<PanesRenderState>)>,
     pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
     pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
-    pub pane_highlights_map: Option<(
-        u64,
-        std::sync::Arc<
-            std::collections::HashMap<usize, std::sync::Arc<Vec<Vec<lattice_syntax::StyledSpan>>>>,
-        >,
-    )>,
+    // DR.2 (decoration-retention): `pane_highlights_map` cache slot
+    // retired with the `pane_highlights` producer.
     pub lsp_progress: Option<(
         u64,
         std::sync::Arc<
@@ -2241,7 +2230,8 @@ mod tests {
     ///
     /// Perf plan B.4 introduced the per-sub-state cache for
     /// `panes` / `modes` / `buffer_locals` plus the inner-Arc
-    /// memoisation for `syntax.pane_highlights` and `lsp.progress`.
+    /// memoisation for `lsp.progress` (DR.2 retired the sibling
+    /// `syntax.pane_highlights` inner-Arc cache).
     /// The other sub-states — `diagnostics`, the outer `lsp`,
     /// `popup`, and the cursor-coupled `active_document` — still
     /// rebuild on every publish because their inputs change every
@@ -2280,7 +2270,6 @@ mod tests {
     /// - `buffer_locals` (outer `Arc<BufferLocalsRenderState>`)
     /// - `buffers` (outer `Arc<BuffersRenderState>`)
     /// - `tabs` (outer `Arc<TabsRenderState>`)
-    /// - `syntax.pane_highlights` (inner per-pane spans map Arc)
     /// - `lsp.progress` (inner progress HashMap Arc)
     #[test]
     fn cached_substates_preserve_arc_identity_on_no_op_publish() {
@@ -2311,12 +2300,10 @@ mod tests {
             std::sync::Arc::ptr_eq(&a.tabs, &b.tabs),
             "tabs sub-state should reuse its Arc when its composite key hasn't moved"
         );
-        // Inner-Arc caches (parent SyntaxRenderState / LspRenderState
-        // still rebuild because their other fields churn per-frame).
-        assert!(
-            std::sync::Arc::ptr_eq(&a.syntax.pane_highlights, &b.syntax.pane_highlights),
-            "syntax.pane_highlights inner Arc should be reused when pane_highlights.version() hasn't moved"
-        );
+        // Inner-Arc cache (parent LspRenderState still rebuilds because
+        // its other fields churn per-frame). DR.2 retired the
+        // `syntax.pane_highlights` inner-Arc cache along with the
+        // per-pane span producer.
         assert!(
             std::sync::Arc::ptr_eq(&a.lsp.progress, &b.lsp.progress),
             "lsp.progress inner Arc should be reused when lsp_progress.version() hasn't moved"
@@ -2564,24 +2551,10 @@ mod tests {
         assert!(!rs.buffer_locals.map.contains_key(&buf));
     }
 
-    /// Slice 3c.final.B.8: pane_highlights map round-trip.
-    #[test]
-    fn pane_highlights_reflect_editor_state() {
-        let mut editor = Editor::default();
-        // Insert a synthetic span set for pane index 1 (the test
-        // doesn't care about the span content; only the shape +
-        // map round-trip matters).
-        editor.pane_highlights.insert(1, vec![vec![], vec![]]);
-        editor.publish_render_state();
-        let rs = editor.render_state.load_full();
-        let spans = rs.syntax.pane_highlights.get(&1).expect("pane 1 entry");
-        assert_eq!(spans.len(), 2);
-        // Removal also round-trips.
-        editor.pane_highlights.remove(&1);
-        editor.publish_render_state();
-        let rs = editor.render_state.load_full();
-        assert!(!rs.syntax.pane_highlights.contains_key(&1));
-    }
+    // DR.2 (decoration-retention): the `pane_highlights_reflect_editor_state`
+    // round-trip test was retired with the `pane_highlights` producer.
+    // Inactive-pane styling now flows through the per-pane `DisplayMatrix`
+    // (covered by the cells-worker tests).
 
     /// Slice 3c.final.B.11: active-modes map round-trip. Inserts
     /// an entry at a synthetic buffer id and verifies the

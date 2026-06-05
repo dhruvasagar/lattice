@@ -441,7 +441,6 @@ impl App {
             // logic. Same pattern the other 5.5.G migrations use.
             | Action::SetViewportHeight(_)
             | Action::EnsureCursorVisible
-            | Action::RefreshPaneHighlights
             | Action::DismissPopup
             | Action::SetTerminalWidth(_)
             | Action::AcknowledgeRedraw => {}
@@ -2202,33 +2201,30 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_l_redraws_screen_and_invalidates_caches() {
-        // `<C-l>` is the user-visible escape hatch for visual
-        // glitches. The action must:
-        // - clear the visible-highlight + pane-highlight caches so
-        //   the next frame repopulates from scratch;
+    fn ctrl_l_redraws_screen_and_forces_clean_rederive() {
+        // `<C-l>` / `:redraw` is the user-visible escape hatch for
+        // visual glitches. DR.2 (decoration-retention): a routine focus
+        // change recomputes NO decorations, but this forceful,
+        // user-initiated action deliberately re-derives from a clean
+        // slate. It must:
         // - flag the runtime to clear the terminal on next frame;
-        // - force a fresh parser run inside this same `apply` (the
-        //   end-of-apply `maybe_reparse_syntax` re-syncs against
-        //   the bumped version mirror, so by the time the user
-        //   sees the next frame the tree matches the document).
+        // - reset every visible pane's cell/display matrix to empty +
+        //   bump `last_parsed_text_version` so the end-of-apply
+        //   `maybe_reparse_syntax` re-syncs the tree and the cells
+        //   worker rebuilds each pane's matrix from it on its next wake;
+        // - echo "redraw" to the user.
         let mut a = app_with("fn main() {}\n", 10);
-        a.editor.pane_highlights.insert(0, vec![Vec::new(); 1]);
         a.editor.pending_redraw = false;
         a.apply(Action::RedrawScreen);
         assert!(
             a.editor.pending_redraw,
             "runtime should clear terminal next frame"
         );
-        assert!(
-            a.editor.pane_highlights.is_empty(),
-            "pane highlights cache must reset (so next frame repopulates from scratch)"
-        );
         // Post-apply, the version mirror equals the document's
         // version because the end-of-apply reparse already ran.
         // The intermediate `u64::MAX` value is gone; that's the
-        // desired flow -- a single keystroke produces an
-        // already-fresh tree.
+        // desired flow -- a forceful redraw produces an already-fresh
+        // tree, exactly as a single keystroke does.
         assert_eq!(
             a.editor.last_parsed_text_version,
             a.editor.document.text_version(),

@@ -555,7 +555,6 @@ impl Editor {
         let panes_v = self.pane_tree.version();
         let modes_v = self.active_modes.version();
         let buffer_locals_v = self.buffer_locals.version();
-        let pane_highlights_v = self.pane_highlights.version();
         let lsp_progress_v = self.lsp_progress.version();
         // Perf plan B.4.b: `buffers` keyed on `buffer_uris.version()`
         // alone — the registry inside the cached `BuffersRenderState`
@@ -588,7 +587,6 @@ impl Editor {
             panes_arc,
             modes_arc,
             buffer_locals_arc,
-            pane_highlights_map_arc,
             lsp_progress_map_arc,
             buffers_arc,
             tabs_arc,
@@ -630,26 +628,9 @@ impl Editor {
                     })
                 },
             );
-            // Inner-Arc memoisation: the outer `SyntaxRenderState`
-            // still rebuilds per publish (its other fields churn
-            // per-frame), but the per-pane spans map is reused when
-            // no pane has rebuilt its spans.
-            let pane_highlights_map_arc = crate::render_state::cached_or_build(
-                &mut cache.pane_highlights_map,
-                pane_highlights_v,
-                || {
-                    std::sync::Arc::new(
-                        self.pane_highlights
-                            .iter()
-                            .map(|(idx, spans)| (*idx, std::sync::Arc::new(spans.clone())))
-                            .collect(),
-                    )
-                },
-            );
-            // Inner-Arc memoisation: same shape as pane_highlights —
-            // outer `LspRenderState` still rebuilds; the inner
-            // progress HashMap is reused when no $/progress event
-            // fired between publishes.
+            // Inner-Arc memoisation: outer `LspRenderState` still
+            // rebuilds; the inner progress HashMap is reused when no
+            // $/progress event fired between publishes.
             let lsp_progress_map_arc = crate::render_state::cached_or_build(
                 &mut cache.lsp_progress,
                 lsp_progress_v,
@@ -677,7 +658,6 @@ impl Editor {
                 panes_arc,
                 modes_arc,
                 buffer_locals_arc,
-                pane_highlights_map_arc,
                 lsp_progress_map_arc,
                 buffers_arc,
                 tabs_arc,
@@ -1078,12 +1058,6 @@ impl Editor {
                 // publish surfaces the worker's latest write without
                 // a republish round-trip.
                 visible_rows: self.syntax_visible_rows_cell.clone(),
-                // Perf plan B.4: inner Arc cached in publish_cache;
-                // outer `SyntaxRenderState` still rebuilds (its
-                // worker cells, scroll, viewport, fold_hash all
-                // churn per-publish), but the per-pane spans map is
-                // reused when no pane has rebuilt its spans.
-                pane_highlights: pane_highlights_map_arc,
                 // Perf plan A.2 slice A.2b.1: pre-gate + flatten
                 // the active document's LSP inlay hints into the
                 // syntax-input contract. Empty when the
@@ -1622,7 +1596,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     let is_renderer_housekeeping = matches!(
         action,
         Action::EnsureCursorVisible
-            | Action::RefreshPaneHighlights
             | Action::SetViewportHeight(_)
             | Action::SetTerminalWidth(_)
             | Action::AcknowledgeRedraw
@@ -1673,9 +1646,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::EnsureCursorVisible => {
             editor.ensure_cursor_visible();
-        }
-        Action::RefreshPaneHighlights => {
-            editor.refresh_pane_highlights();
         }
         Action::DismissPopup => {
             editor.dismiss_popup();
@@ -11486,14 +11456,11 @@ impl Editor {
         if self.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
             self.recompute_folds();
         }
-        // Drop per-pane highlight caches so the next buffer-switch
-        // re-derives them. Active-pane spans now flow through the
-        // worker-published `syntax_visible_spans_cell`, which the
-        // worker repopulates on its own wake (no clear here needed).
-        self.pane_highlights.clear();
-        // DR.1: keep the retention provenance in sync with the
-        // dropped spans so the next refresh re-derives from scratch.
-        self.pane_highlight_keys.clear();
+        // DR.2 (decoration-retention): no per-pane span cache to drop
+        // on buffer switch — inactive panes render from their retained
+        // per-pane `DisplayMatrix`, and the cells worker rebuilds those
+        // on its own wake. Active-pane spans flow through the
+        // worker-published `syntax_visible_spans_cell`.
         signals
     }
 
@@ -13096,10 +13063,32 @@ impl Editor {
     /// on its next wake.
     pub fn do_redraw_screen(&mut self) {
         self.last_parsed_text_version = u64::MAX;
-        self.pane_highlights.clear();
-        // DR.1: drop retention provenance alongside the spans so
-        // `:redraw` forces a full re-derive.
-        self.pane_highlight_keys.clear();
+        // DR.2 (decoration-retention): `:redraw` / <C-l> is the user's
+        // forceful escape hatch for a corrupted display, so — unlike a
+        // routine focus change, which recomputes nothing — it re-derives
+        // EVERY visible pane from a clean slate, matching the pre-DR.2
+        // `pane_highlights.clear()` semantics. Reset each visible
+        // Document pane's per-buffer cell + display matrix to empty so
+        // the cells worker rebuilds it on its next wake (an empty
+        // matrix's zero version always lags the snapshot). The active
+        // doc's reparse is forced by `last_parsed_text_version` above;
+        // this loop additionally covers inactive panes' retained
+        // matrices. A one-frame plain-text flash during the rebuild is
+        // acceptable here — the user asked for a redraw and
+        // `pending_redraw` clears the terminal anyway.
+        let visible_doc_buffers: Vec<lattice_core::BufferId> = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .filter(|p| matches!(p.buffer, BufferKind::Document))
+            .map(|p| p.buffer_id)
+            .collect();
+        for buffer_id in visible_doc_buffers {
+            self.cells_matrix_for(buffer_id)
+                .store(std::sync::Arc::new(lattice_cells::CellMatrix::empty()));
+            self.display_matrix_for(buffer_id)
+                .store(std::sync::Arc::new(crate::display_matrix::DisplayMatrix::empty()));
+        }
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());

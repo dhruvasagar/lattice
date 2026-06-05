@@ -16,8 +16,8 @@ producers, then collapse the inactive render fork. (Scope chosen over
 
 | Slice    | Title                                                                                  | Status |
 |----------|----------------------------------------------------------------------------------------|--------|
-| **DR.1** | **Retain + repaint.** Stop the teardown and render the full decoration set on inactive panes; focus-gain frame already carries it (no keystroke). | 🚧 |
-| **DR.2** | **Per-buffer syntax producer.** Retained per-buffer cells/spans for all visible panes; remove cells-active-only gating + the cleared-each-frame `pane_highlights` map. | 🗒 |
+| **DR.1** | **Retain + repaint.** Stop the teardown and render the full decoration set on inactive panes; focus-gain frame already carries it (no keystroke). | ✅ |
+| **DR.2** | **One producer (retire `pane_highlights`).** Both renderers read the per-pane retained `DisplayMatrix` for inactive panes (the producer already existed per-pane — see Premise below); the redundant `pane_highlights` span producer + its per-frame refresh are deleted. `:redraw` stays the forceful clean-slate escape hatch. | 🚧 |
 | **DR.3** | **One render path.** Collapse `draw_inactive_document` / inactive-compose fork into the shared path; inactive = opacity + no interaction state only. | 🗒 |
 | **DR.4** | **Four-artefact close.** Bench proving zero decoration recompute on focus change; design/doc finalize; parity audit. | 🗒 |
 
@@ -96,15 +96,69 @@ inactive).
 parsed / no LSP) → render text + whatever decorations exist, never
 panic, never clear another buffer's state.
 
-## DR.2 — Per-buffer syntax producer
+## DR.2 — One producer (retire `pane_highlights`)
 
-Retain a per-buffer cells/spans product for every visible buffer,
-refreshed only when that buffer's syntax version advances. Removes the
-cells-active-only gating in both renderers (`cell_matrix: if
-render_active`) and the cleared-each-frame `pane_highlights` map.
-Inactive panes then render through the **same** cells path as active
-(syntax parity, not the lesser span fallback). Depends on DR.1's
-retention guarantee.
+**Premise correction (2026-06-05).** DR.2 was originally framed as
+*"build a per-buffer syntax producer."* Tracing the code showed that
+producer **already exists, per-pane, for both renderers**: the cells
+worker (`recompute` → `recompute_pane`) builds the canonical
+`DisplayMatrix` (+ projected `CellMatrix`) for **every** visible
+Document pane (it iterates `cells.panes`), keyed by `PaneId`. The
+active path of both renderers already consumes it (GPUI via the
+top-level `display_matrix`, which shares Arc identity with the active
+pane's `pane_matrices` entry; TUI via `cells_rs.display_matrix` →
+`row_at_source_line` → `display_line_to_source_spans`). Only the
+**inactive** path still used the legacy `pane_highlights` span map —
+a redundant second producer left over from before per-pane matrices
+existed. So DR.2 is *redirect inactive reads to the existing matrix +
+retire the redundant producer*, not *build a producer*.
+
+**Heuristic mapping.** UX: net win, no regression (inactive panes get
+full syntax via the same matrix as active; the only plain-text moment
+is the one transient frame after a split, identical to the active
+pane's first frame). Paramount #1: retiring `refresh_pane_highlights`
+deletes a per-frame dispatch that re-sliced `highlight_lines` per
+inactive pane and could fire focus-keyed async reparses — one
+producer, zero recompute on a pure focus toggle. Paramount #3
+(`feedback_buffers_no_special_case`): removes the focus-keyed
+`if render_active { … } else { pane_highlights }` branch in both
+renderers. Heuristic #1: `pane_highlights` is the inferior primitive
+kept past its purpose; deleting it is the merit win (one producer,
+less host state — `Editor::pane_highlights` + `pane_highlight_keys` +
+`refresh_pane_highlights` + `pane_highlights.rs` +
+`Action::RefreshPaneHighlights` + `SyntaxRenderState::pane_highlights`
++ `PublishCache::pane_highlights_map` all deleted).
+
+**Landed surface.**
+
+- GPUI `window.rs`: `cell_matrix` / `display_matrix` read
+  `matrix_for_pane(pane.id)` / `display_matrix_for_pane(pane.id)` for
+  *all* panes (active entry shares Arc identity → behaviour-preserving),
+  with the per-pane snapshot stale guard; the inactive `visible_spans`
+  branch (read `pane_highlights`) is gone; the per-frame
+  `RefreshPaneHighlights` dispatch + its `EnsureGateCache.pane_refresh_key`
+  gate are removed.
+- TUI `render.rs`: `draw_inactive_document` sources its body from
+  `display_matrix_for_pane(pane.id)` → `display_line_to_source_spans`
+  (mirrors the active compose path, incl. the `body_from_cells`
+  whitespace gate + W.4.t.1 inlay byte-mapping), not `pane_highlights`
+  spans.
+- Host: the whole `pane_highlights` producer retired (see deleted-symbol
+  list above), with its render-state publish + memoisation + the two
+  B.4 Arc-identity / round-trip tests.
+
+**`:redraw` is the exception.** A routine focus change recomputes *no*
+decorations (the whole point). But `:redraw` / `<C-l>` is the user's
+forceful, user-initiated escape hatch for a corrupted display, so it
+re-derives **every** visible pane from a clean slate — matching the
+pre-DR.2 `pane_highlights.clear()` semantics. `do_redraw_screen` now
+resets each visible Document pane's per-buffer cell + display matrix to
+empty (so the cells worker rebuilds it) in addition to bumping
+`last_parsed_text_version`. A one-frame plain-text flash during the
+rebuild is acceptable there (the user asked for a redraw;
+`pending_redraw` clears the terminal). (User direction, 2026-06-05.)
+
+Depends on DR.1's retention guarantee.
 
 ## DR.3 — One render path
 

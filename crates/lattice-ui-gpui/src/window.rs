@@ -721,14 +721,11 @@ fn diagnostic_glyph_and_color(
 /// which is part of the key; storing the pre-dispatch key would
 /// re-fire on the next frame for a guaranteed no-op).
 ///
-/// `pane_refresh_key` uses `Arc::as_ptr(&pane_tree)` as a cheap
-/// identity probe: the tree Arc is rebuilt by `publish_render_state`
-/// whenever any pane state (buffer_id, scroll, split, focus) changes.
-/// Trade-off: if an *inactive* pane's document text version advances
-/// (rare — typically only on LSP edits in an unfocused buffer), the
-/// gate stays closed until the next pane switch. The user can't see
-/// stale highlights on a pane they're not focused on; the moment they
-/// switch focus, `active_idx` changes → key changes → refresh fires.
+/// DR.2 (decoration-retention) removed the `pane_refresh_key` gate
+/// along with the per-frame `RefreshPaneHighlights` dispatch it
+/// guarded: inactive panes now read their own retained per-pane
+/// `DisplayMatrix`, so there is no per-frame pane-highlight refresh
+/// left to gate.
 #[derive(Default)]
 struct EnsureGateCache {
     cursor_snap_key: Option<(
@@ -737,7 +734,6 @@ struct EnsureGateCache {
         u32,
         lattice_core::BufferKind,
     )>,
-    pane_refresh_key: Option<(usize, usize, lattice_core::BufferId)>,
 }
 
 /// The renderer-side composition root rendered as a GPUI
@@ -1659,35 +1655,23 @@ impl EditorView {
             // The element subtracts `scroll` from line_idx to
             // index this visible-window subset.
             text: std::sync::Arc::new(raw_lines.join("\n")),
-            // Issue #25 (2026-05-22): per-pane visible_spans for
-            // multi-split support. Active pane reads the live
-            // visible_spans cell (the highlights worker writes
-            // there continuously). Inactive panes read from
-            // `pane_highlights[pane_idx]` populated by the
-            // RefreshPaneHighlights dispatch fired in the render
-            // body. Empty when the cache hasn't refreshed yet
-            // (first frame after split); the renderer paints
-            // plain text in that case until the next frame.
+            // DR.2 (decoration-retention): inactive panes render from
+            // their per-pane `DisplayMatrix` (same producer as active —
+            // see `cell_matrix` / `display_matrix` below), so they no
+            // longer consult the legacy `pane_highlights` span map.
+            // `visible_spans` is only the shape_row fallback for when the
+            // matrix is absent/stale: for the active pane it's the live
+            // worker spans; for an inactive pane the matrix is already
+            // built (the cells worker covers every visible pane), so the
+            // empty fallback matters only for the one transient frame
+            // right after a split — identical to the active pane's
+            // first-frame behaviour. This retires the `pane_highlights`
+            // producer (host-side teardown removed in the same slice).
             visible_spans: if render_active {
                 (*active_spans_guard).clone()
             } else {
-                let pane_spans = rs_guard
-                    .syntax
-                    .pane_highlights
-                    .get(&pane_idx)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        std::sync::Arc::new(Vec::<Vec<lattice_syntax::StyledSpan>>::new())
-                    });
-                // Perf plan D.1: `VisibleSpans.spans` is now
-                // `Arc<[Vec<StyledSpan>]>`. The pane cache still
-                // stores `Arc<Vec<Vec<StyledSpan>>>` (host-side
-                // shape unchanged), so we clone its inner Vec into
-                // a fresh `Arc<[T]>` here. A future slice could
-                // migrate `pane_highlights` storage to match,
-                // collapsing this clone to an Arc bump.
                 lattice_host::render_state::VisibleSpans {
-                    spans: (*pane_spans).clone().into(),
+                    spans: Vec::<Vec<lattice_syntax::StyledSpan>>::new().into(),
                     computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
                 }
                 .into()
@@ -1763,15 +1747,22 @@ impl EditorView {
             // path with `snapshot.buffer.line(...)` — user sees
             // the new char immediately, syntax styling catches
             // up next frame.
-            cell_matrix: if render_active {
-                let m = rs_guard.cells.load().matrix.load_full();
-                if m.version.text == snapshot.text_version {
-                    Some(m)
-                } else {
-                    None
-                }
-            } else {
-                None
+            // DR.2 (decoration-retention): read THIS pane's cell matrix
+            // by id, for active and inactive alike. The active pane's
+            // `pane_matrices` entry shares Arc identity with the
+            // top-level `matrix` (dispatch.rs derives both from the same
+            // per-buffer registry cell), so this is behaviour-preserving
+            // for the active pane while giving inactive panes the same
+            // retained, fully-styled matrix instead of the lesser span
+            // fallback. `snapshot` is THIS pane's buffer, so the stale
+            // guard is correct per pane. No focus-keyed branch
+            // [[feedback_buffers_no_special_case]].
+            cell_matrix: {
+                let cells = rs_guard.cells.load();
+                cells
+                    .matrix_for_pane(pane.id)
+                    .map(|cell| cell.load_full())
+                    .filter(|m| m.version.text == snapshot.text_version)
             },
             // B3 (2026-06-04): the canonical DisplayMatrix is the GPU's
             // primary shaping source (cell_matrix above now feeds only the
@@ -1782,15 +1773,17 @@ impl EditorView {
             // retires the GPU whole-viewport flicker. The guard still fires
             // for publishes the sync path skips (multi-edit, doc switch),
             // where EditorElement falls back to the legacy shape_row path.
-            display_matrix: if render_active {
-                let m = rs_guard.cells.load().display_matrix.load_full();
-                if m.version.text == snapshot.text_version {
-                    Some(m)
-                } else {
-                    None
-                }
-            } else {
-                None
+            // DR.2 (decoration-retention): per-pane display matrix, same
+            // rationale as `cell_matrix`. The canonical DisplayMatrix is
+            // the GPU's primary shaping source; reading it per-pane is
+            // what makes inactive panes paint full syntax through the
+            // shared path. Same per-pane stale guard.
+            display_matrix: {
+                let cells = rs_guard.cells.load();
+                cells
+                    .display_matrix_for_pane(pane.id)
+                    .map(|cell| cell.load_full())
+                    .filter(|m| m.version.text == snapshot.text_version)
             },
             // B3: host theme (Copy) for resolving DisplayRun style tags →
             // TextRun colours at shape time (display_line_to_text_runs).
@@ -2550,31 +2543,13 @@ impl Render for EditorView {
         // Pre-X2 cost: ~178µs at 80 lines per frame; post-X2: zero
         // UI-thread parse cost. Goal #1 violation B1 closed for the
         // GPUI peer.
-        // 5.8.R: rebuild the per-pane cache for inactive Document
-        // panes whose buffer differs from the active pane's. The
-        // host method handles the same-doc short-circuit + reparse
-        // gating; this peer just makes the call so paint_pane can
-        // read `editor.pane_highlights[idx]` for the inactive case.
-        // Slice 3c.final.C: pane-highlight refresh via dispatch.
-        //
-        // Perf plan A.3 inactive_pane_refresh gate: skip when the
-        // pane-tree identity, active pane index, and active doc id
-        // are all unchanged. `Arc::as_ptr` is a cheap identity probe
-        // — `publish_render_state` rebuilds the pane-tree Arc on any
-        // pane-state change (split/close/scroll/buffer-id swap), so
-        // ptr equality is a sound "nothing relevant changed" gate.
-        // Trade-off documented on `EnsureGateCache::pane_refresh_key`.
-        let rs_for_pane = self.app.render_state.load();
-        let pane_key = (
-            std::sync::Arc::as_ptr(&rs_for_pane.panes.tree) as usize,
-            rs_for_pane.panes.tree.active_index(),
-            rs_for_pane.active_document.load().document_buffer_id,
-        );
-        if self.ensure_gate.pane_refresh_key != Some(pane_key) {
-            self.app
-                .dispatch_action(lattice_host::action::Action::RefreshPaneHighlights);
-            self.ensure_gate.pane_refresh_key = Some(pane_key);
-        }
+        // DR.2 (decoration-retention): the per-frame
+        // `RefreshPaneHighlights` dispatch is gone. Inactive panes now
+        // read their own retained per-pane `DisplayMatrix` (built by the
+        // cells worker for every visible pane), so there is nothing to
+        // re-slice on focus change — the redundant `pane_highlights`
+        // producer is retired. Removing this dispatch is the perf half
+        // of DR.2: zero decoration recompute on a pure focus toggle.
         #[cfg(feature = "profile-frames")]
         let after_highlights = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer

@@ -26,7 +26,7 @@ use lattice_protocol::position::Range as ProtoRange;
 // `Editor::visual_selection_range`; this peer no longer references
 // the variants directly.
 use lattice_runtime::DocumentSnapshot;
-use lattice_syntax::{Lang, Style, StyledSpan};
+use lattice_syntax::{Lang, Style};
 
 use crate::app::{App, EchoLevel, Fold};
 
@@ -259,41 +259,11 @@ impl<'a> FrameView<'a> {
     }
 }
 
-/// Perf plan A.2 slice A.2b.2b: derive `StyledSpan`s for a row's
-/// SOURCE text from the worker-published `RowPrepaint.runs`.
-/// Inlay runs are skipped — they cover `combined`-bytes that are
-/// not in the source line, so they don't appear in the
-/// styled-spans partition.
-///
-/// The result partitions the source line's utf-8 bytes
-/// exhaustively (sum of `Source.len` == source line byte length);
-/// the existing compose-loop overlays (which all index by source
-/// byte offsets) consume it identically to the legacy
-/// `view.visible_highlights[row]` slice.
-///
-/// One allocation per visible row; bounded by `viewport_height`
-/// (~120 at the captured baselines, typically <60). Could be
-/// eliminated by changing the compose loop to walk `&[RowRun]`
-/// directly with a Source-only filter, but that's a much larger
-/// surgery — A.2b.3 can re-bench and prioritise it if needed.
-fn source_spans_from_runs(
-    runs: &[lattice_host::render_state::RowRun],
-) -> Vec<StyledSpan> {
-    use lattice_host::render_state::RowRun;
-    let mut out: Vec<StyledSpan> = Vec::with_capacity(runs.len());
-    let mut cursor: usize = 0;
-    for r in runs {
-        if let RowRun::Source { len, style } = r {
-            let start = cursor;
-            let end = start + (*len as usize);
-            out.push(StyledSpan { start, end, style: *style });
-            cursor = end;
-        }
-        // Inlay runs cover `combined`-bytes that aren't part of the
-        // source line — don't advance the source cursor for them.
-    }
-    out
-}
+// DR.2 (decoration-retention): `source_spans_from_runs` (the
+// inactive-pane fallback that derived `StyledSpan`s from the worker's
+// `RowPrepaint.runs`) was retired with the `pane_highlights` path.
+// Inactive panes now read the per-pane `DisplayMatrix` like the active
+// pane.
 
 /// Render one terminal frame.
 ///
@@ -2892,7 +2862,11 @@ fn draw_inactive_document(
     area: Rect,
     app: &App,
     pane: &crate::pane::PaneState,
-    pane_idx: usize,
+    // DR.2: the pane index is no longer needed for span lookup (inactive
+    // panes read their per-pane `DisplayMatrix` by `pane.id`); kept in
+    // the signature for call-site symmetry until DR.3 folds this function
+    // into the shared compose path.
+    _pane_idx: usize,
 ) {
     // Audit slice 7 / M2: snapshot once at chain entry. The
     // inactive-pane chain is independent of the active-pane
@@ -2930,61 +2904,27 @@ fn draw_inactive_document(
         .saturating_sub(DIAG_GUTTER_WIDTH)
         .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
 
-    // Source for inactive-pane highlights:
-    //  1. `pane_highlights[idx]` when the pane has a different
-    //     document than the active pane (refreshed by
-    //     `refresh_pane_highlights`).
-    //  2. Derived from the worker's `visible_rows` when the panes
-    //     share a document AND the inactive pane's scroll matches
-    //     the active's (avoids a redundant parse). A.2b.2b: the
-    //     fallback used to clone `view.visible_highlights` —
-    //     `visible_rows.runs` now carries the same source spans
-    //     (`source_spans_from_runs` filters the Source variants
-    //     and the per-row partition matches the legacy shape).
-    //  3. Empty otherwise -- plain text, no syntax. Acceptable
-    //     for the rare same-doc-different-scroll case.
-    // K.4.3 (2026-06-01): include document-backed kinds
-    // (Document / Messages / Multibuffer) per
-    // `feedback_buffers_no_special_case`. After
-    // `activate_buffer` routes the latter two through
-    // `activate_document`, `app.ad().document_buffer_id` IS
-    // their live document id, so the syntax-cell fallback
-    // below (`active_doc_id == Some(pane.buffer_id)`) should
-    // resolve for them too. Pre-K.4.3 this matcher was
-    // `Document`-only, so multibuffer / messages panes hit
-    // the empty-highlights branch and rendered without
-    // tree-sitter styling.
-    let active_doc_id = if matches!(
-        app.ad().buffer_kind,
-        crate::buffers::BufferKind::Document
-            | crate::buffers::BufferKind::Messages
-            | crate::buffers::BufferKind::Multibuffer
-    ) {
-        Some(app.ad().document_buffer_id)
-    } else {
-        None
-    };
-    // Slice 3c.final.B.8: pane_highlights via published `syntax()`
-    // sub-state — wait-free Arc-bump lookup. Inner `Arc<Vec<...>>`
-    // means we can hold the spans without cloning the vec body.
-    let rs = app.render_state.load();
-    let pane_highlights = rs.syntax.pane_highlights.get(&pane_idx).cloned();
-    let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
-        if let Some(spans) = pane_highlights {
-            (*spans).clone()
-        } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.ad().scroll {
-            // A.2b.2b: derive per-row Source spans from the worker's
-            // `visible_rows`. Each row contributes one `Vec<StyledSpan>`
-            // to the output (same shape the legacy
-            // `view.visible_highlights.iter().cloned()` produced).
-            view.visible_rows
-                .rows
-                .iter()
-                .map(|r| source_spans_from_runs(&r.runs))
-                .collect()
-        } else {
-            Vec::new()
-        };
+    // DR.2 (decoration-retention): source inactive-pane body styling
+    // from THIS pane's retained `DisplayMatrix` — the SAME canonical
+    // producer the active compose path consumes
+    // (`display_line_to_source_spans`) — instead of the legacy per-pane
+    // `pane_highlights` span map. The cells worker builds a
+    // `DisplayMatrix` for EVERY visible pane (`recompute_pane` iterates
+    // `cells.panes`), so an inactive pane's matrix is already current;
+    // the redundant `pane_highlights` producer and its per-frame refresh
+    // are retired in this slice. The per-line loop below reads
+    // `display_matrix.row_at_source_line(buf_line)` with the same stale
+    // guard + empty→plain-text fallback as the active path, and gates
+    // the whitespace pre-pass on `!body_from_cells` because the matrix
+    // already bakes whitespace + tab expansion (mirrors W.4.t).
+    let cells_for_pane = app.render_state.load().cells.load_full();
+    let display_matrix = cells_for_pane
+        .display_matrix_for_pane(pane.id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
+        });
+    let display_theme = &cells_for_pane.theme;
 
     let dim_overlay = if app.theme.dim_inactive_panes {
         Some(app.theme.inactive_pane_overlay)
@@ -3091,13 +3031,36 @@ fn draw_inactive_document(
             gutter_w,
             inactive_display_line_numbers.as_deref(),
         );
-        let spans = highlights.get((i - 1) as usize).map(Vec::as_slice).unwrap_or(&[]);
-        let mut body = render_styled_line(&line_text, spans, buffer_w);
-        // M.7.3.b: whitespace decoration pre-pass for inactive
-        // panes too -- consistency with the active pane.
-        // Same gate as the active path (cache mirror is global,
-        // not per-pane in v1).
-        if view.app.ad().option_cache.show_whitespace {
+        // DR.2: body spans from this pane's retained DisplayMatrix row,
+        // mirroring the active compose path (stale guard, empty→plain
+        // text). `body_from_cells` tracks whether the body carries the
+        // matrix's tab-expanded text so the whitespace pre-pass + inlay
+        // byte-mapping below match the active path's W.4.t handling.
+        let mut body_from_cells = false;
+        let mut body = {
+            let display_stale = display_matrix.version.text != snap.text_version;
+            let spans = if display_stale {
+                Vec::new()
+            } else {
+                match display_matrix.row_at_source_line(buf_line) {
+                    Some(line) => {
+                        crate::cells_render::display_line_to_source_spans(line, display_theme)
+                    }
+                    None => Vec::new(),
+                }
+            };
+            if spans.is_empty() && !line_text.is_empty() {
+                truncate_spans_to_width(vec![Span::raw(line_text.clone())], buffer_w)
+            } else {
+                body_from_cells = !spans.is_empty();
+                truncate_spans_to_width(spans, buffer_w)
+            }
+        };
+        // M.7.3.b / W.4.t: whitespace decoration pre-pass — only on the
+        // plain-text fallback. A matrix-derived body already has
+        // whitespace decorated + tabs expanded; re-running would
+        // double-decorate and desync against source bytes.
+        if view.app.ad().option_cache.show_whitespace && !body_from_cells {
             let decoration = WhitespaceDecoration::from_app(view.app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -3111,14 +3074,32 @@ fn draw_inactive_document(
                 .filter(|(l, _, _)| *l == buf_line)
                 .collect();
             on_line.sort_by(|a, b| b.1.cmp(&a.1));
+            // W.4.t.1: inlay positions are SOURCE-byte offsets. A
+            // matrix-derived body has tabs expanded, so source bytes no
+            // longer index it; map src byte → body column → body byte
+            // (identity on the plain-text fallback). Computed once
+            // pre-splice; reverse-char-order splicing keeps left
+            // positions valid as right ones are inserted.
+            let overlay_tabstop = view.app.ad().option_cache.tabstop;
+            let body_concat: String = if body_from_cells {
+                body.iter().map(|s| s.content.as_ref()).collect()
+            } else {
+                String::new()
+            };
             for (_, ch, text) in on_line {
-                let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    *ch,
-                );
+                let src_byte =
+                    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, *ch) as usize;
+                let pos = if body_from_cells {
+                    nth_char_byte(
+                        &body_concat,
+                        source_byte_to_body_col(&line_text, src_byte, overlay_tabstop),
+                    )
+                } else {
+                    src_byte.min(line_text.len())
+                };
                 body = splice_virtual_text_into_spans(
                     body,
-                    (byte as usize).min(line_text.len()),
+                    pos,
                     text.clone(),
                     inlay_hint_style(),
                 );
@@ -5375,38 +5356,11 @@ fn messages_line_spans(
     truncate_spans_to_width(spans, max_width)
 }
 
-fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut cursor = 0usize;
-    let bytes = line.as_bytes();
-    // Spans from tree-sitter come in event order; re-sort by start byte so
-    // the renderer's "no overlap" assumption holds. Also drop spans that
-    // overlap a previous one (the highlighter resolves overlaps already, but
-    // belt-and-braces).
-    let mut sorted: Vec<StyledSpan> = spans.to_vec();
-    sorted.sort_by_key(|s| (s.start, s.end));
-    for span in sorted.iter() {
-        if span.start < cursor || span.start >= bytes.len() {
-            continue;
-        }
-        if span.start > cursor {
-            out.push(Span::raw(line[cursor..span.start].to_string()));
-        }
-        let end = span.end.min(bytes.len());
-        if end <= span.start {
-            continue;
-        }
-        out.push(Span::styled(
-            line[span.start..end].to_string(),
-            style_to_tui(span.style),
-        ));
-        cursor = end;
-    }
-    if cursor < bytes.len() {
-        out.push(Span::raw(line[cursor..].to_string()));
-    }
-    truncate_spans_to_width(out, max_width)
-}
+// DR.2 (decoration-retention): `render_styled_line` (the legacy
+// `StyledSpan` → ratatui renderer for the inactive-pane span path) was
+// retired. Both panes now render bodies from the `DisplayMatrix` via
+// `cells_render::display_line_to_source_spans`; `truncate_spans_to_width`
+// (below) is still shared by both paths.
 
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: u32) -> Vec<Span<'static>> {
     // Naive byte-based truncation. Adequate for ASCII; non-ASCII display
@@ -6577,27 +6531,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_styled_line_with_no_spans_round_trips_text() {
-        let spans = render_styled_line("plain text", &[], 80);
-        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(joined, "plain text");
-    }
-
-    #[test]
-    fn render_styled_line_emits_styled_span_at_offsets() {
-        let span = StyledSpan {
-            start: 0,
-            end: 2,
-            style: Style::Keyword,
-        };
-        let spans = render_styled_line("fn main()", &[span], 80);
-        let first = spans
-            .iter()
-            .find(|s| s.style != TuiStyle::default())
-            .expect("at least one styled span");
-        assert_eq!(first.content.as_ref(), "fn");
-    }
+    // DR.2 (decoration-retention): the `render_styled_line_*` tests were
+    // retired with the function. Body styling now comes from the
+    // `DisplayMatrix` via `cells_render::display_line_to_source_spans`
+    // (covered in `cells_render` tests); truncation is covered by
+    // `truncation_does_not_overrun_max_width` below.
 
     /// msg-mode.3: a well-formed messages record produces a
     /// styled level token. Order: timestamp (dim), space,
@@ -6694,28 +6632,13 @@ mod tests {
     }
 
     #[test]
-    fn render_styled_line_drops_overlapping_secondary_spans() {
-        // Two spans at the same position; the second is ignored to keep the
-        // renderer's no-overlap invariant. (tree-sitter-highlight already
-        // resolves overlaps; this is belt-and-braces.)
-        let primary = StyledSpan {
-            start: 0,
-            end: 4,
-            style: Style::Keyword,
-        };
-        let overlap = StyledSpan {
-            start: 2,
-            end: 4,
-            style: Style::String,
-        };
-        let spans = render_styled_line("test rest", &[primary, overlap], 80);
-        let total: usize = spans.iter().map(|s| s.content.len()).sum();
-        assert_eq!(total, "test rest".len());
-    }
-
-    #[test]
     fn truncation_does_not_overrun_max_width() {
-        let spans = render_styled_line("this is a long line of text", &[], 6);
+        // DR.2: `render_styled_line` retired; exercise the surviving
+        // shared `truncate_spans_to_width` directly.
+        let spans = truncate_spans_to_width(
+            vec![Span::raw("this is a long line of text".to_string())],
+            6,
+        );
         let total: usize = spans.iter().map(|s| s.content.len()).sum();
         assert!(total <= 6, "rendered length {total} exceeded max width 6");
     }
@@ -6955,65 +6878,8 @@ mod tests {
         assert!(dump.contains("world"), "rendered: {dump}");
     }
 
-    // ---- Perf plan A.2 slice A.2b.2b: source_spans_from_runs ----
-
-    /// Empty input → empty output, no surprises.
-    #[test]
-    fn source_spans_from_runs_empty_input_yields_empty() {
-        let out = source_spans_from_runs(&[]);
-        assert!(out.is_empty());
-    }
-
-    /// Source-only runs round-trip into a partition of the source
-    /// line: `start`/`end` are byte offsets into the source text
-    /// (cumulative `len`s); style matches the run.
-    #[test]
-    fn source_spans_from_runs_source_only_partitions_source_bytes() {
-        use lattice_host::render_state::RowRun;
-        let runs = vec![
-            RowRun::Source { len: 3, style: Style::Keyword },
-            RowRun::Source { len: 5, style: Style::Default },
-            RowRun::Source { len: 2, style: Style::Function },
-        ];
-        let out = source_spans_from_runs(&runs);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], StyledSpan { start: 0, end: 3, style: Style::Keyword });
-        assert_eq!(out[1], StyledSpan { start: 3, end: 8, style: Style::Default });
-        assert_eq!(out[2], StyledSpan { start: 8, end: 10, style: Style::Function });
-    }
-
-    /// Inlay runs are skipped without advancing the source cursor
-    /// — the spans partition the SOURCE text, not the woven
-    /// `combined`. Two Source(3) runs split by an Inlay(5) still
-    /// produce contiguous spans [0..3, 3..6) in source-byte space.
-    #[test]
-    fn source_spans_from_runs_skips_inlay_without_advancing_cursor() {
-        use lattice_host::render_state::RowRun;
-        let runs = vec![
-            RowRun::Source { len: 3, style: Style::Keyword },
-            RowRun::Inlay { len: 5 }, // splice — NOT in source line
-            RowRun::Source { len: 3, style: Style::Default },
-        ];
-        let out = source_spans_from_runs(&runs);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0], StyledSpan { start: 0, end: 3, style: Style::Keyword });
-        assert_eq!(out[1], StyledSpan { start: 3, end: 6, style: Style::Default });
-    }
-
-    /// Leading inlay (e.g. trailing inlay on prior line semantic
-    /// — not typical for source-attached hints, but possible)
-    /// doesn't shift source-byte offsets.
-    #[test]
-    fn source_spans_from_runs_leading_inlay_keeps_first_source_at_zero() {
-        use lattice_host::render_state::RowRun;
-        let runs = vec![
-            RowRun::Inlay { len: 4 },
-            RowRun::Source { len: 5, style: Style::Default },
-        ];
-        let out = source_spans_from_runs(&runs);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0], StyledSpan { start: 0, end: 5, style: Style::Default });
-    }
+    // DR.2 (decoration-retention): the `source_spans_from_runs_*` tests
+    // were retired with the function (the inactive-pane span fallback).
 
     // ---- Visual selection rendering ----
 

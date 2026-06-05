@@ -58,8 +58,8 @@ use lattice_mode::{ActiveModes, BufferLocals};
 
 /// Build an editor with a populated state so per-publish costs are
 /// non-trivial: a multi-pane tree, several buffers' worth of
-/// active_modes + buffer_locals, a non-empty pane_highlights /
-/// lsp_progress map, plus B.4.b-relevant load: 20 `buffer_uris`
+/// active_modes + buffer_locals, a non-empty lsp_progress map,
+/// plus B.4.b-relevant load: 20 `buffer_uris`
 /// (matching the active_modes count — typical LSP-attached session)
 /// and 4 open tabs. Mirrors a mid-size editing session.
 fn populated_editor() -> Editor {
@@ -82,11 +82,6 @@ fn populated_editor() -> Editor {
         ))
         .expect("synthetic file URI parses");
         editor.buffer_uris.insert(id, uri);
-    }
-
-    for pane_idx in 0..3 {
-        let spans = vec![Vec::new(); 60];
-        editor.pane_highlights.insert(pane_idx, spans);
     }
 
     for i in 0..6 {
@@ -221,7 +216,6 @@ fn mutated_all(c: &mut Criterion) {
     editor.publish_render_state();
 
     let toggle_id = BufferId(9_999);
-    let toggle_pane: usize = 9_999;
     let toggle_progress = (
         std::sync::Arc::<str>::from("benchmark"),
         "toggle".to_string(),
@@ -243,11 +237,6 @@ fn mutated_all(c: &mut Criterion) {
                 editor.buffer_locals.remove(&toggle_id);
             } else {
                 editor.buffer_locals.insert(toggle_id, BufferLocals::new());
-            }
-            if editor.pane_highlights.contains_key(&toggle_pane) {
-                editor.pane_highlights.remove(&toggle_pane);
-            } else {
-                editor.pane_highlights.insert(toggle_pane, Vec::new());
             }
             if editor.lsp_progress.contains_key(&toggle_progress) {
                 editor.lsp_progress.remove(&toggle_progress);

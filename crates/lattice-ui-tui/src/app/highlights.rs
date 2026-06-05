@@ -126,23 +126,9 @@ impl App {
         last
     }
 
-    /// Recompute per-pane highlights for inactive Document panes.
-    /// Each inactive pane's `DocumentEntry::syntax` gets reparsed
-    /// when the document's `text_version` differs from the entry's
-    /// cached version (cheap: one parse per inactive pane per
-    /// changed document); the visible-window slice lands in
-    /// `Editor::pane_highlights` keyed by pane index. The renderer
-    /// reads from there via `&App`.
-    ///
-    /// Active pane is skipped (it uses the worker-published
-    /// `syntax_visible_spans_cell` directly via FrameView). Panes
-    /// whose document is the same as the active document also
-    /// fall through to the worker cell -- a single parse covers
-    /// both panes.
-    pub fn refresh_pane_highlights(&mut self) {
-        // Slice 3c.final.C: route through `Action::RefreshPaneHighlights`
-        // so the per-frame call doesn't mutate editor state
-        // directly. Dispatch tail publishes RS.
-        self.apply(lattice_host::action::Action::RefreshPaneHighlights);
-    }
+    // DR.2 (decoration-retention): the `refresh_pane_highlights` App
+    // wrapper was retired with the `pane_highlights` producer. Inactive
+    // panes render from their per-pane `DisplayMatrix` (built by the
+    // cells worker for every visible pane); there is no per-frame
+    // pane-highlight recompute to trigger.
 }

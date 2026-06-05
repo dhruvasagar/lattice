@@ -17,8 +17,8 @@ producers, then collapse the inactive render fork. (Scope chosen over
 | Slice    | Title                                                                                  | Status |
 |----------|----------------------------------------------------------------------------------------|--------|
 | **DR.1** | **Retain + repaint.** Stop the teardown and render the full decoration set on inactive panes; focus-gain frame already carries it (no keystroke). | ✅ |
-| **DR.2** | **One producer (retire `pane_highlights`).** Both renderers read the per-pane retained `DisplayMatrix` for inactive panes (the producer already existed per-pane — see Premise below); the redundant `pane_highlights` span producer + its per-frame refresh are deleted. `:redraw` stays the forceful clean-slate escape hatch. | 🚧 |
-| **DR.3** | **One render path.** Collapse `draw_inactive_document` / inactive-compose fork into the shared path; inactive = opacity + no interaction state only. | 🗒 |
+| **DR.2** | **One producer (retire `pane_highlights`).** Both renderers read the per-pane retained `DisplayMatrix` for inactive panes (the producer already existed per-pane — see Premise below); the redundant `pane_highlights` span producer + its per-frame refresh are deleted. `:redraw` stays the forceful clean-slate escape hatch. | ✅ |
+| **DR.3** | **One render path.** Collapse `draw_inactive_document` / inactive-compose fork into the shared path; inactive = opacity + no interaction state only. | 🚧 |
 | **DR.4** | **Four-artefact close.** Bench proving zero decoration recompute on focus change; design/doc finalize; parity audit. | 🗒 |
 
 ## DR.1 — Retain + repaint
@@ -50,9 +50,17 @@ newly-focused pane to paint complete.
   GPUI (converging parity); 1470 TUI tests green. Manual TUI check
   pending.
 
-**Remaining for DR.1:** item 3 (republish + repaint on focus-gain —
-the "needs a keystroke" symptom), item 4 (diagnostics parity on
-inactive).
+**Items 3 + 4 resolved by downstream slices (not separate code):**
+
+- *Item 3 (republish + repaint on focus-gain):* DR.2 removed the
+  active-only cells-publish gate. The cells worker now builds the
+  `DisplayMatrix` for ALL visible panes, so a newly-focused pane's
+  matrix is already current on the focus-gain frame — no republish
+  step needed. The "lags one keystroke" symptom is gone.
+- *Item 4 (diagnostics parity on inactive):* DR.3's unified
+  `compose_pane_lines` renders diagnostic underlines + severity cells
+  unconditionally (not `is_active`-gated), so inactive panes get the
+  full diagnostic decoration set.
 
 **Work items (mechanics refined during implementation):**
 
@@ -162,13 +170,41 @@ Depends on DR.1's retention guarantee.
 
 ## DR.3 — One render path
 
-Collapse `draw_inactive_document` (TUI) and the inactive-compose
-branch into the shared render path. A pane's input becomes
-`(buffer decorations, interaction state | None, opacity)`; inactive
-panes pass `None` interaction state + `inactive_pane_opacity`. Removes
-the focus-keyed special-case (`feedback_buffers_no_special_case`).
-Depends on DR.2 (both paths must already source the same per-buffer
-decoration product).
+**Working tree (2026-06-05) — tests green, not yet committed.**
+
+`draw_inactive_document` (TUI) is now a 30-line thin entry that builds
+`PaneComposeCtx { is_active: false, … }` and delegates to
+`compose_pane_lines` — the same function `compose_visible_lines` calls
+for the active pane. The old parallel inactive compose body (~300 lines
+sourcing from the retired `pane_highlights`) is gone. Interaction-state
+features (visual selection, hlsearch, substitute preview, ghost text,
+cursor-line highlight) are gated on `ctx.is_active`; buffer-intrinsic
+decorations (diagnostics, diff signs, syntax, inlays) are not.
+
+**Documented seams lifted to future work:**
+- *Folds on inactive panes:* `closed_fold_at_start` is gated on
+  `is_active` because fold state lives in the active document; the ` ┄
+  N lines` annotation is omitted on inactive panes. Lifts when
+  per-buffer fold state lands.
+- *Soft-wrap on inactive panes:* `view.wrap_lines` (via
+  `FrameView::for_buffer`) is the resolver. Currently global
+  (same value for all panes); when buffer-local options land,
+  `for_buffer` resolves the buffer's local value with the global
+  default — the emacs buffer-local pattern. No `is_active` gate.
+- *Inlay two-source seam:* active path reads `rs.syntax.inlay_hints`
+  (pre-built active-buffer list); inactive path reads
+  `rs.lsp.inlay_hints.get_for(buffer_id)` (per-buffer LSP cache).
+  Functionally identical; converges to one source when both paths
+  consume the per-buffer cache.
+
+**GPUI parity (no change needed):** GPUI never had a separate
+`draw_inactive_document`; its paint loop already iterates panes
+uniformly with per-pane `display_matrix_for_pane` (from DR.2). GPUI
+was already in the DR.3 target shape before this slice.
+`feedback_tui_gpui_parity` is satisfied.
+
+Depends on DR.2 (both paths must source the same per-buffer decoration
+product).
 
 ## DR.4 — Four-artefact close
 

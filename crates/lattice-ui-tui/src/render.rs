@@ -122,6 +122,15 @@ pub struct FrameView<'a> {
     /// `is_empty()` on the published list is the cheap fast-path
     /// check.
     pub lsp_progress_enabled: bool,
+    /// Whether soft-wrap is enabled for this pane's buffer. Global
+    /// option today (`option_cache.wrap_lines`); the seam for
+    /// per-buffer options: when buffer-local options land,
+    /// `for_buffer` resolves from that buffer's local value with
+    /// the global default as fallback (emacs buffer-local pattern).
+    /// Compose paths read `view.wrap_lines` instead of touching
+    /// `app.ad().option_cache` directly so the resolver is always
+    /// in one place.
+    pub wrap_lines: bool,
 }
 
 impl<'a> FrameView<'a> {
@@ -178,15 +187,17 @@ impl<'a> FrameView<'a> {
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
+            wrap_lines: app.ad().option_cache.wrap_lines,
         }
     }
 
     /// M.4: per-pane FrameView -- resolves options for `buffer_id`
     /// instead of capturing the active buffer's settings. Used by
     /// inactive-pane render paths so each pane's mode stack drives
-    /// its own gutter independently. The fold / highlight snapshots
-    /// stay tied to the active doc (inactive panes pull their own
-    /// per-pane span snapshots through `app.editor.pane_highlights`).
+    /// its own gutter independently. The fold snapshot stays tied
+    /// to the active doc (per-buffer fold state is a future seam).
+    /// DR.2: inactive panes now source decorations from their own
+    /// per-pane `DisplayMatrix`; `pane_highlights` is retired.
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
         // A.2b.2b: same migration as `from_app` — read pre-paint
         // rows through the worker-published cell.
@@ -221,6 +232,9 @@ impl<'a> FrameView<'a> {
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
+            // Seam: global today; when buffer-local options land, resolve
+            // from `buffer_id`'s local value with global default fallback.
+            wrap_lines: app.ad().option_cache.wrap_lines,
         }
     }
 
@@ -2374,7 +2388,7 @@ fn draw_pane_content(
     if is_active {
         draw_buffer(frame, content_rect, app, snap);
     } else {
-        draw_inactive_document(frame, content_rect, app, pane, idx);
+        draw_inactive_document(frame, content_rect, app, pane);
     }
 }
 
@@ -2847,350 +2861,49 @@ fn draw_pane_status_line(
     frame.render_widget(para, area);
 }
 
-/// Render a Document pane that isn't currently focused. Reads the
-/// stashed cursor / scroll from `pane`, looks up the document by
-/// `pane.buffer_id`, and renders gutter + visible lines with the
-/// same syntax-highlight pipeline as the active pane. Inactive
-/// highlights are sourced from [`App::pane_highlights`] (keyed by
-/// pane index) when the doc differs from the active pane's, or
-/// from [`App::visible_highlights`] when the docs match -- a
-/// single parse covers both panes. The theme's
-/// `inactive_pane_overlay` modifier (default: DIM) layers on top
-/// of every span so focus stays unambiguous without losing color.
+/// DR.3 (decoration-retention): render a Document pane that isn't
+/// focused. This is now a thin entry point — it builds the per-pane
+/// [`PaneComposeCtx`] (`is_active: false`, the pane's OWN buffer /
+/// cursor / scroll / display-line-number map) and a `for_buffer`
+/// [`FrameView`], then defers to the SAME [`compose_pane_lines`] the
+/// active pane uses via [`draw_buffer`]. The old parallel inactive
+/// compose body — a smaller, drifting decoration set keyed on focus —
+/// is retired; the only inactive-specific behaviour now lives in the
+/// ctx flags (interaction overlays off, dim opacity on) interpreted
+/// inside the one shared path. Inactive panes therefore carry the
+/// FULL buffer-intrinsic decoration set (syntax, semantic tokens,
+/// inlay hints, diagnostics) dimmed, per the design's §Render
+/// contract.
 fn draw_inactive_document(
     frame: &mut Frame,
     area: Rect,
     app: &App,
     pane: &crate::pane::PaneState,
-    // DR.2: the pane index is no longer needed for span lookup (inactive
-    // panes read their per-pane `DisplayMatrix` by `pane.id`); kept in
-    // the signature for call-site symmetry until DR.3 folds this function
-    // into the shared compose path.
-    _pane_idx: usize,
 ) {
-    // Audit slice 7 / M2: snapshot once at chain entry. The
-    // inactive-pane chain is independent of the active-pane
-    // chain and gets its own `FrameView`; each chain stays
-    // internally consistent regardless of multi-thread render
-    // / input interleaving.
-    // M.4: resolve options for THIS pane's buffer, not the
-    // active one. Two visible doc panes with different mode
-    // stacks now render their gutters independently.
-    let view = FrameView::for_buffer(app, pane.buffer_id);
-    // Slice 3c.final.B (group 1): registry lookup via
-    // `app.buffers()`.
+    // Slice 3c.final.B (group 1): registry lookup via `app.buffers()`.
     let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
         return;
     };
     let snap = handle.snapshot();
-    let total_lines = snap.buffer.line_count();
-    // 2026-06-02: per-pane composed→source row map. Loaded once
-    // per inactive draw so the gutter shows source line numbers
-    // for a multibuffer pane even when that pane is inactive.
-    // Regular Documents return None (identity numbering).
-    let inactive_display_line_numbers: Option<std::sync::Arc<[u32]>> =
-        handle.display_line_numbers();
-    let gutter_w = if view.show_line_numbers {
-        gutter_width(total_lines)
-    } else {
-        2
+    // M.4: resolve options for THIS pane's buffer (its own mode stack
+    // drives gutter / LSP gates), not the active one.
+    let view = FrameView::for_buffer(app, pane.buffer_id);
+    let ctx = PaneComposeCtx {
+        is_active: false,
+        pane_id: pane.id,
+        buffer_id: pane.buffer_id,
+        // Inactive panes read their stashed cursor / scroll; the
+        // active pane reads `app.ad()`.
+        cursor_line: pane.cursor.line,
+        scroll: pane.scroll,
+        // Per-pane composed→source row map: a multibuffer pane shows
+        // source line numbers even when inactive; regular Documents
+        // return None (identity numbering).
+        display_line_numbers: handle.display_line_numbers(),
     };
-    // Reserve the diagnostic-severity column on inactive panes
-    // too so the gutter alignment matches the active pane when
-    // they share a document. D.3.d.1: same for the diff-sign
-    // column.
-    let buffer_w = (area.width as u32)
-        .saturating_sub(gutter_w)
-        .saturating_sub(DIAG_GUTTER_WIDTH)
-        .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
-
-    // DR.2 (decoration-retention): source inactive-pane body styling
-    // from THIS pane's retained `DisplayMatrix` — the SAME canonical
-    // producer the active compose path consumes
-    // (`display_line_to_source_spans`) — instead of the legacy per-pane
-    // `pane_highlights` span map. The cells worker builds a
-    // `DisplayMatrix` for EVERY visible pane (`recompute_pane` iterates
-    // `cells.panes`), so an inactive pane's matrix is already current;
-    // the redundant `pane_highlights` producer and its per-frame refresh
-    // are retired in this slice. The per-line loop below reads
-    // `display_matrix.row_at_source_line(buf_line)` with the same stale
-    // guard + empty→plain-text fallback as the active path, and gates
-    // the whitespace pre-pass on `!body_from_cells` because the matrix
-    // already bakes whitespace + tab expansion (mirrors W.4.t).
-    let cells_for_pane = app.render_state.load().cells.load_full();
-    let display_matrix = cells_for_pane
-        .display_matrix_for_pane(pane.id)
-        .map(|cell| cell.load_full())
-        .unwrap_or_else(|| {
-            std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
-        });
-    let display_theme = &cells_for_pane.theme;
-
-    let dim_overlay = if app.theme.dim_inactive_panes {
-        Some(app.theme.inactive_pane_overlay)
-    } else {
-        None
-    };
-
-    // D.3.b.1 (2026-05-29): inactive-pane virtual-row
-    // interleaver. Mirrors the active-pane logic so a pane
-    // showing the same document as the active pane reads
-    // identically (deletion blocks land at the same anchor
-    // positions).
-    //
-    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02): each pane reads
-    // ITS OWN virtual-rows matrix via `matrix_for_pane(pane.id)`.
-    // Earlier version used `active_pane_id` here too, which gave
-    // the inactive pane the active pane's matrix (wrong for any
-    // case where the panes show different buffers). Worse, the
-    // `rs.virtual_rows.matrix` fallback returned the boot-seeded
-    // single cell — which shares Arc identity with whichever
-    // pane was active LAST, so multibuffer headers leaked into
-    // panes that should have had no virtual rows.
-    //
-    // Now: per-pane lookup, no fallback. When a pane has no
-    // entry (test paths / transient publish race), use an empty
-    // matrix → no virtual rows render for that pane. That's the
-    // correct behaviour for a buffer with no registered
-    // virtual-row providers.
-    let virtual_rows_matrix = {
-        let rs = app.render_state.load();
-        rs.virtual_rows
-            .matrix_for_pane(pane.id)
-            .map(|cell| cell.load_full())
-            .unwrap_or_else(|| {
-                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
-            })
-    };
-    let inactive_body_col_width = buffer_w;
-    // DR.1b (decoration-retention): weave inlay hints on inactive
-    // panes too. The active pane reads the active-published
-    // `rs.syntax.inlay_hints`; inactive panes read their OWN buffer's
-    // per-buffer LSP cache so the hints don't vanish the instant the
-    // pane loses focus. Gated by the same per-buffer inlay-hint mode
-    // as the active publish (`build_active_inlay_hints`). Prepared
-    // once here (label flattened + padding baked, utf-16 character
-    // column kept for the per-line utf-8 conversion) so the per-line
-    // loop just filters + splices. Mirrors the GPUI peer, which
-    // already sources inactive inlays per-buffer in `paint_pane`.
-    let inactive_inlays: Vec<(u32, u32, String)> =
-        if app.lsp_inlay_hint_mode_enabled_for(pane.buffer_id) {
-            use lattice_host::per_buffer_cache::PerBufferCacheExt;
-            let rs = app.render_state.load();
-            rs.lsp
-                .inlay_hints
-                .get_for(pane.buffer_id)
-                .map(|cache| {
-                    cache
-                        .hints
-                        .iter()
-                        .map(|h| {
-                            let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
-                            if h.padding_left.unwrap_or(false) {
-                                text.insert(0, ' ');
-                            }
-                            if h.padding_right.unwrap_or(false) {
-                                text.push(' ');
-                            }
-                            (h.position.line, h.position.character, text)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
-    let mut i: u32 = 0;
-    while (lines.len() as u32) < area.height as u32 {
-        let buf_line = pane.scroll + i;
-        i += 1;
-        if buf_line >= total_lines {
-            lines.push(empty_marker_line(gutter_w));
-            continue;
-        }
-        // Emit Above-anchored virtual rows for this doc line.
-        for vrow in virtual_rows_at(
-            &virtual_rows_matrix,
-            buf_line,
-            lattice_cells::AnchorPosition::Above,
-        ) {
-            if (lines.len() as u32) >= area.height as u32 {
-                break;
-            }
-            lines.push(render_virtual_row(&view, vrow, gutter_w, inactive_body_col_width));
-        }
-        if (lines.len() as u32) >= area.height as u32 {
-            break;
-        }
-        let line_text = snap.buffer.line(buf_line).unwrap_or_default();
-        let gutter = render_gutter_for_inactive(
-            &view,
-            pane.cursor.line,
-            buf_line,
-            gutter_w,
-            inactive_display_line_numbers.as_deref(),
-        );
-        // DR.2: body spans from this pane's retained DisplayMatrix row,
-        // mirroring the active compose path (stale guard, empty→plain
-        // text). `body_from_cells` tracks whether the body carries the
-        // matrix's tab-expanded text so the whitespace pre-pass + inlay
-        // byte-mapping below match the active path's W.4.t handling.
-        let mut body_from_cells = false;
-        let mut body = {
-            let display_stale = display_matrix.version.text != snap.text_version;
-            let spans = if display_stale {
-                Vec::new()
-            } else {
-                match display_matrix.row_at_source_line(buf_line) {
-                    Some(line) => {
-                        crate::cells_render::display_line_to_source_spans(line, display_theme)
-                    }
-                    None => Vec::new(),
-                }
-            };
-            if spans.is_empty() && !line_text.is_empty() {
-                truncate_spans_to_width(vec![Span::raw(line_text.clone())], buffer_w)
-            } else {
-                body_from_cells = !spans.is_empty();
-                truncate_spans_to_width(spans, buffer_w)
-            }
-        };
-        // M.7.3.b / W.4.t: whitespace decoration pre-pass — only on the
-        // plain-text fallback. A matrix-derived body already has
-        // whitespace decorated + tabs expanded; re-running would
-        // double-decorate and desync against source bytes.
-        if view.app.ad().option_cache.show_whitespace && !body_from_cells {
-            let decoration = WhitespaceDecoration::from_app(view.app);
-            body = apply_whitespace_decoration(body, &line_text, &decoration);
-        }
-        // DR.1b: splice this buffer's inlay hints into the inactive
-        // body (reverse char order so earlier splices don't shift
-        // later ones), BEFORE the dim overlay so the hints dim with
-        // the rest of the inactive content.
-        if !inactive_inlays.is_empty() {
-            let mut on_line: Vec<&(u32, u32, String)> = inactive_inlays
-                .iter()
-                .filter(|(l, _, _)| *l == buf_line)
-                .collect();
-            on_line.sort_by(|a, b| b.1.cmp(&a.1));
-            // W.4.t.1: inlay positions are SOURCE-byte offsets. A
-            // matrix-derived body has tabs expanded, so source bytes no
-            // longer index it; map src byte → body column → body byte
-            // (identity on the plain-text fallback). Computed once
-            // pre-splice; reverse-char-order splicing keeps left
-            // positions valid as right ones are inserted.
-            let overlay_tabstop = view.app.ad().option_cache.tabstop;
-            let body_concat: String = if body_from_cells {
-                body.iter().map(|s| s.content.as_ref()).collect()
-            } else {
-                String::new()
-            };
-            for (_, ch, text) in on_line {
-                let src_byte =
-                    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, *ch) as usize;
-                let pos = if body_from_cells {
-                    nth_char_byte(
-                        &body_concat,
-                        source_byte_to_body_col(&line_text, src_byte, overlay_tabstop),
-                    )
-                } else {
-                    src_byte.min(line_text.len())
-                };
-                body = splice_virtual_text_into_spans(
-                    body,
-                    pos,
-                    text.clone(),
-                    inlay_hint_style(),
-                );
-            }
-        }
-        if let Some(overlay) = dim_overlay {
-            for span in body.iter_mut() {
-                span.style = span.style.patch(overlay);
-            }
-        }
-        // Inactive panes get a blank severity cell so the
-        // alignment matches the active pane when they share a
-        // document. Diagnostics on inactive panes are
-        // intentionally minimal -- the active pane is the
-        // canonical surface; inactive ones avoid visual noise.
-        // D.3.d.1: diff sign cell sits LEFT of line numbers —
-        // matches editor convention (Helix-style adjacent
-        // columns alongside severity).
-        let diff_sign_cell = render_diff_sign_cell(&view, buf_line);
-        // D.3.e: line tint on inactive panes too — keeps
-        // cross-pane reads consistent when both panes show
-        // the active document.
-        let body = match diff_tint_bg(&view, buf_line) {
-            Some(bg) => apply_diff_tint(body, bg),
-            None => body,
-        };
-        lines.push(combine_prefixed(
-            vec![
-                Span::styled(" ".to_string(), TuiStyle::default()),
-                diff_sign_cell,
-            ],
-            gutter,
-            body,
-        ));
-        // D.3.b.1: emit Below-anchored virtual rows after the
-        // document row.
-        for vrow in virtual_rows_at(
-            &virtual_rows_matrix,
-            buf_line,
-            lattice_cells::AnchorPosition::Below,
-        ) {
-            if (lines.len() as u32) >= area.height as u32 {
-                break;
-            }
-            lines.push(render_virtual_row(&view, vrow, gutter_w, inactive_body_col_width));
-        }
-    }
+    let lines =
+        compose_pane_lines(&view, &snap, area.height as u32, area.width as u32, &ctx);
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// Gutter render for an inactive pane. Uses the pane's stashed
-/// cursor line for relative-numbering -- the active pane uses
-/// `app.editor.cursor.line` instead.
-fn render_gutter_for_inactive(
-    view: &FrameView<'_>,
-    cursor_line: u32,
-    line_idx: u32,
-    gutter_w: u32,
-    display_line_numbers: Option<&[u32]>,
-) -> Span<'static> {
-    // Inactive panes don't carry their own fold state today (folds
-    // live on the active App), so we format an empty glyph slot --
-    // but use the same shared layout helper so column alignment
-    // matches the active pane.
-    if !view.show_line_numbers {
-        return Span::styled(
-            format_gutter_cell("", gutter_w, None),
-            TuiStyle::default().fg(Color::DarkGray),
-        );
-    }
-    // 2026-06-02: mirror the active path's composed→source
-    // mapping for inactive panes. Without this an inactive
-    // multibuffer pane would show 1,2,3,… instead of the source
-    // line numbers from each excerpt. Per "active-state only
-    // affects the active pane": map and cursor are sourced from
-    // the inactive pane's own handle + pane state, not `app.ad()`.
-    let display_line_idx: u32 = if let Some(map) = display_line_numbers {
-        *map.get(line_idx as usize).unwrap_or(&line_idx)
-    } else {
-        line_idx
-    };
-    let multibuffer_mode = display_line_numbers.is_some();
-    let n = if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
-        (display_line_idx + 1).to_string()
-    } else {
-        line_idx.abs_diff(cursor_line).to_string()
-    };
-    Span::styled(
-        format_gutter_cell(&n, gutter_w, None),
-        TuiStyle::default().fg(Color::DarkGray),
-    )
 }
 
 /// Render a file-tree pane vim-style: no decorative border, just
@@ -3669,6 +3382,28 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
 /// Spans are owned (`Cow::Owned`) so the returned `Line`s outlive the
 /// document text we slice out of for this frame. One alloc per visible line
 /// per frame -- negligible at terminal sizes (typically 50-100 lines).
+/// DR.3 (decoration-retention): the per-pane inputs that vary
+/// between the focused pane and inactive panes, so ONE compose path
+/// ([`compose_pane_lines`]) serves both. Buffer-intrinsic
+/// decorations are sourced by `buffer_id` — syntax via the per-pane
+/// `DisplayMatrix` keyed by `pane_id`, plus semantic tokens, inlay
+/// hints, and diagnostic underlines/severity from their per-buffer
+/// caches — so they paint on inactive panes too (dimmed). The state
+/// gated on `is_active` is exactly *interaction* (cursor-line,
+/// visual selection, hlsearch, current match, ghost text, substitute
+/// preview) plus the layout that still reads active-doc-scoped state
+/// (closed-fold skipping/summary, soft-wrap) — documented seams that
+/// lift to per-pane when per-buffer fold + option state lands. See
+/// docs/dev/architecture/decoration-retention.md §Render contract.
+pub(crate) struct PaneComposeCtx {
+    pub is_active: bool,
+    pub pane_id: crate::pane::PaneId,
+    pub buffer_id: crate::buffers::BufferId,
+    pub cursor_line: u32,
+    pub scroll: u32,
+    pub display_line_numbers: Option<Arc<[u32]>>,
+}
+
 pub fn compose_visible_lines(
     app: &App,
     snap: &DocumentSnapshot,
@@ -3682,14 +3417,31 @@ pub fn compose_visible_lines(
     // future Web) can't see a torn mid-render view if a
     // concurrent input event mutates the underlying App fields.
     let view = FrameView::from_app(app);
-    compose_visible_lines_inner(&view, snap, height, width)
+    let ctx = PaneComposeCtx {
+        is_active: true,
+        pane_id: app.panes().tree.active().id,
+        buffer_id: app.ad().document_buffer_id,
+        cursor_line: app.ad().cursor.line,
+        scroll: app.ad().scroll,
+        display_line_numbers: app.ad().display_line_numbers.clone(),
+    };
+    compose_pane_lines(&view, snap, height, width, &ctx)
 }
 
-fn compose_visible_lines_inner(
+/// DR.3: the single compose path for every Document pane. The active
+/// pane calls it via [`compose_visible_lines`] with `is_active =
+/// true` + a `from_app` view; inactive panes call it from
+/// [`draw_pane_content`] with `is_active = false` + a `for_buffer`
+/// view. The body the active pane produces is byte-identical to the
+/// pre-merge path (pinned by `dr3_active_pane_compose_characterization`):
+/// for the active pane `ctx.buffer_id == app.ad().document_buffer_id`,
+/// so the per-buffer decoration sourcing resolves the same id.
+pub(crate) fn compose_pane_lines(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     height: u32,
     width: u32,
+    ctx: &PaneComposeCtx,
 ) -> Vec<Line<'static>> {
     let app = view.app;
     // msg-mode.3: when the active pane's major mode is
@@ -3699,15 +3451,16 @@ fn compose_visible_lines_inner(
     // bypassed because the level styles aren't expressible as
     // `lattice_syntax::Style` enum variants (which is the
     // unit the spans pipeline carries).
-    // Slice 3c.final.B (group 1): active-pane buffer id via
-    // `app.panes()`.
-    let active_buffer = app.panes().tree.active().buffer_id;
+    // DR.3: key the messages-mode body path on THIS pane's buffer,
+    // not the globally-active one, so an inactive messages pane still
+    // renders level-aware. For the active pane `ctx.buffer_id` IS the
+    // active buffer (byte-identical).
     // Slice 3c.final.B.11: active_modes via published `modes()`
     // sub-state — wait-free Arc-bump lookup, no actor round-trip.
     let is_messages_buffer = app
         .modes()
         .map
-        .get(&active_buffer)
+        .get(&ctx.buffer_id)
         .and_then(|m| m.major())
         .map(|m| m == lattice_mode::MessagesMode::mode_id())
         .unwrap_or(false);
@@ -3737,8 +3490,18 @@ fn compose_visible_lines_inner(
         .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
 
     // Compute visual selection range once (instead of per line).
-    let visual_range = visual_selection_range(app);
-    let block = visual_block_extents(app);
+    // DR.3: visual selection is interaction state — present only on
+    // the focused pane.
+    let visual_range = if ctx.is_active {
+        visual_selection_range(app)
+    } else {
+        None
+    };
+    let block = if ctx.is_active {
+        visual_block_extents(app)
+    } else {
+        None
+    };
 
     // Perf plan B.2 slice B.2.b: load the worker's per-row pre-
     // bucketed static-overlay quads once for the whole frame
@@ -3749,28 +3512,45 @@ fn compose_visible_lines_inner(
     // the legacy walk. DocHighlight stays on the per-row walk
     // because the TUI's per-quad style is keyed off
     // `DocumentHighlightKind` which the bucket doesn't carry.
-    let active_overlay_quads_for_frame = {
+    // DR.3: the per-row hlsearch/substitute bucket is the ACTIVE
+    // pane's (published from `app.ad()`), and both layers it feeds are
+    // interaction state — only loaded for the focused pane. Inactive
+    // panes get an empty bucket and skip the hlsearch/substitute
+    // blocks below.
+    let active_overlay_quads_for_frame = if ctx.is_active {
         let rs = app.render_state.load();
         rs.syntax.static_overlay_quads.load_full()
+    } else {
+        std::sync::Arc::new(lattice_host::render_state::StaticOverlayQuads::default())
     };
-    let frame_scroll = app.ad().scroll;
+    let frame_scroll = ctx.scroll;
 
     // Build the visible-buffer-line ordering: starting from `scroll`,
     // skip lines inside closed folds, taking up to `height` entries.
     // Bound the walk by `total_lines` from ropey -- O(1).
     let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
-    let mut buf_line = app.ad().scroll;
+    let mut buf_line = ctx.scroll;
     while visible.len() < height as usize && buf_line < total_lines {
-        // Slice 3c.extension.fold-rs: use view.X (wait-free) instead
-        // of app.X (per-line actor RPC).
-        if view.line_inside_closed_fold(buf_line) {
-            buf_line += 1;
-            continue;
-        }
-        visible.push(buf_line);
-        if let Some(fold) = view.fold_start_at(buf_line) {
-            buf_line = fold.end_line + 1;
+        // DR.3: closed-fold skipping reads `view.folds`, which is the
+        // ACTIVE document's fold set (folds aren't per-buffer yet), so
+        // it applies only to the focused pane. Inactive panes walk
+        // lines 1:1 — a documented seam that lifts when per-buffer
+        // fold state lands.
+        if ctx.is_active {
+            // Slice 3c.extension.fold-rs: use view.X (wait-free) instead
+            // of app.X (per-line actor RPC).
+            if view.line_inside_closed_fold(buf_line) {
+                buf_line += 1;
+                continue;
+            }
+            visible.push(buf_line);
+            if let Some(fold) = view.fold_start_at(buf_line) {
+                buf_line = fold.end_line + 1;
+            } else {
+                buf_line += 1;
+            }
         } else {
+            visible.push(buf_line);
             buf_line += 1;
         }
     }
@@ -3780,20 +3560,18 @@ fn compose_visible_lines_inner(
     // lines. Lock-free `Arc` clone; the matrix lives on the
     // RenderState snapshot already loaded by callers.
     //
-    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02):
-    // compose_visible_lines_inner only ever runs for the active
-    // pane (draw_buffer → compose_visible_lines), so the active
-    // pane's id is the right lookup key here. Drop the
-    // boot-seeded fallback for the same reason as
-    // draw_inactive_document — falling back to
-    // `rs.virtual_rows.matrix` leaks the last-active-pane's
-    // headers into panes (e.g. a file pane) that have no
-    // providers.
+    // K.4.6 c.ii (2026-06-02, FIXED 2026-06-02): each pane reads ITS
+    // OWN virtual-rows matrix. DR.3 keys it on `ctx.pane_id` (was
+    // `active_pane_id`) so the one compose path serves both the
+    // focused pane and inactive panes correctly — for the active pane
+    // `ctx.pane_id` IS the active pane (byte-identical). Drop the
+    // boot-seeded fallback: falling back to `rs.virtual_rows.matrix`
+    // leaks the last-active-pane's headers into panes (e.g. a file
+    // pane) that have no providers.
     let virtual_rows_matrix = {
         let rs = view.app.render_state.load();
-        let active_pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
-            .matrix_for_pane(active_pane_id)
+            .matrix_for_pane(ctx.pane_id)
             .map(|cell| cell.load_full())
             .unwrap_or_else(|| {
                 std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
@@ -3805,14 +3583,40 @@ fn compose_visible_lines_inner(
     // `split_body_into_segments` can wrap it into `body_col_width`
     // columns; when off, the body is clipped to the viewport
     // (horizontal-scroll behaviour, unchanged).
-    let wrap_on = app.ad().option_cache.wrap_lines;
+    // Soft-wrap is a global option today; `view.wrap_lines` is the
+    // resolver seam — `FrameView::from_app` and `::for_buffer` both
+    // read the global `option_cache.wrap_lines` for now. When
+    // buffer-local options land, `for_buffer` resolves the
+    // buffer-local override with the global as default (emacs
+    // buffer-local pattern) and this site stays unchanged.
+    let wrap_on = view.wrap_lines;
     let body_trunc_w = if wrap_on { u32::MAX } else { buffer_w };
-    // Active-pane composed→source row map. Cloned once per frame
-    // (Arc bump). The active path is the only place that reads
-    // `app.ad().display_line_numbers` — inactive panes get their
-    // own per-pane mapping via `handle.display_line_numbers()`.
-    let active_display_line_numbers = app.ad().display_line_numbers.clone();
-    let active_cursor_line = app.ad().cursor.line;
+    // DR.3: composed→source row map + cursor line come from the pane
+    // ctx — the active pane passes `app.ad()`'s values, inactive panes
+    // pass their own handle's mapping + stashed cursor. Cloned once
+    // per frame (Arc bump).
+    let active_display_line_numbers = ctx.display_line_numbers.clone();
+    let active_cursor_line = ctx.cursor_line;
+    // DR.3: load THIS pane's retained `DisplayMatrix` ONCE per frame,
+    // keyed by `pane_id`, instead of the top-level
+    // `cells.display_matrix` per line. For the active pane this entry
+    // is published from the same `p.display_matrix.clone()` that backs
+    // the top-level, so the body is byte-identical; inactive panes get
+    // their own buffer's matrix (no focus-keyed source branch — the
+    // DR.3 "one producer, one path" payoff). Empty fallback (boot /
+    // transient publish gap / a pane with no matrix entry) → the
+    // per-line plain-text fallback. Hoisting the lookup out of the
+    // loop keeps the body O(viewport) with no per-line HashMap probe
+    // (paramount #1). `cells_rs` is held for the whole function so
+    // `display_theme` can borrow its `theme`.
+    let cells_rs = view.app.render_state.load().cells.load_full();
+    let display_matrix = cells_rs
+        .display_matrix_for_pane(ctx.pane_id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
+        });
+    let display_theme = &cells_rs.theme;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {
@@ -3903,15 +3707,14 @@ fn compose_visible_lines_inner(
             // it. Only the document-body branch in
             // `compose_visible_lines_inner` is cut over to the
             // cell-grid.
-            let rs_load = view.app.render_state.load();
-            // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once.
-            let cells_rs = rs_load.cells.load();
             // B2.4 (2026-06-04): consume the canonical `DisplayMatrix`
             // directly — its style-tagged runs resolve to ratatui via the
             // host theme at paint (`display_line_to_source_spans`). Pre-B2.4
             // the TUI read the projected cell grid here; the projection (and
             // the whole cell path) is deleted in B4.
-            let matrix = cells_rs.display_matrix.load();
+            // DR.3: `display_matrix` + `display_theme` are this pane's
+            // retained matrix, loaded once above (keyed by `ctx.pane_id`),
+            // not a per-line top-level cell read.
             // Three paths fall through to plain `line_text`:
             //   1. matrix has no row at `line_idx` (boot frames before the
             //      first build, doc-switch gap, or off-window on a large
@@ -3931,13 +3734,13 @@ fn compose_visible_lines_inner(
             //      (multi-edit batch, doc switch); painting current
             //      plain-text for a frame beats painting PRE-edit content,
             //      and the async worker recolours within a frame or two.
-            let display_stale = matrix.version.text != snap.text_version;
+            let display_stale = display_matrix.version.text != snap.text_version;
             let spans = if display_stale {
                 Vec::new()
             } else {
-                match matrix.row_at_source_line(line_idx) {
+                match display_matrix.row_at_source_line(line_idx) {
                     Some(line) => {
-                        crate::cells_render::display_line_to_source_spans(line, &cells_rs.theme)
+                        crate::cells_render::display_line_to_source_spans(line, display_theme)
                     }
                     None => Vec::new(),
                 }
@@ -4000,19 +3803,27 @@ fn compose_visible_lines_inner(
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
-        let closed_fold_at_start = view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
-            // The "N lines folded" suffix should reflect the
-            // user's perception of how much content collapsed
-            // onto this single visible row -- including any
-            // sibling / nested closed folds whose headings are
-            // themselves hidden by this fold and whose ranges
-            // chain past `f.end_line`. Without this walk, two
-            // touching folds (1..=3 then 3..=5, both closed)
-            // visually hide 5 lines but report only the first
-            // fold's own 3 lines, which doesn't match what the
-            // user just collapsed.
-            closed_fold_display_span(view, snap, &f)
-        });
+        // DR.3: fold state is the ACTIVE document's (`view.folds`), so
+        // the summary only applies to the focused pane — matches the
+        // fold-aware visible-line walk above. Inactive panes show no
+        // fold suffix (seam lifts with per-buffer fold state).
+        let closed_fold_at_start = if ctx.is_active {
+            view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
+                // The "N lines folded" suffix should reflect the
+                // user's perception of how much content collapsed
+                // onto this single visible row -- including any
+                // sibling / nested closed folds whose headings are
+                // themselves hidden by this fold and whose ranges
+                // chain past `f.end_line`. Without this walk, two
+                // touching folds (1..=3 then 3..=5, both closed)
+                // visually hide 5 lines but report only the first
+                // fold's own 3 lines, which doesn't match what the
+                // user just collapsed.
+                closed_fold_display_span(view, snap, &f)
+            })
+        } else {
+            None
+        };
         // 4.4.h: LSP semantic-tokens overlay. Replaces the
         // foreground color (folding in modifier bits) for
         // each token's byte range. Painted BEFORE visual /
@@ -4025,12 +3836,17 @@ fn compose_visible_lines_inner(
         // task writes via `insert_for` into the same underlying
         // `PerBufferCache` -- this read sees fresh data without
         // any UI-thread drain.
+        // DR.3: semantic tokens are a buffer-intrinsic decoration —
+        // source from THIS pane's per-buffer cache (`ctx.buffer_id`)
+        // and the per-pane `view` gate, so they paint on inactive
+        // panes too (dimmed). For the active pane `ctx.buffer_id` IS
+        // the active doc → byte-identical.
         use lattice_host::per_buffer_cache::PerBufferCacheExt;
         let rs_st = app.render_state.load();
         if let Some(cache) = rs_st
             .lsp
             .semantic_tokens
-            .get_for(app.ad().document_buffer_id)
+            .get_for(ctx.buffer_id)
             && view.lsp_semantic_tokens_enabled
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
@@ -4085,41 +3901,57 @@ fn compose_visible_lines_inner(
         // pre-first-recompute or for non-active panes; in those cases
         // we fall back to the legacy per-frame walk so search hits
         // still paint correctly through the warm-up window.
+        // DR.3: hlsearch + current-match are interaction state — the
+        // `all_matches` walk reads the ACTIVE doc's matches (no
+        // per-buffer search store yet), so both run only on the
+        // focused pane. The bucket is empty when inactive anyway; the
+        // gate also stops the `else` walk from painting the active
+        // buffer's matches onto an inactive pane.
         let bucket_row: Option<&Vec<lattice_host::render_state::RowOverlayQuad>> =
             (line_idx >= frame_scroll)
                 .then(|| (line_idx - frame_scroll) as usize)
                 .and_then(|idx| active_overlay_quads_for_frame.quads.get(idx));
-        if let Some(row_quads) = bucket_row {
-            for q in row_quads {
-                if matches!(q.layer, lattice_host::render_state::OverlayLayer::AllMatches) {
-                    let start = (q.source_byte_start as usize).min(line_len);
-                    let end = (q.source_byte_end as usize).min(line_len);
-                    if start < end {
-                        body =
-                            apply_match_overlay(body, map_ob(start), map_ob(end), hlsearch_style());
+        if ctx.is_active {
+            if let Some(row_quads) = bucket_row {
+                for q in row_quads {
+                    if matches!(q.layer, lattice_host::render_state::OverlayLayer::AllMatches) {
+                        let start = (q.source_byte_start as usize).min(line_len);
+                        let end = (q.source_byte_end as usize).min(line_len);
+                        if start < end {
+                            body = apply_match_overlay(
+                                body,
+                                map_ob(start),
+                                map_ob(end),
+                                hlsearch_style(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                for &range in app.ad().all_matches.iter() {
+                    if let Some((overlay_start, overlay_end)) =
+                        match_overlay_range(range, line_idx, line_len)
+                    {
+                        body = apply_match_overlay(
+                            body,
+                            map_ob(overlay_start),
+                            map_ob(overlay_end),
+                            hlsearch_style(),
+                        );
                     }
                 }
             }
-        } else {
-            for &range in app.ad().all_matches.iter() {
-                if let Some((overlay_start, overlay_end)) =
+            if let Some(range) = app.ad().current_match
+                && let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx, line_len)
-                {
-                    body = apply_match_overlay(
-                        body,
-                        map_ob(overlay_start),
-                        map_ob(overlay_end),
-                        hlsearch_style(),
-                    );
-                }
+            {
+                body = apply_match_overlay(
+                    body,
+                    map_ob(overlay_start),
+                    map_ob(overlay_end),
+                    match_style(),
+                );
             }
-        }
-        if let Some(range) = app.ad().current_match
-            && let Some((overlay_start, overlay_end)) =
-                match_overlay_range(range, line_idx, line_len)
-        {
-            body =
-                apply_match_overlay(body, map_ob(overlay_start), map_ob(overlay_end), match_style());
         }
         // LSP diagnostic underline overlay (Phase 4.1.d.iii):
         // for each diagnostic touching this line, underline the
@@ -4127,7 +3959,11 @@ fn compose_visible_lines_inner(
         // modifier composes with any prior bg / fg overlays
         // (visual / hlsearch / current_match) -- all four can
         // co-exist on a single span without conflict.
-        for d in diagnostics_on_line(view, snap, line_idx) {
+        // DR.3: diagnostics are a buffer-intrinsic decoration —
+        // sourced by `ctx.buffer_id` (the layer is per-URI) so they
+        // underline on inactive panes too (dimmed). Active pane's
+        // `ctx.buffer_id` is the active doc → byte-identical.
+        for d in diagnostics_on_line(view, ctx.buffer_id, line_idx) {
             let start = if d.range.start.line == line_idx {
                 (d.range.start.character as usize).min(line_len)
             } else {
@@ -4164,10 +4000,19 @@ fn compose_visible_lines_inner(
         // the same underlying slot, so this `load_full()` sees
         // the latest result without any tick-driven drain on
         // the renderer thread.
+        // DR.3: document-highlight is a buffer-intrinsic decoration —
+        // the highlight ranges are positions in `cache.buffer_id`, so
+        // paint them on ANY pane showing that buffer (active or
+        // inactive, dimmed), matching the GPUI peer
+        // (`feedback_tui_gpui_parity`). Keyed on `ctx.buffer_id` (was
+        // `app.ad().document_buffer_id`): the active pane's id is the
+        // active doc → byte-identical; an inactive pane showing a
+        // DIFFERENT buffer no longer mis-claims the active buffer's
+        // highlights.
         let rs = app.render_state.load();
         let dh_guard = rs.lsp.document_highlights.load_full();
         if let Some(cache) = dh_guard.as_deref()
-            && cache.buffer_id == app.ad().document_buffer_id
+            && cache.buffer_id == ctx.buffer_id
             && view.lsp_document_highlight_enabled
         {
             for h in &cache.highlights {
@@ -4210,20 +4055,62 @@ fn compose_visible_lines_inner(
         // it) is deferred to slice A.2b.2b. This slice keeps the
         // existing Span-mutation chain intact and just collapses
         // the inlay source-of-truth to the canonical one.
+        //
+        // DR.3: inlay hints are a buffer-intrinsic decoration shown on
+        // BOTH panes. The active pane reads the publish-time-baked
+        // active list (`rs.syntax.inlay_hints`, utf-8 byte offsets
+        // ready) — byte-identical to the pre-merge path. Inactive
+        // panes read their OWN buffer's per-buffer cache
+        // (`rs.lsp.inlay_hints.get_for(buffer_id)`), converting utf-16
+        // columns → utf-8 bytes per line. The baked active list isn't
+        // keyed per-buffer yet, so the SOURCE differs by focus — a
+        // documented seam; the user-visible result (inlays on both,
+        // dimmed when inactive) is uniform. Both splice through
+        // `map_ob` so W.4.t tab expansion lands them on the right cell.
         let rs = app.render_state.load();
-        if !rs.syntax.inlay_hints.is_empty() {
-            let mut on_line: Vec<&lattice_host::render_state::InlayHintRow> = rs
-                .syntax
-                .inlay_hints
+        if ctx.is_active {
+            if !rs.syntax.inlay_hints.is_empty() {
+                let mut on_line: Vec<&lattice_host::render_state::InlayHintRow> = rs
+                    .syntax
+                    .inlay_hints
+                    .iter()
+                    .filter(|h| h.line == line_idx)
+                    .collect();
+                on_line.sort_by(|a, b| b.byte.cmp(&a.byte));
+                for h in on_line {
+                    body = splice_virtual_text_into_spans(
+                        body,
+                        map_ob((h.byte as usize).min(line_len)),
+                        h.text.clone(),
+                        inlay_hint_style(),
+                    );
+                }
+            }
+        } else if app.lsp_inlay_hint_mode_enabled_for(ctx.buffer_id)
+            && let Some(cache) = rs.lsp.inlay_hints.get_for(ctx.buffer_id)
+        {
+            let mut on_line: Vec<_> = cache
+                .hints
                 .iter()
-                .filter(|h| h.line == line_idx)
+                .filter(|h| h.position.line == line_idx)
                 .collect();
-            on_line.sort_by(|a, b| b.byte.cmp(&a.byte));
+            on_line.sort_by(|a, b| b.position.character.cmp(&a.position.character));
             for h in on_line {
+                let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
+                if h.padding_left.unwrap_or(false) {
+                    text.insert(0, ' ');
+                }
+                if h.padding_right.unwrap_or(false) {
+                    text.push(' ');
+                }
+                let src_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    h.position.character,
+                ) as usize;
                 body = splice_virtual_text_into_spans(
                     body,
-                    map_ob((h.byte as usize).min(line_len)),
-                    h.text.clone(),
+                    map_ob(src_byte.min(line_len)),
+                    text,
                     inlay_hint_style(),
                 );
             }
@@ -4235,38 +4122,43 @@ fn compose_visible_lines_inner(
         //
         // Perf plan B.2 slice B.2.b: consume the worker bucket's
         // Substitute layer when available; legacy walk as fallback.
-        if let Some(row_quads) = bucket_row {
-            let mut found_any = false;
-            for q in row_quads {
-                if matches!(q.layer, lattice_host::render_state::OverlayLayer::Substitute) {
-                    let start = (q.source_byte_start as usize).min(line_len);
-                    let end = (q.source_byte_end as usize).min(line_len);
-                    if start < end {
-                        body = apply_match_overlay(
-                            body,
-                            map_ob(start),
-                            map_ob(end),
-                            substitute_preview_style(),
-                        );
-                        found_any = true;
+        // DR.3: the substitute preview is driven by the command line
+        // (`:s///`) typed in the focused pane — interaction state, so
+        // it paints only on the active pane.
+        if ctx.is_active {
+            if let Some(row_quads) = bucket_row {
+                let mut found_any = false;
+                for q in row_quads {
+                    if matches!(q.layer, lattice_host::render_state::OverlayLayer::Substitute) {
+                        let start = (q.source_byte_start as usize).min(line_len);
+                        let end = (q.source_byte_end as usize).min(line_len);
+                        if start < end {
+                            body = apply_match_overlay(
+                                body,
+                                map_ob(start),
+                                map_ob(end),
+                                substitute_preview_style(),
+                            );
+                            found_any = true;
+                        }
                     }
                 }
-            }
-            // If the worker bucket existed but had no substitute
-            // quads, that's accurate state — no substitute preview is
-            // active. Don't fall back to per-frame walk.
-            let _ = found_any;
-        } else if let Some(preview) = app.ad().substitute_preview.as_ref() {
-            for &range in preview.matches.iter() {
-                if let Some((overlay_start, overlay_end)) =
-                    match_overlay_range(range, line_idx, line_len)
-                {
-                    body = apply_match_overlay(
-                        body,
-                        map_ob(overlay_start),
-                        map_ob(overlay_end),
-                        substitute_preview_style(),
-                    );
+                // If the worker bucket existed but had no substitute
+                // quads, that's accurate state — no substitute preview is
+                // active. Don't fall back to per-frame walk.
+                let _ = found_any;
+            } else if let Some(preview) = app.ad().substitute_preview.as_ref() {
+                for &range in preview.matches.iter() {
+                    if let Some((overlay_start, overlay_end)) =
+                        match_overlay_range(range, line_idx, line_len)
+                    {
+                        body = apply_match_overlay(
+                            body,
+                            map_ob(overlay_start),
+                            map_ob(overlay_end),
+                            substitute_preview_style(),
+                        );
+                    }
                 }
             }
         }
@@ -4287,7 +4179,10 @@ fn compose_visible_lines_inner(
         // most-likely accept inline. Cursor block visually
         // overlays the first ghost char (the typed prefix
         // ends right before it).
-        if line_idx == app.ad().cursor.line
+        // DR.3: ghost text previews the active completion at the
+        // active cursor — interaction state, focused pane only.
+        if ctx.is_active
+            && line_idx == app.ad().cursor.line
             && (app.ad().cursor.byte as usize) == line_text.len()
             && let Some(suffix) = app.completion_ghost_text_suffix()
         {
@@ -4306,15 +4201,20 @@ fn compose_visible_lines_inner(
         // per-cell -- spans with bg already set (visual /
         // hlsearch / current_match overlays) keep their bg.
         // Pads to buffer width so the highlight extends to the
-        // pane's right edge. Active pane only (this code path
-        // is the active path; the inactive path at line ~1800
-        // doesn't run this).
+        // pane's right edge.
+        //
+        // DR.3: the cursor line is interaction state — `is_active`
+        // gates it so inactive panes (no cursor) never paint a
+        // cursor-line bg.
         //
         // Gutter + severity cell are intentionally not
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if line_idx == app.ad().cursor.line && app.ad().option_cache.current_line_highlight {
+        if ctx.is_active
+            && line_idx == app.ad().cursor.line
+            && app.ad().option_cache.current_line_highlight
+        {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -4336,7 +4236,11 @@ fn compose_visible_lines_inner(
         // one cell of gutter width on every frame -- visible
         // even when no diagnostics exist so the layout doesn't
         // shift when one arrives.
-        let severity_cell = render_diagnostic_severity_cell(view, snap, line_idx);
+        // DR.3: severity is a buffer-intrinsic decoration — sourced by
+        // `ctx.buffer_id` so an inactive pane shows ITS buffer's
+        // severity glyph (was a blank cell pre-merge). Active pane's
+        // id is the active doc → byte-identical.
+        let severity_cell = render_diagnostic_severity_cell(view, ctx.buffer_id, line_idx);
         // D.3.d.1: diff sign cell sits LEFT of line numbers
         // (between severity and gutter) — matches the editor
         // convention used by Vim signcolumn, Helix, Zed,
@@ -4354,6 +4258,26 @@ fn compose_visible_lines_inner(
         let body = match diff_tint_bg(view, line_idx) {
             Some(bg) => apply_diff_tint(body, bg),
             None => body,
+        };
+        // DR.3: inactive panes are a paint-time opacity (the design's
+        // §Render contract). Dim the fully-decorated body (syntax +
+        // semantic + diagnostics + inlays + diff tint) uniformly AFTER
+        // every decoration overlay and BEFORE wrap-segmenting, so the
+        // pane reads as unfocused without dropping any decoration cue
+        // (`feedback_decorations_update_in_place`). The focused pane
+        // skips this entirely (opacity 1.0 → byte-identical). The
+        // gutter/severity/diff-sign prefix keeps its own styling, as
+        // it did on the pre-merge inactive path.
+        let body = if ctx.is_active || !view.app.theme.dim_inactive_panes {
+            body
+        } else {
+            let overlay = view.app.theme.inactive_pane_overlay;
+            body.into_iter()
+                .map(|mut s| {
+                    s.style = s.style.patch(overlay);
+                    s
+                })
+                .collect()
         };
         // W.4 (soft-wrap): split the fully-overlaid body into
         // display segments of `body_col_width` columns when `:set
@@ -5062,12 +4986,12 @@ fn render_diff_sign_cell(
 /// dim-darkgray when nothing's there.
 fn render_diagnostic_severity_cell(
     view: &FrameView<'_>,
-    snap: &DocumentSnapshot,
+    buffer_id: crate::buffers::BufferId,
     line_idx: u32,
 ) -> Span<'static> {
     let theme = &view.app.theme;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let Some(severity) = severity_for_line(view, snap, line_idx) else {
+    let Some(severity) = severity_for_line(view, buffer_id, line_idx) else {
         return blank;
     };
     let (glyph, style) = crate::theme::diagnostic_glyph_and_style(theme, severity);
@@ -5077,17 +5001,21 @@ fn render_diagnostic_severity_cell(
     Span::styled(glyph.to_string(), style)
 }
 
-/// Resolve the most-severe diagnostic on `line_idx` of the
-/// active buffer. Walks `app.editor.lsp_diagnostics` keyed by the
-/// active URI (looked up via `app.buffer_uri`). Returns `None`
-/// when:
-/// - `lsp-mode` is inactive on the active buffer (M.5.6 gate),
-/// - the active buffer has no URI (unsaved scratch),
+/// Resolve the most-severe diagnostic on `line_idx` of `buffer_id`.
+/// Looks up the buffer's URI (via `app.buffer_uri`) and reads its
+/// per-URI severity from the published diagnostics layer. Returns
+/// `None` when:
+/// - `lsp-mode` is inactive on the buffer (M.5.6 gate),
+/// - the buffer has no URI (unsaved scratch),
 /// - the buffer has no LSP attachment, or
 /// - no diagnostic touches the line.
+///
+/// DR.3: takes `buffer_id` (was the active `_snap`) so inactive panes
+/// resolve their OWN buffer's severity; the active pane passes its
+/// own id (byte-identical).
 pub(crate) fn severity_for_line(
     view: &FrameView<'_>,
-    _snap: &DocumentSnapshot,
+    buffer_id: crate::buffers::BufferId,
     line_idx: u32,
 ) -> Option<DiagnosticSeverity> {
     // Slice 3c.extension.fold-rs: gate on cached
@@ -5097,7 +5025,7 @@ pub(crate) fn severity_for_line(
         return None;
     }
     let app = view.app;
-    let uri = app.buffer_uri(app.ad().document_buffer_id)?;
+    let uri = app.buffer_uri(buffer_id)?;
     // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
     // `RenderState` contract instead of `editor.lsp_diagnostics`
     // directly. This is the proof-of-life migration that
@@ -5109,13 +5037,17 @@ pub(crate) fn severity_for_line(
     rs.diagnostics.layer.line_severity(&uri, line_idx)
 }
 
-/// Diagnostics that overlap `line_idx` of the active buffer.
-/// Used by the inline-underline overlay. Gated on `lsp-mode`
-/// (M.5.6); the diagnostics layer keeps storing data when the
-/// mode is off, but the renderer pretends none exist.
+/// Diagnostics that overlap `line_idx` of `buffer_id`. Used by the
+/// inline-underline overlay. Gated on `lsp-mode` (M.5.6); the
+/// diagnostics layer keeps storing data when the mode is off, but
+/// the renderer pretends none exist.
+///
+/// DR.3: takes `buffer_id` (was the active `_snap`) so inactive panes
+/// underline their OWN buffer's diagnostics; the active pane passes
+/// its own id (byte-identical).
 pub(crate) fn diagnostics_on_line(
     view: &FrameView<'_>,
-    _snap: &DocumentSnapshot,
+    buffer_id: crate::buffers::BufferId,
     line_idx: u32,
 ) -> Vec<LspDiagnostic> {
     // Slice 3c.extension.fold-rs: gate on the cached
@@ -5126,7 +5058,7 @@ pub(crate) fn diagnostics_on_line(
         return Vec::new();
     }
     let app = view.app;
-    let Some(uri) = app.buffer_uri(app.ad().document_buffer_id) else {
+    let Some(uri) = app.buffer_uri(buffer_id) else {
         return Vec::new();
     };
     // Slice 3c.final.B.8: read via the already-published
@@ -6985,6 +6917,123 @@ mod tests {
         // verify the line still contains the original text after overlay.
         assert!(dump.contains("hello"));
         assert!(dump.contains("world"));
+    }
+
+    // --- DR.3 characterization: active-pane compose byte-identity ---
+
+    /// Serialise every span of every line to a stable
+    /// `text/fg/bg/modifier` fingerprint. Used to pin the active-pane
+    /// compose output across the DR.3 render-path merge: the merge
+    /// parameterizes one path over `(buffer, interaction|None,
+    /// opacity)`, and the active pane must come out pixel-identical.
+    fn compose_fingerprint(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "{:?}/{:?}/{:?}/{:?}",
+                            s.content.as_ref(),
+                            s.style.fg,
+                            s.style.bg,
+                            s.style.add_modifier
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn dr3_active_pane_compose_characterization() {
+        // DR.3: pins the active-pane overlay stack (syntax spans,
+        // gutter, line-number column, cursor-line bg, visual
+        // selection, hlsearch, current-match) byte-identical through
+        // the render-path merge. LSP-decoration sourcing (semantic,
+        // diagnostics) is provably id-equivalent for the active pane
+        // — `ctx.buffer_id == app.ad().document_buffer_id` — so it is
+        // not injected here; the existing LSP overlay tests cover it.
+        let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
+        app.toggle_mode_by_name("current-line-highlight-mode");
+        // Visual selection on line 1 (cols 4..=6), hlsearch + current
+        // match on line 2 (cols 4..7) — exercises every active-only
+        // overlay branch in one scene.
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Charwise));
+        let sel = Selection {
+            anchor: pos(1, 4),
+            head: pos(1, 6),
+            visual: Some(VisualMode::Charwise),
+        };
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
+        app.editor.current_match = Some(ProtoRange::new(pos(2, 4), pos(2, 7)));
+        app.editor.all_matches = vec![ProtoRange::new(pos(2, 4), pos(2, 7))];
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
+        let fp = compose_fingerprint(&lines);
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/Some(White)/Some(Blue)/BOLD|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/Some(Black)/Some(Yellow)/BOLD|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
+        assert_eq!(fp, expected, "active-pane compose output changed");
+    }
+
+    #[test]
+    fn dr3_inactive_pane_drops_interaction_and_dims_decorations() {
+        // DR.3: the SAME scene as the active characterization, but
+        // composed through `compose_pane_lines` with `is_active:
+        // false`. Interaction overlays (visual selection, current
+        // match, cursor-line bg) must be GONE; buffer-intrinsic
+        // decorations (syntax here) must REMAIN, dimmed by the theme's
+        // `inactive_pane_overlay` (default DIM). This is the
+        // decoration-vs-interaction split the merge encodes.
+        let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
+        app.toggle_mode_by_name("current-line-highlight-mode");
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Charwise));
+        let sel = Selection {
+            anchor: pos(1, 4),
+            head: pos(1, 6),
+            visual: Some(VisualMode::Charwise),
+        };
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
+        app.editor.current_match = Some(ProtoRange::new(pos(2, 4), pos(2, 7)));
+        app.editor.all_matches = vec![ProtoRange::new(pos(2, 4), pos(2, 7))];
+        app.editor.publish_render_state();
+
+        let view = FrameView::for_buffer(&app, app.ad().document_buffer_id);
+        let ctx = PaneComposeCtx {
+            is_active: false,
+            pane_id: app.panes().tree.active().id,
+            buffer_id: app.ad().document_buffer_id,
+            cursor_line: app.ad().cursor.line,
+            scroll: app.ad().scroll,
+            display_line_numbers: app.ad().display_line_numbers.clone(),
+        };
+        let lines = compose_pane_lines(&view, &app.ad().snapshot.clone(), 6, 40, &ctx);
+        let spans: Vec<&Span<'static>> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+
+        // Interaction state is gone on the inactive pane.
+        assert!(
+            spans.iter().all(|s| s.style.bg != Some(Color::Blue)),
+            "visual selection leaked onto inactive pane",
+        );
+        assert!(
+            spans.iter().all(|s| s.style.bg != Some(Color::Yellow)),
+            "current-match leaked onto inactive pane",
+        );
+        assert!(
+            spans.iter().all(|s| s.style.bg != Some(Color::Indexed(236))),
+            "cursor-line leaked onto inactive pane",
+        );
+        // Decorations retained + dimmed: the syntax-coloured body span
+        // keeps its fg and gains the DIM overlay.
+        assert!(
+            spans.iter().any(|s| s.style.fg == Some(Color::Rgb(205, 214, 244))
+                && s.style.add_modifier.contains(Modifier::DIM)),
+            "inactive pane lost its dimmed syntax decoration: {lines:?}",
+        );
     }
 
     // --- Heading-preserved fold render -------------------------

@@ -18,11 +18,11 @@ the cursor, the visual selection, the current search match, the
 cursor-line background. Everything else a pane shows is a property of
 its buffer and survives focus changes untouched.
 
-## Problem (verified 2026-06-05)
+## Problem (resolved 2026-06-05, DR.1–DR.3)
 
-Today, active and inactive panes run **different decoration
-machinery**, and the inactive machinery produces a *lesser* set and
-throws work away:
+The original state had active and inactive panes running **different
+decoration machinery**, with the inactive machinery producing a *lesser*
+set and throwing work away. All five issues below are closed:
 
 - **Two syntax producers.** The active pane reads the live
   `visible_highlights` cell (continuously maintained) plus the

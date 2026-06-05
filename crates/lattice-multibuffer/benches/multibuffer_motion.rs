@@ -3,7 +3,7 @@
 //! Pure-helper latency for the four motions registered in
 //! `lattice-multibuffer::motions`. CI gate per
 //! `multibuffer-views.md` §7: ≤ 10µs at 50 excerpts (motion is
-//! per-keystroke; well under the 8ms / 120Hz frame budget).
+//! per-keystroke; well under the one-frame ceiling, 8.3 ms at 120Hz).
 //!
 //! The motion handlers themselves wrap these helpers with
 //! `MultibufferRegistry::handle(buffer_id)` (an `RwLock::read` +

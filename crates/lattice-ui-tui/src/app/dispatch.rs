@@ -668,11 +668,11 @@ impl App {
         // `run_tick_pending` is the host aggregator that polls
         // ~30 channels for async results -- on a busy frame
         // (file open) it can take 49ms, which is 6x over the
-        // 8ms-at-120Hz keystroke-to-glyph budget. Running it
+        // one-frame ceiling (8.3 ms at 120Hz). Running it
         // here makes that cost happen during the keystroke that
-        // caused the work (the open), where 8ms is not the
-        // budget; subsequent frames see only what the dispatch
-        // tail published.
+        // caused the work (the open) -- the one frame where the
+        // ceiling doesn't apply; subsequent frames see only what
+        // the dispatch tail published.
         //
         // Recursive `apply` calls (next_actions) drain again --
         // cheap because the prior call already emptied the

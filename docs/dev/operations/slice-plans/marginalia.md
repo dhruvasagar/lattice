@@ -57,7 +57,7 @@ Acceptance: GPUI cmdline-completion popup shows the same color-coded annotations
 
 Bench landed at `crates/lattice-completion/benches/annotation_pipeline.rs`; numbers captured in `docs/dev/operations/benchmarks.md` "MARG.4 — annotation pipeline benches (2026-06-03)". Three measurements:
 
-- `annotate_pipeline_1000_3stage` — full pipeline (kind + doc + keybinding) on 1000 candidates. Median ~167 µs on dev box; ~10% of 8 ms keystroke-to-glyph budget at 5× hardware scaling.
+- `annotate_pipeline_1000_3stage` — full pipeline (kind + doc + keybinding) on 1000 candidates. Median ~167 µs on dev box; ~10% of the one-frame keystroke-to-glyph ceiling (8.3 ms at 120 Hz) at 5× hardware scaling.
 - `keybinding_annotator_1000` — keybinding-only, ~59 µs (HashMap probe + Vec clone). Isolates the reverse-cache cost so regressions surface here without pipeline noise.
 - `annotation_display_text/*` — per-variant format cost. String variants ~1.5 ns (Cow::Borrowed). Keybinding ~28.7 ns (allocates a String via fmt::Write).
 

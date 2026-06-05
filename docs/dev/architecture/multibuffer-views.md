@@ -314,7 +314,7 @@ Negligible against:
 - The actor mpsc round-trip on writes (~few µs).
 - The per-frame snapshot Arc-load (~17 ns, ~2 ns through
   the per-thread cache).
-- The 8 ms / 120 Hz frame budget.
+- The one-frame ceiling (8.3 ms at 120 Hz).
 
 The `PublishedSnapshot` machinery and the `SnapshotCache`
 optimisation (~17 ns → ~2 ns for thread-local repeat reads)

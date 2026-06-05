@@ -1684,7 +1684,7 @@ into the same drain path the sync sources use.
 | `completionItem/resolve` round-trip | bounded by LSP latency | non-blocking; drain + re-render |
 
 These line up with the editor's overall keystroke-to-glyph
-budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
+ceiling (one frame: 8.3 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 
 ---
 

@@ -930,7 +930,7 @@ impl GpuiApp {
         // `run_tick_pending` is the host aggregator that polls
         // ~30 channels for async results -- on a busy frame
         // (file open) it can take 49ms, which is 6x over the
-        // 8ms-at-120Hz keystroke-to-glyph budget. Running it
+        // one-frame ceiling (8.3 ms at 120Hz). Running it
         // here makes that cost happen during the keystroke that
         // caused the work (the open) instead of on the next
         // paint after open. The post-X1 perf trace expects

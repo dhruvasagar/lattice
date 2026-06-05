@@ -9,9 +9,9 @@
 //! decoration column-remapping that runs on the renderer thread
 //! before any `shape_line` call.
 //!
-//! Target: at 120Hz the per-frame budget is 8 ms. The editor-
+//! Target: at 120Hz the per-frame ceiling is 8.3 ms. The editor-
 //! side per-row work below should fit ~hundreds of rows inside
-//! ~1 ms so the remaining 7 ms covers shaping + paint + tail.
+//! ~1 ms so the remaining ~7 ms covers shaping + paint + tail.
 //! Run:
 //!
 //!   cargo bench -p lattice-ui-gpui \

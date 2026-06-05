@@ -52,8 +52,8 @@ The primitive must satisfy three invariants:
 > render / motion / scroll on `BufferKind`. -- saved feedback
 > `feedback_buffers_no_special_case.md`
 
-> Sub-frame input latency: keystroke -> glyph <= 8ms at
-> 120Hz. -- Paramount goal #1
+> Sub-frame input latency: keystroke -> glyph within the
+> one-frame ceiling (<= 8.3 ms at 120Hz). -- Paramount goal #1
 
 The first two say virtual rows must NOT change the document /
 buffer model — they ride alongside, not inside. The third says

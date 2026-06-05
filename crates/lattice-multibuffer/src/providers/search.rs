@@ -975,7 +975,7 @@ async fn run_scan(
     // synchronous blocking calls with no `.await` between
     // syscalls — a `yield_now().await` per file is not nearly
     // enough to keep the actor's command loop responsive
-    // (paramount-goal-1: keystroke → glyph ≤ 8 ms).
+    // (paramount-goal-1: keystroke → glyph within the one-frame ceiling, ≤ 8.3 ms at 120 Hz).
     //
     // Architectural relocation per `feedback_no_ui_thread_work`:
     // wrap the entire walk + match + publish loop in

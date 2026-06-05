@@ -178,7 +178,7 @@ The merge is one pass — O(P + O + F) where P is the primary
 result size, O is the union of overlay result sizes, F is
 the previous `self.folds` size. At expected scales
 (P ≤ 200, O ≤ 100, F ≤ 300) the recompute fits inside the
-8 ms keystroke budget; bench gate enforces this.
+one-frame keystroke ceiling (8.3 ms at 120 Hz); bench gate enforces this.
 
 ## 5. Composition rules
 

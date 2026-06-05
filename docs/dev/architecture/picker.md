@@ -549,7 +549,7 @@ Each surfaces in `:customize` via the typed-option machinery
 
 ## 7. Performance budget
 
-Per-keystroke (target sub-frame, < 8ms at 120Hz):
+Per-keystroke (target sub-frame, < 8.3 ms at 120Hz):
 
 | Stage | Bound |
 |---|---|

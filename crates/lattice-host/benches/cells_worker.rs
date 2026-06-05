@@ -35,9 +35,10 @@
 //!
 //!   cargo bench -p lattice-host --bench cells_worker
 //!
-//! Backs paramount goal #1 (sub-8ms keystroke→glyph at 120Hz):
-//! `incremental_build` is the per-keystroke cost that has to
-//! fit comfortably inside the budget alongside the paint pass.
+//! Backs paramount goal #1 (imperceptible keystroke→glyph, within
+//! the one-frame ceiling -- 8.3 ms at 120Hz): `incremental_build` is
+//! the per-keystroke cost that has to fit comfortably inside the
+//! ceiling alongside the paint pass.
 
 use std::sync::Arc;
 
@@ -443,7 +444,7 @@ fn bench_windowed_build(c: &mut Criterion) {
 /// B2.3 (2026-06-04): the synchronous edit-path cost the ACTOR pays in the
 /// publish tail (`sync_rebuild_pane_on_edit`) on every keystroke, BEFORE it
 /// replies to the UI thread — so this latency is directly on the
-/// keystroke→glyph budget (paramount goal #1: ≤ 8ms at 120Hz).
+/// keystroke→glyph ceiling (paramount goal #1: ≤ 8.3 ms at 120Hz).
 ///
 /// The sync path does ONLY the windowed incremental `DisplayMatrix` rebuild
 /// with highlight forced off: prefix/suffix `DisplayLine` (whole-doc) or

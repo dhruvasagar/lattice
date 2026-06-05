@@ -30,10 +30,11 @@
 //!
 //!   cargo bench -p lattice-host --bench pane_group
 //!
-//! Backs paramount goal #1 (sub-8ms keystroke→glyph at 120Hz):
-//! the propagation tail runs on every publish, so its no-group
-//! floor + identity-bound cost both have to fit inside the
-//! budget alongside cells / virtual-rows / highlights rebuilds.
+//! Backs paramount goal #1 (imperceptible keystroke→glyph, within
+//! the one-frame ceiling -- 8.3 ms at 120Hz): the propagation tail
+//! runs on every publish, so its no-group floor + identity-bound
+//! cost both have to fit inside the ceiling alongside cells /
+//! virtual-rows / highlights rebuilds.
 
 use std::sync::Arc;
 

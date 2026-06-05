@@ -84,9 +84,9 @@ TUI `criterion`):
 - `dispatch_translate_full_two_chord`: full `translate()`
   round-trip through the production-shape handle.
 
-The 8 ms-at-120 Hz budget has ~7.99 ms of headroom; the
+The one-frame ceiling (8.3 ms at 120 Hz) leaves ~8.3 ms of headroom; the
 keystroke path consumes single-digit microseconds end to
-end. Well within budget.
+end. Well within the ceiling.
 
 **Open performance gap — K.1.c minor-mode composite fold.**
 
@@ -107,8 +107,8 @@ analytical estimate (one merge_overlay × N minors) put the
 | `keymap_handle_lookup_empty_minors_with_layers_registered` | **36.4 ns** | Fast-path: 3 minors registered, active=[] |
 
 The worst realistic case (3 minors × 3-chord) lands at
-**1.18 µs / keystroke** — 99.985% under the 8 ms-at-120 Hz
-frame budget. The fast-path branch (empty `active_modes`)
+**1.18 µs / keystroke** — 99.986% under the one-frame ceiling
+(8.3 ms at 120 Hz). The fast-path branch (empty `active_modes`)
 holds at ~36 ns even with three minor layers registered,
 proving the `if active_modes.is_empty()` short-circuit in
 `lookup_with_context` does its job: registered-but-inactive

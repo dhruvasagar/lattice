@@ -208,7 +208,7 @@ CLAUDE.md goal #1 (performance) and goal #2 (extensibility) compete on every sub
 
 > **Fast path stays in core. Configuration / orchestration / authoring goes to plugins. The trait surface between them is the extensibility seam.**
 
-The WASM Component Model boundary has real cost (typed-call p99 budget < 500ns; round-trip < 5μs per §5.5). Anything that fires per-keystroke or holds keystroke-hot-path state pays that cost on every input event, and even with batching it accumulates against the 8ms-at-120Hz / 16ms-at-60Hz keystroke-to-glyph budget. We earn extensibility *around* those subsystems via traits, not *inside* them via WASM dispatch.
+The WASM Component Model boundary has real cost (typed-call p99 budget < 500ns; round-trip < 5μs per §5.5). Anything that fires per-keystroke or holds keystroke-hot-path state pays that cost on every input event, and even with batching it accumulates against the one-frame keystroke-to-glyph ceiling (8.3 ms at 120 Hz, 16 ms at 60 Hz). We earn extensibility *around* those subsystems via traits, not *inside* them via WASM dispatch.
 
 Concretely:
 
@@ -1320,7 +1320,7 @@ Lattice's "everything is a buffer" model means the active pane *is* the cursor-c
 **Decision posture.** No commitment to adopt cx.notify()-shaped reactive publication. The substrate (§5.7.2 + §5.7.3) is already reactive in the load-bearing sense; further paint-side savings are an *open* question, gated on bench data:
 
 1. Land Slice 3c (`Editor` on its own thread). Sub-states fully populated.
-2. Bench: where is the renderer thread actually spending its 8 ms budget? On what kinds of frames?
+2. Bench: where is the renderer thread actually spending its one frame (8.3 ms at 120 Hz)? On what kinds of frames?
 3. *If* the data shows redundant per-frame paint work, evaluate the alternatives in order of complexity — input-keyed pane cache first (simplest), syntax/atlas caching second, sub-state dirty bits with renderer-side `Arc::ptr_eq` only if the simpler shapes don't close the gap.
 
 This is heuristic #2 in action: evaluate against the paramount goals, not against other editors. Zed has reactive paint; that's data, not justification.

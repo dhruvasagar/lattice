@@ -2,7 +2,7 @@
 //!
 //! Three workloads back the §6.5 / `fold-architecture.md`
 //! claims that the registry indirection + hunk-overlay
-//! emission stays well inside the 8 ms keystroke budget at
+//! emission stays well inside the one-frame keystroke→glyph ceiling (8.3 ms at 120 Hz) at
 //! the v1 expected scales (N hunks ≤ 100 typical, ≤ 1000
 //! pathological).
 //!

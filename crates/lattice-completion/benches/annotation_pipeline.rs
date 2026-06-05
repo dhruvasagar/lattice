@@ -24,7 +24,7 @@
 //! - `annotate_pipeline_1000_3stage`: full pipeline (kind +
 //!   doc + keybinding) on 1000 candidates. Target < 200 µs
 //!   on the dev box so 5× slower user hardware lands under
-//!   the 8 ms frame budget with plenty of headroom.
+//!   the one-frame ceiling (8.3 ms at 120 Hz) with plenty of headroom.
 //! - `keybinding_annotator_1000`: keybinding annotator only,
 //!   1000 candidates. Isolates the reverse-cache lookup
 //!   cost so reverse-cache regressions surface here without

@@ -80,7 +80,7 @@ canonical `DisplayMatrix` **synchronously in the publish tail**
 (`sync_rebuild_pane_on_edit`) BEFORE replying to the UI thread, so
 `version.text` never lags the snapshot — that lag was the per-keystroke
 whole-viewport stale-guard flicker. This latency sits directly on the
-keystroke→glyph budget (§8.2: ≤ 8 ms at 120 Hz), so it has a hard bound.
+keystroke→glyph ceiling (§8.2: one frame ≤ 8.3 ms at 120 Hz), so it has a hard bound.
 
 New bench `display_edit_path` — times `sync_rebuild_pane_on_edit` for an
 in-place single-line edit at the middle of the document, across whole-doc
@@ -170,10 +170,10 @@ paramount-#1.
 pipeline on 1000 candidates uses ~167 µs on the dev box.
 Applying the hardware-caveat 5× headroom for typical
 ultrabook hardware, the user-facing cost is ~835 µs —
-~10% of the 8 ms keystroke-to-glyph budget at 120 Hz. That
-leaves ~7.2 ms for the rest of the frame (cell-grid build,
+~10% of the one-frame keystroke-to-glyph ceiling (8.3 ms at 120 Hz). That
+leaves ~7.5 ms for the rest of the frame (cell-grid build,
 text shaping, GPU draw), which is the desired profile:
-annotators are a minor cost, not a budget-eater. Any future
+annotators are a minor cost, not a frame-eater. Any future
 change that pushes the 1000-candidate case past ~300 µs on
 the dev box (or ~1.5 ms after 5× scaling) should be
 reviewed against the §8.2 commitment.
@@ -245,7 +245,7 @@ the geometry walk that dominates at large excerpt counts.
 |---|---|---|
 | `next_excerpt_start/50` | ~80 ns | CI-relevant size; well under per-keystroke budget |
 | `next_excerpt_start/500` | ~870 ns | |
-| `next_excerpt_start/5000` | ~7.9 µs | Stress shape; still 1000× under 8 ms frame budget |
+| `next_excerpt_start/5000` | ~7.9 µs | Stress shape; still 1000× under the 8.3 ms one-frame ceiling |
 | `prev_excerpt_start/50` | ~80 ns | Symmetric |
 | `prev_excerpt_start/500` | ~850 ns | |
 | `prev_excerpt_start/5000` | ~8.0 µs | |
@@ -261,8 +261,8 @@ excerpt count — the prefix-sum walk dominates. `]E` / `[E`
 include the boundary-list scan (one extra O(N) pass). At the
 M.2 architecture-§7 CI-gate size (50 excerpts), all four
 motions land sub-µs. At 5k excerpts (well past any realistic
-single-view size), the worst case is ~12 µs — still 600× under
-the 8 ms 120 Hz frame budget. Any future change that pushes the
+single-view size), the worst case is ~12 µs — still ~690× under
+the 8.3 ms one-frame ceiling at 120 Hz. Any future change that pushes the
 50-excerpt case past ~5 µs should be reviewed.
 
 ### View construction + translation rebuild
@@ -1100,9 +1100,9 @@ that those two slices put on the per-keystroke fold-recompute path
 so a future regression on either the registry indirection or the
 per-hunk emission shape surfaces immediately.
 
-| Workload                           | n=0      | n=10     | n=100    | n=1000   | Vs. 8 ms keystroke budget          |
+| Workload                           | n=0      | n=10     | n=100    | n=1000   | Vs. 8.3 ms one-frame ceiling          |
 |------------------------------------|----------|----------|----------|----------|-----------------------------------|
-| `overlay_only_at_n_hunks`          | 95 ns    | 275 ns   | 3.1 µs   | 144 µs   | 1000-hunk case: 55× headroom      |
+| `overlay_only_at_n_hunks`          | 95 ns    | 275 ns   | 3.1 µs   | 144 µs   | 1000-hunk case: 57× headroom      |
 | `hunk_provider_compute_pure`       | 1.9 ns   | 138 ns   | 1.3 µs   | 12.4 µs  | provider floor; integration adds ~15× through carry-over |
 | `fold_identity_hash`               | —        | —        | —        | —        | 11.5 ns / hash (DefaultHasher, salted "diff:hunk")        |
 
@@ -1393,7 +1393,7 @@ write; `bonus_of` is the frecency math kernel.
 |----------------------------------------|--------------|----------------|-----------------------------------------------------------------------------------------------------------------------------|
 | `picker::open_inline/100`              | **26.4 µs**  | ~25 µs / <500 µs   | Build candidates + bonus snapshot + single-pass seat. Buffer-switcher scale.                                                |
 | `picker::open_inline/500`              | **120.0 µs** | ~120 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
-| `picker::open_inline/5000`             | **1.43 ms**  | ~1.4 ms / <8 ms    | **−49% vs prior baseline (2.80 ms)** -- the single-pass seat collapsing the prior double-refilter (commit 1b095ae) lit up here. Worst-case file-picker walker output (5000 candidates). |
+| `picker::open_inline/5000`             | **1.43 ms**  | ~1.4 ms / <8.3 ms    | **−49% vs prior baseline (2.80 ms)** -- the single-pass seat collapsing the prior double-refilter (commit 1b095ae) lit up here. Worst-case file-picker walker output (5000 candidates). |
 | `picker::refilter/n=500,query=""`      | **52.3 µs**  | ~50 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
 | `picker::refilter/n=500,query="f"`     | **99.3 µs**  | ~100 µs / <500 µs  | Single-char substring filter -- the match-range walk dominates over the trivial empty-query bypass.                          |
 | `picker::refilter/n=500,query="file_"` | **122.9 µs** | ~120 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
@@ -1506,9 +1506,9 @@ moments that matter:
 
 - **UI thread** (`lsp_edit_publish_three_subs`): publishing
   one event must stay deep in microseconds even with several
-  attached actors. The §8.2 keystroke-to-glyph budget is 8 ms;
+  attached actors. The §8.2 keystroke-to-glyph ceiling is one frame, 8.3 ms;
   budgeting <50 µs for "tell the LSP layer" leaves >99% of
-  the budget for the rest of the path. **1.9 µs ≪ 50 µs.**
+  the frame for the rest of the path. **1.9 µs ≪ 50 µs.**
 - **Propagation** (`lsp_edit_propagation_publish_to_recv`):
   bus → fan-in receive hop. Sub-microsecond means the actor
   sees the event in the same tick the publish completes;
@@ -1559,7 +1559,7 @@ startup catalog enumeration).
 | `dispatch_translate_full_operator_motion`   | **101ns**  | ~100ns / <300ns| Hot path. Full `translate()` for `dw` -- partial_chord `[d]`, event `w`. Operator-motion variant of the above; latches op_count via the `AbsorbOperatorPrefix` flow that 8.i.4.c rebuilt, then resolves to a motion `Action::Invoke`. Slice 8.i.4.h.                                                                                                                                              |
 | `keymap_handle_lookup_with_one_minor`       | **980ns**  | ~1µs / <3µs    | K.1.c hot path with 1 active minor mode (review R1, 2026-06-02). Single-chord lookup pays `ArcSwap::load × 2` + `KeymapTrie::merge_over × 2` (always_on base + 1 minor overlay) + trie walk. ~22× the no-minor `keymap_handle_lookup_single` row -- the entire delta is the composite-fold work the K.1.c slow path does on every keystroke when any minor mode is active.                |
 | `keymap_handle_lookup_with_two_minors`      | **1.07µs** | ~1.1µs / <3µs  | K.1.c hot path with 2 active minors. One extra `merge_over` over the 1-minor row; the slope holds at ~50ns per additional minor merge.                                                                                                                                                                                                                                                              |
-| `keymap_handle_lookup_with_three_minors_three_chord` | **1.18µs** | ~1.2µs / <5µs | K.1.c hot path worst realistic case: 3 active minors × 3-chord lookup (`diw`). Three composite merges + a 3-descent trie walk. **Combined with `keychord_from_event` (~2 ns) the full keystroke path at 3 active minors is ~1.2 µs vs. the 8 ms-at-120 Hz frame budget — 99.985% headroom.** If this row regresses past ~10 µs the K.1.c memoized-composite-cache follow-up (review R4) becomes load-bearing. |
+| `keymap_handle_lookup_with_three_minors_three_chord` | **1.18µs** | ~1.2µs / <5µs | K.1.c hot path worst realistic case: 3 active minors × 3-chord lookup (`diw`). Three composite merges + a 3-descent trie walk. **Combined with `keychord_from_event` (~2 ns) the full keystroke path at 3 active minors is ~1.2 µs vs. the one-frame ceiling (8.3 ms at 120 Hz) — 99.986% headroom.** If this row regresses past ~10 µs the K.1.c memoized-composite-cache follow-up (review R4) becomes load-bearing. |
 | `keymap_handle_lookup_empty_minors_with_layers_registered` | **36.4ns** | ~35ns / <80ns  | K.1.c fast path: 3 minor layers registered but `active_modes = []`. Confirms the `if active_modes.is_empty()` branch in `lookup_with_context` bypasses the composite fold; lands at the same ~36ns ballpark as `keymap_handle_lookup_single`, proving registered-but-inactive minors don't tax buffers that don't use them. |
 
 ### Why these targets
@@ -1605,7 +1605,7 @@ shape introduces don't measurably hurt the hot path.
 ## Cell-grid renderer (`crates/lattice-host/benches/cells_worker.rs`)
 
 Anchor: `../architecture/cell-grid-renderer.md` (S5 bench
-harness) + paramount goal #1 (≤8ms keystroke→glyph at 120Hz).
+harness) + paramount goal #1 (one frame: ≤8.3 ms keystroke→glyph at 120Hz).
 
 Measures `lattice_host::cells_worker::recompute` — the cells
 worker's entrypoint — across three workloads at three line
@@ -1625,7 +1625,7 @@ counts. Viewport height fixed at 60 (chunked-mode threshold:
   expected behaviour from `MatrixVersion::differs_from`.
 - `incremental_build` is what fires on every keystroke. The
   5000-line cost (~103 µs) is well under any reasonable
-  fraction of the 8 ms keystroke→glyph budget; the chunk
+  fraction of the one-frame keystroke→glyph ceiling (8.3 ms at 120 Hz); the chunk
   rebuild + suffix shift scales sub-linearly because only the
   edit zone rebuilds, not the whole document.
 - `full_build` is the cold path (boot frame, buffer switch).

@@ -8,7 +8,7 @@
 //! is visible as a perf-budget breach, not just a binary
 //! test failure.
 //!
-//! Paramount-goal-1 says keystroke → glyph ≤ 8 ms at 120 Hz.
+//! Paramount-goal-1 says keystroke → glyph within the one-frame ceiling (≤ 8.3 ms at 120 Hz).
 //! The probe gap measured here is the worst-case latency a
 //! command queued on the actor's `cmd_rx` would experience
 //! at the runtime layer (does not include actor processing

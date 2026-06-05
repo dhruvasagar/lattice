@@ -11,7 +11,7 @@
 //! Divs per pane per frame is the dominant cost: `paint_us` in the
 //! 1300-3000µs band at 60Hz, 85-95% of frame time, downstream of
 //! GPUI's flex layout + composition pass. Paramount goal #1
-//! (sub-frame input latency: keystroke -> glyph <= 8ms at 120Hz)
+//! (sub-frame input latency: keystroke -> glyph within the one-frame ceiling, <= 8.3 ms at 120Hz)
 //! cannot be met while the element tree has that fan-out.
 //!
 //! This element collapses the entire pane body into ONE element-tree

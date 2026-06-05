@@ -748,7 +748,7 @@ actor; auto-restart + `didOpen` replay lands in 4.4.
 ## 11. Edit-path architecture
 
 The hot edit path is the architecture's tightest constraint:
-the UI thread must commit a keystroke in <8 ms p99 (design.md
+the UI thread must commit a keystroke within one frame, <8.3 ms p99 (design.md
 §8). LSP synchronisation cannot show up on that critical
 path. The pipeline below keeps it off entirely.
 

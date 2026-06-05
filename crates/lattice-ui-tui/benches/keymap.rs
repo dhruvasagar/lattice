@@ -545,7 +545,7 @@ fn dispatch_translate_full_operator_motion(c: &mut Criterion) {
 // fixed baseline. Budget target: end-to-end keystroke
 // (`KeyEvent → KeyChord → lookup_with_context → Action`)
 // stays under 100 µs at 3 active minors / 3-chord depth so
-// the 8 ms-at-120 Hz frame budget retains its 99% headroom.
+// the one-frame ceiling (8.3 ms at 120 Hz) retains its 99% headroom.
 // ---------------------------------------------------------------
 
 /// Add `n` distinct synthetic minor-mode keymap layers to `h`.

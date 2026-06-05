@@ -7,17 +7,19 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 non-blocking, multi-threaded core where the UI thread does no I/O, no parsing,
 and no shaping.
 
-> **Status:** Pre-1.0 / heavy development. Phases 0–4 of the design roadmap
-> are landed (foundation, modal engine, terminal UI, tree-sitter, LSP);
-> **Phase 5 (GPU rendering + architectural asynchrony enforcement) is structurally complete** —
-> the Editor now runs on its own dedicated thread, the `&mut Editor` type
-> cannot escape that thread in production builds (compile-time enforced
-> via the `EditorActorHandle` swap, slice `3c.final.E.swap`), and both
-> TUI and GPUI peers are editable against a live LSP backend
-> (rust-analyzer tested). Outstanding Phase 5 work is perf-driven: queued
-> RenderState lifts in
-> [`docs/dev/operations/3c-final-b-extension.md`](docs/dev/operations/3c-final-b-extension.md).
-> The WASM plugin host arrives in Phase 7. See
+> **Status:** Pre-1.0 / heavy development. Phases 0–3 are complete; Phase 4
+> (LSP) is in wind-down (~90% shipped, 3 trigger-UX items deferred);
+> **Phase 5 (GPU rendering + architectural asynchrony) is architecturally
+> complete** — the Editor runs on its own dedicated thread with
+> `&mut Editor` escape compile-time impossible (`EditorActorHandle`), both
+> TUI and GPUI peers edit against a live rust-analyzer backend, and
+> Phase 5.8 GPUI feature-parity work is the active frontier. Recent
+> cross-cutting improvements: O(viewport) incremental highlight + cell
+> build (flat to 100k lines), soft-wrap on both renderers, event-driven
+> TUI loop (100ms poll retired), decoration retention across focus changes
+> (inactive panes keep full syntax/inlay/diagnostic set), multibuffer
+> excerpt display, and a diff foundation. The WASM plugin host arrives
+> in Phase 7. See
 > [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
 > for the per-feature ledger.
 
@@ -138,9 +140,13 @@ flowchart TD
 | `lattice-file-tree`    | File-tree buffer kind + per-buffer state types.                                                          | ✅ stable   |
 | `lattice-oil`          | Oil-style directory buffer kind + state types.                                                           | ✅ stable   |
 | `lattice-lsp`          | LSP client: actor pool, capability fingerprinting, diagnostics layer, supervisor, watcher subscriptions. | ✅ stable   |
-| `lattice-host`         | Renderer-agnostic substrate. Owns `Editor`, dispatch, mode lifecycle, options cascade, `RenderState`, `PerBufferCache`, LSP watcher task. | ✅ stable   |
-| `lattice-ui-tui`       | Terminal UI peer: crossterm + ratatui, modal cursor, gutter, hlsearch, command line, popups, picker UI.  | ✅ stable   |
-| `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering, symmetric capability with the TUI peer.          | 🚧 partial parity |
+| `lattice-cells`        | Pure data substrate for the cell-grid renderer: `CellMatrix`, `DisplayMatrix`, `VirtualRow`, display-slice iteration. No I/O, no rendering. | ✅ stable   |
+| `lattice-multibuffer`  | Multibuffer data model, excerpt layout, major mode, motions, header/fold virtual-row providers.          | 🚧 active   |
+| `lattice-diff`         | Two-way and three-way hunk computation over `ropey::Rope` inputs (Histogram algorithm via `imara-diff`). Pure data; no I/O. | 🚧 active   |
+| `lattice-terminal`     | Terminal emulator state machine + cell grid (`alacritty_terminal`). Backs the terminal buffer kind.     | 🚧 active   |
+| `lattice-host`         | Renderer-agnostic substrate. Owns `Editor`, dispatch, mode lifecycle, options cascade, `RenderState`, `PerBufferCache`, LSP watcher task, cells/virtual-rows workers. | ✅ stable   |
+| `lattice-ui-tui`       | Terminal UI peer: crossterm + ratatui, modal cursor, gutter, hlsearch, soft-wrap, command line, popups, picker UI. | ✅ stable   |
+| `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering. Full edit + LSP against rust-analyzer; Phase 5.8 feature-parity in progress. | 🚧 active   |
 | `lattice-cli`          | Binary entry-point. `--tui` / `--gui` flag routes to either peer; tokio multi-thread main.               | ✅ stable   |
 | `lattice-config-macros`| Proc-macro for typed-option / `OptionGroup` registration via `linkme` distributed slices.                | ✅ stable   |
 | `lattice-plugin-host`  | WASM Component Model host. **Planned (Phase 7).**                                                        | ⛔ planned  |
@@ -207,7 +213,7 @@ gtk-update-icon-cache -f /usr/share/icons/hicolor/
 **Run tests**
 
 ```sh
-cargo test --workspace        # ~1784 tests, sub-second
+cargo test --workspace        # ~3748 tests, sub-second
 cargo clippy --workspace      # workspace lints (deny unsafe outside opt-in)
 ```
 
@@ -238,7 +244,8 @@ In the running editor:
 - `:Tree .` (or `:e some-folder`) — open a folder as a file-tree buffer; `<CR>` toggles directories or opens files
 - `:bn` / `:bp` / `:ls` / `:bd` — cycle, list, or close any open buffer (document or tree)
 - `:set foldmethod=indent` — auto-fold indented blocks; `zo` / `zc` to open / close
-- `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay
+- `:set wrap` — enable soft-wrap; long lines reflow at the pane width across both TUI and GPUI
+- `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay (inactive panes keep full syntax + inlay hints; only opacity changes)
 - `:help` — open the topic index; `:help folding` / `:help buffers` for deep-dive docs (`<Tab>` completes)
 
 ---
@@ -287,8 +294,8 @@ flipped `CancellationToken` within ~100 µs).
 | 1     | Modal Editing                          | ✅ done     |
 | 2     | Terminal UI Bootstrap                  | ✅ done     |
 | 3     | Tree-sitter (Rust / Python / JS / MD)  | ✅ done     |
-| 4     | LSP                                    | ✅ done     |
-| 5     | GPU Rendering + architectural async    | ✅ structurally complete (Editor on its own thread via `EditorActorHandle`; goal #4 compile-time enforced). Perf B-extension lifts queued. |
+| 4     | LSP                                    | 🚧 wind-down (~90% shipped; 3 trigger-UX items deferred: `linkedEditingRange`, `inlineValue`, `inlineCompletion`) |
+| 5     | GPU Rendering + architectural async    | 🚧 architecturally complete (Editor on its own thread, compile-time enforced; both peers edit against live LSP). Phase 5.8 GPUI feature-parity is the active frontier. |
 | 6     | Document Renderer + UI Components      | ⛔ planned  |
 | 7     | Plugin Host (WASM Component Model)     | ⛔ planned  |
 | 8     | Major / Minor Modes + Reference Plugins| ⛔ planned  |
@@ -370,16 +377,26 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Tree-sitter highlight emission (Rust / Python / JS / Markdown bundled)
 - [x] Markdown grammar with fenced-code injections (` ```rust``` ` blocks highlight as rust)
 - [x] Markup `Style` variants for headings (1-6), bold / italic, links, raw — themable from day one
-- [ ] GPU compositor (GPUI preferred, wgpu fallback) — Phase 5
-- [ ] `EditorRenderer` + `DocumentRenderer` + `TuiRenderer` trait split — Phase 5/6
+- [x] GPU compositor via GPUI — full edit + LSP parity with TUI on both renderers
+- [x] O(viewport) incremental highlight + cell build (flat to 100k-line files; H-series)
+- [x] Soft-wrap on both renderers: reflow at pane width, wrap-continuation gutter marker, wrapped cursor movement
+- [x] Event-driven TUI loop — 100ms poll replaced by reader-thread + `Wake` channel; idle CPU ≈ 0
+- [x] Decoration retention: inactive panes keep full syntax + inlay hints + diagnostics; focus change = opacity flip only, zero recompute
+- [x] Per-pane `DisplayMatrix` (keyed by `PaneId`): shared produce/consume path for both active and inactive panes
+- [ ] Renderer trait split (`EditorRenderer` / `DocumentRenderer` / `TuiRenderer`) — Phase 5/6
 - [ ] Sprite atlas for icons (file-type, severity, gutter, picker, status) — §5.6.7
 - [ ] Rich-buffer rendering (variable fonts within a single buffer) — Phase 9
 
-**LSP** (DESIGN.md §5.4) — Phase 4
+**LSP** (DESIGN.md §5.4) — Phase 4 (wind-down)
 
-- [ ] Diagnostics, completion, hover, go-to-definition, references
-- [ ] Cancellation (uses the cancellation-token plumbing already in place)
-- [ ] Per-server compatibility shims
+- [x] Diagnostics, completion (Insert-mode + LSP source + docs popup + snippets + ghost text), hover (`K`), go-to-definition family (`gd`/`gD`/`gy`/`gI`), references (`gr`), symbols
+- [x] Signature help, rename + prepareRename, code actions + execute, formatting (range / on-type / format-on-save)
+- [x] Inlay hints, semantic tokens, document highlights, folding ranges, selection ranges
+- [x] Call hierarchy, type hierarchy, document links, code lens, document colors
+- [x] `window/showMessage`, `$/progress` modeline, `:lsp-restart`, dynamic `registerCapability` / `unregisterCapability`
+- [x] Cancellation tokens plumbed through every wrapper; per-server compatibility shims
+- [x] 15 sub-modes toggle individually or via the `lsp-mode` umbrella
+- [ ] `linkedEditingRange` (needs shadow-edit machinery), `inlineValue` (needs DAP), `inlineCompletion` (lsp-types `proposed`) — deferred
 
 **Plugin host** (DESIGN.md §5.5, §9) — Phase 7
 
@@ -390,16 +407,21 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 **Multi-buffer + UI components** (DESIGN.md §5.9) — Phase 6
 
-- [x] **B.1.a** Buffer abstraction + active-buffer routing (help is a regular buffer; `<C-o>` / `<C-i>` walk across buffers)
-- [x] **B.1.b** Pane tree + `<C-w>{s,v,c,h,j,k,l,w,W}` window-management chord grammar (incl. `<C-w><C-l>` form)
-- [x] **B.1.c** Multiple Document buffers + `:bn` / `:bp` / `:ls` / `:bd` / `:b N`
-- [x] **B.1.d** File-tree buffer (`:Tree path`); multiple roots coexist; `:e folder` defers to `:Tree folder`
-- [x] Unified `BufferRegistry`: documents and trees in one keyspace; per-buffer `BufferFlags { listed, hidden }` skeleton
-- [x] Vim-style pane visuals: per-pane status line (active reverse-videoed, inactive dim), `│` separator between vertical splits, inactive panes keep syntax highlighting with `DIM` overlay; all customizable via `:set ui.*`
-- [x] Hover popup scaffolding (`:hover [text]` / `:HoverClose`); LSP-driven hover wiring queues with Phase 4
-- [x] Inline completion popup (vertico-style, wired)
-- [ ] Picker primitive (file picker as first user)
-- [ ] Buffer-backed views: outline, diagnostics-list, scratch, messages, compilation (file-tree shipped)
+- [x] Buffer abstraction + active-buffer routing; `<C-o>` / `<C-i>` walk across buffers
+- [x] Pane tree + `<C-w>{s,v,c,h,j,k,l,w,W}` window-management chord grammar
+- [x] Multiple Document buffers + `:bn` / `:bp` / `:ls` / `:bd` / `:b N`
+- [x] File-tree buffer (`:Tree path`); multiple roots; `:e folder` defers to `:Tree folder`
+- [x] Unified `BufferRegistry`: documents and trees in one keyspace; `BufferFlags { listed, hidden }`
+- [x] Vim-style pane visuals: per-pane status line, `│` separator, inactive dim — all `:set ui.*`
+- [x] Hover popup (LSP `K`); inline completion popup (vertico-style)
+- [x] Multibuffer / excerpt display: `lattice-multibuffer` crate, excerpt layout, virtual-row header providers, composed→source row map, scrolling
+- [x] `*messages*` buffer (synthetic Document, subsystem-owned streaming content)
+- [x] Pane groups (D.4) — foundation for diff side-by-side, `:set scrollbind`, `:windo`
+- [x] Virtual rows + `DisplayMatrix` — above/below-anchored inlays, fold summaries, header rows
+- [x] Diff foundation: two-way and three-way hunk computation; gutter diff signs; side-by-side diff layout (partial)
+- [ ] Picker primitive as standalone buffer (file picker, project grep, diagnostics list — Phase 6)
+- [ ] Oil buffer (directory editing à la vim-oil) — Phase 6
+- [ ] Terminal buffer full PTY (T1 grid + snapshot landed; T2 color/input, T3 persistence — Phase 6)
 
 **CI / engineering** (DESIGN.md §8)
 

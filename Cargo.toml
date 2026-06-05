@@ -223,8 +223,8 @@ opt-level = 1
 # Perf plan F. Targets the GPUI peer's <3 ms idle frame / <6 ms p50
 # keystroke budget by giving LLVM enough whole-program context to
 # devirtualise + inline across crate boundaries, and by stripping the
-# unwind landing pads (paramount goal #1: keystroke -> glyph <= 8 ms
-# at 120 Hz).
+# unwind landing pads (paramount goal #1: imperceptible keystroke ->
+# glyph, within one display frame -- 8.3 ms at 120 Hz).
 #
 # Trade-offs accepted:
 # - `codegen-units = 1` lengthens release link time; we eat it because

@@ -42,9 +42,11 @@ target rather than just a slower number.
 >    hardware can be 5-10× slower. A bench showing 1 µs on
 >    the dev box could be 5-10 µs in the wild.
 >
-> 2. **Paramount goal #1's budgets apply to user hardware,
+> 2. **Paramount goal #1 applies to user hardware,
 >    not the dev box.** The §8.2 commitments (keystroke →
->    glyph ≤ 8 ms at 120 Hz, ≤ 16 ms at 60 Hz; per-call
+>    glyph imperceptible — within one display frame, the
+>    physical ceiling: ≤ 8.3 ms at 120 Hz, ≤ 16 ms at 60 Hz —
+>    and ratcheted down by CI, never regressing; per-call
 >    WASM overhead < 500 ns p99; grammar-extension round-trip
 >    < 5 µs p99) are commitments we make to USERS. A bench
 >    that fits the budget on the dev box but consumes more

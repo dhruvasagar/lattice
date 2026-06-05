@@ -8,16 +8,27 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines vim
 
 ## Paramount goals (in priority order when they conflict)
 
-1. **Performance.** Sub-frame input latency: keystroke -> glyph <= 8ms at 120Hz, <= 16ms at 60Hz. UI thread does no I/O, no parsing, no shaping. Per-call WASM overhead budgeted in CI (typed call < 500ns p99; grammar-extension round-trip < 5us p99).
+1. **Performance.** Keystroke->glyph latency the user **cannot perceive** -- indistinguishable from the terminal/compositor echoing the key itself. *Not a fixed budget* but three examinable parts: **aspiration** -- match-or-beat the best-in-class reference (vim in the TUI, the compositor in GPUI); "best possible", not a line you cross once. **Hard ceiling** -- the glyph lands within **one display frame** under any background load (8.3ms at 120Hz, 16ms at 60Hz; this is display physics, not a target -- below one frame, faster output is imperceptible, so the point is to never *miss* a frame). **Ratchet** -- CI records the measured keystroke->glyph distribution and fails on regression; the bar only moves down, toward the I/O-hardware floor we can't beat. The current number is **descriptive** (≈0.7ms p50 today: TUI, debug build, 2300-line file), never a finish line. UI thread does no I/O, no parsing, no shaping. Per-call WASM overhead budgeted in CI (typed call < 500ns p99; grammar-extension round-trip < 5us p99). See `docs/dev/architecture/input-pipeline.md`.
 2. **Extensibility.** WebAssembly Component Model plugin host from day one. WIT is the canonical API. Plugins ship in any language with component-model toolchain support (Rust, Zig, Go, AssemblyScript, ...). Capability-gated, fuel-limited, crash-isolated.
 3. **Extensible vim modal editing.** Strict vim semantics. The grammar (operators, motions, text objects, registers, ranges, counts) IS the public command API. Adding new motions / text objects / operators is first-class -- including future tree-sitter-driven variants. One deliberate deviation from vim: the `:` command line and the functional API are unified into a single typed `CommandRegistry` with one dispatcher.
 4. **Asynchronicity.** Three-layer architecture (UI / Core / Plugins) communicating via typed message passing. Multi-threaded by construction. Each plugin instance owns its own `wasmtime::Store` and runs as a tokio task; many plugins execute in parallel across cores. Nothing blocks the UI -- enforced architecturally, not by discipline.
+
+## User experience is the higher court
+
+The four paramount goals and the heuristics below are critical, but they are NOT upheld at the cost of user experience. When a goal or heuristic conflicts with a materially worse UX, **UX wins -- within reason**. Architectural purity that produces a visibly bad editor is the wrong trade. The priority order is: **UX > paramount goals > heuristics.**
+
+- Acceptable compromises in service of a goal: **eventual consistency** and the like (e.g. an edited line's syntax colour catching up a frame or two later).
+- Not acceptable: visible flicker, whole-viewport restyle, or any pixel change to content the user did not edit. "Even a 100-year-old editor doesn't do this" is a valid veto.
+- The keystroke UX contract: only the edited line may visibly change per keystroke; everything else stays pixel-stable; the typed character appears immediately (text synchronous; syntax recolour may be eventual).
+- When choosing an architecture, weight "does this make good UX the natural, reliable outcome?" -- a cleaner design that risks NEW visual regressions is the worse UX bet unless the regression risk is controlled by slicing + tests.
+
+See `feedback_ux_over_paramount_goals`.
 
 ## Decision-making heuristics
 
 When the four paramount goals conflict with each other or with an implementation constraint, fall back to these. They came out of the architectural debates that shaped Phase 4 and are meant to keep design judgement consistent across sessions and contributors.
 
-1. **Best long-term fit beats easy implementation.** Ease of coding is not a tiebreaker. If the simpler approach contradicts a paramount goal, the harder one wins. Call the trade-off out in prose, don't smuggle it.
+1. **Best long-term fit beats easy implementation -- decided on merit.** Ease of coding is not a tiebreaker. Choose the genuinely-better long-term design (performance, correctness, clean abstraction); when it is clearly better, pick it even if the rewrite is large. Two equal-and-opposite failures to avoid: (a) keeping an inferior primitive out of risk-aversion -- "it works / it's well-tested / the rewrite is big" is NOT a sufficient reason; (b) rewriting or abstracting for its own sake without a concrete merit win. "Doesn't strictly violate a paramount goal" is not licence to keep the inferior design. Name the specific technical advantage; call the trade-off out in prose, don't smuggle it. See `feedback_long_term_design_over_quick_fix`.
 2. **Evaluate against the paramount goals, not against other editors.** Neovim, helix, emacs, zed solved different problems on different substrates; "X does Y" is data, not justification. When choosing between approaches, name the paramount goal each one protects (and the one it sacrifices).
 3. **Treat user-suggested options as input, not the menu.** When the user proposes A vs B, also surface C if it fits the goals better. The right answer may be neither. Say so explicitly with the trade-off.
 4. **Confirm the plan before non-trivial work.** For any change touching architecture, public API, or cross-crate boundaries: walk through the chosen approach, the trade-offs accepted, and the impact surface (which crates / docs / benches / tests get touched) before writing code. Slice large changes; land each slice green.
@@ -35,8 +46,9 @@ Every time options are presented for a non-trivial design choice — an `AskUser
 
 For every option include this block BEFORE the implementation shape:
 
+> **UX (higher court):** does this option degrade user experience (flicker, latency, instability, or a pixel change to unedited content)? If so it loses regardless of goal/heuristic scores, within reason.
 > **Paramount goals:** protects #N (specific reason); sacrifices #M (specific reason).
-> **Heuristic #1 (long-term fit):** is this the long-term fit, or the easy implementation?
+> **Heuristic #1 (long-term fit, on merit):** is this the genuinely-better long-term design, or kept out of risk-aversion / rewritten for novelty?
 > **Heuristic #2 (paramount, not other editors):** is the justification anchored on a paramount goal, or on "X does it this way" / "consistent with"?
 > **Heuristic #3 (third option):** is the option-set complete, or am I missing a (C) that fits the goals better than (A) or (B)?
 > **Standing-rule check (mode ownership):** for any option that touches a chord, ex-command, action body, or buffer behavior — does this keep BOTH the binding choice AND the handler body with the mode that owns the buffer, or does it leave half the surface in the host? See `feedback_mode_owns_its_surface`. Half-migrations (substrate publishes data but host still wires the chord) DO NOT satisfy the rule.

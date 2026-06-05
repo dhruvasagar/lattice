@@ -105,7 +105,7 @@ This revision adds UI specification and a performance baseline:
 
 A text editor that combines the **modal editing power of Vim** with the **extensibility model of Emacs**, built on a **modern, asynchronous, multi-threaded core** that never blocks the UI. The editor is GPU-accelerated, has first-class support for tree-sitter and LSP, and exposes a plugin API where extensions are sandboxed WebAssembly modules -- meaning a slow or buggy plugin cannot freeze the editor, leak memory, or crash the host.
 
-The guiding principle: **the user's keystrokes are sacred.** Every architectural decision is in service of the rule that input latency stays under one frame (<= 8ms at 120Hz) regardless of what the editor is doing in the background -- indexing a million-line repo, running an LSP request, evaluating a misbehaving plugin, or re-shaping rich text in a markdown buffer.
+The guiding principle: **the user's keystrokes are sacred.** Every architectural decision is in service of the rule that keystroke->glyph latency stays **imperceptible** -- indistinguishable from the terminal/compositor echoing the key, always within one display frame (<= 8.3ms at 120Hz) -- regardless of what the editor is doing in the background: indexing a million-line repo, running an LSP request, evaluating a misbehaving plugin, or re-shaping rich text in a markdown buffer. One frame is a *physical* ceiling -- the goal is to never miss a refresh, not to fill a budget; the bar is "as fast as the best-in-class reference (vim / the compositor), ratcheted down forever", not a fixed number.
 
 A secondary principle, equally non-negotiable: **the architecture must compose.** A buffer of plain code, a buffer of richly-styled markdown, and a future buffer of rendered web content are all the same kind of thing as far as the core is concerned. Specialization happens at the rendering layer, not the data layer.
 
@@ -122,7 +122,7 @@ The four paramount goals -- in priority order when they conflict -- are **perfor
 - **Unified command / grammar dispatch.** Vim's split between ex-commands and functional APIs is merged into one `CommandRegistry` and one dispatcher. The `:` line is a parser front-end producing typed `CommandInvocation`s; everything below the parser is one normal call path. Plugins and built-ins are peers of the dispatcher, not separated worlds.
 - **Vim/emacs unifications.** Hooks and autocmds unify as typed event subscriptions (§5.10). Self-documenting help via metadata on every registered primitive (§5.11). Jump list and mark ring unify as position history with tagged sources (§5.1). Visual mode IS the active region. Macros are recorded `CommandInvocation` sequences. Options are typed with a customize buffer view (§5.12). The minibuffer is a rich editing surface with full vim grammar, tree-sitter syntax highlighting, and live error / parameter-hint decorations (§5.9.10).
 - **Extensible grammar.** Registering new motions, text objects, and operators is first-class -- not bolted on later. Tree-sitter-driven motions ("next function," "inner argument," "outer class") are a clean future plugin requiring no host changes.
-- **Sub-frame input latency** (target: keystroke to glyph on screen <= 8ms at 120Hz, <= 16ms at 60Hz) on a mid-range laptop, for buffers up to 100MB. **Performance parity with Vim/Neovim for code editing is the bar.**
+- **Imperceptible input latency** -- keystroke->glyph indistinguishable from the terminal/compositor echoing the key, always within one display frame (8.3ms at 120Hz, 16ms at 60Hz; a *physical* ceiling, not a target) on a mid-range laptop, for buffers up to 100MB, regardless of background load. The bar is **match-or-beat Vim/Neovim**, ratcheted down by CI -- not a fixed number.
 - **Truly non-blocking architecture.** No plugin, LSP request, file I/O, syntax parse, or text-shaping operation can stall the UI thread. Ever. Multi-threaded by construction.
 - **First-class tree-sitter integration**: incremental parsing, syntax highlighting, structural motions, structural selection, language injections.
 - **First-class LSP integration**: diagnostics, completion, hover, go-to-definition, rename, code actions.
@@ -3356,7 +3356,7 @@ Both editors target sub-frame latency. The mechanism is the meaningful distincti
 
 | Aspect | Lattice | Zed (typical) |
 |---|---|---|
-| Keystroke → glyph @ 120 Hz | ≤ 8 ms (§8.2) | ~8--12 ms |
+| Keystroke → glyph @ 120 Hz | within 1 frame; ≈0.7 ms measured (TUI, §8.2) | ~8--12 ms |
 | Per-call WASM overhead | < 500 ns p99 (CI-gated) | unbudgeted |
 | UI-thread blocking | architecturally impossible (§5.7.1) | discipline-enforced |
 | Cold-start file open → first frame | not yet committed | ~50--80 ms typical |

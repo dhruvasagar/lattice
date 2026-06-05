@@ -218,13 +218,60 @@ path only (still reads the worker's cell projection); it + the projection die in
 99 GPU + 19 cells_paint tests green; `cargo build --features gui -p lattice-cli`
 links.
 
+### B2.5 — chunked-zone row-reuse (the *second* flicker cause)  ✅ (2026-06-04)
+
+B2.3/B2.4a/B3 each claimed "the flicker dies here" — but they only killed the
+**version-stale guard** firing per keystroke. A *second*, independent flicker
+survived and only showed on **chunked-mode** files (line_count > 4×viewport, e.g.
+README at 500 lines): the syntax colour of the **entire viewport** toggled off→on
+every keystroke even though `version.text` was current (`stale=false`) the whole
+time, so the guard-based diagnosis missed it.
+
+Root cause, in `try_incremental_display_build`: the **whole-doc** branch reused
+prior `DisplayLine`s row-by-row (rebuild only `[edit_lo, affected_hi)`), but the
+**chunked** branch rebuilt the entire `chunk_size`-aligned **rebuild zone**
+wholesale via `build_display_rows`. On the sync edit path (`allow_highlight:
+false`, B2.3) that meant ~`chunk_size` (≈64) lines rendered **colourless every
+keystroke**; since the viewport sits inside one chunk, the whole screen lost
+colour, recoloured a frame later by the async worker. That asymmetry — whole-doc
+reused, chunked didn't — *was* the bug. (Violated `feedback_decorations_update_in_place`:
+unchanged lines must never lose their cues.)
+
+Fix: the chunked rebuild zone now does the **same row-level reuse** as whole-doc —
+gather prior rows from the straddling chunks, reuse `< edit_lo` (unshifted) and
+`>= pre_hi` (shifted by `net`), rebuild only `[edit_lo, affected_hi)`, then
+re-bucket into `chunk_size`-aligned chunks (identical chunk starts to the old
+wholesale loop, so next-edit prefix/suffix detection is unchanged — only the ROWS
+differ, reused vs rebuilt). Now a keystroke decolours only the edited line
+(text-synchronous, colour-eventual — the keystroke UX contract), never the chunk.
+The `display_edit_path` bench profile is unchanged (still O(window); reuse trades
+`build_display_row` calls for Arc clones).
+
+Test: `chunked_incremental_reuses_rows_in_rebuild_zone` — an in-place edit mid-chunk
+asserts unchanged lines (prefix, and a line after the edit in the same chunk) reuse
+their prior `text` AND `runs` Arcs (the colour-carrying payload), while only the
+edited line is rebuilt. 57 cells_worker + 691 host + 1467 TUI tests green.
+
 ## B4 — delete legacy  🗒
 
+**Pre-disabled ahead of B4 (2026-06-04):** the two legacy highlight triggers are
+already off — `runtime.rs::refresh_pane_highlights()` (a per-frame UI-thread
+`highlight_lines` recompute — itself a goal-#1 violation) and
+`dispatch.rs::highlight_wake` (the async `highlights_worker`). The active document
+body sources colour from the canonical `DisplayMatrix`, so both were pure
+redundancy for it. **Interim caveat:** their only remaining consumer is
+`draw_inactive_document` (`pane_highlights` + `visible_rows`), so until B4 migrates
+it, **inactive panes render without syntax colour**. Single-pane editing is
+unaffected. B4 is the immediate follow-up so this interim never ships standalone.
+
 - Consumer audit first (`*messages*`/help bodies, inactive panes, virtual rows,
-  wrap, cursor, hit-test).
+  wrap, cursor, hit-test). **Known:** `draw_inactive_document` is the last
+  legacy-highlight consumer — migrate it onto `DisplayMatrix` first.
 - Delete: `highlights_worker`, `VisibleSpans`/`VisibleRows`/`RowPrepaint`
-  (legacy cells), `pane_highlights`, `CellMatrix`/`Cell`/`CellRow`/`CellChunk`,
-  `shape_row`. Fold `MatrixVersion`/`EditDelta` into their final home.
+  (legacy cells), `pane_highlights`, `refresh_pane_highlights` + its
+  `Action::RefreshPaneHighlights`, the `highlight_wake` plumbing,
+  `CellMatrix`/`Cell`/`CellRow`/`CellChunk`, `shape_row`. Fold
+  `MatrixVersion`/`EditDelta` into their final home.
 
 ## Sequencing
 

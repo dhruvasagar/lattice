@@ -40,9 +40,12 @@ foundation:
 - **Emacs-class extensibility through WebAssembly.** Plugins are sandboxed
   WASM components: cross-language, capability-gated, fuel-limited,
   crash-isolated. A misbehaving plugin cannot freeze the editor.
-- **Sub-frame input latency.** Keystroke → glyph in <8 ms at 120 Hz. The UI
-  thread never blocks. Multi-threaded by construction (one tokio task per
-  document, snapshot-based render reads, bounded-mailbox dispatch).
+- **Imperceptible input latency.** Keystroke → glyph indistinguishable from
+  the terminal/compositor echoing the key — within one display frame under any
+  background load, measured against the best-in-class reference and ratcheted
+  by CI (it only gets faster). The UI thread never blocks. Multi-threaded by
+  construction (one tokio task per document, snapshot-based render reads,
+  bounded-mailbox dispatch).
 - **GPU-accelerated rendering.** Sub-pixel-precise text, smooth scroll,
   layered paint paths optimized per content type (code vs. rich text vs.
   inline media). TUI is a first-class peer — not a throwaway.
@@ -55,7 +58,9 @@ The full design is in [`docs/dev/architecture/design.md`](docs/dev/architecture/
 
 In priority order when they conflict:
 
-1. **Performance.** Sub-frame input latency. Per-call WASM overhead
+1. **Performance.** Imperceptible keystroke→glyph latency — match-or-beat
+   the best-in-class reference, always within one display frame under load,
+   ratcheted by CI (never regress; only gets faster). Per-call WASM overhead
    budgeted in CI (typed call < 500 ns p99; grammar-extension round-trip <
    5 µs p99).
 2. **Extensibility.** WebAssembly Component Model plugin host from day one.

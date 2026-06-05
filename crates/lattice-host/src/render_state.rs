@@ -66,7 +66,15 @@ use std::sync::Arc;
 /// `editor.render_state.load_full()` once per frame.
 #[derive(Debug, Clone)]
 pub struct RenderState {
-    pub active_document: Arc<ActiveDocumentRenderState>,
+    /// I.5.1 (2026-06-05): inner `ArcSwap` so a keystroke can
+    /// republish the active-document substate WITHOUT reswapping the
+    /// whole monolith `RenderState` (I.5.3 the keystroke-only publish).
+    /// The outer monolith Arc stays the single shared cell threaded to
+    /// every renderer + worker; this inner cell is what the hot path
+    /// stores into. Readers go through `.active_document.load().load()`.
+    /// Mirrors the established `VirtualRowsRenderState.pane_matrices`
+    /// nested-`ArcSwap` shape.
+    pub active_document: Arc<arc_swap::ArcSwap<ActiveDocumentRenderState>>,
     pub buffers: Arc<BuffersRenderState>,
     pub panes: Arc<PanesRenderState>,
     pub lsp: Arc<LspRenderState>,
@@ -136,7 +144,9 @@ pub struct RenderState {
 impl Default for RenderState {
     fn default() -> Self {
         Self {
-            active_document: Arc::new(ActiveDocumentRenderState::default()),
+            active_document: Arc::new(arc_swap::ArcSwap::from_pointee(
+                ActiveDocumentRenderState::default(),
+            )),
             buffers: Arc::new(BuffersRenderState::default()),
             panes: Arc::new(PanesRenderState::default()),
             lsp: Arc::new(LspRenderState::default()),
@@ -384,7 +394,7 @@ pub struct ActiveDocumentRenderState {
     pub terminal_visual: Option<lattice_terminal::TerminalVisualState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
     /// the active document. Renderers read
-    /// `rs.active_document.folds` instead of `app.editor.folds`.
+    /// `rs.active_document.load().folds` instead of `app.editor.folds`.
     /// `Arc<[Fold]>` so subsequent reader frames share the
     /// allocation; typical fold count is <20 so cloning at
     /// publish-time is sub-µs.
@@ -2030,30 +2040,30 @@ mod tests {
         editor.viewport_height = 30;
         editor.publish_render_state();
         let rs = editor.render_state.load();
-        assert_eq!(rs.active_document.cursor, Position::new(7, 3));
-        assert_eq!(rs.active_document.scroll, 5);
-        assert_eq!(rs.active_document.viewport_height, 30);
+        assert_eq!(rs.active_document.load().cursor, Position::new(7, 3));
+        assert_eq!(rs.active_document.load().scroll, 5);
+        assert_eq!(rs.active_document.load().viewport_height, 30);
         assert_eq!(
-            rs.active_document.modal,
+            rs.active_document.load().modal,
             lattice_grammar::ModalState::Normal
         );
         assert_eq!(
-            rs.active_document.buffer_kind,
+            rs.active_document.load().buffer_kind,
             lattice_core::BufferKind::Document
         );
         // Snapshot is a fresh Arc clone from `editor.document`.
         // Identity isn't preserved across publications (naive
         // rebuild today); the value is what matters.
-        assert_eq!(rs.active_document.snapshot.buffer.byte_len(), 0);
+        assert_eq!(rs.active_document.load().snapshot.buffer.byte_len(), 0);
         // Slice 3c.atomic.J: translator-context mirror fields
         // default to zero/false when no count, no macro, no
         // picker, no completion, no snippet is active.
-        assert_eq!(rs.active_document.pending_count, 0);
-        assert_eq!(rs.active_document.op_count, 0);
-        assert!(!rs.active_document.macro_recording);
-        assert!(!rs.active_document.completion_open);
-        assert!(!rs.active_document.picker_open);
-        assert!(!rs.active_document.snippet_active);
+        assert_eq!(rs.active_document.load().pending_count, 0);
+        assert_eq!(rs.active_document.load().op_count, 0);
+        assert!(!rs.active_document.load().macro_recording);
+        assert!(!rs.active_document.load().completion_open);
+        assert!(!rs.active_document.load().picker_open);
+        assert!(!rs.active_document.load().snippet_active);
     }
 
     /// Slice 3c.atomic.J: writing the translator-context
@@ -2068,8 +2078,8 @@ mod tests {
         editor.op_count = 3;
         editor.publish_render_state();
         let rs = editor.render_state.load();
-        assert_eq!(rs.active_document.pending_count, 7);
-        assert_eq!(rs.active_document.op_count, 3);
+        assert_eq!(rs.active_document.load().pending_count, 7);
+        assert_eq!(rs.active_document.load().op_count, 3);
         // The Option-typed fields (`macro_recording`,
         // `completion_state`, `picker`, `active_snippet`) need
         // domain types to populate. The mirror's contract is
@@ -2457,7 +2467,7 @@ mod tests {
 
     /// Slice 3c.final.B (group 2): mutating editor.folds and
     /// publishing exposes the same fold list through
-    /// `rs.active_document.folds`.
+    /// `rs.active_document.load().folds`.
     #[test]
     fn active_document_folds_reflects_editor_state() {
         use lattice_core::Fold;
@@ -2476,11 +2486,11 @@ mod tests {
         });
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.active_document.folds.len(), 2);
-        assert_eq!(rs.active_document.folds[0].start_line, 5);
-        assert!(rs.active_document.folds[0].closed);
-        assert_eq!(rs.active_document.folds[1].end_line, 30);
-        assert!(!rs.active_document.folds[1].closed);
+        assert_eq!(rs.active_document.load().folds.len(), 2);
+        assert_eq!(rs.active_document.load().folds[0].start_line, 5);
+        assert!(rs.active_document.load().folds[0].closed);
+        assert_eq!(rs.active_document.load().folds[1].end_line, 30);
+        assert!(!rs.active_document.load().folds[1].closed);
     }
 
     /// Slice 3c.final.B (group 2): hlsearch matches /
@@ -2497,11 +2507,11 @@ mod tests {
         editor.option_cache.current_line_highlight = true;
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.active_document.all_matches.len(), 1);
-        assert_eq!(rs.active_document.all_matches[0], r);
-        assert_eq!(rs.active_document.current_match, Some(r));
-        assert!(rs.active_document.option_cache.show_whitespace);
-        assert!(rs.active_document.option_cache.current_line_highlight);
+        assert_eq!(rs.active_document.load().all_matches.len(), 1);
+        assert_eq!(rs.active_document.load().all_matches[0], r);
+        assert_eq!(rs.active_document.load().current_match, Some(r));
+        assert!(rs.active_document.load().option_cache.show_whitespace);
+        assert!(rs.active_document.load().option_cache.current_line_highlight);
     }
 
     /// Slice 3c.final.B (group 4): editor.lsp_progress is

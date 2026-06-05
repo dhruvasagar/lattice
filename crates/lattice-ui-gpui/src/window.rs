@@ -1141,7 +1141,7 @@ impl EditorView {
         // 2026-06-02: pull both the snapshot AND the per-pane
         // `display_line_numbers` mapping from the SAME handle.
         // Previously the gutter meta below cloned
-        // `rs_guard.active_document.display_line_numbers`, which
+        // `rs_guard.active_document.load().display_line_numbers`, which
         // gave inactive multibuffer panes the active doc's
         // mapping (None for regular files → identity numbering
         // 1,2,3 instead of source line numbers). Per "active
@@ -1298,8 +1298,8 @@ impl EditorView {
         // per-line check to a partition-point binary search with a
         // constant-time fast path for non-overlapping folds.
         let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs_guard.active_document.folds,
-            rs_guard.active_document.option_cache.foldenable,
+            &rs_guard.active_document.load().folds,
+            rs_guard.active_document.load().option_cache.foldenable,
         );
         // K.4.6 follow-up (2026-06-02): cache the
         // display_line_numbers map outside the per-row closure.
@@ -1433,7 +1433,7 @@ impl EditorView {
         // all_matches / substitute_preview read through the published
         // `rs_guard.active_document` snapshot instead of `editor.X`.
         let visual_range = if render_active {
-            rs_guard.active_document.visual_range
+            rs_guard.active_document.load().visual_range
         } else {
             None
         };
@@ -1441,23 +1441,24 @@ impl EditorView {
         // host. Element-side paints a per-line column band instead
         // of the linear visual_range.
         let visual_block_extents = if render_active {
-            rs_guard.active_document.visual_block_extents
+            rs_guard.active_document.load().visual_block_extents
         } else {
             None
         };
         let current_match = if render_active {
-            rs_guard.active_document.current_match
+            rs_guard.active_document.load().current_match
         } else {
             None
         };
         let all_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
-            rs_guard.active_document.all_matches.to_vec()
+            rs_guard.active_document.load().all_matches.to_vec()
         } else {
             Vec::new()
         };
         let substitute_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
             rs_guard
                 .active_document
+                .load()
                 .substitute_preview
                 .as_ref()
                 .map(|p| p.matches.to_vec())
@@ -1866,11 +1867,11 @@ impl EditorView {
         // active, which is the intentional cross-pane
         // preservation behaviour.
         if is_active {
-            if rs_guard.active_document.terminal_nav_cursor.is_some() {
-                nav_cursor = rs_guard.active_document.terminal_nav_cursor;
+            if rs_guard.active_document.load().terminal_nav_cursor.is_some() {
+                nav_cursor = rs_guard.active_document.load().terminal_nav_cursor;
             }
-            if rs_guard.active_document.terminal_visual.is_some() {
-                visual = rs_guard.active_document.terminal_visual;
+            if rs_guard.active_document.load().terminal_visual.is_some() {
+                visual = rs_guard.active_document.load().terminal_visual;
             }
         }
         tracing::trace!(
@@ -2450,7 +2451,7 @@ impl Render for EditorView {
         // per-frame update; diff-then-send keeps churn down.
         let rs_for_popup = self.app.render_state.load();
         let popup_focused = matches!(
-            rs_for_popup.active_document.buffer_kind,
+            rs_for_popup.active_document.load().buffer_kind,
             lattice_core::BufferKind::Help
         );
         let target_height = if popup_focused {
@@ -2458,7 +2459,7 @@ impl Render for EditorView {
         } else {
             rs_for_popup.panes.tree.active().viewport_height.max(1)
         };
-        if rs_for_popup.active_document.viewport_height != target_height {
+        if rs_for_popup.active_document.load().viewport_height != target_height {
             drop(rs_for_popup);
             self.app.set_viewport_height(target_height);
         }
@@ -2477,7 +2478,7 @@ impl Render for EditorView {
         // dispatch value so the cache settles in one frame
         // after a snap mutates `scroll`. First frame always runs
         // (cache starts at `None`).
-        let pre_ad = self.app.render_state.load().active_document.clone();
+        let pre_ad = self.app.render_state.load().active_document.load_full();
         let cursor_key = (
             pre_ad.cursor,
             pre_ad.scroll,
@@ -2486,7 +2487,7 @@ impl Render for EditorView {
         );
         if self.ensure_gate.cursor_snap_key != Some(cursor_key) {
             self.app.ensure_cursor_in_viewport();
-            let post_ad = self.app.render_state.load().active_document.clone();
+            let post_ad = self.app.render_state.load().active_document.load_full();
             self.ensure_gate.cursor_snap_key = Some((
                 post_ad.cursor,
                 post_ad.scroll,
@@ -2506,9 +2507,9 @@ impl Render for EditorView {
         if tracing::enabled!(target: "lattice_gpui::viewport", tracing::Level::DEBUG) {
             let rs_probe = self.app.render_state.load();
             let active_leaf = rs_probe.panes.tree.active();
-            let cursor = rs_probe.active_document.cursor;
-            let scroll = rs_probe.active_document.scroll;
-            let vh = rs_probe.active_document.viewport_height;
+            let cursor = rs_probe.active_document.load().cursor;
+            let scroll = rs_probe.active_document.load().scroll;
+            let vh = rs_probe.active_document.load().viewport_height;
             let bot_visible = scroll.saturating_add(vh.saturating_sub(1));
             let cursor_past_bot = cursor.line > bot_visible;
             let leaf_h_px = active_leaf.viewport_height as f32 * estimated_row_px;
@@ -2532,7 +2533,7 @@ impl Render for EditorView {
                 scroll,
                 bot_visible,
                 cursor_past_bot,
-                active_buffer_kind = ?rs_probe.active_document.buffer_kind,
+                active_buffer_kind = ?rs_probe.active_document.load().buffer_kind,
                 "viewport-invariant probe"
             );
         }
@@ -2567,7 +2568,7 @@ impl Render for EditorView {
         let pane_key = (
             std::sync::Arc::as_ptr(&rs_for_pane.panes.tree) as usize,
             rs_for_pane.panes.tree.active_index(),
-            rs_for_pane.active_document.document_buffer_id,
+            rs_for_pane.active_document.load().document_buffer_id,
         );
         if self.ensure_gate.pane_refresh_key != Some(pane_key) {
             self.app

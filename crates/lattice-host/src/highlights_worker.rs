@@ -320,9 +320,12 @@ pub fn recompute(
     // no-overlay path cheap. Bucket happens BEFORE the cell stores
     // below so the rows borrow doesn't outlive the per-row column
     // walk.
+    // I.5.1: active-document substate is now an inner `ArcSwap`; load
+    // it once and read `substitute_preview` / `all_matches` off the guard.
+    let ad = rs.active_document.load();
     let substitute_storage: Vec<lattice_protocol::position::Range>;
     let substitute_matches: &[lattice_protocol::position::Range] =
-        match rs.active_document.substitute_preview.as_ref() {
+        match ad.substitute_preview.as_ref() {
             Some(prev) => {
                 substitute_storage = prev.matches.to_vec();
                 &substitute_storage
@@ -334,7 +337,7 @@ pub fn recompute(
         start,
         snap.source(),
         &syntax.doc_highlights,
-        &rs.active_document.all_matches,
+        &ad.all_matches,
         substitute_matches,
     );
 

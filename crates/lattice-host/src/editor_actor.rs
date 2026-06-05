@@ -856,7 +856,7 @@ mod tests {
             !Arc::ptr_eq(&before, &after),
             "SetCursor must publish a fresh RenderState Arc"
         );
-        assert_eq!(after.active_document.cursor, target);
+        assert_eq!(after.active_document.load().cursor, target);
     }
 
     #[test]
@@ -866,15 +866,15 @@ mod tests {
         handle.set_cursor_line(5).expect("send set_cursor_line");
         await_actor(&handle);
         let after_line = handle.render_state();
-        assert_eq!(after_line.active_document.cursor.line, 5);
+        assert_eq!(after_line.active_document.load().cursor.line, 5);
         // byte stays at default.
-        assert_eq!(after_line.active_document.cursor.byte, 0);
+        assert_eq!(after_line.active_document.load().cursor.byte, 0);
 
         handle.set_cursor_byte(11).expect("send set_cursor_byte");
         await_actor(&handle);
         let after_byte = handle.render_state();
-        assert_eq!(after_byte.active_document.cursor.line, 5);
-        assert_eq!(after_byte.active_document.cursor.byte, 11);
+        assert_eq!(after_byte.active_document.load().cursor.line, 5);
+        assert_eq!(after_byte.active_document.load().cursor.byte, 11);
     }
 
     #[test]
@@ -884,7 +884,7 @@ mod tests {
         handle.set_scroll(42).expect("send set_scroll");
         await_actor(&handle);
         let after = handle.render_state();
-        assert_eq!(after.active_document.scroll, 42);
+        assert_eq!(after.active_document.load().scroll, 42);
     }
 
     #[test]
@@ -897,7 +897,7 @@ mod tests {
         await_actor(&handle);
         let after = handle.render_state();
         assert!(matches!(
-            after.active_document.modal,
+            after.active_document.load().modal,
             lattice_grammar::ModalState::Insert
         ));
     }
@@ -936,8 +936,8 @@ mod tests {
             }))
             .expect("mutate blocking succeeds");
         let rs = handle.render_state();
-        assert_eq!(rs.active_document.cursor, Position::new(9, 4));
-        assert_eq!(rs.active_document.scroll, 7);
+        assert_eq!(rs.active_document.load().cursor, Position::new(9, 4));
+        assert_eq!(rs.active_document.load().scroll, 7);
     }
 
     /// Slice 3c.final.E: `mutate_async` is fire-and-forget; a
@@ -957,7 +957,7 @@ mod tests {
             .apply_blocking(Action::None)
             .expect("apply blocking barrier");
         assert_eq!(
-            handle.render_state().active_document.cursor,
+            handle.render_state().active_document.load().cursor,
             Position::new(2, 1)
         );
     }
@@ -969,10 +969,10 @@ mod tests {
         // 0 must clamp to 1 -- mirror App-side wrapper.
         handle.set_viewport_height(0).expect("send vh=0");
         await_actor(&handle);
-        assert_eq!(handle.render_state().active_document.viewport_height, 1);
+        assert_eq!(handle.render_state().active_document.load().viewport_height, 1);
 
         handle.set_viewport_height(24).expect("send vh=24");
         await_actor(&handle);
-        assert_eq!(handle.render_state().active_document.viewport_height, 24);
+        assert_eq!(handle.render_state().active_document.load().viewport_height, 24);
     }
 }

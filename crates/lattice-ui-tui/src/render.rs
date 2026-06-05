@@ -151,13 +151,13 @@ impl<'a> FrameView<'a> {
         // (~7 RPCs total per frame) replaces N actor RPCs in the
         // per-line compose loop. The active document id is needed
         // for the mode-gate checks.
-        let doc_id = rs.active_document.document_buffer_id;
+        let doc_id = rs.active_document.load().document_buffer_id;
         let foldenable = app.foldenable();
         // Perf plan C: build the index once per frame from the same
         // snapshot the renderer reads. Both peers go through this
         // path now; build cost is O(folds) (<1 µs for typical files).
         let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs.active_document.folds,
+            &rs.active_document.load().folds,
             foldenable,
         );
         Self {
@@ -165,7 +165,7 @@ impl<'a> FrameView<'a> {
             // Slice 3c.final.B (group 2): folds already published as
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
-            folds: rs.active_document.folds.clone(),
+            folds: rs.active_document.load().folds.clone(),
             // A.2b.2b: one Arc bump; the worker owns the underlying
             // `VisibleRows` (writes via `ArcSwap::store`).
             visible_rows: rows,
@@ -198,7 +198,7 @@ impl<'a> FrameView<'a> {
         // gate keyed on `foldenable` collapses every predicate to
         // `false` when folding is off — match the `from_app` path.
         let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs.active_document.folds,
+            &rs.active_document.load().folds,
             foldenable,
         );
         Self {
@@ -206,7 +206,7 @@ impl<'a> FrameView<'a> {
             // Slice 3c.final.B (group 2): folds already published as
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
-            folds: rs.active_document.folds.clone(),
+            folds: rs.active_document.load().folds.clone(),
             // A.2b.2b: one Arc bump (worker owns the cell).
             visible_rows: rows,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
@@ -2410,7 +2410,7 @@ fn draw_terminal_pane(
     };
     // T-clean-1 Phase A.2 (2026-05-28): for the active pane,
     // prefer the publisher's derived values from
-    // `rs.active_document.terminal_nav_cursor` /
+    // `rs.active_document.load().terminal_nav_cursor` /
     // `terminal_visual` (computed from `self.cursor` (doc-space)
     // + `synthetic.origin_top_line`). This is the path that
     // will retire `t.nav_cursor` / `t.visual` direct reads
@@ -2418,11 +2418,11 @@ fn draw_terminal_pane(
     // keep using `with_terminal` (their stashed values are
     // intentionally last-known-good across pane switches).
     if is_active {
-        if rs.active_document.terminal_nav_cursor.is_some() {
-            nav_cursor = rs.active_document.terminal_nav_cursor;
+        if rs.active_document.load().terminal_nav_cursor.is_some() {
+            nav_cursor = rs.active_document.load().terminal_nav_cursor;
         }
-        if rs.active_document.terminal_visual.is_some() {
-            visual = rs.active_document.terminal_visual;
+        if rs.active_document.load().terminal_visual.is_some() {
+            visual = rs.active_document.load().terminal_visual;
         }
     }
     let rows_to_paint = area.height.min(snap_arc.rows);
@@ -6400,7 +6400,7 @@ mod tests {
         });
         // Slice 3c.final.B (group 2): direct fold mutation needs
         // a publish — the renderer reads folds via the published
-        // `rs.active_document.folds` snapshot now.
+        // `rs.active_document.load().folds` snapshot now.
         app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 7);
         let pos = cursor_screen_position(
@@ -7029,7 +7029,7 @@ mod tests {
             identity: None,
         });
         // Slice 3c.final.B (group 2): publish after direct fold
-        // mutations so `rs.active_document.folds` reflects them.
+        // mutations so `rs.active_document.load().folds` reflects them.
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 7, 80);
         // Find the row that summarises the chained folds (line 1's
@@ -7065,7 +7065,7 @@ mod tests {
         app.recompute_folds();
         // Slice 3c.final.B (group 2): recompute_folds mutates
         // editor.folds outside dispatch; publish so the renderer's
-        // `rs.active_document.folds` reflects the new set.
+        // `rs.active_document.load().folds` reflects the new set.
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);

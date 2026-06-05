@@ -753,7 +753,8 @@ impl Editor {
             // time so renderers read consistent per-frame state
             // without touching `editor.X` directly. Snapshot
             // clone is one Arc bump (rope is Arc-backed).
-            active_document: std::sync::Arc::new(ActiveDocumentRenderState {
+            active_document: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                ActiveDocumentRenderState {
                 buffer_kind: self.active_buffer,
                 document_buffer_id: self.document_buffer_id,
                 active_pane_buffer_id: self.active_pane_buffer_id(),
@@ -888,7 +889,8 @@ impl Editor {
                 // the Document trait method; no kind branch
                 // here.
                 display_line_numbers: self.document.display_line_numbers(),
-            }),
+                },
+            )),
             // Slice 3c.final.B (group 5): translator inputs.
             // `builtins` is `Copy`; `keymap` is one Arc bump;
             // `partial_chord` is small (0–2 entries typically)

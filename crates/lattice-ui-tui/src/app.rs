@@ -1030,7 +1030,7 @@ impl App {
         // byte-for-byte; the change isolates this method from the
         // `self.editor` field so 3c.atomic can sever the Editor
         // reference without disturbing reader call sites.
-        self.render_state.load().active_document.clone()
+        self.render_state.load().active_document.load_full()
     }
 
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): wait-free

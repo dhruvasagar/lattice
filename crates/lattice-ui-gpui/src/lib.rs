@@ -382,7 +382,7 @@ impl GpuiApp {
     /// renderer-side state through this method so the eventual
     /// `editor → handle` swap leaves call sites untouched.
     pub fn ad(&self) -> Arc<ActiveDocumentRenderState> {
-        self.render_state.load().active_document.clone()
+        self.render_state.load().active_document.load_full()
     }
 
     /// Slice 3c.final.B.7: published echo-area state — parallel

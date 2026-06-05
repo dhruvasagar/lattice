@@ -480,9 +480,9 @@ pub fn sync_rebuild_pane_on_edit(
         .min(coverage_line_count);
 
     let existing = pane.display_matrix.load_full();
-    let Some(mut matrix) =
-        try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, false)
-    else {
+    let result =
+        try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, false);
+    let Some(mut matrix) = result else {
         return false;
     };
     matrix.wrap_width = effective_wrap;
@@ -1643,7 +1643,32 @@ fn try_incremental_display_build(
     }
 
     let edit_lo = edit.start_line;
-    let pre_hi = edit.pre_edit_end_line();
+    // B2.3 intra-line staleness fix (2026-06-05): the row-reuse partition
+    // treats lines `>= pre_edit_end_line()` as the unchanged SUFFIX (reused,
+    // shifted by `net`). But `EditDelta` counts only FULL lines added/removed,
+    // so a **pure intra-line edit** — the COMMON typing case, inserting or
+    // deleting a char without crossing a newline — reports
+    // `lines_added == lines_removed == 0`, which makes
+    // `pre_edit_end_line() == start_line == the EDITED line`. Reusing it as
+    // suffix paints the PRE-edit row while the matrix version is stamped
+    // current, so the renderer's per-line staleness fallback never fires and
+    // the typed glyph visibly lags the cursor for a frame
+    // (`|word` → `w|ord` → ` |word`; felt as "one key behind" because the
+    // TUI's 100ms poll only redraws on the NEXT keystroke). For an intra-line
+    // edit the edited line MUST be rebuilt, so the reusable suffix starts one
+    // past it. Gated to `removed == added == 0`: for a structural edit
+    // (`lines_*` > 0) `pre_edit_end_line()` is a genuinely-unchanged line that
+    // only SHIFTS — reusing its row (and thus its syntax colour) is correct,
+    // and extending the boundary there would needlessly recolour it (a flicker
+    // the async worker would have to repaint — feedback_decorations_update_in_place).
+    // Boundary-line CONTENT changes from mid-line splits / joins (same
+    // `EditDelta` shape as a clean line insert/delete, distinguishable only
+    // with intra-line column info) remain a rarer, self-healing follow-up.
+    let suffix_lo = if edit.lines_removed == 0 && edit.lines_added == 0 {
+        edit.pre_edit_end_line().saturating_add(1)
+    } else {
+        edit.pre_edit_end_line()
+    };
     let net = edit.net_delta();
 
     let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
@@ -1691,7 +1716,7 @@ fn try_incremental_display_build(
         let affected_hi = prior_rows
             .iter()
             .map(|r| r.source_line)
-            .find(|&l| l >= pre_hi)
+            .find(|&l| l >= suffix_lo)
             .map(|l| (l as i64 + net as i64).max(edit_lo as i64) as u32)
             .unwrap_or(new_line_count)
             .min(new_line_count);
@@ -1719,7 +1744,7 @@ fn try_incremental_display_build(
         rows.extend(
             prior_rows
                 .iter()
-                .filter(|r| r.source_line >= pre_hi)
+                .filter(|r| r.source_line >= suffix_lo)
                 .map(|r| r.with_source_line((r.source_line as i64 + net as i64).max(0) as u32)),
         );
         let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
@@ -1744,7 +1769,7 @@ fn try_incremental_display_build(
     // Step 2: suffix-shift.
     let mut suffix_chunks: Vec<Arc<DisplayChunk>> = Vec::new();
     for chunk in published.chunks.iter() {
-        if chunk.start_source_line >= pre_hi {
+        if chunk.start_source_line >= suffix_lo {
             suffix_chunks.push(Arc::new(chunk.shifted_by(net, new_version)));
         }
     }
@@ -1765,12 +1790,52 @@ fn try_incremental_display_build(
             .min(new_line_count)
     });
 
-    // Step 3: rebuild zone.
-    let spans = highlight_range(rebuild_lo, rebuild_hi);
+    // Step 3: rebuild zone — ROW-LEVEL reuse (mirrors the whole-doc
+    // branch above). Only the actually-edited line range
+    // `[edit_lo, affected_hi)` is rebuilt; every unchanged line WITHIN the
+    // zone `Arc`-reuses its prior `DisplayLine` (and thus its syntax
+    // colour). Load-bearing for the keystroke UX contract: the sync edit
+    // path ([`sync_rebuild_pane_on_edit`]) runs with `allow_highlight:
+    // false`, so the prior *wholesale* rebuild of the zone blanked
+    // ~`chunk_size` lines of colour on EVERY keystroke — a whole-viewport
+    // syntax-highlight flicker on any chunked-mode file (e.g. README at 500
+    // lines: the viewport sits inside one 64-line chunk, so the entire
+    // screen lost colour per char, recoloured a frame later by the async
+    // worker). Reusing prior rows confines the transient colour loss to the
+    // single edited line. Whole-doc mode already did this; chunked mode
+    // rebuilt the whole zone — that asymmetry WAS the flicker bug.
+    // (feedback_decorations_update_in_place)
+    //
+    // Prior rows for the zone come from the STRADDLING chunks: those
+    // neither fully prefix-reused (`chunk_end <= edit_lo`) nor fully
+    // suffix-shifted (`chunk_start >= suffix_lo`).
+    let zone_prior_rows: Vec<DisplayLine> = published
+        .chunks
+        .iter()
+        .filter(|c| {
+            let start = c.start_source_line;
+            let end = start.saturating_add(published.chunk_size);
+            end > edit_lo && start < suffix_lo
+        })
+        .flat_map(|c| c.rows.iter().cloned())
+        .collect();
+
+    // First unchanged line at/after the edit, mapped into post-edit space
+    // (mirrors the whole-doc `affected_hi`); bounded by the zone end so a
+    // suffix row never collides with the suffix-shifted chunks.
+    let affected_hi = zone_prior_rows
+        .iter()
+        .map(|r| r.source_line)
+        .find(|&l| l >= suffix_lo)
+        .map(|l| (l as i64 + net as i64).max(edit_lo as i64) as u32)
+        .unwrap_or(rebuild_hi)
+        .min(rebuild_hi);
+
+    let spans = highlight_range(edit_lo, affected_hi);
     let inputs = ChunkInputs {
         snapshot,
         per_line_spans: spans.as_ref(),
-        spans_base: rebuild_lo,
+        spans_base: edit_lo,
         inlays_by_line: &inlays_by_line,
         fold_index: &fold_index,
         theme,
@@ -1779,11 +1844,41 @@ fn try_incremental_display_build(
         inlay_fg,
         whitespace,
     };
+
+    // Assemble the zone rows in source-line order:
+    //   prefix-reuse (source_line < edit_lo, unshifted)
+    //   ++ rebuilt edit range [edit_lo, affected_hi)
+    //   ++ suffix-reuse (source_line >= suffix_lo, shifted by net).
+    let mut zone_rows: Vec<DisplayLine> = Vec::with_capacity(zone_prior_rows.len() + 2);
+    zone_rows.extend(
+        zone_prior_rows
+            .iter()
+            .filter(|r| r.source_line < edit_lo)
+            .cloned(),
+    );
+    zone_rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
+    zone_rows.extend(
+        zone_prior_rows
+            .iter()
+            .filter(|r| r.source_line >= suffix_lo)
+            .map(|r| r.with_source_line((r.source_line as i64 + net as i64).max(0) as u32)),
+    );
+
+    // Re-bucket into `chunk_size`-aligned chunks — identical chunk starts
+    // to the prior wholesale loop (`cur` stepping by `chunk_size`), so the
+    // chunked-matrix shape and the `chunk_end = start + chunk_size`
+    // prefix/suffix detection on the NEXT edit are preserved; only the ROWS
+    // differ (reused vs rebuilt).
     let mut cur = rebuild_lo;
+    let mut idx = 0usize;
     while cur < rebuild_hi {
         let end = cur.saturating_add(chunk_size).min(rebuild_hi);
-        let rows = build_display_rows(&inputs, cur, end);
-        new_chunks.push(Arc::new(DisplayChunk::new(cur, rows, new_version)));
+        let mut bucket: Vec<DisplayLine> = Vec::new();
+        while idx < zone_rows.len() && zone_rows[idx].source_line < end {
+            bucket.push(zone_rows[idx].clone());
+            idx += 1;
+        }
+        new_chunks.push(Arc::new(DisplayChunk::new(cur, bucket, new_version)));
         cur = end;
     }
 
@@ -3385,6 +3480,94 @@ mod tests {
         assert_eq!(row_texts, vec!["aa", "NEW", "bb", "cc"]);
     }
 
+    /// 2026-06-05 REGRESSION (intra-line text lag). A PURE intra-line edit
+    /// — inserting a char without crossing a newline, `EditDelta {removed:0,
+    /// added:0}` — has `pre_edit_end_line() == start_line == the edited
+    /// line`. The row-reuse partition used to classify that line as the
+    /// unchanged SUFFIX and reuse its prior row VERBATIM while stamping the
+    /// matrix version current, so the renderer's per-line staleness fallback
+    /// never fired and it painted PRE-edit text for a frame (`|word` →
+    /// `w|ord` → ` |word`; the felt "one key behind" typing lag on every
+    /// keystroke). The edited line MUST be rebuilt from the current snapshot;
+    /// unchanged lines still reuse their `text` Arc (colour preserved). The
+    /// sibling `whole_doc_incremental_reuses_unchanged_rows` covers the
+    /// STRUCTURAL edit (`{0,1}`, a clean line insert) where the boundary line
+    /// only SHIFTS and must NOT regress to a rebuild — which is exactly why
+    /// the fix is gated on `removed == added == 0`.
+    #[test]
+    fn whole_doc_incremental_rebuilds_intra_line_edited_row() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let snap1 = snap_of_versioned("word\nbb\ncc", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // whole-doc
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let d1 = dm_cell.load_full();
+        assert_eq!(&*d1.row_at_source_line(0).unwrap().text, "word");
+        let bb_pre = Arc::clone(&d1.row_at_source_line(1).unwrap().text);
+        let cc_pre = Arc::clone(&d1.row_at_source_line(2).unwrap().text);
+
+        // Insert a space at col 0 of line 0 → " word\nbb\ncc". Pure
+        // intra-line: no newline crossed ⇒ EditDelta {start:0, removed:0,
+        // added:0} (line count unchanged). This is the keystroke shape.
+        let snap2 = snap_of_versioned(" word\nbb\ncc", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(0, 0, 0);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let d2 = dm_cell.load_full();
+        // THE REGRESSION ASSERTION: the edited row is text-CURRENT, not the
+        // reused-stale "word". Pre-fix this was "word" and the typed space
+        // lagged a frame behind the cursor.
+        assert_eq!(
+            &*d2.row_at_source_line(0).unwrap().text,
+            " word",
+            "intra-line edited row must rebuild to the CURRENT text, never reuse the stale pre-edit row"
+        );
+        // Unchanged lines still reuse their prior row Arc (colour preserved —
+        // no whole-viewport recolour flicker).
+        assert!(
+            Arc::ptr_eq(&bb_pre, &d2.row_at_source_line(1).unwrap().text),
+            "unchanged line 1 must reuse its prior DisplayLine text Arc"
+        );
+        assert!(
+            Arc::ptr_eq(&cc_pre, &d2.row_at_source_line(2).unwrap().text),
+            "unchanged line 2 must reuse its prior DisplayLine text Arc"
+        );
+    }
+
     /// 2026-06-04: whole-doc incremental rebuild must REUSE the prior
     /// chunk's `DisplayLine`s for unchanged lines (same `text` Arc),
     /// not rebuild them — that reuse is what keeps their syntax colours
@@ -3916,6 +4099,120 @@ mod tests {
                 "DisplayLine text Arc must be shared across the suffix shift"
             );
         }
+    }
+
+    /// 2026-06-04 (B-flicker fix): in CHUNKED mode, a single in-place edit
+    /// in the MIDDLE of a chunk must rebuild ONLY the edited line; every
+    /// other line in that chunk reuses its prior `DisplayLine` payload
+    /// (`text` AND the colour-carrying `runs` Arc). The prior code rebuilt
+    /// the whole `chunk_size`-aligned zone wholesale, so on the sync edit
+    /// path (`allow_highlight: false`) ~`chunk_size` lines lost their syntax
+    /// colour on every keystroke — the whole-viewport markdown flicker,
+    /// since the viewport sits inside one chunk. Whole-doc mode already
+    /// reused rows (`whole_doc_incremental_reuses_unchanged_rows`); this is
+    /// the missing chunked-mode guarantee. (feedback_decorations_update_in_place)
+    #[test]
+    fn chunked_incremental_reuses_rows_in_rebuild_zone() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // 25 lines → viewport 5 ⇒ chunked, chunk_size 16, chunks [0,16)+[16,25).
+        let text1: String = (0..25)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap1 = snap_of_versioned(&text1, 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let d1 = dm_cell.load_full();
+        assert_eq!(d1.chunk_size, 16);
+        assert_eq!(d1.chunks.len(), 2, "25 lines ⇒ two chunks");
+
+        // Capture prior payload Arcs for lines that must survive the edit:
+        // a prefix line (0), the line just before the edit (4), and a line
+        // AFTER the edit but still inside the same chunk (10). All three
+        // were rebuilt fresh by the buggy wholesale-zone path.
+        let l0 = d1.row_at_source_line(0).unwrap();
+        let (l0_text, l0_runs) = (Arc::clone(&l0.text), Arc::clone(&l0.runs));
+        let l4_text = Arc::clone(&d1.row_at_source_line(4).unwrap().text);
+        let l10 = d1.row_at_source_line(10).unwrap();
+        let (l10_text, l10_runs) = (Arc::clone(&l10.text), Arc::clone(&l10.runs));
+        let l5_text_pre = Arc::clone(&d1.row_at_source_line(5).unwrap().text);
+
+        // Edit line 5 IN PLACE (removed 1, added 1 → net 0): the edit lands
+        // inside chunk 0, so the rebuild zone is the whole chunk [0,16).
+        let text2: String = {
+            let mut lines: Vec<String> = (0..25).map(|i| format!("line{}", i)).collect();
+            lines[5] = "EDITED".to_string();
+            lines.join("\n")
+        };
+        let snap2 = snap_of_versioned(&text2, 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(5, 1, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let d2 = dm_cell.load_full();
+        assert_eq!(d2.source_line_count, 25);
+
+        // Unchanged lines reuse their prior DisplayLine payload — both the
+        // text AND the colour-carrying runs Arc. This is the regression: the
+        // old wholesale-zone rebuild produced fresh Arcs here (blanking colour
+        // on the sync path), now confined to the single edited line.
+        let l0_post = d2.row_at_source_line(0).unwrap();
+        assert!(
+            Arc::ptr_eq(&l0_text, &l0_post.text) && Arc::ptr_eq(&l0_runs, &l0_post.runs),
+            "prefix line 0 must reuse its prior text+runs Arcs (keeps colour)"
+        );
+        assert!(
+            Arc::ptr_eq(&l4_text, &d2.row_at_source_line(4).unwrap().text),
+            "line 4 (just before edit) must reuse its prior text Arc"
+        );
+        let l10_post = d2.row_at_source_line(10).unwrap();
+        assert!(
+            Arc::ptr_eq(&l10_text, &l10_post.text) && Arc::ptr_eq(&l10_runs, &l10_post.runs),
+            "line 10 (after edit, same chunk) must reuse its prior text+runs Arcs — \
+             the buggy wholesale-zone rebuild lost these"
+        );
+
+        // Only the edited line is rebuilt: fresh payload, new content.
+        let l5_post = d2.row_at_source_line(5).unwrap();
+        assert!(
+            !Arc::ptr_eq(&l5_text_pre, &l5_post.text),
+            "edited line 5 must be rebuilt (fresh text Arc)"
+        );
+        assert_eq!(&*l5_post.text, "EDITED", "edited line carries the new content");
     }
 
     /// Eligibility falls back to full rebuild when `last_edit` is

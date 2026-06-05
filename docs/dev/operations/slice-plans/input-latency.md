@@ -108,7 +108,7 @@ nested (cascaded) dispatch coalesces too.
   whole-world `build_render_state` (~200µs). Sub-ms requires I.5.
 - Deps: none. Correct independently of I.5 (the batch guard stays useful there).
 
-### I.5 — per-substate publication (the sub-ms / test-of-time fix)  🗒
+### I.5 — per-substate publication (the sub-ms / test-of-time fix)  🚧
 
 Retire the whole-world `build_render_state` on the keystroke path. Each subsystem
 `store()`s its own substate Arc when *it* changes; a keystroke publishes only the
@@ -116,6 +116,35 @@ Retire the whole-world `build_render_state` on the keystroke path. Each subsyste
 per-pane `DisplayMatrix` ArcSwap is *already* independently published by the cells
 worker + B2.3). Keystroke publish becomes a few Arc swaps → **sub-ms even on
 low-end hardware.**
+
+**I.5.0 — ratchet foundation ✅ (2026-06-05).** Before touching the read contract,
+pin the bar so the cut is data-driven and a regression is loud:
+- Bench `dispatch_publish::keystroke_publish_{2000,100000}` — the per-keystroke
+  `publish_render_state` cost on a content-loaded, mid-scrolled document (the
+  whole-world `build_render_state` + B2.3 windowed sync rebuild I.5 retires). Two
+  sizes prove the cost stays O(viewport), flat across file size; the number is the
+  bar the ratchet drives **down** as the active-document cell split lands.
+- Gate `tests/keystroke_publish_ratchet.rs` — the enforced CI ceiling. Asserts the
+  median publish stays under a generous absolute bound (25 ms debug), orders of
+  magnitude above the real cost per `ci.yml`'s "GitHub runners are too jittery for
+  tight statistical gating" stance — it catches an O(file) term creeping back onto
+  the publish path without flapping. **Baseline: ~157 µs median (2000 lines, debug,
+  dev box).** Tightens as I.5 lands.
+
+**Cut-planning finding (the risk for I.5.1+):** `build_render_state` is *not* a flat
+monolith — B.4's `cached_or_build` already reuses the heavy registry sub-states
+(panes/modes/buffer_locals/pane_highlights/lsp_progress/buffers/tabs) by Arc
+identity. The residual per-keystroke cost is `active_document` rebuild + the upfront
+hashing (inlay/doc-highlights/overlay-version — cheap unless LSP/search active) +
+**`build_cells_panes()`**, which is *load-bearing per edit*: `publish_render_state`
+loops `next.cells.panes` through `sync_rebuild_pane_on_edit` (B2.3) **and** the async
+cells/virtual-rows workers read `rs.cells.panes`. So "a keystroke = a few Arc swaps"
+can't simply delete the per-edit derivation — the clean win is decoupling the
+*renderer's* per-frame active-doc read from the monolithic snapshot, with
+`build_cells_panes` relocated to the edit path so workers keep correct inputs. The
+read contract spans ~110 TUI read sites + GPUI parity + 3 workers, so slice
+active-document-first (I.5.1 a provable no-op cell split; I.5.2 the keystroke-only
+publish).
 
 - This is the documented 3b/3c destination (`build_render_state` is an explicit
   placeholder) and the cross-editor convention: Neovim emits incremental grid

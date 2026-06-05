@@ -1,6 +1,16 @@
 //! Perf plan B.4: dispatch publish-path bench.
 //!
-//! Measures `Editor::publish_render_state` across three regimes:
+//! Measures `Editor::publish_render_state` across several regimes:
+//!
+//! - `keystroke_publish_{2000,100000}` (I.5 ratchet) — the
+//!   per-keystroke publish cost on a content-loaded document: the
+//!   whole-world `build_render_state` (active-document rebuild +
+//!   `build_cells_panes` + the B2.3 windowed sync `DisplayMatrix`
+//!   rebuild) that slice I.5 retires in favour of per-substate
+//!   publication. This is the bar the ratchet drives **down** as
+//!   the active-document cell split lands; the 2k vs 100k rows
+//!   prove the cost stays O(viewport), flat across file size.
+//!   Enforced ceiling: `tests/keystroke_publish_ratchet.rs`.
 //!
 //! - `steady_state` — publish N times back-to-back with no
 //!   intervening mutation. Every cached sub-state (`panes` /
@@ -38,7 +48,9 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
+use lattice_cells::EditDelta;
 use lattice_core::BufferId;
+use lattice_core::Document;
 use lattice_core::ui::pane::{PaneState, PaneTree, SplitOrientation};
 use lattice_host::editor::Editor;
 use lattice_host::versioned::Versioned;
@@ -103,6 +115,68 @@ fn populated_editor() -> Editor {
     }
 
     editor
+}
+
+/// Generates `line_count` synthetic Rust-ish lines (~80 chars
+/// each) so the active document the publisher snapshots + the
+/// cell-builder windows over has realistic line lengths rather
+/// than an empty buffer. Mirrors `cells_worker.rs`'s helper.
+fn synthetic_rust_doc(line_count: usize) -> Document {
+    let body: String = (0..line_count)
+        .map(|i| format!("fn handler_{i:04}(input: &str) -> Result<Output, Error> {{ Ok(()) }}\n"))
+        .collect();
+    Document::from_text(&body)
+}
+
+/// A booted editor with a `line_count`-line active document, a
+/// 60-line viewport scrolled to the document's interior (so
+/// `build_cells_panes` windows a realistic mid-file region, not
+/// the cheap top-of-file case), and the cursor on the middle line.
+fn editor_with_doc(line_count: usize) -> Editor {
+    let mut editor = Editor::boot(synthetic_rust_doc(line_count));
+    editor.viewport_height = 60;
+    let mid = (line_count as u32) / 2;
+    editor.scroll = mid.saturating_sub(30);
+    editor.cursor.line = mid;
+    editor.cursor.byte = 0;
+    editor
+}
+
+/// I.5 ratchet baseline — the per-keystroke `publish_render_state`
+/// cost on a content-loaded document. This is the whole-world
+/// `build_render_state` (active-document rebuild + `build_cells_panes`
+/// + the B2.3 windowed sync `DisplayMatrix` rebuild) that I.5
+/// retires in favour of per-substate publication; the number here
+/// is the bar the ratchet drives **down** as the active-document
+/// cell split lands.
+///
+/// Two sizes prove the property I.5 must protect: the cost stays
+/// **O(viewport)**, flat from 2k to 100k lines — a regression that
+/// reintroduces an O(file) term shows up as the 100k row diverging
+/// from the 2k row (and trips `tests/keystroke_publish_ratchet.rs`).
+fn keystroke_publish(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dispatch_publish");
+    for &n in &[2_000usize, 100_000usize] {
+        let mut editor = editor_with_doc(n);
+        editor.publish_render_state(); // warm the sub-state caches
+        let edit_line = editor.cursor.line;
+        group.bench_function(format!("keystroke_publish_{n}"), |b| {
+            b.iter(|| {
+                // Mimic the per-keystroke publish: an intra-line edit on the
+                // cursor line (`EditDelta {_, 0, 0}`) drives the B2.3 windowed
+                // sync rebuild inside `publish_render_state`, alongside the
+                // whole-world `build_render_state` the publish runs today.
+                editor.last_edit_for_cells = Some(EditDelta {
+                    start_line: edit_line,
+                    lines_removed: 0,
+                    lines_added: 0,
+                });
+                editor.publish_render_state();
+                black_box(editor.render_state.load_full());
+            });
+        });
+    }
+    group.finish();
 }
 
 fn steady_state(c: &mut Criterion) {
@@ -221,6 +295,7 @@ fn unmemoised(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    keystroke_publish,
     steady_state,
     mutated_modes,
     mutated_all,

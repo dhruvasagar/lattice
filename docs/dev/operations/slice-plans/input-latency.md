@@ -108,7 +108,7 @@ nested (cascaded) dispatch coalesces too.
   whole-world `build_render_state` (~200µs). Sub-ms requires I.5.
 - Deps: none. Correct independently of I.5 (the batch guard stays useful there).
 
-### I.5 — per-substate publication (the sub-ms / test-of-time fix)  🚧
+### I.5 — per-substate publication (the sub-ms / test-of-time fix)  ✅ infra (I.5.0–I.5.2) · I.5.3 flip deferred
 
 Retire the whole-world `build_render_state` on the keystroke path. Each subsystem
 `store()`s its own substate Arc when *it* changes; a keystroke publishes only the
@@ -145,6 +145,43 @@ can't simply delete the per-edit derivation — the clean win is decoupling the
 read contract spans ~110 TUI read sites + GPUI parity + 3 workers, so slice
 active-document-first (I.5.1 a provable no-op cell split; I.5.2 the keystroke-only
 publish).
+
+**I.5.1 — `active_document` inner ArcSwap ✅ (2026-06-05, `99351f6`).** Changed
+`RenderState.active_document: Arc<ActiveDocumentRenderState>` →
+`Arc<ArcSwap<ActiveDocumentRenderState>>` so the keystroke path *can* republish it
+without reswapping the monolith. Pure no-op reader migration (all ~110 read sites →
+`.active_document.load()`); accessors return `.load_full()`. Green across host/tui/gpui.
+
+**I.5.2 — `cells` inner ArcSwap ✅ (2026-06-05, `ee9fd14`).** Same shape for
+`RenderState.cells` (the cell-grid substate). Compiler-driven, not sed — `cells` is an
+overloaded field name (`RenderState.cells` vs `Row`/`VirtualRow`/`Chunk.cells:
+Arc<[Cell]>`). Producers wrapped in `ArcSwap::from_pointee`; readers load once per pass;
+test/bench readers bind a guard where a borrow outlives its statement (the `load()`
+guard is a statement-temporary). Green: host 692 + ratchet + 13; tui 1467 + 3 paint
+gates; gpui 25 + window build; host benches.
+
+**I.5.3 — flip the keystroke fast path 🗒 DEFERRED (2026-06-05).** Decision: do NOT
+flip `dispatch_fused` to store only the two inner cells. Two findings, on merit:
+1. **Correctness.** `partial_chord` lives on `Editor` and is *mutated during dispatch*
+   — pressing a chord prefix (`g`, operator keys) does `partial_chord.push(chord)` and
+   *otherwise no-ops* (dispatch.rs:1700-1703), which is a *fuseable* dispatch. A naive
+   "store only active_document+cells on every fuseable dispatch" leaves the published
+   `TranslatorRenderState.partial_chord` (and `ModelineRenderState.cmdline_text`) stale
+   → multi-key chords (`gg`, `dw`) and command-line typing break. A *safe* fast path
+   must also republish translator + modeline or version-gate — fragile hot-path
+   machinery.
+2. **Win is imperceptible + unquantified.** `active_document` already carries the entire
+   per-keystroke read surface (cursor, scroll, modal, op/pending counts, visual anchor,
+   snapshot, completion/picker gates, terminal flags); `build_active_document` +
+   `build_cells_panes` + inlay hashing are *unavoidable* on any edit/motion. The flip
+   would save only the other ~18 substates' cached_or_build checks + monolith alloc —
+   and the publish path is *already* ~157µs ≪ one frame (8.3ms), where goal #1's own
+   framing says faster output is imperceptible. No profiler on the dev box to quantify.
+
+   The inner-ArcSwap infra (I.5.1/I.5.2) **stays landed and ratchet-gated** — the flip is
+   a drop-in the moment a real profile shows it clears the imperceptibility bar by a
+   margin that justifies the gate. Until then, the perceptible win is I.3 (drop the
+   100ms poll), so execution proceeds there.
 
 - This is the documented 3b/3c destination (`build_render_state` is an explicit
   placeholder) and the cross-editor convention: Neovim emits incremental grid

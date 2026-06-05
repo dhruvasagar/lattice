@@ -710,8 +710,10 @@ impl Editor {
         // (spawned below) and the Editor (constructed below) hold
         // the same `Arc<Notify>`. The renderer peer subscribes to
         // `editor.paint_request` and translates wakes to its own
-        // redraw mechanism (TUI: free via 100ms event poll; GPUI:
-        // foreground-executor future that calls `cx.notify()`).
+        // redraw mechanism (TUI I.3: a bridge task forwards each notify
+        // as a `Wake::Repaint` onto the input-reader channel the main
+        // loop blocks on; GPUI: foreground-executor future that calls
+        // `cx.notify()`).
         let paint_request: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
         runtime_handle.spawn(crate::highlights_worker::run(
             render_state_arc.clone(),

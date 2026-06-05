@@ -65,7 +65,7 @@ Off the single-pane typing path. If taken later: publish per-buffer
 number/relativenumber resolution into a `RenderState` substate so inactive panes
 read wait-free too. Low priority — split-layout polish, not the latency goal.
 
-### I.3 — event-driven wake (drop the 100ms poll)  🗒
+### I.3 — event-driven wake (drop the 100ms poll)  ✅ (2026-06-05)
 
 Wake the loop on *(input-ready OR actor-publish)* instead of a fixed timeout.
 
@@ -82,6 +82,33 @@ Wake the loop on *(input-ready OR actor-publish)* instead of a fixed timeout.
   channel + crossterm raw-mode handoff); needs careful teardown on quit.
 - Deps: cleanest *after* I.1 (coalescing) so the input channel drains in the same
   shape.
+
+**Landed (2026-06-05).** `runtime.rs` main loop is now event-driven:
+- A single `mpsc::channel::<Wake>` (`Wake::Input(Event)` | `Wake::Repaint`). The
+  loop blocks on `wake_rx.recv()` — **zero draws, zero CPU when idle** — and
+  drains every buffered wake (`try_recv`) before one redraw, preserving I.1's
+  burst coalescing (now over the mockable channel I.1's burst test was deferred
+  to). The 100ms terminal poll is gone from the draw path.
+- A dedicated `lattice-tui-input` reader thread owns terminal events
+  (`event::poll`/`read`) and forwards `Wake::Input`. It polls a `100ms` stop
+  flag **only** for cooperative shutdown (it never wakes the loop on a timeout);
+  `poll` returns the instant input is ready, so input latency is *not* capped at
+  100ms. Teardown: main sets the flag + `join()`s the reader before `run`
+  restores the terminal — no detached thread reads stdin in cooked mode.
+- A task on the shared LSP runtime (`spawn_on_lsp_runtime`) awaits the actor's
+  `paint_request.notified()` and forwards `Wake::Repaint`, so a background
+  republish reaches the screen with no poll lag. `Notify` is permit-style → no
+  lost wakeups; the bridge exits when the loop drops the receiver.
+- New host seam: `EditorActorHandle::paint_request()` exposes the shared
+  `Notify` (the prod App holds the actor handle, not the Editor). TUI binds it
+  cfg-gated (`editor_actor` in prod, `editor` in `cfg(test)`).
+- **GPUI parity:** none needed — the GPUI peer is *already* event-driven
+  (`cx.notify()` + its own `paint_request` bridge at `window.rs`). This is a
+  TUI-only input-loop change; the shared `paint_request` contract is unchanged.
+- Tests: `drain_wakes_applies_and_coalesces_buffered_input` (N inputs → one
+  drained batch, perf timer armed, modal advances) + `drain_wakes_repaint_applies_no_input`
+  (a `Repaint` applies no input, leaves modal untouched). Green: host 692 + tui
+  1469 + gpui build (window).
 
 ### I.4 — publish coalescing  ✅ (2026-06-05)
 

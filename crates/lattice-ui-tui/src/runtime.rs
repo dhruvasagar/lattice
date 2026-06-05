@@ -5,7 +5,9 @@
 //! Everything else is pure and unit-tested.
 
 use std::io::Stdout;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -169,6 +171,104 @@ fn popup_height_for(candidate_count: usize) -> usize {
     candidate_count.min(MAX_ROWS).max(1)
 }
 
+/// I.3 (event-driven wake): a reason the main loop woke. The loop blocks on a
+/// single channel of these instead of polling the terminal on a 100ms timer.
+/// `Input` carries a decoded terminal event from the dedicated reader thread;
+/// `Repaint` is forwarded from the actor's `paint_request` `Notify` (async
+/// syntax / LSP / worker republishes) so a background republish reaches the
+/// screen promptly without the loop spinning. See
+/// `docs/dev/operations/slice-plans/input-latency.md` I.3.
+enum Wake {
+    Input(Event),
+    Repaint,
+}
+
+/// Apply one decoded terminal event to the app. Mirrors the per-event arm the
+/// pre-I.3 inline drain ran: keys translate through the published `translator`
+/// substate (no `&Editor` borrow); a bracketed paste is one edit; a resize
+/// defers to the next iteration's viewport setup. Sets `last_input_at` only for
+/// events that produced fresh input, so the `LATTICE_PERF_INPUT` timer
+/// attributes the next draw to a keystroke and not to an async repaint.
+fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut Option<Instant>) {
+    match ev {
+        Event::Key(k) => {
+            // Slice 3c.final.B (group 5): translator inputs read through
+            // `rs.translator` instead of `&app.editor.{builtins,keymap,
+            // partial_chord}`. The Arc-bound substate keeps the borrows valid
+            // for the translate call without tying them to `Editor`'s lifetime.
+            let ad = app.ad();
+            let translator = app.render_state.load().translator.clone();
+            let ctx = TranslateContext {
+                modal: ad.modal,
+                builtins: &translator.builtins,
+                pending_count: ad.pending_count,
+                op_count: ad.op_count,
+                recording_macro: ad.macro_recording,
+                active_buffer: ad.buffer_kind,
+                completion_open: ad.completion_open,
+                chord_capture: app.chord_capture_active(),
+                picker_open: ad.picker_open,
+                insert_completion_open: app.completion_popup_active(),
+                snippet_active: ad.snippet_active,
+                terminal_insert_active: ad.terminal_insert_active,
+                terminal_esc_exits: ad.terminal_esc_exits,
+                terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+                terminal_visual_active: ad.terminal_visual_active,
+                keymap: &translator.keymap,
+                partial_chord: &translator.partial_chord,
+                active_minor_modes: &translator.active_minor_modes,
+            };
+            let action = translate(ctx, k);
+            app.apply(action);
+            if perf_input {
+                *last_input_at = Some(Instant::now());
+            }
+        }
+        Event::Paste(text) => {
+            // Real bracketed-paste burst from the terminal's clipboard
+            // shortcut. Hand the payload to the app as a single edit; Ctrl+V
+            // keystrokes (the binding for blockwise visual) still arrive as
+            // `Event::Key` because they're not the terminal's paste path.
+            app.apply(Action::PasteText(text));
+            if perf_input {
+                *last_input_at = Some(Instant::now());
+            }
+        }
+        Event::Resize(_, _) => {
+            // next iteration's top-of-loop setup reads the new size
+        }
+        _ => {}
+    }
+}
+
+/// Drain a batch of wakes: the `first` one that unblocked the loop plus every
+/// other wake already buffered (zero-wait `try_recv`). Input events apply and
+/// coalesce — a typing burst of N queued keys becomes N applies + ONE draw (the
+/// keystroke UX contract: the displayed text never trails the keystrokes).
+/// Stops the instant a quit lands so later buffered keys aren't applied against
+/// a tearing-down app. `Repaint` wakes apply nothing — they exist purely to
+/// trigger the single redraw at the loop top so an async republish (syntax
+/// recolour, LSP decoration) reaches the screen.
+fn drain_wakes(
+    app: &mut App,
+    rx: &mpsc::Receiver<Wake>,
+    first: Wake,
+    perf_input: bool,
+    last_input_at: &mut Option<Instant>,
+) {
+    let mut next = Some(first);
+    while let Some(wake) = next.take() {
+        if let Wake::Input(ev) = wake {
+            apply_event(app, ev, perf_input, last_input_at);
+        }
+        if app.render_state.load().lifecycle.should_quit {
+            return;
+        }
+        next = rx.try_recv().ok();
+    }
+}
+
 fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // Terminal-mode T2.b (2026-05-25): cursor-style cache now keys
     // off `(modal, terminal_insert_active)` since TerminalInsert is
@@ -197,6 +297,72 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // add to the debug-log flood). Off by default — zero cost when unset.
     let perf_input = std::env::var_os("LATTICE_PERF_INPUT").is_some();
     let mut last_input_at: Option<Instant> = None;
+
+    // I.3 (event-driven wake): replace the 100ms terminal poll with a wake on
+    // (input-ready OR actor-publish). A dedicated reader thread owns terminal
+    // events and forwards each as `Wake::Input`; a tiny task on the shared LSP
+    // runtime forwards the actor's `paint_request` `Notify` (async syntax / LSP
+    // / worker republishes) as `Wake::Repaint`. The loop blocks on a single
+    // channel of `Wake`s, so it draws exactly when something changed and stays
+    // fully idle (zero draws, zero CPU) otherwise — the up-to-100ms async-
+    // repaint lag is gone. The reader polls a stop flag on a 100ms tick (NOT a
+    // redraw timer — it never wakes the loop on its own) purely so it tears
+    // down cleanly on quit. See input-latency.md I.3.
+    let (wake_tx, wake_rx) = mpsc::channel::<Wake>();
+    let reader_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let reader_handle = {
+        let tx = wake_tx.clone();
+        let stop = reader_stop.clone();
+        thread::Builder::new()
+            .name("lattice-tui-input".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // Block up to 100ms for an event; on timeout, loop back to
+                    // re-check the stop flag. `poll` returns the instant an
+                    // event is ready, so input latency is NOT capped at 100ms.
+                    match event::poll(Duration::from_millis(100)) {
+                        Ok(true) => match event::read() {
+                            Ok(ev) => {
+                                if tx.send(Wake::Input(ev)).is_err() {
+                                    break; // main loop dropped the receiver
+                                }
+                            }
+                            Err(_) => break,
+                        },
+                        Ok(false) => {}
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("spawn input reader thread")
+    };
+    // Forward async `paint_request` notifications onto the same wake channel.
+    // The actor's workers (syntax highlights, cells, virtual-rows) call
+    // `paint_request.notify_one()` after publishing; `Notify` is permit-style,
+    // so a notify that arrives before this re-awaits is not lost. The task
+    // exits when the main loop drops the receiver (`send` errors).
+    {
+        let tx = wake_tx.clone();
+        // App holds the actor handle in production (`cfg(not(test))`) and the
+        // Editor directly in test builds (3c.final.E.swap); both expose the
+        // same shared `paint_request` Notify.
+        #[cfg(not(test))]
+        let paint_request = app.editor_actor.paint_request();
+        #[cfg(test)]
+        let paint_request = app.editor.paint_request.clone();
+        spawn_on_lsp_runtime(async move {
+            loop {
+                paint_request.notified().await;
+                if tx.send(Wake::Repaint).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    // The main loop owns only the receiver; the two producer clones above keep
+    // the channel alive until both the reader thread and the bridge task exit.
+    drop(wake_tx);
+
     // Slice 3c.final.B (group 6): lifecycle read via published
     // substate. `should_quit` flips from inside dispatch (`:q`,
     // `:wq`, `:qa!`) which republishes at its tail, so the next
@@ -391,89 +557,29 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
             }
         }
 
-        // Slice I.1 — input coalescing. The 100ms poll waits for the FIRST
-        // event (keeps the loop responsive to resizes without spinning;
-        // Slice I.3 makes this fully event-driven). Once an event is ready
-        // we drain EVERY currently-buffered event before looping back to
-        // draw: a typing burst of N queued keys collapses to N cheap
-        // `apply`s + ONE draw instead of N full draw cycles, so the
-        // displayed text never trails the keystrokes (the keystroke UX
-        // contract). The translate context is rebuilt per event because
-        // applying one event can change the modal state / mode stack that
-        // governs how the next event translates. See
+        // I.3 (event-driven wake): block until the input reader forwards a
+        // terminal event or the actor's `paint_request` forwards a repaint,
+        // then drain every wake already buffered before looping back to draw
+        // once. A typing burst collapses to N applies + ONE draw (I.1's
+        // coalescing, now over the wake channel — the mockable seam I.1
+        // deferred to here). `recv()` parks the thread with zero CPU while
+        // idle, so an idle editor issues zero draws and the up-to-100ms
+        // async-repaint lag is gone. The translate context is rebuilt per key
+        // inside `apply_event` because applying one event can change the modal
+        // state / mode stack that governs the next event's translation. See
         // docs/dev/architecture/input-pipeline.md.
-        if event::poll(Duration::from_millis(100)).context("poll events")? {
-            loop {
-                match event::read().context("read event")? {
-                    Event::Key(k) => {
-                        // Slice 3c.final.B (group 5): translator
-                        // inputs read through `rs.translator` instead
-                        // of `&app.editor.{builtins,keymap,partial_chord}`.
-                        // The Arc-bound substate keeps the borrows
-                        // valid for the duration of the translate call
-                        // without tying them to `Editor`'s lifetime —
-                        // sets up the slice-E thread split.
-                        let ad = app.ad();
-                        // Slice 3c.final.E.4: via App-cached render_state.
-                        let translator = app.render_state.load().translator.clone();
-                        let ctx = TranslateContext {
-                            modal: ad.modal,
-                            builtins: &translator.builtins,
-                            pending_count: ad.pending_count,
-                            op_count: ad.op_count,
-                            recording_macro: ad.macro_recording,
-                            active_buffer: ad.buffer_kind,
-                            completion_open: ad.completion_open,
-                            chord_capture: app.chord_capture_active(),
-                            picker_open: ad.picker_open,
-                            insert_completion_open: app.completion_popup_active(),
-                            snippet_active: ad.snippet_active,
-                            terminal_insert_active: ad.terminal_insert_active,
-                            terminal_esc_exits: ad.terminal_esc_exits,
-                            terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
-                            terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
-                            terminal_visual_active: ad.terminal_visual_active,
-                            keymap: &translator.keymap,
-                            partial_chord: &translator.partial_chord,
-                            active_minor_modes: &translator.active_minor_modes,
-                        };
-                        let action = translate(ctx, k);
-                        app.apply(action);
-                        if perf_input {
-                            last_input_at = Some(Instant::now());
-                        }
-                    }
-                    Event::Paste(text) => {
-                        // Real bracketed-paste burst from the terminal's
-                        // clipboard shortcut. Hand the payload to the app
-                        // as a single edit; Ctrl+V keystrokes (the binding
-                        // for blockwise visual) still arrive as Event::Key
-                        // because they're not the terminal's paste path.
-                        app.apply(Action::PasteText(text));
-                        if perf_input {
-                            last_input_at = Some(Instant::now());
-                        }
-                    }
-                    Event::Resize(_, _) => {
-                        // next iteration handles the new size
-                    }
-                    _ => {}
-                }
-                // Stop draining the instant a quit lands: don't apply later
-                // buffered keys against a tearing-down app, and let the outer
-                // `while !should_quit` exit without a final draw.
-                if app.render_state.load().lifecycle.should_quit {
-                    break;
-                }
-                // Drain only what is ALREADY buffered (zero-timeout poll).
-                // When the queue empties, fall through to a single redraw
-                // showing the coalesced final state.
-                if !event::poll(Duration::ZERO).context("poll events")? {
-                    break;
-                }
-            }
+        match wake_rx.recv() {
+            Ok(first) => drain_wakes(&mut app, &wake_rx, first, perf_input, &mut last_input_at),
+            // Both producer clones are gone (the reader thread died and the
+            // paint bridge exited) — nothing can wake us again; leave the loop.
+            Err(_) => break,
         }
     }
+    // I.3 teardown: stop the reader thread and join it before `run` restores
+    // the terminal, so no detached thread is left reading stdin once raw mode
+    // is disabled. The reader observes the flag within its 100ms poll tick.
+    reader_stop.store(true, Ordering::Relaxed);
+    let _ = reader_handle.join();
     Ok(())
 }
 
@@ -481,7 +587,57 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use lattice_grammar::{SearchDirection, VisualKind};
+
+    /// Build a plain `Event::Key` for a character (no modifiers).
+    fn key(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+
+    /// I.3: `drain_wakes` applies every buffered input event in one batch —
+    /// the coalescing the event-driven loop relies on for the keystroke UX
+    /// contract (N queued keys → N applies → ONE draw) — and arms the perf
+    /// timer because real input was applied. The wake channel is the mockable
+    /// event source I.1's burst test was deferred to.
+    #[test]
+    fn drain_wakes_applies_and_coalesces_buffered_input() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let (tx, rx) = mpsc::channel::<Wake>();
+        // Queue a burst: `i` enters Insert, `X` types a char.
+        tx.send(Wake::Input(key('i'))).unwrap();
+        tx.send(Wake::Input(key('X'))).unwrap();
+        let first = rx.recv().unwrap();
+        let mut last_input_at = None;
+        drain_wakes(&mut app, &rx, first, true, &mut last_input_at);
+        // Whole burst drained in one batch — nothing left for a second draw.
+        assert!(rx.try_recv().is_err(), "burst must coalesce into one drain");
+        // Real input applied → perf timer armed + modal advanced to Insert.
+        assert!(
+            last_input_at.is_some(),
+            "applied input must arm the perf timer"
+        );
+        assert_eq!(app.ad().modal, ModalState::Insert, "`i` must enter Insert");
+    }
+
+    /// I.3: a `Repaint` wake (forwarded from `paint_request`) drives the
+    /// redraw at the loop top but applies NO input — it must not arm the perf
+    /// timer or mutate modal state. This is what keeps an async republish
+    /// (syntax recolour, LSP) repainting promptly without being mistaken for a
+    /// keystroke.
+    #[test]
+    fn drain_wakes_repaint_applies_no_input() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let (_tx, rx) = mpsc::channel::<Wake>();
+        let mut last_input_at = None;
+        drain_wakes(&mut app, &rx, Wake::Repaint, true, &mut last_input_at);
+        assert!(last_input_at.is_none(), "repaint must not look like input");
+        assert_eq!(
+            app.ad().modal,
+            ModalState::Normal,
+            "repaint must not change modal"
+        );
+    }
 
     #[test]
     fn normal_mode_uses_block_cursor() {

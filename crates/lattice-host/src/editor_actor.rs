@@ -241,6 +241,10 @@ pub struct EditorActorHandle {
     cmd_tx: mpsc::UnboundedSender<EditorCommand>,
     signal_rx: mpsc::UnboundedReceiver<RendererSignal>,
     render_state: Arc<ArcSwap<RenderState>>,
+    /// I.3: the editor's `paint_request` `Notify`, fired by the async
+    /// workers after a republish. Cloned to the TUI event loop so a
+    /// background publish wakes a repaint without polling.
+    paint_request: Arc<tokio::sync::Notify>,
     /// Join handle to the dedicated editor thread. Held so
     /// shutdown can join cleanly when the handle drops. `Some`
     /// in normal construction; `None` after explicit
@@ -493,6 +497,14 @@ impl EditorActorHandle {
         self.render_state.clone()
     }
 
+    /// Shared `paint_request` `Notify` the actor's workers fire after an
+    /// async republish (syntax recolour, LSP decoration, cells/virtual-rows).
+    /// The TUI event loop (I.3) awaits this to repaint promptly; the GPUI peer
+    /// uses the same notify natively.
+    pub fn paint_request(&self) -> Arc<tokio::sync::Notify> {
+        self.paint_request.clone()
+    }
+
     /// Send `Shutdown` and join the editor thread. Idempotent
     /// in the sense that subsequent calls return `Ok(())`
     /// without re-joining. Returns `Err` only if the thread
@@ -538,6 +550,7 @@ pub fn spawn_editor_actor(editor: Editor) -> EditorActorHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<EditorCommand>();
     let (signal_tx, signal_rx) = mpsc::unbounded_channel::<RendererSignal>();
     let render_state = editor.render_state.clone();
+    let paint_request = editor.paint_request.clone();
 
     let join = std::thread::Builder::new()
         .name("lattice-editor".to_string())
@@ -559,6 +572,7 @@ pub fn spawn_editor_actor(editor: Editor) -> EditorActorHandle {
         cmd_tx,
         signal_rx,
         render_state,
+        paint_request,
         join: Some(join),
     }
 }

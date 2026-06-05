@@ -11491,6 +11491,9 @@ impl Editor {
         // worker-published `syntax_visible_spans_cell`, which the
         // worker repopulates on its own wake (no clear here needed).
         self.pane_highlights.clear();
+        // DR.1: keep the retention provenance in sync with the
+        // dropped spans so the next refresh re-derives from scratch.
+        self.pane_highlight_keys.clear();
         signals
     }
 
@@ -13094,6 +13097,9 @@ impl Editor {
     pub fn do_redraw_screen(&mut self) {
         self.last_parsed_text_version = u64::MAX;
         self.pane_highlights.clear();
+        // DR.1: drop retention provenance alongside the spans so
+        // `:redraw` forces a full re-derive.
+        self.pane_highlight_keys.clear();
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());

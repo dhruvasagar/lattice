@@ -635,6 +635,18 @@ pub struct Editor {
     /// spans. `refresh_pane_highlights`'s single `.insert` site
     /// autorefs `&mut self.pane_highlights` and bumps automatically.
     pub pane_highlights: Versioned<std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>>,
+    /// DR.1 (decoration-retention): per-pane provenance for
+    /// [`Self::pane_highlights`] so `refresh_pane_highlights` retains
+    /// an unchanged pane's spans instead of clearing + re-slicing
+    /// every frame. Maps pane index → `(buffer_id, scroll,
+    /// syntax_snapshot.text_version)` of the spans currently cached.
+    /// A pane whose key is unchanged keeps its spans (the `Versioned`
+    /// map is never taken `&mut`, so no version bump and the published
+    /// Arc is reused); a pane whose buffer / scroll / parsed-tree
+    /// version moved is recomputed; a pane index that no longer
+    /// qualifies is pruned. Internal bookkeeping — not published.
+    pub pane_highlight_keys:
+        std::collections::HashMap<usize, (lattice_core::BufferId, u32, u64)>,
     /// Active picker overlay. `None` outside picker mode.
     pub picker: Option<Picker>,
     /// Manual folds. v1 supports non-nested folds defined by line range.

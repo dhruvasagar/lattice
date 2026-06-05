@@ -29,6 +29,19 @@ decoration set on **both** at all times (inactive dimmed), with zero
 decoration recompute on the switch and **no keystroke** needed for the
 newly-focused pane to paint complete.
 
+**Progress (2026-06-05):** item 2 (stop the teardown) landed — the
+syntax-highlight retention foundation. `refresh_pane_highlights` no
+longer `clear()`s and re-slices every frame; it decides changes from
+immutable reads first and takes `&mut` only when a pane must be
+recomputed or pruned, keyed on `(buffer_id, scroll,
+syntax_snapshot.text_version())`. New `Editor.pane_highlight_keys`
+provenance; the two `:redraw`/buffer-switch `pane_highlights.clear()`
+sites clear it in lockstep. Regression test
+`refresh_pane_highlights_no_op_does_not_bump_version` (693 host tests
+green). **Remaining for DR.1:** item 1 (inlays on inactive panes),
+item 3 (republish + repaint on focus-gain — the "needs a keystroke"
+symptom), item 4 (diagnostics parity on inactive).
+
 **Work items (mechanics refined during implementation):**
 
 1. **Inlays on inactive panes.** Source inlays from the retained

@@ -388,7 +388,7 @@ lifecycle events the same way diff sessions do today.
 ## 9. Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/pane-groups.md`](../operations/slice-plans/pane-groups.md);
+[`docs/d../archive/pane-groups.md`](../archive/pane-groups.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

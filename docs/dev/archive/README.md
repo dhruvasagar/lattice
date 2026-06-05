@@ -31,6 +31,12 @@ exist, trust the live spec + the source over the archive.
 | [`gpui-perf-plan.md`](gpui-perf-plan.md) | GPUI perf plan (A–F) | Slices A.1–A.4, A.2*, B.1, B.2.*, B.4.*, C, D.1, E.1, F + E.2 (dropped) | 19 perf slices: ensure gating, fold O(log), worker pre-paint + inlay weave, overlay buckets, `Arc<[T]>` publish, identity-preserving Arc publish, build-profile tightening |
 | [`8i-approach.md`](8i-approach.md) | M3 / Slice 8.i plan | M3 keymap migration | Approach memo for retiring the `bind_legacy` keymap bridge |
 | [`m3-binding-census.md`](m3-binding-census.md) | M3 / Slice 8 audit | M3 keymap migration | Inventory of every keybinding for the trie-driven dispatcher port |
+| [`keymap-substrate.md`](keymap-substrate.md) | 2026-06-01 | K.2.7 (2026-06-02) | K.2 mode-owned keymap binding substrate — all sub-slices K.2.1–K.2.7 ✅ |
+| [`help-prefix.md`](help-prefix.md) | 2026-06-02 | K.3.4 (2026-06-02) | K.3 `<C-h>` help-prefix bindings — K.3.0–K.3.4 ✅ |
+| [`marginalia.md`](marginalia.md) | 2026-06-03 | MARG.5 (2026-06-03) | MARG typed marginalia + keybinding column — MARG.1–MARG.5 ✅ |
+| [`virtual-rows.md`](virtual-rows.md) | 2026-05-28 | D.0a.1 (2026-05-28) | D.0a virtual-row data layer in `lattice-cells` — D.0a and D.0a.1 ✅ |
+| [`pane-groups.md`](pane-groups.md) | D.4 plan | D.4.e | D.4 pane-group primitive (diff side-by-side, scrollbind) — D.4.a–D.4.e ✅ |
+| [`ui-tui-refactor.md`](ui-tui-refactor.md) | Phase 5 | R.1.98 | `lattice-ui-tui` decomposition into per-feature App submodules — primary goal achieved |
 
 ## Conventions
 

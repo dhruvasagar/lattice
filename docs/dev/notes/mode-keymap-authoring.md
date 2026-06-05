@@ -224,7 +224,7 @@ your crate.
 
 - [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md) §11
   — design rationale.
-- [`../operations/slice-plans/keymap-substrate.md`](../operations/slice-plans/keymap-substrate.md)
+- [`../archive/keymap-substrate.md`](../archive/keymap-substrate.md)
   — K.2 sub-arc sequencing.
 - [`../../user/modes.md`](../../user/modes.md#how-modes-interact-with-keybindings)
   — user-facing description of how mode-contributed bindings

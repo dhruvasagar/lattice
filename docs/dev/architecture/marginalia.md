@@ -1,6 +1,6 @@
 # Marginalia — typed annotations for completion candidates
 
-> **Status (2026-06-03):** proposed; no code yet. Implementation lands as the `MARG.*` slice series — see slice plan at `docs/dev/operations/slice-plans/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
+> **Status (2026-06-03):** proposed; no code yet. Implementation lands as the `MARG.*` slice series — see slice plan at `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
 
 ## 1. Vision
 
@@ -171,7 +171,7 @@ Pre-Phase-4 (today): the `Annotation::Custom` escape hatch is reserved for in-tr
 
 ## 9. Cross-references
 
-- Slice sequencing + status: `docs/dev/operations/slice-plans/marginalia.md`
+- Slice sequencing + status: `docs/dev/archive/marginalia.md`
 - Substrate this rides on: `docs/dev/architecture/completion-pipeline-unification.md`
 - Sibling consumer of the candidate-rendering pipeline: `docs/dev/architecture/insert-completion.md`
 - Self-documenting help surface (the `:describe-key` / `:describe-command` cousin of this feature): `design.md` §5.11

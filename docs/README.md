@@ -72,7 +72,7 @@ Ongoing tracking docs.
 | Doc                                                     | What it covers                                                         |
 |---------------------------------------------------------|------------------------------------------------------------------------|
 | [lsp-features.md](dev/notes/lsp-features.md)            | LSP feature checklist with per-feature status notes.                    |
-| [ui-tui-refactor.md](dev/notes/ui-tui-refactor.md)      | The `lattice-ui-tui` decomposition into per-feature App submodules.     |
+| [ui-tui-refactor.md](dev/archive/ui-tui-refactor.md)      | The `lattice-ui-tui` decomposition into per-feature App submodules.     |
 
 ## dev/archive/
 

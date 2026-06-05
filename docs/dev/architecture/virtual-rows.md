@@ -342,7 +342,7 @@ concrete consumer to validate the UX, not in this slice.
 ## 8. Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/virtual-rows.md`](../operations/slice-plans/virtual-rows.md);
+[`docs/d../archive/virtual-rows.md`](../archive/virtual-rows.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

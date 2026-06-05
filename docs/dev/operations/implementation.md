@@ -1897,7 +1897,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   filler rows. Per-pane buffer mutability addressed by
   buffer-pair keyed membership (see
   [`pane-groups.md`](../architecture/pane-groups.md)).
-  Carve in [`slice-plans/pane-groups.md`](slice-plans/pane-groups.md).
+  Carve in [`../archive/pane-groups.md`](../archive/pane-groups.md).
   - ✅ **D.4.a** (2026-05-29) — `PaneGroup` substrate
     landed. New `PaneGroupId` in
     `lattice-core::ui::pane`. New `lattice-host/src/pane_group.rs`
@@ -4339,7 +4339,7 @@ architecture §10 for the rationale.
   §13; mode-author guide at
   [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md);
   full sequencing + commit table at
-  [`slice-plans/keymap-substrate.md`](slice-plans/keymap-substrate.md).
+  [`../archive/keymap-substrate.md`](../archive/keymap-substrate.md).
 - ✅ **K.3** — Help-prefix bindings (`<C-h>` map,
   Normal-mode only). Closed 2026-06-02. Emacs-style
   discoverability for the §5.11 self-documenting help
@@ -4391,7 +4391,7 @@ architecture §10 for the rationale.
   Design at
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
   §12; sequencing + commit refs at
-  [`slice-plans/help-prefix.md`](slice-plans/help-prefix.md).
+  [`../archive/help-prefix.md`](../archive/help-prefix.md).
 - 🚧 **K.4** — Multibuffer-is-a-regular-buffer audit +
   integration verification. Triggered by M.6 testing
   surfacing four latent failures (silent EventBus None,

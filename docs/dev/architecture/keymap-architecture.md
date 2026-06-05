@@ -1425,7 +1425,7 @@ tomorrow); resolution is unchanged.
 
 ### 11.5 Migration sequencing
 
-See [slice plan: keymap-substrate](../operations/slice-plans/keymap-substrate.md)
+See [slice plan: keymap-substrate](../archive/keymap-substrate.md)
 for the K.2.1--K.2.7 carving. The K.2 substrate unblocks the
 MO.1--MO.4 cleanup slices (LSP, Oil, Snippet bindings move
 out of host) and the `multibuffer_keymap.rs` deletion that
@@ -1525,7 +1525,7 @@ the explicit form is the convention.
 ### 12.4 Sequencing — landed (2026-06-02)
 
 Full carving in
-[slice plan: help-prefix](../operations/slice-plans/help-prefix.md).
+[slice plan: help-prefix](../archive/help-prefix.md).
 K.3 was gated on K.2 landing (it did, commit `0938572` closing
 the K.2 arc) and shipped as a thin slice on top: substrate
 unchanged, just the new bindings + Option-2 design lock-in +
@@ -1544,8 +1544,8 @@ mode-scope tests + docs.
 
 ## See also
 
-- [slice plan: keymap-substrate](../operations/slice-plans/keymap-substrate.md) -- K.2 sequencing.
-- [slice plan: help-prefix](../operations/slice-plans/help-prefix.md) -- K.3 sequencing.
+- [slice plan: keymap-substrate](../archive/keymap-substrate.md) -- K.2 sequencing.
+- [slice plan: help-prefix](../archive/help-prefix.md) -- K.3 sequencing.
 - [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.
 - [design.md §5.2.3](design.md) -- canonical spec.
 - [design.md §5.2.4](design.md) -- extensibility (matches §5.5

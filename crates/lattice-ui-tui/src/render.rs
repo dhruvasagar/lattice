@@ -3023,6 +3023,43 @@ fn draw_inactive_document(
             })
     };
     let inactive_body_col_width = buffer_w;
+    // DR.1b (decoration-retention): weave inlay hints on inactive
+    // panes too. The active pane reads the active-published
+    // `rs.syntax.inlay_hints`; inactive panes read their OWN buffer's
+    // per-buffer LSP cache so the hints don't vanish the instant the
+    // pane loses focus. Gated by the same per-buffer inlay-hint mode
+    // as the active publish (`build_active_inlay_hints`). Prepared
+    // once here (label flattened + padding baked, utf-16 character
+    // column kept for the per-line utf-8 conversion) so the per-line
+    // loop just filters + splices. Mirrors the GPUI peer, which
+    // already sources inactive inlays per-buffer in `paint_pane`.
+    let inactive_inlays: Vec<(u32, u32, String)> =
+        if app.lsp_inlay_hint_mode_enabled_for(pane.buffer_id) {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            let rs = app.render_state.load();
+            rs.lsp
+                .inlay_hints
+                .get_for(pane.buffer_id)
+                .map(|cache| {
+                    cache
+                        .hints
+                        .iter()
+                        .map(|h| {
+                            let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
+                            if h.padding_left.unwrap_or(false) {
+                                text.insert(0, ' ');
+                            }
+                            if h.padding_right.unwrap_or(false) {
+                                text.push(' ');
+                            }
+                            (h.position.line, h.position.character, text)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
     let mut i: u32 = 0;
     while (lines.len() as u32) < area.height as u32 {
@@ -3063,6 +3100,29 @@ fn draw_inactive_document(
         if view.app.ad().option_cache.show_whitespace {
             let decoration = WhitespaceDecoration::from_app(view.app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
+        }
+        // DR.1b: splice this buffer's inlay hints into the inactive
+        // body (reverse char order so earlier splices don't shift
+        // later ones), BEFORE the dim overlay so the hints dim with
+        // the rest of the inactive content.
+        if !inactive_inlays.is_empty() {
+            let mut on_line: Vec<&(u32, u32, String)> = inactive_inlays
+                .iter()
+                .filter(|(l, _, _)| *l == buf_line)
+                .collect();
+            on_line.sort_by(|a, b| b.1.cmp(&a.1));
+            for (_, ch, text) in on_line {
+                let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    *ch,
+                );
+                body = splice_virtual_text_into_spans(
+                    body,
+                    (byte as usize).min(line_text.len()),
+                    text.clone(),
+                    inlay_hint_style(),
+                );
+            }
         }
         if let Some(overlay) = dim_overlay {
             for span in body.iter_mut() {

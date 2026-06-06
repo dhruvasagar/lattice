@@ -86,7 +86,7 @@ pub enum KeymapLayer {
     /// plugin bindings shadow these.
     Builtin,
     /// Major-mode keymap (rust, markdown, ...).
-    MajorMode,
+    MajorMode(ModeId),
     /// Active minor-mode keymap. The `ModeId` is the layer's
     /// identity — push for the same mode is idempotent on the
     /// layer (bindings replaced, not appended as a sibling).

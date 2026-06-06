@@ -128,9 +128,21 @@ fn push_mode_keymap(
         // empty layer.
         return;
     }
-    let bindings_by_mode = group_bindings_into_tries(&all_bindings, mode_id);
+
+    let layer = match mode.kind() {
+        lattice_mode::ModeKind::Major => KeymapLayer::MajorMode(mode_id),
+        lattice_mode::ModeKind::Minor => KeymapLayer::MinorMode(mode_id),
+    };
+
+    let bindings_by_mode = group_bindings_into_tries(&all_bindings, layer);
+
+    let push_layer = match mode.kind() {
+        lattice_mode::ModeKind::Major => PushLayerKind::MajorMode(mode_id),
+        lattice_mode::ModeKind::Minor => PushLayerKind::MinorMode(mode_id),
+    };
+
     handle.push_layer(
-        PushLayerKind::MinorMode(mode_id),
+        push_layer,
         format!("{mode_id}"),
         bindings_by_mode,
     );
@@ -138,7 +150,7 @@ fn push_mode_keymap(
 
 /// Group a slice of bindings into one [`KeymapTrie`] per
 /// [`BindingMode`], wrapping each `KeymapBinding` in a
-/// [`BoundCommand`] at `KeymapLayer::MinorMode(mode_id)`.
+/// [`BoundCommand`] at given [`KeymapLayer`]
 ///
 /// Factored out so unit tests can exercise the grouping +
 /// `BoundCommand` construction without going through the
@@ -147,9 +159,8 @@ fn push_mode_keymap(
 /// chain form + resolved table form into one list.
 fn group_bindings_into_tries(
     bindings: &[KeymapBinding],
-    mode_id: ModeId,
+    layer: KeymapLayer,
 ) -> HashMap<BindingMode, KeymapTrie> {
-    let layer = KeymapLayer::MinorMode(mode_id);
     let mut by_mode: HashMap<BindingMode, KeymapTrie> = HashMap::new();
     for binding in bindings {
         let bound = Arc::new(BoundCommand::from_invocation(

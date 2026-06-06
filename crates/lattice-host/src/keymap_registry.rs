@@ -662,6 +662,7 @@ impl KeymapHandle {
         let (id, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer = match kind {
+                PushLayerKind::MajorMode(mode_id) => KeymapLayer::MajorMode(mode_id),
                 PushLayerKind::MinorMode(mode_id) => KeymapLayer::MinorMode(mode_id),
                 PushLayerKind::Buffer => KeymapLayer::Buffer,
             };
@@ -875,6 +876,7 @@ impl KeymapHandle {
             // the synthesised tag reflects the layer *kind* the
             // caller tried to write to.
             let placeholder = match kind {
+                PushLayerKind::MajorMode(mode_id) => KeymapLayer::MajorMode(mode_id),
                 PushLayerKind::MinorMode(mode_id) => KeymapLayer::MinorMode(mode_id),
                 PushLayerKind::Buffer => KeymapLayer::Buffer,
             };
@@ -941,6 +943,7 @@ impl Default for KeymapHandle {
 /// [`lattice_core::BufferId`] for symmetry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushLayerKind {
+    MajorMode(ModeId),
     MinorMode(ModeId),
     Buffer,
 }
@@ -948,7 +951,7 @@ pub enum PushLayerKind {
 fn default_label(layer: KeymapLayer) -> String {
     match layer {
         KeymapLayer::Builtin => "builtin".into(),
-        KeymapLayer::MajorMode => "major-mode".into(),
+        KeymapLayer::MajorMode(mode_id) => format!("major-mode:{mode_id}"),
         // K.1.b: layer label derives from the ModeId's canonical
         // name, so `:describe-key` provenance reads
         // `minor-mode:diff-mode` directly from the typed id —
@@ -1264,7 +1267,7 @@ mod tests {
         let h = KeymapHandle::new();
         for layer in [
             KeymapLayer::Builtin,
-            KeymapLayer::MajorMode,
+            KeymapLayer::MajorMode(ModeId::new("test-major")),
             KeymapLayer::MinorMode(ModeId::new("test-minor-7")),
             KeymapLayer::User,
             KeymapLayer::Buffer,
@@ -1368,7 +1371,7 @@ mod tests {
         let h = KeymapHandle::new();
         for layer in [
             KeymapLayer::Builtin,
-            KeymapLayer::MajorMode,
+            KeymapLayer::MajorMode(ModeId::new("major-mode")),
             KeymapLayer::User,
         ] {
             let r = h.try_bind(

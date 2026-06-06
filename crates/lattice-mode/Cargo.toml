@@ -19,6 +19,10 @@ lattice-protocol = { path = "../lattice-protocol" }
 # this dep is cycle-free. Resolves the stub-deferral reason
 # noted in keymap-architecture.md §11.
 lattice-grammar = { path = "../lattice-grammar" }
+# K.3 (2026-06-06): `ModeId` moved to `lattice-keymap` so
+# `KeymapLayer::MajorMode(ModeId)` can live in the keymap crate
+# without a dep cycle back to `lattice-mode`.
+lattice-keymap = { path = "../lattice-keymap" }
 # M.4 dep-inversion: modes contribute typed-option overrides
 # (e.g. `Mode::options() -> OptionOverrideSet`); the override
 # types live in `lattice-config`, so `lattice-mode` pulls them

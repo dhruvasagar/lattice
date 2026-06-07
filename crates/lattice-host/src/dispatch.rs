@@ -4134,15 +4134,27 @@ impl Editor {
         if self.viewport_height == 0 {
             return;
         }
+        // Sticky virtual rows (tutor HUD, diff-mode header, …) occupy
+        // the top N rows of the pane permanently regardless of scroll.
+        // They are excluded from virtual_rows_in_line_range (to avoid
+        // double-counting in the display-row walk), so scroll arithmetic
+        // must treat them as a fixed cost subtracted from the budget.
+        // Without this, bottom_anchored_scroll thinks there are more
+        // content rows than actually exist, allowing the scroll to settle
+        // at a position where the cursor is visually behind the header.
+        let buffer_id = self.active_buffer_id();
+        let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
+        let sticky_count = vrows.sticky_rows().count() as u32;
+        let effective_height = self.viewport_height.saturating_sub(sticky_count).max(1);
+
         // `scrolloff`: keep this many DOCUMENT lines of context
-        // above and below the cursor. Clamped to half the viewport
-        // so the two margins can't fight — vim's behaviour once
-        // `scrolloff >= height/2` is to keep the cursor centred,
-        // which `(viewport_height - 1) / 2` reproduces.
+        // above and below the cursor. Clamped to half the effective
+        // viewport so the two margins can't fight — vim's behaviour
+        // once `scrolloff >= height/2` is to keep the cursor centred.
         let scrolloff = self
             .option_cache
             .scrolloff
-            .min(self.viewport_height.saturating_sub(1) / 2);
+            .min(effective_height.saturating_sub(1) / 2);
 
         // Top margin: at least `scrolloff` lines visible above the
         // cursor (clamped at BOF). Doc-line space on purpose —
@@ -4158,16 +4170,12 @@ impl Editor {
         // Bottom margin: at least `scrolloff` lines visible below
         // the cursor, in *display-row* space so excerpt headers
         // (virtual rows) don't push the margin — or the cursor
-        // itself — behind the modeline (the `G` / bottom-scroll bug
-        // in multibuffer views). The target clamps to the last
-        // addressable line so EOF reserves no phantom space (vim:
-        // `G` puts the last line flush at the bottom). With
-        // `scrolloff == 0` and an empty virtual-row matrix this
-        // reduces exactly to the historical
-        // `scroll = cursor.line + 1 - viewport_height`.
+        // itself — behind the modeline. Uses effective_height so the
+        // sticky header rows are excluded from the budget — the
+        // cursor must remain in the scrollable content region.
         let last = last_addressable_line(&self.active_text());
         let bottom_target = self.cursor.line.saturating_add(scrolloff).min(last);
-        let min_scroll = self.bottom_anchored_scroll(bottom_target, self.viewport_height);
+        let min_scroll = self.bottom_anchored_scroll(bottom_target, effective_height);
         if self.scroll < min_scroll {
             self.scroll = min_scroll;
         }

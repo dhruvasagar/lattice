@@ -5713,8 +5713,24 @@ fn cursor_screen_position_at(
     } else {
         (0, display_col)
     };
+    // Sticky rows are emitted in a pre-pass before the scrollable
+    // content (compose_pane_lines), so they occupy the first N screen
+    // rows of the pane regardless of scroll. virtual_rows_at /
+    // buffer_line_to_visible_row_with exclude sticky rows from their
+    // counts (to avoid double-painting), so row_in_view is relative
+    // to the *scrollable* region starting at sticky_count, not to the
+    // pane top. Add sticky_count here so the terminal cursor lands on
+    // the correct physical row.
+    let sticky_count = {
+        let rs = view.app.render_state.load();
+        let pane_id = view.app.panes().tree.active().id;
+        rs.virtual_rows
+            .matrix_for_pane(pane_id)
+            .map(|cell| cell.load_full().sticky_rows().count() as u32)
+            .unwrap_or(0)
+    };
     let col = DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH + gutter_w + body_col;
-    let row = row_in_view.saturating_add(own_segment);
+    let row = row_in_view.saturating_add(own_segment).saturating_add(sticky_count);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y.saturating_add(row.try_into().unwrap_or(u16::MAX)),

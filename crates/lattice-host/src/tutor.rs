@@ -109,6 +109,9 @@ pub struct TutorSession {
     pub exercise_started_at: Option<std::time::Instant>,
     /// High-level game state.
     pub state: TutorGameState,
+    /// All-time high score for this lesson loaded from disk at session
+    /// start.  Shown in the HUD as `HI:`.
+    pub high_score: u32,
 }
 
 impl TutorSession {
@@ -159,6 +162,7 @@ impl TutorSession {
             score: 0,
             exercise_started_at: Some(std::time::Instant::now()),
             state: TutorGameState::Active,
+            high_score: 0,
         })
     }
 

@@ -98,6 +98,8 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 toml = { workspace = true }
 # T.1: TutorSession sidecar TOML deserialization.
 serde = { workspace = true }
+# T.B: tutor high-score persistence path via data_local_dir().
+dirs = { workspace = true }
 # 5.7.B.7: `Editor::lookup_lsp_config_section` round-trips
 # toml::Value -> serde_json::Value so it can ship the
 # server-namespaced config subtree to LSP actors via

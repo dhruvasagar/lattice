@@ -168,23 +168,29 @@ pub fn tutor_headerline_text(session: &crate::tutor::TutorSession) -> String {
             format!(" === GAME OVER === | {} | {} | <CR>=skip  <C-k>=retry ", lv, sc)
         }
         TutorGameState::Active => {
+            let hi = if session.high_score > 0 {
+                format!(" | HI: {:>5}", session.high_score)
+            } else {
+                String::new()
+            };
             if session.is_complete() {
-                // Lesson complete — waiting for user to press <CR> to open next.
+                let new_record = session.score > session.high_score && session.high_score > 0;
+                let record_tag = if new_record { " NEW RECORD!" } else { "" };
                 format!(
-                    " *** LESSON CLEAR! *** | LV.{} | {} | <CR>=next lesson ",
-                    session.lesson, sc
+                    " *** LESSON CLEAR! *** | LV.{} | {}{}{} | <CR>=next lesson ",
+                    session.lesson, sc, hi, record_tag
                 )
             } else {
                 let hearts = format_hearts(session.lives, crate::tutor::MAX_LIVES);
                 match session.current_exercise() {
-                    None => format!(" {} | {} | {} ", hearts, lv, sc),
+                    None => format!(" {} | {} | {}{} ", hearts, lv, sc, hi),
                     Some(ex) => {
                         let hint = if session.attempt_count >= 2 && !ex.hint.is_empty() {
                             format!("  Hint: {}", ex.hint)
                         } else {
                             String::new()
                         };
-                        format!(" {} | {} | {} | {}{}", hearts, lv, sc, ex.description, hint)
+                        format!(" {} | {} | {}{} | {}{}", hearts, lv, sc, hi, ex.description, hint)
                     }
                 }
             }

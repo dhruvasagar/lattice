@@ -17962,7 +17962,7 @@ impl Editor {
             }
         };
         let mut path = std::env::temp_dir();
-        path.push(format!("lattice-tutor-lesson-{lesson_num}.txt"));
+        path.push(format!("lattice-tutor-lesson-{lesson_num}.md"));
         if let Err(e) = std::fs::write(&path, lesson_text) {
             self.set_message(
                 EchoLevel::Error,
@@ -17981,7 +17981,7 @@ impl Editor {
         // T.4: seed TutorSession, TutorHeaderlineProvider, and tutor-mode
         // on the buffer that was just opened (now self.document_buffer_id).
         let buffer_id = self.document_buffer_id;
-        let session =
+        let mut session =
             match crate::tutor::TutorSession::load(lesson_num, 5, lesson_text, exercises_toml) {
                 Ok(s) => s,
                 Err(e) => {
@@ -17992,6 +17992,9 @@ impl Editor {
                     return signals;
                 }
             };
+        // T.B: seed the HUD's HI: field from persisted scores.
+        session.high_score =
+            crate::tutor_scores::TutorScores::load_or_default().high_score(lesson_num);
         // Build the initial headerline text before session moves.
         let initial_text = crate::tutor_mode::tutor_headerline_text(&session);
         // Provider — unregister any stale one (re-open path) then register fresh.
@@ -18145,11 +18148,19 @@ impl Editor {
     }
 
     /// Open the next lesson, or mark AllComplete on the final lesson.
+    /// Saves the lesson's score to disk on every completion.
     fn tutor_open_next_or_complete(
         &mut self,
         mut session: crate::tutor::TutorSession,
     ) -> Vec<RendererSignal> {
         use crate::tutor::TutorGameState;
+        // T.B: persist high score whenever a lesson is cleared.
+        let mut scores = crate::tutor_scores::TutorScores::load_or_default();
+        let new_record = scores.record(session.lesson, session.score);
+        scores.save();
+        if new_record {
+            session.high_score = session.score;
+        }
         let next = session.lesson + 1;
         if next <= session.total_lessons {
             return self.do_tutor(Some(next));

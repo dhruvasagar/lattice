@@ -250,6 +250,18 @@ pub enum AppEffect {
     /// Vim's `A`: move cursor to end of the current line and enter
     /// Insert.
     EnterAppendEndOfLine,
+    /// Vim's `gj`: move down one display line (wrap segment).
+    /// Degrades to `j` when wrapping is off.
+    DisplayLineDown,
+    /// Vim's `gk`: move up one display line (wrap segment).
+    /// Degrades to `k` when wrapping is off.
+    DisplayLineUp,
+    /// Vim's `g0`: move to the first byte of the current display segment.
+    /// Degrades to `0` when wrapping is off.
+    DisplayLineStart,
+    /// Vim's `g$`: move to the last byte of the current display segment.
+    /// Degrades to `$` when wrapping is off.
+    DisplayLineEnd,
     /// Vim's `zf`. Create a fold from the most recent Visual
     /// selection. Promoted from `Action::CreateFoldFromVisual`
     /// in slice 8.i.1.g.

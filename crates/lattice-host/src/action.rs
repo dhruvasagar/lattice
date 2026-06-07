@@ -91,6 +91,14 @@ pub enum Action {
     EnterInsertFirstNonBlank,
     /// Vim's `A`: move to end of line and enter Insert.
     EnterAppendEndOfLine,
+    /// Vim's `gj`: move down one display line (wrap segment).
+    DisplayLineDown,
+    /// Vim's `gk`: move up one display line (wrap segment).
+    DisplayLineUp,
+    /// Vim's `g0`: move to the first byte of the current display segment.
+    DisplayLineStart,
+    /// Vim's `g$`: move to the last byte of the current display segment.
+    DisplayLineEnd,
     /// Vim's blockwise-visual `I`: move cursor to the leftmost
     /// column of the block on the top line, enter Insert, and on
     /// Esc replicate the typed text to every other line in the

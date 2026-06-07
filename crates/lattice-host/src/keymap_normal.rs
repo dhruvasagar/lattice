@@ -585,6 +585,49 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.lsp_follow_link_at_cursor),
         source(),
     );
+    // W.6: display-line motions (soft-wrap aware).
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('j')],
+        CommandInvocation::of(actions.display_line_down),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_special(SpecialKey::Down)],
+        CommandInvocation::of(actions.display_line_down),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('k')],
+        CommandInvocation::of(actions.display_line_up),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_special(SpecialKey::Up)],
+        CommandInvocation::of(actions.display_line_up),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('0')],
+        CommandInvocation::of(actions.display_line_start),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('$')],
+        CommandInvocation::of(actions.display_line_end),
+        source(),
+    );
 
     // ---- Slice 8.g.ii: `z_` family.
     //

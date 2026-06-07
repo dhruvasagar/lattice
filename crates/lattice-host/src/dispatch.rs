@@ -1641,6 +1641,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // The catch-all `_ => {}` is the seam: anything not yet moved
     // is still handled by App's match (which runs after this
     // function returns).
+    //
+    // goal_col (gj/gk sticky column): preserve only across
+    // display-line vertical moves; any other action resets it.
+    if !matches!(
+        action,
+        Action::DisplayLineDown | Action::DisplayLineUp
+    ) {
+        editor.goal_col = None;
+    }
     match action {
         Action::None => {}
         // ---- Slice 3c.final.C: renderer non-dispatch mutations ----
@@ -1803,6 +1812,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::EnterAppend => editor.do_enter_append(),
         Action::EnterInsertFirstNonBlank => editor.do_enter_insert_first_non_blank(),
         Action::EnterAppendEndOfLine => editor.do_enter_append_end_of_line(),
+        Action::DisplayLineDown => editor.do_display_line_down(),
+        Action::DisplayLineUp => editor.do_display_line_up(),
+        Action::DisplayLineStart => editor.do_display_line_start(),
+        Action::DisplayLineEnd => editor.do_display_line_end(),
         Action::OpenLineBelow => editor.do_open_line_below(),
         Action::OpenLineAbove => editor.do_open_line_above(),
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
@@ -4912,6 +4925,10 @@ impl Editor {
             AppEffect::EnterAppendEndOfLine => {
                 out.next_actions.push(Action::EnterAppendEndOfLine)
             }
+            AppEffect::DisplayLineDown => out.next_actions.push(Action::DisplayLineDown),
+            AppEffect::DisplayLineUp => out.next_actions.push(Action::DisplayLineUp),
+            AppEffect::DisplayLineStart => out.next_actions.push(Action::DisplayLineStart),
+            AppEffect::DisplayLineEnd => out.next_actions.push(Action::DisplayLineEnd),
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
@@ -12629,6 +12646,128 @@ impl Editor {
             .line_byte_len(self.cursor.line);
         self.cursor.byte = len;
         self.modal = ModalState::Insert;
+    }
+
+    /// Return the wrap_width for the active buffer's cell matrix.
+    /// `0` means wrapping is off.
+    fn active_wrap_width(&self) -> u32 {
+        let bid = self.active_buffer_id();
+        self.cells_matrix_for(bid).load_full().wrap_width
+    }
+
+    /// Vim's `gj` -- move down one display-line segment.
+    /// When wrapping is off (`wrap_width == 0`), degrades to `j`.
+    pub fn do_display_line_down(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        if wrap_width == 0 {
+            let snap = self.document.snapshot();
+            let last = snap.buffer.line_count().saturating_sub(1);
+            let line = (self.cursor.line + 1).min(last);
+            let max_byte = snap.buffer.line_byte_len(line);
+            self.cursor.line = line;
+            self.cursor.byte = self.cursor.byte.min(max_byte);
+            self.ensure_cursor_visible();
+            return;
+        }
+        let snap = self.document.snapshot();
+        let cur_line = self.cursor.line;
+        let cur_byte = self.cursor.byte;
+        let cur_seg = cur_byte / wrap_width;
+        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        let seg_count = {
+            let bid = self.active_buffer_id();
+            self.cells_matrix_for(bid).load_full().segment_count(cur_line)
+        };
+        if cur_seg + 1 < seg_count {
+            // next segment on the same source line
+            let next_start = (cur_seg + 1) * wrap_width;
+            let next_end = ((cur_seg + 2) * wrap_width)
+                .min(snap.buffer.line_byte_len(cur_line));
+            self.cursor.byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
+        } else {
+            // first segment of the next source line
+            let last = snap.buffer.line_count().saturating_sub(1);
+            if cur_line >= last {
+                return;
+            }
+            let next_line = cur_line + 1;
+            let next_len = snap.buffer.line_byte_len(next_line);
+            self.cursor.line = next_line;
+            self.cursor.byte = goal.min(next_len.saturating_sub(1).max(0));
+        }
+        self.goal_col = Some(goal);
+        self.ensure_cursor_visible();
+    }
+
+    /// Vim's `gk` -- move up one display-line segment.
+    /// When wrapping is off (`wrap_width == 0`), degrades to `k`.
+    pub fn do_display_line_up(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        if wrap_width == 0 {
+            let snap = self.document.snapshot();
+            let line = self.cursor.line.saturating_sub(1);
+            let max_byte = snap.buffer.line_byte_len(line);
+            self.cursor.line = line;
+            self.cursor.byte = self.cursor.byte.min(max_byte);
+            self.ensure_cursor_visible();
+            return;
+        }
+        let snap = self.document.snapshot();
+        let cur_line = self.cursor.line;
+        let cur_byte = self.cursor.byte;
+        let cur_seg = cur_byte / wrap_width;
+        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        if cur_seg > 0 {
+            // previous segment on the same source line
+            let prev_start = (cur_seg - 1) * wrap_width;
+            let prev_end = cur_seg * wrap_width;
+            let line_len = snap.buffer.line_byte_len(cur_line);
+            let actual_end = prev_end.min(line_len);
+            self.cursor.byte = (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
+        } else {
+            // last segment of the previous source line
+            if cur_line == 0 {
+                return;
+            }
+            let prev_line = cur_line - 1;
+            let prev_len = snap.buffer.line_byte_len(prev_line);
+            let prev_segs = {
+                let bid = self.active_buffer_id();
+                self.cells_matrix_for(bid).load_full().segment_count(prev_line)
+            };
+            let last_seg_start = (prev_segs - 1) * wrap_width;
+            self.cursor.line = prev_line;
+            self.cursor.byte = (last_seg_start + goal)
+                .min(prev_len.saturating_sub(1).max(last_seg_start));
+        }
+        self.goal_col = Some(goal);
+        self.ensure_cursor_visible();
+    }
+
+    /// Vim's `g0` -- move to the first byte of the current display
+    /// segment. Degrades to `0` when wrapping is off.
+    pub fn do_display_line_start(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        self.cursor.byte = if wrap_width == 0 {
+            0
+        } else {
+            (self.cursor.byte / wrap_width) * wrap_width
+        };
+    }
+
+    /// Vim's `g$` -- move to the last byte of the current display
+    /// segment. Degrades to `$` when wrapping is off.
+    pub fn do_display_line_end(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        let snap = self.document.snapshot();
+        let line_len = snap.buffer.line_byte_len(self.cursor.line);
+        self.cursor.byte = if wrap_width == 0 {
+            line_len.saturating_sub(1)
+        } else {
+            let cur_seg = self.cursor.byte / wrap_width;
+            let seg_end = ((cur_seg + 1) * wrap_width).min(line_len);
+            seg_end.saturating_sub(1)
+        };
     }
 
     /// Vim's `o` -- splice `\n` at EOL, drop cursor on the new
@@ -28635,6 +28774,129 @@ mod tests {
     }
 
     // ---- I / A mode-entry ----
+
+    // ---- gj / gk / g0 / g$ display-line motions ----
+
+    fn seed_wrap_matrix(editor: &crate::editor::Editor, wrap_width: u32, line_count: u32) {
+        // Build a CellMatrix where every source line has col_count = wrap_width * 2,
+        // so each line spans exactly 2 display segments at this wrap_width.
+        let rows: Arc<[lattice_cells::CellRow]> = (0..line_count)
+            .map(|i| {
+                lattice_cells::CellRow::new(
+                    vec![lattice_cells::Cell::default(); (wrap_width * 2) as usize],
+                    i,
+                    [],
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let chunk = Arc::new(lattice_cells::CellChunk::new(
+            0,
+            rows,
+            lattice_cells::version::MatrixVersion::ZERO,
+        ));
+        let mut matrix = lattice_cells::CellMatrix::whole_doc(chunk, line_count);
+        matrix.wrap_width = wrap_width;
+        let bid = editor.active_buffer_id();
+        editor
+            .cells_matrix_for(bid)
+            .store(std::sync::Arc::new(matrix));
+    }
+
+    #[test]
+    fn display_line_down_advances_segment_within_line() {
+        // Line "abcdefgh\n" (8 bytes), wrap_width=4 → 2 segments.
+        // Cursor at byte 1 (segment 0). gj → segment 1, goal=1.
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.byte, 5, "segment 1 start(4) + goal(1) = 5");
+        assert_eq!(editor.goal_col, Some(1));
+    }
+
+    #[test]
+    fn display_line_down_at_last_segment_goes_to_next_line() {
+        // Two source lines, wrap_width=4. Cursor on line 0, seg 1 (byte 5).
+        // gj → line 1, byte = goal=1.
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(0, 5);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 1, "goal=5%4=1");
+    }
+
+    #[test]
+    fn display_line_up_retreats_segment_within_line() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 5); // seg 1
+        editor.do_display_line_up();
+        assert_eq!(editor.cursor.byte, 1, "seg 0 start(0) + goal(1) = 1");
+    }
+
+    #[test]
+    fn display_line_up_at_first_segment_goes_to_prev_line_last_seg() {
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(1, 1); // line 1, seg 0
+        editor.do_display_line_up();
+        assert_eq!(editor.cursor.line, 0);
+        // last seg of line 0 starts at byte 4; goal=1 → byte 5
+        assert_eq!(editor.cursor.byte, 5);
+    }
+
+    #[test]
+    fn display_line_start_moves_to_seg_start() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 6); // seg 1
+        editor.do_display_line_start();
+        assert_eq!(editor.cursor.byte, 4, "seg 1 start = 4");
+        assert_eq!(editor.goal_col, None, "g0 resets goal_col");
+    }
+
+    #[test]
+    fn display_line_end_moves_to_seg_end() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1); // seg 0
+        editor.do_display_line_end();
+        // seg 0 end = min(2*4, line_len=8) - 1 = 3
+        assert_eq!(editor.cursor.byte, 3);
+    }
+
+    #[test]
+    fn display_line_down_degrades_to_j_when_wrap_off() {
+        let doc = lattice_core::Document::from_text("hello\nworld\n");
+        let mut editor = Editor::boot(doc);
+        // wrap_width stays 0 (default matrix)
+        editor.cursor = lattice_protocol::position::Position::new(0, 2);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 2);
+    }
+
+    #[test]
+    fn goal_col_reset_on_non_display_line_action() {
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCD\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1);
+        editor.do_display_line_down();
+        assert!(editor.goal_col.is_some(), "goal_col set after gj");
+        // Any non-display-line action via handle_action clears goal_col.
+        let mut out = DispatchOutcome::default();
+        handle_action(&mut editor, Action::None, &mut out);
+        assert_eq!(editor.goal_col, None, "goal_col cleared by non-display action");
+    }
 
     #[test]
     fn enter_insert_first_non_blank_moves_to_first_non_blank() {

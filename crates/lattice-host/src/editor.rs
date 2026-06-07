@@ -908,6 +908,11 @@ pub struct Editor {
     /// in lockstep with the active pane's stash so cross-
     /// pane jumps restore the right position.
     pub cursor: ProtoPosition,
+    /// Sticky display-column target for `gj`/`gk` (vim's `w_curswant`).
+    /// Stores the byte offset within the current wrap segment so
+    /// consecutive display-line moves try to land at the same column.
+    /// `None` between any non-display-line motion.
+    pub goal_col: Option<u32>,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
     /// Quit flag. The main loop reads this and tears down

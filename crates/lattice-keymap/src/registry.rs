@@ -45,6 +45,7 @@ use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
 use lattice_protocol::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 
 use crate::{BindingMode, BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult, ModeId};
+use crate::resolution::{KeymapResolution, LayerHit};
 
 /// Privilege bundle a writer presents when calling
 /// capability-gated bind APIs (slice 8.h). Mirrors the WIT
@@ -732,6 +733,73 @@ impl KeymapHandle {
             }
         }
         hits
+    }
+
+    /// Full per-layer trace for `chords` in `mode`.
+    ///
+    /// Returns a [`KeymapResolution`] whose `hits` list every registered
+    /// layer that has a terminal binding at the given chord path, in
+    /// priority order ascending (Builtin first, Buffer last). The `active`
+    /// flag on each hit is set by crossing the layer against `active_modes`:
+    /// - `Builtin`, `User`, `Buffer` are always active.
+    /// - `MajorMode(id)` and `MinorMode(id)` are active iff `id` is
+    ///   contained in `active_modes`.
+    ///
+    /// Telemetry path; not on the keystroke hot path.
+    pub fn resolve_trace(
+        &self,
+        mode: BindingMode,
+        chords: &[KeyChord],
+        active_modes: &[ModeId],
+    ) -> KeymapResolution {
+        let pairs = self.enumerate_chord_bindings(mode, chords);
+        let hits = pairs
+            .into_iter()
+            .map(|(layer, command)| {
+                let active = match layer {
+                    KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
+                    KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => {
+                        active_modes.contains(&id)
+                    }
+                };
+                LayerHit { layer, command, active }
+            })
+            .collect();
+        KeymapResolution { mode, hits }
+    }
+
+    /// Run [`Self::resolve_trace`] for every `BindingMode` variant.
+    ///
+    /// Returns only the modes that have at least one registered binding
+    /// for `chords` (i.e. non-empty `hits`). Callers that want to display
+    /// `:describe-key` with all modes iterate the returned vec; modes with
+    /// no bindings are omitted to keep output compact.
+    ///
+    /// Telemetry path; not on the keystroke hot path.
+    pub fn resolve_trace_all_modes(
+        &self,
+        chords: &[KeyChord],
+        active_modes: &[ModeId],
+    ) -> Vec<KeymapResolution> {
+        BindingMode::all()
+            .iter()
+            .map(|&mode| self.resolve_trace(mode, chords, active_modes))
+            .filter(|r| !r.hits.is_empty())
+            .collect()
+    }
+
+    /// Human-readable label for a `KeymapLayer`, derived from the layer's
+    /// registered label string (set at `push_layer` / `bind` time). Falls
+    /// back to `default_label` when the layer hasn't been explicitly named.
+    /// Used by `:describe-key` output.
+    pub fn layer_label_string(&self, layer: KeymapLayer) -> String {
+        let inner = self.registry.inner.lock().expect("registry mutex");
+        inner
+            .layers
+            .iter()
+            .find(|l| l.layer == layer)
+            .map(|l| l.label.clone())
+            .unwrap_or_else(|| default_label(layer))
     }
 
     /// Human-readable label for the layer carrying `id`, if any.

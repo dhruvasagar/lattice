@@ -106,6 +106,20 @@ impl BindingMode {
             BindingMode::Snippet => "Active-snippet (minor mode)",
         }
     }
+
+    /// All variants in declaration order. Used by
+    /// `KeymapHandle::resolve_trace_all_modes` to iterate every mode.
+    pub fn all() -> &'static [BindingMode] {
+        use BindingMode::*;
+        &[
+            Normal, Insert, Visual, Replace, Command, Search,
+            OperatorPending, AfterG, AfterZ, AfterMark,
+            AfterJumpMarkLine, AfterJumpMarkExact, AfterRegister,
+            AfterMacroStart, AfterMacroPlay, AfterFindChar,
+            AfterTextObject, Help, AfterCtrlW, AfterCtrlX,
+            CompletionPopup, Snippet,
+        ]
+    }
 }
 
 impl std::fmt::Display for BindingMode {
@@ -155,5 +169,16 @@ mod tests {
         assert_eq!(format!("{}", BindingMode::Normal), "Normal");
         assert_eq!(format!("{}", BindingMode::Insert), "Insert");
         assert_eq!(format!("{}", BindingMode::OperatorPending), "Operator-Pending");
+    }
+
+    #[test]
+    fn all_covers_every_variant() {
+        // Must match the count in `label_covers_all_variants`.
+        assert_eq!(BindingMode::all().len(), 22);
+        // Every variant must appear exactly once (no duplicates).
+        let mut seen = std::collections::HashSet::new();
+        for m in BindingMode::all() {
+            assert!(seen.insert(*m), "duplicate: {m:?}");
+        }
     }
 }

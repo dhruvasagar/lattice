@@ -22021,9 +22021,8 @@ impl Editor {
                 // ~23440–23475 for the picker-source rendering).
                 BufferKind::Messages => {
                     let label = row.name.clone().unwrap_or_else(|| "*messages*".to_string());
-                    let dirty = if row.doc_dirty { "[+]" } else { "   " };
                     lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} msg  {dirty} {label}",
+                        "  {active_marker}{listed_marker} #{:<3} msg       {label}",
                         id.0
                     ));
                 }
@@ -23993,14 +23992,13 @@ pub fn raw_buffer_candidates(
                 format!("#{:<3} {}", id.0, t.label),
                 format!("term{active_marker}"),
             ),
-            BufferData::Messages(d) => {
+            BufferData::Messages(_) => {
                 let label = entry
                     .name
                     .clone()
                     .unwrap_or_else(|| "*messages*".to_string());
-                let dirty = if d.handle.dirty() { " [+]" } else { "" };
                 (
-                    format!("#{:<3} {label}{dirty}", id.0),
+                    format!("#{:<3} {label}", id.0),
                     format!("msg{active_marker}"),
                 )
             }
@@ -24133,12 +24131,12 @@ pub fn picker_buffer_entry(
             ("oil".to_string(), dir, title, false)
         }
         BufferData::Terminal(t) => ("term".to_string(), None, t.label.clone(), false),
-        BufferData::Messages(d) => {
+        BufferData::Messages(_) => {
             let title = entry
                 .name
                 .clone()
                 .unwrap_or_else(|| "*messages*".to_string());
-            ("msg".to_string(), None, title, d.handle.dirty())
+            ("msg".to_string(), None, title, false)
         }
         BufferData::Multibuffer(_) => {
             let title = entry
@@ -29004,5 +29002,58 @@ mod tests {
         editor.do_enter_append_end_of_line();
         assert_eq!(editor.cursor.byte, 0);
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
+    }
+
+    // ---- *messages* dirty-flag must never show [+] ----
+
+    #[test]
+    fn messages_buffer_never_shows_dirty_in_picker() {
+        use crate::buffer_registry::BufferData;
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.ensure_messages_buffer();
+        // Append content so the underlying DocumentEntry is marked dirty.
+        let id = editor.ensure_messages_buffer();
+        editor.append_to_owned_buffer(id, "some log line\n");
+        editor.publish_render_state();
+
+        // picker_buffer_entry must not include "[+]" for the Messages entry.
+        let registry = &editor.buffers;
+        let locals = &editor.buffer_locals;
+        let active = editor.document_buffer_id;
+        let mut found = false;
+        registry.for_each(|entry| {
+            if matches!(entry.data, BufferData::Messages(_)) {
+                let row = crate::dispatch::picker_buffer_entry(entry, locals);
+                assert!(
+                    !row.dirty,
+                    "*messages* picker entry must not be dirty"
+                );
+                assert!(
+                    !row.title.contains("[+]"),
+                    "*messages* picker title must not contain [+]: {:?}",
+                    row.title
+                );
+                found = true;
+            }
+        });
+        assert!(found, "expected a Messages buffer to exist");
+        let _ = active;
+    }
+
+    #[test]
+    fn messages_buffer_never_shows_dirty_in_ls() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.ensure_messages_buffer();
+        let id = editor.ensure_messages_buffer();
+        editor.append_to_owned_buffer(id, "some log line\n");
+
+        let content = editor.build_list_buffers_content();
+        let text = content.lines().join("\n");
+        assert!(
+            !text.contains("[+]"),
+            ":ls output must not contain [+] for *messages*: {text}"
+        );
     }
 }

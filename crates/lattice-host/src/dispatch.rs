@@ -17921,11 +17921,15 @@ impl Editor {
         let lesson_num = lesson.unwrap_or(1);
         let lesson_text: &'static str = match lesson_num {
             1 => include_str!("../../../docs/user/tutor/lesson-1.md"),
+            2 => include_str!("../../../docs/user/tutor/lesson-2.md"),
+            3 => include_str!("../../../docs/user/tutor/lesson-3.md"),
+            4 => include_str!("../../../docs/user/tutor/lesson-4.md"),
+            5 => include_str!("../../../docs/user/tutor/lesson-5.md"),
             n => {
                 self.set_message(
                     EchoLevel::Error,
                     format!(
-                        "lesson {n} doesn't exist yet (lessons 1 available); \
+                        "lesson {n} doesn't exist (lessons 1-5 available); \
                          contributions welcome"
                     ),
                 );

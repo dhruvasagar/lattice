@@ -3491,6 +3491,7 @@ dependencies = [
  "memchr",
  "notify",
  "ropey",
+ "serde",
  "serde_json",
  "smallvec",
  "streaming-iterator",

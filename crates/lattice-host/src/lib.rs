@@ -147,6 +147,7 @@ pub mod state;
 // renderer peers seed `*lsp*` + `*messages*` eagerly.
 pub mod messages;
 pub mod synthetic_buffers;
+pub mod tutor;
 pub mod ui;
 
 // Perf plan B.4: tiny newtype wrapper that bumps a `u64` version

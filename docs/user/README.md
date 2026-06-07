@@ -54,10 +54,10 @@ same surface).
 | Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
 | Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
 | Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
-| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                                     | _covered in ex-commands_            | 🟡     |
+| Help system (`:describe-*`, `:apropos`, `:keymap`, `<C-h>` map, mode-prefix syntax for `:describe-key`)    | [help.md](help.md)                  | ✅     |
 | Plugins (WASM Component Model, capabilities, fuel)                                                          | _planned (Phase 7+)_                | ⛔     |
 | Performance posture (latency budgets, what's safe in a hot loop)                                            | _planned_                           | ⛔     |
-| Tutor (vim-tutor-style interactive lesson sequence)                                                         | _planned_                           | ⛔     |
+| Tutor (interactive lesson sequence: modes, grammar, visual, registers, help, LSP)                           | [tutor/](tutor/)                    | ✅     |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

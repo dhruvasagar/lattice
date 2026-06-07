@@ -32,6 +32,7 @@
 
 pub mod action;
 pub mod actions;
+pub(crate) mod events;
 pub mod activator;
 pub mod buffer_registry;
 pub mod buffers;

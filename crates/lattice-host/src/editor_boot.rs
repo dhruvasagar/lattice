@@ -588,17 +588,22 @@ impl Editor {
         let initial_text = document.text();
         let initial_text_version = document.text_version();
         // Slice B.1: created here (before the syntax handle) so it can
-        // be handed to the reparse worker as its `on_publish` wake; it
-        // also seats the `Editor::async_landed` field below.
+        // be handed to the reparse worker as its `on_publish` callback;
+        // it also seats the `Editor::async_landed` field below.
         let async_landed: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
         let syntax: Option<SyntaxHandle> =
             match Syntax::for_language_with_registry(lang, lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
+                    let al = async_landed.clone();
+                    let eb = event_bus.clone();
                     Some(SyntaxHandle::seeded_with_runtime(
                         s,
                         &runtime_handle,
-                        Some(async_landed.clone()),
+                        Some(std::sync::Arc::new(move || {
+                            al.notify_one();
+                            eb.publish_typed(crate::events::SyntaxReparsed);
+                        })),
                     ))
                 }
                 _ => None,
@@ -843,6 +848,42 @@ impl Editor {
             virtual_row_providers.clone(),
             paint_request.clone(),
         ));
+
+        // Event-bus → cells_wake bridges.
+        //
+        // SyntaxReparsed: fired by the on_publish callback in every
+        // SyntaxHandle after a snapshot is published. Wakes the cells
+        // worker so a fresh display matrix is built once tree-sitter
+        // finishes — without this, a reparse that completes with no
+        // keystroke in flight doesn't repaint.
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) = mpsc::unbounded_channel::<crate::events::SyntaxReparsed>();
+            event_bus.subscribe_typed::<crate::events::SyntaxReparsed>(tx);
+            let cw = cells_wake.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    cw.0.notify_one();
+                }
+            });
+        }
+
+        // MultibufferExcerptsReady: fired by the project-search
+        // forwarder after each batch of excerpts is appended to the
+        // multibuffer view. Wakes the cells worker so search results
+        // appear without waiting for the next keystroke.
+        #[cfg(feature = "search")]
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) = mpsc::unbounded_channel::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>();
+            event_bus.subscribe_typed::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>(tx);
+            let cw = cells_wake.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    cw.0.notify_one();
+                }
+            });
+        }
 
         // D.3.a.1 (2026-05-29): bind the diff subsystem to the
         // event bus. The drainer task subscribes to

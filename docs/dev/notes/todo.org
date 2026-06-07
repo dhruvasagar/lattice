@@ -38,6 +38,7 @@
 - [ ] project.el
 - [ ] Claude Code IDE
 - [ ] Org Mode
+- [ ] lsp context
 
 * Issues
 - [X] GUI: cursor scrolls past viewport
@@ -112,7 +113,7 @@
 - [X] marginalia columns alignment
 - [ ] `scrolloff` not respected properly
 - [ ] ]e,[e, ]E, [E for multibuffer view not working
-- [ ] Any edit breaks syntax highlighting
+- [X] Any edit breaks syntax highlighting
 - [X] `:e!` clones the buffer instead of just refreshing
 - [X] `:e!` should not reposition cursor
 - [ ] *messages* buffer shows [+] in the :b list, it should not track

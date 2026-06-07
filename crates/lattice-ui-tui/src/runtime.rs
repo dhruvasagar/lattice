@@ -254,23 +254,31 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
 /// a tearing-down app. `Repaint` wakes apply nothing — they exist purely to
 /// trigger the single redraw at the loop top so an async republish (syntax
 /// recolour, LSP decoration) reaches the screen.
+///
+/// Returns `true` when the batch contained at least one `Repaint` and NO input
+/// events. The caller uses this to call `drain_async_pending` so idle LSP
+/// arrivals (hover, signature-help) reach the screen on the repaint itself
+/// rather than waiting for the next keystroke (X1b).
 fn drain_wakes(
     app: &mut App,
     rx: &mpsc::Receiver<Wake>,
     first: Wake,
     perf_input: bool,
     last_input_at: &mut Option<Instant>,
-) {
+) -> bool {
+    let mut had_input = false;
     let mut next = Some(first);
     while let Some(wake) = next.take() {
         if let Wake::Input(ev) = wake {
+            had_input = true;
             apply_event(app, ev, perf_input, last_input_at);
         }
         if app.render_state.load().lifecycle.should_quit {
-            return;
+            return false;
         }
         next = rx.try_recv().ok();
     }
+    !had_input
 }
 
 fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
@@ -573,7 +581,17 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // state / mode stack that governs the next event's translation. See
         // docs/dev/architecture/input-pipeline.md.
         match wake_rx.recv() {
-            Ok(first) => drain_wakes(&mut app, &wake_rx, first, perf_input, &mut last_input_at),
+            Ok(first) => {
+                let repaint_only =
+                    drain_wakes(&mut app, &wake_rx, first, perf_input, &mut last_input_at);
+                // X1b: repaint-only wakes (hover response, syntax reparse,
+                // search excerpts) need a tick drain so the pending channel
+                // is read before the next draw. Keystrokes drain it already
+                // at the apply tail; this path covers the idle-arrival gap.
+                if repaint_only {
+                    app.drain_async_pending();
+                }
+            }
             // Both producer clones are gone (the reader thread died and the
             // paint bridge exited) — nothing can wake us again; leave the loop.
             Err(_) => break,
@@ -613,7 +631,7 @@ mod tests {
         tx.send(Wake::Input(key('X'))).unwrap();
         let first = rx.recv().unwrap();
         let mut last_input_at = None;
-        drain_wakes(&mut app, &rx, first, true, &mut last_input_at);
+        let _ = drain_wakes(&mut app, &rx, first, true, &mut last_input_at);
         // Whole burst drained in one batch — nothing left for a second draw.
         assert!(rx.try_recv().is_err(), "burst must coalesce into one drain");
         // Real input applied → perf timer armed + modal advanced to Insert.
@@ -634,7 +652,8 @@ mod tests {
         let mut app = App::new(Document::from_text("hello\n"));
         let (_tx, rx) = mpsc::channel::<Wake>();
         let mut last_input_at = None;
-        drain_wakes(&mut app, &rx, Wake::Repaint, true, &mut last_input_at);
+        let repaint_only = drain_wakes(&mut app, &rx, Wake::Repaint, true, &mut last_input_at);
+        assert!(repaint_only, "repaint batch must return repaint_only=true");
         assert!(last_input_at.is_none(), "repaint must not look like input");
         assert_eq!(
             app.ad().modal,

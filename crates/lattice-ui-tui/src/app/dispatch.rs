@@ -687,6 +687,19 @@ impl App {
         }
     }
 
+    /// Drain pending async results (hover, signature-help, etc.) without a
+    /// full keystroke apply. Called from the TUI main loop on `Wake::Repaint`
+    /// batches that contained no input events — the X1b gap: idle LSP
+    /// responses arrive, fire `paint_request`, the loop wakes and redraws,
+    /// but the pending channels are only drained at the apply tail so the
+    /// first repaint doesn't show the popup until the next keystroke.
+    pub fn drain_async_pending(&mut self) {
+        let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
+        for signal in tick_signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
     pub(super) fn execute_ex_line(&mut self, line: &str) {
         let reg = self.registry();
         match excommand::parse(line, &reg) {

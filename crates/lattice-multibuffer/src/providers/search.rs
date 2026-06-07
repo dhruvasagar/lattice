@@ -350,6 +350,22 @@ lattice_protocol::register_event!(
     "lattice-multibuffer",
 );
 
+/// Fired by the forwarder task after `append_excerpts` so the
+/// cells worker rebuilds the display matrix without waiting for
+/// the next keystroke — fixes the blank-results-until-keypress
+/// symptom on `:search spawn`.
+#[derive(Debug, Clone)]
+pub struct MultibufferExcerptsReady {
+    pub view: BufferId,
+}
+
+lattice_protocol::register_event!(
+    MultibufferExcerptsReady,
+    "multibuffer.excerpts-ready",
+    "New excerpts appended to a multibuffer view.",
+    "lattice-multibuffer",
+);
+
 // ─────────────────────────────────────────────────────────────────
 // Provider-minor mode
 // ─────────────────────────────────────────────────────────────────
@@ -678,6 +694,7 @@ impl Mode for ProjectSearchMultibufferMode {
             let view_id_for_task = view_id;
             let search_svc_for_task: Option<ProjectSearchServiceHandle> =
                 search_svc_arc.as_ref().map(|s| (**s).clone());
+            let bus_for_task = bus.clone();
             let forwarder = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -798,6 +815,9 @@ impl Mode for ProjectSearchMultibufferMode {
                                 hit_count_in_batch += fh.rows.len();
                                 view.append_excerpts(excerpts);
                             }
+                            bus_for_task.publish_typed(MultibufferExcerptsReady {
+                                view: view_id_for_task,
+                            });
 
                             view.set_headerline(HeaderlineStatus::InProgress {
                                 label: "Searching".into(),

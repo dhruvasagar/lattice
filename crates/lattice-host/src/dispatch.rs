@@ -8437,14 +8437,18 @@ impl Editor {
             ) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
-                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                        s,
-                        lattice_runtime::runtime::lsp_runtime().handle(),
-                        // Slice B.1: wake the actor on idle reparse so
-                        // freshly-opened/reloaded buffers repaint when
-                        // syntax lands without a keystroke.
-                        Some(self.async_landed.clone()),
-                    ))
+                    {
+                        let al = self.async_landed.clone();
+                        let eb = self.event_bus.clone();
+                        Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                            s,
+                            lattice_runtime::runtime::lsp_runtime().handle(),
+                            Some(std::sync::Arc::new(move || {
+                                al.notify_one();
+                                eb.publish_typed(crate::events::SyntaxReparsed);
+                            })),
+                        ))
+                    }
                 }
                 _ => None,
             };

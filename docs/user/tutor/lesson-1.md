@@ -12,6 +12,64 @@ Approximate reading time: 8–10 minutes. Practice time: as long as you need.
 
 ---
 
+## How the Tutor Works
+
+Each lesson is a document you edit directly. Exercises are marked with `--->`
+on a practice line — put your cursor there and make the requested change.
+
+**HUD (headerline above the text)**
+
+The colored bar at the very top of the buffer shows your current state:
+
+```
+♥♥♥ | LV.1-1 | SCORE:     0 | HI: 250 | Delete a word   Hint: type d w
+```
+
+- `♥♥♥` — lives remaining for the current exercise (3 per exercise)
+- `LV.1-1` — lesson number - exercise number
+- `SCORE` — cumulative score for this session
+- `HI` — your all-time high score for this lesson (saved between sessions)
+- Description and, after two failed attempts, a hint
+
+**Scoring**
+
+Each exercise awards points automatically when you satisfy the condition:
+
+| Points | Condition |
+|--------|-----------|
+| 100 | base award for completing the exercise |
+| +50 | first-try bonus (no wrong `<CR>` presses before succeeding) |
+| +100 | speed bonus: done in under 10 seconds |
+| +50 | speed bonus: done in under 30 seconds |
+| +25 | speed bonus: done in under 60 seconds |
+
+Maximum per exercise: **250 points.** High score is saved to disk.
+
+**Navigation**
+
+| Key | Action |
+|-----|--------|
+| `<CR>` or `<C-j>` | advance to the next exercise once the condition is met |
+| `<C-k>` | retreat to the previous exercise |
+| `:tutor-next` | same as `<CR>` (for observational exercises that require it) |
+
+When the tutor detects that you've satisfied an exercise, the HUD flashes
+**STAGE CLEAR** — press `<CR>` to confirm and move on.
+
+**Lives and failure**
+
+If you press `<CR>` when the exercise condition is *not* yet met, you lose a
+life (♥ → ♡). Three misses on one exercise triggers **GAME OVER** for that
+exercise:
+
+- `<CR>` — skip past it and continue with the next exercise (no score awarded)
+- `<C-k>` — retry the same exercise with lives restored
+
+**Observational exercises** have no auto-detectable condition. Read them,
+follow the instruction, then run `:tutor-next` (or press `<CR>`) when you're done.
+
+---
+
 ## 1.1 Modes — Normal vs Insert
 
 When you opened this file, you landed in **Normal mode**. In Normal mode,

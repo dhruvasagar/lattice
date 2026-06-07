@@ -293,6 +293,31 @@ mod tests {
 
     const TOTAL: u32 = 5;
 
+    // T.2: verify that all shipped sidecar files parse correctly and
+    // that every anchor text is present in the matching lesson file.
+    macro_rules! sidecar_roundtrip {
+        ($name:ident, $n:literal) => {
+            #[test]
+            fn $name() {
+                let lesson_text =
+                    include_str!(concat!("../../../../docs/user/tutor/lesson-", $n, ".md"));
+                let exercises_toml = include_str!(concat!(
+                    "../../../../docs/user/tutor/lesson-",
+                    $n,
+                    ".exercises.toml"
+                ));
+                TutorSession::load($n, TOTAL, lesson_text, exercises_toml)
+                    .expect(concat!("lesson-", $n, " sidecar should parse + all anchors found"));
+            }
+        };
+    }
+
+    sidecar_roundtrip!(all_anchors_found_lesson1, 1);
+    sidecar_roundtrip!(all_anchors_found_lesson2, 2);
+    sidecar_roundtrip!(all_anchors_found_lesson3, 3);
+    sidecar_roundtrip!(all_anchors_found_lesson4, 4);
+    sidecar_roundtrip!(all_anchors_found_lesson5, 5);
+
     fn lesson_text() -> &'static str {
         "Header line\n\
          Some explanation text.\n\

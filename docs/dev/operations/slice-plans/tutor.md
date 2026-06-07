@@ -4,7 +4,7 @@
 
 ---
 
-## T.1 — Data types + sidecar format  🚧
+## T.1 — Data types + sidecar format  ✅
 
 **Files touched:**
 - `lattice-host/src/tutor.rs` (new)
@@ -31,7 +31,7 @@
 
 ---
 
-## T.2 — Exercise sidecar files (content)  🗒
+## T.2 — Exercise sidecar files (content)  ✅
 
 **Files touched:**
 - `docs/user/tutor/lesson-1.exercises.toml` (new)
@@ -55,7 +55,7 @@
 
 ---
 
-## T.3 — TutorMode skeleton: registration + headerline + keymaps  🗒
+## T.3 — TutorMode skeleton: registration + headerline + keymaps  ✅
 
 **Files touched:**
 - `lattice-host/src/tutor_mode.rs` (new)
@@ -86,7 +86,7 @@
 
 ---
 
-## T.4 — Buffer-version watcher + success evaluation  🗒
+## T.4 — Buffer-version watcher + success evaluation  ✅
 
 **Files touched:**
 - `lattice-host/src/tutor_mode.rs` — add post-dispatch callback
@@ -112,7 +112,7 @@
 
 ---
 
-## T.5 — `--tutor` CLI flag  🗒
+## T.5 — `--tutor` CLI flag  ✅
 
 **Files touched:**
 - `lattice-cli/src/main.rs` — add `tutor: Option<u32>` to `Cli` struct

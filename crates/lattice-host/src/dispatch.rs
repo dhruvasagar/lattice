@@ -21842,7 +21842,9 @@ impl Editor {
     fn friendly_layer_label(layer: crate::keymap_trie::KeymapLayer) -> String {
         match layer {
             crate::keymap_trie::KeymapLayer::Builtin => "Built-in".to_string(),
-            crate::keymap_trie::KeymapLayer::MajorMode => "Major mode".to_string(),
+            crate::keymap_trie::KeymapLayer::MajorMode(mode_id) => {
+                format!("Major: {mode_id}")
+            }
             crate::keymap_trie::KeymapLayer::MinorMode(mode_id) => {
                 format!("Minor: {mode_id}")
             }

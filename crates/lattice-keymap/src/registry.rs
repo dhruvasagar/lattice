@@ -981,16 +981,14 @@ pub enum PushLayerKind {
 
 fn default_label(layer: KeymapLayer) -> String {
     match layer {
-        KeymapLayer::Builtin => "builtin".into(),
-        KeymapLayer::MajorMode(mode_id) => format!("major-mode:{mode_id}"),
-        // K.1.b: layer label derives from the ModeId's canonical
-        // name, so `:describe-key` provenance reads
-        // `minor-mode:diff-mode` directly from the typed id —
-        // no label-string indirection that could drift from the
-        // mode's actual name.
-        KeymapLayer::MinorMode(mode_id) => format!("minor-mode:{mode_id}"),
-        KeymapLayer::User => "user".into(),
-        KeymapLayer::Buffer => "buffer".into(),
+        // K.2.4.A.2: user-facing friendly labels, not Debug slugs.
+        KeymapLayer::Builtin => "Built-in".into(),
+        KeymapLayer::MajorMode(mode_id) => format!("Major mode: {mode_id}"),
+        // K.1.b: label derives from ModeId so `:describe-key`
+        // provenance reads `Minor mode: diff-mode` without drift.
+        KeymapLayer::MinorMode(mode_id) => format!("Minor mode: {mode_id}"),
+        KeymapLayer::User => "User config".into(),
+        KeymapLayer::Buffer => "Buffer".into(),
     }
 }
 

@@ -535,69 +535,52 @@ mod tests {
 
     #[test]
     fn describe_key_shows_resolved_binding_section_for_bound_chord() {
-        // The "Resolved binding (under current active modes):"
-        // section is the K.2.4.A.1 polish — it sits between
-        // the title and the catalog-hits and tells the user
-        // what would fire RIGHT NOW. For `j` (a builtin Normal
-        // and Visual binding), the resolved section should
-        // surface both `[normal mode]` and `[visual mode]`.
+        // T12 (K.1.d resolve_trace rebuild): describe-key leads with
+        // a per-mode trace showing what fires RIGHT NOW. For `j`
+        // (Builtin Normal + Visual + Replace), the trace surfaces
+        // all three mode sections.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-key j".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
         assert!(
-            body.contains("Resolved binding (under current active modes):"),
-            "missing resolved-binding header: {body}"
+            body.contains("registration(s) across"),
+            "missing registration count header: {body}"
         );
         assert!(
-            body.contains("[normal mode]"),
-            "missing [normal mode] resolution row: {body}"
+            body.contains("[Normal mode]"),
+            "missing [Normal mode] resolution row: {body}"
         );
         assert!(
-            body.contains("[visual mode]"),
-            "missing [visual mode] resolution row: {body}"
+            body.contains("[Visual mode]"),
+            "missing [Visual mode] resolution row: {body}"
         );
     }
 
     #[test]
     fn describe_key_resolved_binding_renders_canonical_command_name() {
-        // The resolved-binding section uses the registry's
-        // canonical command name (`motion:line-down`) rather
-        // than `CommandId(N)` debug formatting. This is the
-        // user-facing contract that K.2.4.A.1 establishes:
-        // name resolution via the host's CommandRegistry, not
-        // raw ids.
-        //
-        // K.2.4.A.4 (catalog/registry unification) will retire
-        // the K.1.d runtime-registry section that still
-        // formats its hits as `CommandId(...)`; until then we
-        // narrowly verify the new K.2.4.A.1 section (between
-        // the resolved-binding header and the next blank
-        // section).
+        // T12 (K.1.d): the layer trace renders the registry's
+        // canonical command name (`motion:line-down`) rather than
+        // `CommandId(N)` debug formatting. There is no longer a
+        // separate "Resolved binding" vs "Runtime registry" split —
+        // the whole output is the trace.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-key j".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
-        let header = "Resolved binding (under current active modes):";
-        let start = body
-            .find(header)
-            .unwrap_or_else(|| panic!("missing resolved header: {body}"));
-        // Slice from the header to the next double-newline-
-        // separated section (runtime registry / catalog hits).
-        let after_header = &body[start..];
-        let resolved_section = after_header
-            .find("\n\nRuntime registry:")
-            .map(|end| &after_header[..end])
-            .unwrap_or(after_header);
         assert!(
-            resolved_section.contains("→ motion:line-down"),
-            "resolved section should render canonical name: {resolved_section}"
+            body.contains("→ motion:line-down"),
+            "trace should render canonical command name: {body}"
         );
         assert!(
-            !resolved_section.contains("→ CommandId("),
-            "resolved section should not leak CommandId debug: {resolved_section}"
+            !body.contains("→ CommandId("),
+            "trace should not leak CommandId debug: {body}"
+        );
+        assert!(
+            body.contains("(fires now)"),
+            "winner hit should be marked with (fires now): {body}"
         );
     }
 
@@ -649,34 +632,22 @@ mod tests {
 
     #[test]
     fn describe_key_runtime_registry_section_renders_canonical_command_names() {
-        // K.2.4.A.4: the K.1.d runtime-registry section now
-        // resolves CommandId → canonical name (matching the
-        // K.2.4.A.1 resolved section's rendering). The two
-        // sections present consistently — same friendly
-        // layer label format, same canonical name, same
-        // as_link source — so the whole describe-key output
-        // reads as one coherent view rather than three
-        // stylistically-different stacked sections.
+        // T12 (K.1.d): the "Runtime registry:" separate section was
+        // removed; the whole output is now one unified trace (T12's
+        // resolve_trace API). Check that the trace renders canonical
+        // names and doesn't leak CommandId debug format anywhere.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-key j".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
-        // Find the runtime-registry section (sits after the
-        // resolved section and catalog hits).
-        let runtime_start = body.find("Runtime registry:").unwrap_or_else(|| {
-            panic!("missing Runtime registry header: {body}");
-        });
-        let runtime_section = &body[runtime_start..];
-        // Should contain the canonical name `motion:line-down`
-        // and NOT the debug-formatted `CommandId(...)` form.
         assert!(
-            runtime_section.contains("→ motion:line-down"),
-            "runtime-registry section should render canonical name: {runtime_section}"
+            body.contains("→ motion:line-down"),
+            "trace should contain canonical command name: {body}"
         );
         assert!(
-            !runtime_section.contains("→ CommandId("),
-            "runtime-registry section should not leak CommandId debug: {runtime_section}"
+            !body.contains("→ CommandId("),
+            "trace should not leak CommandId debug anywhere: {body}"
         );
     }
 
@@ -708,18 +679,16 @@ mod tests {
 
     #[test]
     fn describe_key_resolved_binding_falls_back_to_unbound_message() {
-        // Chord parses fine but doesn't bind in any of the
-        // four common binding-modes. The section still emits
-        // the fallback line so the reader knows the absence
-        // is intentional rather than an empty section.
+        // Chord parses fine but doesn't bind in any mode.
+        // T12: the fallback is "X is not bound in any mode."
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-key <C-S-q>".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
         assert!(
-            body.contains("Resolved binding: not bound under the current active modes"),
-            "missing resolved-binding fallback message: {body}"
+            body.contains("is not bound in any mode."),
+            "missing unbound fallback message: {body}"
         );
     }
 

@@ -74,7 +74,11 @@ lattice-host            ← mode_contributions.rs stays here (needs ModeRegistry
 
 ---
 
-## Part 1 — Slice 1: Extract `lattice-keymap` (pure migration)
+## Part 1 — Slice 1: Extract `lattice-keymap` (pure migration) ✅ landed
+
+> **Status (2026-06-07):** All tasks (T1-T9) landed as a pure mechanical migration;
+> zero behaviour change; all tests green throughout. See commit message on the
+> "Commit Slice 1" step in Task 9 for the full change list.
 
 ### Task 1: Reconnaissance — WIP commit + baseline build
 
@@ -646,7 +650,20 @@ git commit -m "feat(keymap): extract lattice-keymap crate — pure migration, ze
 
 ---
 
-## Part 2 — Slice 2: Layer-trace API + `describe-key` rebuild
+## Part 2 — Slice 2: Layer-trace API + `describe-key` rebuild ✅ landed
+
+> **Status (2026-06-07):** All tasks (T10-T13) landed. The commit message on T13's
+> "Commit Slice 2" step has the full change list. Two bugs found and fixed
+> post-landing (commit `eb219c5`); see `docs/dev/architecture/keymap-architecture.md §13.3`.
+>
+> **Spec-vs-actual divergences in landed code:**
+> - `LayerHit` shape: landed as `{ layer, command: Arc<BoundCommand>, active: bool }`,
+>   NOT `{ layer, label: String, command: BoundCommand, wins: bool }` from this spec.
+>   `label` moved to `layer_label_string()` on `KeymapHandle`; `wins` renamed to `active`.
+> - `KeymapResolution` shape: landed as `{ mode: BindingMode, hits: Vec<LayerHit> }`
+>   with a `winner()` method, NOT `{ binding_mode, hits, winner: Option<BoundCommand> }`.
+> - `parse_describe_key_arg` returns `(Option<BindingMode>, &str)` tuple,
+>   NOT a `ParsedDescribeKeyArg` struct. `x_` Visual alias not in the landed version.
 
 ### Task 10: Add `KeymapResolution` and `LayerHit` types
 

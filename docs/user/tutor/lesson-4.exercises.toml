@@ -1,0 +1,53 @@
+# Lesson 4 exercises — two mode axes, help system, options, autocmds.
+# All manual_advance: exercises are observational (mode switching,
+# help introspection, options browsing) and not validatable via
+# buffer text state.
+
+[[exercises]]
+id          = "4.1"
+description = "Switch to a Rust buffer and observe Normal/Insert modal state"
+anchor      = "---> Open any Rust file to see the rust major mode activate."
+success     = "manual_advance"
+hint        = ":e src/main.rs  (or any file); mode indicator updates in the status line"
+
+[[exercises]]
+id          = "4.2.1"
+description = "Describe the  J  key with  <C-h> k"
+anchor      = "---> Press <C-h> k J  to see what J does."
+success     = "manual_advance"
+hint        = "<C-h> k opens :describe-key; J shows 'join lines (normal mode)'"
+
+[[exercises]]
+id          = "4.2.2"
+description = "Describe a key with a mode prefix:  :describe-key n_J"
+anchor      = "---> Run :describe-key n_J  to confirm the Normal-mode binding."
+success     = "manual_advance"
+hint        = "n_ prefix scopes the lookup to Normal mode specifically"
+
+[[exercises]]
+id          = "4.2.3"
+description = "Search for motion-related commands:  :apropos motion"
+anchor      = "---> Run :apropos motion  and browse the results."
+success     = "manual_advance"
+hint        = ":apropos word opens a help buffer listing matching commands"
+
+[[exercises]]
+id          = "4.3"
+description = "Browse all options:  :options"
+anchor      = "---> Run :options  to see the typed option registry."
+success     = "manual_advance"
+hint        = ":options opens a customize-style buffer; q or <Esc> to close"
+
+[[exercises]]
+id          = "4.4"
+description = "Describe the BufWrite event:  :describe-event BufWrite"
+anchor      = "---> Run :describe-event BufWrite  to see the event schema."
+success     = "manual_advance"
+hint        = ":describe-event shows the typed payload and subscriber count"
+
+[[exercises]]
+id          = "4.5"
+description = "Read about the init module in the help system:  :help init"
+anchor      = "---> Run :help init  to open the init-module documentation."
+success     = "manual_advance"
+hint        = ":help topic opens the matching help buffer; links are navigable"

@@ -1,0 +1,45 @@
+# Lesson 1 exercises — modes, movement, basic editing.
+# All manual_advance: these exercises are positional/modal and not
+# validatable via buffer text state.
+
+[[exercises]]
+id          = "1.1"
+description = "Enter Normal mode with  <Esc>"
+anchor      = "---> Practice on the empty line:"
+success     = "manual_advance"
+hint        = "Press <Esc> to return to Normal mode, then :tutor-next to continue"
+
+[[exercises]]
+id          = "1.2"
+description = "Move with  h j k l"
+anchor      = "---> Move to each X and press x to delete:"
+success     = "manual_advance"
+hint        = "h=left  j=down  k=up  l=right; use x to delete each X"
+
+[[exercises]]
+id          = "1.3"
+description = "Insert text with  i  and  A"
+anchor      = "---> Practice line:"
+success     = "manual_advance"
+hint        = "i inserts before cursor; A appends at end of line; <Esc> to exit Insert"
+
+[[exercises]]
+id          = "1.4"
+description = "Delete a line with  dd  and undo with  u"
+anchor      = "---> Practice lines (delete with dd, undo with u):"
+success     = "manual_advance"
+hint        = "dd deletes the current line; u undoes the last change"
+
+[[exercises]]
+id          = "1.5"
+description = "Yank and paste with  yy  and  p"
+anchor      = "---> Yank this line:"
+success     = "manual_advance"
+hint        = "yy yanks the current line; p pastes it below; P pastes above"
+
+[[exercises]]
+id          = "1.6"
+description = "Change with  cw"
+anchor      = "---> Replace some words:"
+success     = "manual_advance"
+hint        = "cw deletes to end of word and enters Insert mode"

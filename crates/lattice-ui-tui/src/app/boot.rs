@@ -198,4 +198,14 @@ impl App {
             self.handle_renderer_signal(s);
         }
     }
+
+    /// T.5: open the tutor at lesson `lesson`. Called from
+    /// `lattice-cli` when `--tutor [N]` is passed; fires after
+    /// `load_persistent_config` so user config lands first.
+    pub fn open_tutor(&mut self, lesson: u32) {
+        let signals = self.mutate_editor_with(move |e| e.do_tutor(Some(lesson)));
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
 }

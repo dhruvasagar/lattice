@@ -148,6 +148,8 @@ pub mod state;
 pub mod messages;
 pub mod synthetic_buffers;
 pub mod tutor;
+// T.3 (2026-06-07): TutorMode minor mode + TutorHeaderlineProvider.
+pub mod tutor_mode;
 pub mod ui;
 
 // Perf plan B.4: tiny newtype wrapper that bumps a `u64` version

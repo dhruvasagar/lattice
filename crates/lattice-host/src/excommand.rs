@@ -433,6 +433,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("customize", "ex:customize"),
     ("tutor", "ex:tutor"),
     ("Tutor", "ex:tutor"),
+    ("tutor-next", "ex:tutor-next"),
+    ("tutor-prev", "ex:tutor-prev"),
     ("hover", "ex:hover"),
     ("HoverClose", "ex:hover-close"),
     ("h", "ex:help"),

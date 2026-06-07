@@ -533,6 +533,14 @@ pub enum AppEffect {
     /// the dispatch handler emits "dp: baseline is not a
     /// buffer; use :write" rather than silently no-op'ing.
     DiffPut,
+    /// T.3: tutor-mode `<CR>` / `:tutor-next`. Advance to the
+    /// next exercise; advance to the next lesson when the
+    /// current one is complete. No-op when tutor-mode is not
+    /// active on the current buffer.
+    TutorAdvance,
+    /// T.3: tutor-mode `:tutor-prev`. Retreat to the previous
+    /// exercise. No-op at exercise 0.
+    TutorRetreat,
     /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
     /// `:multibuffer-contract [n]` ex-commands. `delta` is the
     /// signed row count (positive expands, negative contracts).

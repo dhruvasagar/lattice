@@ -6,6 +6,19 @@
 
 use serde::Deserialize;
 
+pub const MAX_LIVES: u8 = 3;
+
+/// High-level game state for the tutor session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TutorGameState {
+    /// Normal play: lives > 0, exercises remaining.
+    Active,
+    /// Player ran out of lives on the current exercise.
+    GameOver,
+    /// All lessons in the build are complete.
+    AllComplete,
+}
+
 // ---- Success conditions -----------------------------------------------
 
 /// How the tutor decides an exercise is complete.
@@ -77,8 +90,8 @@ pub struct TutorSession {
     pub exercises: Vec<TutorExercise>,
     /// Index of the current exercise.
     pub current: usize,
-    /// Buffer-version bumps since last advance that did not satisfy the
-    /// success condition.  Resets to 0 on every advance or retreat.
+    /// Failed-attempt count since the last advance/retreat.
+    /// Used to gate hint display (shows after ≥ 2).
     pub attempt_count: usize,
     /// Resolved line index in the buffer for each exercise's anchor.
     /// Parallel to `exercises`.
@@ -88,6 +101,14 @@ pub struct TutorSession {
     pub initial_texts: Vec<String>,
     /// Last buffer version seen by the post-dispatch watcher.
     pub last_version: u64,
+    /// Lives remaining for the current exercise.
+    pub lives: u8,
+    /// Cumulative score across all passed exercises this session.
+    pub score: u32,
+    /// Wall-clock start time for the current exercise; used for speed bonuses.
+    pub exercise_started_at: Option<std::time::Instant>,
+    /// High-level game state.
+    pub state: TutorGameState,
 }
 
 impl TutorSession {
@@ -134,6 +155,10 @@ impl TutorSession {
             anchor_lines,
             initial_texts,
             last_version: 0,
+            lives: MAX_LIVES,
+            score: 0,
+            exercise_started_at: Some(std::time::Instant::now()),
+            state: TutorGameState::Active,
         })
     }
 
@@ -147,13 +172,17 @@ impl TutorSession {
         self.exercises.get(self.current)
     }
 
-    /// Evaluate the current exercise against live buffer lines.
-    /// Returns `true` when the success condition is met.
-    /// Increments `attempt_count` on failure.
+    /// Auto-detect pass/fail against live buffer lines.  Awards score
+    /// on pass (base + first-try bonus + speed bonus).  Increments
+    /// `attempt_count` on failure.  Does NOT drain lives — that only
+    /// happens on explicit `<CR>` presses via `drain_life`.
     ///
-    /// If the lesson is already complete, returns `false` without
-    /// mutating state.
+    /// Returns `false` when the session is not `Active` or the lesson
+    /// is already complete.
     pub fn check(&mut self, lines: &[&str]) -> bool {
+        if self.state != TutorGameState::Active {
+            return false;
+        }
         let Some(ex) = self.exercises.get(self.current) else {
             return false;
         };
@@ -162,6 +191,16 @@ impl TutorSession {
         let initial_text = self.initial_texts[self.current].as_str();
 
         if ex.success.is_met(initial_text, current_text) {
+            let base = 100u32;
+            let first_try = if self.attempt_count == 0 { 50 } else { 0 };
+            let speed = self
+                .exercise_started_at
+                .map(|t| {
+                    let s = t.elapsed().as_secs();
+                    if s < 10 { 100 } else if s < 30 { 50 } else if s < 60 { 25 } else { 0 }
+                })
+                .unwrap_or(0);
+            self.score = self.score.saturating_add(base + first_try + speed);
             true
         } else {
             self.attempt_count += 1;
@@ -169,21 +208,52 @@ impl TutorSession {
         }
     }
 
-    /// Advance to the next exercise; resets `attempt_count`.
-    /// Returns the new current exercise, or `None` if the lesson is now
-    /// complete.
+    /// Peek: is the success condition currently met?  Pure read — no
+    /// side effects.  Used by `do_tutor_advance` to decide whether an
+    /// explicit `<CR>` press is a valid advance or a penalised miss.
+    pub fn is_condition_met(&self, lines: &[&str]) -> bool {
+        let Some(ex) = self.exercises.get(self.current) else {
+            return false;
+        };
+        let anchor_idx = self.anchor_lines[self.current];
+        let current_text = lines.get(anchor_idx).copied().unwrap_or("");
+        let initial_text = self.initial_texts[self.current].as_str();
+        ex.success.is_met(initial_text, current_text)
+    }
+
+    /// Drain one life on an explicit wrong attempt (`<CR>` press when
+    /// the condition is not met).  Increments `attempt_count` and
+    /// transitions to `GameOver` when lives reach zero.
+    pub fn drain_life(&mut self) {
+        self.attempt_count += 1;
+        self.lives = self.lives.saturating_sub(1);
+        if self.lives == 0 {
+            self.state = TutorGameState::GameOver;
+        }
+    }
+
+    /// Advance to the next exercise; resets lives, attempt_count, and
+    /// restarts the exercise timer.  Returns the new current exercise,
+    /// or `None` if the lesson is now complete.
     pub fn advance(&mut self) -> Option<&TutorExercise> {
         self.current += 1;
         self.attempt_count = 0;
+        self.lives = MAX_LIVES;
+        self.state = TutorGameState::Active;
+        self.exercise_started_at = Some(std::time::Instant::now());
         self.exercises.get(self.current)
     }
 
-    /// Return to the previous exercise.  No-op if already at 0.
+    /// Return to the previous exercise; resets lives, attempt_count,
+    /// and clears any GameOver state.
     pub fn retreat(&mut self) {
         if self.current > 0 {
             self.current -= 1;
-            self.attempt_count = 0;
         }
+        self.attempt_count = 0;
+        self.lives = MAX_LIVES;
+        self.state = TutorGameState::Active;
+        self.exercise_started_at = Some(std::time::Instant::now());
     }
 }
 

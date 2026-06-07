@@ -62,7 +62,7 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
 /// The concrete terminal backend type, now wrapped in the byte counter.
 type TermBackend = CrosstermBackend<CountingWriter<Stdout>>;
 
-pub fn run(document: Document) -> Result<()> {
+pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
     let mut app = App::new(document);
     // Load persistent config (TOML) before LSP attach work so
@@ -78,6 +78,10 @@ pub fn run(document: Document) -> Result<()> {
     let workspace_root = lattice_host::editor::Editor::workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     app.apply_per_language_toml_overrides();
+    // T.5: `--tutor [N]` opens the tutor buffer before the first draw.
+    if let Some(n) = startup_lesson {
+        app.open_tutor(n);
+    }
     // LSP attach is event-driven: `App::new` already
     // published `Event::DocumentOpened` for the initial
     // document (if path-bearing). The attach driver wired in

@@ -1360,6 +1360,10 @@ impl Editor {
         // keystroke filter all consume the same state).
         // Idempotent and cheap when the queue is empty.
         self.apply_pending_diff_mode_changes();
+        // T.4: poll the active buffer's tutor session for success.
+        // Cheap: version-compare early-return when no session or no
+        // buffer change since the last tick.
+        self.check_tutor_session();
         // D.4.a (2026-05-29): propagate scroll bindings before
         // the render state snapshot so the snapshot reflects the
         // bound panes' updated stashed scrolls. Idempotent —
@@ -5013,6 +5017,12 @@ impl Editor {
             AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
+            AppEffect::TutorAdvance => {
+                out.renderer_signals.extend(self.do_tutor_advance());
+            }
+            AppEffect::TutorRetreat => {
+                out.renderer_signals.extend(self.do_tutor_retreat());
+            }
             AppEffect::MultibufferExpand { delta } => {
                 // M.10.4 (2026-06-03): the work moved to a
                 // substrate helper in `lattice-multibuffer`. No
@@ -17919,12 +17929,27 @@ impl Editor {
     /// `Vec<RendererSignal>` because `do_edit` may emit signals.
     pub fn do_tutor(&mut self, lesson: Option<u32>) -> Vec<RendererSignal> {
         let lesson_num = lesson.unwrap_or(1);
-        let lesson_text: &'static str = match lesson_num {
-            1 => include_str!("../../../docs/user/tutor/lesson-1.md"),
-            2 => include_str!("../../../docs/user/tutor/lesson-2.md"),
-            3 => include_str!("../../../docs/user/tutor/lesson-3.md"),
-            4 => include_str!("../../../docs/user/tutor/lesson-4.md"),
-            5 => include_str!("../../../docs/user/tutor/lesson-5.md"),
+        let (lesson_text, exercises_toml): (&'static str, &'static str) = match lesson_num {
+            1 => (
+                include_str!("../../../docs/user/tutor/lesson-1.md"),
+                include_str!("../../../docs/user/tutor/lesson-1.exercises.toml"),
+            ),
+            2 => (
+                include_str!("../../../docs/user/tutor/lesson-2.md"),
+                include_str!("../../../docs/user/tutor/lesson-2.exercises.toml"),
+            ),
+            3 => (
+                include_str!("../../../docs/user/tutor/lesson-3.md"),
+                include_str!("../../../docs/user/tutor/lesson-3.exercises.toml"),
+            ),
+            4 => (
+                include_str!("../../../docs/user/tutor/lesson-4.md"),
+                include_str!("../../../docs/user/tutor/lesson-4.exercises.toml"),
+            ),
+            5 => (
+                include_str!("../../../docs/user/tutor/lesson-5.md"),
+                include_str!("../../../docs/user/tutor/lesson-5.exercises.toml"),
+            ),
             n => {
                 self.set_message(
                     EchoLevel::Error,
@@ -17946,13 +17971,255 @@ impl Editor {
             return Vec::new();
         }
         let outcome = self.do_edit(Some(path), false);
-        match outcome {
+        let signals = match outcome {
             DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) | DoEditOutcome::Reloaded(s) => {
                 s
             }
             DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
-            DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+            DoEditOutcome::NoFileName | DoEditOutcome::Failed => return Vec::new(),
+        };
+        // T.4: seed TutorSession, TutorHeaderlineProvider, and tutor-mode
+        // on the buffer that was just opened (now self.document_buffer_id).
+        let buffer_id = self.document_buffer_id;
+        let session =
+            match crate::tutor::TutorSession::load(lesson_num, 5, lesson_text, exercises_toml) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("tutor: failed to load session: {e}"),
+                    );
+                    return signals;
+                }
+            };
+        // Build the initial headerline text before session moves.
+        let initial_text = crate::tutor_mode::tutor_headerline_text(&session);
+        // Provider — unregister any stale one (re-open path) then register fresh.
+        let provider_id = buffer_id.0 as u64 ^ crate::tutor_mode::TUTOR_PROVIDER_TAG;
+        self.virtual_row_providers.unregister(buffer_id, provider_id);
+        let provider =
+            crate::tutor_mode::TutorHeaderlineProvider::new(buffer_id.0 as u64);
+        provider
+            .state
+            .lock()
+            .ok()
+            .map(|mut s| s.update(initial_text));
+        let state_arc = std::sync::Arc::clone(&provider.state);
+        self.virtual_row_providers
+            .register(buffer_id, std::sync::Arc::new(provider));
+        // Store the state handle and session as buffer-locals.
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(crate::tutor_mode::TutorHeaderlineState(state_arc));
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
+        // Activate tutor-mode on this buffer.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            crate::tutor_mode::TutorMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        self.active_modes.insert(buffer_id, active);
+        signals
+    }
+
+    /// `<CR>` / `<C-j>` in tutor-mode.
+    ///
+    /// - **GameOver**: skip past the current exercise (lose this one;
+    ///   advance without scoring).
+    /// - **Lesson complete**: open the next lesson, or show AllComplete
+    ///   if on the final lesson.
+    /// - **ManualAdvance exercise**: always advance (no penalty).
+    /// - **Condition met** (auto-detected by tick): advance.
+    /// - **Condition NOT met**: drain one life. If lives hit 0 the
+    ///   session transitions to `GameOver` and the headerline updates.
+    pub fn do_tutor_advance(&mut self) -> Vec<RendererSignal> {
+        use crate::tutor::{SuccessCondition, TutorGameState};
+
+        let buffer_id = self.document_buffer_id;
+        let Some(mut session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return Vec::new();
+        };
+
+        // GameOver: <CR> skips — advance without scoring.
+        if session.state == TutorGameState::GameOver {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
         }
+
+        // Lesson already complete: open the next lesson.
+        if session.is_complete() {
+            return self.tutor_open_next_or_complete(session);
+        }
+
+        let is_manual = matches!(
+            session.current_exercise().map(|e| &e.success),
+            Some(SuccessCondition::ManualAdvance)
+        );
+
+        if is_manual {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
+        }
+
+        // Peek: is the condition currently met?
+        let text = self.document.snapshot().buffer.as_string();
+        let owned: Vec<String> = text.lines().map(|l| l.to_owned()).collect();
+        let lines: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+
+        if session.is_condition_met(&lines) {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
+        }
+
+        // Wrong answer: drain a life.
+        session.drain_life();
+        let header = crate::tutor_mode::tutor_headerline_text(&session);
+        self.tutor_update_headerline(buffer_id, header);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// `<C-k>` in tutor-mode.
+    ///
+    /// - **GameOver**: reload the current lesson from scratch (retry).
+    /// - **Active**: retreat to the previous exercise.
+    pub fn do_tutor_retreat(&mut self) -> Vec<RendererSignal> {
+        use crate::tutor::TutorGameState;
+
+        let buffer_id = self.document_buffer_id;
+        let Some(session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return Vec::new();
+        };
+
+        if session.state == TutorGameState::GameOver {
+            // Full lesson reload: resets buffer text + spawns a fresh session.
+            return self.do_tutor(Some(session.lesson));
+        }
+
+        let mut session = session;
+        session.retreat();
+        let header = crate::tutor_mode::tutor_headerline_text(&session);
+        self.tutor_update_headerline(buffer_id, header);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// After a successful `session.advance()`, either open the next lesson
+    /// (lesson complete) or update the headerline for the new exercise.
+    fn tutor_after_advance(
+        &mut self,
+        buffer_id: BufferId,
+        session: crate::tutor::TutorSession,
+    ) -> Vec<RendererSignal> {
+        if session.is_complete() {
+            return self.tutor_open_next_or_complete(session);
+        }
+        let header = crate::tutor_mode::tutor_headerline_text(&session);
+        self.tutor_update_headerline(buffer_id, header);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// Open the next lesson, or mark AllComplete on the final lesson.
+    fn tutor_open_next_or_complete(
+        &mut self,
+        mut session: crate::tutor::TutorSession,
+    ) -> Vec<RendererSignal> {
+        use crate::tutor::TutorGameState;
+        let next = session.lesson + 1;
+        if next <= session.total_lessons {
+            return self.do_tutor(Some(next));
+        }
+        // Final lesson complete.
+        let buffer_id = self.document_buffer_id;
+        session.state = TutorGameState::AllComplete;
+        let header = crate::tutor_mode::tutor_headerline_text(&session);
+        self.tutor_update_headerline(buffer_id, header);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// Push `text` into the tutor headerline provider for `buffer_id`.
+    fn tutor_update_headerline(&self, buffer_id: BufferId, text: String) {
+        if let Some(state) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor_mode::TutorHeaderlineState>())
+        {
+            state.0.lock().ok().map(|mut s| s.update(text));
+        }
+    }
+
+    /// Auto-detect success per tick. Awards score when the condition
+    /// is first met; updates the headerline to a "STAGE CLEAR" prompt.
+    /// Does NOT drain lives — that only happens on explicit `<CR>` via
+    /// `do_tutor_advance`. Called from `publish_render_state`.
+    fn check_tutor_session(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let Some(mut session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return;
+        };
+        use crate::tutor::TutorGameState;
+        if session.state == TutorGameState::GameOver || session.is_complete() {
+            return;
+        }
+        let current_version = self.document.version();
+        if current_version == session.last_version {
+            return;
+        }
+        session.last_version = current_version;
+        let text = self.document.snapshot().buffer.as_string();
+        let owned: Vec<String> = text.lines().map(|l| l.to_owned()).collect();
+        let lines: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let success = session.check(&lines);
+        let header_text = if success {
+            let ex_id = session
+                .current_exercise()
+                .map(|e| e.id.as_str())
+                .unwrap_or("");
+            format!(
+                " *** STAGE CLEAR! *** | {} | SCORE: {:>5} | Ex {} done — <CR>=next ",
+                format!("LV.{}-{}", session.lesson, session.current + 1),
+                session.score,
+                ex_id,
+            )
+        } else {
+            crate::tutor_mode::tutor_headerline_text(&session)
+        };
+        self.tutor_update_headerline(buffer_id, header_text);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
     }
 
     /// Insert-mode auto-trigger: fire `textDocument/onTypeFormatting`

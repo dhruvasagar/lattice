@@ -104,6 +104,8 @@ pub struct ExBuiltins {
     pub describe_option_resolution: ExCommandId,
     pub customize: ExCommandId,
     pub tutor: ExCommandId,
+    pub tutor_next: ExCommandId,
+    pub tutor_prev: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -1252,6 +1254,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let tutor_next = registry.register_ex_command(
+        "ex:tutor-next",
+        "Advance to the next tutor exercise (or lesson). \
+         Equivalent to pressing `<CR>` in tutor-mode.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorAdvance))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let tutor_prev = registry.register_ex_command(
+        "ex:tutor-prev",
+        "Retreat to the previous tutor exercise.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorRetreat))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let customize = registry.register_ex_command(
         "ex:customize",
         "Open the customize buffer (`:customize [name]`). With no \
@@ -1953,6 +1982,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_option_resolution,
         customize,
         tutor,
+        tutor_next,
+        tutor_prev,
         hover,
         hover_close,
         help,

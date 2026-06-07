@@ -1,0 +1,74 @@
+# Lesson 5 exercises — splits, buffer list, project search, diff, LSP.
+# All manual_advance: exercises involve multi-buffer operations,
+# split navigation, and tool invocations that cannot be validated
+# by inspecting a single anchor line's text.
+
+[[exercises]]
+id          = "5.1.1"
+description = "Split vertically:  <C-w> v"
+anchor      = "---> Press <C-w> v to open a vertical split."
+success     = "manual_advance"
+hint        = "<C-w>v splits; <C-w>h/<C-w>l navigate left/right; <C-w>q closes"
+
+[[exercises]]
+id          = "5.1.2"
+description = "Navigate between panes with  <C-w> w"
+anchor      = "---> Press <C-w> w to cycle between panes."
+success     = "manual_advance"
+hint        = "<C-w>w cycles; <C-w>hjkl moves directionally"
+
+[[exercises]]
+id          = "5.2.1"
+description = "List all open buffers:  :ls"
+anchor      = "---> Run :ls to see the buffer list."
+success     = "manual_advance"
+hint        = ":ls shows all listed buffers with their IDs and flags"
+
+[[exercises]]
+id          = "5.2.2"
+description = "Jump to a buffer by number:  :b N"
+anchor      = "---> Run :b 1 to jump to the first buffer."
+success     = "manual_advance"
+hint        = ":b 1 jumps to buffer #1; :bn / :bp cycle forward/back"
+
+[[exercises]]
+id          = "5.3"
+description = "Search the project:  :search <pattern>"
+anchor      = "---> Run :search fn main  to find all definitions."
+success     = "manual_advance"
+hint        = ":search opens a multibuffer; ]e / [e navigate between matches"
+
+[[exercises]]
+id          = "5.4.1"
+description = "Open the diff view:  :diffthis"
+anchor      = "---> Run :diffthis in a modified buffer to see diff highlights."
+success     = "manual_advance"
+hint        = ":diffthis marks the buffer for diff; ]c / [c navigate hunks"
+
+[[exercises]]
+id          = "5.4.2"
+description = "Navigate diff hunks with  ]c  /  [c"
+anchor      = "---> Press ]c to jump to the next changed hunk."
+success     = "manual_advance"
+hint        = "]c next hunk, [c previous hunk; do/dp to obtain/put a hunk"
+
+[[exercises]]
+id          = "5.5.1"
+description = "Jump to definition:  g d"
+anchor      = "---> Place the cursor on a symbol and press g d."
+success     = "manual_advance"
+hint        = "gd jumps to the definition; <C-o> returns to the prior position"
+
+[[exercises]]
+id          = "5.5.2"
+description = "Show hover documentation:  K"
+anchor      = "---> Place the cursor on a symbol and press K."
+success     = "manual_advance"
+hint        = "K opens an LSP hover popup; press K again or <Esc> to dismiss"
+
+[[exercises]]
+id          = "5.5.3"
+description = "Rename a symbol:  :lsp-rename"
+anchor      = "---> Place the cursor on a symbol and run :lsp-rename."
+success     = "manual_advance"
+hint        = ":lsp-rename prompts for a new name and applies the workspace edit"

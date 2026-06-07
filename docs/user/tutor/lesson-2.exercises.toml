@@ -1,0 +1,64 @@
+# Lesson 2 exercises — operators, text objects, counts, dot.
+
+[[exercises]]
+id          = "2.1"
+description = "Delete a word with  d i w"
+anchor      = "--->  The quick brown fox jumps over the lazy dog."
+success     = "text_changed"
+hint        = "Place cursor on any word and type:  d  i  w"
+
+[[exercises]]
+id          = "2.2.1"
+description = "Yank and paste a line with  yy  /  p"
+anchor      = "--->  Duplicate me."
+success     = "manual_advance"
+hint        = "yy to yank, move down, p to paste -- then :tutor-next when done"
+
+[[exercises]]
+id          = "2.2.2"
+description = "Uppercase a word with  g U i w"
+anchor      = "--->  The wrong word stands out."
+success     = { text_not_contains = "wrong" }
+hint        = "Place cursor on 'wrong' and type:  g U i w"
+
+[[exercises]]
+id          = "2.3.1"
+description = "Change text inside quotes with  c i \""
+anchor      = "--->  She said \"replace this entire phrase\" to nobody."
+success     = { text_not_contains = "replace this entire phrase" }
+hint        = "Place cursor anywhere inside the quotes and type:  c i \""
+
+[[exercises]]
+id          = "2.3.2"
+description = "Delete function args with  d a ("
+anchor      = "--->  result = compute(some, arguments, here) + offset;"
+success     = { text_not_contains = "some, arguments, here" }
+hint        = "Place cursor on or inside the parens and type:  d a ("
+
+[[exercises]]
+id          = "2.3.3"
+description = "Yank a paragraph with  y i p"
+anchor      = "--->  This is a short paragraph."
+success     = "manual_advance"
+hint        = "Place cursor in the paragraph, type:  y i p  then  }  then  p"
+
+[[exercises]]
+id          = "2.4"
+description = "Delete three words with  3 d w"
+anchor      = "--->  one two three four five six remaining."
+success     = { text_contains = "four five six remaining." }
+hint        = "Place cursor on 'one' and type:  3  d  w"
+
+[[exercises]]
+id          = "2.5"
+description = "Dot-repeat: delete REMOVE, then  .  to repeat"
+anchor      = "--->  Please REMOVE this word and also REMOVE the other one."
+success     = { text_not_contains = "REMOVE" }
+hint        = "Delete first REMOVE with d i w, search /REMOVE, press . to repeat"
+
+[[exercises]]
+id          = "2.6"
+description = "Re-indent a block with  = i {"
+anchor      = "--->  function hello() {"
+success     = "manual_advance"
+hint        = "Place cursor inside the braces and type:  = i {"

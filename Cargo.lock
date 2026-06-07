@@ -3477,6 +3477,7 @@ dependencies = [
  "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
+ "lattice-keymap",
  "lattice-lsp",
  "lattice-mode",
  "lattice-multibuffer",
@@ -3498,6 +3499,17 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tree-sitter",
+]
+
+[[package]]
+name = "lattice-keymap"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "internment",
+ "lattice-grammar",
+ "lattice-protocol",
+ "tracing",
 ]
 
 [[package]]
@@ -3536,6 +3548,7 @@ dependencies = [
  "lattice-config",
  "lattice-core",
  "lattice-grammar",
+ "lattice-keymap",
  "lattice-protocol",
  "lattice-runtime",
  "linkme",

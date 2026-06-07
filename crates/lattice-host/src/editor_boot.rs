@@ -1043,7 +1043,7 @@ impl Editor {
                 // current snapshot. See
                 // `docs/dev/architecture/marginalia.md` §6.
                 let kb_anno = lattice_completion::KeybindingAnnotator::new(
-                    h.reverse_lookup_handle(registry.clone()),
+                    crate::keymap_registry::KeymapReverseLookupHandle::new(&h, registry.clone()),
                 );
                 let kb_anno_id = completion_registry.register_annotator(
                     "anno:keybinding",

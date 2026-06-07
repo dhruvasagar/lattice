@@ -20,3 +20,8 @@ pub use mode_id::ModeId;
 pub mod trie;
 pub use trie::{BoundCommand, KeymapLayer, KeymapTrie, LookupResult};
 pub use lattice_protocol::ChordPattern;
+
+pub mod registry;
+pub use registry::{
+    KeymapCapability, KeymapError, KeymapHandle, KeymapRegistry, LayerId, PushLayerKind,
+};

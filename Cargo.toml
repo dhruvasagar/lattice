@@ -6,6 +6,7 @@ members = [
 	"crates/lattice-mode",
 	"crates/lattice-core",
 	"crates/lattice-grammar",
+	"crates/lattice-keymap",
 	"crates/lattice-completion",
 	"crates/lattice-picker",
 	"crates/lattice-config",

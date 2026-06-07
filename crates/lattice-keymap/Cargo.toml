@@ -1,0 +1,16 @@
+[package]
+name = "lattice-keymap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-grammar  = { path = "../lattice-grammar" }
+internment       = { workspace = true }
+arc-swap         = { workspace = true }
+tracing          = { workspace = true }
+
+[lints]
+workspace = true

@@ -1194,7 +1194,7 @@ After Task 12, the following are no longer called:
 
 **Files:** `crates/lattice-host/src/dispatch.rs`
 
-- [ ] **Delete the three dead helper functions**
+- [x] **Delete the three dead helper functions**
 
 ```bash
 grep -n "fn append_resolved_binding_section\|fn append_runtime_chord_bindings_section\|fn friendly_layer_label" \
@@ -1203,7 +1203,7 @@ grep -n "fn append_resolved_binding_section\|fn append_runtime_chord_bindings_se
 
 Delete each function body (from the `fn` line to its closing `}`).
 
-- [ ] **Remove now-unused imports from `dispatch.rs`**
+- [x] **Remove now-unused imports from `dispatch.rs`**
 
 ```bash
 cargo check -p lattice-host 2>&1 | grep "unused import"
@@ -1211,7 +1211,7 @@ cargo check -p lattice-host 2>&1 | grep "unused import"
 
 Delete any import line flagged as unused.
 
-- [ ] **Run clippy workspace-wide**
+- [x] **Run clippy workspace-wide**
 
 ```bash
 cargo clippy --workspace -- -D warnings 2>&1 | grep "^error"
@@ -1221,7 +1221,7 @@ Fix any remaining issues. Common ones after a migration:
 - `dead_code` on re-export shim items not yet used elsewhere
 - `unused_imports` in modified files
 
-- [ ] **Final test run**
+- [x] **Final test run**
 
 ```bash
 cargo test --workspace 2>&1 | tail -10
@@ -1229,7 +1229,7 @@ cargo test --workspace 2>&1 | tail -10
 
 Expected: all tests pass; test count ≥ baseline.
 
-- [ ] **Commit Slice 2**
+- [x] **Commit Slice 2**
 
 ```bash
 git add -A

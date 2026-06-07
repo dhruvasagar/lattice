@@ -28775,6 +28775,69 @@ mod tests {
 
     // ---- I / A mode-entry ----
 
+    // ---- W.7: :set wrap live toggle + viewport width change ----
+
+    #[test]
+    fn set_wrap_updates_option_cache_and_pane_cells_inputs() {
+        let doc = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(doc);
+        assert!(!editor.option_cache.wrap_lines, "wrap must default to false");
+
+        let _signals = editor.do_set("wrap");
+        assert!(editor.option_cache.wrap_lines, "option_cache must reflect :set wrap");
+
+        // do_set is a direct call; publish_render_state is normally called by
+        // the dispatch() wrapper. Drive it explicitly here.
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(pane.wrap, "PaneCellsInputs.wrap must be true after :set wrap");
+    }
+
+    #[test]
+    fn set_nowrap_reverts_pane_cells_inputs_wrap() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        let _ = editor.do_set("wrap");
+        editor.publish_render_state();
+        let _ = editor.do_set("nowrap");
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(!pane.wrap, "PaneCellsInputs.wrap must be false after :set nowrap");
+    }
+
+    #[test]
+    fn set_pane_viewport_width_propagates_to_pane_cells_inputs() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[0].viewport_width = 60;
+        }
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert_eq!(pane.viewport_width, 60, "viewport_width must propagate to PaneCellsInputs");
+    }
+
+    #[test]
+    fn wrap_and_width_together_give_nonzero_effective_wrap() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[0].viewport_width = 80;
+        }
+        let _ = editor.do_set("wrap");
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(pane.wrap, "wrap on");
+        assert_eq!(pane.viewport_width, 80, "width propagated");
+        // cells_worker: effective_wrap = viewport_width = 80 when wrap is true
+    }
+
     // ---- gj / gk / g0 / g$ display-line motions ----
 
     fn seed_wrap_matrix(editor: &crate::editor::Editor, wrap_width: u32, line_count: u32) {

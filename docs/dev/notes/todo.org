@@ -32,6 +32,7 @@
   - [ ] It should resolve to `:<command> |` for the user to enter
     arguments if the command requires arguments or just execute them
     if they don't take arguments
+- [ ] focus mode
 
 * Plugins
 - [ ] plugin manager

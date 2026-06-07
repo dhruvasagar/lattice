@@ -3575,6 +3575,7 @@ dependencies = [
  "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-syntax",
  "linkme",
  "thiserror 2.0.18",
  "tokio",

@@ -1038,6 +1038,34 @@ impl CellsRenderState {
 /// [`crate::editor::Editor::cells_matrix_for`] at publish
 /// time and rebuild per visible buffer.
 ///
+/// K.4.7 (2026-06-07): per-excerpt syntax entry for multibuffer
+/// panes. The cells worker reads `excerpt_syntax` to apply
+/// per-source tree-sitter highlights across composed rows.
+///
+/// - `composed_start` / `composed_end`: inclusive row range in the
+///   multibuffer's composed coordinate space.
+/// - `source_start`: the first source-buffer row that maps to
+///   `composed_start` (used to translate highlight results back).
+/// - `handle`: long-lived `SyntaxHandle` owned by `MultibufferState`
+///   for the source file at this language.
+#[derive(Clone)]
+pub struct ExcerptSyntax {
+    pub composed_start: u32,
+    pub composed_end: u32,
+    pub source_start: u32,
+    pub handle: std::sync::Arc<lattice_syntax::SyntaxHandle>,
+}
+
+impl std::fmt::Debug for ExcerptSyntax {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExcerptSyntax")
+            .field("composed_start", &self.composed_start)
+            .field("composed_end", &self.composed_end)
+            .field("source_start", &self.source_start)
+            .finish_non_exhaustive()
+    }
+}
+
 /// `last_edit` is `Some(delta)` only for the active pane
 /// (edits land on the active document; the publish path
 /// `take()`s `Editor::last_edit_for_cells` exactly once);
@@ -1138,6 +1166,9 @@ pub struct PaneCellsInputs {
     /// cycle when exactly one edit was applied; `None`
     /// otherwise. See struct-level docstring.
     pub last_edit: Option<lattice_cells::EditDelta>,
+    /// K.4.7 (2026-06-07): per-excerpt syntax entries for multibuffer
+    /// panes. Empty for ordinary single-document panes.
+    pub excerpt_syntax: Arc<[ExcerptSyntax]>,
 }
 
 impl Default for CellsRenderState {

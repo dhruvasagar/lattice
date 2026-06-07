@@ -76,6 +76,8 @@ use lattice_protocol::selection::SelectionSet;
 use lattice_runtime::{
     Document, DocumentSnapshot, Pending, PublishedSnapshot, RuntimeError, SnapshotCache,
 };
+// K.4.7 (2026-06-07): per-excerpt syntax highlighting.
+use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle};
 
 // ─────────────────────────────────────────────────────────────────
 // Excerpt + identity + header
@@ -263,6 +265,10 @@ struct MultibufferInner {
     // multibuffer's own `Document::dispatch_with_cancel` impl
     // now does the work uniformly).
     registry: Arc<CommandRegistry>,
+    // K.4.7 (2026-06-07): language registry for per-source
+    // SyntaxHandle creation. Set once after construction via
+    // `set_lang_registry`; `None` until the host wires it.
+    lang_registry: std::sync::OnceLock<Arc<LangRegistry>>,
 }
 
 #[derive(Default)]
@@ -303,6 +309,10 @@ struct SourceForwardMsg {
 struct MultibufferState {
     sources: HashMap<BufferId, Arc<dyn Document>>,
     excerpts: Vec<Excerpt>,
+    /// K.4.7 (2026-06-07): per-source SyntaxHandle for excerpt
+    /// highlighting. Populated by `add_source` when `lang_registry`
+    /// is set. Sources with `Lang::Plain` are absent.
+    source_syntax: HashMap<BufferId, Arc<SyntaxHandle>>,
     /// K.4.5 (2026-06-02): composed-coordinate selection set
     /// for the view. Multibuffers don't propagate selections to
     /// their source buffers (M.3 design — composed coordinates
@@ -465,6 +475,7 @@ impl MultibufferDocumentHandle {
                 state: std::sync::Mutex::new(MultibufferState {
                     sources,
                     excerpts,
+                    source_syntax: HashMap::new(),
                     selections: Arc::new(SelectionSet::default()),
                 }),
                 composed_doc: std::sync::Mutex::new(composed_doc),
@@ -474,6 +485,7 @@ impl MultibufferDocumentHandle {
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
                 registry,
+                lang_registry: std::sync::OnceLock::new(),
             }),
         })
     }
@@ -763,9 +775,86 @@ impl MultibufferDocumentHandle {
     /// reference it. Idempotent: re-adding an existing source
     /// updates the handle reference (which may have been
     /// replaced via slot-replacement upstream).
+    ///
+    /// K.4.7 (2026-06-07): if `set_lang_registry` has been called,
+    /// detect the source's language from its path and create a
+    /// long-lived `SyntaxHandle` for it. The handle worker runs on
+    /// the tokio runtime of the caller (the scan task); subsequent
+    /// reparsing is async and wait-free at read time.
     pub fn add_source(&self, id: BufferId, source: Arc<dyn Document>) {
         let mut state = self.lock_state();
-        state.sources.insert(id, source);
+        state.sources.insert(id, source.clone());
+        if let Some(lr) = self.inner.lang_registry.get() {
+            let lang = Lang::detect_from_path(source.path().as_deref());
+            if lang != Lang::Plain {
+                if let Ok(Some(mut syntax)) =
+                    Syntax::for_language_with_registry(lang, lr.clone())
+                {
+                    let snap = source.snapshot();
+                    let text = snap.buffer.as_string();
+                    syntax.parse(&text);
+                    // `seeded` snapshots the initial parse and spawns the
+                    // async reparse worker when a tokio runtime is present;
+                    // gracefully degrades (snapshot kept, worker absent) in
+                    // sync test contexts.
+                    let handle = SyntaxHandle::seeded(syntax);
+                    state.source_syntax.insert(id, Arc::new(handle));
+                }
+            }
+        }
+    }
+
+    /// K.4.7 (2026-06-07): enable per-source syntax highlighting.
+    /// Called by the host immediately after `create_multibuffer_view`.
+    /// Subsequent `add_source` calls use the registry to detect the
+    /// source language and create a `SyntaxHandle` per source.
+    ///
+    /// Also retroactively creates handles for sources that were already
+    /// added before this call (the common case: `new(sources, ...)` is
+    /// called first, then `set_lang_registry` wires highlighting).
+    pub fn set_lang_registry(&self, lr: Arc<LangRegistry>) {
+        if self.inner.lang_registry.set(lr.clone()).is_err() {
+            return;
+        }
+        let mut state = self.lock_state();
+        let ids: Vec<(BufferId, Arc<dyn Document>)> = state
+            .sources
+            .iter()
+            .filter(|(id, _)| !state.source_syntax.contains_key(id))
+            .map(|(id, src)| (*id, src.clone()))
+            .collect();
+        for (id, source) in ids {
+            let lang = Lang::detect_from_path(source.path().as_deref());
+            if lang == Lang::Plain {
+                continue;
+            }
+            if let Ok(Some(mut syntax)) = Syntax::for_language_with_registry(lang, lr.clone()) {
+                let snap = source.snapshot();
+                let text = snap.buffer.as_string();
+                syntax.parse(&text);
+                let handle = SyntaxHandle::seeded(syntax);
+                state.source_syntax.insert(id, Arc::new(handle));
+            }
+        }
+    }
+
+    /// K.4.7 (2026-06-07): per-excerpt syntax entries for the cells
+    /// worker. Each entry is `(composed_start, source_start,
+    /// source_end, handle)` where `composed_start` is the first row
+    /// of this excerpt in the composed snapshot (0-indexed). Only
+    /// excerpts whose source has a `SyntaxHandle` are included.
+    pub fn excerpt_syntax_entries(&self) -> Vec<(u32, u32, u32, Arc<SyntaxHandle>)> {
+        let state = self.lock_state();
+        let mut entries = Vec::new();
+        let mut composed_row = 0u32;
+        for ex in &state.excerpts {
+            let line_count = ex.end_line.saturating_sub(ex.start_line) + 1;
+            if let Some(handle) = state.source_syntax.get(&ex.source) {
+                entries.push((composed_row, ex.start_line, ex.end_line, handle.clone()));
+            }
+            composed_row += line_count;
+        }
+        entries
     }
 
     /// Recompose the snapshot from current source state.

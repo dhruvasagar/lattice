@@ -2,9 +2,8 @@
 
 **Design:** [multibuffer-is-a-regular-buffer.md](../../architecture/multibuffer-is-a-regular-buffer.md).
 
-**Status:** 🚧 in progress. K.4.0–K.4.6 + K.4.8–K.4.11 all
-landed. Only K.4.7 (per-excerpt syntax highlighting —
-design slice) remains open.
+**Status:** ✅ complete. K.4.0–K.4.11 all landed (K.4.7
+closed 2026-06-08 — per-excerpt syntax highlighting).
 
 **Why:** M.2.b shipped declaring Multibuffer integration but
 no test exercised end-to-end behavior. Four latent failures
@@ -363,61 +362,42 @@ Estimated ~300-500 LOC spread across
 `lattice-host` impl, `lattice-ui-tui/src/render.rs`
 (c.ii).
 
-### K.4.7 — Per-excerpt syntax highlighting 🗒 design slice
+### K.4.7 — Per-excerpt syntax highlighting ✅ (2026-06-08)
 
-**New finding (2026-06-01 user testing).** Excerpt body
-text renders unstyled — the multibuffer view's filename
-(`*search:spawn*`) detects as `Lang::Plain` so
-tree-sitter returns nothing for the composed snapshot,
-even after K.4.3 plumbed the syntax cell through.
+**Implementation:** Option A — per-source long-lived `SyntaxHandle` owned by
+`MultibufferState`. Design fragment: `docs/dev/architecture/multibuffer-syntax.md`.
 
-This is a **design slice**, not a one-liner. Right shape:
+**What landed:**
 
-1. **Composer-side language tracking.** Each
-   `Excerpt` records its source `Lang` (resolved at
-   excerpt-creation time from
-   `Lang::detect_from_path(source.path)`).
-2. **Per-excerpt highlight cache.** The composer (or
-   the multibuffer's snapshot publisher) maintains a
-   `Vec<StyledSpan>` per excerpt, each excerpt parsed
-   against its own language.
-3. **Composed-coordinate span shifting.** When the
-   renderer asks for highlights for the multibuffer's
-   composed snapshot, the multibuffer slices each
-   excerpt's per-language spans and shifts them into
-   composed-row coordinates.
-4. **Renderer integration.** Today's renderer pulls
-   highlights from the host's `pane_highlights` cell
-   (a single buffer's spans). For multibuffer, pull
-   from the multibuffer's per-excerpt aggregated spans
-   instead.
+- `lattice-multibuffer`: `MultibufferInner.lang_registry: OnceLock<Arc<LangRegistry>>`
+  + `MultibufferState.source_syntax: HashMap<BufferId, Arc<SyntaxHandle>>`.
+  `add_source` creates a `SyntaxHandle::seeded(syntax)` per source when `lang_registry`
+  is set. `set_lang_registry` retroactively creates handles for sources already in
+  state (the common path: `new(sources, …)` runs before the host wires the registry).
+  `excerpt_syntax_entries()` walks excerpts, accumulates `composed_row`, returns
+  `(composed_start, composed_end, source_start, handle)` tuples.
 
-**Architecture artefact required before code lands.**
-Write `docs/dev/architecture/multibuffer-syntax.md`
-fragment + companion slice plan. Decisions to lock:
+- `lattice-multibuffer/src/view.rs`: `create_multibuffer_view` gains 7th param
+  `lang_registry: Option<Arc<LangRegistry>>`; wires via `handle.set_lang_registry`.
 
-- Where the per-excerpt parses live (composer vs.
-  per-source-buffer reuse — source buffers already
-  have their own syntax cells; can the multibuffer
-  ride those instead of re-parsing?).
-- Incremental update on source edits (M.3 already
-  propagates edits to sources; the source's syntax
-  cell updates; the multibuffer just needs to
-  re-resolve when source changes).
-- Performance budget — paramount goal #1 still applies.
+- `lattice-multibuffer/src/providers/search.rs`: `project_search` gains 5th param
+  `lang_registry: Option<Arc<LangRegistry>>`; threads through.
 
-Likely-cleanest path: **multibuffer rides per-source
-syntax cells.** Each source buffer already maintains a
-tree-sitter parse via the syntax worker. The
-multibuffer's render path reads each source's current
-span set and shifts to composed coordinates on the fly.
-No re-parsing, no separate cache.
+- `lattice-host/src/render_state.rs`: `ExcerptSyntax` struct + `PaneCellsInputs.
+  excerpt_syntax: Arc<[ExcerptSyntax]>`.
 
-Slice this as **K.4.7.0 design fragment**, **K.4.7.1
-composer language-tracking changes**, **K.4.7.2
-renderer per-excerpt span resolution**, **K.4.7.3
-benchmark coverage**, **K.4.7.4 test additions to
-K.4.1**.
+- `lattice-host/src/dispatch.rs`: `build_cells_panes` populates `excerpt_syntax`
+  via multibuffer registry lookup; folds excerpt handle versions into `MatrixVersion.
+  syntax` (XOR) so per-source reparsing invalidates the cells cache.
+  `do_search` threads `lang_registry` into `project_search`.
+
+- `lattice-host/src/cells_worker.rs`: `highlight_range_multibuffer` free function;
+  `recompute_pane`'s `highlight_range` closure delegates to it when `excerpt_syntax`
+  is non-empty. All `PaneCellsInputs` construction sites updated.
+
+- **Test:** `syntax_highlights_per_excerpt_use_source_language` in
+  `multibuffer_is_a_regular_buffer.rs` — asserts `excerpt_syntax_entries()` is
+  non-empty for a `.rs` source + that `recompute_pane` produces non-default-fg rows.
 
 ### K.4.8 — `:ls` listing format polish ✅ (commit `6299564`)
 

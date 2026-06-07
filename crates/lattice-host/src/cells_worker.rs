@@ -271,6 +271,53 @@ pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
     }
 }
 
+/// K.4.7 (2026-06-07): assemble per-excerpt tree-sitter highlights for
+/// a multibuffer composed row range `[lo, hi)` (exclusive `hi`).
+///
+/// Returns a `Vec` indexed relative to `lo` (row 0 = composed row `lo`).
+/// Each inner `Vec` is the `StyledSpan` list for that row — empty when
+/// no excerpt covers it or the excerpt's parse hasn't landed yet.
+/// Returns `None` only when the `excerpt_syntax` slice is empty (caller
+/// falls back to the standard single-document path).
+fn highlight_range_multibuffer(
+    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
+    lo: u32,
+    hi: u32,
+) -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+    if excerpt_syntax.is_empty() {
+        return None;
+    }
+    if hi <= lo {
+        return Some(Vec::new());
+    }
+    let row_count = (hi - lo) as usize;
+    let mut result: Vec<Vec<lattice_syntax::StyledSpan>> = vec![Vec::new(); row_count];
+    for ex in excerpt_syntax {
+        if ex.composed_start >= hi || ex.composed_end < lo {
+            continue;
+        }
+        let composed_lo = ex.composed_start.max(lo);
+        let composed_hi = (ex.composed_end + 1).min(hi);
+        let src_lo = ex.source_start + (composed_lo - ex.composed_start);
+        let src_hi = src_lo + (composed_hi - composed_lo);
+        let snap = ex.handle.snapshot();
+        if snap.text_version() == 0 {
+            continue;
+        }
+        let spans = match snap.highlight_lines(src_lo, src_hi) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        for (i, span_row) in spans.into_iter().enumerate() {
+            let dest = (composed_lo - lo) as usize + i;
+            if dest < row_count {
+                result[dest] = span_row;
+            }
+        }
+    }
+    Some(result)
+}
+
 /// D.4.d.1.b (2026-05-29): per-pane recompute. Same algorithm
 /// the pre-d.1.b `recompute` ran against the top-level
 /// active-doc fields, now keyed off a single
@@ -609,6 +656,11 @@ fn try_incremental_build(
     // per-keystroke highlight O(edit) instead of O(file) — and collapses the
     // compose `cells_stale` plain-text window that read as a flicker.
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        // K.4.7: multibuffer panes carry per-excerpt handles; use them
+        // when present. Falls back to the single-doc path when empty.
+        if let Some(spans) = highlight_range_multibuffer(&pane.excerpt_syntax, lo, hi) {
+            return Some(spans);
+        }
         if hi <= lo {
             return Some(Vec::new());
         }
@@ -2275,6 +2327,7 @@ mod tests {
             wrap: false,
             foldenable,
             last_edit,
+            excerpt_syntax: Arc::from([]),
         };
         let pane_matrices = {
             let mut m = std::collections::HashMap::new();
@@ -4728,6 +4781,7 @@ mod tests {
                         wrap: false,
                         foldenable: true,
                         last_edit,
+                        excerpt_syntax: Arc::from([]),
                     };
                     let cells = CellsRenderState {
                         matrix: matrix_cell.clone(),
@@ -4876,6 +4930,7 @@ mod tests {
                 wrap: false,
                 foldenable: true,
                 last_edit: None,
+                excerpt_syntax: Arc::from([]),
             };
             let cells = CellsRenderState {
                 matrix: matrix_cell.clone(),
@@ -4963,6 +5018,7 @@ mod tests {
             wrap: false,
             foldenable: true,
             last_edit: None,
+            excerpt_syntax: Arc::from([]),
         }
     }
 

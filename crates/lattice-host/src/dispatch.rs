@@ -5116,11 +5116,13 @@ impl Editor {
                             };
                         let query_for_echo = query.clone();
                         let registry_for_search = self.registry.clone();
+                        let lr_for_search = Some(self.lang_registry.clone());
                         match lattice_multibuffer::providers::search::project_search(
                             self,
                             query,
                             options,
                             registry_for_search,
+                            lr_for_search,
                         ) {
                             Some(view_id) => {
                                 if self.activate_buffer(view_id) {
@@ -9286,6 +9288,29 @@ impl Editor {
             let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
                 self.document_syntax_for(buffer_id).cloned().map(Arc::new);
 
+            // K.4.7 (2026-06-07): for multibuffer panes, build per-excerpt
+            // syntax entries. The MultibufferRegistryHandle is registered as
+            // `Arc<dyn MultibufferRegistry>` (TypeId-keyed); look up with
+            // `MultibufferRegistryHandle` directly.
+            let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> = self
+                .services
+                .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+                .and_then(|mb_reg| mb_reg.handle(buffer_id))
+                .map(|mb| {
+                    mb.excerpt_syntax_entries()
+                        .into_iter()
+                        .map(|(cs, ce, ss, h)| crate::render_state::ExcerptSyntax {
+                            composed_start: cs,
+                            composed_end: ce,
+                            source_start: ss,
+                            handle: h,
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                        .into()
+                })
+                .unwrap_or_else(|| Arc::from([]));
+
             // Folds. Active buffer: live mutable slot
             // (`Editor::folds`). Non-active: per-buffer entry on
             // `buffer_locals`.
@@ -9322,10 +9347,18 @@ impl Editor {
                 // rebuild with fresh colours. See the matching comment
                 // in `build_render_state`. Falls back to the doc version
                 // when the buffer has no syntax handle.
-                syntax: syntax_handle
-                    .as_ref()
-                    .map(|h| h.snapshot().text_version())
-                    .unwrap_or(text_version),
+                // K.4.7: for multibuffer panes fold in a XOR of all
+                // excerpt handle versions so a per-source reparse also
+                // invalidates the cache.
+                syntax: {
+                    let base = syntax_handle
+                        .as_ref()
+                        .map(|h| h.snapshot().text_version())
+                        .unwrap_or(text_version);
+                    excerpt_syntax.iter().fold(base, |acc, ex| {
+                        acc ^ ex.handle.snapshot().text_version()
+                    })
+                },
                 inlay_hints: inlay_version,
                 folds: if foldenable { folds_hash } else { !folds_hash },
                 theme: theme_hash,
@@ -9375,6 +9408,7 @@ impl Editor {
                 } else {
                     None
                 },
+                excerpt_syntax,
             });
         }
         Arc::from(entries.into_boxed_slice())

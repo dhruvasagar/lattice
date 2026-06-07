@@ -32,6 +32,7 @@ use std::sync::Arc;
 use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_mode::{BufferStoreHandle, ModeActivator};
 use lattice_runtime::{Document, EventBus};
+use lattice_syntax::LangRegistry;
 
 use crate::registry::MultibufferRegistryHandle;
 use crate::{Excerpt, MultibufferDocumentHandle, MultibufferHeaderProvider};
@@ -69,6 +70,9 @@ pub fn create_multibuffer_view(
     name: Option<String>,
     flags: BufferFlags,
     registry: Arc<lattice_grammar::CommandRegistry>,
+    // K.4.7 (2026-06-07): when `Some`, wired into the handle so
+    // `add_source` creates a `SyntaxHandle` per source file.
+    lang_registry: Option<Arc<LangRegistry>>,
 ) -> BufferId {
     let services = activator.services();
 
@@ -105,6 +109,11 @@ pub fn create_multibuffer_view(
             return BufferId::next();
         }
     };
+    // K.4.7: wire lang_registry so subsequent add_source calls can
+    // create SyntaxHandles for per-excerpt syntax highlighting.
+    if let Some(lr) = lang_registry {
+        handle.set_lang_registry(lr);
+    }
     let buffer_id = handle.buffer_id();
 
     // Step 2.5 (M.4 2026-06-01): auto-subscribe to source events

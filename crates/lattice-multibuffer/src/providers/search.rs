@@ -891,6 +891,10 @@ pub fn project_search(
     query: String,
     options: ProjectSearchOptions,
     registry: Arc<lattice_grammar::CommandRegistry>,
+    // K.4.7 (2026-06-07): when `Some`, passed to
+    // `create_multibuffer_view` so per-source SyntaxHandles are
+    // created as hits arrive via `add_source`.
+    lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
 ) -> Option<BufferId> {
     let services = activator.services();
     // `services.get::<T>()` wraps the registered value in an
@@ -916,6 +920,7 @@ pub fn project_search(
         Some(format!("*search:{query}*")),
         BufferFlags::default(),
         registry,
+        lang_registry,
     );
 
     search_svc.set_state(

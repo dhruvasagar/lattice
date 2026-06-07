@@ -18,6 +18,8 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-cells = { path = "../lattice-cells" }
+# K.4.7 (2026-06-07): per-excerpt syntax highlighting.
+lattice-syntax = { path = "../lattice-syntax" }
 lattice-config = { path = "../lattice-config" }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }

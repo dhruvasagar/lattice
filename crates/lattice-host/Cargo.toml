@@ -36,6 +36,8 @@ lattice-oil = { path = "../lattice-oil" }
 # substrate.
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-protocol = { path = "../lattice-protocol" }
+# K.3 (2026-06-07): keymap types moved to lattice-keymap
+lattice-keymap = { path = "../lattice-keymap" }
 thiserror = { workspace = true }
 # Phase 5.2 third wave: host_generators (picker-source completion
 # generators). Reaches into mode, picker, lsp, config for the

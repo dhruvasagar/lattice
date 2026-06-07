@@ -3577,6 +3577,13 @@ pub(crate) fn compose_pane_lines(
                 std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
             })
     };
+    // Sticky rows occupy the top of the pane; shrink the visible window
+    // so document line 0 (at scroll=0) always renders BELOW the header
+    // and the bottom of the viewport doesn't lose content silently.
+    let sticky_count = virtual_rows_matrix.sticky_rows().count();
+    if sticky_count > 0 {
+        visible.truncate(visible.len().saturating_sub(sticky_count));
+    }
     let body_col_width = buffer_w;
     // W.4 (soft-wrap): `:set wrap`. When on, the per-line body is
     // kept at full width (truncation below is skipped) so
@@ -3618,6 +3625,14 @@ pub(crate) fn compose_pane_lines(
         });
     let display_theme = &cells_rs.theme;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
+    // Sticky pre-pass: render fixed-top rows before the scrollable content.
+    // These are excluded from virtual_rows_at so they don't double-paint.
+    for vrow in virtual_rows_matrix.sticky_rows() {
+        if (out.len() as u32) >= height {
+            break;
+        }
+        out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+    }
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {
         let line_idx = match visible.get(visible_idx) {
@@ -4793,6 +4808,9 @@ fn virtual_rows_at<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
+        // Sticky rows are rendered at the pane top in the pre-pass;
+        // skip them here so they don't double-paint in the content loop.
+        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
 }
 
 /// D.3.b.1: render a virtual row as a ratatui `Line`.
@@ -4822,24 +4840,32 @@ fn render_virtual_row(
     // merge into a single styled Span so an 80-char
     // baseline line produces ~5 spans, not 80.
     //
-    // D.6.i (2026-05-31): backdrop selection by
-    // `vrow.kind`. Deletion blocks (D.3) + Generic
-    // virtual rows get `theme.diff_deletion_block_bg`
-    // (the historical D.3.b.3 default). Filler rows
-    // (D.4.c / D.6.b) are visual padding for side-by-
-    // side alignment — they paint with no backdrop,
-    // otherwise the deletion-block red would mis-read
-    // them as deleted lines.
+    // D.6.i (2026-05-31): backdrop selection by `vrow.kind`.
+    // `vrow.bg` (0xRRGGBB u32) overrides the kind-based default
+    // when `Some` — sticky rows supply their own retro HUD palette.
+    // Deletion blocks / generic rows fall back to the theme's
+    // diff_deletion_block_bg; filler and sticky rows without an
+    // explicit bg have no backdrop.
     //
-    // `cell.fg = 0` means "use terminal default" (the
-    // renderer leaves fg unset).
-    let bg = match vrow.kind {
-        lattice_cells::VirtualRowKind::DeletionBlock
-        | lattice_cells::VirtualRowKind::Generic => {
-            Some(view.app.theme.diff_deletion_block_bg)
-        }
-        lattice_cells::VirtualRowKind::Filler => None,
-    };
+    // `cell.fg = 0` means "use terminal default" (renderer
+    // leaves fg unset).
+    let bg: Option<Color> = vrow
+        .bg
+        .map(|rgb| {
+            Color::Rgb(
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            )
+        })
+        .or_else(|| match vrow.kind {
+            lattice_cells::VirtualRowKind::DeletionBlock
+            | lattice_cells::VirtualRowKind::Generic => {
+                Some(view.app.theme.diff_deletion_block_bg)
+            }
+            lattice_cells::VirtualRowKind::Filler
+            | lattice_cells::VirtualRowKind::Sticky => None,
+        });
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();
     let mut run_fg: Option<u32> = None;

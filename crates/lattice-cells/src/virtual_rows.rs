@@ -78,6 +78,12 @@ pub enum VirtualRowKind {
 	/// Side-by-side alignment filler (D.4.c / D.6.b).
 	/// Blank padding; no backdrop.
 	Filler,
+	/// Sticky header row — always rendered at the top of the pane
+	/// regardless of scroll position. Excluded from the per-line
+	/// `virtual_rows_at` pass so it is never double-painted when its
+	/// anchor line is in the viewport. Use `VirtualRow::bg` to supply
+	/// a background colour; falls back to no backdrop if `bg` is `None`.
+	Sticky,
 }
 
 /// One virtual row's anchor + content.
@@ -97,6 +103,11 @@ pub enum VirtualRowKind {
 /// `kind` (D.6.i) tags the row's provenance so renderers
 /// pick the right backdrop / decoration treatment without
 /// guessing from cell content.
+///
+/// `bg` overrides the kind-based default background when
+/// `Some(rgb_u32)` (`0xRRGGBB`). `None` → renderer picks from
+/// `kind` (deletion-block red for `DeletionBlock`/`Generic`,
+/// transparent for `Filler`/`Sticky`).
 #[derive(Clone, Debug)]
 pub struct VirtualRow {
 	pub anchor_line: u32,
@@ -104,6 +115,7 @@ pub struct VirtualRow {
 	pub cells: Arc<[Cell]>,
 	pub height: u16,
 	pub kind: VirtualRowKind,
+	pub bg: Option<u32>,
 }
 
 /// A monotonically-increasing counter; bumped by the
@@ -248,13 +260,29 @@ impl VirtualRowMatrix {
 	/// `Below` rows, which is the safe direction (the last line is
 	/// guaranteed clear of the modeline rather than flush against
 	/// it).
+	///
+	/// [`VirtualRowKind::Sticky`] rows are excluded — they are
+	/// rendered at the pane top outside the scroll window and do
+	/// not displace content rows.
 	pub fn virtual_rows_in_line_range(&self, lo: u32, hi: u32) -> u32 {
 		if lo > hi {
 			return 0;
 		}
 		let end = self.first_row_at_or_after(hi.saturating_add(1));
 		let start = self.first_row_at_or_after(lo);
-		end.saturating_sub(start)
+		let total = end.saturating_sub(start);
+		let sticky = self.rows[start as usize..end as usize]
+			.iter()
+			.filter(|r| r.kind == VirtualRowKind::Sticky)
+			.count() as u32;
+		total.saturating_sub(sticky)
+	}
+
+	/// Iterator over all sticky rows in the matrix (kind ==
+	/// [`VirtualRowKind::Sticky`]). Used by renderers to paint the
+	/// fixed top strip before the scrollable content window.
+	pub fn sticky_rows(&self) -> impl Iterator<Item = &VirtualRow> {
+		self.rows.iter().filter(|r| r.kind == VirtualRowKind::Sticky)
 	}
 }
 
@@ -324,6 +352,7 @@ mod tests {
 			cells: Arc::from([] as [Cell; 0]),
 			height: 1,
 			kind: VirtualRowKind::Generic,
+			bg: None,
 		}
 	}
 

@@ -294,7 +294,7 @@ impl Editor {
             // `do`/`dp` chords gate on per-buffer diff
             // participation.
             crate::diff::mode::register_diff_modes(&mut mr);
-            crate::tutor_mode::register_tutor_modes(&mut mr);
+            crate::tutor::register_tutor_modes(&mut mr);
             mr
         };
         register_mode_toggle_commands(&mut registry, &mode_registry);

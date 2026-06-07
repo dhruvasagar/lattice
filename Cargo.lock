@@ -3466,6 +3466,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "dirs 5.0.1",
  "fancy-regex",
  "globset",
  "ignore",

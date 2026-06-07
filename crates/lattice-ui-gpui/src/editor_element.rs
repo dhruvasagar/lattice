@@ -1002,6 +1002,29 @@ impl Element for EditorElement {
             // within this budget, so the cap only ever drops rows
             // below the cursor that wouldn't fit anyway. Parity
             // with the TUI peer per [[feedback_tui_gpui_parity]].
+            // Sticky pre-pass: render fixed-top rows before scrollable content.
+            // These are excluded from virtual_rows_at_gpui to avoid double-paint.
+            for vrow in self.virtual_rows.sticky_rows() {
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
+                }
+                push_virtual_row(
+                    vrow,
+                    self.gutter_width,
+                    &font,
+                    font_size,
+                    self.theme.foreground,
+                    vrow.bg.unwrap_or(0),
+                    window,
+                    &mut shaped_text,
+                    &mut shaped_gutter,
+                    &mut row_meta,
+                    &mut row_segment,
+                    &mut inlay_offsets_per_row,
+                    &mut diagnostic_segments_per_row,
+                    &mut overlay_quads_per_row,
+                );
+            }
             'rows: for meta in &self.gutter {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
@@ -1960,6 +1983,9 @@ fn virtual_rows_at_gpui<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
+        // Sticky rows are rendered at the pane top in the pre-pass;
+        // skip them here so they don't double-paint in the content loop.
+        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
 }
 
 /// D.3.b.1.gpui (2026-05-29): shape a virtual row's content
@@ -2085,6 +2111,15 @@ fn push_virtual_row(
         | lattice_cells::VirtualRowKind::Generic => {
             let backdrop_width = content_cols.max(1);
             vec![(0u32, backdrop_width, backdrop_color)]
+        }
+        lattice_cells::VirtualRowKind::Sticky => {
+            // backdrop_color is set to vrow.bg by the sticky pre-pass caller.
+            if backdrop_color != 0 {
+                let backdrop_width = content_cols.max(1);
+                vec![(0u32, backdrop_width, backdrop_color)]
+            } else {
+                Vec::new()
+            }
         }
         lattice_cells::VirtualRowKind::Filler => Vec::new(),
     };

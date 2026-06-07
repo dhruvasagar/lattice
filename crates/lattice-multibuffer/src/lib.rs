@@ -1535,6 +1535,7 @@ pub fn compose_header_rows(
                 cells,
                 height: 1,
                 kind: VirtualRowKind::Generic,
+                bg: None,
             });
             last_source = Some(excerpt.source);
         }

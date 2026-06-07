@@ -808,6 +808,7 @@ mod tests {
             cells: Arc::from([] as [Cell; 0]),
             height: 1,
             kind: crate::VirtualRowKind::Generic,
+            bg: None,
         }
     }
 

@@ -349,6 +349,7 @@ impl DiffOverlayVirtualRowProvider {
                     // D.6.i: deletion blocks render with the
                     // diff-deletion-block backdrop.
                     kind: lattice_cells::VirtualRowKind::DeletionBlock,
+                    bg: None,
                 });
             }
         }

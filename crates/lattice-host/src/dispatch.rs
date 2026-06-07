@@ -17994,19 +17994,15 @@ impl Editor {
             };
         // T.B: seed the HUD's HI: field from persisted scores.
         session.high_score =
-            crate::tutor_scores::TutorScores::load_or_default().high_score(lesson_num);
-        // Build the initial headerline text before session moves.
-        let initial_text = crate::tutor_mode::tutor_headerline_text(&session);
+            crate::tutor::TutorScores::load_or_default().high_score(lesson_num);
         // Provider — unregister any stale one (re-open path) then register fresh.
-        let provider_id = buffer_id.0 as u64 ^ crate::tutor_mode::TUTOR_PROVIDER_TAG;
+        let provider_id = buffer_id.0 as u64 ^ crate::tutor::TUTOR_PROVIDER_TAG;
         self.virtual_row_providers.unregister(buffer_id, provider_id);
         let provider =
-            crate::tutor_mode::TutorHeaderlineProvider::new(buffer_id.0 as u64);
-        provider
-            .state
-            .lock()
-            .ok()
-            .map(|mut s| s.update(initial_text));
+            crate::tutor::TutorHeaderlineProvider::new(buffer_id.0 as u64);
+        provider.state.lock().ok().map(|mut s| {
+            s.update_for_display(&session, crate::tutor::TutorHudKind::Normal)
+        });
         let state_arc = std::sync::Arc::clone(&provider.state);
         self.virtual_row_providers
             .register(buffer_id, std::sync::Arc::new(provider));
@@ -18014,7 +18010,7 @@ impl Editor {
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
-            .insert(crate::tutor_mode::TutorHeaderlineState(state_arc));
+            .insert(crate::tutor::TutorHeaderlineState(state_arc));
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -18029,7 +18025,7 @@ impl Editor {
             &self.event_bus,
             &self.services,
             proto_id,
-            crate::tutor_mode::TutorMode::mode_id(),
+            crate::tutor::TutorMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),
         );
         self.active_modes.insert(buffer_id, active);
@@ -18095,8 +18091,7 @@ impl Editor {
 
         // Wrong answer: drain a life.
         session.drain_life();
-        let header = crate::tutor_mode::tutor_headerline_text(&session);
-        self.tutor_update_headerline(buffer_id, header);
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
         self.buffer_locals.entry(buffer_id).or_default().insert(session);
         Vec::new()
     }
@@ -18125,8 +18120,7 @@ impl Editor {
 
         let mut session = session;
         session.retreat();
-        let header = crate::tutor_mode::tutor_headerline_text(&session);
-        self.tutor_update_headerline(buffer_id, header);
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
         self.buffer_locals.entry(buffer_id).or_default().insert(session);
         Vec::new()
     }
@@ -18141,8 +18135,7 @@ impl Editor {
         if session.is_complete() {
             return self.tutor_open_next_or_complete(session);
         }
-        let header = crate::tutor_mode::tutor_headerline_text(&session);
-        self.tutor_update_headerline(buffer_id, header);
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
         self.buffer_locals.entry(buffer_id).or_default().insert(session);
         Vec::new()
     }
@@ -18155,7 +18148,7 @@ impl Editor {
     ) -> Vec<RendererSignal> {
         use crate::tutor::TutorGameState;
         // T.B: persist high score whenever a lesson is cleared.
-        let mut scores = crate::tutor_scores::TutorScores::load_or_default();
+        let mut scores = crate::tutor::TutorScores::load_or_default();
         let new_record = scores.record(session.lesson, session.score);
         scores.save();
         if new_record {
@@ -18168,20 +18161,25 @@ impl Editor {
         // Final lesson complete.
         let buffer_id = self.document_buffer_id;
         session.state = TutorGameState::AllComplete;
-        let header = crate::tutor_mode::tutor_headerline_text(&session);
-        self.tutor_update_headerline(buffer_id, header);
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
         self.buffer_locals.entry(buffer_id).or_default().insert(session);
         Vec::new()
     }
 
-    /// Push `text` into the tutor headerline provider for `buffer_id`.
-    fn tutor_update_headerline(&self, buffer_id: BufferId, text: String) {
+    /// Ask the tutor headerline provider for `buffer_id` to recompute
+    /// its HUD from `session`. All formatting stays in `TutorViewState`.
+    fn tutor_update_headerline(
+        &self,
+        buffer_id: BufferId,
+        session: &crate::tutor::TutorSession,
+        kind: crate::tutor::TutorHudKind,
+    ) {
         if let Some(state) = self
             .buffer_locals
             .get(&buffer_id)
-            .and_then(|l| l.get::<crate::tutor_mode::TutorHeaderlineState>())
+            .and_then(|l| l.get::<crate::tutor::TutorHeaderlineState>())
         {
-            state.0.lock().ok().map(|mut s| s.update(text));
+            state.0.lock().ok().map(|mut s| s.update_for_display(session, kind));
         }
     }
 
@@ -18212,21 +18210,12 @@ impl Editor {
         let owned: Vec<String> = text.lines().map(|l| l.to_owned()).collect();
         let lines: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         let success = session.check(&lines);
-        let header_text = if success {
-            let ex_id = session
-                .current_exercise()
-                .map(|e| e.id.as_str())
-                .unwrap_or("");
-            format!(
-                " *** STAGE CLEAR! *** | {} | SCORE: {:>5} | Ex {} done — <CR>=next ",
-                format!("LV.{}-{}", session.lesson, session.current + 1),
-                session.score,
-                ex_id,
-            )
+        let kind = if success {
+            crate::tutor::TutorHudKind::StageClear
         } else {
-            crate::tutor_mode::tutor_headerline_text(&session)
+            crate::tutor::TutorHudKind::Normal
         };
-        self.tutor_update_headerline(buffer_id, header_text);
+        self.tutor_update_headerline(buffer_id, &session, kind);
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -26934,6 +26923,7 @@ mod tests {
                 cells: std::sync::Arc::from([] as [lattice_cells::Cell; 0]),
                 height: 1,
                 kind: lattice_cells::VirtualRowKind::Generic,
+                bg: None,
             })
             .collect();
         let matrix = lattice_cells::VirtualRowMatrix::build(

@@ -21801,9 +21801,12 @@ impl Editor {
         };
 
         // Active-mode set for the current buffer (for `active` flags).
+        // Use active_buffer_id() so focused Multibuffer/Terminal/etc.
+        // panes see their own mode contributions as active, not the
+        // last-seen Document buffer's modes.
         let active_modes: Vec<lattice_mode::mode::ModeId> = self
             .active_modes
-            .get(&self.document_buffer_id)
+            .get(&self.active_buffer_id())
             .map(|m| m.minors().to_vec())
             .unwrap_or_default();
 
@@ -27757,13 +27760,15 @@ mod tests {
         // Active buffer does NOT have diff-mode active.
         let content = editor.build_describe_key_content("do");
         let body = content.lines().join("\n");
+        // T12 format: binding is found (non-empty resolution) but
+        // all layers are inactive on the current buffer.
         assert!(
-            body.contains("Runtime registry:"),
-            "describe-key must include the runtime registry section, got:\n{body}"
+            !body.contains("is not bound in any mode"),
+            "describe-key must find the diff-mode registration, got:\n{body}"
         );
         assert!(
-            body.contains("[inactive"),
-            "minor-mode binding must be marked [inactive] when the mode isn't active, got:\n{body}"
+            body.contains("registered but not active"),
+            "inactive minor-mode binding must show 'registered but not active', got:\n{body}"
         );
     }
 

@@ -757,10 +757,14 @@ impl KeymapHandle {
             .into_iter()
             .map(|(layer, command)| {
                 let active = match layer {
-                    KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
-                    KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => {
-                        active_modes.contains(&id)
-                    }
+                    // MajorMode is always-on: it lives in the always_on
+                    // merged trie used by lookup_with_context, so its
+                    // bindings fire regardless of which modes are active.
+                    KeymapLayer::Builtin
+                    | KeymapLayer::MajorMode(_)
+                    | KeymapLayer::User
+                    | KeymapLayer::Buffer => true,
+                    KeymapLayer::MinorMode(id) => active_modes.contains(&id),
                 };
                 LayerHit { layer, command, active }
             })

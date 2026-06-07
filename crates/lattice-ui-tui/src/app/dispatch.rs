@@ -443,7 +443,16 @@ impl App {
             | Action::EnsureCursorVisible
             | Action::DismissPopup
             | Action::SetTerminalWidth(_)
-            | Action::AcknowledgeRedraw => {}
+            | Action::AcknowledgeRedraw
+            // W.6 (2026-06-07): display-line motions (gj/gk/g0/g$)
+            // and insert-mode entry variants (I/A) — host-resident
+            // bodies in Editor::dispatch; no App-side work.
+            | Action::EnterInsertFirstNonBlank
+            | Action::EnterAppendEndOfLine
+            | Action::DisplayLineDown
+            | Action::DisplayLineUp
+            | Action::DisplayLineStart
+            | Action::DisplayLineEnd => {}
             // 5.5.LSP.5: workspace-symbol request migrated to
             // `Editor::dispatch`. Action carries the query string;
             // a data-bearing variant can't sit in the grouped

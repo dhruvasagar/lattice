@@ -83,6 +83,8 @@ pub struct ActionIds {
     pub lsp_references_request: CommandId,
     pub lsp_follow_link_at_cursor: CommandId,
     pub enter_append: CommandId,
+    pub enter_insert_first_non_blank: CommandId,
+    pub enter_append_end_of_line: CommandId,
     pub create_fold_from_visual: CommandId,
     pub delete_char_backward: CommandId,
     pub completion_trigger: CommandId,
@@ -470,6 +472,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:enter-append",
             "Vim's `a`: move right one byte and enter Insert.",
             AppEffect::EnterAppend,
+        ),
+        enter_insert_first_non_blank: register_simple(
+            registry,
+            "action:enter-insert-first-non-blank",
+            "Vim's `I`: move to first non-blank of line and enter Insert.",
+            AppEffect::EnterInsertFirstNonBlank,
+        ),
+        enter_append_end_of_line: register_simple(
+            registry,
+            "action:enter-append-end-of-line",
+            "Vim's `A`: move to end of line and enter Insert.",
+            AppEffect::EnterAppendEndOfLine,
         ),
         create_fold_from_visual: register_simple(
             registry,
@@ -1210,6 +1224,14 @@ mod tests {
             (ids.lsp_references_request, "action:lsp-references"),
             (ids.lsp_follow_link_at_cursor, "action:lsp-follow-link"),
             (ids.enter_append, "action:enter-append"),
+            (
+                ids.enter_insert_first_non_blank,
+                "action:enter-insert-first-non-blank",
+            ),
+            (
+                ids.enter_append_end_of_line,
+                "action:enter-append-end-of-line",
+            ),
             (
                 ids.create_fold_from_visual,
                 "action:create-fold-from-visual",

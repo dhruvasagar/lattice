@@ -87,6 +87,10 @@ pub enum Action {
     EnterMode(ModalState),
     /// Vim's `a`: move cursor one byte right (clamped) and enter Insert.
     EnterAppend,
+    /// Vim's `I`: move to first non-blank of line and enter Insert.
+    EnterInsertFirstNonBlank,
+    /// Vim's `A`: move to end of line and enter Insert.
+    EnterAppendEndOfLine,
     /// Vim's blockwise-visual `I`: move cursor to the leftmost
     /// column of the block on the top line, enter Insert, and on
     /// Esc replicate the typed text to every other line in the

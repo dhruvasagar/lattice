@@ -244,6 +244,12 @@ pub enum AppEffect {
     /// Insert. Promoted from `Action::EnterAppend` in slice
     /// 8.i.1.g.
     EnterAppend,
+    /// Vim's `I`: move cursor to first non-blank column of the
+    /// current line and enter Insert.
+    EnterInsertFirstNonBlank,
+    /// Vim's `A`: move cursor to end of the current line and enter
+    /// Insert.
+    EnterAppendEndOfLine,
     /// Vim's `zf`. Create a fold from the most recent Visual
     /// selection. Promoted from `Action::CreateFoldFromVisual`
     /// in slice 8.i.1.g.

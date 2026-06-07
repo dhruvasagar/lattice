@@ -385,20 +385,6 @@ pub fn recompute_pane(
         return WorkerDecision::Recomputed;
     }
 
-    // Stale-syntax guard: if the document's syntax handle exists but
-    // its snapshot is behind the text version, a full rebuild would
-    // produce an all-grey matrix (highlight_range returns None for the
-    // whole window). Skip the rebuild entirely and return CacheHit so
-    // the sync-path matrix (edited line: default-fg, rest: correct Arc
-    // reuse) stays on screen. `SyntaxReparsed` (event bus) or
-    // `async_landed` (actor arm) fires cells_wake again once the
-    // reparse completes, at which point this guard passes.
-    if let Some(sh) = pane.syntax_handle.as_deref() {
-        if sh.with_snapshot(|s| s.text_version() < snapshot.text_version) {
-            return WorkerDecision::CacheHit;
-        }
-    }
-
     // Incremental rebuild (S2.4.b semantics, DisplayLine payload).
     // Eligibility is checked inside `try_incremental_display_build`;
     // `None` falls through to a full windowed rebuild. The worker path

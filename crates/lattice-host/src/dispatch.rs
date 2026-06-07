@@ -1801,6 +1801,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::JoinLines { with_space } => editor.do_join_lines(with_space),
         Action::ToggleCaseAtCursor => editor.do_toggle_case_at_cursor(),
         Action::EnterAppend => editor.do_enter_append(),
+        Action::EnterInsertFirstNonBlank => editor.do_enter_insert_first_non_blank(),
+        Action::EnterAppendEndOfLine => editor.do_enter_append_end_of_line(),
         Action::OpenLineBelow => editor.do_open_line_below(),
         Action::OpenLineAbove => editor.do_open_line_above(),
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
@@ -4904,6 +4906,12 @@ impl Editor {
                 out.next_actions.push(Action::LspFollowLinkAtCursor)
             }
             AppEffect::EnterAppend => out.next_actions.push(Action::EnterAppend),
+            AppEffect::EnterInsertFirstNonBlank => {
+                out.next_actions.push(Action::EnterInsertFirstNonBlank)
+            }
+            AppEffect::EnterAppendEndOfLine => {
+                out.next_actions.push(Action::EnterAppendEndOfLine)
+            }
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
@@ -12595,6 +12603,31 @@ impl Editor {
         if self.cursor.byte < len {
             self.cursor.byte += 1;
         }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `I` -- move to the first non-blank column of the
+    /// current line, then enter Insert mode.
+    pub fn do_enter_insert_first_non_blank(&mut self) {
+        let snap = self.document.snapshot();
+        let byte_offset = snap
+            .buffer
+            .line(self.cursor.line)
+            .map(|s| s.bytes().take_while(|b| b.is_ascii_whitespace()).count() as u32)
+            .unwrap_or(0);
+        self.cursor.byte = byte_offset;
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `A` -- move to end of the current line (past the last
+    /// byte), then enter Insert mode.
+    pub fn do_enter_append_end_of_line(&mut self) {
+        let len = self
+            .document
+            .snapshot()
+            .buffer
+            .line_byte_len(self.cursor.line);
+        self.cursor.byte = len;
         self.modal = ModalState::Insert;
     }
 
@@ -28599,5 +28632,52 @@ mod tests {
             !editor.auto_submit_after_chord,
             "ArgKind::String args must NOT arm chord auto-submit"
         );
+    }
+
+    // ---- I / A mode-entry ----
+
+    #[test]
+    fn enter_insert_first_non_blank_moves_to_first_non_blank() {
+        let doc = lattice_core::Document::from_text("   hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.cursor = lattice_protocol::position::Position::new(0, 6);
+        editor.do_enter_insert_first_non_blank();
+        assert_eq!(editor.cursor.byte, 3, "first non-blank is at byte 3");
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "must enter Insert mode"
+        );
+    }
+
+    #[test]
+    fn enter_insert_first_non_blank_on_blank_line_stays_at_zero() {
+        let doc = lattice_core::Document::from_text("\n");
+        let mut editor = Editor::boot(doc);
+        editor.do_enter_insert_first_non_blank();
+        assert_eq!(editor.cursor.byte, 0);
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
+    }
+
+    #[test]
+    fn enter_append_end_of_line_moves_cursor_past_last_byte() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_enter_append_end_of_line();
+        // line_byte_len excludes the newline, so len("hello") = 5
+        assert_eq!(editor.cursor.byte, 5, "cursor must land past last content byte");
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "must enter Insert mode"
+        );
+    }
+
+    #[test]
+    fn enter_append_end_of_line_on_empty_line_stays_at_zero() {
+        let doc = lattice_core::Document::from_text("\n");
+        let mut editor = Editor::boot(doc);
+        editor.do_enter_append_end_of_line();
+        assert_eq!(editor.cursor.byte, 0);
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
     }
 }

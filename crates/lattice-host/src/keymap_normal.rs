@@ -243,6 +243,20 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
     handle.bind(
         layer,
         mode,
+        &[lit_char('I')],
+        CommandInvocation::of(actions.enter_insert_first_non_blank),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('A')],
+        CommandInvocation::of(actions.enter_append_end_of_line),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
         &[lit_char('o')],
         CommandInvocation::of(actions.open_line_below),
         source(),

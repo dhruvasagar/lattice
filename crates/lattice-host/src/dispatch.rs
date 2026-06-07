@@ -21771,57 +21771,146 @@ impl Editor {
         )
     }
 
-    /// 5.5.F.2: build the `:describe-key <chord>` content. Looks up
-    /// every binding of `chord` across all modes
-    /// ([`crate::keymap::lookup`]) and renders each entry through
-    /// the unified `render_introspection_lines` surface. Infallible
-    /// — an unbound chord renders as "`{chord}` is not bound in any
-    /// mode."
+    /// 5.5.F.2: build the `:describe-key <chord>` content.
+    ///
+    /// Accepts an optional mode prefix (`n_j` → Normal mode `j`;
+    /// `i_<C-n>` → Insert mode `<C-n>`; no prefix → all modes).
+    /// Uses `resolve_trace` / `resolve_trace_all_modes` from
+    /// `lattice-keymap` to produce a fully-traced, layer-annotated
+    /// output showing which binding fires now and what is shadowed.
+    ///
+    /// Infallible — an unbound or unparseable chord renders an
+    /// explanatory message.
     pub fn build_describe_key_content(&self, chord: &str) -> lattice_help::HelpContent {
-        let hits = crate::keymap::lookup(chord);
+        let (mode_filter, chord_str) =
+            lattice_keymap::parse_describe_key_arg(chord);
+
+        // Parse the chord. If parsing fails, show an error line.
+        let parsed = match crate::chord::parse_chord_sequence(chord_str) {
+            Ok(p) if !p.is_empty() => p,
+            _ => {
+                let lines = vec![format!(
+                    "`{chord_str}` — cannot parse chord string."
+                )];
+                return lattice_help::HelpContent::from_lines(
+                    format!("describe-key {chord}"),
+                    lines,
+                )
+                .with_markdown_syntax(self.lang_registry.clone());
+            }
+        };
+
+        // Active-mode set for the current buffer (for `active` flags).
+        let active_modes: Vec<lattice_mode::mode::ModeId> = self
+            .active_modes
+            .get(&self.document_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+
+        // Run trace(s).
+        let resolutions: Vec<lattice_keymap::KeymapResolution> = match mode_filter {
+            Some(mode) => {
+                let r = self.keymap.resolve_trace(mode, &parsed, &active_modes);
+                if r.hits.is_empty() { vec![] } else { vec![r] }
+            }
+            None => self.keymap.resolve_trace_all_modes(&parsed, &active_modes),
+        };
+
         let mut lines: Vec<String> = Vec::new();
-        if hits.is_empty() {
-            lines.push(format!("`{chord}` is not bound in any mode."));
-        } else {
+
+        if resolutions.is_empty() {
             lines.push(format!(
-                "{} -- {} binding(s):",
-                lattice_help::key_link(chord),
-                hits.len()
+                "{} is not bound in any mode.",
+                lattice_help::key_link(chord_str),
+            ));
+        } else {
+            let total: usize = resolutions.iter().map(|r| r.hits.len()).sum();
+            lines.push(format!(
+                "{} — {total} registration(s) across {} mode(s):",
+                lattice_help::key_link(chord_str),
+                resolutions.len(),
             ));
         }
 
-        // K.2.4.A.1 (2026-06-02): resolved-binding indicator.
-        // Answers the practical question users open describe-
-        // key for — "what does this chord do RIGHT NOW under
-        // the current active modes?" Sits between the title
-        // and the catalog/registry sections so the resolution
-        // is the first thing the eye lands on. Computed by
-        // replaying the K.1.c precedence fold per
-        // binding-mode (Normal / Insert / Visual / Replace).
-        self.append_resolved_binding_section(chord, &mut lines);
-
-        // Static-catalog hits (one block per `(chord, mode)`
-        // descriptor). Catalog-side body — the dispatchable
-        // bindings + their docstrings as enumerated by the
-        // catalog drift table.
-        for entry in hits {
+        for resolution in &resolutions {
             lines.push(String::new());
-            for l in lattice_grammar::render_introspection_lines(entry) {
-                lines.push(l);
+            lines.push(format!("[{} mode]", resolution.mode.label()));
+
+            // Winner: what fires under the current active modes.
+            if let Some(winner) = resolution.winner() {
+                let cmd_name = self
+                    .registry
+                    .lookup(winner.command.command.command)
+                    .map(|spec| spec.name.clone())
+                    .unwrap_or_else(|| {
+                        format!("{:?}", winner.command.command.command)
+                    });
+                lines.push(format!("  → {cmd_name}  (fires now)"));
+                lines.push(format!(
+                    "    layer: {}",
+                    self.keymap.layer_label_string(winner.layer),
+                ));
+                lines.push(format!(
+                    "    source: {}",
+                    winner.command.source.as_link(),
+                ));
+            } else {
+                lines.push(
+                    "  (registered but not active — \
+                     all matching layers are inactive on this buffer)"
+                        .to_string(),
+                );
+            }
+
+            // Full layer trace when more than one layer has a binding.
+            if resolution.hits.len() > 1 {
+                lines.push(String::new());
+                lines.push("  All layers (ascending priority):".to_string());
+                for hit in &resolution.hits {
+                    let status = if hit.active {
+                        "[active]"
+                    } else {
+                        "[inactive]"
+                    };
+                    let cmd_name = self
+                        .registry
+                        .lookup(hit.command.command.command)
+                        .map(|spec| spec.name.clone())
+                        .unwrap_or_else(|| {
+                            format!("{:?}", hit.command.command.command)
+                        });
+                    lines.push(format!(
+                        "    {} → {cmd_name} {status}",
+                        self.keymap.layer_label_string(hit.layer),
+                    ));
+                    lines.push(format!(
+                        "      source: {}",
+                        hit.command.source.as_link(),
+                    ));
+                }
             }
         }
 
-        // K.1.d (2026-05-30): runtime-registry section.
-        // Surfaces minor-mode and runtime-installed bindings
-        // that the static catalog above doesn't know about,
-        // annotated with whether each MinorMode binding is
-        // currently active given the active buffer's mode
-        // set. Lets the user answer "why doesn't `do` work
-        // here? oh, diff-mode isn't active on this buffer."
-        self.append_runtime_chord_bindings_section(chord, &mut lines);
+        // Static-catalog entries (docstrings, source locations from the
+        // built-in catalog). Rendered below the runtime trace so the
+        // "what fires now" answer is the first thing users see.
+        let catalog_hits = crate::keymap::lookup(chord_str);
+        if !catalog_hits.is_empty() {
+            lines.push(String::new());
+            lines.push("─── Static catalog ───".to_string());
+            for entry in catalog_hits {
+                lines.push(String::new());
+                for l in lattice_grammar::render_introspection_lines(entry) {
+                    lines.push(l);
+                }
+            }
+        }
 
-        lattice_help::HelpContent::from_lines(format!("describe-key {chord}"), lines)
-            .with_markdown_syntax(self.lang_registry.clone())
+        lattice_help::HelpContent::from_lines(
+            format!("describe-key {chord}"),
+            lines,
+        )
+        .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// K.2.4.A.2 (2026-06-02): friendly label for a

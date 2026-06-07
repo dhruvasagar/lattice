@@ -69,12 +69,12 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod guards;
-// K.2.4.A.0.1 (2026-06-02): static keymap catalog + `keymap_entry!`
-// macro relocated from `lattice-host::keymap` so mode crates can
-// declare bindings without depending on `lattice-host`. The host
-// retains `lattice-host::keymap` as a re-export shim so the
-// dispatcher / TUI drift test / `:describe-key` / `:keymap` keep
-// resolving verbatim.
+// K.3 (2026-06-07): `KeymapEntry` + `keymap_entry!` moved from
+// `lattice-mode::keymap_entry` to `lattice-keymap::keymap_entry`.
+// `lattice-mode::keymap_entry` is now a re-export shim.
+// The macro is re-exported here at the crate root so that
+// `lattice_mode::keymap_entry! { … }` continues to work for callers
+// in `lattice-multibuffer`, `lattice-host`, and `lattice-ui-tui`.
 pub mod keymap_entry;
 pub mod locals;
 pub mod mode;

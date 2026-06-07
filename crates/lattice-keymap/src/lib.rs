@@ -8,7 +8,9 @@
 //! Nothing in this crate may import from `lattice-mode` or `lattice-host`.
 
 pub mod binding_mode;
+pub mod keymap_entry;
 pub mod mode_id;
 
 pub use binding_mode::BindingMode;
+pub use keymap_entry::{KeymapEntry, default_keymap, entries, lookup};
 pub use mode_id::ModeId;

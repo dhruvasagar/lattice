@@ -25,3 +25,6 @@ pub mod registry;
 pub use registry::{
     KeymapCapability, KeymapError, KeymapHandle, KeymapRegistry, LayerId, PushLayerKind,
 };
+
+pub mod resolution;
+pub use resolution::{KeymapResolution, LayerHit, parse_describe_key_arg};

@@ -1496,7 +1496,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   consumer lands and the paint pass joins the budget. Bench
   is annotated with the §3.4 paragraphs it backs so the
   design + bench stay coupled (heuristic #5).
-- 🚧 **D.3** — Inline overlay presentation. Carved during build
+- ✅ **D.3** — Inline overlay presentation. Carved during build
   into a series of sub-slices; D.3.a landed 2026-05-29 as the
   foundational wiring, follow-ons (D.3.a.1 / D.3.b / D.3.c /
   D.3.d / D.3.e) track the ex-command + content + motions +
@@ -1717,7 +1717,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     next walks forward + wraps to first, prev walks
     backward + wraps to last, empty-HunkIndex info message);
     **439 lattice-host unit tests green**.
-  - 🚧 **D.3.d** — Gutter sign rendering. Carved during build
+  - ✅ **D.3.d** — Gutter sign rendering. Carved during build
     into a data layer + per-renderer integration sub-slices.
     - ✅ **D.3.d.0** (2026-05-29) — Data layer. New
       `DiffSignKind { Add, Remove, Change }` enum (Conflict
@@ -1899,7 +1899,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     visual regression motivates an absolute ceiling — the
     headroom is large enough that bench-on-PR catches
     regressions. Closes D.3.f.
-- 🚧 **D.4** — Side-by-side two-way: `:diffsplit`,
+- ✅ **D.4** — Side-by-side two-way: `:diffsplit`,
   `:diffthis`, `:diffoff` extension; pane-group
   scroll-binding with hunk-correspondent row mapping +
   filler rows. Per-pane buffer mutability addressed by
@@ -1999,7 +1999,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     simultaneously, the worker needs per-document
     matrices. That upgrade lands in D.4.d alongside the
     `:diffsplit` wiring.
-  - 🚧 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
+  - ✅ **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
     Carved into four sub-slices to keep blast radius
     bounded:
     - ✅ **D.4.d.0** (2026-05-29) — Per-document cells-
@@ -2116,7 +2116,7 @@ shared with multibuffer-views and post-v1 inlay hints.
         `matrix_for_pane` returns the matching cell + None
         for unknown ids; non-Document leaves skipped).
         515 host tests green.
-    - 🚧 **D.4.d.2** — Same surface for virtual rows.
+    - ✅ **D.4.d.2** — Same surface for virtual rows.
       Mirror of D.4.d.0 + D.4.d.1 on
       `virtual_rows_matrix_cell`. Carved into four sub-
       slices for the same blast-radius bounding as
@@ -2541,7 +2541,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     Closes K.1; D.5's diff-mode dispatch wires into the
     new substrate without further keymap-architecture
     work.
-- 🚧 **D.5** — Hunk transfer operators `do` / `dp` via
+- ✅ **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`. After K.1: `do`/`dp` register in the
   diff-mode `MinorMode(ModeId)` layer, not globally.
   Carved into D.5.a (mode lifecycle), D.5.b (`do`),
@@ -3394,7 +3394,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     valid).
 - 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
-- 🚧 **D.8** — `:diffthis` as buffer-group membership +
+- ✅ **D.8** — `:diffthis` as buffer-group membership +
   arity-agnostic descriptor refactor. Design fragment:
   [`../architecture/n-way-diff-membership.md`](../architecture/n-way-diff-membership.md).
   Replaces the D.4.d.3.a `pending_diffthis:
@@ -4400,7 +4400,7 @@ architecture §10 for the rationale.
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
   §12; sequencing + commit refs at
   [`../archive/help-prefix.md`](../archive/help-prefix.md).
-- 🚧 **K.4** — Multibuffer-is-a-regular-buffer audit +
+- ✅ **K.4** — Multibuffer-is-a-regular-buffer audit +
   integration verification. Triggered by M.6 testing
   surfacing four latent failures (silent EventBus None,
   current_thread freeze, `contains_document` exclusion,
@@ -4416,40 +4416,40 @@ architecture §10 for the rationale.
   virtual-row pipeline — `ModeActivator::register_virtual_row_provider`
   + per-pane matrix renderer + search provider
   per-file excerpt collapse (`07acd33` + follow-ons);
-  K.4.8 `:ls` Multibuffer/Messages split (`6299564`);
-  K.4.9 audit-comment pass (`4c4631d`); K.4.10 convention
+  K.4.7 per-excerpt syntax highlighting — multibuffer
+  rides per-source syntax cells, shifting spans to
+  composed coordinates (`2026-06-08`); K.4.8 `:ls`
+  Multibuffer/Messages split (`6299564`); K.4.9
+  audit-comment pass (`4c4631d`); K.4.10 convention
   codification (`29ffec3`); K.4.11 `dispatch_with_cancel`
   proper impl — grammar dispatch owned by
   `MultibufferDocumentHandle`, kind-branch in host
-  deleted (`d05348d`, `f598a72`). **Pending:** K.4.7
-  per-excerpt syntax highlighting (design slice —
-  multibuffer rides per-source syntax cells, shifting
-  spans to composed coordinates). Design at
+  deleted (`d05348d`, `f598a72`). Design at
   [`../architecture/multibuffer-is-a-regular-buffer.md`](../architecture/multibuffer-is-a-regular-buffer.md);
   sequencing at [`slice-plans/multibuffer-is-a-regular-buffer.md`](slice-plans/multibuffer-is-a-regular-buffer.md).
   Convention codified in
   `feedback_buffers_no_special_case` memory.
-- 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
+- ✅ **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
-  into the existing fold registry. **No new keymaps** — the
-  standard `z*` vocabulary (`za` / `zo` / `zc` / `zR` /
-  `zM`, `foldlevel=N`) covers excerpts identically to
-  syntactic / marker folds. `za` on a row inside an excerpt
-  collapses to the excerpt's M.2 header virtual row. Composes
+  into the existing fold registry via `FoldOverlayService`.
+  `MultibufferMode::on_activate` registers the provider and
+  holds it in `MultibufferModeGuard`; `Drop` deregisters on
+  mode exit. **No new keymaps** — the standard `z*` vocabulary
+  (`za` / `zo` / `zc` / `zR` / `zM`, `foldlevel=N`) covers
+  excerpts identically to syntactic / marker folds. Composes
   with diff-system D.3.f hunk folds via vim's "smallest
-  enclosing fold wins" on `za`. Depends on M.4 so fold ranges
-  stay current as source edits shift anchors. See
+  enclosing fold wins" on `za`. 3 tests: one-fold-per-excerpt,
+  namespace-distinct, empty-when-no-excerpts. See
   `multibuffer-views.md` §6.5.
-- 🗒 **M.8** — File-boundary fold provider. `FileBoundaryFoldProvider`
+- ✅ **M.8** — File-boundary fold provider. `FileBoundaryFoldProvider`
   registers one fold range per distinct `source: BufferId`
-  covering the union of that file's excerpts. **No new
-  keymaps** — same vocabulary as M.7. Essential for project-
-  wide diff (A.1) + AI multi-file diff (A.2) where a user
-  reviewing 50 files wants `za` on a file-header row to
-  collapse the whole file into one summary. Nesting: file
-  > excerpt > hunk on `za`. Depends on M.6 so provider-
-  driven excerpt sets are stable before fold ranges union
-  across them. See `multibuffer-views.md` §6.5.
+  covering the union of that file's excerpts. Registered
+  alongside `ExcerptFoldProvider` in `MultibufferMode::on_activate`.
+  **No new keymaps** — same vocabulary as M.7. Nesting:
+  file > excerpt > hunk on `za`. 3 tests:
+  one-fold-per-source-file (non-contiguous excerpts span
+  correctly), namespace-distinct, empty-when-no-excerpts.
+  See `multibuffer-views.md` §6.5.
 
 Follow-on consumers (post-M.6, each its own slice sequence,
 not yet committed): `ProjectDiffProvider` (composes with

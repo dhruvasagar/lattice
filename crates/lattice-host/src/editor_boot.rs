@@ -869,14 +869,37 @@ impl Editor {
         }
 
         // MultibufferExcerptsReady: fired by the project-search
-        // forwarder after each batch of excerpts is appended to the
-        // multibuffer view. Wakes the cells worker so search results
-        // appear without waiting for the next keystroke.
+        // forwarder after each batch of excerpts is appended.
+        // Only fires async_landed so the actor calls
+        // publish_render_state (picking up the new excerpt_syntax
+        // entries). The actor then publishes AsyncRenderStatePublished
+        // via the event bus; the bridge below wakes cells_wake AFTER
+        // the ArcSwap store — no race possible.
         #[cfg(feature = "search")]
         {
             use tokio::sync::mpsc;
             let (tx, mut rx) = mpsc::unbounded_channel::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>();
             event_bus.subscribe_typed::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>(tx);
+            let al = async_landed.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    al.notify_one();
+                }
+            });
+        }
+
+        // AsyncRenderStatePublished: fired by the actor after every
+        // publish_render_state triggered by the async_landed arm.
+        // Wakes cells_wake so the cells worker reads the freshly-
+        // written PaneCellsInputs. Ordering guarantee: the event is
+        // published after the ArcSwap store, so cells always sees
+        // fresh state. This replaces the racy direct notify_one that
+        // previously fired from the async event handlers.
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) =
+                mpsc::unbounded_channel::<crate::events::AsyncRenderStatePublished>();
+            event_bus.subscribe_typed::<crate::events::AsyncRenderStatePublished>(tx);
             let cw = cells_wake.clone();
             runtime_handle.spawn(async move {
                 while rx.recv().await.is_some() {

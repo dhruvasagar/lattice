@@ -1046,14 +1046,15 @@ impl CellsRenderState {
 ///   multibuffer's composed coordinate space.
 /// - `source_start`: the first source-buffer row that maps to
 ///   `composed_start` (used to translate highlight results back).
-/// - `handle`: long-lived `SyntaxHandle` owned by `MultibufferState`
-///   for the source file at this language.
+/// - `handle`: per-excerpt highlight provider (impl `ExcerptHighlighter`).
+///   Owned by `MultibufferState`; accessed via trait object so the host
+///   never depends on the concrete `SyntaxHandle` type.
 #[derive(Clone)]
 pub struct ExcerptSyntax {
     pub composed_start: u32,
     pub composed_end: u32,
     pub source_start: u32,
-    pub handle: std::sync::Arc<lattice_syntax::SyntaxHandle>,
+    pub handle: std::sync::Arc<dyn lattice_cells::ExcerptHighlighter>,
 }
 
 impl std::fmt::Debug for ExcerptSyntax {

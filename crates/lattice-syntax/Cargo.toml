@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+lattice-cells = { path = "../lattice-cells" }
 lattice-core = { path = "../lattice-core" }
 # CSM.6: tree-sitter-completion-mode owns the local-symbol
 # completion source. lattice-mode is already a dep (for the

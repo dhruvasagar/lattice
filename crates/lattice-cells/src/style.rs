@@ -1,0 +1,96 @@
+//! Syntax-highlight style types and the `ExcerptHighlighter` trait.
+//!
+//! Moved from `lattice-syntax` so that `lattice-runtime` (which defines the
+//! `Document` trait) can reference `ExcerptHighlighter` without pulling in
+//! `lattice-syntax` — which has a transitive dep on `lattice-mode` →
+//! `lattice-runtime` (cycle). `lattice-cells` has no lattice deps, breaking
+//! the chain cleanly.
+//!
+//! `lattice-syntax` re-exports everything from here so call-sites outside
+//! `lattice-cells` / `lattice-runtime` see no path change.
+
+use std::sync::Arc;
+
+/// Semantic style category emitted by the tree-sitter highlighter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    Default,
+    Comment,
+    LineComment,
+    String,
+    Keyword,
+    Type,
+    Number,
+    Function,
+    Constant,
+    Variable,
+    Operator,
+    Punctuation,
+    Attribute,
+    // ---- Markup styles (markdown / org / future rich-text modes) ----
+    /// `# Heading` — level 1.
+    Heading1,
+    /// `## Heading` — level 2.
+    Heading2,
+    /// `### Heading` — level 3.
+    Heading3,
+    /// `#### Heading` — level 4.
+    Heading4,
+    /// `##### Heading` — level 5.
+    Heading5,
+    /// `###### Heading` — level 6.
+    Heading6,
+    /// `**bold**` / `__bold__` text.
+    Bold,
+    /// `*italic*` / `_italic_` text.
+    Italic,
+    /// Link label / link text (`[label]`). Distinct from [`Style::Url`] so
+    /// the renderer can underline navigable labels without underlining the URL.
+    Link,
+    /// Link destination (`(url)`) and autolinks.
+    Url,
+    /// Inline `` `code` ``, fenced code blocks without an info string, link
+    /// titles.
+    MarkupRaw,
+    /// List markers, thematic breaks, blockquote markers, and other markup
+    /// punctuation.
+    Markup,
+}
+
+/// Byte-range span within one source line, carrying a semantic [`Style`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StyledSpan {
+    /// Byte offset within the line where the span starts.
+    pub start: usize,
+    /// Byte offset within the line (exclusive).
+    pub end: usize,
+    pub style: Style,
+}
+
+/// Trait implemented by `SyntaxHandle` (and future highlight providers).
+/// Used by `Document::excerpt_highlights` so that `lattice-runtime` can
+/// expose per-excerpt highlighting through the `Document` trait without
+/// taking a direct dep on `lattice-syntax`.
+pub trait ExcerptHighlighter: Send + Sync {
+    /// Return per-line styled spans for source rows `lo..hi` (exclusive).
+    /// The returned `Vec` has exactly `(hi - lo)` entries; an empty inner
+    /// `Vec` means "no spans on that line" (fall back to default fg).
+    /// Returns `None` when the highlight snapshot is stale or unavailable.
+    fn highlight_lines(&self, lo: u32, hi: u32) -> Option<Vec<Vec<StyledSpan>>>;
+
+    /// Monotonic version of the last-published parse result. Used to build
+    /// `MatrixVersion::syntax` without taking a dep on `SyntaxHandle` internals.
+    fn highlight_version(&self) -> u64;
+}
+
+/// Per-excerpt entry produced by [`Document::excerpt_highlights`].
+///
+/// `composed_start` / `composed_end` are line numbers in the multibuffer's
+/// composed coordinate space. `source_start` is the first source line mapped
+/// to `composed_start`. The highlighter operates in source coordinates.
+pub struct ExcerptHighlight {
+    pub composed_start: u32,
+    pub composed_end: u32,
+    pub source_start: u32,
+    pub highlighter: Arc<dyn ExcerptHighlighter>,
+}

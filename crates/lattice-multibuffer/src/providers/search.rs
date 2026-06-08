@@ -734,7 +734,10 @@ impl Mode for ProjectSearchMultibufferMode {
                                     let Ok(text) = text_res else { continue; };
 
                                     let id = BufferId::next();
-                                    let document = lattice_core::Document::from_text(&text);
+                                    let document = lattice_core::DocumentBuilder::default()
+                                        .with_text(&text)
+                                        .with_path(path.clone())
+                                        .build();
                                     let registry = Arc::new(CommandRegistry::new());
                                     let handle = spawn_document(id, document, registry);
                                     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
@@ -1226,7 +1229,11 @@ pub fn register_search_ex_command(registry: &mut CommandRegistry) {
                 };
                 Ok(Effect::AppAction(AppEffect::SearchTrigger { query }))
             }),
-            args_schema: Vec::<ArgSpec>::new(),
+            args_schema: vec![ArgSpec::required(
+                "query",
+                lattice_grammar::args::ArgKind::String,
+                "search query",
+            )],
             surface_form: SurfaceForm::Keyword,
         },
     );

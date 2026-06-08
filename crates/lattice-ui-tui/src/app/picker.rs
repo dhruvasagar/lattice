@@ -43,8 +43,11 @@ impl App {
     /// variant requires editing exactly this match.
     pub(super) fn apply_picker_outcome(&mut self, outcome: lattice_picker::PickerAcceptOutcome) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals = self.mutate_editor_with(move |e| e.apply_picker_outcome(outcome));
-        for s in signals {
+        let out = self.mutate_editor_with(move |e| e.apply_picker_outcome(outcome));
+        for effect in out.effects {
+            self.apply_effect_app_arms(effect);
+        }
+        for s in out.renderer_signals {
             self.handle_renderer_signal(s);
         }
     }
@@ -241,8 +244,14 @@ impl App {
     /// Apply `Action::PickerAccept`. Phase 5.8.AF: body migrated.
     pub(super) fn do_picker_accept(&mut self) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals = self.mutate_editor_with(|e| e.do_picker_accept());
-        for s in signals {
+        // `do_picker_accept` now returns a full `DispatchOutcome`;
+        // drain effects first (renderer-coupled App arms), then
+        // renderer signals — same order as the main dispatch loop.
+        let outcome = self.mutate_editor_with(|e| e.do_picker_accept());
+        for effect in outcome.effects {
+            self.apply_effect_app_arms(effect);
+        }
+        for s in outcome.renderer_signals {
             self.handle_renderer_signal(s);
         }
     }

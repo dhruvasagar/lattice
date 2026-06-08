@@ -194,6 +194,11 @@ pub enum AppEffect {
     /// Vim's `<C-l>`. Force a full screen redraw. Promoted from
     /// `Action::RedrawScreen` in slice 8.i.1.e.
     RedrawScreen,
+    /// Vim's `:` / Emacs' `M-x`. Open the command picker over
+    /// all registered ex-commands. If the chosen command has a
+    /// required first argument the picker arms the cmdline so
+    /// the user can supply it; otherwise executes immediately.
+    OpenCommandPicker,
     /// Vim's `:`. Enter the command-line minibuffer. Promoted
     /// from `Action::EnterCommandLine` in slice 8.i.1.e.
     EnterCommandLine,

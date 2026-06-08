@@ -157,6 +157,23 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     fn display_line_numbers(&self) -> Option<Arc<[u32]>> {
         None
     }
+
+    /// K.4.7: per-excerpt highlight entries for multibuffer panes.
+    /// Default returns empty — regular single-file documents carry
+    /// no excerpt structure.  `MultibufferDocumentHandle` overrides
+    /// to return one entry per excerpt that has a `SyntaxHandle`.
+    ///
+    /// The cells worker calls this uniformly on every pane's document;
+    /// no `BufferKind` branch needed in `publish_render_state`.
+    fn excerpt_highlights(&self) -> Vec<lattice_cells::ExcerptHighlight> {
+        Vec::new()
+    }
+
+    /// Monotonic counter that bumps whenever the excerpt highlight set
+    /// changes (new sources added, lang registry wired).  Default: 0.
+    fn excerpt_syntax_version(&self) -> u64 {
+        0
+    }
 }
 
 /// M.0 (2026-05-31): the active-document slot held by

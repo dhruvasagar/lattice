@@ -269,6 +269,22 @@ struct MultibufferInner {
     // SyntaxHandle creation. Set once after construction via
     // `set_lang_registry`; `None` until the host wires it.
     lang_registry: std::sync::OnceLock<Arc<LangRegistry>>,
+    // K.4.7 (2026-06-08): monotonic generation counter. Incremented
+    // every time `source_syntax` gains a new handle (`add_source` /
+    // `set_lang_registry`). Folded into `MatrixVersion::syntax` in
+    // `publish_render_state` so the cells worker invalidates its cache
+    // when per-source handles are first populated. XOR of individual
+    // handle text_versions is unreliable: N handles all at version=1
+    // XOR to 0 for even N, colliding with the initial-zero and
+    // producing a false cache hit that freezes highlighting.
+    excerpt_syntax_gen: std::sync::atomic::AtomicU64,
+    // K.4.7 (2026-06-08): monotonic publish counter. Stamped as the
+    // `text_version` on every DocumentSnapshot emitted by
+    // `append_excerpts` / `replace_excerpts`. Document::from_text()
+    // always returns text_version=0, so without this counter the
+    // MatrixVersion.text axis is permanently 0 and the cells worker
+    // always returns CacheHit — the "empty until keypress" bug.
+    publish_seq: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -486,6 +502,8 @@ impl MultibufferDocumentHandle {
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
                 registry,
                 lang_registry: std::sync::OnceLock::new(),
+                excerpt_syntax_gen: std::sync::atomic::AtomicU64::new(0),
+                publish_seq: std::sync::atomic::AtomicU64::new(0),
             }),
         })
     }
@@ -707,11 +725,16 @@ impl MultibufferDocumentHandle {
         // streaming phase precedes user editing.
         let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
         let new_composed_doc = lattice_core::Document::from_text(composed_text);
-        let snapshot = snapshot_from_composed_doc(
+        // K.4.7: stamp with monotonic seq — Document::from_text always
+        // returns text_version=0, so MatrixVersion.text is permanently 0
+        // and the cells worker always returns CacheHit ("empty until keypress").
+        let seq = self.inner.publish_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut snapshot = snapshot_from_composed_doc(
             &new_composed_doc,
             self.inner.id,
             state.selections.clone(),
         );
+        snapshot.text_version = seq;
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         {
@@ -751,11 +774,14 @@ impl MultibufferDocumentHandle {
         // user edits land on a rope reflecting current content.
         let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
         let new_composed_doc = lattice_core::Document::from_text(composed_text);
-        let snapshot = snapshot_from_composed_doc(
+        // K.4.7: same monotonic seq stamp as append_excerpts.
+        let seq = self.inner.publish_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut snapshot = snapshot_from_composed_doc(
             &new_composed_doc,
             self.inner.id,
             state.selections.clone(),
         );
+        snapshot.text_version = seq;
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         {
@@ -784,21 +810,33 @@ impl MultibufferDocumentHandle {
     pub fn add_source(&self, id: BufferId, source: Arc<dyn Document>) {
         let mut state = self.lock_state();
         state.sources.insert(id, source.clone());
+        let path = source.path();
+        tracing::debug!(
+            buffer = ?id,
+            path = ?path,
+            has_lang_registry = self.inner.lang_registry.get().is_some(),
+            "add_source: checking for syntax handle creation"
+        );
         if let Some(lr) = self.inner.lang_registry.get() {
-            let lang = Lang::detect_from_path(source.path().as_deref());
+            let lang = Lang::detect_from_path(path.as_deref());
+            tracing::debug!(buffer = ?id, ?lang, "add_source: detected language");
             if lang != Lang::Plain {
-                if let Ok(Some(mut syntax)) =
-                    Syntax::for_language_with_registry(lang, lr.clone())
-                {
-                    let snap = source.snapshot();
-                    let text = snap.buffer.as_string();
-                    syntax.parse(&text);
-                    // `seeded` snapshots the initial parse and spawns the
-                    // async reparse worker when a tokio runtime is present;
-                    // gracefully degrades (snapshot kept, worker absent) in
-                    // sync test contexts.
-                    let handle = SyntaxHandle::seeded(syntax);
-                    state.source_syntax.insert(id, Arc::new(handle));
+                match Syntax::for_language_with_registry(lang, lr.clone()) {
+                    Ok(Some(mut syntax)) => {
+                        let snap = source.snapshot();
+                        let text = snap.buffer.as_string();
+                        syntax.parse(&text);
+                        let handle = SyntaxHandle::seeded(syntax);
+                        state.source_syntax.insert(id, Arc::new(handle));
+                        self.inner.excerpt_syntax_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::debug!(buffer = ?id, ?lang, "add_source: syntax handle created");
+                    }
+                    Ok(None) => {
+                        tracing::debug!(buffer = ?id, ?lang, "add_source: no grammar registered");
+                    }
+                    Err(e) => {
+                        tracing::debug!(buffer = ?id, ?lang, error = ?e, "add_source: grammar error");
+                    }
                 }
             }
         }
@@ -823,6 +861,7 @@ impl MultibufferDocumentHandle {
             .filter(|(id, _)| !state.source_syntax.contains_key(id))
             .map(|(id, src)| (*id, src.clone()))
             .collect();
+        let mut added = 0u64;
         for (id, source) in ids {
             let lang = Lang::detect_from_path(source.path().as_deref());
             if lang == Lang::Plain {
@@ -834,15 +873,28 @@ impl MultibufferDocumentHandle {
                 syntax.parse(&text);
                 let handle = SyntaxHandle::seeded(syntax);
                 state.source_syntax.insert(id, Arc::new(handle));
+                added += 1;
             }
+        }
+        if added > 0 {
+            self.inner.excerpt_syntax_gen.fetch_add(added, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
+    /// K.4.7 (2026-06-08): monotonic version that increments whenever
+    /// per-source `SyntaxHandle`s are created. Used by `publish_render_state`
+    /// to invalidate the cells-worker cache when handles are first populated.
+    pub fn excerpt_syntax_version(&self) -> u64 {
+        self.inner.excerpt_syntax_gen.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// K.4.7 (2026-06-07): per-excerpt syntax entries for the cells
-    /// worker. Each entry is `(composed_start, source_start,
-    /// source_end, handle)` where `composed_start` is the first row
-    /// of this excerpt in the composed snapshot (0-indexed). Only
-    /// excerpts whose source has a `SyntaxHandle` are included.
+    /// worker. Each entry is `(composed_start, composed_end,
+    /// source_start, handle)` where `composed_start`/`composed_end`
+    /// are inclusive row bounds in the composed snapshot (0-indexed)
+    /// and `source_start` is the first source row mapped to
+    /// `composed_start`. Only excerpts with a `SyntaxHandle` are
+    /// included.
     pub fn excerpt_syntax_entries(&self) -> Vec<(u32, u32, u32, Arc<SyntaxHandle>)> {
         let state = self.lock_state();
         let mut entries = Vec::new();
@@ -850,7 +902,8 @@ impl MultibufferDocumentHandle {
         for ex in &state.excerpts {
             let line_count = ex.end_line.saturating_sub(ex.start_line) + 1;
             if let Some(handle) = state.source_syntax.get(&ex.source) {
-                entries.push((composed_row, ex.start_line, ex.end_line, handle.clone()));
+                let composed_end = composed_row + line_count - 1;
+                entries.push((composed_row, composed_end, ex.start_line, handle.clone()));
             }
             composed_row += line_count;
         }
@@ -1376,6 +1429,34 @@ impl Document for MultibufferDocumentHandle {
             })
             .collect();
         Some(Arc::from(rows.into_boxed_slice()))
+    }
+
+    // K.4.7 (2026-06-08): mode owns its highlighting surface. The host's
+    // `publish_render_state` calls these uniformly on every document; no
+    // `BufferKind` branch needed there.
+    fn excerpt_highlights(&self) -> Vec<lattice_cells::ExcerptHighlight> {
+        let state = self.lock_state();
+        let mut out = Vec::new();
+        let mut composed_row = 0u32;
+        for ex in &state.excerpts {
+            let line_count = ex.end_line.saturating_sub(ex.start_line) + 1;
+            if let Some(handle) = state.source_syntax.get(&ex.source) {
+                out.push(lattice_cells::ExcerptHighlight {
+                    composed_start: composed_row,
+                    composed_end: composed_row + line_count - 1,
+                    source_start: ex.start_line,
+                    highlighter: Arc::clone(handle) as Arc<dyn lattice_cells::ExcerptHighlighter>,
+                });
+            }
+            composed_row += line_count;
+        }
+        out
+    }
+
+    fn excerpt_syntax_version(&self) -> u64 {
+        self.inner
+            .excerpt_syntax_gen
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn dispatch_with_cancel(

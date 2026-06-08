@@ -3624,6 +3624,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "lattice-cells",
  "lattice-core",
  "lattice-grammar",
  "lattice-protocol",
@@ -3656,6 +3657,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "lattice-cells",
  "lattice-completion",
  "lattice-core",
  "lattice-mode",

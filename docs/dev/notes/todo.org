@@ -33,6 +33,7 @@
     arguments if the command requires arguments or just execute them
     if they don't take arguments
 - [ ] focus mode
+- [ ] history (command, macros, yank, etc.)
 
 * Plugins
 - [ ] plugin manager
@@ -113,18 +114,18 @@
 - [X] visual block mode does not work
 - [X] marginalia columns alignment
 - [ ] `scrolloff` not respected properly
-- [ ] ]e,[e, ]E, [E for multibuffer view not working
+- [X] ]e,[e, ]E, [E for multibuffer view not working
 - [X] Any edit breaks syntax highlighting
 - [X] `:e!` clones the buffer instead of just refreshing
 - [X] `:e!` should not reposition cursor
 - [ ] *messages* buffer shows [+] in the :b list, it should not track
   dirty flag
 - [ ] hover popup position is off when there are splits
-- [ ] typing on rust, the inlay hint flicker is fixed but I notice as
+- [X] typing on rust, the inlay hint flicker is fixed but I notice as
   I type the comment fonts switch to italics sometimes, possibly when
   there are diagnostic errors on the line I am editing. They disappear
   when the line is syntactically valid.
-- [ ] When using `K`, and we focus on the popup, the decorations such
+- [X] When using `K`, and we focus on the popup, the decorations such
   as inlay-hint are removed from the background buffer (no reason to
   remove them), and when we close the popup and the background buffer
   gains focus again, they don't come back until the next key press

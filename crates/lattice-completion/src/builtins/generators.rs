@@ -41,19 +41,24 @@ impl CandidateGenerator for CommandsGenerator {
             .filter_map(|name| {
                 let id = ctx.registry.id_by_name(name)?;
                 let spec = ctx.registry.lookup(id)?;
+                // Only include ex-commands (not action:* entries which
+                // are internal actions not executable from the `:` line).
+                let ex = ctx.registry.ex_command_spec(id)?;
                 // Filter delimiter-only commands -- they have no
                 // useful keyword-form completion target.
-                if let Some(ex) = ctx.registry.ex_command_spec(id)
-                    && matches!(
-                        ex.surface_form,
-                        lattice_grammar::SurfaceForm::Delimiter { .. }
-                    )
-                {
+                if matches!(ex.surface_form, lattice_grammar::SurfaceForm::Delimiter { .. }) {
                     return None;
                 }
+                // User-facing name: strip the `ex:` namespace prefix
+                // so completions show `oil` not `ex:oil`.
+                let display_name = spec
+                    .name
+                    .strip_prefix("ex:")
+                    .unwrap_or(&spec.name)
+                    .to_string();
                 Some(RawCandidate {
-                    text: spec.name.clone(),
-                    display: spec.name.clone(),
+                    text: display_name.clone(),
+                    display: display_name.clone(),
                     kind: CandidateKind::Command,
                     data: CandidateData::Command {
                         name: spec.name.clone(),
@@ -221,11 +226,14 @@ mod tests {
         let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let candidates = g.generate(&ctx_for("", &buffer, &registry));
-        assert!(candidates.len() > 50, "expected many built-in commands");
-        // Spot-check: ex:write should be in there.
-        assert!(candidates.iter().any(|c| c.text == "ex:write"));
-        // Spot-check: motion:line-down should be in there.
-        assert!(candidates.iter().any(|c| c.text == "motion:line-down"));
+        assert!(candidates.len() > 10, "expected multiple ex-commands");
+        // Spot-check: write should appear (it's an ex-command).
+        assert!(candidates.iter().any(|c| c.text == "write"));
+        // Motions/operators are not ex-commands and must not appear.
+        assert!(
+            !candidates.iter().any(|c| c.text == "motion:line-down"),
+            "motions are not ex-commands and must be filtered out",
+        );
     }
 
     #[test]
@@ -250,7 +258,7 @@ mod tests {
             "ex:global is delimiter-form-only and must not appear",
         );
         // Other ex-commands stay present.
-        assert!(candidates.iter().any(|c| c.text == "ex:write"));
+        assert!(candidates.iter().any(|c| c.text == "write"));
     }
 
     #[test]
@@ -261,7 +269,7 @@ mod tests {
         let document = Document::empty();
         let buffer = document.buffer().clone();
         let candidates = CommandsGenerator.generate(&ctx_for("", &buffer, &registry));
-        let write = candidates.iter().find(|c| c.text == "ex:write").unwrap();
+        let write = candidates.iter().find(|c| c.text == "write").unwrap();
         match &write.data {
             CandidateData::Command {
                 doc, kind_label, ..

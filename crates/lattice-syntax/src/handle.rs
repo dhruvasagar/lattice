@@ -271,6 +271,19 @@ impl std::fmt::Debug for SyntaxHandle {
     }
 }
 
+// K.4.7 (2026-06-08): `ExcerptHighlighter` impl so `MultibufferDocumentHandle`
+// can return `Arc<dyn ExcerptHighlighter>` without exposing `SyntaxHandle`
+// to `lattice-runtime` (which would create a dep cycle).
+impl lattice_cells::ExcerptHighlighter for SyntaxHandle {
+    fn highlight_lines(&self, lo: u32, hi: u32) -> Option<Vec<Vec<lattice_cells::StyledSpan>>> {
+        self.snapshot().highlight_lines(lo, hi).ok()
+    }
+
+    fn highlight_version(&self) -> u64 {
+        self.snapshot().text_version()
+    }
+}
+
 /// Worker loop. Owns the `Syntax` exclusively; processes
 /// reparse requests in FIFO order, coalescing newer requests on
 /// top of older ones before running each parse on a blocking

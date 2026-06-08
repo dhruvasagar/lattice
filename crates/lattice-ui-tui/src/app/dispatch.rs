@@ -392,6 +392,7 @@ impl App {
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
             | Action::HelpDismiss
             // 5.5.G.13: pure-editor cmdline arms.
+            | Action::OpenCommandPicker
             | Action::EnterCommandLine
             | Action::CommandLineHistoryPrev
             | Action::CommandLineHistoryNext
@@ -1098,7 +1099,8 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
-            } // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+            }
+            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
               // `visible_highlights` / `pane_highlights` cache clear
               // lives on `Editor` as plain field writes, so the
               // post-activation tail (`activate_buffer_state`) runs

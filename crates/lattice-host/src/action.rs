@@ -410,6 +410,10 @@ pub enum Action {
     JumpToMarkExact(char),
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
+    /// Open the command picker (`:`/`M-x`). On accept: if the
+    /// chosen command needs a required arg, arm the cmdline;
+    /// otherwise execute immediately.
+    OpenCommandPicker,
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
     EnterCommandLine,
     /// Append a character to the in-progress command line.

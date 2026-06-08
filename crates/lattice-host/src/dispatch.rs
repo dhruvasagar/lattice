@@ -135,6 +135,21 @@ pub struct DispatchOutcome {
     pub next_actions: Vec<crate::action::Action>,
 }
 
+impl DispatchOutcome {
+    /// Drain `other` into `self`: append signals, effects, and
+    /// next_actions; OR the consumed flag. Used by picker-accept
+    /// paths that delegate to `apply_picker_outcome` and need to
+    /// forward the full outcome upward.
+    pub fn merge(&mut self, other: DispatchOutcome) {
+        self.renderer_signals.extend(other.renderer_signals);
+        self.effects.extend(other.effects);
+        self.next_actions.extend(other.next_actions);
+        if other.consumed {
+            self.consumed = true;
+        }
+    }
+}
+
 /// Slice I.7 — result of [`Editor::dispatch_fused`], the one-round-trip
 /// keystroke apply.
 ///
@@ -2014,6 +2029,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             | BufferKind::Messages
             | BufferKind::Multibuffer => {}
         },
+        // Open the command picker (`:` / M-x). Editor::open_picker
+        // handles source lookup + async init; renderer signals flow
+        // through _out.renderer_signals as with other picker actions.
+        Action::OpenCommandPicker => {
+            let sigs = editor.open_picker("commands".to_string(), Vec::new());
+            _out.renderer_signals.extend(sigs);
+        }
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
         // and auto-dismisses a State-A help popup (so the user's
@@ -2158,22 +2180,18 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // without double-invoking.
         Action::PickerAcceptInSplit => {
             editor.picker_open_target = lattice_picker::OpenTarget::Split;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAcceptInVSplit => {
             editor.picker_open_target = lattice_picker::OpenTarget::VSplit;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAcceptInTab => {
             editor.picker_open_target = lattice_picker::OpenTarget::Tab;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAccept => {
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerDismiss => {
             let signals = editor.do_picker_dismiss();
@@ -4899,6 +4917,7 @@ impl Editor {
             AppEffect::ScrollLineUp => out.next_actions.push(Action::ScrollLineUp),
             AppEffect::ScrollLineDown => out.next_actions.push(Action::ScrollLineDown),
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
+            AppEffect::OpenCommandPicker => out.next_actions.push(Action::OpenCommandPicker),
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
@@ -5281,15 +5300,59 @@ impl Editor {
             first.prompt.to_string()
         };
         let info = crate::state::MissingArgPrompt {
-            // Prefill the cmdline with the name the caller
-            // passed verbatim. When the user typed
-            // `:describe-key<CR>` the cmdline keeps showing
-            // `:describe-key ` (their typed form); when a
-            // keymap binding or plugin passes the canonical
-            // `ex:describe-key`, the cmdline shows that.
-            // Symmetric with the cmdline-submit path's prefill
-            // (which uses the raw user-typed token).
-            prefill: format!("{command_name} "),
+            // Always show the user-facing name (strip the `ex:`
+            // namespace prefix) so the cmdline reads
+            // `describe-key ` not `ex:describe-key `.
+            prefill: format!(
+                "{} ",
+                command_name.strip_prefix("ex:").unwrap_or(command_name)
+            ),
+            kind: first.kind,
+            prompt,
+        };
+        self.apply_missing_arg_prompt(info);
+        true
+    }
+
+    /// Picker-only variant of [`arm_missing_arg_prompt`]: arms the
+    /// cmdline with a prefill whenever the command has ANY entry in
+    /// `args_schema`, regardless of `ArgDefault`. Commands with no
+    /// `args_schema` entries (`:q`, `:bn`, `:noh`, …) return `false`
+    /// and the picker executes them immediately. Commands with
+    /// optional args (`:oil`, `:write`, `:help`) arm the cmdline so
+    /// the user can optionally supply the arg or press `<CR>` again
+    /// to run with the default.
+    ///
+    /// The `do_command_line_submit` / `run_invocation` paths continue
+    /// to use `arm_missing_arg_prompt` (Required-only) so `:write<CR>`
+    /// still saves immediately without a second `<CR>`.
+    fn arm_picker_prompt(&mut self, command_name: &str) -> bool {
+        let canonical = self.registry.id_by_name(command_name).or_else(|| {
+            crate::excommand::aliases()
+                .get(command_name)
+                .copied()
+                .and_then(|c| self.registry.id_by_name(c))
+        });
+        let Some(canonical) = canonical else {
+            return false;
+        };
+        let Some(spec) = self.registry.ex_command_spec(canonical) else {
+            return false;
+        };
+        let Some(first) = spec.args_schema.first() else {
+            // No args declared → execute immediately from the picker.
+            return false;
+        };
+        let prompt = if first.prompt.is_empty() {
+            format!("{}:", first.name)
+        } else {
+            first.prompt.to_string()
+        };
+        let info = crate::state::MissingArgPrompt {
+            prefill: format!(
+                "{} ",
+                command_name.strip_prefix("ex:").unwrap_or(command_name)
+            ),
             kind: first.kind,
             prompt,
         };
@@ -9288,28 +9351,37 @@ impl Editor {
             let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
                 self.document_syntax_for(buffer_id).cloned().map(Arc::new);
 
-            // K.4.7 (2026-06-07): for multibuffer panes, build per-excerpt
-            // syntax entries. The MultibufferRegistryHandle is registered as
-            // `Arc<dyn MultibufferRegistry>` (TypeId-keyed); look up with
-            // `MultibufferRegistryHandle` directly.
-            let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> = self
-                .services
-                .get::<lattice_multibuffer::MultibufferRegistryHandle>()
-                .and_then(|mb_reg| mb_reg.handle(buffer_id))
-                .map(|mb| {
-                    mb.excerpt_syntax_entries()
-                        .into_iter()
-                        .map(|(cs, ce, ss, h)| crate::render_state::ExcerptSyntax {
-                            composed_start: cs,
-                            composed_end: ce,
-                            source_start: ss,
-                            handle: h,
-                        })
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice()
-                        .into()
-                })
-                .unwrap_or_else(|| Arc::from([]));
+            // K.4.7 (2026-06-08): per-excerpt syntax entries via Document
+            // trait — no BufferKind branch. excerpt_highlights() returns
+            // empty for regular single-file buffers; MultibufferDocumentHandle
+            // overrides to return one entry per syntax-bearing excerpt.
+            let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> =
+                if is_active_buffer {
+                    Some(self.document.as_arc())
+                } else {
+                    self.buffers.document_handle(buffer_id)
+                };
+            let excerpt_syntax_ver = doc_for_excerpts
+                .as_ref()
+                .map(|d| d.excerpt_syntax_version())
+                .unwrap_or(0);
+            let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> =
+                doc_for_excerpts
+                    .as_ref()
+                    .map(|d| {
+                        d.excerpt_highlights()
+                            .into_iter()
+                            .map(|eh| crate::render_state::ExcerptSyntax {
+                                composed_start: eh.composed_start,
+                                composed_end: eh.composed_end,
+                                source_start: eh.source_start,
+                                handle: eh.highlighter,
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice()
+                            .into()
+                    })
+                    .unwrap_or_else(|| Arc::from([]));
 
             // Folds. Active buffer: live mutable slot
             // (`Editor::folds`). Non-active: per-buffer entry on
@@ -9355,9 +9427,16 @@ impl Editor {
                         .as_ref()
                         .map(|h| h.snapshot().text_version())
                         .unwrap_or(text_version);
-                    excerpt_syntax.iter().fold(base, |acc, ex| {
-                        acc ^ ex.handle.snapshot().text_version()
-                    })
+                    // K.4.7: use wrapping_add, not XOR. XOR cancels when N
+                    // sources all share the same text_version (e.g. all=1
+                    // with even N → 0). Addition never cancels to zero
+                    // unless all terms are zero.
+                    base.wrapping_add(excerpt_syntax_ver)
+                        .wrapping_add(
+                            excerpt_syntax.iter()
+                                .map(|ex| ex.handle.highlight_version())
+                                .fold(0u64, u64::wrapping_add),
+                        )
                 },
                 inlay_hints: inlay_version,
                 folds: if foldenable { folds_hash } else { !folds_hash },
@@ -17748,23 +17827,25 @@ impl Editor {
     pub fn apply_picker_outcome(
         &mut self,
         outcome: lattice_picker::PickerAcceptOutcome,
-    ) -> Vec<RendererSignal> {
+    ) -> DispatchOutcome {
         use lattice_picker::PickerAcceptOutcome::*;
         // Issue #32 (2026-05-22): consume the open-target
         // override AT ENTRY so even nested apply paths see
         // Default. The four file-targeting arms below honor it
         // via `prepare_open_target_pane`; the rest ignore.
         let target = std::mem::take(&mut self.picker_open_target);
-        let mut signals = Vec::new();
+        let mut out = DispatchOutcome::default();
         match outcome {
             OpenFile { path } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                let edit_outcome = self.do_edit(Some(path), false);
+                match edit_outcome {
                     DoEditOutcome::Opened(s)
                     | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    | DoEditOutcome::Reloaded(s) => out.renderer_signals.extend(s),
+                    DoEditOutcome::Directory(d) => {
+                        out.renderer_signals.extend(self.do_open_oil(Some(d)))
+                    }
                     DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
                 }
             }
@@ -17773,10 +17854,10 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
             }
@@ -17790,10 +17871,10 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
                 let snap = self.document.snapshot();
@@ -17803,8 +17884,8 @@ impl Editor {
                 self.cursor = lattice_protocol::Position::new(line, col);
             }
             JumpToLocation { path, line, col } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
             OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
@@ -17813,10 +17894,16 @@ impl Editor {
                 self.do_jump_mark(name, true);
             }
             InvokeCommand { id, .. } => {
-                let user_facing = id.strip_prefix("ex:").unwrap_or(&id).to_string();
-                let mut out = DispatchOutcome::default();
-                self.execute_ex_line(&user_facing, &mut out);
-                signals.extend(std::mem::take(&mut out.renderer_signals));
+                // Use `arm_picker_prompt` (not `arm_missing_arg_prompt`):
+                // the picker arms the cmdline for any command with
+                // args_schema entries, so the user can provide optional
+                // args or press <CR> to accept the default. Commands with
+                // no args_schema (`:q`, `:bn`, …) execute immediately.
+                if !self.arm_picker_prompt(&id) {
+                    let mut inner = DispatchOutcome::default();
+                    self.execute_ex_line(&id, &mut inner);
+                    out.merge(inner);
+                }
             }
             PasteRegister { name } => {
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
@@ -17833,7 +17920,7 @@ impl Editor {
                 let snippet = self.snippet_registry.load().by_name(&id).cloned();
                 let Some(snippet) = snippet else {
                     self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
-                    return signals;
+                    return out;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
             }
@@ -17852,7 +17939,7 @@ impl Editor {
                 ),
             ),
         }
-        signals
+        out
     }
 
     /// `:help [topic]` direct-call entry. Phase 5.8.AD.5.
@@ -20708,7 +20795,7 @@ impl Editor {
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body
     /// including the trait-driven generator path + MRU recording
     /// + event-bus publish + legacy routing arms.
-    pub fn do_picker_accept(&mut self) -> Vec<RendererSignal> {
+    pub fn do_picker_accept(&mut self) -> DispatchOutcome {
         // Issue #32 (2026-05-22): consume the open-target
         // override AT ENTRY so every early-return path (no
         // candidate, no routing, generator error, ...) leaves
@@ -20722,7 +20809,7 @@ impl Editor {
         // returns, `self.picker_open_target == Default`.
         let target = std::mem::take(&mut self.picker_open_target);
         let Some(picker) = self.picker.take() else {
-            return Vec::new();
+            return DispatchOutcome::default();
         };
         // Issue #37 (2026-05-22): stash picker's preview_origin
         // so `prepare_open_target_pane` /
@@ -20738,10 +20825,13 @@ impl Editor {
                 let needs_state = self.activate_buffer(BufferId(origin));
                 self.previewing = false;
                 if needs_state {
-                    return self.activate_buffer_state();
+                    return DispatchOutcome {
+                        renderer_signals: self.activate_buffer_state(),
+                        ..Default::default()
+                    };
                 }
             }
-            return Vec::new();
+            return DispatchOutcome::default();
         };
         let routing = match picker.routing_for(c).cloned() {
             Some(r) => r,
@@ -20755,10 +20845,13 @@ impl Editor {
                     let needs_state = self.activate_buffer(BufferId(origin));
                     self.previewing = false;
                     if needs_state {
-                        return self.activate_buffer_state();
+                        return DispatchOutcome {
+                            renderer_signals: self.activate_buffer_state(),
+                            ..Default::default()
+                        };
                     }
                 }
-                return Vec::new();
+                return DispatchOutcome::default();
             }
         };
         // Slice `3c.unify.picker-registry-cutover` (7d.0):
@@ -20785,7 +20878,7 @@ impl Editor {
                 Ok(a) => a,
                 Err(e) => {
                     self.set_message(EchoLevel::Error, e);
-                    return Vec::new();
+                    return DispatchOutcome::default();
                 }
             };
             // Defensive: the handler is supposed to return the
@@ -20835,7 +20928,7 @@ impl Editor {
                 Ok(o) => o,
                 Err(e) => {
                     self.set_message(EchoLevel::Error, e);
-                    return Vec::new();
+                    return DispatchOutcome::default();
                 }
             };
             drop(ctx);
@@ -20865,17 +20958,17 @@ impl Editor {
         // (`:b`) uses RoutingPayload::Buffer which never sets
         // accept_action, so it falls through to this arm
         // bypassing apply_picker_outcome's target handling.
-        let mut signals = Vec::new();
+        let mut out = DispatchOutcome::default();
         match routing {
             lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
             }
@@ -20899,25 +20992,25 @@ impl Editor {
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
-                signals.extend(self.prepare_open_target_pane(target));
-                signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             lattice_picker::RoutingPayload::LspCompletion { index } => {
                 let Some(items) = self.pending_completion_items.take() else {
-                    return signals;
+                    return out;
                 };
                 let Some(item) = items.into_iter().nth(index as usize) else {
                     self.set_message(
                         EchoLevel::Error,
                         format!("picker: completion idx {index} out of range"),
                     );
-                    return signals;
+                    return out;
                 };
                 self.apply_lsp_completion_item(&item);
             }
             lattice_picker::RoutingPayload::LspCodeAction { index } => {
                 let Some(items) = self.pending_code_action_items.take() else {
-                    return signals;
+                    return out;
                 };
                 let handle = self.pending_code_action_handle.take();
                 let Some(row) = items.into_iter().nth(index as usize) else {
@@ -20925,18 +21018,20 @@ impl Editor {
                         EchoLevel::Error,
                         format!("picker: code-action idx {index} out of range"),
                     );
-                    return signals;
+                    return out;
                 };
-                signals.extend(self.apply_lsp_code_action(row, handle));
+                out.renderer_signals.extend(self.apply_lsp_code_action(row, handle));
             }
             lattice_picker::RoutingPayload::OpenFile { path } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                let edit_outcome = self.do_edit(Some(path), false);
+                match edit_outcome {
                     DoEditOutcome::Opened(s)
                     | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    | DoEditOutcome::Reloaded(s) => out.renderer_signals.extend(s),
+                    DoEditOutcome::Directory(d) => {
+                        out.renderer_signals.extend(self.do_open_oil(Some(d)))
+                    }
                     DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
                 }
             }
@@ -20951,7 +21046,7 @@ impl Editor {
                 // (InvokeCommand / PasteRegister / JumpToMark)
                 // below don't need the restore — target is moot.
                 self.picker_open_target = target;
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::JumpInBuffer {
                         buffer_id,
                         line,
@@ -20960,22 +21055,22 @@ impl Editor {
                 ));
             }
             lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
                 ));
             }
             lattice_picker::RoutingPayload::PasteRegister { name } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::PasteRegister { name },
                 ));
             }
             lattice_picker::RoutingPayload::JumpToMark { name } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::JumpToMark { name },
                 ));
             }
             lattice_picker::RoutingPayload::ExpandSnippet { id } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 ));
             }
@@ -20993,7 +21088,7 @@ impl Editor {
                 self.accept_lsp_color_presentation(index);
             }
         }
-        signals
+        out
     }
 
     /// `:b` no-arg / `<leader>b` -- open the vertico-style buffer
@@ -24581,7 +24676,11 @@ pub fn prefer_aliases_for_command_candidates(
         }
         let canonical = c.raw.text.clone();
         let alias = crate::excommand::preferred_alias_for(&canonical);
-        let new_text = alias.map(|a| a.to_string()).unwrap_or(canonical);
+        // Fallback: strip the `ex:` namespace prefix so the user
+        // sees `oil` not `ex:oil` when no short alias exists.
+        let new_text = alias
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| canonical.strip_prefix("ex:").unwrap_or(&canonical).to_string());
         c.raw.text = new_text.clone();
         c.raw.display = new_text.clone();
         c.match_ranges = subsequence_match_ranges(&needle, &new_text);

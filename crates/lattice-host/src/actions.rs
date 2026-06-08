@@ -71,6 +71,7 @@ pub struct ActionIds {
     pub scroll_line_up: CommandId,
     pub scroll_line_down: CommandId,
     pub redraw_screen: CommandId,
+    pub open_command_picker: CommandId,
     pub enter_command_line: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
@@ -404,6 +405,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:redraw-screen",
             "Vim's `<C-l>`: force a full screen redraw.",
             AppEffect::RedrawScreen,
+        ),
+        open_command_picker: register_simple(
+            registry,
+            "action:open-command-picker",
+            "Vim's `:` / Emacs' `M-x`: open the command picker.",
+            AppEffect::OpenCommandPicker,
         ),
         enter_command_line: register_simple(
             registry,
@@ -1237,6 +1244,7 @@ mod tests {
             (ids.scroll_line_up, "action:scroll-line-up"),
             (ids.scroll_line_down, "action:scroll-line-down"),
             (ids.redraw_screen, "action:redraw-screen"),
+            (ids.open_command_picker, "action:open-command-picker"),
             (ids.enter_command_line, "action:enter-command-line"),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),

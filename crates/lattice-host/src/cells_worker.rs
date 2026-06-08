@@ -300,13 +300,8 @@ fn highlight_range_multibuffer(
         let composed_hi = (ex.composed_end + 1).min(hi);
         let src_lo = ex.source_start + (composed_lo - ex.composed_start);
         let src_hi = src_lo + (composed_hi - composed_lo);
-        let snap = ex.handle.snapshot();
-        if snap.text_version() == 0 {
+        let Some(spans) = ex.handle.highlight_lines(src_lo, src_hi) else {
             continue;
-        }
-        let spans = match snap.highlight_lines(src_lo, src_hi) {
-            Ok(s) => s,
-            Err(_) => continue,
         };
         for (i, span_row) in spans.into_iter().enumerate() {
             let dest = (composed_lo - lo) as usize + i;
@@ -455,6 +450,7 @@ pub fn recompute_pane(
             let mut dm = build_display_matrix(
                 snapshot.as_ref(),
                 pane.syntax_handle.as_deref(),
+                &pane.excerpt_syntax,
                 theme,
                 &pane.inlay_hints,
                 &pane.folds,
@@ -1553,6 +1549,7 @@ fn build_display_rows(
 fn build_display_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
+    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
     theme: &crate::ui::theme::Theme,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
@@ -1577,6 +1574,10 @@ fn build_display_matrix(
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        // K.4.7: multibuffer panes use per-excerpt handles.
+        if let Some(spans) = highlight_range_multibuffer(excerpt_syntax, lo, hi) {
+            return Some(spans);
+        }
         if hi <= lo {
             return Some(Vec::new());
         }
@@ -1735,6 +1736,10 @@ fn try_incremental_display_build(
         // call ever lands on the edit-critical actor thread.
         if !allow_highlight {
             return None;
+        }
+        // K.4.7: multibuffer panes use per-excerpt handles.
+        if let Some(spans) = highlight_range_multibuffer(&pane.excerpt_syntax, lo, hi) {
+            return Some(spans);
         }
         if hi <= lo {
             return Some(Vec::new());
@@ -3260,6 +3265,7 @@ mod tests {
         let dm = build_display_matrix(
             snap.as_ref(),
             None,
+            &[],
             &theme,
             &inlays,
             &[],

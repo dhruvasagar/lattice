@@ -845,11 +845,9 @@ impl GpuiApp {
         // migrate.
         match &action {
             Action::PickerAccept => {
-                let signals = self.mutate_editor_with(|e| e.do_picker_accept());
-                let mut outcome = DispatchOutcome::default();
+                let mut outcome = self.mutate_editor_with(|e| e.do_picker_accept());
                 outcome.consumed = true;
-                outcome.renderer_signals = signals.clone();
-                for s in signals {
+                for s in std::mem::take(&mut outcome.renderer_signals) {
                     self.handle_renderer_signal(s);
                 }
                 return outcome;

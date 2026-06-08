@@ -604,6 +604,13 @@ async fn run_actor(
             _ = async_landed.notified() => {
                 let signals = editor.run_tick_pending();
                 editor.publish_render_state();
+                // Notify cells via the event bus so the wake is
+                // sequenced after the ArcSwap store in
+                // publish_render_state. Cells wakes via the
+                // AsyncRenderStatePublished bridge in editor_boot.rs.
+                editor.event_bus.publish_typed(
+                    crate::events::AsyncRenderStatePublished,
+                );
                 for sig in signals {
                     let _ = signal_tx.send(sig);
                 }

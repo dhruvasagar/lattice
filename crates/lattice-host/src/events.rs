@@ -17,8 +17,26 @@
 #[derive(Debug, Clone)]
 pub(crate) struct SyntaxReparsed;
 
+/// Fired by the actor after every `publish_render_state` triggered
+/// by the `async_landed` arm (async completions: syntax reparsed,
+/// excerpts appended, etc.). The subscriber in `editor_boot.rs`
+/// fires `cells_wake` after receiving this event, guaranteeing that
+/// the cells worker reads the freshly-written `PaneCellsInputs`
+/// rather than racing against the actor's ArcSwap store.
+///
+/// Same pattern as `SyntaxReparsed` — event bus as the ordering
+/// seam between the actor OS thread and the cells-worker task.
+#[derive(Debug, Clone)]
+pub(crate) struct AsyncRenderStatePublished;
+
 impl lattice_protocol::event_registry::Event for SyntaxReparsed {
     fn event_type_id(&self) -> lattice_protocol::event_registry::EventTypeId {
         lattice_protocol::event_registry::EventTypeId::of::<Self>("syntax.reparsed")
+    }
+}
+
+impl lattice_protocol::event_registry::Event for AsyncRenderStatePublished {
+    fn event_type_id(&self) -> lattice_protocol::event_registry::EventTypeId {
+        lattice_protocol::event_registry::EventTypeId::of::<Self>("render_state.async_published")
     }
 }

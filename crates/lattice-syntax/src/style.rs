@@ -1,69 +1,11 @@
 //! Style category emitted by the highlighter, plus the capture-name table.
 //!
-//! `tree-sitter-highlight` emits captures by index into a pre-configured
-//! list. We provide the list once, in priority order (most specific first),
-//! and map each list index to a `Style`. Capture names that aren't in the
-//! list are ignored by the highlighter -- the runtime walks the dot-prefix
-//! hierarchy itself, so adding `keyword.control` here will match
-//! `keyword.control.return` query captures without us doing anything else.
+//! `Style` and `StyledSpan` now live in `lattice-cells` (to break the
+//! `lattice-syntax → lattice-mode → lattice-runtime` dep cycle).
+//! Re-exported here so all existing `lattice_syntax::Style` / `StyledSpan`
+//! call-sites see no change.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Style {
-    Default,
-    Comment,
-    LineComment,
-    String,
-    Keyword,
-    Type,
-    Number,
-    Function,
-    Constant,
-    Variable,
-    Operator,
-    Punctuation,
-    Attribute,
-    // ---- Markup styles (markdown / org / future rich-text modes) ----
-    /// `# Heading` -- level 1.
-    Heading1,
-    /// `## Heading` -- level 2.
-    Heading2,
-    /// `### Heading` -- level 3.
-    Heading3,
-    /// `#### Heading` -- level 4.
-    Heading4,
-    /// `##### Heading` -- level 5.
-    Heading5,
-    /// `###### Heading` -- level 6.
-    Heading6,
-    /// `**bold**` / `__bold__` text.
-    Bold,
-    /// `*italic*` / `_italic_` text.
-    Italic,
-    /// Link label / link text (`[label]`). Distinct from
-    /// [`Style::Url`] so the renderer can underline navigable
-    /// labels without underlining the URL itself.
-    Link,
-    /// Link destination (`(url)`) and autolinks.
-    Url,
-    /// Inline `` `code` ``, fenced code blocks without an info
-    /// string, link titles. Themed similar to comments today;
-    /// promoted to its own variant so a future theme can give it
-    /// a distinct background.
-    MarkupRaw,
-    /// List markers (`-`, `*`, `1.`), thematic breaks, blockquote
-    /// markers, and other markup punctuation that isn't a
-    /// programming-language operator.
-    Markup,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StyledSpan {
-    /// Byte offset within the line where the span starts.
-    pub start: usize,
-    /// Byte offset within the line where the span ends (exclusive).
-    pub end: usize,
-    pub style: Style,
-}
+pub use lattice_cells::style::{Style, StyledSpan};
 
 /// The capture-name table consumed by `HighlightConfiguration::configure`.
 /// Order matters only as far as it's consistent with the index-to-style
@@ -102,9 +44,6 @@ pub(crate) const CAPTURE_NAMES: &[&str] = &[
     "tag",
     "label",
     // ---- Markup captures (markdown block + inline grammars) ----
-    // Per-level heading captures. The bundled tree-sitter-md queries
-    // emit `text.title` without level info -- our augmented markdown
-    // query (in `lang.rs`) adds the level-discriminated variants.
     "text.title.1",
     "text.title.2",
     "text.title.3",
@@ -120,37 +59,18 @@ pub(crate) const CAPTURE_NAMES: &[&str] = &[
     "none",
 ];
 
-/// Public re-export of the capture-name → Style mapping. The
-/// native highlighter runs each language's compiled
-/// `tree_sitter::Query` and looks up styles by capture *name*
-/// (using the dot-prefix walk implemented in the private
-/// `name_to_style`).
+/// Public re-export of the capture-name → Style mapping.
 pub fn name_to_style_pub(name: &str) -> Style {
     name_to_style(name)
 }
 
-/// Capture-name priority: position in the private `CAPTURE_NAMES`
-/// table (lower = higher precedence on overlap). Walks the dot-prefix
-/// hierarchy the same way the private `name_to_style` does, so a query capture named
-/// `keyword.control.return` resolves through `keyword.control` →
-/// `keyword`, picking the longest matching prefix's index. Names
-/// outside the table return [`u32::MAX`] -- effectively the lowest
-/// priority -- so they only "win" overlap when nothing else
-/// covers the byte.
-///
-/// This mirrors what `tree_sitter_highlight::HighlightConfiguration::configure`
-/// does internally; the native pipeline uses it to break ties when
-/// multiple captures span the same byte range, so e.g. Python's
-/// `def f(...)` resolves to the more specific `@function` rather
-/// than the broader `@variable` capture.
+/// Capture-name priority: position in `CAPTURE_NAMES` (lower = higher
+/// precedence on overlap). Walks the dot-prefix hierarchy.
 pub fn capture_priority(name: &str) -> u32 {
     let mut best: Option<usize> = None;
     let mut probe = name;
     loop {
         if let Some(pos) = CAPTURE_NAMES.iter().position(|n| *n == probe) {
-            // Take the *first* (most-specific) match the dot-prefix
-            // walk encounters; later (broader) prefixes don't beat
-            // it.
             best = Some(pos);
             break;
         }
@@ -162,7 +82,7 @@ pub fn capture_priority(name: &str) -> u32 {
     best.map(|p| p as u32).unwrap_or(u32::MAX)
 }
 
-fn name_to_style(name: &str) -> Style {
+pub(crate) fn name_to_style(name: &str) -> Style {
     let head = name.split('.').next().unwrap_or(name);
     match head {
         "comment" if name.starts_with("comment.line") => Style::LineComment,
@@ -178,9 +98,8 @@ fn name_to_style(name: &str) -> Style {
         "punctuation" if name == "punctuation.special" => Style::Markup,
         "punctuation" => Style::Punctuation,
         "attribute" => Style::Attribute,
-        "tag" => Style::Type, // HTML/JSX tags display as types for now.
+        "tag" => Style::Type,
         "label" => Style::Constant,
-        // ---- Markup ----
         "text" => match name {
             "text.title.1" => Style::Heading1,
             "text.title.2" => Style::Heading2,
@@ -188,7 +107,7 @@ fn name_to_style(name: &str) -> Style {
             "text.title.4" => Style::Heading4,
             "text.title.5" => Style::Heading5,
             "text.title.6" => Style::Heading6,
-            "text.title" => Style::Heading1, // bundled query doesn't carry level
+            "text.title" => Style::Heading1,
             "text.strong" => Style::Bold,
             "text.emphasis" => Style::Italic,
             "text.uri" => Style::Url,
@@ -196,9 +115,6 @@ fn name_to_style(name: &str) -> Style {
             "text.literal" => Style::MarkupRaw,
             _ => Style::Default,
         },
-        // `@none` in bundled markdown queries: explicitly suppress
-        // highlight on a node so an injection can paint it. Mapped
-        // to Default so the node carries no style of its own.
         "none" => Style::Default,
         _ => Style::Default,
     }
@@ -250,8 +166,6 @@ mod tests {
         assert_eq!(name_to_style("text.title.1"), Style::Heading1);
         assert_eq!(name_to_style("text.title.2"), Style::Heading2);
         assert_eq!(name_to_style("text.title.6"), Style::Heading6);
-        // Bundled query falls back to level 1 when no explicit
-        // level info is captured.
         assert_eq!(name_to_style("text.title"), Style::Heading1);
     }
 
@@ -266,10 +180,7 @@ mod tests {
 
     #[test]
     fn punctuation_special_maps_to_markup() {
-        // `punctuation.special` covers list markers, heading
-        // markers, thematic breaks -- all "markup punctuation".
         assert_eq!(name_to_style("punctuation.special"), Style::Markup);
-        // Generic punctuation stays Punctuation.
         assert_eq!(name_to_style("punctuation"), Style::Punctuation);
         assert_eq!(name_to_style("punctuation.bracket"), Style::Punctuation);
     }

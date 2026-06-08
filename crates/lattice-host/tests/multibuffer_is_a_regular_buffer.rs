@@ -630,6 +630,21 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         "K.4.7: excerpt_syntax_entries() is empty — SyntaxHandle was not created \
          for the Rust source. Check lang_registry wiring in add_source."
     );
+    // Validate tuple field ordering: (composed_start, composed_end, source_start, handle).
+    // Before the K.4.7 bug-fix the tuple was (composed_start, source_start, source_end, _),
+    // which produced composed_end < composed_start and wildly wrong src_lo in the highlighter.
+    let (cs0, ce0, ss0, _) = &entries[0];
+    assert_eq!(*cs0, 0, "K.4.7: first excerpt must start at composed row 0");
+    assert!(
+        *ce0 > *cs0,
+        "K.4.7: composed_end ({ce0}) must exceed composed_start ({cs0}) for a multi-line excerpt \
+         — likely tuple field ordering bug in excerpt_syntax_entries()"
+    );
+    assert_eq!(
+        *ss0, 0,
+        "K.4.7: source_start must be 0 for a full-file excerpt starting at line 0 \
+         (got {ss0}) — likely tuple field ordering bug in excerpt_syntax_entries()"
+    );
 
     // 2. Build a minimal PaneCellsInputs with the excerpt handles and
     //    run recompute_pane; at least one row should have non-empty spans.

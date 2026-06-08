@@ -22,11 +22,12 @@
 //!   `(prior_foldmethod, config_handle)`; Drop restores the prior
 //!   value.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lattice_mode::{
-    BufferStoreHandle, CapabilitySet, LifecycleFuture, Mode, ModeActivationError, ModeContext,
-    ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
+    BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
+    ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
+    keymap_entry,
 };
 use lattice_runtime::{EventBus, SubscriptionId};
 
@@ -473,6 +474,52 @@ impl Drop for LspModeGuard {
     }
 }
 
+/// MO.1: 7 Normal-mode LSP navigation bindings contributed by `LspMode::keymap()`.
+/// Moved out of `keymap_normal.rs` Builtin layer so K.1.c scoping fires them
+/// only when `lsp-mode` is active on the buffer, not globally.
+fn lsp_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "K",
+                doc: "Show hover documentation",
+                cmd: "action:lsp-hover"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gd",
+                doc: "Go to definition",
+                cmd: "action:lsp-definition"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gD",
+                doc: "Go to declaration",
+                cmd: "action:lsp-declaration"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gy",
+                doc: "Go to type definition",
+                cmd: "action:lsp-type-definition"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gI",
+                doc: "Go to implementation",
+                cmd: "action:lsp-implementation"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gr",
+                doc: "Find references",
+                cmd: "action:lsp-references"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gx",
+                doc: "Follow document link at cursor",
+                cmd: "action:lsp-follow-link"
+            },
+        ]
+    })
+}
+
 /// `lsp-mode` -- the umbrella minor that gates LSP traffic on a
 /// buffer. Cascades to the 15 sub-modes via `Mode::implies()`.
 pub struct LspMode {
@@ -523,6 +570,11 @@ impl Mode for LspMode {
     }
     fn implies(&self) -> &[ModeId] {
         &self.sub_modes
+    }
+    /// MO.1: 7 Normal-mode LSP navigation bindings.
+    /// Scoped to lsp-mode buffers by K.1.c; absent at the Builtin layer.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(lsp_mode_keymap_entries())
     }
     fn options(&self) -> OptionOverrideSet {
         OptionOverrideSet::default()
@@ -836,6 +888,40 @@ mod tests {
         assert!(registry.is_registered(LspFoldingMode::mode_id()));
         assert!(registry.is_registered(LspInlayHintMode::mode_id()));
         assert!(registry.is_registered(LspSemanticTokensMode::mode_id()));
+    }
+
+    // ── MO.1: keymap convention checks ──────────────────────────────────────
+
+    #[test]
+    fn lsp_mode_keymap_has_seven_entries() {
+        let km = LspMode::new().keymap();
+        assert_eq!(km.entries.len(), 7, "expected exactly 7 LSP nav entries");
+    }
+
+    #[test]
+    fn lsp_mode_keymap_entries_have_expected_commands() {
+        let km = LspMode::new().keymap();
+        let cmds: Vec<&str> = km.entries.iter().filter_map(|e| e.command).collect();
+        for expected in [
+            "action:lsp-hover",
+            "action:lsp-definition",
+            "action:lsp-declaration",
+            "action:lsp-type-definition",
+            "action:lsp-implementation",
+            "action:lsp-references",
+            "action:lsp-follow-link",
+        ] {
+            assert!(cmds.contains(&expected), "missing command {expected}");
+        }
+    }
+
+    #[test]
+    fn lsp_mode_keymap_includes_all_chord_strings() {
+        let km = LspMode::new().keymap();
+        let chords: Vec<&str> = km.entries.iter().map(|e| e.chord).collect();
+        for expected in ["K", "gd", "gD", "gy", "gI", "gr", "gx"] {
+            assert!(chords.contains(&expected), "missing chord {expected}");
+        }
     }
 
     #[test]

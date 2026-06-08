@@ -2847,21 +2847,16 @@ mod tests {
     // ---- LSP introspection tests (Phase 4.1.g) ---------------
 
     #[test]
-    fn k_chord_is_registered_in_keymap() {
-        // `:describe-key K` walks the keymap registry; without an
-        // entry there it reports "K is not bound" even though the
-        // input translator dispatches K to LspHoverRequest. The
-        // registry entry is the source of truth `:describe-key`
-        // and `:apropos` consult.
-        use crate::keymap::{BindingMode, default_keymap};
-        let entries = default_keymap();
-        let k = entries
-            .iter()
-            .find(|e| e.chord == "K" && e.mode == BindingMode::Normal);
-        assert!(
-            k.is_some(),
-            "K should be registered as a Normal-mode binding"
-        );
+    fn k_chord_registered_in_lsp_mode_keymap() {
+        // MO.1: `K` migrated from Builtin layer to LspMode::keymap().
+        // `:describe-key K` on an lsp-mode buffer walks the mode-contributed
+        // layer and finds it there. On a non-lsp buffer it correctly shows
+        // "not bound" — the binding is mode-gated by K.1.c.
+        use lattice_lsp::modes::LspMode;
+        use lattice_mode::Mode as _;
+        let km = LspMode::new().keymap();
+        let k = km.entries.iter().find(|e| e.chord == "K");
+        assert!(k.is_some(), "K should be in LspMode::keymap() entries");
         let entry = k.unwrap();
         assert!(
             entry.doc.to_lowercase().contains("hover"),

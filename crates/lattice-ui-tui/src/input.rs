@@ -1750,71 +1750,68 @@ mod tests {
         }
     }
 
-    // ---- LSP navigation (gd / gD / gy / gI) ----
+    // ---- LSP navigation (gd / gD / gy / gI / gr) ----
+    // MO.1: these bindings moved to LspMode::keymap() (MinorMode layer).
+    // Without lsp-mode active the Builtin layer has no entry → Action::None.
 
     #[test]
-    fn gd_after_g_emits_lsp_definition_request() {
+    fn gd_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('d')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
-            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('d')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn capital_g_d_after_g_emits_lsp_declaration_request() {
+    fn g_d_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('D')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_declaration_request),
-            other => panic!("expected Invoke(lsp_declaration_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('D')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn gy_after_g_emits_lsp_type_definition_request() {
+    fn gy_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('y')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_type_definition_request),
-            other => panic!("expected Invoke(lsp_type_definition_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('y')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn capital_g_i_after_g_emits_lsp_implementation_request() {
+    fn g_i_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('I')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_implementation_request),
-            other => panic!("expected Invoke(lsp_implementation_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('I')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn gr_after_g_emits_lsp_references_request() {
+    fn gr_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('r')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_references_request),
-            other => panic!("expected Invoke(lsp_references_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('r')),
+            ),
+            Action::None
+        ));
     }
 
     // ---- Insert-mode completion (Phase 4.2.g.1) ----

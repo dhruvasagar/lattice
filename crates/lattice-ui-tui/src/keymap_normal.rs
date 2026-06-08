@@ -485,17 +485,16 @@ mod tests {
     }
 
     #[test]
-    fn gd_resolves_to_lsp_definition_request() {
-        let (h, _, a) = populated_handle();
+    fn gd_without_lsp_mode_is_unresolved_at_builtin_layer() {
+        // MO.1: gd migrated to LspMode::keymap() (MinorMode layer).
+        // Builtin trie no longer has gd → Action::None without lsp-mode.
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
-        match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
-            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
-        }
+        assert!(matches!(r, Action::None), "expected Action::None, got {r:?}");
     }
 
     #[test]

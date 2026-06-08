@@ -329,13 +329,6 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
     handle.bind(
         layer,
         mode,
-        &[lit_char('K')],
-        CommandInvocation::of(actions.lsp_hover_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
         &[lit_char('/')],
         CommandInvocation::of(actions.enter_search_forward),
         source(),
@@ -540,49 +533,6 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         mode,
         &[g.clone(), lit_char(',')],
         CommandInvocation::of(actions.walk_mark_history_forward),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('d')],
-        CommandInvocation::of(actions.lsp_definition_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('D')],
-        CommandInvocation::of(actions.lsp_declaration_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('y')],
-        CommandInvocation::of(actions.lsp_type_definition_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('I')],
-        CommandInvocation::of(actions.lsp_implementation_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('r')],
-        CommandInvocation::of(actions.lsp_references_request),
-        source(),
-    );
-    // 4.5.c: `gx` -> follow LSP documentLink at cursor.
-    handle.bind(
-        layer,
-        mode,
-        &[g.clone(), lit_char('x')],
-        CommandInvocation::of(actions.lsp_follow_link_at_cursor),
         source(),
     );
     // W.6: display-line motions (soft-wrap aware).

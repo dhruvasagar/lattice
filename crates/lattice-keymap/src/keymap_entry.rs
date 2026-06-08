@@ -328,15 +328,8 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterG, chord: "gJ", doc: "Join lines without inserting a space" },
         keymap_entry! { mode: AfterG, chord: "g;", doc: "Walk named-mark history backward" },
         keymap_entry! { mode: AfterG, chord: "g,", doc: "Walk named-mark history forward" },
-        keymap_entry! { mode: AfterG, chord: "gd", doc: "LSP: go to definition (textDocument/definition)" },
-        keymap_entry! { mode: AfterG, chord: "gD", doc: "LSP: go to declaration (textDocument/declaration)" },
-        keymap_entry! { mode: AfterG, chord: "gy", doc: "LSP: go to type definition (textDocument/typeDefinition)" },
-        keymap_entry! { mode: AfterG, chord: "gI", doc: "LSP: go to implementation (textDocument/implementation)" },
-        keymap_entry! { mode: AfterG, chord: "gr", doc: "LSP: list references (textDocument/references)" },
-        keymap_entry! { mode: AfterG, chord: "gx", doc: "LSP: follow `textDocument/documentLink` at cursor (file:// -> :e; external -> OS handler)" },
+        // gd / gD / gy / gI / gr / gx / K moved to LspMode::keymap() (MO.1).
         keymap_entry! { mode: Normal, chord: "<C-t>", doc: "Tag stack: pop -- walk back through the LIFO chain of LSP go-to-definition drill-downs (independent of <C-o> jump list)" },
-        // ---- LSP top-level keys ----
-        keymap_entry! { mode: Normal, chord: "K", doc: "LSP: hover documentation popup at cursor (textDocument/hover)" },
         // ---- After-z sub-commands (scroll + folds) ----
         keymap_entry! { mode: AfterZ, chord: "zz", doc: "Center cursor in viewport" },
         keymap_entry! { mode: AfterZ, chord: "z.", doc: "Center cursor in viewport (alias of zz)" },

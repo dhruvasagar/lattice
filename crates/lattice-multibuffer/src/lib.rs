@@ -3289,3 +3289,276 @@ mod tests {
         assert_eq!(status_id & 0xFFFF_FFFF, 7);
     }
 }
+
+// ── M.7: ExcerptFoldProvider ────────────────────────────────────────────────
+
+/// Namespace for excerpt fold provider IDs: `0xBBBB_0003_0000_0000 | buffer_id`.
+/// Distinct from the header provider (`0xBBBB_0001_*`) and status
+/// provider (`0xBBBB_0002_*`) namespaces.
+const EXCERPT_FOLD_NAMESPACE: u64 = 0xBBBB_0003_0000_0000;
+const FILE_BOUNDARY_FOLD_NAMESPACE: u64 = 0xBBBB_0004_0000_0000;
+
+/// M.7: computes one open [`lattice_core::Fold`] per excerpt in the
+/// composed multibuffer. Registered as a
+/// [`lattice_core::FoldSource`] by `MultibufferMode::on_activate`
+/// via `FoldOverlayService`; the `FoldSourceAdapter` in `lattice-host`
+/// gates `compute_folds` to calls where `FoldContext::buffer_id`
+/// matches this multibuffer's buffer ID.
+pub struct ExcerptFoldProvider {
+    id: lattice_core::ProviderId,
+    handle: MultibufferDocumentHandle,
+}
+
+impl ExcerptFoldProvider {
+    pub fn new(handle: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        let id = lattice_core::ProviderId(EXCERPT_FOLD_NAMESPACE | buffer_id.0 as u64);
+        Self { id, handle }
+    }
+}
+
+impl lattice_core::FoldSource for ExcerptFoldProvider {
+    fn id(&self) -> lattice_core::ProviderId {
+        self.id
+    }
+
+    fn compute_folds(&self) -> Vec<lattice_core::Fold> {
+        let excerpts = self.handle.excerpts();
+        let starts = crate::motions::excerpt_start_rows(&excerpts);
+        excerpts
+            .iter()
+            .zip(starts.iter())
+            .map(|(excerpt, &start)| {
+                let line_count = excerpt.line_count();
+                let end = start.saturating_add(line_count.saturating_sub(1));
+                lattice_core::Fold {
+                    start_line: start,
+                    end_line: end,
+                    closed: false,
+                    identity: Some(excerpt.id.0),
+                }
+            })
+            .collect()
+    }
+}
+
+/// M.8: computes one open [`lattice_core::Fold`] per distinct source
+/// [`BufferId`] (file), spanning the composed-row range from the first
+/// to the last excerpt belonging to that file. Registered alongside
+/// `ExcerptFoldProvider` by `MultibufferMode::on_activate`. Enables
+/// collapsing all excerpts from a file to its header row with `za`.
+pub struct FileBoundaryFoldProvider {
+    id: lattice_core::ProviderId,
+    handle: MultibufferDocumentHandle,
+}
+
+impl FileBoundaryFoldProvider {
+    pub fn new(handle: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        let id = lattice_core::ProviderId(FILE_BOUNDARY_FOLD_NAMESPACE | buffer_id.0 as u64);
+        Self { id, handle }
+    }
+}
+
+impl lattice_core::FoldSource for FileBoundaryFoldProvider {
+    fn id(&self) -> lattice_core::ProviderId {
+        self.id
+    }
+
+    fn compute_folds(&self) -> Vec<lattice_core::Fold> {
+        let excerpts = self.handle.excerpts();
+        if excerpts.is_empty() {
+            return Vec::new();
+        }
+        let starts = crate::motions::excerpt_start_rows(&excerpts);
+        // Group by source BufferId: track (start_row, end_row) per file.
+        // First appearance sets start_row; later excerpts from the same
+        // file extend end_row (handles non-contiguous same-file excerpts).
+        let mut by_source: std::collections::HashMap<BufferId, (u32, u32)> =
+            std::collections::HashMap::new();
+        for (excerpt, &start) in excerpts.iter().zip(starts.iter()) {
+            let end = start.saturating_add(excerpt.line_count().saturating_sub(1));
+            by_source
+                .entry(excerpt.source)
+                .and_modify(|(_, e)| *e = end)
+                .or_insert((start, end));
+        }
+        // Sort by start_row for deterministic output order.
+        let mut groups: Vec<(BufferId, (u32, u32))> = by_source.into_iter().collect();
+        groups.sort_by_key(|(_, (start, _))| *start);
+        groups
+            .into_iter()
+            .map(|(source, (start, end))| lattice_core::Fold {
+                start_line: start,
+                end_line: end,
+                closed: false,
+                identity: Some(source.0 as u64),
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod excerpt_fold_tests {
+    #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use lattice_core::Document as CoreDocument;
+    use lattice_core::{FoldOverlayService, FoldOverlayServiceHandle, FoldSource};
+    use lattice_grammar::CommandRegistry;
+    use lattice_runtime::spawn_document;
+
+    use super::*;
+
+    fn reg() -> Arc<CommandRegistry> {
+        Arc::new(CommandRegistry::new())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compute_folds_returns_one_fold_per_excerpt() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 2), // 3 lines → composed rows 0–2
+            Excerpt::new(buf_b, 0, 1), // 2 lines → composed rows 3–4
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let provider = ExcerptFoldProvider::new(mb, buf_id);
+        let folds = provider.compute_folds();
+        assert_eq!(folds.len(), 2);
+        assert_eq!(folds[0].start_line, 0);
+        assert_eq!(folds[0].end_line, 2);
+        assert!(!folds[0].closed);
+        assert!(folds[0].identity.is_some());
+        assert_eq!(folds[1].start_line, 3);
+        assert_eq!(folds[1].end_line, 4);
+        assert!(!folds[1].closed);
+        assert!(folds[1].identity.is_some());
+    }
+
+    #[test]
+    fn excerpt_fold_namespace_distinct_from_header_and_status() {
+        let buf = BufferId(42);
+        let fold_id = ExcerptFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        // header/status ProviderId uses lattice_cells::virtual_rows::ProviderId;
+        // compare raw u64 values to verify no namespace collision.
+        let header_raw: u64 = multibuffer_excerpt_header_provider_id(buf);
+        let status_raw: u64 = multibuffer_status_provider_id(buf);
+        assert_ne!(fold_id.0, header_raw);
+        assert_ne!(fold_id.0, status_raw);
+        assert_eq!(fold_id.0 >> 32, 0xBBBB_0003);
+        assert_eq!(fold_id.0 & 0xFFFF_FFFF, 42);
+    }
+
+    #[test]
+    fn compute_folds_empty_when_no_excerpts() {
+        let mb = MultibufferDocumentHandle::empty(reg());
+        let buf_id = mb.buffer_id();
+        let provider = ExcerptFoldProvider::new(mb, buf_id);
+        assert!(provider.compute_folds().is_empty());
+    }
+
+    // ── MultibufferModeGuard drop ───────────────────────────────────────
+
+    struct MockFoldService {
+        removed: Arc<AtomicBool>,
+    }
+    impl FoldOverlayService for MockFoldService {
+        fn add_source(
+            &self,
+            _source: Arc<dyn FoldSource>,
+            _buffer_id: BufferId,
+        ) -> lattice_core::ProviderId {
+            lattice_core::ProviderId(1)
+        }
+        fn remove_source(&self, _id: lattice_core::ProviderId) {
+            self.removed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn mode_guard_drop_calls_remove_source() {
+        let removed = Arc::new(AtomicBool::new(false));
+        let svc: FoldOverlayServiceHandle = Arc::new(MockFoldService {
+            removed: removed.clone(),
+        });
+        {
+            let _guard = crate::mode::MultibufferModeGuard {
+                fold_registrations: vec![(svc, lattice_core::ProviderId(1))],
+            };
+        }
+        assert!(removed.load(Ordering::SeqCst), "remove_source must fire on guard drop");
+    }
+
+    // ── FileBoundaryFoldProvider ────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_boundary_folds_one_fold_per_source_file() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        // Two excerpts from buf_a, one from buf_b.
+        // buf_a excerpt 1: rows 0-2 (3 lines); buf_a excerpt 2: rows 3-4 (2 lines);
+        // buf_b excerpt:   rows 5-6 (2 lines)
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 2),
+            Excerpt::new(buf_a, 0, 1),
+            Excerpt::new(buf_b, 0, 1),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let provider = FileBoundaryFoldProvider::new(mb, buf_id);
+        let folds = provider.compute_folds();
+        assert_eq!(folds.len(), 2, "one fold per source file");
+        // buf_a fold spans rows 0-4 (first excerpt start to second excerpt end).
+        let a_fold = folds.iter().find(|f| f.start_line == 0).expect("buf_a fold");
+        assert_eq!(a_fold.end_line, 4);
+        assert_eq!(a_fold.identity, Some(buf_a.0 as u64));
+        // buf_b fold spans rows 5-6.
+        let b_fold = folds.iter().find(|f| f.start_line == 5).expect("buf_b fold");
+        assert_eq!(b_fold.end_line, 6);
+        assert_eq!(b_fold.identity, Some(buf_b.0 as u64));
+    }
+
+    #[test]
+    fn file_boundary_fold_namespace_distinct() {
+        let buf = BufferId(42);
+        let fold_id = FileBoundaryFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        let excerpt_id = ExcerptFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        let header_raw: u64 = multibuffer_excerpt_header_provider_id(buf);
+        let status_raw: u64 = multibuffer_status_provider_id(buf);
+        assert_ne!(fold_id.0, excerpt_id.0);
+        assert_ne!(fold_id.0, header_raw);
+        assert_ne!(fold_id.0, status_raw);
+        assert_eq!(fold_id.0 >> 32, 0xBBBB_0004);
+        assert_eq!(fold_id.0 & 0xFFFF_FFFF, 42);
+    }
+
+    #[test]
+    fn file_boundary_folds_empty_when_no_excerpts() {
+        let mb = MultibufferDocumentHandle::empty(reg());
+        let buf_id = mb.buffer_id();
+        let provider = FileBoundaryFoldProvider::new(mb, buf_id);
+        assert!(provider.compute_folds().is_empty());
+    }
+}

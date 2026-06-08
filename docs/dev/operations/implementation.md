@@ -1311,9 +1311,17 @@ shared with multibuffer-views and post-v1 inlay hints.
   document line count changes, merges rows from multiple
   providers. **419 unit tests green** in `lattice-host`
   overall after the slice landed (no regressions).
-- 🗒 **D.0b** — Scroll-binding pane-group primitive. Reusable
-  by side-by-side diff (D.4), vim `:set scrollbind`, future
-  `:windo`.
+- ✅ **D.0b** (2026-06-08) — `:set scrollbind` / `scb` typed
+  `BoolOption` in `lattice-config` + `OptionCache::scrollbind`
+  field + `Editor::scrollbind_group_id: Option<PaneGroupId>` +
+  `rebuild_scrollbind_group` helper (walks pane-tree leaves,
+  collects those with scrollbind=true, drops old group and
+  mints a fresh `IdentityRowMapper` group when ≥ 2 panes are
+  bound; no-ops below 2) + `"scrollbind"` arm in
+  `apply_option_cascade`. 4 new tests: single-pane no-group,
+  two-pane creates-group + propagation, toggle-off drops group,
+  idempotent double-rebuild. Reusable by side-by-side diff
+  (D.4), `:windo`, and any future scroll-coupled pane pair.
 - ✅ **D.1** (2026-05-28) — `lattice-diff` crate landed.
   Public surface: `Hunk` / `HunkKind` / `LineRange` /
   `HunkIndex` / `DiffAlgorithm` (Histogram / Myers /
@@ -5138,6 +5146,46 @@ Workspace tests as of the last commit. Coverage by crate:
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/benchmarks.md` for the latest numbers.
+
+---
+
+## buffer-local options (2026-06-08)
+
+Design fragment:
+[`../architecture/buffer-local-options.md`](../architecture/buffer-local-options.md).
+Slice plan:
+[`slice-plans/buffer-local-options.md`](slice-plans/buffer-local-options.md).
+
+Every option is potentially buffer-local. `:setlocal foo=bar` writes
+layer 2 of the existing resolver stack (the `buffer_local_overrides`
+field already on `Editor`); `:set` continues to write the global layer.
+`OptionOrigin` tracks where each effective value came from (BL.2).
+
+- ✅ **BL.1** (2026-06-08) — Write path: `ErasedOption::parse_to_erased`
+  (parses without writing global storage) + `ConfigError::QueryNotAllowed` +
+  `ConfigRegistry::parse_for_buffer_local` (returns `(TypeId, Arc<dyn Any>,
+  canonical_name)`) + `ParsedSet::Reset` variant (`name&` / bare `&`) +
+  `Editor::do_set_local` + `Editor::do_set_local_write` (inner write path) +
+  `Effect::SetLocalOption` + `ex:setlocal` registered in grammar +
+  `ALIAS_TABLE` entries `setlocal` / `sl`. 4 tests green: write override for
+  active buffer, per-buffer independence, `name&` clears one override, `&`
+  clears all.
+- ✅ **BL.2** (2026-06-08) — `OptionOrigin` enum (`Default`, `GlobalConfig`,
+  `BufferLocal`, `ModeContribution { mode_id }`) in `lattice-config/origin.rs` +
+  parallel `origins` map in `ResolvedOptions` with `get_origin<T>()` /
+  `get_origin_for_typeid()` / `get_erased()` APIs + `insert_erased_with_origin` +
+  `Resolver::resolve_into_with_origins` (origin-tagged layer list; `resolve_into`
+  delegates) + `recompute_options_for_buffer` tags every layer with its origin +
+  `ErasedOption::format_erased_value` (formats an erased Arc) +
+  `ConfigRegistry::type_id_for_name` exposed `pub` + `:setlocal name?` fixed to
+  use TypeId matching via `type_id_for_name` + `format_erased_value` +
+  `Effect::SetGlobalOption` + `ex:setglobal` (`apply_set_global`) + aliases
+  `setglobal` / `sg` + `Editor::do_set_global` + OR-pattern arms in both
+  renderers. 3 tests: `set_global_writes_registry_not_local_overrides`,
+  `resolved_origin_is_buffer_local_after_set_local`,
+  `resolved_origin_is_global_config_without_local_override`.
+- 🗒 **BL.3** — `:describe-buffer` options section + `:options` buffer
+  view.
 
 ---
 

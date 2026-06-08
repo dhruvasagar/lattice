@@ -641,7 +641,10 @@ pub struct Editor {
     /// `Overlay` providers (HunkFoldProvider lands in D.3.f.1;
     /// excerpt + file-boundary providers land in M.7 / M.8).
     /// See `docs/dev/architecture/fold-architecture.md`.
-    pub fold_registry: crate::fold_provider::FoldRegistry,
+    /// M.7: shared behind `Arc<Mutex>` so `FoldOverlayServiceImpl`
+    /// can call `add_overlay`/`remove_overlay` from mode-activation
+    /// context (outside `&mut Editor`) without blocking the UI thread.
+    pub fold_registry: std::sync::Arc<std::sync::Mutex<crate::fold_provider::FoldRegistry>>,
     /// D.4.a (2026-05-29): scroll-binding pane groups. Each
     /// entry binds a set of `(pane, buffer)` pairs through a
     /// pluggable `RowMapper`; propagation runs at
@@ -670,6 +673,13 @@ pub struct Editor {
     ///   `remove_participant_buffer`; if arity drops to 0 the
     ///   subsystem auto-drops the session and this clears
     ///   back to `None`.
+    /// D.0b (2026-06-08): id of the singleton identity-mapper
+    /// pane group that backs `:set scrollbind`. `None` when no
+    /// panes currently have `scrollbind=true` (the group is
+    /// dropped when the last member opts out). Rebuilt by
+    /// `rebuild_scrollbind_group` on every `scrollbind`
+    /// option-change cascade.
+    pub scrollbind_group_id: Option<lattice_core::ui::pane::PaneGroupId>,
     pub diffthis_group: Option<lattice_core::BufferId>,
     /// D.8.e (2026-05-31): pane members corresponding to each
     /// participant of the diffthis group, in `:diffthis`-call

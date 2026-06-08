@@ -147,6 +147,68 @@ impl Default for FoldRegistry {
     }
 }
 
+/// M.7: wraps a [`lattice_core::FoldSource`] as a `FoldProvider`.
+/// `target_buffer_id` scopes this overlay: `compute()` returns
+/// empty when `ctx.buffer_id` doesn't match, so providers from
+/// multiple simultaneous multibuffers don't bleed into each other.
+pub struct FoldSourceAdapter {
+    source: Arc<dyn lattice_core::FoldSource>,
+    target_buffer_id: BufferId,
+}
+
+impl FoldProvider for FoldSourceAdapter {
+    fn id(&self) -> ProviderId {
+        self.source.id()
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Overlay
+    }
+    fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
+        if ctx.buffer_id != self.target_buffer_id {
+            return Vec::new();
+        }
+        self.source.compute_folds()
+    }
+}
+
+/// M.7: [`lattice_core::FoldOverlayService`] impl that wraps the
+/// shared `Arc<Mutex<FoldRegistry>>`. `MultibufferMode::on_activate`
+/// obtains this via `ctx.service::<FoldOverlayServiceHandle>()` and
+/// registers `ExcerptFoldProvider` without depending on
+/// `lattice-host`.
+pub struct FoldOverlayServiceImpl {
+    registry: Arc<std::sync::Mutex<FoldRegistry>>,
+}
+
+impl FoldOverlayServiceImpl {
+    pub fn new(registry: Arc<std::sync::Mutex<FoldRegistry>>) -> Self {
+        Self { registry }
+    }
+}
+
+impl lattice_core::FoldOverlayService for FoldOverlayServiceImpl {
+    fn add_source(
+        &self,
+        source: Arc<dyn lattice_core::FoldSource>,
+        buffer_id: BufferId,
+    ) -> ProviderId {
+        self.registry
+            .lock()
+            .expect("fold_registry poisoned")
+            .add_overlay(Arc::new(FoldSourceAdapter {
+                source,
+                target_buffer_id: buffer_id,
+            }))
+    }
+
+    fn remove_source(&self, id: ProviderId) {
+        self.registry
+            .lock()
+            .expect("fold_registry poisoned")
+            .remove_overlay(id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -220,6 +220,15 @@ crate::options! {
     #[aliases("cul", "cursorline")]
     #[name("current-line-highlight")]
     pub CursorLine: bool = false;
+
+    /// Synchronise scrolling across all panes that have
+    /// `scrollbind=true`. The option-change handler rebuilds the
+    /// singleton identity-mapper `PaneGroup` to contain exactly
+    /// the current panes with `scrollbind=true`. Vim's
+    /// `:set scrollbind` / `scb`. D.0b.
+    #[aliases("scb")]
+    #[name("scrollbind")]
+    pub Scrollbind: bool = false;
 }
 
 // ---- Completion group: insert-completion knobs ----

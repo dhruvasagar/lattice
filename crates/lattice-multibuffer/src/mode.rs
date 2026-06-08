@@ -20,7 +20,7 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_config::{OptionOverrideSet, overrides};
-use lattice_core::BufferKind;
+use lattice_core::{BufferKind, FoldOverlayServiceHandle, ProviderId};
 use lattice_mode::{
     CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     ModeRegistry, keymap_entry,
@@ -29,6 +29,22 @@ use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 
 use crate::registry::MultibufferRegistryHandle;
+
+/// M.7 / M.8: deregisters all fold overlay providers when the mode is
+/// deactivated. Holds one entry per registered provider
+/// (`ExcerptFoldProvider` + `FileBoundaryFoldProvider`). `Drop` fires
+/// when the buffer's major mode is swapped out or the buffer closes.
+pub struct MultibufferModeGuard {
+    pub(crate) fold_registrations: Vec<(FoldOverlayServiceHandle, ProviderId)>,
+}
+
+impl Drop for MultibufferModeGuard {
+    fn drop(&mut self) {
+        for (svc, id) in self.fold_registrations.drain(..) {
+            svc.remove_source(id);
+        }
+    }
+}
 
 /// K.2.5 (2026-06-02): static keymap catalog for `MultibufferMode`.
 ///
@@ -88,7 +104,7 @@ impl MultibufferMode {
 }
 
 impl Mode for MultibufferMode {
-    type Guard = ();
+    type Guard = MultibufferModeGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -132,12 +148,64 @@ impl Mode for MultibufferMode {
         Keymap::from_entries(multibuffer_keymap_entries())
     }
 
-    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
-        // Marker mode for M.2.b.2 — no per-buffer subscriptions
-        // or resource grabs. M.4 will likely keep this empty too
-        // (live-update subscriptions are owned by the handle
-        // itself, not the mode).
-        Box::pin(async { Ok(()) })
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, MultibufferModeGuard> {
+        Box::pin(async move {
+            // lattice-host converts lattice_core::BufferId → lattice_protocol::ids::BufferId
+            // via `new(id.0 as u64)`; invert here so we can key into MultibufferRegistry.
+            let core_buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+
+            // Both handle types are `Arc<dyn Trait>` aliases.
+            // `ctx.service::<T>()` returns `Option<Arc<T>>` which is
+            // `Option<Arc<Arc<dyn Trait>>>` — clone through the outer
+            // Arc to obtain the inner handle.
+            let fold_service = ctx
+                .service::<FoldOverlayServiceHandle>()
+                .map(|outer| (*outer).clone());
+            let mb_registry = ctx
+                .service::<MultibufferRegistryHandle>()
+                .map(|outer| (*outer).clone());
+
+            let mut fold_registrations = Vec::new();
+
+            match (fold_service, mb_registry) {
+                (Some(svc), Some(reg)) => {
+                    match reg.handle(core_buffer_id) {
+                        Some(mb_handle) => {
+                            // M.7: one fold per excerpt.
+                            let excerpt_provider = Arc::new(crate::ExcerptFoldProvider::new(
+                                (*mb_handle).clone(),
+                                core_buffer_id,
+                            ));
+                            let excerpt_id = svc.add_source(excerpt_provider, core_buffer_id);
+                            fold_registrations.push((svc.clone(), excerpt_id));
+
+                            // M.8: one fold per source file (union of that file's excerpts).
+                            let file_provider = Arc::new(crate::FileBoundaryFoldProvider::new(
+                                (*mb_handle).clone(),
+                                core_buffer_id,
+                            ));
+                            let file_id = svc.add_source(file_provider, core_buffer_id);
+                            fold_registrations.push((svc, file_id));
+                        }
+                        None => {
+                            tracing::debug!(
+                                "MultibufferMode::on_activate: no handle for buffer {:?}; \
+                                 excerpt + file-boundary folds inactive",
+                                core_buffer_id
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    tracing::debug!(
+                        "MultibufferMode::on_activate: fold service or multibuffer \
+                         registry not registered; excerpt folds inactive (expected in tests)"
+                    );
+                }
+            }
+
+            Ok(MultibufferModeGuard { fold_registrations })
+        })
     }
 }
 

@@ -23,17 +23,19 @@
 - [ ] DAP
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
   split, vertical split or tab. This will override
-- [ ] {count}G, :{count} should jump to that line (preserve <C-o>)
+- [X] {count}G, :{count} should jump to that line (preserve <C-o>)
 - [ ] Create an api similar to `:jump` from vim that allows easy
   handling of any future jumps to automatically record jump history
   without requiring manual work arounds
 - [ ] <C-g>, (:abort-all !?) to abort any running tasks
-- [ ] M-x as a command picker
-  - [ ] It should resolve to `:<command> |` for the user to enter
+- [X] M-x as a command picker
+  - [X] It should resolve to `:<command> |` for the user to enter
     arguments if the command requires arguments or just execute them
     if they don't take arguments
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
+- [ ] auto indent
+- [ ] auto formatting
 
 * Plugins
 - [ ] plugin manager
@@ -118,9 +120,9 @@
 - [X] Any edit breaks syntax highlighting
 - [X] `:e!` clones the buffer instead of just refreshing
 - [X] `:e!` should not reposition cursor
-- [ ] *messages* buffer shows [+] in the :b list, it should not track
+- [X] *messages* buffer shows [+] in the :b list, it should not track
   dirty flag
-- [ ] hover popup position is off when there are splits
+- [X] hover popup position is off when there are splits
 - [X] typing on rust, the inlay hint flicker is fixed but I notice as
   I type the comment fonts switch to italics sometimes, possibly when
   there are diagnostic errors on the line I am editing. They disappear

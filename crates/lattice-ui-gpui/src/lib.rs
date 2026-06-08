@@ -970,6 +970,8 @@ impl GpuiApp {
             | Effect::EnterMode(_)
             | Effect::Yank { .. }
             | Effect::SetOption { .. }
+            | Effect::SetLocalOption { .. }
+            | Effect::SetGlobalOption { .. }
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
             | Effect::EchoRegisters

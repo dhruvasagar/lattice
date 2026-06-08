@@ -937,6 +937,12 @@ impl Editor {
             >,
         > = std::sync::Arc::default();
 
+        // M.7: pre-create shared fold registry so `FoldOverlayServiceImpl`
+        // and the `fold_registry:` field both point at the same Arc.
+        let fold_registry = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::fold_provider::FoldRegistry::with_builtins(),
+        ));
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1013,6 +1019,14 @@ impl Editor {
                 // Same `Arc<X>` alias pattern as
                 // ActionHandlerRegistryHandle.
                 s.register::<lattice_grammar::CommandRegistryHandle>(registry.clone());
+                // M.7: expose the fold-overlay service so
+                // `MultibufferMode::on_activate` can register
+                // `ExcerptFoldProvider` without depending on
+                // `lattice-host`. Same Arc as `fold_registry` above.
+                let fold_svc: lattice_core::FoldOverlayServiceHandle = Arc::new(
+                    crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()),
+                );
+                s.register::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the
@@ -1241,6 +1255,9 @@ impl Editor {
             completion_in_path_context: false,
             active_snippet: None,
             snippet_dirs: Vec::new(),
+            // M.7: use the pre-created Arc so the `services:` block
+            // and `fold_registry` field share identity.
+            fold_registry,
             ..Editor::default()
         };
         // 2026-05-26: register the built-in invocation runners

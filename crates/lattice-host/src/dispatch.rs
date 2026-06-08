@@ -2356,6 +2356,20 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             let signals = editor.do_set(&spec);
             out.renderer_signals.extend(signals);
         }
+        Effect::SetLocalOption { spec } => {
+            // BL.1: `:setlocal foo=bar` -- writes to the buffer-local
+            // override layer for the active buffer only; does not touch
+            // the global config registry. The cascade is scoped to the
+            // active buffer.
+            let signals = editor.do_set_local(&spec);
+            out.renderer_signals.extend(signals);
+        }
+        Effect::SetGlobalOption { spec } => {
+            // BL.2: `:setglobal foo=bar` -- writes the global config
+            // registry only, leaving buffer-local overrides untouched.
+            let signals = editor.do_set_global(&spec);
+            out.renderer_signals.extend(signals);
+        }
         Effect::ListBuffers => {
             // 5.5.F.1: `:ls` / `:buffers` -- build the help-style
             // listing host-side from `editor.buffers` + per-kind
@@ -3038,6 +3052,59 @@ impl Editor {
         let before = self.pane_groups.len();
         self.pane_groups.retain(|g| g.id != id);
         self.pane_groups.len() != before
+    }
+
+    /// D.0b: rebuild the singleton identity-mapper pane group
+    /// that backs `:set scrollbind`. Called from
+    /// `apply_option_cascade` on every `scrollbind` change.
+    ///
+    /// Walks `pane_tree.leaves()` and collects each leaf whose
+    /// current buffer's per-pane resolved `scrollbind` option is
+    /// `true`. Drops the old group (if any), then:
+    /// - ≥ 2 members → creates a fresh `IdentityRowMapper` group
+    ///   and stores its id in `scrollbind_group_id`.
+    /// - 0 or 1 members → no group (identity scroll-binding on a
+    ///   single pane is a no-op); clears `scrollbind_group_id`.
+    pub fn rebuild_scrollbind_group(&mut self) {
+        // Drop the previous group so no stale bindings remain.
+        if let Some(old_id) = self.scrollbind_group_id.take() {
+            self.drop_pane_group(old_id);
+        }
+
+        let members: Vec<crate::pane_group::PaneGroupMember> = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .filter_map(|leaf| {
+                let scrollbind =
+                    *self.resolved_option::<lattice_config::Scrollbind>(leaf.buffer_id);
+                if scrollbind {
+                    Some(crate::pane_group::PaneGroupMember {
+                        pane: leaf.id,
+                        buffer: leaf.buffer_id,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if members.len() < 2 {
+            // 0 or 1 panes with scrollbind=true — no group needed.
+            return;
+        }
+
+        match self.add_pane_group(
+            members,
+            std::sync::Arc::new(crate::pane_group::IdentityRowMapper),
+        ) {
+            Ok(id) => {
+                self.scrollbind_group_id = Some(id);
+            }
+            Err(e) => {
+                tracing::debug!("rebuild_scrollbind_group: add_pane_group failed: {e}");
+            }
+        }
     }
 
     /// Remove a single `(pane, buffer)` member from a group.
@@ -11761,7 +11828,13 @@ impl Editor {
         // entirely until overlays land (D.3.f.1 reintroduces the
         // path for the hunk-overlay-on-manual case via its own
         // wake-driven `recompute_folds()` invocations).
-        if matches!(fm, FoldMethod::Manual) && self.fold_registry.overlays().count() == 0 {
+        // M.7: lock once; the guard is dropped after `next` is built
+        // so dispatch can mutate `self.folds` freely below.
+        let fold_reg = self
+            .fold_registry
+            .lock()
+            .expect("fold_registry poisoned");
+        if matches!(fm, FoldMethod::Manual) && fold_reg.overlays().count() == 0 {
             return;
         }
         // D.3.f.0 (2026-05-29): registry dispatch. The primary
@@ -11807,12 +11880,13 @@ impl Editor {
         };
 
         let mut next: Vec<Fold> = Vec::new();
-        if let Some(primary) = self.fold_registry.primary(fm) {
+        if let Some(primary) = fold_reg.primary(fm) {
             next.extend(primary.compute(&ctx));
         }
-        for overlay in self.fold_registry.overlays() {
+        for overlay in fold_reg.overlays() {
             next.extend(overlay.compute(&ctx));
         }
+        drop(fold_reg);
 
         // Carry over closed-state. Identity hash (heading text +
         // depth, node-kind for syntax, etc.) is the primary key so
@@ -21764,7 +21838,7 @@ impl Editor {
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
+            Number, RelativeNumber, Scrollbind, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
             WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing,
             Wrap,
         };
@@ -21791,6 +21865,7 @@ impl Editor {
             whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
             whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
             terminal_esc_exits: *self.resolved_option::<TerminalEscExits>(buffer),
+            scrollbind: *self.resolved_option::<Scrollbind>(buffer),
         };
     }
 
@@ -21811,18 +21886,24 @@ impl Editor {
             .bootstrap_resolved_with_current_values(&mut resolved);
 
         // Active modes (layers 4 + 3): walk in activation order
-        // for minors, prepend major.
+        // for minors, prepend major. Each entry carries its origin.
         let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
-        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
+        let mut mode_contributions: Vec<(lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
             Vec::with_capacity(modes_snapshot.minors().len() + 1);
         if let Some(major_id) = modes_snapshot.major()
             && let Some(major) = self.mode_registry.get(major_id)
         {
-            mode_contributions.push(major.options());
+            mode_contributions.push((
+                major.options(),
+                lattice_config::OptionOrigin::ModeContribution { mode_id: major_id.to_string() },
+            ));
         }
         for &minor_id in modes_snapshot.minors() {
             if let Some(minor) = self.mode_registry.get(minor_id) {
-                mode_contributions.push(minor.options());
+                mode_contributions.push((
+                    minor.options(),
+                    lattice_config::OptionOrigin::ModeContribution { mode_id: minor_id.to_string() },
+                ));
             }
         }
 
@@ -21836,15 +21917,18 @@ impl Editor {
         // Modal-state layer (1) is empty for now; M.7 wires it.
         let modal_layer = lattice_config::OptionOverrideSet::new();
 
-        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
-        layered.push(&modal_layer);
-        layered.push(&buffer_local);
-        for set in mode_contributions.iter().rev() {
-            layered.push(set);
+        // Build the origin-tagged layer list (highest priority first).
+        // Layer 1: modal-state  Layer 2: buffer-local  Layers 3+: modes
+        let mut layered: Vec<(&lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
+            Vec::new();
+        layered.push((&modal_layer, lattice_config::OptionOrigin::Default));
+        layered.push((&buffer_local, lattice_config::OptionOrigin::BufferLocal));
+        for (set, origin) in mode_contributions.iter().rev() {
+            layered.push((set, origin.clone()));
         }
 
         let resolver = lattice_config::Resolver::new();
-        resolver.resolve_into(layered, &mut resolved);
+        resolver.resolve_into_with_origins(layered, &mut resolved);
 
         self.resolved_options.insert(buffer, resolved);
         // M.4: keep `option_cache` in lockstep with the active
@@ -21900,6 +21984,186 @@ impl Editor {
         let signals = self.drain_option_changes();
         self.set_message(EchoLevel::Info, echo);
         signals
+    }
+
+    /// `:setlocal` write path (BL.1). Parses `option` and writes the
+    /// result to `buffer_local_overrides` for the active buffer only,
+    /// then triggers a per-buffer recompute + cascade.
+    ///
+    /// Handles the full `:setlocal` surface:
+    /// - `name=value` / `noname` / `name` (bool→true) — write override
+    /// - `name?` — echo local value or "not set locally (global: X)"
+    /// - `name&` — clear override for `name`; bare `&` clears all
+    pub fn do_set_local(&mut self, option: &str) -> Vec<RendererSignal> {
+        use lattice_config::{ParsedSet, parse_set};
+        let parsed = match parse_set(option) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e);
+                return Vec::new();
+            }
+        };
+        let buffer_id = self.document_buffer_id;
+        match parsed {
+            ParsedSet::Reset(name) if name.is_empty() => {
+                // `:setlocal &` — clear all local overrides for active buffer.
+                self.buffer_local_overrides.remove(&buffer_id);
+                self.recompute_options_for_buffer(buffer_id);
+                self.rebuild_option_cache();
+                Vec::new()
+            }
+            ParsedSet::Reset(name) => {
+                // `:setlocal name&` — clear one override.
+                if let Some(set) = self.buffer_local_overrides.get_mut(&buffer_id) {
+                    // Resolve canonical name so aliases work.
+                    let canonical = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.name().to_string())
+                        .unwrap_or(name.clone());
+                    let type_id = match self
+                        .config
+                        .parse_for_buffer_local(&format!("{canonical}=0"))
+                    {
+                        // We only need the TypeId; discard the value.
+                        Ok((tid, _, _)) => tid,
+                        Err(_) => {
+                            // Fall back: try to find by name via a bool parse.
+                            match self.config.parse_for_buffer_local(&canonical) {
+                                Ok((tid, _, _)) => tid,
+                                Err(e) => {
+                                    self.set_message(EchoLevel::Error, e.to_string());
+                                    return Vec::new();
+                                }
+                            }
+                        }
+                    };
+                    // Remove the override for this TypeId.
+                    let overrides: Vec<_> = set
+                        .iter()
+                        .filter(|o| o.option_type_id != type_id)
+                        .cloned()
+                        .collect();
+                    *set = overrides.into_iter().collect();
+                }
+                self.recompute_options_for_buffer(buffer_id);
+                self.rebuild_option_cache();
+                Vec::new()
+            }
+            ParsedSet::Query(name) => {
+                // `:setlocal name?` — echo local value or "not set locally (global: X)".
+                let msg = if let Some(type_id) = self.config.type_id_for_name(&name) {
+                    let global_fmt = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.get_formatted())
+                        .unwrap_or_default();
+                    let canonical_name = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.name().to_string())
+                        .unwrap_or(name.clone());
+                    let local_fmt = self
+                        .buffer_local_overrides
+                        .get(&buffer_id)
+                        .and_then(|set| set.iter().filter(|ov| ov.option_type_id == type_id).last())
+                        .and_then(|ov| {
+                            self.config
+                                .lookup(&canonical_name)
+                                .and_then(|o| o.format_erased_value(&ov.value))
+                        });
+                    if let Some(local) = local_fmt {
+                        format!("{canonical_name}={local}  (buffer-local)")
+                    } else {
+                        format!("{canonical_name}  not set locally (global: {global_fmt})")
+                    }
+                } else {
+                    format!("E518: Unknown option: {name}")
+                };
+                self.set_message(EchoLevel::Info, msg);
+                Vec::new()
+            }
+            ParsedSet::NameOnly(ref name) => {
+                // For non-bool, behave like `:set name` (echo current value).
+                // For bool, fall through to the write path below.
+                if let Some(opt) = self.config.lookup(name) {
+                    if !opt.is_bool() {
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("{}={}", opt.name(), opt.get_formatted()),
+                        );
+                        return Vec::new();
+                    }
+                }
+                // Bool NameOnly: write override (sets to true).
+                self.do_set_local_write(option)
+            }
+            _ => self.do_set_local_write(option),
+        }
+    }
+
+    /// Inner write path for `do_set_local`: calls `parse_for_buffer_local`,
+    /// pushes to `buffer_local_overrides`, recomputes + cascades.
+    fn do_set_local_write(&mut self, option: &str) -> Vec<RendererSignal> {
+        let buffer_id = self.document_buffer_id;
+        let (type_id, erased, canonical) = match self.config.parse_for_buffer_local(option) {
+            Ok(triple) => triple,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e.to_string());
+                return Vec::new();
+            }
+        };
+        let override_val = lattice_config::OptionOverride {
+            option_type_id: type_id,
+            value: erased,
+            priority: lattice_config::OverridePriority::Normal,
+        };
+        self.buffer_local_overrides
+            .entry(buffer_id)
+            .or_default()
+            .push(override_val);
+        self.recompute_options_for_buffer(buffer_id);
+        let mut signals = Vec::new();
+        self.apply_option_cascade(&canonical, &mut signals);
+        self.set_message(
+            EchoLevel::Info,
+            format!("{}={}  (buffer-local)", canonical, {
+                let opt = self.config.lookup(&canonical);
+                opt.map(|o| o.get_formatted()).unwrap_or_default()
+            }),
+        );
+        signals
+    }
+
+    /// `:setglobal` write path (BL.2). Writes only the global config
+    /// registry; buffer-local override layers are untouched. On
+    /// `name?` query, echoes the global registry value (not the
+    /// resolved per-buffer value).
+    pub fn do_set_global(&mut self, option: &str) -> Vec<RendererSignal> {
+        use lattice_config::{ParsedSet, parse_set};
+        let parsed = match parse_set(option) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e);
+                return Vec::new();
+            }
+        };
+        match parsed {
+            ParsedSet::Query(name) => {
+                // `:setglobal name?` — echo the global registry value.
+                let msg = if let Some(opt) = self.config.lookup(&name) {
+                    format!("{}={}  (global)", opt.name(), opt.get_formatted())
+                } else {
+                    format!("E518: Unknown option: {name}")
+                };
+                self.set_message(EchoLevel::Info, msg);
+                Vec::new()
+            }
+            _ => {
+                // All write forms delegate to the canonical global path.
+                self.do_set(option)
+            }
+        }
     }
 
     /// Drain queued [`Event::OptionChanged`] events from the typed-
@@ -21968,6 +22232,14 @@ impl Editor {
                 // and cheap when method is `Manual` (the recompute
                 // returns immediately).
                 self.recompute_folds();
+            }
+            "scrollbind" => {
+                // D.0b: rebuild the singleton scrollbind group so the
+                // new state of this pane's option is reflected. Drops
+                // the old group and creates a fresh one containing all
+                // panes currently with scrollbind=true; no-ops when
+                // < 2 panes are bound.
+                self.rebuild_scrollbind_group();
             }
             "messages.filter" => {
                 // msg-mode.2: live-reload the `MessagesLayer`'s
@@ -24331,6 +24603,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -24428,6 +24702,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -27038,6 +27314,261 @@ mod tests {
             editor.pane_groups.len(),
             0,
             "empty group must be pruned automatically"
+        );
+    }
+
+    // ── D.0b: rebuild_scrollbind_group ──────────────────────────
+
+    /// Helper: mark `buffer_id` as having scrollbind=`val` in
+    /// `editor.resolved_options`. Bypasses `init_from_linkme`
+    /// so the test can drive the option without a full boot.
+    fn set_resolved_scrollbind(editor: &mut Editor, buffer_id: BufferId, val: bool) {
+        editor
+            .resolved_options
+            .entry(buffer_id)
+            .or_insert_with(lattice_config::ResolvedOptions::default)
+            .insert::<lattice_config::Scrollbind>(val);
+    }
+
+    /// Single pane with scrollbind=true → no group created
+    /// (need ≥ 2 panes for binding to be meaningful).
+    #[test]
+    fn scrollbind_single_pane_no_group() {
+        let mut editor = Editor::default();
+        let leaf = editor.pane_tree.leaves()[0];
+        set_resolved_scrollbind(&mut editor, leaf.buffer_id, true);
+        editor.rebuild_scrollbind_group();
+        assert!(
+            editor.scrollbind_group_id.is_none(),
+            "single scrollbound pane must not create a group"
+        );
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    /// Two panes both with scrollbind=true → group created and id
+    /// stored; propagation follows identity mapper.
+    #[test]
+    fn scrollbind_two_panes_creates_group() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+
+        editor.rebuild_scrollbind_group();
+
+        assert!(
+            editor.scrollbind_group_id.is_some(),
+            "two scrollbound panes must create a group"
+        );
+        assert_eq!(editor.pane_groups.len(), 1);
+
+        // Scroll propagation follows identity mapper.
+        editor.scroll = 77;
+        editor.propagate_pane_group_scroll();
+        let l1_after = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .find(|p| p.id == l1.id)
+            .expect("second leaf present");
+        assert_eq!(l1_after.scroll, 77, "identity mapper propagates scroll");
+    }
+
+    /// Calling rebuild a second time with one pane now set to
+    /// scrollbind=false drops the group and clears the id.
+    #[test]
+    fn scrollbind_toggle_off_drops_group() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+        editor.rebuild_scrollbind_group();
+        assert!(editor.scrollbind_group_id.is_some());
+
+        // Turn off scrollbind on the second pane then rebuild.
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, false);
+        editor.rebuild_scrollbind_group();
+
+        assert!(
+            editor.scrollbind_group_id.is_none(),
+            "only one pane left with scrollbind=true; group must drop"
+        );
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    /// Rebuilding twice when both panes remain bound must not
+    /// accumulate extra groups — old group is replaced atomically.
+    #[test]
+    fn scrollbind_rebuild_is_idempotent() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+
+        editor.rebuild_scrollbind_group();
+        let id_first = editor.scrollbind_group_id.unwrap();
+        editor.rebuild_scrollbind_group();
+        let id_second = editor.scrollbind_group_id.unwrap();
+
+        assert_ne!(id_first, id_second, "second rebuild mints a fresh group id");
+        assert_eq!(
+            editor.pane_groups.len(),
+            1,
+            "only one group must exist after double rebuild"
+        );
+    }
+
+    // ── BL.1: do_set_local ──────────────────────────────────────
+
+    /// Helper: boot the registry on an Editor so `parse_for_buffer_local`
+    /// can look up option TypeIds.
+    fn boot_config(editor: &mut Editor) {
+        editor.config.init_from_linkme();
+    }
+
+    /// `:setlocal number=false` writes to buffer_local_overrides for the
+    /// active buffer and does not touch the global registry value.
+    #[test]
+    fn set_local_writes_override_for_active_buffer() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Global value before: number=true (registered default).
+        let global_before = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(global_before, "global number must start true");
+        editor.do_set_local("number=false");
+        // Buffer-local override must be present.
+        assert!(
+            editor.buffer_local_overrides.contains_key(&buf),
+            "buffer_local_overrides must have an entry for the active buffer"
+        );
+        assert_eq!(
+            editor.buffer_local_overrides[&buf].len(),
+            1,
+            "exactly one override pushed"
+        );
+        // Global value must be unchanged.
+        let global_after = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(global_after, "global number must remain true after :setlocal");
+    }
+
+    /// Two buffers get independent local overrides.
+    #[test]
+    fn set_local_overrides_are_per_buffer() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf_a = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        // Synthesize a second buffer id and point the active buffer at it.
+        let buf_b = crate::buffers::BufferId(buf_a.0 + 1);
+        editor.document_buffer_id = buf_b;
+        editor.do_set_local("number=true");
+        // buf_a retains its own override.
+        assert!(editor.buffer_local_overrides.contains_key(&buf_a));
+        // buf_b has its own independent override.
+        assert!(editor.buffer_local_overrides.contains_key(&buf_b));
+        assert_ne!(buf_a, buf_b);
+    }
+
+    /// `:setlocal number&` clears the override, reverting to global.
+    #[test]
+    fn set_local_name_ampersand_clears_override() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        assert!(editor.buffer_local_overrides.contains_key(&buf));
+        editor.do_set_local("number&");
+        let set = editor.buffer_local_overrides.get(&buf);
+        assert!(
+            set.map(|s| s.is_empty()).unwrap_or(true),
+            "override for `number` must be removed after `number&`"
+        );
+    }
+
+    /// `:setlocal &` clears ALL overrides for the active buffer.
+    #[test]
+    fn set_local_bare_ampersand_clears_all_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        editor.do_set_local("wrap=true");
+        // Both overrides present.
+        assert_eq!(editor.buffer_local_overrides.get(&buf).map(|s| s.len()), Some(2));
+        editor.do_set_local("&");
+        assert!(
+            !editor.buffer_local_overrides.contains_key(&buf),
+            "`:setlocal &` must clear all buffer-local overrides"
+        );
+    }
+
+    // ── BL.2: origin tracking + do_set_global ───────────────────
+
+    /// `:setglobal number=false` writes the global registry only;
+    /// buffer-local overrides are untouched.
+    #[test]
+    fn set_global_writes_registry_not_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Confirm global starts at its registered default.
+        let before = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(before, "number must start true");
+        editor.do_set_global("number=false");
+        // Global registry must reflect the new value.
+        let after = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(!after, "global number must be false after :setglobal");
+        // Buffer-local overrides must be untouched.
+        assert!(
+            !editor.buffer_local_overrides.contains_key(&buf),
+            ":setglobal must not create buffer-local overrides"
+        );
+    }
+
+    /// After `:setlocal number=false`, the resolved options for the
+    /// active buffer carry `OptionOrigin::BufferLocal` for `number`.
+    #[test]
+    fn resolved_origin_is_buffer_local_after_set_local() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let origin = resolved.get_origin::<lattice_config::Number>();
+        assert_eq!(
+            origin,
+            lattice_config::OptionOrigin::BufferLocal,
+            "after :setlocal the origin must be BufferLocal"
+        );
+    }
+
+    /// Without any local override, the resolved origin is GlobalConfig.
+    #[test]
+    fn resolved_origin_is_global_config_without_local_override() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Force a recompute with no local overrides.
+        editor.recompute_options_for_buffer(buf);
+        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let origin = resolved.get_origin::<lattice_config::Number>();
+        assert_eq!(
+            origin,
+            lattice_config::OptionOrigin::GlobalConfig,
+            "without a local override the origin must be GlobalConfig"
         );
     }
 

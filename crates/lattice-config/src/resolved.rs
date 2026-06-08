@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::option_decl::OptionDecl;
+use crate::origin::OptionOrigin;
 
 /// Cached snapshot of the resolved value for every option a
 /// buffer reads. Built by the [`crate::Resolver`]; invalidated
@@ -26,13 +27,17 @@ use crate::option_decl::OptionDecl;
 /// recomputed eagerly on invalidation per the v1 invalidation
 /// policy (`mode-architecture.md` §6.3.1).
 ///
-/// Public read API: [`Self::get`] (typed). The internal
-/// `Arc<dyn Any>` storage is `pub(crate)` so the resolver in
-/// this crate can populate it; external code reads through
-/// `get`.
+/// Public read API: [`Self::get`] (typed), [`Self::get_origin`]
+/// (layer that supplied the value). The internal storage is
+/// `pub(crate)` so the resolver in this crate can populate it;
+/// external code reads through the typed accessors.
 #[derive(Debug, Default, Clone)]
 pub struct ResolvedOptions {
     by_type: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    /// Parallel map: which layer each option's winning value came from.
+    /// Entries are inserted in lockstep with `by_type`; missing entries
+    /// default to [`OptionOrigin::Default`].
+    origins: HashMap<TypeId, OptionOrigin>,
 }
 
 impl ResolvedOptions {
@@ -57,11 +62,10 @@ impl ResolvedOptions {
         any.clone().downcast::<T::Value>().ok()
     }
 
-    /// Test-only helper: insert a resolved value directly. Used
-    /// by tests that exercise the read path without running the
-    /// resolver. Production code uses [`Self::insert_erased`]
-    /// from the resolver.
-    #[cfg(test)]
+    /// Test helper: insert a resolved value directly. Used by
+    /// tests across crates that exercise the read path without
+    /// running the resolver. Production code uses
+    /// [`Self::insert_erased`] from the resolver.
     pub fn insert<T: OptionDecl>(&mut self, value: T::Value)
     where
         T::Value: Send + Sync + 'static,
@@ -71,9 +75,49 @@ impl ResolvedOptions {
 
     /// Erased insert used by [`crate::Resolver`]. The caller
     /// owns the type-correct construction; the cache stores
-    /// erased.
+    /// erased. Writes [`OptionOrigin::Default`] for the origin;
+    /// use [`Self::insert_erased_with_origin`] when the layer is known.
     pub(crate) fn insert_erased(&mut self, type_id: TypeId, value: Arc<dyn Any + Send + Sync>) {
         self.by_type.insert(type_id, value);
+        self.origins.insert(type_id, OptionOrigin::Default);
+    }
+
+    /// Erased insert with explicit origin. Used by the resolver's
+    /// origin-aware path and by `bootstrap_resolved_with_current_values`.
+    pub(crate) fn insert_erased_with_origin(
+        &mut self,
+        type_id: TypeId,
+        value: Arc<dyn Any + Send + Sync>,
+        origin: OptionOrigin,
+    ) {
+        self.by_type.insert(type_id, value);
+        self.origins.insert(type_id, origin);
+    }
+
+    /// Look up the origin for option type `T`. Returns
+    /// [`OptionOrigin::Default`] if the option wasn't resolved in this
+    /// cycle (unknown option / resolver hasn't run yet).
+    pub fn get_origin<T: OptionDecl>(&self) -> OptionOrigin {
+        self.origins
+            .get(&TypeId::of::<T>())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// TypeId-keyed origin lookup for sites that only have a runtime
+    /// `TypeId` (e.g. the query echo path in `do_set`).
+    pub fn get_origin_for_typeid(&self, type_id: TypeId) -> OptionOrigin {
+        self.origins
+            .get(&type_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// TypeId-keyed erased value lookup. Used by the query echo path
+    /// to format the resolved value when the concrete type isn't
+    /// statically known.
+    pub fn get_erased(&self, type_id: TypeId) -> Option<&Arc<dyn Any + Send + Sync>> {
+        self.by_type.get(&type_id)
     }
 
     /// Number of entries (for tests and `:describe-buffer` /

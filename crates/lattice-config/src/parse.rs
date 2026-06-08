@@ -23,6 +23,9 @@ pub enum ParsedSet {
     Assign { name: String, value: String },
     /// `:set noname` -- clear boolean.
     Negate(String),
+    /// `:set name&` / `:setlocal name&` -- reset to registered default
+    /// / clear local override. Empty name means "clear all" (`:setlocal &`).
+    Reset(String),
 }
 
 pub fn parse_set(input: &str) -> Result<ParsedSet, String> {
@@ -44,6 +47,10 @@ pub fn parse_set(input: &str) -> Result<ParsedSet, String> {
             return Err("empty option name".into());
         }
         return Ok(ParsedSet::Query(name));
+    }
+    if let Some(name) = trimmed.strip_suffix('&') {
+        // `:set name&` resets to default; `:setlocal &` (bare `&`) clears all.
+        return Ok(ParsedSet::Reset(name.trim().to_string()));
     }
     if let Some(rest) = trimmed.strip_prefix("no") {
         // Every `no...` form is a candidate negation; the registry

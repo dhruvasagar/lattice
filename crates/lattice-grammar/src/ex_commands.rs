@@ -43,6 +43,8 @@ pub struct ExBuiltins {
     pub list_marks: ExCommandId,
     pub delete_line: ExCommandId,
     pub set_option: ExCommandId,
+    pub set_local_option: ExCommandId,
+    pub set_global_option: ExCommandId,
     pub edit: ExCommandId,
     pub substitute: ExCommandId,
     pub global: ExCommandId,
@@ -257,6 +259,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 name: "option",
                 kind: ArgKind::String,
                 doc: "Option name, `name=value`, `name?`, or `noname`.",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let set_local_option = registry.register_ex_command(
+        "ex:setlocal",
+        "Set a buffer-local option override (`:setlocal <option>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_set_local),
+            args_schema: vec![ArgSpec {
+                name: "option",
+                kind: ArgKind::String,
+                doc: "Option name, `name=value`, `noname`, or `name&` to clear.",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let set_global_option = registry.register_ex_command(
+        "ex:setglobal",
+        "Set a global option (`:setglobal <option>`). Does not update buffer-local overrides.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_set_global),
+            args_schema: vec![ArgSpec {
+                name: "option",
+                kind: ArgKind::String,
+                doc: "Option name, `name=value`, `noname`, or `name?` to query global value.",
                 prompt: "option:",
                 default: ArgDefault::Required,
                 completion: Some("gen:options"),
@@ -1947,6 +1989,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_marks,
         delete_line,
         set_option,
+        set_local_option,
+        set_global_option,
         edit,
         substitute,
         global,
@@ -2259,6 +2303,20 @@ fn apply_write_quit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
 fn apply_set(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     match &ctx.args {
         Args::String(s) => Ok(Effect::SetOption { spec: s.clone() }),
+        _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_set_local(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::SetLocalOption { spec: s.clone() }),
+        _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_set_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::SetGlobalOption { spec: s.clone() }),
         _ => Err(CommandError::BadArgs("expected option string".into())),
     }
 }

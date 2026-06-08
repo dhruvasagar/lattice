@@ -80,6 +80,7 @@ pub mod loader;
 pub mod option;
 mod option_decl;
 mod option_type;
+mod origin;
 // M.4 dep-inversion: layer-input types (`OptionOverride`,
 // `OptionOverrideSet`, `OverridePriority`) live here now.
 // Previously hosted in `lattice-mode` to break a cycle through
@@ -119,7 +120,8 @@ pub use core_options::{
     CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
-    NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay,
+    NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
+    SignatureDisplay,
     TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
     WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
@@ -143,6 +145,7 @@ pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
 // Layer-input types live in this crate now (post M.4 dep
 // inversion). Modes pull them in via lattice-mode's re-export.
+pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{ConfigError, ConfigRegistry, EventPublisher};

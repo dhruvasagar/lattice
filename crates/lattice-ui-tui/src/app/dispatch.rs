@@ -872,6 +872,8 @@ impl App {
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::SetOption { .. }
+            | Effect::SetLocalOption { .. }
+            | Effect::SetGlobalOption { .. }
             | Effect::ListBuffers
             | Effect::DescribeBuffer
             | Effect::DescribeCommand { .. }
@@ -1143,6 +1145,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -1239,6 +1243,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters

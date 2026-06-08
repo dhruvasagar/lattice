@@ -152,6 +152,18 @@ pub enum Effect {
     SetOption {
         spec: String,
     },
+    /// `:setlocal <option>` -- like `SetOption` but writes to the
+    /// buffer-local override layer for the active buffer only, without
+    /// touching the global config registry.
+    SetLocalOption {
+        spec: String,
+    },
+    /// `:setglobal <option>` -- like `SetOption` but only writes the
+    /// global config registry without updating any buffer-local override
+    /// layers. Reads back the global value on `:setglobal name?`.
+    SetGlobalOption {
+        spec: String,
+    },
     /// `:noh[lsearch]` -- clear the hlsearch overlay.
     ClearSearchHighlight,
     /// Display a one-line message in the echo area.

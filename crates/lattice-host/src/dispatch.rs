@@ -22489,10 +22489,40 @@ impl Editor {
         ));
         lines.push(format!("macros stored:  {}", self.macros.len()));
         lines.push(format!("folds:          {}", self.folds.len()));
-        lines.push(format!(
-            "options:        number={}  relativenumber={}",
-            self.option_cache.show_line_numbers, self.option_cache.relative_line_numbers,
-        ));
+        // Buffer-local options section (BL.3).
+        let buf_id = self.document_buffer_id;
+        let local_set = self.buffer_local_overrides.get(&buf_id);
+        let local_count = local_set.map(|s| s.len()).unwrap_or(0);
+        lines.push(String::new());
+        lines.push(format!("## Buffer-local options ({local_count} overrides)"));
+        if local_count == 0 {
+            lines.push("(no buffer-local overrides)".into());
+        } else {
+            let local_set = local_set.unwrap();
+            // Collect canonical names from OPTION_DECLS so we can display them.
+            // Deduplicate by TypeId (last-pushed wins, matching resolver semantics).
+            let mut seen = std::collections::HashMap::new();
+            for ov in local_set.iter() {
+                seen.insert(ov.option_type_id, ov);
+            }
+            // Sort by canonical name for deterministic output.
+            let mut entries: Vec<_> = lattice_config::OPTION_DECLS
+                .iter()
+                .filter_map(|meta| {
+                    let tid = (meta.type_id)();
+                    seen.get(&tid).map(|ov| (meta.name, tid, *ov))
+                })
+                .collect();
+            entries.sort_by_key(|(name, _, _)| *name);
+            for (name, _tid, ov) in entries {
+                let value_str = self
+                    .config
+                    .lookup(name)
+                    .and_then(|opt| opt.format_erased_value(&ov.value))
+                    .unwrap_or_else(|| "?".into());
+                lines.push(format!("- {name}={value_str}"));
+            }
+        }
         // Active modes on the document buffer. Each mode name is a
         // clickable `[name](mode:name)` link.
         lines.push(String::new());
@@ -22882,7 +22912,7 @@ impl Editor {
     /// `options! { ... }` declaration lights up here at the next
     /// build with no extra wiring.
     pub fn build_list_options_content(&self) -> lattice_help::HelpContent {
-        use lattice_config::{GROUP_DECLS, OPTION_DECLS};
+        use lattice_config::{GROUP_DECLS, OPTION_DECLS, OptionOrigin};
         use std::collections::BTreeMap;
 
         let mut by_group: BTreeMap<&'static str, Vec<&'static lattice_config::OptionDeclMetadata>> =
@@ -22946,6 +22976,33 @@ impl Editor {
                     )
                 };
                 lines.push(header);
+                // BL.3: show per-buffer effective value + origin when it
+                // differs from the global registry value.
+                let type_id = (meta.type_id)();
+                let buf_id = self.document_buffer_id;
+                let origin = self
+                    .resolved_options
+                    .get(&buf_id)
+                    .map(|r| r.get_origin_for_typeid(type_id))
+                    .unwrap_or_default();
+                let effective = self
+                    .resolved_options
+                    .get(&buf_id)
+                    .and_then(|r| r.get_erased(type_id))
+                    .and_then(|erased| spec.as_ref().and_then(|o| o.format_erased_value(erased)));
+                match (&origin, &effective) {
+                    (OptionOrigin::BufferLocal, Some(eff)) => {
+                        lines.push(format!(
+                            "  effective (this buffer): {eff}  [buffer-local]"
+                        ));
+                    }
+                    (OptionOrigin::ModeContribution { mode_id }, Some(eff)) if eff != &current => {
+                        lines.push(format!(
+                            "  effective (this buffer): {eff}  [mode: {mode_id}]"
+                        ));
+                    }
+                    _ => {}
+                }
                 for doc_line in meta.doc.lines() {
                     let trimmed = doc_line.trim();
                     if !trimmed.is_empty() {
@@ -27569,6 +27626,70 @@ mod tests {
             origin,
             lattice_config::OptionOrigin::GlobalConfig,
             "without a local override the origin must be GlobalConfig"
+        );
+    }
+
+    // ── BL.3: describe-buffer options section + :options view ───
+
+    /// `:describe-buffer` shows no overrides section when none are set.
+    #[test]
+    fn describe_buffer_options_section_empty_when_no_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let content = editor.build_describe_buffer_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("Buffer-local options (0 overrides)"),
+            "must show 0 overrides header; got:\n{text}"
+        );
+        assert!(
+            text.contains("(no buffer-local overrides)"),
+            "must show empty-state message; got:\n{text}"
+        );
+    }
+
+    /// After `:setlocal number=false`, `:describe-buffer` lists the override.
+    #[test]
+    fn describe_buffer_options_section_shows_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        editor.do_set_local("number=false");
+        let content = editor.build_describe_buffer_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("Buffer-local options (1 overrides)"),
+            "must show 1 override header; got:\n{text}"
+        );
+        assert!(
+            text.contains("number=false"),
+            "must list the number override; got:\n{text}"
+        );
+    }
+
+    /// `:options` output contains all registered options.
+    #[test]
+    fn list_options_content_contains_registered_options() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let content = editor.build_list_options_content();
+        let text = content.buffer.content.as_string();
+        // A few core options that must always be present.
+        assert!(text.contains("number"), "must contain `number`; got:\n{text}");
+        assert!(text.contains("tabstop"), "must contain `tabstop`; got:\n{text}");
+        assert!(text.contains("wrap"), "must contain `wrap`; got:\n{text}");
+    }
+
+    /// After `:setlocal wrap=true`, `:options` shows the effective buffer value.
+    #[test]
+    fn list_options_shows_buffer_local_effective_value() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        editor.do_set_local("wrap=true");
+        let content = editor.build_list_options_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("effective (this buffer): true  [buffer-local]"),
+            "must show effective buffer-local value for wrap; got:\n{text}"
         );
     }
 

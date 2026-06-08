@@ -5184,8 +5184,13 @@ field already on `Editor`); `:set` continues to write the global layer.
   renderers. 3 tests: `set_global_writes_registry_not_local_overrides`,
   `resolved_origin_is_buffer_local_after_set_local`,
   `resolved_origin_is_global_config_without_local_override`.
-- 🗒 **BL.3** — `:describe-buffer` options section + `:options` buffer
-  view.
+- ✅ **BL.3** (2026-06-08) — `build_describe_buffer_content` gains a
+  `## Buffer-local options (N overrides)` section: iterates
+  `buffer_local_overrides[active_buffer]`, resolves TypeId → name via
+  `OPTION_DECLS`, formats via `ErasedOption::format_erased_value`, sorted
+  alphabetically. `build_list_options_content` shows per-buffer effective
+  value + origin when the resolved value differs from global (buffer-local
+  or mode-contribution). 4 tests green.
 
 ---
 

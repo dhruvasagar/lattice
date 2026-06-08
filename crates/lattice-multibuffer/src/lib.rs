@@ -23,7 +23,7 @@
 //! * **Handle**: `MultibufferDocumentHandle` — read-only impl of
 //!   `lattice_runtime::Document` composing N source handles into
 //!   one view. M.3 lifts the read-only restriction.
-//! * **Header provider**: `MultibufferHeaderProvider` (impl
+//! * **Header provider**: `MultibufferExcerptHeaderProvider` (impl
 //!   `lattice_cells::VirtualRowProvider`) emitting one virtual
 //!   row per excerpt header.
 //!
@@ -63,6 +63,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 use lattice_cells::cell::Cell;
+use lattice_cells::headerline::{Headerline, HeaderlineProvider, HeaderlineRow};
 use lattice_cells::virtual_rows::{
     AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowProvider,
 };
@@ -252,6 +253,10 @@ struct MultibufferInner {
     // `set_headerline` which also publishes
     // `MultibufferHeaderlineChanged`.
     headerline: ArcSwap<HeaderlineStatus>,
+    // M.6.5 (2026-06-08): monotonic version for the view-status headerline.
+    // Bumped in `set_headerline` so `MultibufferStatusProvider::version()`
+    // advances and the cells worker rebuilds the sticky row.
+    headerline_version: AtomicU64,
     // M.4 (2026-06-01): event-bus subscription bookkeeping for
     // the auto-recompose forwarder. `SubscriptionId`s registered
     // by `attach_event_subscriptions` are unsubscribed on Drop.
@@ -348,7 +353,7 @@ struct MultibufferState {
 // ─────────────────────────────────────────────────────────────────
 
 /// View-level headerline status. Rendered above the first
-/// excerpt (M.2.a `MultibufferHeaderProvider` extends to handle
+/// excerpt (M.2.a `MultibufferExcerptHeaderProvider` extends to handle
 /// the view header in a later renderer slice).
 ///
 /// Async providers transition `Idle → InProgress → Complete` /
@@ -499,6 +504,7 @@ impl MultibufferDocumentHandle {
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
+                headerline_version: AtomicU64::new(0),
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
                 registry,
                 lang_registry: std::sync::OnceLock::new(),
@@ -958,6 +964,7 @@ impl MultibufferDocumentHandle {
             .ok()
             .and_then(|book| book.bus.clone());
         self.inner.headerline.store(Arc::new(status.clone()));
+        self.inner.headerline_version.fetch_add(1, Ordering::Release);
         if let Some(bus) = bus {
             bus.publish_typed(MultibufferHeaderlineChanged {
                 view: self.inner.buffer_id,
@@ -1640,29 +1647,29 @@ pub enum MultibufferError {
 
 /// Namespace prefix for multibuffer header provider ids.
 /// Distinct from the diff filler / overlay namespaces (`0xD1FF_*`).
-const MULTIBUFFER_HEADER_NAMESPACE: u64 = 0xBBBB_0001_0000_0000;
+const MULTIBUFFER_EXCERPT_HEADER_NAMESPACE: u64 = 0xBBBB_0001_0000_0000;
 
-pub fn multibuffer_header_provider_id(buffer_id: BufferId) -> ProviderId {
-    MULTIBUFFER_HEADER_NAMESPACE | u64::from(buffer_id.0)
+pub fn multibuffer_excerpt_header_provider_id(buffer_id: BufferId) -> ProviderId {
+    MULTIBUFFER_EXCERPT_HEADER_NAMESPACE | u64::from(buffer_id.0)
 }
 
 /// Emits one virtual row per excerpt header, anchored above the
 /// excerpt's first composed row. Cheap-clone reference to the
 /// multibuffer handle; re-reads excerpts on each `collect()`.
 #[derive(Debug)]
-pub struct MultibufferHeaderProvider {
+pub struct MultibufferExcerptHeaderProvider {
     multibuffer: MultibufferDocumentHandle,
 }
 
-impl MultibufferHeaderProvider {
+impl MultibufferExcerptHeaderProvider {
     pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
         Self { multibuffer }
     }
 }
 
-impl VirtualRowProvider for MultibufferHeaderProvider {
+impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
     fn id(&self) -> ProviderId {
-        multibuffer_header_provider_id(self.multibuffer.buffer_id())
+        multibuffer_excerpt_header_provider_id(self.multibuffer.buffer_id())
     }
 
     fn version(&self) -> u64 {
@@ -1712,6 +1719,87 @@ pub fn compose_header_rows(
         composed_cursor = composed_cursor.saturating_add(excerpt.line_count());
     }
     rows
+}
+
+// ─────────────────────────────────────────────────────────────────
+// M.6.5 (2026-06-08): view-status sticky headerline
+// ─────────────────────────────────────────────────────────────────
+
+/// Namespace prefix for the view-status headerline provider.
+/// Distinct from the excerpt-header namespace (`0xBBBB_0001_*`).
+const MULTIBUFFER_STATUS_NAMESPACE: u64 = 0xBBBB_0002_0000_0000;
+
+pub fn multibuffer_status_provider_id(buffer_id: BufferId) -> ProviderId {
+    MULTIBUFFER_STATUS_NAMESPACE | u64::from(buffer_id.0)
+}
+
+/// Pure function: `HeaderlineStatus` → display row (or `None` when idle).
+///
+/// Color legend (0xRRGGBB):
+///   InProgress — neutral gray text, theme bg
+///   Complete   — green `◆` prefix, theme bg
+///   Failed     — red `■` prefix, theme bg
+fn render_multibuffer_status(status: &HeaderlineStatus) -> Option<HeaderlineRow> {
+    let text: String = match status {
+        HeaderlineStatus::Idle => return None,
+        HeaderlineStatus::InProgress { label, count: None } => {
+            format!(" ⟳ {label} … ")
+        }
+        HeaderlineStatus::InProgress { label, count: Some(n) } => {
+            format!(" ⟳ {label} ({n}) … ")
+        }
+        HeaderlineStatus::Complete { summary } => {
+            format!(" ◆ {summary} ")
+        }
+        HeaderlineStatus::Failed { reason } => {
+            format!(" ■ {reason} ")
+        }
+    };
+    let fg: u32 = match status {
+        HeaderlineStatus::InProgress { .. } => 0x999999,
+        HeaderlineStatus::Complete { .. }   => 0x44cc88,
+        HeaderlineStatus::Failed { .. }     => 0xff4444,
+        HeaderlineStatus::Idle              => unreachable!(),
+    };
+    let cells: Arc<[Cell]> = text
+        .chars()
+        .map(|c| Cell::new(c as u32, fg, 0, 0))
+        .collect::<Vec<_>>()
+        .into();
+    Some(HeaderlineRow { cells, bg: None })
+}
+
+/// Sticky headerline provider that surfaces the view's
+/// [`HeaderlineStatus`] as a pinned row above line 0.
+///
+/// Implements [`Headerline`] directly — the status lives in
+/// `MultibufferInner` (behind an `ArcSwap`); no extra dedicated
+/// state allocation is needed.
+pub struct MultibufferStatusProvider {
+    multibuffer: MultibufferDocumentHandle,
+}
+
+impl MultibufferStatusProvider {
+    pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
+        Self { multibuffer }
+    }
+
+    pub fn into_provider(self, buffer_id: BufferId) -> HeaderlineProvider {
+        HeaderlineProvider::new(
+            multibuffer_status_provider_id(buffer_id),
+            Arc::new(self),
+        )
+    }
+}
+
+impl Headerline for MultibufferStatusProvider {
+    fn version(&self) -> u64 {
+        self.multibuffer.inner.headerline_version.load(Ordering::Acquire)
+    }
+
+    fn render(&self) -> Option<HeaderlineRow> {
+        render_multibuffer_status(&self.multibuffer.inner.headerline.load())
+    }
 }
 
 /// M.10.4 (2026-06-03): host glue for the
@@ -3118,7 +3206,7 @@ mod tests {
             Excerpt::new(ids[0], 2, 2).with_header(ExcerptHeader::new("second")),
         ];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
-        let provider = MultibufferHeaderProvider::new(mb);
+        let provider = MultibufferExcerptHeaderProvider::new(mb);
         let rows = provider.collect();
 
         assert_eq!(rows.len(), 1);
@@ -3128,7 +3216,7 @@ mod tests {
     #[test]
     fn provider_id_namespace_is_stable() {
         let buffer_id = BufferId(42);
-        let id = multibuffer_header_provider_id(buffer_id);
+        let id = multibuffer_excerpt_header_provider_id(buffer_id);
         assert_eq!(id & 0xFFFF_FFFF, 42);
         assert!(id < 0xD1FF_0000_0000_0000 || id >= 0xD200_0000_0000_0000);
     }
@@ -3139,7 +3227,7 @@ mod tests {
         let source = sources.get(&ids[0]).unwrap().clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
-        let provider = MultibufferHeaderProvider::new(mb.clone());
+        let provider = MultibufferExcerptHeaderProvider::new(mb.clone());
 
         let v_before = provider.version();
         source
@@ -3152,5 +3240,52 @@ mod tests {
             v_after > v_before,
             "version must bump after recompose; before={v_before} after={v_after}"
         );
+    }
+
+    // ── M.6.5: MultibufferStatusProvider ────────────────────────
+
+    #[test]
+    fn status_provider_hidden_when_idle() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(mb.buffer_id());
+        // Idle → no sticky row
+        assert!(provider.collect().is_empty());
+    }
+
+    #[test]
+    fn status_provider_emits_sticky_row_when_in_progress() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        mb.set_headerline(HeaderlineStatus::InProgress {
+            label: "searching".into(),
+            count: Some(3),
+        });
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(mb.buffer_id());
+        let rows = provider.collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, VirtualRowKind::Sticky);
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[0].bg, None); // theme bg
+    }
+
+    #[test]
+    fn status_provider_version_bumps_on_set_headerline() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        let buffer_id = mb.buffer_id();
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(buffer_id);
+        let v0 = provider.version();
+        mb.set_headerline(HeaderlineStatus::Complete { summary: "done".into() });
+        assert!(provider.version() > v0, "version must advance after set_headerline");
+    }
+
+    #[test]
+    fn status_provider_namespace_does_not_collide_with_excerpt_header() {
+        let buf = BufferId(7);
+        let excerpt_id = multibuffer_excerpt_header_provider_id(buf);
+        let status_id  = multibuffer_status_provider_id(buf);
+        assert_ne!(excerpt_id, status_id);
+        assert_eq!(status_id & 0xFFFF_FFFF, 7);
     }
 }

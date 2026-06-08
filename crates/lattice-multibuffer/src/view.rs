@@ -35,7 +35,10 @@ use lattice_runtime::{Document, EventBus};
 use lattice_syntax::LangRegistry;
 
 use crate::registry::MultibufferRegistryHandle;
-use crate::{Excerpt, MultibufferDocumentHandle, MultibufferHeaderProvider};
+use crate::{
+    Excerpt, MultibufferDocumentHandle, MultibufferExcerptHeaderProvider,
+    MultibufferStatusProvider,
+};
 
 /// Atomic insert + activate-major for a multibuffer view. Returns
 /// the freshly-allocated view `BufferId`. After this call:
@@ -146,22 +149,30 @@ pub fn create_multibuffer_view(
     let dyn_handle: Arc<dyn Document> = typed_handle.clone();
     buffer_store.insert_document_buffer(buffer_id, BufferKind::Multibuffer, dyn_handle, flags, name);
 
-    // K.4.6 (2026-06-02): register the excerpt-header provider so
-    // the virtual-rows worker emits one VirtualRow per excerpt
-    // (anchored Above the excerpt's first composed row, content
-    // = excerpt header label). MultibufferHeaderProvider holds a
-    // cheap clone of the typed handle and reads excerpts on each
-    // collect() call; the worker picks it up on its next wake.
-    // Default ModeActivator impl returns false (no-op test
-    // activators); Editor's override forwards to
-    // virtual_row_providers.register().
-    let header_provider =
-        Arc::new(MultibufferHeaderProvider::new((*typed_handle).clone()));
-    let registered = activator.register_virtual_row_provider(buffer_id, header_provider);
+    // K.4.6 (2026-06-02): excerpt-header provider — one VirtualRow per
+    // excerpt (anchored Above the excerpt's first composed row).
+    // M.6.5 (2026-06-08): renamed to MultibufferExcerptHeaderProvider.
+    let excerpt_header_provider =
+        Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone()));
+    let registered = activator.register_virtual_row_provider(buffer_id, excerpt_header_provider);
     if !registered {
         tracing::debug!(
             buffer = ?buffer_id,
-            "create_multibuffer_view: header provider not registered \
+            "create_multibuffer_view: excerpt header provider not registered \
+             (test activator with default impl, or duplicate ProviderId)"
+        );
+    }
+
+    // M.6.5 (2026-06-08): view-status sticky headerline — surfaces
+    // HeaderlineStatus (Idle / InProgress / Complete / Failed) as a
+    // pinned row above line 0. Hidden when status is Idle.
+    let status_provider = MultibufferStatusProvider::new((*typed_handle).clone())
+        .into_provider(buffer_id);
+    let registered = activator.register_virtual_row_provider(buffer_id, Arc::new(status_provider));
+    if !registered {
+        tracing::debug!(
+            buffer = ?buffer_id,
+            "create_multibuffer_view: status provider not registered \
              (test activator with default impl, or duplicate ProviderId)"
         );
     }

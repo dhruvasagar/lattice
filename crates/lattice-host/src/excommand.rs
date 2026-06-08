@@ -52,6 +52,17 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
         return Err(ExCommandError::Empty);
     }
 
+    // Bare line number: `:42` → go to line 42 (same as `42G`).
+    // Checked before keyword parse; pure digits are not valid command
+    // names so there's no ambiguity. `:0` is treated as `:1`.
+    if let Ok(n) = trimmed.parse::<u32>() {
+        let id = registry
+            .id_by_name("motion:goto-last-line")
+            .ok_or_else(|| ExCommandError::Unknown(trimmed.to_string()))?;
+        return Ok(lattice_grammar::CommandInvocation::of(id)
+            .with_count(lattice_grammar::command::Count(n.max(1))));
+    }
+
     // Delimiter-syntax routes through the registry too -- the front-end
     // parses the body into Args::List.
     if let Some(inv) = try_parse_substitute(trimmed, registry)? {
@@ -1389,5 +1400,22 @@ mod tests {
         let r = fixture();
         let inv = parse("g/foo/d", &r).unwrap();
         assert_eq!(invocation_name(&inv, &r), "ex:global");
+    }
+
+    #[test]
+    fn bare_integer_routes_to_goto_last_line_with_count() {
+        let r = fixture();
+        let inv = parse("42", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "motion:goto-last-line");
+        let count = inv.count.expect("bare integer must carry explicit count");
+        assert_eq!(count.get(), 42);
+    }
+
+    #[test]
+    fn bare_integer_one_routes_to_goto_last_line_with_count_one() {
+        let r = fixture();
+        let inv = parse("1", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "motion:goto-last-line");
+        assert_eq!(inv.count.unwrap().get(), 1);
     }
 }

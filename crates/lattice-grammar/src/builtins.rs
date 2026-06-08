@@ -1353,17 +1353,30 @@ fn motion_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
 
 // ---- Motion: goto-first-line / goto-last-line ----
 
-fn motion_goto_first_line(_ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+fn motion_goto_first_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    // `{count}gg` goes to line count (1-indexed); bare `gg` → line 1.
+    let target_line = if ctx.has_explicit_count {
+        let last = last_addressable_line(ctx.buffer);
+        ctx.count.get().saturating_sub(1).min(last)
+    } else {
+        0
+    };
     Ok(MotionResult {
-        target: Position::ZERO,
+        target: Position::new(target_line, 0),
         linewise: true,
     })
 }
 
 fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    // `{count}G` goes to line count (1-indexed); bare `G` → last line.
     let last = last_addressable_line(ctx.buffer);
+    let target_line = if ctx.has_explicit_count {
+        ctx.count.get().saturating_sub(1).min(last)
+    } else {
+        last
+    };
     Ok(MotionResult {
-        target: Position::new(last, 0),
+        target: Position::new(target_line, 0),
         linewise: true,
     })
 }
@@ -2491,6 +2504,44 @@ mod tests {
             &registry,
             &mut doc,
             lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_last_line_with_count_goes_to_specific_line() {
+        // `3G` on a 5-line buffer → line 3 (1-indexed → row 2)
+        let (registry, b, mut doc) = fixture("a\nb\nc\nd\ne");
+        let inv = CommandInvocation::of(b.goto_last_line.0).with_count(Count(3));
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_first_line_with_count_goes_to_specific_line() {
+        // `3gg` on a 5-line buffer → line 3 (1-indexed → row 2)
+        let (registry, b, mut doc) = fixture("a\nb\nc\nd\ne");
+        let inv = CommandInvocation::of(b.goto_first_line.0).with_count(Count(3));
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::new(4, 0),
             inv,
             &CancellationToken::never(),
         )

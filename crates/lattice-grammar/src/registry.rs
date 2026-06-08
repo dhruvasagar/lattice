@@ -71,6 +71,11 @@ pub struct MotionContext<'a> {
     pub buffer_id: BufferId,
     pub from: Position,
     pub count: Count,
+    /// True when the invocation carried an explicit count (e.g.
+    /// `5G`). False for bare invocations (`G` alone). Motions
+    /// whose semantic changes with an explicit count (goto-last-
+    /// line: last vs. specific line) use this to disambiguate.
+    pub has_explicit_count: bool,
     pub args: Args,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Hot
     /// loops should poll `cancel.check()?` on each iteration; on a

@@ -123,6 +123,7 @@ pub fn execute_motion_only(
         buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
+        has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
     };
@@ -161,6 +162,7 @@ fn execute_motion(
         buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
+        has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
     };
@@ -535,6 +537,7 @@ fn resolve_target(
                 buffer_id,
                 from: cursor,
                 count,
+                has_explicit_count: false,
                 args: args.clone(),
                 cancel,
             };

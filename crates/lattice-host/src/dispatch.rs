@@ -5554,10 +5554,22 @@ impl Editor {
     /// `out.effects` for the renderer-coupled tail).
     pub fn execute_ex_line(&mut self, line: &str, out: &mut DispatchOutcome) {
         match crate::excommand::parse(line, &self.registry) {
-            Ok(inv) => match self.dispatch_blocking(inv) {
-                Ok(eff) => apply_effect_host(self, eff, out),
-                Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
-            },
+            Ok(inv) => {
+                // `:N` and bare `:G` / `:gg` invoked from the ex line
+                // must push jump history just like their key-bound
+                // equivalents (handled in `run_invocation`). The ex
+                // path bypasses `run_invocation`, so we push here.
+                let is_goto = inv.command == self.builtins.goto_last_line.0
+                    || inv.command == self.builtins.goto_first_line.0;
+                if is_goto {
+                    let cur = self.cursor;
+                    self.push_position_history(cur, PositionSource::AutoJump);
+                }
+                match self.dispatch_blocking(inv) {
+                    Ok(eff) => apply_effect_host(self, eff, out),
+                    Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
+                }
+            }
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }

@@ -104,6 +104,7 @@ fn actor_runtime_stays_responsive_during_scan() {
             options,
             service.clone(),
             events.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         // Probe: sleep in a tight loop, measure realised

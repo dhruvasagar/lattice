@@ -25,6 +25,7 @@
 //! batches hits, publishes `ProjectSearchBatchReady` events.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lattice_config::OptionOverrideSet;
@@ -144,6 +145,12 @@ pub struct ProjectSearchState {
     pub status: SearchStatus,
     pub total_hits: usize,
     pub scan_task: Option<tokio::task::JoinHandle<()>>,
+    /// M.6.6 (2026-06-08): cooperative cancellation flag. Set to `true`
+    /// by the refresh handler before spawning a replacement task; the
+    /// blocking scan loop checks this at each file iteration and exits
+    /// early when it fires. `spawn_blocking` tasks ignore `JoinHandle`
+    /// abort — only this flag reaches the blocking thread.
+    pub cancel_token: Arc<AtomicBool>,
     /// M.6.1: source `BufferId` → on-disk path. Populated by the
     /// provider-minor's forwarder as it loads files into the
     /// view's source map. The mode's `<CR>` handler (M.10.3,
@@ -162,6 +169,7 @@ impl ProjectSearchState {
             total_hits: 0,
             scan_task: None,
             source_paths: std::collections::HashMap::new(),
+            cancel_token: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -653,6 +661,12 @@ impl Mode for ProjectSearchMultibufferMode {
                                 (s.query.clone(), s.options.clone())
                             };
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
+                            // M.6.6: cancel the prior scan before replacing state.
+                            if let Some(old) = search_svc.state(view_id_for_refresh) {
+                                if let Ok(s) = old.read() {
+                                    s.cancel_token.store(true, Ordering::Relaxed);
+                                }
+                            }
                             // Clear + reset.
                             view.replace_excerpts(
                                 std::collections::HashMap::new(),
@@ -666,13 +680,18 @@ impl Mode for ProjectSearchMultibufferMode {
                                 view_id_for_refresh,
                                 ProjectSearchState::scanning(query.clone(), options.clone()),
                             );
-                            // Spawn fresh scan task.
+                            // Spawn fresh scan task with a fresh cancel token.
+                            let cancel = search_svc
+                                .state(view_id_for_refresh)
+                                .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+                                .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
                             let task = spawn_scan_task(
                                 view_id_for_refresh,
                                 query.clone(),
                                 options,
                                 search_svc.clone(),
                                 bus_for_refresh.clone(),
+                                cancel,
                             );
                             search_svc.attach_task(view_id_for_refresh, task);
                             // Publish refresh event so any
@@ -942,7 +961,11 @@ pub fn project_search(
 
     activator.activate_minor_by_id(view_id, ProjectSearchMultibufferMode::mode_id());
 
-    let task = spawn_scan_task(view_id, query, options, search_svc.clone(), events.clone());
+    let cancel = search_svc
+        .state(view_id)
+        .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let task = spawn_scan_task(view_id, query, options, search_svc.clone(), events.clone(), cancel);
     search_svc.attach_task(view_id, task);
 
     Some(view_id)
@@ -957,9 +980,10 @@ pub fn spawn_scan_task(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        run_scan(view, query, options, service, events).await;
+        run_scan(view, query, options, service, events, cancel).await;
     })
 }
 
@@ -969,6 +993,7 @@ async fn run_scan(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) {
     // M.6.3: compile the matcher up-front. Literal mode stores
     // the (possibly lowercased) needle; regex mode compiles a
@@ -1017,6 +1042,7 @@ async fn run_scan(
     let view_for_task = view;
     let service_for_task = service.clone();
     let events_for_task = events.clone();
+    let cancel_for_task = cancel;
     let _ = tokio::task::spawn_blocking(move || {
         run_scan_blocking(
             view_for_task,
@@ -1024,6 +1050,7 @@ async fn run_scan(
             options,
             service_for_task,
             events_for_task,
+            cancel_for_task,
         );
     })
     .await;
@@ -1038,6 +1065,7 @@ fn run_scan_blocking(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) {
     let mut walker = ignore::Walk::new(&options.root);
     let mut files_scanned: usize = 0;
@@ -1048,6 +1076,9 @@ fn run_scan_blocking(
     let max_files = options.max_files.unwrap_or(usize::MAX);
 
     while let Some(entry) = walker.next() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let Ok(entry) = entry else { continue; };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -1417,5 +1448,82 @@ mod tests {
                 .as_nanos()
         ));
         p
+    }
+
+    // ── M.6.6: cooperative cancellation ──────────────────────────
+
+    /// A cancelled scan must exit without publishing
+    /// `ProjectSearchCompleted`. Verifies the token-check at
+    /// the top of each `walker.next()` iteration fires before
+    /// any file is processed when the token is pre-set.
+    #[test]
+    fn cancelled_scan_exits_without_publishing_completed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let events = Arc::new(lattice_runtime::EventBus::new());
+        let view = BufferId(77);
+
+        // Track completions via an mpsc channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProjectSearchCompleted>();
+        events.subscribe_typed(tx);
+
+        let svc = InMemoryProjectSearchService::handle();
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        // Pre-cancel before the task can process any files.
+        cancel.store(true, Ordering::Relaxed);
+
+        rt.block_on(async move {
+            let handle = spawn_scan_task(
+                view,
+                "x".into(),
+                ProjectSearchOptions::default(),
+                svc,
+                events,
+                cancel,
+            );
+            handle.await.unwrap();
+        });
+
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled scan must not publish ProjectSearchCompleted"
+        );
+    }
+
+    /// Refreshing a running scan: the old token fires, the new
+    /// task gets a fresh (unset) token and runs to completion.
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_cancels_old_token_and_issues_fresh_one() {
+        let svc = InMemoryProjectSearchService::handle();
+        let view = BufferId(88);
+
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let old_cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        // Simulate the refresh: flip old token, install fresh state.
+        old_cancel.store(true, Ordering::Relaxed);
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let new_cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        assert!(old_cancel.load(Ordering::Relaxed), "old token must be set");
+        assert!(!new_cancel.load(Ordering::Relaxed), "fresh token must start unset");
+        assert!(
+            !Arc::ptr_eq(&old_cancel, &new_cancel),
+            "refresh must allocate a distinct cancel token"
+        );
     }
 }

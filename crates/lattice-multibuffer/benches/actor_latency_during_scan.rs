@@ -87,6 +87,7 @@ fn one_iter(root: &PathBuf) -> Duration {
             options,
             service.clone(),
             events.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let probe_iters = 100;

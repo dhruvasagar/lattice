@@ -120,19 +120,25 @@ mod tests {
         })
     }
 
+    /// Push the `active-snippet-mode` layer via the K.2.4 translation path.
+    fn push_snippet_layer_via_k24(h: &KeymapHandle) {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        let b = lattice_grammar::builtins::populate(&mut r);
+        let _ = lattice_grammar::ex_commands::populate(&mut r);
+        crate::actions::populate(&mut r, &b);
+        let mut mr = lattice_mode::ModeRegistry::new();
+        mr.register(lattice_snippet::modes::SnippetActiveMode)
+            .expect("register active-snippet-mode");
+        lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, &r);
+    }
+
     /// Base keymap + active-snippet minor-mode layer.
     fn shared_keymap_with_snippet() -> &'static KeymapHandle {
         use std::sync::OnceLock;
         static H: OnceLock<KeymapHandle> = OnceLock::new();
         H.get_or_init(|| {
             let h = build_base_keymap();
-            h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
-            );
+            push_snippet_layer_via_k24(&h);
             h
         })
     }
@@ -145,13 +151,7 @@ mod tests {
         static H: OnceLock<KeymapHandle> = OnceLock::new();
         H.get_or_init(|| {
             let h = build_base_keymap();
-            h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
-            );
+            push_snippet_layer_via_k24(&h);
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode(
                     crate::keymap_insert::completion_popup_mode_id(),

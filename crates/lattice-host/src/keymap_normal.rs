@@ -389,14 +389,6 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('-')],
-        CommandInvocation::of(actions.oil_navigate_up),
-        source(),
-    );
-
     // Specials.
     handle.bind(
         layer,

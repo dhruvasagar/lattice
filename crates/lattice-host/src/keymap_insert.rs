@@ -125,13 +125,6 @@ pub fn completion_popup_mode_id() -> ModeId {
     ModeId::new("completion-popup-mode")
 }
 
-/// K.1.b (2026-05-30): canonical `ModeId` for the
-/// active-snippet minor-mode keymap layer. Same pattern as
-/// [`completion_popup_mode_id`].
-pub fn active_snippet_mode_id() -> ModeId {
-    ModeId::new("active-snippet-mode")
-}
-
 /// Register every chord the legacy `input::translate_insert`
 /// recognised into the supplied handle's `Builtin` layer under
 /// `BindingMode::Insert`. Called at App startup.
@@ -347,46 +340,6 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
         layer,
         &[ChordPattern::CharLiteral],
         actions.completion_accept_then_insert,
-    );
-
-    let mut modes = HashMap::new();
-    modes.insert(BindingMode::Insert, trie);
-    modes
-}
-
-/// Build the active-snippet minor-mode layer's binding set.
-/// Pushed by `App::push_snippet_layer` when an `ActiveSnippet`
-/// activates; popped on snippet exit.
-pub fn active_snippet_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
-    let mut trie = KeymapTrie::new();
-    // K.1.b: per-binding provenance tag — same ModeId the
-    // push site uses, so `:describe-key` shows the binding's
-    // layer correctly.
-    let layer = KeymapLayer::MinorMode(active_snippet_mode_id());
-
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit_special(SpecialKey::Tab)],
-        actions.snippet_next_placeholder,
-    );
-    // <S-Tab> -- chord (Tab, SHIFT). KeyChord::from_event
-    // canonicalises both `KeyCode::BackTab` and
-    // `KeyCode::Tab + SHIFT` to the same chord.
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit(KeyChord {
-            key: KeyKind::Special(SpecialKey::Tab),
-            mods: KeyMods::SHIFT,
-        })],
-        actions.snippet_prev_placeholder,
-    );
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit_special(SpecialKey::Esc)],
-        actions.snippet_leave,
     );
 
     let mut modes = HashMap::new();

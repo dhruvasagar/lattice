@@ -149,7 +149,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `help_topics`, `host_theme`).
 /// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
 ///   `registry`, `event_bus`, `builtins`, `action_ids`,
-///   `keymap`, `completion_popup_layer`, `snippet_layer`).
+///   `keymap`, `completion_popup_layer`).
 /// - 5.B.16 -- active-pane state (subset) (`cursor`,
 ///   `scroll`, `should_quit`, `viewport_height`,
 ///   `terminal_width`, `active_buffer`,
@@ -838,11 +838,6 @@ pub struct Editor {
     /// layer when the popup is open; `None` otherwise.
     /// Pushed / popped in lockstep with `insert_completion`.
     pub completion_popup_layer: Option<LayerId>,
-    /// `LayerId` of the active-snippet minor-mode layer
-    /// when a snippet is in flight; `None` otherwise. Same
-    /// lockstep pattern as
-    /// [`Self::completion_popup_layer`].
-    pub snippet_layer: Option<LayerId>,
     /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
     /// the host editor.
     pub completion_registry: lattice_completion::CompletionRegistry,

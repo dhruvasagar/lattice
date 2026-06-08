@@ -11081,18 +11081,44 @@ impl Editor {
         let want_popup = self.insert_completion.is_some();
         let want_snippet = self.active_snippet.is_some();
         let have_popup = self.completion_popup_layer.is_some();
-        let have_snippet = self.snippet_layer.is_some();
+
+        let buffer_id = self.document_buffer_id;
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+
+        // MO.3: `active-snippet-mode` now uses K.2.4-registered keymap entries
+        // + `activate_minor` / `deactivate_minor` for K.1.c scoping, matching
+        // the same pattern as LspMode (MO.1). No push_layer/pop_layer needed.
+        let snippet_mode_id = lattice_snippet::modes::SnippetActiveMode::mode_id();
+        let have_snippet = active.has_minor(snippet_mode_id);
+        if want_snippet && !have_snippet {
+            let _ = self.mode_registry.activate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                snippet_mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            );
+        } else if !want_snippet && have_snippet {
+            let _ = self.mode_registry.deactivate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.event_bus,
+                proto_id,
+                snippet_mode_id,
+            );
+        }
 
         // CSM.K1: bring `completion-popup-mode` activation in line
         // with `want_popup` (inlined from the prior App-side helper
         // since this is the sole caller). Per-buffer scope: the
         // popup belongs to the document the user is typing in.
-        let buffer_id = self.document_buffer_id;
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let currently = active.has_minor(popup_mode_id);
-        if want_popup && !currently {
+        let currently_popup = active.has_minor(popup_mode_id);
+        if want_popup && !currently_popup {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
                 &self.mode_guards,
@@ -11103,7 +11129,7 @@ impl Editor {
                 popup_mode_id,
                 lattice_mode::CapabilitySet::empty(),
             );
-        } else if !want_popup && currently {
+        } else if !want_popup && currently_popup {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
                 &self.mode_guards,
@@ -11119,30 +11145,12 @@ impl Editor {
         // snapshot.
         self.recompute_active_completion_sources_for(buffer_id);
 
-        if want_popup == have_popup && want_snippet == have_snippet {
+        if want_popup == have_popup {
             return;
         }
-        // Re-stack: pop everything, then push in the canonical
-        // order (snippet first, popup second).
+        // Re-stack the completion-popup layer only.
         if let Some(id) = self.completion_popup_layer.take() {
             self.keymap.pop_layer(id);
-        }
-        if let Some(id) = self.snippet_layer.take() {
-            self.keymap.pop_layer(id);
-        }
-        if want_snippet {
-            // K.1.b (2026-05-30): push the minor-mode layer
-            // keyed by the canonical ModeId so the per-keystroke
-            // merge (K.1.c) and `:describe-key` (K.1.d) resolve
-            // the right mode.
-            let id = self.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
-            );
-            self.snippet_layer = Some(id);
         }
         if want_popup {
             let id = self.keymap.push_layer(

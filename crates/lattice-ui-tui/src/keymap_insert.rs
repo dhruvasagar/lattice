@@ -56,13 +56,22 @@ mod tests {
         h
     }
 
+    /// Push the `active-snippet-mode` layer via the K.2.4 translation path
+    /// so the test uses the same mechanism as editor boot.
+    fn push_snippet_layer_via_k24(h: &KeymapHandle) {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        let b = lattice_grammar::builtins::populate(&mut r);
+        let _ = lattice_grammar::ex_commands::populate(&mut r);
+        crate::actions::populate(&mut r, &b);
+        let mut mr = lattice_mode::ModeRegistry::new();
+        mr.register(lattice_snippet::modes::SnippetActiveMode)
+            .expect("register active-snippet-mode");
+        lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, &r);
+    }
+
     fn populated_handle_with_snippet() -> KeymapHandle {
         let h = populated_handle();
-        h.push_layer(
-            PushLayerKind::MinorMode(active_snippet_mode_id()),
-            "active-snippet",
-            active_snippet_layer_bindings(shared_actions()),
-        );
+        push_snippet_layer_via_k24(&h);
         h
     }
 
@@ -74,11 +83,7 @@ mod tests {
         // — this fixture still exercises the lower-level
         // registry merge ordering directly.
         let h = populated_handle();
-        h.push_layer(
-            PushLayerKind::MinorMode(active_snippet_mode_id()),
-            "active-snippet",
-            active_snippet_layer_bindings(shared_actions()),
-        );
+        push_snippet_layer_via_k24(&h);
         h.push_layer(
             PushLayerKind::MinorMode(completion_popup_mode_id()),
             "completion-popup",

@@ -16,7 +16,7 @@
 //! live together in the feature crate -- the placement the
 //! mode-architecture rule asks for.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use lattice_completion::{
@@ -25,7 +25,8 @@ use lattice_completion::{
 };
 use lattice_config::OptionOverrideSet;
 use lattice_mode::{
-    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+    keymap_entry, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId,
+    ModeKind, ModeRegistry,
 };
 
 use crate::registry::SnippetRegistry;
@@ -139,6 +140,70 @@ impl Mode for SnippetCompletionMode {
     }
 }
 
+fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry!(
+                mode: Insert,
+                chord: "<Tab>",
+                doc: "Move to the next placeholder in the active snippet session.",
+                cmd: "action:snippet-next-placeholder"
+            ),
+            keymap_entry!(
+                mode: Insert,
+                chord: "<S-Tab>",
+                doc: "Move to the previous placeholder in the active snippet session.",
+                cmd: "action:snippet-prev-placeholder"
+            ),
+            keymap_entry!(
+                mode: Insert,
+                chord: "<Esc>",
+                doc: "Exit the active snippet session and return to Normal mode.",
+                cmd: "action:snippet-leave"
+            ),
+        ]
+    })
+}
+
+/// `active-snippet-mode` — a transient minor mode activated while
+/// a snippet session is live on a buffer. Contributes the three
+/// Insert-mode bindings (`<Tab>` / `<S-Tab>` / `<Esc>`) via
+/// `Mode::keymap()`; K.2.4 registers them at startup under
+/// `KeymapLayer::MinorMode("active-snippet-mode")` and K.1.c gates
+/// them to buffers where the mode is active.
+///
+/// Replaces the old `push_layer` / `pop_layer` push mechanism
+/// (MO.3). The host's `sync_keymap_overlays` now calls
+/// `activate_minor` / `deactivate_minor` alongside snippet session
+/// enter / exit instead of manually building and pushing a trie.
+pub struct SnippetActiveMode;
+
+impl SnippetActiveMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("active-snippet-mode")
+    }
+}
+
+impl Mode for SnippetActiveMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(snippet_active_keymap_entries())
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 /// Register `snippet-completion-mode` against `registry` using
 /// `snippet_registry` as the contribution-side handle. The App
 /// shares the same `Arc<SnippetRegistry>` with this mode so
@@ -152,6 +217,9 @@ pub fn register_snippet_modes(
             registry: snippet_registry,
         })
         .expect("snippet-completion-mode must register without conflict");
+    registry
+        .register(SnippetActiveMode)
+        .expect("active-snippet-mode must register without conflict");
 }
 
 #[cfg(test)]
@@ -229,5 +297,37 @@ mod tests {
         let snippet_registry = make_registry();
         register_snippet_modes(&mut registry, snippet_registry);
         assert!(registry.is_registered(SnippetCompletionMode::mode_id()));
+    }
+
+    #[test]
+    fn active_snippet_mode_id_is_active_snippet_mode() {
+        assert_eq!(SnippetActiveMode::mode_id().as_str(), "active-snippet-mode");
+        assert_eq!(SnippetActiveMode.id(), SnippetActiveMode::mode_id());
+        assert_eq!(SnippetActiveMode.kind(), ModeKind::Minor);
+    }
+
+    #[test]
+    fn active_snippet_mode_keymap_has_three_entries() {
+        use lattice_mode::Mode as _;
+        let km = SnippetActiveMode.keymap();
+        assert_eq!(km.entries.len(), 3);
+    }
+
+    #[test]
+    fn active_snippet_mode_keymap_entries_have_expected_commands() {
+        use lattice_mode::Mode as _;
+        let km = SnippetActiveMode.keymap();
+        let cmds: Vec<_> = km.entries.iter().filter_map(|e| e.command).collect();
+        assert!(cmds.contains(&"action:snippet-next-placeholder"));
+        assert!(cmds.contains(&"action:snippet-prev-placeholder"));
+        assert!(cmds.contains(&"action:snippet-leave"));
+    }
+
+    #[test]
+    fn register_snippet_modes_registers_active_snippet_mode() {
+        let mut registry = ModeRegistry::new();
+        let snippet_registry = make_registry();
+        register_snippet_modes(&mut registry, snippet_registry);
+        assert!(registry.is_registered(SnippetActiveMode::mode_id()));
     }
 }

@@ -16,10 +16,12 @@
 //! consumer's App surface.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use lattice_core::BufferKind;
 use lattice_mode::{
-    BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+    keymap_entry, BufferLocal, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
+    ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
 /// Major mode for oil-style directory-listing buffers. Any
@@ -31,6 +33,18 @@ impl OilMode {
     pub fn mode_id() -> ModeId {
         ModeId::new("oil-mode")
     }
+}
+
+fn oil_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![keymap_entry!(
+            mode: Normal,
+            chord: "-",
+            doc: "Navigate to the parent directory in the oil buffer.",
+            cmd: "action:oil-navigate-up"
+        )]
+    })
 }
 
 impl Mode for OilMode {
@@ -53,6 +67,9 @@ impl Mode for OilMode {
     /// `Editor::run_oil_invocation`.
     fn invocation_runner(&self) -> Option<ModeId> {
         Some(Self::mode_id())
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(oil_mode_keymap_entries())
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
@@ -113,5 +130,21 @@ mod tests {
         let mut registry = ModeRegistry::new();
         register_oil_modes(&mut registry);
         assert!(registry.is_registered(OilMode::mode_id()));
+    }
+
+    #[test]
+    fn oil_mode_keymap_has_one_entry() {
+        use lattice_mode::Mode as _;
+        let km = OilMode.keymap();
+        assert_eq!(km.entries.len(), 1);
+    }
+
+    #[test]
+    fn oil_mode_keymap_entry_chord_and_command() {
+        use lattice_mode::Mode as _;
+        let km = OilMode.keymap();
+        let e = &km.entries[0];
+        assert_eq!(e.chord, "-");
+        assert_eq!(e.command, Some("action:oil-navigate-up"));
     }
 }

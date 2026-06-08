@@ -5,7 +5,7 @@ pub mod scores;
 pub mod session;
 
 pub use mode::{
-    register_tutor_modes, TutorHeaderlineProvider, TutorHeaderlineState, TutorHudKind, TutorMode,
+    register_tutor_modes, render_tutor_headerline, TutorHeaderlineState, TutorHudKind, TutorMode,
     TutorViewState, TUTOR_PROVIDER_TAG,
 };
 pub use scores::TutorScores;

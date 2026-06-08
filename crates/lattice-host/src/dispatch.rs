@@ -18315,19 +18315,18 @@ impl Editor {
         // Provider — unregister any stale one (re-open path) then register fresh.
         let provider_id = buffer_id.0 as u64 ^ crate::tutor::TUTOR_PROVIDER_TAG;
         self.virtual_row_providers.unregister(buffer_id, provider_id);
-        let provider =
-            crate::tutor::TutorHeaderlineProvider::new(buffer_id.0 as u64);
-        provider.state.lock().ok().map(|mut s| {
-            s.update_for_display(&session, crate::tutor::TutorHudKind::Normal)
-        });
-        let state_arc = std::sync::Arc::clone(&provider.state);
+        let handle = lattice_cells::SimpleHeaderlineHandle::new(
+            crate::tutor::TutorViewState::default(),
+            crate::tutor::render_tutor_headerline,
+        );
+        handle.update(|s| s.update_for_display(&session, crate::tutor::TutorHudKind::Normal));
         self.virtual_row_providers
-            .register(buffer_id, std::sync::Arc::new(provider));
+            .register(buffer_id, std::sync::Arc::new(handle.provider(provider_id)));
         // Store the state handle and session as buffer-locals.
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
-            .insert(crate::tutor::TutorHeaderlineState(state_arc));
+            .insert(crate::tutor::TutorHeaderlineState(handle));
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -18496,7 +18495,7 @@ impl Editor {
             .get(&buffer_id)
             .and_then(|l| l.get::<crate::tutor::TutorHeaderlineState>())
         {
-            state.0.lock().ok().map(|mut s| s.update_for_display(session, kind));
+            state.0.update(|s| s.update_for_display(session, kind));
         }
     }
 

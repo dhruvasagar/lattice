@@ -9,11 +9,9 @@
 //! T.4 wires `TutorSession` as a `BufferLocal` and populates the
 //! headerline's `TutorViewState` from the live session.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use lattice_cells::{
-    AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowKind, VirtualRowProvider,
-};
+use lattice_cells::{Cell, HeaderlineRow, SimpleHeaderlineHandle};
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{Keymap, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
@@ -98,33 +96,23 @@ pub fn register_tutor_modes(registry: &mut ModeRegistry) {
 /// the session advances or a hint becomes active.
 #[derive(Debug, Default)]
 pub struct TutorViewState {
-    /// Colored spans: `(text, 0xRRGGBB fg)`. Empty → provider
-    /// emits nothing.
+    /// Colored spans: `(text, 0xRRGGBB fg)`. Empty → provider emits nothing.
     pub spans: Vec<(String, u32)>,
     /// Row background color (`0xRRGGBB`); `0` = transparent.
     pub row_bg: u32,
-    /// Monotonic counter; bumped on every update so the worker
-    /// detects staleness without comparing spans.
-    pub version: u64,
 }
 
 impl TutorViewState {
     /// Recompute spans from `session` using the retro HUD palette.
     /// `kind` selects the display variant (normal vs. stage-clear flash).
-    /// Bumps version. Returns the new version.
-    pub fn update_for_display(
-        &mut self,
-        session: &super::TutorSession,
-        kind: TutorHudKind,
-    ) -> u64 {
+    /// Version tracking is handled by [`SimpleHeaderlineHandle::update`].
+    pub fn update_for_display(&mut self, session: &super::TutorSession, kind: TutorHudKind) {
         let (spans, row_bg) = match kind {
             TutorHudKind::Normal => tutor_headerline_spans(session),
             TutorHudKind::StageClear => tutor_stage_clear_spans(session),
         };
         self.spans = spans;
         self.row_bg = row_bg;
-        self.version = self.version.wrapping_add(1);
-        self.version
     }
 }
 
@@ -151,22 +139,19 @@ pub const TUTOR_PROVIDER_TAG: u64 = 0x7475_746F_725F_6865; // "tutor_he"
 // TutorHeaderlineState — BufferLocal handle to the shared view state
 // ──────────────────────────────────────────────────────────────
 
-/// Buffer-local handle to the shared `TutorViewState` arc. Stored
-/// alongside `TutorSession` so `check_tutor_session` can update the
-/// headerline text without holding a reference to the provider itself.
+/// Buffer-local handle for updating the tutor headerline. Wraps a
+/// [`SimpleHeaderlineHandle<TutorViewState>`] so dispatch can push
+/// session state without holding a reference to the provider itself.
 #[derive(Clone)]
-pub struct TutorHeaderlineState(pub Arc<Mutex<TutorViewState>>);
+pub struct TutorHeaderlineState(pub SimpleHeaderlineHandle<TutorViewState>);
 
 impl lattice_mode::BufferLocal for TutorHeaderlineState {
     const NAME: &'static str = "tutor-mode.headerline";
-    const DOC: &'static str = "Shared arc for the tutor headerline provider's view state.";
+    const DOC: &'static str = "SimpleHeaderlineHandle for the tutor buffer's sticky HUD row.";
     const OWNER_MODE: &'static str = "tutor-mode";
 
     fn describe(&self) -> String {
-        self.0
-            .lock()
-            .map(|s| format!("version={}", s.version))
-            .unwrap_or_default()
+        format!("version={}", self.0.version())
     }
 }
 
@@ -320,64 +305,23 @@ fn tutor_stage_clear_spans(
     (s, pal::BG)
 }
 
-/// Emits one virtual row above line 0 of the tutor buffer showing
-/// lesson/exercise progress and the exercise description or hint.
+/// Render function for [`SimpleHeaderlineHandle<TutorViewState>`].
 ///
-/// T.4 populates `state` via `TutorViewState::update` and wakes
-/// the virtual-rows worker so the renderer sees fresh rows.
-#[derive(Debug)]
-pub struct TutorHeaderlineProvider {
-    /// Stable id: XOR of the buffer's numeric id with the tag
-    /// constant so each buffer gets a unique provider id.
-    provider_id: ProviderId,
-    pub state: Arc<Mutex<TutorViewState>>,
-}
-
-impl TutorHeaderlineProvider {
-    pub fn new(buffer_id: u64) -> Self {
-        Self {
-            provider_id: buffer_id ^ TUTOR_PROVIDER_TAG,
-            state: Arc::new(Mutex::new(TutorViewState::default())),
-        }
+/// Converts the current session spans into cells and returns a
+/// [`HeaderlineRow`] with the tutor's retro background, or `None`
+/// when there is nothing to display yet.
+pub fn render_tutor_headerline(s: &TutorViewState) -> Option<HeaderlineRow> {
+    if s.spans.is_empty() {
+        return None;
     }
-}
-
-impl VirtualRowProvider for TutorHeaderlineProvider {
-    fn id(&self) -> ProviderId {
-        self.provider_id
-    }
-
-    fn version(&self) -> u64 {
-        self.state.lock().map(|s| s.version).unwrap_or(0)
-    }
-
-    fn collect(&self) -> Vec<VirtualRow> {
-        let (spans, row_bg) = {
-            let Ok(s) = self.state.lock() else {
-                return Vec::new();
-            };
-            if s.spans.is_empty() {
-                return Vec::new();
-            }
-            (s.spans.clone(), s.row_bg)
-        };
-
-        let cells: Arc<[Cell]> = spans
-            .iter()
-            .flat_map(|(text, fg)| {
-                let fg = *fg;
-                text.chars().map(move |c| Cell::new(c as u32, fg, 0, 0))
-            })
-            .collect::<Vec<_>>()
-            .into();
-
-        vec![VirtualRow {
-            anchor_line: 0,
-            position: AnchorPosition::Above,
-            cells,
-            height: 1,
-            kind: VirtualRowKind::Sticky,
-            bg: Some(row_bg),
-        }]
-    }
+    let cells: Arc<[Cell]> = s
+        .spans
+        .iter()
+        .flat_map(|(text, fg)| {
+            let fg = *fg;
+            text.chars().map(move |c| Cell::new(c as u32, fg, 0, 0))
+        })
+        .collect::<Vec<_>>()
+        .into();
+    Some(HeaderlineRow { cells, bg: Some(s.row_bg) })
 }

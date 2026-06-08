@@ -50,6 +50,10 @@ pub mod version;
 // inlay / code-lens consumers. See
 // `docs/dev/architecture/virtual-rows.md`.
 pub mod virtual_rows;
+// Generic sticky headerline — the one mechanism for a buffer to pin a status
+// row above line 0. Tutor, multibuffer search, LSP status, VCS branch all use
+// this. See `docs/dev/architecture/headerline.md`.
+pub mod headerline;
 
 pub use cell::{flags as cell_flags, Cell};
 pub use chunk::CellChunk;
@@ -65,3 +69,4 @@ pub use virtual_rows::{
 	AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowMatrix, VirtualRowProvider,
 	VirtualRowVersion,
 };
+pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};

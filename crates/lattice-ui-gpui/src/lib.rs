@@ -176,7 +176,7 @@ pub struct GpuiTheme {
     /// Whether OpenType ligatures are enabled. Configurable via
     /// `ui.ligatures` (default `true`). When `false`,
     /// `FontFeatures::disable_ligatures()` is applied to every
-    /// `Font` before shaping, suppressing `liga` + `calt`.
+    /// `Font` before shaping, suppressing `calt` (drives programming ligatures).
     pub ligatures: bool,
     /// Main document background.
     pub background: u32,

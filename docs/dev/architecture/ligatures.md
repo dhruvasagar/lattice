@@ -42,28 +42,30 @@ The GPUI renderer builds `TextRun` slices and passes them to
 (`gpui::text_system::font_features::FontFeatures`). The API:
 
 ```rust
-// Default — liga + calt ON.
+// Default — empty feature list; shaper uses font/engine defaults
+// (liga + calt enabled in all common OpenType fonts).
 let features = FontFeatures::default();
 
-// Opt-out — sets liga=0, calt=0.
-features.disable_ligatures();
+// Opt-out — sets calt=0 only (calt drives programming ligatures;
+// liga is left at the shaper default which is fine for most users).
+let features = FontFeatures::disable_ligatures();
 
-// Query.
-features.is_calt_enabled() → bool
+// Query whether calt is explicitly disabled.
+features.is_calt_enabled() → Option<bool>  // None = not set (enabled by default)
 
 // Arbitrary OpenType tags (future granular control).
-features.tag_value_list() → &[(Tag, u32)]
+features.tag_value_list() → &[(String, u32)]
 ```
 
-`FontFeatures::default()` has ligatures **enabled**. The opt-out
-direction is intentional in gpui's API — ligature-capable fonts
-produce them by default; users with fonts that don't support
-ligatures see no effect. `disable_ligatures()` is the explicit
-opt-out for users who prefer them off.
+`FontFeatures::default()` is an empty list — the shaper uses the
+font's/engine's defaults, which enable `liga` and `calt` in all
+common ligature fonts (Fira Code, JetBrains Mono, Cascadia Code).
+`disable_ligatures()` adds `("calt", 0)` only; it does not touch
+`liga`. Programming ligatures (`->`, `!=`, `=>`, …) are almost
+exclusively `calt`-driven so this is the correct single-knob opt-out.
 
-The `FontFeatures` struct is converted to
-`cosmic_text::attrs::FontFeatures` via `TryFrom<&FontFeatures>`
-before shaping, which passes the `liga`/`calt` state to HarfBuzz.
+The `FontFeatures` list is passed through gpui's shaping pipeline to
+cosmic-text / HarfBuzz, which respects the explicit `calt=0` override.
 
 ---
 

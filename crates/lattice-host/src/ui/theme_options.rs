@@ -134,7 +134,7 @@ lattice_config::options! {
 
     /// Whether to enable OpenType ligatures in the GPUI renderer.
     ///
-    /// `true` (default) -- `liga` + `calt` font features are active.
+    /// `true` (default) -- shaper defaults apply (`calt`/`liga` active).
     /// Ligature-capable fonts (Fira Code, JetBrains Mono, Cascadia
     /// Code, Iosevka) will substitute multi-char sequences like
     /// `->` / `!=` / `=>` with a single presentation glyph.

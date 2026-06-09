@@ -289,6 +289,9 @@ impl Editor {
             // below.
             #[cfg(feature = "search")]
             lattice_multibuffer::providers::search::register_project_search_mode(&mut mr);
+            // N.1.1 (2026-06-10): narrow provider-minor mode (marker
+            // for narrow views). First-class — no feature gate.
+            lattice_multibuffer::providers::narrow::register_narrow_mode(&mut mr);
             // D.5.a (2026-05-30): `diff-mode` minor — marker bit
             // consulted by K.1.c per-keystroke lookup so D.5.b/c
             // `do`/`dp` chords gate on per-buffer diff
@@ -333,6 +336,9 @@ impl Editor {
         lattice_multibuffer::register_multibuffer_ex_commands(&mut registry);
         #[cfg(feature = "search")]
         lattice_multibuffer::providers::search::register_search_ex_command(&mut registry);
+        // N.1.1 (2026-06-10): `:narrow` + `:widen`. First-class — no
+        // feature gate.
+        lattice_multibuffer::providers::narrow::register_narrow_ex_commands(&mut registry);
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire

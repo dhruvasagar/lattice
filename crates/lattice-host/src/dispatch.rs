@@ -5242,6 +5242,111 @@ impl Editor {
                     );
                 }
             }
+            // N.1.1 (2026-06-10): `:narrow [{range}]`. Resolve the
+            // range against the active document, fetch its handle,
+            // and open a one-excerpt multibuffer focused on the
+            // region via the narrow provider's `create_narrow_view`.
+            // Mirrors the SearchTrigger entry shape: substrate owns
+            // view-creation; the host arm is generic glue (resolve
+            // range → create → activate).
+            AppEffect::NarrowTrigger { range } => {
+                use lattice_grammar::range::{Range, RangeBound};
+
+                /// Resolve a `RangeBound` to a 0-based line, clamped
+                /// to `[0, last]`. Marks + patterns are deferred to a
+                /// follow-up (they resolve to the cursor line here).
+                fn resolve_bound(b: &RangeBound, cursor: u32, last: u32) -> u32 {
+                    match b {
+                        RangeBound::Line(n) => (*n).min(last),
+                        RangeBound::CurrentLine => cursor,
+                        RangeBound::LastLine => last,
+                        RangeBound::Offset { base, delta } => {
+                            let base_line = resolve_bound(base, cursor, last) as i64;
+                            (base_line + *delta as i64).clamp(0, last as i64) as u32
+                        }
+                        RangeBound::Mark(_) | RangeBound::Pattern(_) => cursor,
+                    }
+                }
+
+                /// `Option<Range>` → inclusive `(start, end)` 0-based
+                /// line span. `None` / `CurrentLine` narrows the
+                /// cursor line (N.1.2 widens bare `:narrow` to the
+                /// paragraph / Visual selection).
+                fn resolve_range(range: &Option<Range>, cursor: u32, last: u32) -> (u32, u32) {
+                    match range {
+                        None
+                        | Some(Range::CurrentLine)
+                        | Some(Range::Selection)
+                        | Some(Range::Custom(_)) => (cursor, cursor),
+                        Some(Range::Whole) => (0, last),
+                        Some(Range::Span { start, end }) => {
+                            let s = resolve_bound(start, cursor, last);
+                            let e = resolve_bound(end, cursor, last);
+                            if s <= e { (s, e) } else { (e, s) }
+                        }
+                    }
+                }
+
+                let source_id = self.active_pane_buffer_id();
+                let source_handle = self.buffers.document_handle(source_id);
+                match source_handle {
+                    Some(source_handle) => {
+                        let last_line = (source_handle.snapshot().buffer.line_count() as u32)
+                            .saturating_sub(1);
+                        let cursor_line = self.active_cursor().line;
+                        let (start, end) = resolve_range(&range, cursor_line, last_line);
+                        let label = self.buffers.name_of(source_id).unwrap_or_default();
+                        let registry = self.registry.clone();
+                        let lr = Some(self.lang_registry.clone());
+                        let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
+                            self,
+                            source_id,
+                            source_handle,
+                            start,
+                            end,
+                            &label,
+                            registry,
+                            lr,
+                        );
+                        if self.activate_buffer(view_id) {
+                            let signals = self.activate_buffer_state();
+                            self.enqueue_renderer_signals(signals);
+                        }
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("narrowed to L{}–{}", start + 1, end + 1),
+                        );
+                    }
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            ":narrow: the active buffer has no document".to_string(),
+                        );
+                    }
+                }
+            }
+            // N.1.1 (2026-06-10): `:widen` — close the active narrow
+            // view, restoring the full source buffer. Guarded to
+            // narrow views (NarrowMinorMode active) so it never
+            // deletes an arbitrary buffer or a non-narrow multibuffer
+            // (search / diff results).
+            AppEffect::NarrowWiden => {
+                let active = self.active_pane_buffer_id();
+                let narrow_id =
+                    lattice_multibuffer::providers::narrow::NarrowMinorMode::mode_id();
+                if self.minor_mode_enabled_for(active, narrow_id) {
+                    if self.do_buffer_delete(true) {
+                        let signals = self.activate_buffer_state();
+                        self.enqueue_renderer_signals(signals);
+                    }
+                    self.set_message(EchoLevel::Info, "widened".to_string());
+                } else {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        ":widen: not in a narrow view".to_string(),
+                    );
+                }
+            }
             // M.10.7 (2026-06-03): chord-dispatched routes are
             // mode-owned via the M.10.1.b ActionHandlerRegistry —
             // `run_invocation` intercepts before reaching the

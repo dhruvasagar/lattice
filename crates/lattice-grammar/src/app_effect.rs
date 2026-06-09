@@ -571,6 +571,22 @@ pub enum AppEffect {
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
     MultibufferExpand { delta: i32 },
+    /// N.1.1 (2026-06-10): `:narrow [{range}]` ex-command. The host
+    /// arm resolves `range` against the active document to a line
+    /// span, fetches the active buffer's `Arc<dyn Document>`, and
+    /// calls `lattice_multibuffer::providers::narrow::create_narrow_view`
+    /// — opening a one-excerpt multibuffer focused on that region.
+    /// `range == None` (bare `:narrow`) narrows the current line in
+    /// N.1.1 (N.1.2 widens this to the current paragraph / Visual
+    /// selection).
+    NarrowTrigger {
+        range: Option<crate::range::Range>,
+    },
+    /// N.1.1 (2026-06-10): `:widen` ex-command. The host arm closes
+    /// the active narrow view (an editable one-excerpt multibuffer),
+    /// restoring the full source buffer. No-op + echo when the
+    /// active buffer isn't a narrow view.
+    NarrowWiden,
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
     /// (2026-06-03) inlined the work into the host's
     /// apply_effect arm — it calls

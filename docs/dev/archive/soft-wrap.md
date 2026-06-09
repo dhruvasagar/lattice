@@ -1,5 +1,8 @@
 # Soft line-wrapping — slice plan
 
+> **Status: ✅ Completed.** W.1–W.7 + W.4.t all landed. Archived 2026-06-09.
+
+
 Sequencing companion to
 [`../../architecture/soft-wrap.md`](../../architecture/soft-wrap.md).
 The design fragment owns *what* and *why*; this file owns *when* and

@@ -1,5 +1,8 @@
 # Kind-agnostic buffer + mode infrastructure — slice plan
 
+> **Status: ✅ Completed.** All slices landed. Archived 2026-06-09.
+
+
 Sequencing companion to
 [`docs/dev/architecture/kind-agnostic-buffers.md`](../../architecture/kind-agnostic-buffers.md).
 The design fragment owns *what + why + contracts*; this file owns

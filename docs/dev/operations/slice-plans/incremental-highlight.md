@@ -9,7 +9,7 @@ competitiveness vs Helix/Zed/Neovim while keeping our baked-cell cache.
 `docs/dev/operations/benchmarks.md` so regressions are visible across
 sessions (per the CI perf-budget gate).
 
-## H.1 — range-scoped rebuild highlight  🚧
+## H.1 — range-scoped rebuild highlight  ✅
 
 - `ChunkInputs.spans_base: u32`; `build_chunk_rows` indexes
   `per_line_spans[line_idx - spans_base]`.

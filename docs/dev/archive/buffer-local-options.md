@@ -1,5 +1,8 @@
 # Buffer-local options — slice plan
 
+> **Status: ✅ Completed.** All slices landed. Archived 2026-06-09.
+
+
 Sequencing companion to
 [`docs/dev/architecture/buffer-local-options.md`](../../architecture/buffer-local-options.md).
 Authoritative status per slice lives in

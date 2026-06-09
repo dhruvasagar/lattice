@@ -38,6 +38,17 @@ exist, trust the live spec + the source over the archive.
 | [`pane-groups.md`](pane-groups.md) | D.4 plan | D.4.e | D.4 pane-group primitive (diff side-by-side, scrollbind) — D.4.a–D.4.e ✅ |
 | [`ui-tui-refactor.md`](ui-tui-refactor.md) | Phase 5 | R.1.98 | `lattice-ui-tui` decomposition into per-feature App submodules — primary goal achieved |
 
+| [`diff-system.md`](diff-system.md) | D-series plan | D.8 (2026-05-30) | Diff system 18 slices: inline overlay, hunk map, side-by-side, hunk transfer, diffthis grouping ✅ |
+| [`multibuffer-views.md`](multibuffer-views.md) | M-series plan | M.8 (2026-06-03) | Multibuffer views 26 slices: excerpt rendering, fold providers, search provider, event subscriptions, mode audit ✅ |
+| [`fold-architecture.md`](fold-architecture.md) | F-series plan | F.2 (2026-05-29) | Fold architecture 2 slices: fold-state substrate + provider protocol ✅ |
+| [`buffer-local-options.md`](buffer-local-options.md) | O-series plan | O.3 (2026-06-04) | Buffer-local options 3 slices: OptionOverride substrate, resolver, per-buffer FrameView integration ✅ |
+| [`kind-agnostic-buffers.md`](kind-agnostic-buffers.md) | K.4-series plan | K.4.11 (2026-06-05) | Kind-agnostic buffer + mode infrastructure 3 phases: Document trait, dispatcher, multibuffer test suite ✅ |
+| [`keymap-impl-plan.md`](keymap-impl-plan.md) | K-series plan | K.3.4 (2026-06-07) | lattice-keymap crate + resolution overhaul: K.1 trie dispatcher, K.2 mode-owned binding substrate, K.3 help-prefix ✅ |
+| [`mode-ownership-cleanup.md`](mode-ownership-cleanup.md) | MO-series plan | MO.4.c (2026-06-09) | Mode ownership cleanup 6 slices: LSP/oil/snippet keymap migration, gutter decoration migration, status-line infra, Subscription RAII ✅ |
+| [`lattice-keymap-crate-design.md`](lattice-keymap-crate-design.md) | 2026-06-06 design | K series ✅ | Design fragment for the lattice-keymap crate (Approach 3, crate-first) — was misplaced in slice-plans/ |
+| [`soft-wrap.md`](soft-wrap.md) | W-series plan | W.7 (2026-06-07) | Soft line-wrap 7 slices + W.4.t tab-width: cells geometry, TUI render, GPUI parity, gj/gk motions, live toggle ✅ |
+| [`tutor.md`](tutor.md) | T-series plan | T.5 (2026-06-07) | Interactive tutor 5 slices: data types, exercise sidecars, TutorMode skeleton, success evaluation, --tutor CLI flag ✅ |
+
 ## Conventions
 
 Each file's preamble carries a `> **Status: ✅ Completed.**` banner

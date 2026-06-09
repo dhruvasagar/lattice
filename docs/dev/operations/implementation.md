@@ -1839,7 +1839,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     add/remove round-trip, same-id replace). Design lands
     in [`fold-architecture.md`](../architecture/fold-architecture.md)
     with the slice plan at
-    [`slice-plans/fold-architecture.md`](slice-plans/fold-architecture.md);
+    [`archive/fold-architecture.md`](../archive/fold-architecture.md);
     diff-system.md §6.5 still describes the consumer.
     **1461 workspace tests green** (regression sweep
     end-to-end).
@@ -2810,7 +2810,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   regions, `:diffput <bufnr>` / `:diffget <bufnr>`,
   `:diff-accept` / `:diff-reject`. Carved during build into
   eight sub-slices (D.6.a–h); see
-  [`slice-plans/diff-system.md`](slice-plans/diff-system.md)
+  [`archive/diff-system.md`](../archive/diff-system.md)
   for sequencing. **Three-way merge UX shipped end-to-end:**
   subsystem (D.6.a), pane-group + filler for 3 sides (D.6.b),
   `:diffsplit <base> <remote>` create (D.6.c), target-aware
@@ -4042,7 +4042,7 @@ diagnostics-as-buffer with one implementation.
 Design fragment:
 [`../architecture/kind-agnostic-buffers.md`](../architecture/kind-agnostic-buffers.md).
 Slice plan:
-[`slice-plans/kind-agnostic-buffers.md`](slice-plans/kind-agnostic-buffers.md).
+[`archive/kind-agnostic-buffers.md`](../archive/kind-agnostic-buffers.md).
 **Status: H-series closed after H.2.** H.1 + H.2 removed host's
 hardcoded coupling to specific buffer kinds for the in-tree
 extension-crate case (the only case that exists pre-v1). H.3
@@ -5154,7 +5154,7 @@ runtime actor) — see `docs/benchmarks.md` for the latest numbers.
 Design fragment:
 [`../architecture/buffer-local-options.md`](../architecture/buffer-local-options.md).
 Slice plan:
-[`slice-plans/buffer-local-options.md`](slice-plans/buffer-local-options.md).
+[`archive/buffer-local-options.md`](../archive/buffer-local-options.md).
 
 Every option is potentially buffer-local. `:setlocal foo=bar` writes
 layer 2 of the existing resolver stack (the `buffer_local_overrides`

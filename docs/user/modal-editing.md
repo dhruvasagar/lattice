@@ -126,16 +126,19 @@ A motion moves the cursor. After an operator (`d`, `y`, `c`,
 
 | Key       | Motion                                        |
 |-----------|-----------------------------------------------|
-| `h` / `l` | Left / right one character                    |
-| `j` / `k` | Down / up one line                            |
-| `0`       | Start of line (column 0)                      |
-| `^`       | First non-blank of line                       |
-| `$`       | End of line                                   |
-| `g_`      | Last non-blank of line                        |
-| `gg`      | First line                                    |
-| `G`       | Last line                                     |
-| `42G`     | Line 42                                       |
-| `:42<CR>` | Same as `42G` (jump-by-line)                  |
+| `h` / `l`   | Left / right one character                       |
+| `j` / `k`   | Down / up one **logical** line                   |
+| `gj` / `gk` | Down / up one **display row** (wraps count)      |
+| `0`         | Start of line (column 0)                         |
+| `^`         | First non-blank of line                          |
+| `$`         | End of line                                      |
+| `g0`        | Start of current display row (under `:set wrap`) |
+| `g$`        | End of current display row (under `:set wrap`)   |
+| `g_`        | Last non-blank of line                           |
+| `gg`        | First line                                       |
+| `G`         | Last line                                        |
+| `42G`       | Line 42                                          |
+| `:42<CR>`   | Same as `42G` (jump-by-line)                     |
 
 ### Word / token
 

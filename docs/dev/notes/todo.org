@@ -137,3 +137,12 @@
 
 * Documentation
 - [ ] lattice-tutor
+
+* Pending Slices
+- [X] D.3–D.5/D.8 — diff system (inline overlay, side-by-side, hunk transfer, diffthis grouping)
+- [X] M.2 — excerpt rendering in multibuffer
+- [X] K.4 — multibuffer-is-a-regular-buffer audit
+- [X] M.7/M.8 — excerpt and file-boundary fold providers
+- [ ] LSP phase 4 — still in progress (4.5 wire complete, some trigger-UX rows deferred)
+- [ ] Completion — :complete picker bridge
+- [ ] Multibuffer View Providers

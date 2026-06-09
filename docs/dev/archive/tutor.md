@@ -1,5 +1,8 @@
 # Interactive Tutor — Slice Plan
 
+> **Status: ✅ Completed.** T.1–T.5 all landed. Archived 2026-06-09.
+
+
 **Design:** `docs/dev/architecture/tutor-mode.md`
 
 ---

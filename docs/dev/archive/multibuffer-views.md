@@ -1,5 +1,8 @@
 # Multibuffer views — slice plan
 
+> **Status: ✅ Completed.** All slices landed. Archived 2026-06-09.
+
+
 Sequencing companion to
 [`docs/dev/architecture/multibuffer-views.md`](../../architecture/multibuffer-views.md).
 The design fragment is the source of truth for *what* and *why*;

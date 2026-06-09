@@ -11,13 +11,12 @@ whether whitespace is shown. All of these are typed options set with
 `:set` (see [options.md](options.md) for the `:set` mechanism and
 layered resolution); this page is the deep-dive on each.
 
-> **Status:** `tabstop`, `scrolloff`, and the whitespace markers are
-> shipped and rendered in both renderers. Soft-wrap (`wrap`) renders
-> in the **terminal** UI today; the GPUI peer's wrap rendering is in
-> progress. One known rough edge under wrap/tabs: selection and
-> search **highlight rectangles** can sit a few cells off on
-> tab-indented or wrapped lines (the cursor itself is correct) — a
-> tracked follow-up.
+> **Status:** all features on this page ship in both the terminal and
+> GPUI renderers. `wrap`, `tabstop`, `scrolloff`, and whitespace
+> markers are production-ready. One known rough edge under wrap/tabs:
+> selection and search **highlight rectangles** can sit a few cells
+> off on tab-indented or wrapped lines (the cursor itself is correct)
+> — a tracked follow-up.
 
 ---
 
@@ -26,6 +25,8 @@ layered resolution); this page is the deep-dive on each.
 | Command                          | Default | Meaning                                                        |
 |----------------------------------|---------|----------------------------------------------------------------|
 | `:set wrap` / `:set nowrap`      | off     | Wrap long lines onto continuation rows vs. clip at the edge    |
+| `gj` / `gk`                      | —       | Move **one display row** (wraps count); `j`/`k` always logical line |
+| `g0` / `g$`                      | —       | Jump to start / end of the current display row (under wrap)    |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
 | `:set list` / `:set whitespace`  | off     | Show whitespace markers (tabs, trailing/leading spaces, …)     |
@@ -50,8 +51,9 @@ edge and the rest is off-screen.
 
 Wrapping is purely visual — it never changes the file. `j` / `k`
 still move by **logical** line (vim's default), so a single long line
-is one `j` regardless of how many rows it occupies. (Display-line
-motions `gj` / `gk`, which step one visual row, are planned.)
+is one `j` regardless of how many rows it occupies. Use `gj` / `gk`
+to step one **display row** at a time, and `g0` / `g$` to reach the
+start or end of the current display row.
 
 The scroll model is wrap-aware: scrolling to the last line brings it
 fully into view even when earlier lines wrapped, and the cursor is

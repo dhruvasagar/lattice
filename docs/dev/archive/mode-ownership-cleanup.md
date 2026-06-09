@@ -1,5 +1,8 @@
 # Mode ownership cleanup — slice plan
 
+> **Status: ✅ Completed.** All slices landed. Archived 2026-06-09.
+
+
 Sequencing companion to
 [`docs/dev/architecture/mode-architecture.md`](../../architecture/mode-architecture.md)
 §13. The architecture fragment owns *what + why* (the principle:

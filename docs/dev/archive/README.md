@@ -39,7 +39,7 @@ exist, trust the live spec + the source over the archive.
 | [`ui-tui-refactor.md`](ui-tui-refactor.md) | Phase 5 | R.1.98 | `lattice-ui-tui` decomposition into per-feature App submodules — primary goal achieved |
 
 | [`diff-system.md`](diff-system.md) | D-series plan | D.8 (2026-05-30) | Diff system 18 slices: inline overlay, hunk map, side-by-side, hunk transfer, diffthis grouping ✅ |
-| [`multibuffer-views.md`](multibuffer-views.md) | M-series plan | M.8 (2026-06-03) | Multibuffer views 26 slices: excerpt rendering, fold providers, search provider, event subscriptions, mode audit ✅ |
+| [`multibuffer-views.md`](multibuffer-views.md) | M-series plan | M.8 (2026-06-03) | Multibuffer views 26 slices: excerpt rendering, fold providers, search provider, event subscriptions, mode audit ✅. Forward-looking N.1 + providers catalog extracted 2026-06-10 to active slice-plans. |
 | [`fold-architecture.md`](fold-architecture.md) | F-series plan | F.2 (2026-05-29) | Fold architecture 2 slices: fold-state substrate + provider protocol ✅ |
 | [`buffer-local-options.md`](buffer-local-options.md) | O-series plan | O.3 (2026-06-04) | Buffer-local options 3 slices: OptionOverride substrate, resolver, per-buffer FrameView integration ✅ |
 | [`kind-agnostic-buffers.md`](kind-agnostic-buffers.md) | K.4-series plan | K.4.11 (2026-06-05) | Kind-agnostic buffer + mode infrastructure 3 phases: Document trait, dispatcher, multibuffer test suite ✅ |

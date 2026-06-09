@@ -5118,7 +5118,7 @@ are crossed out there. Items that influence active tasks:
 - §15:21 File watcher / auto-revert — unaddressed.
 - §15:22 Bookmarks / cross-file marks — current marks are buffer-local.
 - §15:23 Function rebinding / advice — unaddressed.
-- §15:24 Narrow-to-region — unaddressed.
+- §15:24 Narrow-to-region — **N.1 in design** (2026-06-10); see narrow-mode section below.
 - §15:25 Snippets / abbrev — unaddressed.
 - §15:26 Frames (multi-OS-window) — unaddressed.
 - §15:27 Session save / restore — unaddressed.
@@ -5191,6 +5191,43 @@ field already on `Editor`); `:set` continues to write the global layer.
   alphabetically. `build_list_options_content` shows per-buffer effective
   value + origin when the resolved value differs from global (buffer-local
   or mode-contribution). 4 tests green.
+
+---
+
+## narrow-mode N.1 + tree-sitter text objects (in design, 2026-06-10)
+
+Design fragments:
+[`../architecture/narrow-mode.md`](../architecture/narrow-mode.md) (the `zn`
+operator + the one-excerpt view) and
+[`../architecture/tree-sitter-text-objects.md`](../architecture/tree-sitter-text-objects.md)
+(the `af`/`ac`/`aC`/… objects). Slice plan:
+[`slice-plans/narrow-mode.md`](slice-plans/narrow-mode.md).
+
+Narrow mode renders a one-excerpt `MultibufferDocumentHandle` over an
+arbitrary line range. No new `BufferKind` — the narrow view IS a multibuffer
+and reuses every M-series primitive (M.3 edit propagation, M.4 live updates,
+M.10.1 `ActionHandlerRegistry`, K.4.7 syntax). The primary entry is a **`zn`
+narrow operator** (operator-pending; composes with any motion / text object),
+provider-owned, emitting the generic `Effect::Action(AppEffect)` — zero new
+host variants. Tree-sitter **text objects** (`af`/`if`, `ac`/`ic`, `aa`/`ia`,
+`al`/`il`, `aC`/`iC`) are a separate, universal grammar feature owned by
+`lattice-syntax`, registered through the existing `register_text_object` API
+plus one new `ScopeResolver` seam in `lattice-grammar`; they compose with every
+operator (`daf`, `vic`, `znaf`), not just narrow.
+
+| Slice | Title | Status |
+|---|---|---|
+| **N.1.0** | `textobjects.scm` (`.outer`) + `scope_at_cursor` (lattice-syntax) | ✅ 2026-06-10 |
+| **N.1.1** | `create_narrow_view` + `NarrowMinorMode` + `:narrow {range}` + `:widen` | 🗒 |
+| **N.1.2** | `:narrow` from Visual selection / cursor paragraph | 🗒 |
+| **N.1.3** | The `zn` narrow operator (operator-pending; composes with any motion/object) | 🗒 |
+| **N.1.4** | Tree-sitter text objects as first-class grammar objects (`ScopeResolver` seam + `af`/`ac`/`aa`/`al`/`aC` + `.inner`) | 🗒 |
+| **N.1.5** | Transparent stacked narrow — one-hop invariant to `RopeDocumentHandle` | 🗒 |
+
+See also:
+[`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md)
+for the remaining consumer providers (A.1–A.21 catalog, formerly archived in
+`multibuffer-views.md`, now active).
 
 ---
 

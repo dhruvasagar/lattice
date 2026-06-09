@@ -24,15 +24,19 @@ how to add support for a new language -- both the common case
 ## Currently bundled
 
 The default `LangRegistry` ships with these tree-sitter grammars
-plus their `highlights.scm` / `injections.scm` / `folds.scm` (and
-`locals.scm` for JavaScript):
+plus their `highlights.scm` / `injections.scm` / `folds.scm` /
+`symbols.scm` / `textobjects.scm` (and `locals.scm` for
+JavaScript). *Symbols* feed the `gen:tree-sitter-symbol` completion
+source and the outline picker; *text objects* feed narrow-mode and
+the structural text objects (see
+[modal-editing.md](modal-editing.md#tree-sitter-text-objects)):
 
-| Language   | Extensions       | Highlights | Injections                     | Folds | Locals |
-|------------|------------------|------------|--------------------------------|-------|--------|
-| Rust       | `rs`             | ✅         | ✅                             | ✅    | —      |
-| Python     | `py`             | ✅         | —                              | ✅    | —      |
-| JavaScript | `js`/`mjs`/`cjs` | ✅         | ✅                             | ✅    | ✅     |
-| Markdown   | `md`             | ✅         | ✅ (block→inline, fenced code) | ✅    | —      |
+| Language   | Extensions       | Highlights | Injections                     | Folds | Symbols | Text obj |
+|------------|------------------|------------|--------------------------------|-------|---------|----------|
+| Rust       | `rs`             | ✅         | ✅                             | ✅    | ✅      | ✅       |
+| Python     | `py`             | ✅         | —                              | ✅    | ✅      | ✅       |
+| JavaScript | `js`/`mjs`/`cjs` | ✅         | ✅                             | ✅    | ✅      | ✅       |
+| Markdown   | `md`             | ✅         | ✅ (block→inline, fenced code) | ✅    | —       | —        |
 
 Plain text and any unrecognised extension fall through to the
 `Plain` language: no parse, no styled spans. The renderer treats
@@ -127,12 +131,18 @@ configs.insert(
         tree_sitter_go::LANGUAGE.into(),
         "go",
         tree_sitter_go::HIGHLIGHTS_QUERY,
-        "",                       // injections.scm if any
-        "",                       // locals.scm if any
-        Some(GO_FOLDS_QUERY),     // folds.scm
+        "",                          // injections.scm if any
+        "",                          // locals.scm if any
+        Some(GO_FOLDS_QUERY),        // folds.scm
+        Some(GO_SYMBOLS_QUERY),      // symbols.scm   (None if not shipped)
+        Some(GO_TEXTOBJECTS_QUERY),  // textobjects.scm (None if not shipped)
     )?,
 );
 ```
+
+`symbols.scm` and `textobjects.scm` are optional (`None` skips
+them); a language with no `textobjects.scm` simply has no
+tree-sitter text objects or narrow-mode targets.
 
 If the crate doesn't expose `HIGHLIGHTS_QUERY` as a constant
 (some don't), copy the upstream `queries/highlights.scm` into
@@ -141,11 +151,12 @@ If the crate doesn't expose `HIGHLIGHTS_QUERY` as a constant
 
 ### Step 4 -- ship the query files
 
-Lattice looks for `crates/lattice-syntax/queries/<name>/folds.scm`.
-For now only folds is loaded from the queries dir; highlights and
-injections come from the grammar crate's exposed constants.
-Step 3 of the highlight migration will move all `*.scm` to the
-queries dir for consistency.
+Lattice looks for query files under
+`crates/lattice-syntax/queries/<name>/`. `folds.scm`, `symbols.scm`,
+and `textobjects.scm` are loaded from there via `include_str!`;
+highlights and injections come from the grammar crate's exposed
+constants (a later migration moves those into the queries dir too,
+for consistency).
 
 A typical `folds.scm` (adapted from Helix's `runtime/queries/<lang>/folds.scm`):
 

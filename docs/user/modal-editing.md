@@ -276,6 +276,60 @@ inside a brace block (without the braces).
 In Visual mode, text objects extend the selection: `vi{`
 selects everything inside the surrounding `{...}`.
 
+### Tree-sitter text objects
+
+> **Status: arriving in the N-series.** The query substrate
+> (`textobjects.scm` + `scope_at_cursor`) landed in N.1.0; the
+> objects and the `zn` narrow operator land in N.1.3–N.1.4. Design:
+> [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
+
+The objects above are delimiter- and whitespace-based — they don't
+know what a *function* or a *type* is. Tree-sitter text objects add
+**structural** objects read from the syntax tree, registered as
+first-class grammar objects: each composes with **every** operator,
+exactly like `iw` or `ip`. `a` (outer) is the whole construct
+(signature → closing brace); `i` (inner) is the body without the
+delimiters.
+
+| Object | outer / inner | Selects |
+|--------|---------------|---------|
+| **Function** | `af` / `if` | a function, method, or closure |
+| **Class / type** | `ac` / `ic` | a `struct` / `enum` / `trait` / `impl` (Rust), `class` (Python/JS) |
+| **Parameter / arg** | `aa` / `ia` | one argument in a parameter / argument list |
+| **Loop** | `al` / `il` | a `for` / `while` / `loop` |
+| **Comment** | `aC` / `iC` | `aC` whole comment incl. markers; `iC` just the text |
+
+Combine with any operator: `daf` deletes a function, `cic` changes
+a class body, `vaa` selects an argument, `yif` yanks a function
+body, `=af` reindents a function, `diC` clears a comment's text but
+keeps the `//`.
+
+**Why these keys.** `t` (tag) is already a classic object, so
+class/type takes `ac`/`ic` (the nvim-treesitter convention) rather
+than Helix's `t`. Comment takes capital `aC`/`iC` — preserving the
+inner-vs-outer distinction a single `gc` object can't express — and
+leaves `gc` free for a future comment *operator* (`gcc`). `call` /
+`conditional` / `block` have no dedicated key yet (their natural
+letters clash with the classic paren/brace objects); reach them via
+the classic `i(` / `i{` and via the narrow operator below.
+
+**Innermost wins.** With the cursor inside a closure nested in a
+function, `af` targets the **closure**; move to the function's
+signature line to target the whole function.
+
+**The narrow operator.** `zn` is a narrow operator that pairs with
+any motion or text object: `znaf` narrows a function, `znic` an
+inner class, `znip` a paragraph, `zni{` inside braces, `znG` to
+end-of-file. Edits in the narrow view save back to the source file;
+`:widen` (or `q`) closes it. See
+[`../dev/architecture/narrow-mode.md`](../dev/architecture/narrow-mode.md).
+
+**Language coverage today:** Rust, Python, JavaScript ship a
+`textobjects.scm`. A language with no query simply has no
+tree-sitter objects (the delimiter objects above still work).
+Adding a language's objects is one query file — see
+[languages.md](languages.md).
+
 ---
 
 ## Visual modes

@@ -283,6 +283,17 @@ impl Syntax {
     }
 
     /// Convenience pass-through to
+    /// [`SyntaxSnapshot::scope_at_cursor`].
+    pub fn scope_at_cursor(
+        &self,
+        line: u32,
+        col_byte: u32,
+        capture_suffix: &str,
+    ) -> Option<(u32, u32)> {
+        self.inner.scope_at_cursor(line, col_byte, capture_suffix)
+    }
+
+    /// Convenience pass-through to
     /// [`SyntaxSnapshot::highlight_lines`]. Note: takes `&self`
     /// (the read API never needed `&mut`).
     pub fn highlight_lines(
@@ -670,6 +681,82 @@ impl SyntaxSnapshot {
         // down through the file.
         out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
         out
+    }
+
+    /// Find the innermost tree-sitter scope containing the cursor whose
+    /// `textobjects.scm` capture name *ends with* `capture_suffix`
+    /// (e.g. `"function.outer"`, `"class.outer"`, `"block.outer"`) and
+    /// return its inclusive 0-based `(start_line, end_line)` source rows.
+    ///
+    /// "Innermost" = smallest byte span among the matching captures that
+    /// contain the cursor byte, so a cursor inside a closure nested in a
+    /// function resolves the closure for `"function.outer"`, and a cursor
+    /// on a statement resolves the tightest enclosing brace block for
+    /// `"block.outer"`. Returns `None` when no parse is cached, the
+    /// language ships no `textobjects.scm`, the cursor line is out of
+    /// range, or no matching capture contains the cursor.
+    ///
+    /// `line` / `col_byte` are 0-based; `col_byte` is a utf-8 byte offset
+    /// within the line (the snapshot's position convention). Powers
+    /// narrow-mode's tree-sitter targets (`:narrow-function` /
+    /// `:narrow-class` / `:narrow-block`, N.1.3); the plain `(u32, u32)`
+    /// return keeps multibuffer / narrow types out of this crate
+    /// (dependency direction: `lattice-multibuffer` -> `lattice-syntax`).
+    pub fn scope_at_cursor(
+        &self,
+        line: u32,
+        col_byte: u32,
+        capture_suffix: &str,
+    ) -> Option<(u32, u32)> {
+        let tree = self.tree.as_ref()?;
+        let query = self.registry.textobjects_query(self.lang.name())?;
+        // Absolute cursor byte = line-start + column. `line_starts` holds
+        // `line_count + 1` entries (final = source length); an out-of-range
+        // line yields `None`.
+        let line_start = self.line_starts.get(line as usize).copied()?;
+        let cursor_byte = (line_start + col_byte as usize).min(self.source.len());
+
+        let names = query.capture_names();
+        let mut cursor = QueryCursor::new();
+        // Restrict to the 1-byte window at the cursor: a node `[start, end)`
+        // overlaps `[cursor, cursor+1)` iff `start <= cursor < end` -- exactly
+        // the half-open containment we want, so the explicit filter below is a
+        // belt-and-suspenders guard, not a second condition. Bounds the match
+        // set to enclosing scopes on large files.
+        cursor.set_byte_range(cursor_byte..cursor_byte.saturating_add(1));
+        let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
+        // Smallest-span containing capture so far: (span_len, start_row, end_row).
+        let mut best: Option<(usize, u32, u32)> = None;
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = names[cap.index as usize];
+                if !name.ends_with(capture_suffix) {
+                    continue;
+                }
+                let n = cap.node;
+                let start = n.start_byte();
+                let end = n.end_byte();
+                // Half-open containment, matching tree-sitter node range
+                // semantics: the cursor on the construct's last token (e.g.
+                // `}` at byte `end - 1`) counts as inside; one past does not.
+                if cursor_byte < start || cursor_byte >= end {
+                    continue;
+                }
+                let span = end - start;
+                let start_row = n.start_position().row as u32;
+                let end_row = n.end_position().row as u32;
+                // Strictly-smaller replaces, so the first capture seen at a
+                // given span wins ties deterministically (query-pattern order).
+                let replace = match best {
+                    Some((best_span, _, _)) => span < best_span,
+                    None => true,
+                };
+                if replace {
+                    best = Some((span, start_row, end_row));
+                }
+            }
+        }
+        best.map(|(_, s, e)| (s, e))
     }
 
     /// Compute styled spans for each line in `[start_line, end_line)`.
@@ -1299,6 +1386,101 @@ const MAX: i32 = 10;\n\
         let mut s = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
         s.parse("# heading\n\nbody\n");
         assert!(s.collect_symbols().is_empty());
+    }
+
+    // ---- N.1.0: scope_at_cursor (narrow-mode tree-sitter targets) ----
+
+    #[test]
+    fn scope_at_cursor_rust_fn_returns_correct_range() {
+        // line 0: fn outer() {
+        // line 1:     let x = 1;
+        // line 2:     x
+        // line 3: }
+        let src = "fn outer() {\n    let x = 1;\n    x\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        // Cursor inside the body returns the whole function_item.
+        assert_eq!(s.scope_at_cursor(1, 8, "function.outer"), Some((0, 3)));
+    }
+
+    #[test]
+    fn scope_at_cursor_selects_innermost_when_nested() {
+        // A closure nested in a function: the closure is the innermost
+        // @function.outer match, so its (smaller) range wins.
+        // line 0: fn outer() {
+        // line 1:     let f = || {
+        // line 2:         1
+        // line 3:     };
+        // line 4: }
+        let src = "fn outer() {\n    let f = || {\n        1\n    };\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(2, 8, "function.outer"), Some((1, 3)));
+    }
+
+    #[test]
+    fn scope_at_cursor_returns_none_outside_any_scope() {
+        // line 0: use std::io;   <- not inside any function
+        // line 1: fn main() {}
+        let src = "use std::io;\nfn main() {}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(0, 4, "function.outer"), None);
+    }
+
+    #[test]
+    fn scope_at_cursor_class_rust_struct() {
+        // line 0: struct Point {
+        // line 1:     x: i32,
+        // line 2:     y: i32,
+        // line 3: }
+        let src = "struct Point {\n    x: i32,\n    y: i32,\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(1, 4, "class.outer"), Some((0, 3)));
+        // The struct is not a function.
+        assert_eq!(s.scope_at_cursor(1, 4, "function.outer"), None);
+    }
+
+    #[test]
+    fn scope_at_cursor_block_targets_innermost_brace_scope() {
+        // line 0: fn main() {
+        // line 1:     if x > 0 {
+        // line 2:         y = 1;
+        // line 3:     }
+        // line 4: }
+        // Cursor on `y = 1;` -> innermost @block.outer is the if's
+        // then-block (rows 1..3), not the whole function body (0..4).
+        let src = "fn main() {\n    if x > 0 {\n        y = 1;\n    }\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(2, 8, "block.outer"), Some((1, 3)));
+    }
+
+    #[test]
+    fn scope_at_cursor_none_when_no_textobjects_query() {
+        // markdown ships no textobjects.scm -> None even after parse.
+        let mut s = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s.parse("# heading\n\nbody\n");
+        assert_eq!(s.scope_at_cursor(0, 2, "function.outer"), None);
+    }
+
+    #[test]
+    fn scope_at_cursor_none_when_no_parse() {
+        // No parse -> tree is None -> None, no panic.
+        let s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        assert_eq!(s.scope_at_cursor(0, 0, "function.outer"), None);
+    }
+
+    #[test]
+    fn scope_at_cursor_python_function() {
+        // line 0: def greet(name):
+        // line 1:     msg = name
+        // line 2:     return msg
+        let src = "def greet(name):\n    msg = name\n    return msg\n";
+        let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(1, 4, "function.outer"), Some((0, 2)));
     }
 
     #[test]

@@ -27,6 +27,7 @@ layered resolution); this page is the deep-dive on each.
 | `:set wrap` / `:set nowrap`      | off     | Wrap long lines onto continuation rows vs. clip at the edge    |
 | `gj` / `gk`                      | —       | Move **one display row** (wraps count); `j`/`k` always logical line |
 | `g0` / `g$`                      | —       | Jump to start / end of the current display row (under wrap)    |
+| `:set ui.ligatures` / `:set ui.ligatures=off` | on | Enable / disable OpenType ligatures (GPUI only) |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
 | `:set list` / `:set whitespace`  | off     | Show whitespace markers (tabs, trailing/leading spaces, …)     |
@@ -101,3 +102,32 @@ Setting any glyph to the empty string disables decoration for that
 category. The markers degrade gracefully: the defaults are
 plain-BMP glyphs that render in any terminal font, so you don't need
 a patched/Nerd font to use `:set list`.
+
+## Ligatures (`ui.ligatures`)
+
+OpenType programming ligatures replace multi-character sequences with
+a single presentation glyph: `->` becomes a right arrow, `!=` a
+not-equal sign, `=>` a fat arrow, `//` a double slash, and so on.
+Common ligature fonts: Fira Code, JetBrains Mono, Cascadia Code,
+Iosevka.
+
+**GPUI renderer:** ligatures are **on by default**. If you prefer the
+raw characters, `:set ui.ligatures=off` calls
+`FontFeatures::disable_ligatures()` before shaping, suppressing both
+`liga` (standard ligatures) and `calt` (contextual alternates).
+
+```
+:set ui.ligatures=off   " disable — see individual glyphs
+:set ui.ligatures       " re-enable (same as =on)
+```
+
+Ligatures naturally break at syntax-colour boundaries and at the
+cursor position — the same behaviour as VSCode, Helix, and Zed. Most
+operator sequences (`->`, `!=`, `=>`, `<=`, `//`, `...`) share a
+single syntax token and therefore render as ligatures correctly.
+
+**TUI renderer:** the `ui.ligatures` option is ignored. Whether
+ligatures appear in the terminal depends entirely on your terminal
+emulator (kitty, WezTerm, Alacritty, iTerm2 etc.) and your
+configured terminal font. Lattice does not interfere — it outputs
+plain UTF-8 and lets the terminal shape it.

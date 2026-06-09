@@ -64,9 +64,9 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style, TextRun, Window, fill,
-    point, px, rgb, size,
+    App, Bounds, DefiniteLength, Element, ElementId, FontFeatures, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style,
+    TextRun, Window, fill, point, px, rgb, size,
 };
 use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
@@ -506,7 +506,14 @@ impl Element for EditorElement {
         let raw_lines: Vec<&str> = self.text.split('\n').collect();
 
         let text_style = window.text_style();
-        let font = text_style.font();
+        let mut font = text_style.font();
+        if !self.theme.ligatures {
+            font.features = {
+                let mut f = FontFeatures::default();
+                f.disable_ligatures();
+                f
+            };
+        }
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height: Pixels = font_size * 1.3;
         // S4.final.b (2026-05-27): typographic ascent of the

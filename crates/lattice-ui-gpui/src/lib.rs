@@ -173,6 +173,11 @@ pub struct GpuiTheme {
     pub font_family: String,
     /// Font size in points. Configurable via `ui.font_size`.
     pub font_size_pt: u32,
+    /// Whether OpenType ligatures are enabled. Configurable via
+    /// `ui.ligatures` (default `true`). When `false`,
+    /// `FontFeatures::disable_ligatures()` is applied to every
+    /// `Font` before shaping, suppressing `liga` + `calt`.
+    pub ligatures: bool,
     /// Main document background.
     pub background: u32,
     /// Main document foreground (text + non-cursor chars).
@@ -213,6 +218,7 @@ impl Default for GpuiTheme {
         Self {
             font_family: String::from("Menlo"),
             font_size_pt: 14,
+            ligatures: true,
             // Catppuccin Mocha base.
             background: 0x1e1e2e,
             // Catppuccin Mocha text.
@@ -808,6 +814,9 @@ impl GpuiApp {
         }
         if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
             self.theme.font_size_pt = (*size).max(4).min(96) as u32;
+        }
+        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>() {
+            self.theme.ligatures = *ligatures;
         }
     }
 
@@ -1417,6 +1426,28 @@ mod tests {
             ModalState::Insert,
             "ad() must observe the post-dispatch modal state through render_state"
         );
+    }
+
+    /// LG.1: `rebuild_gpui_theme` propagates `ui.ligatures` to
+    /// `GpuiTheme.ligatures`. Default is `true`; setting the option
+    /// to `false` flips the field.
+    #[test]
+    fn rebuild_gpui_theme_propagates_ligatures() {
+        let mut app = GpuiApp::new(Document::empty());
+        // Default is true (ligatures on by default).
+        assert!(app.theme.ligatures, "default ligatures should be true");
+        // Override via the config registry that's already in the render state.
+        let rs = app.render_state.load();
+        rs.options.config.parse_and_set_command("ui.ligatures=off").unwrap();
+        drop(rs);
+        app.rebuild_gpui_theme();
+        assert!(!app.theme.ligatures, "ligatures should be false after ui.ligatures=off");
+        // Toggle back on.
+        let rs = app.render_state.load();
+        rs.options.config.parse_and_set_command("ui.ligatures=on").unwrap();
+        drop(rs);
+        app.rebuild_gpui_theme();
+        assert!(app.theme.ligatures, "ligatures should be true after ui.ligatures=on");
     }
 
     /// Slice 3c.atomic.K: `set_viewport_height` clamps height

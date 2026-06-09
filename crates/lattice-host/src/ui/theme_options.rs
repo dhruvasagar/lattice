@@ -132,6 +132,22 @@ lattice_config::options! {
     #[name("ui.nerd_fonts")]
     pub UiNerdFonts: bool = false;
 
+    /// Whether to enable OpenType ligatures in the GPUI renderer.
+    ///
+    /// `true` (default) -- `liga` + `calt` font features are active.
+    /// Ligature-capable fonts (Fira Code, JetBrains Mono, Cascadia
+    /// Code, Iosevka) will substitute multi-char sequences like
+    /// `->` / `!=` / `=>` with a single presentation glyph.
+    ///
+    /// `false` -- calls `FontFeatures::disable_ligatures()` before
+    /// shaping; all sequences render as individual glyphs.
+    ///
+    /// The TUI renderer ignores this option — ligatures in the
+    /// terminal are controlled by the terminal emulator's font
+    /// settings.
+    #[name("ui.ligatures")]
+    pub UiLigatures: bool = true;
+
     /// Font family used by the GPUI (native window) renderer.
     /// Accepts a single font family name. The font MUST be a
     /// monospace typeface — proportional fonts produce incorrect
@@ -181,6 +197,20 @@ mod tests {
         // BMP fallback is the default so the first frame renders
         // in any terminal font.
         assert!(!*r.get_typed::<UiNerdFonts>().unwrap());
+    }
+
+    #[test]
+    fn ui_ligatures_option_parses_and_default_is_true() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(
+            *r.get_typed::<UiLigatures>().unwrap(),
+            "ui.ligatures should default to true"
+        );
+        r.parse_and_set_command("ui.ligatures=off").unwrap();
+        assert!(!*r.get_typed::<UiLigatures>().unwrap());
+        r.parse_and_set_command("ui.ligatures=on").unwrap();
+        assert!(*r.get_typed::<UiLigatures>().unwrap());
     }
 
     #[test]

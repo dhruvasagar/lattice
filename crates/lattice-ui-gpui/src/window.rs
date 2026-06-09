@@ -62,8 +62,9 @@
 use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
+    FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    SharedString, Styled, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -2474,8 +2475,16 @@ impl Render for EditorView {
         // Clone font family before the block so the immutable borrow of
         // self.app drops before the mutable borrows below.
         let font_family_for_advance = self.app.theme.font_family.clone();
+        let ligatures_enabled = self.app.theme.ligatures;
         let glyph_advance_px = {
-            let ref_font = font(font_family_for_advance);
+            let mut ref_font = font(font_family_for_advance);
+            if !ligatures_enabled {
+                ref_font.features = {
+                    let mut f = FontFeatures::default();
+                    f.disable_ligatures();
+                    f
+                };
+            }
             let ref_run = TextRun {
                 len: 1,
                 font: ref_font,

@@ -5250,51 +5250,29 @@ impl Editor {
             // view-creation; the host arm is generic glue (resolve
             // range → create → activate).
             AppEffect::NarrowTrigger { range } => {
-                use lattice_grammar::range::{Range, RangeBound};
-
-                /// Resolve a `RangeBound` to a 0-based line, clamped
-                /// to `[0, last]`. Marks + patterns are deferred to a
-                /// follow-up (they resolve to the cursor line here).
-                fn resolve_bound(b: &RangeBound, cursor: u32, last: u32) -> u32 {
-                    match b {
-                        RangeBound::Line(n) => (*n).min(last),
-                        RangeBound::CurrentLine => cursor,
-                        RangeBound::LastLine => last,
-                        RangeBound::Offset { base, delta } => {
-                            let base_line = resolve_bound(base, cursor, last) as i64;
-                            (base_line + *delta as i64).clamp(0, last as i64) as u32
-                        }
-                        RangeBound::Mark(_) | RangeBound::Pattern(_) => cursor,
-                    }
-                }
-
-                /// `Option<Range>` → inclusive `(start, end)` 0-based
-                /// line span. `None` / `CurrentLine` narrows the
-                /// cursor line (N.1.2 widens bare `:narrow` to the
-                /// paragraph / Visual selection).
-                fn resolve_range(range: &Option<Range>, cursor: u32, last: u32) -> (u32, u32) {
-                    match range {
-                        None
-                        | Some(Range::CurrentLine)
-                        | Some(Range::Selection)
-                        | Some(Range::Custom(_)) => (cursor, cursor),
-                        Some(Range::Whole) => (0, last),
-                        Some(Range::Span { start, end }) => {
-                            let s = resolve_bound(start, cursor, last);
-                            let e = resolve_bound(end, cursor, last);
-                            if s <= e { (s, e) } else { (e, s) }
-                        }
-                    }
-                }
-
                 let source_id = self.active_pane_buffer_id();
                 let source_handle = self.buffers.document_handle(source_id);
                 match source_handle {
                     Some(source_handle) => {
-                        let last_line = (source_handle.snapshot().buffer.line_count() as u32)
-                            .saturating_sub(1);
-                        let cursor_line = self.active_cursor().line;
-                        let (start, end) = resolve_range(&range, cursor_line, last_line);
+                        let snapshot = source_handle.snapshot();
+                        let last_line = snapshot.buffer.line_count().saturating_sub(1);
+                        let cursor_line = self.active_cursor().line.min(last_line);
+                        // N.1.2: the last Visual selection (preserved
+                        // after `:` left Visual) supplies `Range::Selection`
+                        // and the `'<` / `'>` marks.
+                        let visual = self.last_visual.as_ref().map(|v| {
+                            let a = v.anchor.line.min(last_line);
+                            let h = v.head.line.min(last_line);
+                            (a.min(h), a.max(h))
+                        });
+                        let (start, end) = resolve_narrow_range(
+                            &range,
+                            cursor_line,
+                            last_line,
+                            visual,
+                            &self.marks,
+                            &snapshot.buffer,
+                        );
                         let label = self.buffers.name_of(source_id).unwrap_or_default();
                         let registry = self.registry.clone();
                         let lr = Some(self.lang_registry.clone());
@@ -13390,6 +13368,78 @@ fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> bool {
         .line(line_idx)
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
+}
+
+/// N.1.2 (2026-06-10): resolve a `:narrow` range argument to an
+/// inclusive 0-based line span.
+///
+/// - bare `:narrow` (`None`) → the current paragraph (blank-line
+///   delimited, vim's `ip`);
+/// - `Range::Selection` and the `'<` / `'>` marks → the last Visual
+///   selection (`visual`);
+/// - other marks → `marks`; `.` → cursor; `$` → last line; numeric
+///   and offset bounds resolve directly; patterns are deferred.
+fn resolve_narrow_range(
+    range: &Option<lattice_grammar::range::Range>,
+    cursor: u32,
+    last: u32,
+    visual: Option<(u32, u32)>,
+    marks: &std::collections::HashMap<char, lattice_protocol::position::Position>,
+    buffer: &lattice_core::Buffer,
+) -> (u32, u32) {
+    use lattice_grammar::range::{Range, RangeBound};
+
+    fn resolve_bound(
+        b: &RangeBound,
+        cursor: u32,
+        last: u32,
+        visual: Option<(u32, u32)>,
+        marks: &std::collections::HashMap<char, lattice_protocol::position::Position>,
+    ) -> u32 {
+        match b {
+            RangeBound::Line(n) => (*n).min(last),
+            RangeBound::CurrentLine => cursor,
+            RangeBound::LastLine => last,
+            RangeBound::Mark('<') => visual.map(|(s, _)| s).unwrap_or(cursor),
+            RangeBound::Mark('>') => visual.map(|(_, e)| e).unwrap_or(cursor),
+            RangeBound::Mark(c) => marks.get(c).map(|p| p.line.min(last)).unwrap_or(cursor),
+            RangeBound::Offset { base, delta } => {
+                let bl = resolve_bound(base, cursor, last, visual, marks) as i64;
+                (bl + *delta as i64).clamp(0, last as i64) as u32
+            }
+            RangeBound::Pattern(_) => cursor,
+        }
+    }
+
+    match range {
+        None => paragraph_bounds(buffer, cursor, last),
+        Some(Range::CurrentLine) => (cursor, cursor),
+        Some(Range::Whole) => (0, last),
+        Some(Range::Selection) => visual.unwrap_or((cursor, cursor)),
+        Some(Range::Custom(_)) => (cursor, cursor),
+        Some(Range::Span { start, end }) => {
+            let s = resolve_bound(start, cursor, last, visual, marks);
+            let e = resolve_bound(end, cursor, last, visual, marks);
+            if s <= e { (s, e) } else { (e, s) }
+        }
+    }
+}
+
+/// N.1.2: blank-line-delimited paragraph around `cursor` (vim's `ip`,
+/// for bare `:narrow`). A blank cursor line narrows just that line.
+fn paragraph_bounds(buffer: &lattice_core::Buffer, cursor: u32, last: u32) -> (u32, u32) {
+    if is_blank_line(buffer, cursor) {
+        return (cursor, cursor);
+    }
+    let mut start = cursor;
+    while start > 0 && !is_blank_line(buffer, start - 1) {
+        start -= 1;
+    }
+    let mut end = cursor;
+    while end < last && !is_blank_line(buffer, end + 1) {
+        end += 1;
+    }
+    (start, end)
 }
 
 /// 5.5.G.4: pure-editor scroll / page / viewport / bracket /
@@ -26353,6 +26403,79 @@ fn cells_edit_delta_from_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── N.1.2: narrow `:narrow` range resolution ────────────────
+    #[test]
+    fn narrow_paragraph_bounds_are_blank_delimited() {
+        let buf = lattice_core::Buffer::from_text("a\nb\n\nc\nd\n");
+        let last = buf.line_count().saturating_sub(1);
+        assert_eq!(paragraph_bounds(&buf, 1, last), (0, 1));
+        assert_eq!(paragraph_bounds(&buf, 3, last), (3, 4));
+        // A blank cursor line narrows just that line.
+        assert_eq!(paragraph_bounds(&buf, 2, last), (2, 2));
+    }
+
+    #[test]
+    fn narrow_range_explicit_span_resolves_lines() {
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Span {
+                start: lattice_grammar::range::RangeBound::Line(1),
+                end: lattice_grammar::range::RangeBound::Line(3),
+            }),
+            0,
+            5,
+            None,
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (1, 3));
+    }
+
+    #[test]
+    fn narrow_range_selection_uses_last_visual() {
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Selection),
+            0,
+            5,
+            Some((2, 4)),
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (2, 4));
+    }
+
+    #[test]
+    fn narrow_range_visual_marks_resolve_via_last_visual() {
+        // `:'<,'>narrow` — the `'<` / `'>` marks resolve to the last
+        // Visual selection's bounds.
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Span {
+                start: lattice_grammar::range::RangeBound::Mark('<'),
+                end: lattice_grammar::range::RangeBound::Mark('>'),
+            }),
+            0,
+            5,
+            Some((1, 4)),
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (1, 4));
+    }
+
+    #[test]
+    fn narrow_range_bare_is_current_paragraph() {
+        let buf = lattice_core::Buffer::from_text("a\nb\n\nc\n");
+        let last = buf.line_count().saturating_sub(1);
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(&None, 1, last, None, &marks, &buf);
+        assert_eq!(r, (0, 1));
+    }
 
     /// `RendererSignal` is `Clone` so the renderer can fan signals
     /// out without consuming the host's `Vec<RendererSignal>` (and

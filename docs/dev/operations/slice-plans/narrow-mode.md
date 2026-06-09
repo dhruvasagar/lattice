@@ -39,7 +39,7 @@ owns *when* and *in what order*.
 |---|---|---|
 | **N.1.0** | `textobjects.scm` query infrastructure + `scope_at_cursor` | ✅ |
 | **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen` | ✅ (core) |
-| **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range) | 🗒 |
+| **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range) | ✅ |
 | **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | 🗒 |
 | **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`) | 🗒 |
 | **N.1.5** | Stacked narrow — transparent one-hop invariant | 🗒 |

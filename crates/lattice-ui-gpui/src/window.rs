@@ -1732,9 +1732,7 @@ impl EditorView {
                 } else {
                     String::new()
                 };
-                let lang = snapshot
-                    .path()
-                    .map(|p| lattice_syntax::Lang::detect_from_path(Some(p.as_path())));
+                let lang = Some(lattice_syntax::Lang::detect_from_path(snapshot.path()));
                 let lang_str = match lang {
                     Some(l) if l != lattice_syntax::Lang::Plain => {
                         format!("  {}", l.name())
@@ -2479,11 +2477,7 @@ impl Render for EditorView {
         let glyph_advance_px = {
             let mut ref_font = font(font_family_for_advance);
             if !ligatures_enabled {
-                ref_font.features = {
-                    let mut f = FontFeatures::default();
-                    f.disable_ligatures();
-                    f
-                };
+                ref_font.features = FontFeatures::disable_ligatures();
             }
             let ref_run = TextRun {
                 len: 1,

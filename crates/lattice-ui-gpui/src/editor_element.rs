@@ -508,11 +508,7 @@ impl Element for EditorElement {
         let text_style = window.text_style();
         let mut font = text_style.font();
         if !self.theme.ligatures {
-            font.features = {
-                let mut f = FontFeatures::default();
-                f.disable_ligatures();
-                f
-            };
+            font.features = FontFeatures::disable_ligatures();
         }
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height: Pixels = font_size * 1.3;

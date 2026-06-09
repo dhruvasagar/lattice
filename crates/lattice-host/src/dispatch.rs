@@ -25416,12 +25416,16 @@ impl Editor {
     /// into `do_*` helpers downstream.
     pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_grammar::Effect;
-        // Action-kind commands (`:` enter command line, `/`
-        // enter search, LSP navigation, ...) don't apply to the
-        // oil text buffer; let the grammar Action gate handle
-        // them centrally.
+        // Action- and ExCommand-kind commands don't apply to the oil
+        // text buffer. Action: grammar Action gate handles them centrally.
+        // ExCommand: ex-command dispatcher produces AppAction effects
+        // (e.g. `describe-buffer`, `describe-key`) that work buffer-
+        // agnostically — fall through to `run_document_invocation`.
         if let Some(spec) = self.registry.lookup(inv.command)
-            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
+            && matches!(
+                spec.kind,
+                lattice_grammar::CommandKind::Action | lattice_grammar::CommandKind::ExCommand
+            )
         {
             return false;
         }
@@ -26090,19 +26094,14 @@ impl Editor {
         //   are silently swallowed (claim with `true`) to match
         //   pre-refactor behaviour.
         match self.registry.lookup(cmd).map(|s| s.kind) {
-            Some(lattice_grammar::CommandKind::Action) => false,
+            Some(lattice_grammar::CommandKind::Action)
+            | Some(lattice_grammar::CommandKind::ExCommand) => false,
             Some(lattice_grammar::CommandKind::Motion) | None => true,
             Some(lattice_grammar::CommandKind::Operator)
             | Some(lattice_grammar::CommandKind::TextObject) => {
                 self.pending_count = 0;
                 self.op_count = 0;
                 self.dispatch_synthetic_operator(inv);
-                true
-            }
-            Some(_) => {
-                self.pending_count = 0;
-                self.op_count = 0;
-                self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
                 true
             }
         }
@@ -26179,7 +26178,10 @@ impl Editor {
         let Some(spec) = self.registry.lookup(inv.command) else {
             return true;
         };
-        if matches!(spec.kind, lattice_grammar::CommandKind::Action) {
+        if matches!(
+            spec.kind,
+            lattice_grammar::CommandKind::Action | lattice_grammar::CommandKind::ExCommand
+        ) {
             return false;
         }
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {

@@ -1,7 +1,7 @@
 * Features
 - [ ] diagnostics under cursor
 - [X] Terminal
-- [ ] ligatures
+- [X] ligatures
 - [ ] variable size fonts in GUI, first consumer markdown
 - [X] diffing
 - [ ] Narrow mode
@@ -36,6 +36,7 @@
 - [ ] history (command, macros, yank, etc.)
 - [ ] auto indent
 - [ ] auto formatting
+- [ ] GPUI: Zooming Text
 
 * Plugins
 - [ ] plugin manager
@@ -43,6 +44,7 @@
 - [ ] Claude Code IDE
 - [ ] Org Mode
 - [ ] lsp context
+- [ ] which key
 
 * Issues
 - [X] GUI: cursor scrolls past viewport

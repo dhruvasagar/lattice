@@ -1373,17 +1373,17 @@ impl Element for EditorElement {
             }
         }
 
-        // Text body. S4.final.f: `paint_cells_row` is now the
-        // default for active-pane document bodies — the env-var
-        // toggle retired this slice. When the active pane has a
-        // cell matrix AND the row's source line is covered,
-        // paint via `paint_cells_row` (per-cell `paint_glyph` +
-        // bg quads) and skip `ShapedLine::paint` for that row.
-        // Folded rows / boot frames / buffer-switch gaps /
-        // inactive panes (`cell_matrix == None`) fall through
-        // to `ShapedLine::paint` — the legacy path stays for
-        // those transient and inactive-pane cases until a
-        // future slice migrates inactive panes to cells as well.
+        // Text body. S4.final.f: `paint_cells_row` is the default
+        // for active-pane document bodies when `ui.ligatures=false`.
+        // When `ui.ligatures=true` (LG.1), bg quads still come from
+        // the cell matrix (for syntax-token backgrounds) but glyphs
+        // are emitted by `ShapedLine::paint` — which shapes the full
+        // multi-char TextRun so OpenType ligature sequences form.
+        // Folded rows / boot frames / buffer-switch gaps / inactive
+        // panes (`cell_matrix == None`) fall through to
+        // `ShapedLine::paint` — same behaviour regardless of the
+        // ligatures flag.
+        let ligatures = self.theme.ligatures;
         let use_paint_cells = self.cell_matrix.is_some();
         for (i, shaped_line) in prepaint.shaped_text.iter().enumerate() {
             let line_y = bounds.origin.y + line_height * (i as f32);
@@ -1434,6 +1434,19 @@ impl Element for EditorElement {
                                     && seg > 0
                                     && !line_text.is_empty()
                                 {
+                                    false
+                                } else if ligatures {
+                                    // LG.1: ligatures on — bg quads from cell
+                                    // matrix, glyphs from ShapedLine::paint so
+                                    // multi-char runs are shaped together and
+                                    // OpenType ligature sequences form.
+                                    crate::paint_cells::paint_cells_row_bg_only(
+                                        seg_cells,
+                                        origin,
+                                        prepaint.glyph_advance,
+                                        line_height,
+                                        window,
+                                    );
                                     false
                                 } else {
                                     crate::paint_cells::paint_cells_row(

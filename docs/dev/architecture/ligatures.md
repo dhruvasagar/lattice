@@ -1,7 +1,7 @@
 # Ligature rendering
 
 **Date:** 2026-06-09
-**Status:** LG.1 in progress
+**Status:** complete (LG.1 + LG.2 ✅)
 **Scope:** GPUI renderer only; TUI is terminal-delegated.
 
 ---
@@ -108,6 +108,30 @@ controlled by the terminal emulator's font settings.
 
 ---
 
+## Rendering path — active pane hybrid
+
+The active-pane document body uses a hybrid paint strategy gated on
+`GpuiTheme.ligatures`:
+
+**`ligatures=true` (default)**
+1. Background quads — `paint_cells_row_bg_only(seg_cells, ...)` reads
+   per-cell bg colours from the cell matrix so syntax-token backgrounds
+   (selection, matched-bracket tints, etc.) render correctly.
+2. Glyph paint — `ShapedLine::paint(...)` renders the pre-built shaped
+   line. The shaped line was built in `prepaint` from coalesced multi-char
+   `TextRun`s via `display_line_to_text_runs`; adjacent same-style chars
+   land in one run, HarfBuzz sees the sequence and the ligature forms.
+
+**`ligatures=false`**
+`paint_cells_row(seg_cells, ...)` handles both bg quads and glyphs
+(per-char `paint_glyph` via `GlyphResolver`). No ligature sequences
+form because each char is resolved independently.
+
+Inactive panes and fall-through rows always use `ShapedLine::paint`
+regardless of the flag (their cell matrix is absent).
+
+---
+
 ## Implementation touch surface
 
 | Location | Change |
@@ -115,6 +139,8 @@ controlled by the terminal emulator's font settings.
 | `lattice-host/src/ui/theme_options.rs` | Add `UiLigatures: bool = true` |
 | `lattice-ui-gpui/src/lib.rs` (`GpuiTheme`) | Add `pub ligatures: bool` |
 | `lattice-ui-gpui/src/lib.rs` (`rebuild_gpui_theme`) | Read `UiLigatures`, set `self.theme.ligatures` |
-| `lattice-ui-gpui/src/editor_element.rs` (prepaint) | Post-modify `font.features.disable_ligatures()` when `!self.theme.ligatures` |
-| `lattice-ui-gpui/src/window.rs` (advance measurement) | Same post-modify on the `font()` call |
+| `lattice-ui-gpui/src/editor_element.rs` (prepaint) | Apply `FontFeatures::disable_ligatures()` when `!self.theme.ligatures` |
+| `lattice-ui-gpui/src/editor_element.rs` (paint) | Hybrid path: `paint_cells_row_bg_only` + `ShapedLine::paint` when `ligatures=true` |
+| `lattice-ui-gpui/src/paint_cells.rs` | Add `paint_cells_row_bg_only` |
+| `lattice-ui-gpui/src/window.rs` (advance measurement) | Apply `FontFeatures::disable_ligatures()` on reference font |
 | `docs/user/display.md` | Add `ui.ligatures` row + ligature section |

@@ -126,10 +126,35 @@ pub(crate) fn cell_font_variant(base: &Font, cell: &Cell) -> Font {
     font
 }
 
+/// Paint only the background quads for a display row.
+/// Used when `ui.ligatures=true` — text glyphs are handled by
+/// [`gpui::ShapedLine::paint`] so that multi-char runs are shaped
+/// as a unit and OpenType ligature sequences (`->`, `!=`, `=>`, …)
+/// form. Background quads still come from the cell matrix so
+/// syntax-token backgrounds render correctly.
+pub fn paint_cells_row_bg_only(
+    cells: &[Cell],
+    line_origin: Point<Pixels>,
+    advance: Pixels,
+    line_height: Pixels,
+    window: &mut Window,
+) {
+    for (idx, cell) in cells.iter().enumerate() {
+        let cell_x = line_origin.x + advance * (idx as f32);
+        let (_, bg_u32) = apply_color_modifiers(cell);
+        if bg_u32 != 0 {
+            window.paint_quad(fill(
+                Bounds::new(point(cell_x, line_origin.y), size(advance, line_height)),
+                rgb(bg_u32),
+            ));
+        }
+    }
+}
+
 /// Paint a single document-body row by emitting per-cell
 /// background quads and glyphs. Used by `EditorElement::paint`
-/// for active-pane document bodies; otherwise the row goes
-/// through `ShapedLine::paint`.
+/// for active-pane document bodies when `ui.ligatures=false`;
+/// otherwise the row goes through `ShapedLine::paint`.
 ///
 /// W.5 (soft-wrap): takes a `&[Cell]` slice rather than the whole
 /// `CellRow` so the caller can pass `CellRow::segment(seg, width)`

@@ -419,9 +419,11 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
                     .map(|s| popup_height_for(s.candidates.len()))
                     .unwrap_or(0),
             );
+        // Option A: global modeline removed; each pane has its own
+        // 1-row status footer. Subtract only cmdline (1), not 2.
         let buffer_height = size
             .height
-            .saturating_sub(2)
+            .saturating_sub(1)
             .saturating_sub(extra_rows as u16) as u32;
         // Diff-then-push: only dispatch when the resolved viewport height
         // changed. Unconditional dispatch here was publishing (+ waking both
@@ -450,14 +452,12 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
             height: buffer_height as u16,
         };
         let rects = panes_arc.tree.compute_rects(area_for_panes);
-        let multi = rects.len() > 1;
         let current_leaves: Vec<_> = panes_arc.tree.leaves().to_vec();
         for (idx, prect) in &rects {
-            // Reserve a bottom row for the per-pane status line in
-            // multi-pane setups so the host's viewport matches
-            // what's actually drawn (the renderer carves the same
-            // row off in `draw_panes`).
-            let content_h = if multi && prect.height >= 2 {
+            // Every pane reserves a bottom row for its status line
+            // (Option A: global modeline removed). Mirror of
+            // draw_panes which unconditionally splits rect.height >= 2.
+            let content_h = if prect.height >= 2 {
                 prect.height - 1
             } else {
                 prect.height

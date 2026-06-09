@@ -1825,6 +1825,10 @@ pub struct ModesRenderState {
             std::sync::Arc<lattice_mode::ActiveModes>,
         >,
     >,
+    /// Read-only after boot — one Arc bump per `ModesRenderState`
+    /// publish. Lets the renderer call `mode.status_line_items()`
+    /// without an actor round-trip.
+    pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the

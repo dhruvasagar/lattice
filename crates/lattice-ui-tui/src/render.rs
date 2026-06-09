@@ -355,11 +355,13 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     let tabline_visible = app.render_state.load().tabs.visible;
     let tabline_rows: u16 = if tabline_visible { 1 } else { 0 };
 
+    // MO.4.b / Option-A: global modeline removed. Each pane owns its
+    // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
+    // Layout: tabline (0/1) | panes (Min) | cmdline (1) | candidates (opt).
     let constraints: Vec<Constraint> = if extra_rows > 0 {
         vec![
             Constraint::Length(tabline_rows),      // tabline (0 or 1)
-            Constraint::Min(1),                    // buffer
-            Constraint::Length(1),                 // mode line
+            Constraint::Min(1),                    // panes (each carries its own status row)
             Constraint::Length(1),                 // cmdline / picker query
             Constraint::Length(extra_rows as u16), // candidate list (bottom)
         ]
@@ -368,7 +370,6 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
             Constraint::Length(tabline_rows),
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ]
     };
     let chunks = Layout::default()
@@ -376,21 +377,20 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         .constraints(constraints)
         .split(frame.area());
 
-    // Tabline at chunks[0] (length=0 when invisible draws
-    // nothing); panes/modeline/cmdline indices shift by one.
+    // chunks[0] = tabline (0-height when hidden),
+    // chunks[1] = pane area, chunks[2] = cmdline, chunks[3] = candidates.
     if tabline_visible {
         draw_tabline(frame, chunks[0], app);
     }
     draw_panes(frame, chunks[1], app, snap);
-    draw_mode_line(frame, chunks[2], app, snap);
     // Picker query claims the cmdline row only in minibuffer
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
     // instead.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
-        draw_picker_prompt(frame, chunks[3], app);
+        draw_picker_prompt(frame, chunks[2], app);
     } else {
-        draw_command_or_echo(frame, chunks[3], app);
+        draw_command_or_echo(frame, chunks[2], app);
     }
     // Help popup overlay -- painted whenever a popup_buffer is
     // set AND the active pane isn't already showing it as an
@@ -415,9 +415,9 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
     if picker_rows > 0 {
-        draw_picker_candidates(frame, chunks[4], app);
+        draw_picker_candidates(frame, chunks[3], app);
     } else if completion_rows > 0 {
-        draw_completion_popup(frame, chunks[4], app);
+        draw_completion_popup(frame, chunks[3], app);
     }
     // Picker popup overlay -- only drawn when `picker.display`
     // is `"popup"` and a picker is open. Floats centered over
@@ -2304,9 +2304,9 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // `app.editor.cursor` (which is help's). draw_inactive_document
         // already reads pane state, so we route there.
         let is_active = idx == active && pane_buffer_matches_active(app, idx);
-        // Reserve the bottom row for the per-pane status line, but
-        // only when there's more than one pane visible.
-        let (content_rect, status_rect) = if multi && rect.height >= 2 {
+        // Every pane reserves its bottom row for the per-pane status
+        // line (Option A: global modeline removed).
+        let (content_rect, status_rect) = if rect.height >= 2 {
             let content_h = rect.height - 1;
             (
                 Rect {
@@ -2828,6 +2828,14 @@ fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRec
 /// per-window). Active pane is reverse-videoed; inactive panes are
 /// dim. Format: `path  line:col  [+]` (path, position, dirty
 /// marker). Help and file-tree get their own labels.
+/// Option A: per-pane status row replaces the removed global modeline.
+///
+/// Active pane: `[MODE] label  <mode-items>    line:col  lang`
+/// Inactive pane: `label    line:col` (dimmed)
+///
+/// `label` comes from `pane_status_label` which already incorporates
+/// path/dirty and the MO.4.b mode-contributed items (LSP progress,
+/// diff counts, etc.) sorted by priority.
 fn draw_pane_status_line(
     frame: &mut Frame,
     area: Rect,
@@ -2835,28 +2843,40 @@ fn draw_pane_status_line(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    // M.4: status label resolves through `App::pane_status_label`,
-    // which folds the per-`BufferKind` formatting behind a single
-    // method. The renderer doesn't `match buffer.kind` -- the
-    // App-side dispatch can later route through mode-contributed
-    // status renderers without changing this call site.
-    let label = app.pane_status_label(pane);
-    let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
     let style = if is_active {
         app.theme.pane_status_active
     } else {
         app.theme.pane_status_inactive
     };
-    // Compose: " label                pos "
     let width = area.width as usize;
-    let total_text_len = label.chars().count() + pos.chars().count() + 3; // 1 lead + 2 sep
-    let pad = if width > total_text_len {
-        width - total_text_len
+
+    let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
+    let label = app.pane_status_label(pane);
+
+    let left = if is_active {
+        let modal = app.modal_label();
+        let lang = app
+            .buffers()
+            .registry
+            .document_path(pane.buffer_id)
+            .map(|p| Lang::detect_from_path(Some(p.as_path())).label())
+            .unwrap_or("");
+        let right = if lang.is_empty() {
+            pos.clone()
+        } else {
+            format!("{pos}  {lang}")
+        };
+        let content = format!("[{modal}] {label}");
+        let total = content.chars().count() + right.chars().count() + 2;
+        let pad = if width > total { width - total } else { 1 };
+        format!("{content}{}{right} ", " ".repeat(pad))
     } else {
-        1
+        let total = label.chars().count() + pos.chars().count() + 3;
+        let pad = if width > total { width - total } else { 1 };
+        format!(" {label}{}{pos} ", " ".repeat(pad))
     };
-    let line_text = format!(" {label}{}{pos} ", " ".repeat(pad));
-    let truncated: String = line_text.chars().take(width).collect();
+
+    let truncated: String = left.chars().take(width).collect();
     let para = Paragraph::new(Line::from(Span::styled(truncated, style)));
     frame.render_widget(para, area);
 }
@@ -3169,210 +3189,6 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
-/// Modeline segment listing the LSP servers attached to the active
-/// document buffer. Empty string when no servers are attached, when
-/// the active buffer has no URI yet. Reads are wait-free against
-/// the supervisor's `ArcSwap<SupervisorSnapshot>`; the previous
-/// `try_lock` fallback (would blank the modeline whenever an
-/// async path held the supervisor mutex) is gone. Multiple
-/// servers are joined with `+` (`[lsp:rust+typos]`); the §5.4
-/// multi-server merge model means more than one is legitimate.
-/// D.3.g (2026-05-29): modeline diff-mode indicator. Returns
-/// `[diff: N hunks]` when the active document has an open
-/// `DiffSession`, empty string otherwise. The baseline
-/// descriptor (on-disk path / git ref / sibling buffer) isn't
-/// surfaced here in v1 — the hunk count is the load-bearing
-/// signal that diff mode is active; a future D.3.h headerline
-/// carries the verbose baseline label. `0 hunks` still shows
-/// (the session is open but the buffer happens to match
-/// baseline) so the user has a clear "diff is on" signal even
-/// when no changes are visible yet.
-fn active_diff_segment(app: &App) -> String {
-    let rs = app.render_state.load();
-    let Some(n) = rs.diff.active_session_hunk_count else {
-        return String::new();
-    };
-    match n {
-        0 => "[diff: 0 hunks]".to_string(),
-        1 => "[diff: 1 hunk]".to_string(),
-        n => format!("[diff: {n} hunks]"),
-    }
-}
-
-fn active_lsp_segment(app: &App) -> String {
-    // M.5.6: hide the modeline LSP segment when `lsp-mode` is
-    // off. The supervisor may still hold attachments (other
-    // buffers can still be tracked); we don't surface this
-    // buffer's quiet state via a stale `[lsp:...]` indicator.
-    if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
-        return String::new();
-    }
-    // Slice 3c.final.B (group 1): URI lookup via `app.buffers()`.
-    let buffers = app.buffers();
-    let Some(uri) = buffers.uris.get(&app.ad().document_buffer_id) else {
-        return String::new();
-    };
-    // Slice 3c.final.B (group 4): supervisor handle via published
-    // substate; `servers_for` stays wait-free behind its own ArcSwap.
-    let rs = app.render_state.load();
-    let handles = rs.lsp.supervisor.servers_for(uri);
-    if handles.is_empty() {
-        return String::new();
-    }
-    let ids: Vec<&str> = handles.iter().map(|h| h.server_id()).collect();
-    let base = format!("[lsp:{}]", ids.join("+"));
-    // 4.4.c: append a progress segment when `lsp-progress-mode`
-    // is on and the supervisor has an active progress entry for
-    // one of the buffer's attached servers. The accumulator is
-    // keyed by (server_id, token); we pick the entry whose
-    // server is attached to this buffer. Stable selection: take
-    // the highest-percentage active entry, breaking ties by
-    // server-id then token so the modeline doesn't flicker
-    // between equal candidates frame-to-frame.
-    if !app.lsp_progress_mode_enabled_for(app.ad().document_buffer_id) {
-        return base;
-    }
-    let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
-    let mut best: Option<&lattice_lsp::LspProgressUpdate> = None;
-    // Slice 3c.final.B (group 4): progress via published substate.
-    for ((sid, _tok), update) in rs.lsp.progress.iter() {
-        if !attached.contains(sid.as_ref()) {
-            continue;
-        }
-        if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
-            continue;
-        }
-        best = match best {
-            None => Some(update),
-            Some(cur) => {
-                let cur_key = (
-                    cur.percentage.unwrap_or(0),
-                    cur.server_id.as_ref(),
-                    cur.token.as_str(),
-                );
-                let new_key = (
-                    update.percentage.unwrap_or(0),
-                    update.server_id.as_ref(),
-                    update.token.as_str(),
-                );
-                if new_key > cur_key {
-                    Some(update)
-                } else {
-                    Some(cur)
-                }
-            }
-        };
-    }
-    let Some(p) = best else {
-        return base;
-    };
-    let mut detail = String::new();
-    if let Some(title) = &p.title {
-        detail.push_str(title);
-    }
-    if let Some(msg) = &p.message {
-        if !detail.is_empty() {
-            detail.push_str(": ");
-        }
-        detail.push_str(msg);
-    }
-    if let Some(pct) = p.percentage {
-        if !detail.is_empty() {
-            detail.push(' ');
-        }
-        detail.push_str(&format!("{pct}%"));
-    }
-    if detail.is_empty() {
-        detail.push_str(&p.token);
-    }
-    format!("{base} [{detail}]")
-}
-
-/// Resolve the active buffer's modeline label.
-/// Path -> registry `name` -> "[no name]". Mirrors
-/// `pane_status_label`'s fallback so the global modeline and
-/// per-pane status line agree on synthetic-buffer labels.
-pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
-    let ad = app.ad();
-    snap.path()
-        .map(|p| p.display().to_string())
-        // Slice 3c.final.B (group 1): registry lookup via
-        // `app.buffers()`.
-        //
-        // 2026-05-25: try the active *pane* buffer first so
-        // non-Document panes (Terminal, FileTree, Oil, ...)
-        // surface their registered name ("[zsh]", "[oil]", ...)
-        // rather than falling back to the previously-active
-        // Document's id (which gives `[no name]` when the
-        // pane never had one). Documents land on the same
-        // path because their pane id == document id.
-        .or_else(|| app.buffers().registry.name_of(ad.active_pane_buffer_id))
-        .or_else(|| app.buffers().registry.name_of(ad.document_buffer_id))
-        .unwrap_or_else(|| "[no name]".to_string())
-}
-
-/// Whether the active buffer is a synthetic owner-streamed
-/// Document (`*lsp*`, `*messages*`, ...). Such buffers suppress
-/// the modified marker because the user can't "save" their
-/// streaming state.
-pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
-    // Slice 3c.final.E.swap: registry lookup via published
-    // `buffers()` sub-state.
-    app.buffers()
-        .registry
-        .name_of(app.ad().document_buffer_id)
-        .is_some()
-}
-
-fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
-    // §5.6.8: the renderer reads through a single arc-swap
-    // `Cache::load` per frame (loaded by the runtime) and reuses
-    // that snapshot for the entire frame -- never round-trips the
-    // actor.
-    let path = modeline_label(app, snap);
-    // Suppress the `[+]` marker for synthetic buffers (owner-
-    // streamed, no user-actionable save semantic) -- mirrors the
-    // dirty-flag-suppression slice for pane_status_label / :ls /
-    // picker.
-    let dirty = if !modeline_is_synthetic(app) && snap.dirty {
-        "[+]"
-    } else {
-        "   "
-    };
-    let pos = format!("{}:{}", app.ad().cursor.line + 1, app.ad().cursor.byte);
-    let lang = Lang::detect_from_path(snap.path()).label();
-    let mode_label = app.modal_label();
-    let lsp_segment = active_lsp_segment(app);
-    let diff_segment = active_diff_segment(app);
-
-    let left = if diff_segment.is_empty() {
-        format!("[{mode_label}] {dirty} {path}")
-    } else {
-        // D.3.g (2026-05-29): diff-mode indicator sits between
-        // the mode label and the path so it's adjacent to the
-        // modal-state badge — Vim's `:set statusline` puts
-        // `[diff]` similarly close to the mode flag.
-        format!("[{mode_label}] {diff_segment} {dirty} {path}")
-    };
-    let right = if lsp_segment.is_empty() {
-        format!("{pos}  {lang}")
-    } else {
-        format!("{pos}  {lang}  {lsp_segment}")
-    };
-
-    let total = (area.width as usize).max(left.len() + right.len() + 1);
-    let pad = total - left.len() - right.len();
-    let line = format!("{left}{:pad$}{right}", "", pad = pad);
-
-    let para = Paragraph::new(Line::from(vec![Span::styled(
-        line,
-        TuiStyle::default()
-            .fg(Color::Black)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    frame.render_widget(para, area);
-}
 
 /// Produce the visible buffer lines as `ratatui::text::Line`s, including
 /// gutter (line numbers), tab expansion, and styled spans pulled from
@@ -7451,8 +7267,7 @@ mod tests {
             !row0.contains('■'),
             "lsp-mode off should suppress the error glyph; got {row0:?}"
         );
-        // And the modeline LSP segment hides.
-        assert_eq!(active_lsp_segment(&app), "");
+        // (LSP segment was in the old global modeline; now covered by pane_status_label.)
     }
 
     #[test]
@@ -7924,56 +7739,6 @@ mod tests {
         assert!(row0.contains('■'), "row0 expected ■: {row0:?}");
     }
 
-    #[test]
-    fn modeline_lsp_segment_empty_when_no_uri_mapping() {
-        let app = App::new(Document::from_text(""));
-        // Path-less Document -> publish_document_opened_for_active
-        // emits an event with `path: None`, attach driver ignores
-        // it, buffer_uris stays empty -> indicator hidden.
-        assert_eq!(active_lsp_segment(&app), "");
-    }
-
-    #[test]
-    fn modeline_lsp_segment_empty_when_no_servers_attached() {
-        let mut app = App::new(Document::from_text(""));
-        // Seed a URI mapping but no actor/attachment -- supervisor
-        // returns an empty handle list, so the indicator stays empty.
-        let fake_uri =
-            <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        let doc_id = app.ad().document_buffer_id;
-        app.editor.buffer_uris.insert(doc_id, fake_uri);
-        assert_eq!(active_lsp_segment(&app), "");
-    }
-
-    #[test]
-    fn modeline_label_uses_synthetic_name_when_path_absent() {
-        // The bottom global modeline (`draw_mode_line`) must
-        // surface the buffer's synthetic name (`*lsp*`, etc.)
-        // when there is no path. Mirrors `pane_status_label`'s
-        // fallback so both modeline surfaces show the same label.
-        let mut app = App::new(Document::from_text(""));
-        // Activate *lsp* (created at boot via slice B).
-        let lsp_id = app.editor.buffers.by_name("*lsp*").expect("*lsp* present");
-        app.activate_buffer(lsp_id);
-        let snap = app.editor.document.snapshot();
-        let label = modeline_label(&app, &snap);
-        assert!(
-            label.contains("*lsp*"),
-            "modeline must surface synthetic name; got `{label}`"
-        );
-        // Synthetic buffers suppress the dirty marker.
-        assert!(modeline_is_synthetic(&app), "*lsp* is synthetic");
-    }
-
-    #[test]
-    fn modeline_label_falls_back_to_no_name_when_path_and_name_absent() {
-        let app = App::new(Document::from_text("hi"));
-        let snap = app.editor.document.snapshot();
-        // Initial buffer has no path and no synthetic name.
-        let label = modeline_label(&app, &snap);
-        assert_eq!(label, "[no name]");
-        assert!(!modeline_is_synthetic(&app));
-    }
 
     #[test]
     fn no_lsp_attachment_no_severity_glyph() {
@@ -8096,23 +7861,6 @@ mod tests {
     }
 
     /// Slice 3c.final.X.cleanup: modeline-text builder must read
-    /// only published RS (cmdline_text / cursor / cwd / etc).
-    /// Companion to `compose_visible_lines_makes_zero_actor_calls`.
-    #[test]
-    fn modeline_label_makes_zero_actor_calls() {
-        let app = app_with("a\nb\nc\nd\ne\n", 10);
-        let snap = app.ad().snapshot.clone();
-        let _warmup = modeline_label(&app, &snap);
-        let before = crate::actor_call_counter::snapshot();
-        let _label = modeline_label(&app, &snap);
-        let after = crate::actor_call_counter::snapshot();
-        let delta = after - before;
-        assert_eq!(
-            delta, 0,
-            "modeline_label made {delta} actor-seam calls; \
-             modeline must read RS, not route through read_editor.",
-        );
-    }
 
     /// Slice 3c.final.X.cleanup: pane-status text builder also
     /// counts as a per-frame paint path (drawn once per pane per

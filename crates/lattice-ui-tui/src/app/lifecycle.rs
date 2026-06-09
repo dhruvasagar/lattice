@@ -353,25 +353,22 @@ impl App {
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
 
-    /// M.4: status-line label for a pane. Dispatches through
-    /// `pane_render_provider` (walks active minors then major) so
-    /// each mode owns its own status formatter; falls back to the
-    /// document path when no provider matches. Replaces the
-    /// previous `match buffer.kind` dispatch so plugin-installed
-    /// modes can contribute status formatting through the same
-    /// registry the renderer uses.
+    /// MO.4.b: status-line label for a pane. Builds the path/dirty
+    /// prefix, then collects `StatusLineItem`s from every active
+    /// mode (major + minors) via the mode registry, sorts by
+    /// priority ascending, and appends them after the path.
+    ///
+    /// Render-time data each mode may need (LSP progress, diff
+    /// sign counts) is injected into a `StatusLineCtx`
+    /// `ServiceRegistry` built here from the published render
+    /// state — modes read it type-safely without `lattice-mode`
+    /// depending on feature crates.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
         if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
             return (provider.status)(self, pane);
         }
-        // 2026-05-25: non-Document panes without a registered
-        // [[PaneRenderProvider]] (Terminal today) fall through to
-        // the default path. Honour the registry `name` slot when
-        // the buffer exists — Terminal buffers register a label
-        // like `[zsh]` at spawn — instead of bailing out with the
-        // generic "[no buffer]" marker. The document branch below
-        // still gates `contains_document` for the path / dirty
-        // lookups, which only apply to Documents.
+        // Non-Document panes (Terminal, etc.) without a registered
+        // PaneRenderProvider: honour the registry name slot.
         if !self.buffers().registry.contains_document(pane.buffer_id) {
             return self
                 .buffers()
@@ -379,8 +376,6 @@ impl App {
                 .name_of(pane.buffer_id)
                 .unwrap_or_else(|| "[no buffer]".to_string());
         }
-        // Slice 3c.final.E.5j: registry lookup via published
-        // `buffers()` sub-state.
         let label = self
             .buffers()
             .registry
@@ -388,22 +383,76 @@ impl App {
             .map(|p| p.display().to_string())
             .or_else(|| self.buffers().registry.name_of(pane.buffer_id))
             .unwrap_or_else(|| "[no name]".to_string());
-        // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
-        // name but no path; their content is streamed by the
-        // subsystem that owns them, never user-edited. The
-        // underlying Document's dirty flag flips on every owner
-        // append, which is meaningful for path-backed Documents
-        // (signals "save before close") but misleading for
-        // synthetic ones -- the user can't "save" a streaming
-        // buffer's current state because new records keep
-        // arriving. Suppress the marker for synthetics.
+        // Suppress dirty marker for synthetics (streamed buffers
+        // the user can never save).
         let synthetic = self.buffers().registry.name_of(pane.buffer_id).is_some();
         let dirty = if !synthetic && self.buffers().registry.document_dirty(pane.buffer_id) {
             " [+]"
         } else {
             ""
         };
-        format!("{label}{dirty}")
+        let base = format!("{label}{dirty}");
+
+        // MO.4.b: collect mode-contributed status items.
+        let mode_items = self.collect_status_line_items(pane);
+        if mode_items.is_empty() {
+            return base;
+        }
+        let suffix: String = mode_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("  ");
+        format!("{base}  {suffix}")
+    }
+
+    /// Build the sorted `Vec<StatusLineItem>` for `pane` by
+    /// walking `ActiveModes` through the mode registry and calling
+    /// each mode's `status_line_items`.
+    fn collect_status_line_items(
+        &self,
+        pane: &crate::pane::PaneState,
+    ) -> Vec<lattice_mode::StatusLineItem> {
+        use lattice_mode::{ServiceRegistry, StatusLineCtx};
+
+        let mut services = ServiceRegistry::new();
+        let rs = self.render_state.load();
+
+        // LSP progress: process-wide; LspProgressMode picks what to show.
+        services.register(lattice_lsp::modes::LspProgressStatusData {
+            progress: rs.lsp.progress.clone(),
+        });
+
+        // Diff signs: active-buffer only (DiffRenderState is per active pane).
+        let ad = self.ad();
+        if pane.buffer_id == ad.document_buffer_id {
+            services.register(lattice_host::diff::mode::DiffStatusData {
+                sign_map: rs.diff.sign_map.clone(),
+            });
+        }
+
+        let ctx = StatusLineCtx::new(pane.buffer_id, &services);
+
+        let modes_rs = rs.modes.clone();
+        let Some(active) = modes_rs.map.get(&pane.buffer_id) else {
+            return Vec::new();
+        };
+
+        let registry = &modes_rs.mode_registry;
+        let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+        if let Some(major) = active.major() {
+            all_ids.push(major);
+        }
+        all_ids.extend_from_slice(active.minors());
+
+        let mut items: Vec<lattice_mode::StatusLineItem> = Vec::new();
+        for id in all_ids {
+            if let Some(mode) = registry.get(id) {
+                items.extend(mode.status_line_items(&ctx));
+            }
+        }
+        items.sort_by_key(|i| i.priority);
+        items
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
@@ -1040,10 +1089,10 @@ mod tests {
     }
 
     #[test]
-    fn active_pane_content_height_subtracts_status_row_in_horizontal_split() {
-        // Single pane: content = full buffer height.
+    fn active_pane_content_height_subtracts_status_row_always() {
+        // Option A: every pane (including single) reserves a status row.
         let mut app = app_with("hi\n", 5);
-        assert_eq!(app.active_pane_content_height(20), 20);
+        assert_eq!(app.active_pane_content_height(20), 19);
         // Horizontal split -> two panes, each ~half the buffer
         // height; minus the per-pane status row.
         app.editor

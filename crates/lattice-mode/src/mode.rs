@@ -9,7 +9,7 @@ pub use lattice_keymap::ModeId;
 
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
-use crate::contributions::{DecorationProvider, Keymap, Subscription};
+use crate::contributions::{DecorationProvider, Keymap, StatusLineCtx, StatusLineItem, Subscription};
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
@@ -154,6 +154,16 @@ pub trait Mode: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Status-line segments this mode contributes while active.
+    /// Called by the renderer once per pane per frame with a
+    /// [`StatusLineCtx`] carrying relevant render-state snapshots.
+    /// Items are sorted by [`StatusLineItem::priority`] (ascending)
+    /// and joined with two spaces between the path label and the
+    /// position indicator. Default: empty (no contribution).
+    fn status_line_items(&self, _ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
+        Vec::new()
+    }
+
     /// Insert-mode completion sources this mode contributes while
     /// active on a buffer. Empty by default; minors that own a
     /// completion source (`lsp-completion-mode`,
@@ -264,6 +274,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn keymap(&self) -> Keymap;
     fn subscriptions(&self) -> Vec<Subscription>;
     fn decorations(&self) -> Vec<DecorationProvider>;
+    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem>;
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
     fn required_capabilities(&self) -> CapabilitySet;
     fn conflicts_with(&self) -> &[ModeId];
@@ -302,6 +313,9 @@ impl<M: Mode> DynMode for M {
     }
     fn decorations(&self) -> Vec<DecorationProvider> {
         <M as Mode>::decorations(self)
+    }
+    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
+        <M as Mode>::status_line_items(self, ctx)
     }
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
         <M as Mode>::completion_sources(self)

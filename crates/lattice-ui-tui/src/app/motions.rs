@@ -136,17 +136,14 @@ impl App {
         let panes = self.panes();
         let rects = panes.tree.compute_rects(area);
         let active_idx = panes.tree.active_index();
-        let multi = rects.len() > 1;
         let pane_h = rects
             .iter()
             .find(|(idx, _)| *idx == active_idx)
             .map(|(_, r)| r.height)
             .unwrap_or(buffer_height as u16);
-        let content_h = if multi && pane_h >= 2 {
-            pane_h - 1 // reserve the per-pane status row
-        } else {
-            pane_h
-        };
+        // Option A: every pane has a 1-row status footer; subtract
+        // unconditionally (mirrors draw_panes and runtime.rs).
+        let content_h = if pane_h >= 2 { pane_h - 1 } else { pane_h };
         u32::from(content_h).max(1)
     }
 

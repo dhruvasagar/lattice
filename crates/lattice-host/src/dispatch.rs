@@ -627,6 +627,7 @@ impl Editor {
                             .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
                             .collect(),
                     ),
+                    mode_registry: self.mode_registry.clone(),
                 })
             });
             let buffer_locals_arc = crate::render_state::cached_or_build(

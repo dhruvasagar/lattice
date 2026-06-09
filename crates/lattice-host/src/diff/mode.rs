@@ -51,13 +51,24 @@
 
 use lattice_core::BufferId;
 use lattice_mode::registry::ModeRegistry;
-use lattice_mode::{LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+use lattice_mode::{
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, StatusLineCtx, StatusLineItem,
+};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 // ──────────────────────────────────────────────────────────────
 // DiffMode — the minor mode itself
 // ──────────────────────────────────────────────────────────────
+
+/// Render-time snapshot registered into [`StatusLineCtx`] by the
+/// App before calling `DiffMode::status_line_items`. Carries the
+/// active buffer's diff sign map so `DiffMode` can count
+/// added/changed lines without `lattice-mode` depending on
+/// `lattice-host` types.
+pub struct DiffStatusData {
+    pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+}
 
 /// `diff-mode` minor. Empty marker in v1 (D.5.a): the bit other
 /// layers consult. D.5.b/c land the `do`/`dp` chord bindings
@@ -78,6 +89,33 @@ impl Mode for DiffMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
+    }
+    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
+        use crate::diff::overlay::DiffSignKind;
+        let Some(data) = ctx.service::<DiffStatusData>() else {
+            return Vec::new();
+        };
+        let mut added = 0u32;
+        let mut changed = 0u32;
+        for (_line, kind) in data.sign_map.entries() {
+            match kind {
+                DiffSignKind::Add => added += 1,
+                DiffSignKind::Change | DiffSignKind::Conflict | DiffSignKind::Remove => {
+                    changed += 1;
+                }
+            }
+        }
+        if added == 0 && changed == 0 {
+            return Vec::new();
+        }
+        let mut parts = Vec::new();
+        if added > 0 {
+            parts.push(format!("+{added}"));
+        }
+        if changed > 0 {
+            parts.push(format!("~{changed}"));
+        }
+        vec![StatusLineItem { text: parts.join(" "), priority: 40 }]
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })

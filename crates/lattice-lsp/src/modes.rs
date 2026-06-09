@@ -27,38 +27,13 @@ use std::sync::{Arc, OnceLock};
 use lattice_mode::{
     BufferStoreHandle, CapabilitySet, DecorationCtx, GutterDecoration, GutterSeverityLevel,
     Keymap, KeymapEntry, LifecycleFuture, Mode, ModeActivationError, ModeContext, ModeId,
-    ModeKind, ModeRegistry, OptionOverrideSet, StatusLineCtx, StatusLineItem, keymap_entry,
+    ModeKind, ModeRegistry, OptionOverrideSet, StatusLineCtx, StatusLineItem, Subscription,
+    keymap_entry,
 };
-use lattice_runtime::{EventBus, SubscriptionId};
+use lattice_runtime::EventBus;
 
 use crate::supervisor::LspSupervisorHandle;
 
-/// Common Guard for the three log majors. Holds the event-bus
-/// handle + subscription id; on Drop, unsubscribes. The drain
-/// tokio task observes the channel close (sender dropped on
-/// unsubscribe) and exits naturally.
-pub struct LogSubscriptionGuard {
-    handle: Option<(Arc<EventBus>, SubscriptionId)>,
-}
-
-impl Drop for LogSubscriptionGuard {
-    fn drop(&mut self) {
-        if let Some((bus, id)) = self.handle.take() {
-            bus.unsubscribe(id);
-        }
-    }
-}
-
-impl LogSubscriptionGuard {
-    fn none() -> Self {
-        Self { handle: None }
-    }
-    fn with(bus: Arc<EventBus>, id: SubscriptionId) -> Self {
-        Self {
-            handle: Some((bus, id)),
-        }
-    }
-}
 
 /// `lsp-server-log-mode` -- major mode for the per-instance
 /// `*lsp:<server>:<workspace>*` buffer (B'.4 / B'.7).
@@ -75,7 +50,7 @@ impl LspServerLogMode {
 }
 
 impl Mode for LspServerLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -96,19 +71,19 @@ impl Mode for LspServerLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(instance) = crate::parse_lsp_server_log_name(&name) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             // B'.4: seed the buffer from the per-instance ring so
@@ -197,7 +172,7 @@ impl Mode for LspServerLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }
@@ -214,7 +189,7 @@ impl LspLogMode {
 }
 
 impl Mode for LspLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -235,13 +210,13 @@ impl Mode for LspLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             // B'.4: seed the buffer from the in-memory ring so
@@ -315,7 +290,7 @@ impl Mode for LspLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }
@@ -331,7 +306,7 @@ impl LspTraceLogMode {
 }
 
 impl Mode for LspTraceLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -352,19 +327,19 @@ impl Mode for LspTraceLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(instance) = crate::parse_lsp_trace_log_name(&name) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             if let Some(logger) = ctx.service::<crate::LspLogger>() {
@@ -452,7 +427,7 @@ impl Mode for LspTraceLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }

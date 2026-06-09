@@ -94,7 +94,8 @@ pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{
     DecorationCtx, DecorationProvider, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
-    Keymap, KeymapBinding, StatusLineCtx, StatusLineItem, Subscription,
+    Keymap, KeymapBinding, StatusLineCtx, StatusLineItem,
+    Subscription, // MO.4.c: real RAII type; use in mode Guards
 };
 pub use crate::keymap_entry::KeymapEntry;
 pub use crate::error::ModeActivationError;

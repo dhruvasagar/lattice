@@ -11,7 +11,6 @@ use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
 use crate::contributions::{
     DecorationCtx, DecorationProvider, GutterDecoration, Keymap, StatusLineCtx, StatusLineItem,
-    Subscription,
 };
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
@@ -143,12 +142,6 @@ pub trait Mode: Send + Sync + 'static {
     /// slot.
     fn keymap(&self) -> Keymap {
         Keymap::default()
-    }
-
-    /// Typed event subscriptions registered alongside the mode;
-    /// deregistered on deactivation.
-    fn subscriptions(&self) -> Vec<Subscription> {
-        Vec::new()
     }
 
     /// Decoration providers (gutter / inline / overlay /
@@ -285,7 +278,6 @@ pub trait DynMode: Send + Sync + 'static {
     fn target_buffer_kind(&self) -> Option<BufferKind>;
     fn options(&self) -> OptionOverrideSet;
     fn keymap(&self) -> Keymap;
-    fn subscriptions(&self) -> Vec<Subscription>;
     fn decorations(&self) -> Vec<DecorationProvider>;
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem>;
@@ -321,9 +313,6 @@ impl<M: Mode> DynMode for M {
     }
     fn keymap(&self) -> Keymap {
         <M as Mode>::keymap(self)
-    }
-    fn subscriptions(&self) -> Vec<Subscription> {
-        <M as Mode>::subscriptions(self)
     }
     fn decorations(&self) -> Vec<DecorationProvider> {
         <M as Mode>::decorations(self)

@@ -4,7 +4,6 @@
 //! in K.3 (2026-06-07) — re-exported here for backward compatibility.
 //!
 //! Stubs still pending real impls:
-//! - [`Subscription`] -- when the typed event bus stabilises.
 //! - [`DecorationProvider`] -- M.4 / decoration registry.
 
 use lattice_core::BufferId;
@@ -13,11 +12,33 @@ use crate::services::ServiceRegistry;
 
 pub use lattice_keymap::{Keymap, KeymapBinding};
 
-/// Stub. Real type lands when the typed event bus stabilises
-/// a subscription shape for modes.
-#[derive(Debug, Clone)]
+/// RAII subscription handle. Unsubscribes from the event bus on drop.
+///
+/// Acquire in `Mode::on_activate` via `ctx.events_handle()` +
+/// `EventBus::subscribe_typed`; store in the mode's `Guard` struct so
+/// deactivation cleanup is compiler-enforced. Modes with conditional
+/// subscriptions (e.g. skip when no URI) use `Option<Subscription>`.
+///
+/// MO.4.c: replaces the `_private:()` stub; `Mode::subscriptions()`
+/// removed — `on_activate` + Guard IS the subscription mechanism.
 pub struct Subscription {
-    _private: (),
+    bus: std::sync::Arc<lattice_runtime::EventBus>,
+    id: lattice_runtime::SubscriptionId,
+}
+
+impl Subscription {
+    pub fn new(
+        bus: std::sync::Arc<lattice_runtime::EventBus>,
+        id: lattice_runtime::SubscriptionId,
+    ) -> Self {
+        Self { bus, id }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.bus.unsubscribe(self.id);
+    }
 }
 
 /// Stub. Reserved for the WIT plugin-facing contribution surface

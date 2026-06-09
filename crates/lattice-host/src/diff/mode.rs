@@ -52,7 +52,8 @@
 use lattice_core::BufferId;
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{
-    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, StatusLineCtx, StatusLineItem,
+    DecorationCtx, GutterDecoration, GutterDiffKind, LifecycleFuture, Mode, ModeContext, ModeId,
+    ModeKind, StatusLineCtx, StatusLineItem,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -61,12 +62,18 @@ use std::sync::Mutex;
 // DiffMode — the minor mode itself
 // ──────────────────────────────────────────────────────────────
 
-/// Render-time snapshot registered into [`StatusLineCtx`] by the
-/// App before calling `DiffMode::status_line_items`. Carries the
-/// active buffer's diff sign map so `DiffMode` can count
+/// Render-time snapshot for `DiffMode::status_line_items`. Carries
+/// the active buffer's diff sign map so `DiffMode` can count
 /// added/changed lines without `lattice-mode` depending on
 /// `lattice-host` types.
 pub struct DiffStatusData {
+    pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+}
+
+/// Render-time snapshot for `DiffMode::gutter_decorations`. Carries
+/// the same sign map as `DiffStatusData`; injected by the renderer
+/// only for the active-document buffer (sign_map is active-doc only).
+pub struct DiffDecorationData {
     pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
 }
 
@@ -117,6 +124,26 @@ impl Mode for DiffMode {
         }
         vec![StatusLineItem { text: parts.join(" "), priority: 40 }]
     }
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        use crate::diff::overlay::DiffSignKind;
+        let Some(data) = ctx.service::<DiffDecorationData>() else {
+            return Vec::new();
+        };
+        data.sign_map
+            .entries()
+            .iter()
+            .map(|(line, kind)| {
+                let gdk = match kind {
+                    DiffSignKind::Add => GutterDiffKind::Add,
+                    DiffSignKind::Remove => GutterDiffKind::Remove,
+                    DiffSignKind::Change => GutterDiffKind::Change,
+                    DiffSignKind::Conflict => GutterDiffKind::Conflict,
+                };
+                GutterDecoration::Diff { line: *line, kind: gdk }
+            })
+            .collect()
+    }
+
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

@@ -9,7 +9,10 @@ pub use lattice_keymap::ModeId;
 
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
-use crate::contributions::{DecorationProvider, Keymap, StatusLineCtx, StatusLineItem, Subscription};
+use crate::contributions::{
+    DecorationCtx, DecorationProvider, GutterDecoration, Keymap, StatusLineCtx, StatusLineItem,
+    Subscription,
+};
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
@@ -149,8 +152,18 @@ pub trait Mode: Send + Sync + 'static {
     }
 
     /// Decoration providers (gutter / inline / overlay /
-    /// statusline).
+    /// statusline). Stub — reserved for the WIT plugin path (M.10).
     fn decorations(&self) -> Vec<DecorationProvider> {
+        Vec::new()
+    }
+
+    /// Gutter sign decorations this mode contributes while active.
+    /// Called once per pane per frame with a [`DecorationCtx`]
+    /// carrying relevant render-state snapshots (diff sign map, LSP
+    /// diagnostics arc). Returns per-line `GutterDecoration` values;
+    /// the renderer partitions them by variant into the appropriate
+    /// gutter column. Default: empty (no contribution).
+    fn gutter_decorations(&self, _ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
         Vec::new()
     }
 
@@ -274,6 +287,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn keymap(&self) -> Keymap;
     fn subscriptions(&self) -> Vec<Subscription>;
     fn decorations(&self) -> Vec<DecorationProvider>;
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem>;
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
     fn required_capabilities(&self) -> CapabilitySet;
@@ -313,6 +327,9 @@ impl<M: Mode> DynMode for M {
     }
     fn decorations(&self) -> Vec<DecorationProvider> {
         <M as Mode>::decorations(self)
+    }
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        <M as Mode>::gutter_decorations(self, ctx)
     }
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
         <M as Mode>::status_line_items(self, ctx)

@@ -3440,6 +3440,66 @@ pub(crate) fn compose_pane_lines(
             std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
         });
     let display_theme = &cells_rs.theme;
+    // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
+    // pane's buffer once per frame; accumulate GutterDecoration
+    // contributions into per-line maps. Replaces per-line RenderState
+    // reads from render_diff_sign_cell / render_diagnostic_severity_cell
+    // — both now read the maps, not the render-state directly.
+    let (diff_gutter, severity_gutter) = {
+        use lattice_mode::{
+            DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+            ServiceRegistry,
+        };
+        let mut services = ServiceRegistry::new();
+        let rs_deco = app.render_state.load();
+        // DiffDecorationData: active-doc only (sign_map is per active doc).
+        if ctx.buffer_id == app.ad().document_buffer_id {
+            services.register(lattice_host::diff::mode::DiffDecorationData {
+                sign_map: rs_deco.diff.sign_map.clone(),
+            });
+        }
+        // LspDiagnosticsData: gated on lsp_diagnostics_enabled (M.5.6).
+        if view.lsp_diagnostics_enabled {
+            let diagnostics = app
+                .buffer_uri(ctx.buffer_id)
+                .and_then(|u| rs_deco.diagnostics.layer.diagnostics_arc(&u));
+            services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
+        }
+        let deco_ctx = DecorationCtx::new(ctx.buffer_id, &services);
+        let modes_rs = rs_deco.modes.clone();
+        let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
+        let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
+        if let Some(active) = modes_rs.map.get(&ctx.buffer_id) {
+            let registry = &modes_rs.mode_registry;
+            let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+            if let Some(major) = active.major() {
+                all_ids.push(major);
+            }
+            all_ids.extend_from_slice(active.minors());
+            for id in all_ids {
+                if let Some(mode) = registry.get(id) {
+                    for deco in mode.gutter_decorations(&deco_ctx) {
+                        match deco {
+                            GutterDecoration::Diff { line, kind } => {
+                                diff_map.entry(line).or_insert(kind);
+                            }
+                            GutterDecoration::Severity { line, level } => {
+                                sev_map
+                                    .entry(line)
+                                    .and_modify(|e| {
+                                        if level > *e {
+                                            *e = level;
+                                        }
+                                    })
+                                    .or_insert(level);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (diff_map, sev_map)
+    };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     // Sticky pre-pass: render fixed-top rows before the scrollable content.
     // These are excluded from virtual_rows_at so they don't double-paint.
@@ -4071,14 +4131,18 @@ pub(crate) fn compose_pane_lines(
         // `ctx.buffer_id` so an inactive pane shows ITS buffer's
         // severity glyph (was a blank cell pre-merge). Active pane's
         // id is the active doc → byte-identical.
-        let severity_cell = render_diagnostic_severity_cell(view, ctx.buffer_id, line_idx);
+        let severity_cell = render_diagnostic_severity_cell(
+            severity_gutter.get(&line_idx).copied(),
+            view,
+        );
         // D.3.d.1: diff sign cell sits LEFT of line numbers
         // (between severity and gutter) — matches the editor
         // convention used by Vim signcolumn, Helix, Zed,
         // VSCode, JetBrains. LSP severity and diff signs
         // occupy adjacent dedicated columns so the two
         // decoration types don't compete (Helix-style).
-        let diff_sign_cell = render_diff_sign_cell(view, line_idx);
+        let diff_sign_cell =
+            render_diff_sign_cell(diff_gutter.get(&line_idx).copied(), view);
         // D.3.e: line-background tint. Applied AFTER all other
         // body overlays (whitespace decoration, hlsearch,
         // visual selection, etc.) — the tint sits BEHIND the
@@ -4786,97 +4850,59 @@ fn apply_diff_tint(
         .collect()
 }
 
-/// D.3.d.1: render the diff-sign cell for `line_idx`.
-/// Returns one `Span` — the sign character + colour when a
-/// hunk's current side touches the line, blank otherwise.
-/// Reads through `RenderState::diff.sign_map` — the renderer
-/// side of the diff overlay seam. Lock-free per frame; the
-/// renderer never holds an Editor reference.
+/// D.3.d.1: render the diff-sign cell. MO.4.a: `kind` is the
+/// pre-computed `GutterDiffKind` for this line from the mode-walk
+/// decoration pre-loop; `None` → blank cell.
 fn render_diff_sign_cell(
+    kind: Option<lattice_mode::GutterDiffKind>,
     view: &FrameView<'_>,
-    line_idx: u32,
 ) -> Span<'static> {
-    use lattice_host::diff::overlay::DiffSignKind;
+    use lattice_mode::GutterDiffKind;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let rs = view.app.render_state.load();
-    let Some(kind) = rs.diff.sign_map.sign_at(line_idx) else {
+    let Some(kind) = kind else {
         return blank;
     };
-    // D.3.b.3: glyph stays hardcoded (convention), style
-    // reads from theme so the bold + colour follow the user's
-    // diagnostic-style preferences too.
+    // D.3.b.3: glyph stays hardcoded (convention), style reads
+    // from theme so bold + colour follow the user's preferences.
     let (glyph, style) = match kind {
-        DiffSignKind::Add => ('+', view.app.theme.diff_add_sign_style),
-        DiffSignKind::Change => ('~', view.app.theme.diff_change_sign_style),
-        // D.3.d.0 deliberately doesn't classify any
-        // current-side line as Remove — Remove hunks have an
-        // empty current range. The arm is kept exhaustive
-        // anyway in case a future refactor (e.g., classifying
-        // deletion-block anchors) starts emitting it.
-        DiffSignKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
-        // D.6.f (2026-05-31): `?` for three-way Conflict
-        // hunks — distinct from Add/Change/Remove so the
-        // user spots conflicts immediately in the gutter.
-        DiffSignKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
+        GutterDiffKind::Add => ('+', view.app.theme.diff_add_sign_style),
+        GutterDiffKind::Change => ('~', view.app.theme.diff_change_sign_style),
+        // D.3.d.0: Remove kept exhaustive for future classifiers.
+        GutterDiffKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
+        // D.6.f: `?` for three-way Conflict hunks.
+        GutterDiffKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
     };
     Span::styled(glyph.to_string(), style)
 }
 
-/// Build the severity-column cell for `line_idx`. Returns one
-/// `Span` -- the severity glyph + the per-severity style when a
-/// diagnostic touches the line, or a single space styled
-/// dim-darkgray when nothing's there.
+/// Build the severity-column cell. MO.4.a: `level` is the
+/// pre-computed `GutterSeverityLevel` for this line from the mode-walk
+/// decoration pre-loop; `None` → blank cell.
 fn render_diagnostic_severity_cell(
+    level: Option<lattice_mode::GutterSeverityLevel>,
     view: &FrameView<'_>,
-    buffer_id: crate::buffers::BufferId,
-    line_idx: u32,
 ) -> Span<'static> {
-    let theme = &view.app.theme;
+    use lattice_mode::GutterSeverityLevel;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let Some(severity) = severity_for_line(view, buffer_id, line_idx) else {
+    let Some(level) = level else {
         return blank;
     };
-    let (glyph, style) = crate::theme::diagnostic_glyph_and_style(theme, severity);
-    // The theme stores ratatui-native Style values, so no
-    // conversion is needed here -- they're already the right
-    // shape for `Span::styled`.
+    let theme = &view.app.theme;
+    let (glyph, style) = match level {
+        GutterSeverityLevel::Error => {
+            (theme.diagnostic_error_glyph, theme.diagnostic_error_style)
+        }
+        GutterSeverityLevel::Warning => {
+            (theme.diagnostic_warning_glyph, theme.diagnostic_warning_style)
+        }
+        GutterSeverityLevel::Info => {
+            (theme.diagnostic_info_glyph, theme.diagnostic_info_style)
+        }
+        GutterSeverityLevel::Hint => {
+            (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style)
+        }
+    };
     Span::styled(glyph.to_string(), style)
-}
-
-/// Resolve the most-severe diagnostic on `line_idx` of `buffer_id`.
-/// Looks up the buffer's URI (via `app.buffer_uri`) and reads its
-/// per-URI severity from the published diagnostics layer. Returns
-/// `None` when:
-/// - `lsp-mode` is inactive on the buffer (M.5.6 gate),
-/// - the buffer has no URI (unsaved scratch),
-/// - the buffer has no LSP attachment, or
-/// - no diagnostic touches the line.
-///
-/// DR.3: takes `buffer_id` (was the active `_snap`) so inactive panes
-/// resolve their OWN buffer's severity; the active pane passes its
-/// own id (byte-identical).
-pub(crate) fn severity_for_line(
-    view: &FrameView<'_>,
-    buffer_id: crate::buffers::BufferId,
-    line_idx: u32,
-) -> Option<DiagnosticSeverity> {
-    // Slice 3c.extension.fold-rs: gate on cached
-    // `view.lsp_diagnostics_enabled` instead of per-line
-    // `app.lsp_diagnostics_mode_enabled_for(...)` actor RPC.
-    if !view.lsp_diagnostics_enabled {
-        return None;
-    }
-    let app = view.app;
-    let uri = app.buffer_uri(buffer_id)?;
-    // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
-    // `RenderState` contract instead of `editor.lsp_diagnostics`
-    // directly. This is the proof-of-life migration that
-    // establishes the read seam every later sub-slice cuts
-    // against. `load` is wait-free (~2ns); the layer it returns
-    // is internally `Arc<ArcSwap<...>>`-backed so
-    // `line_severity` stays wait-free.
-    let rs = app.render_state.load();
-    rs.diagnostics.layer.line_severity(&uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of `buffer_id`. Used by the

@@ -25,9 +25,9 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_mode::{
-    BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
-    ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
-    StatusLineCtx, StatusLineItem, keymap_entry,
+    BufferStoreHandle, CapabilitySet, DecorationCtx, GutterDecoration, GutterSeverityLevel,
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeActivationError, ModeContext, ModeId,
+    ModeKind, ModeRegistry, OptionOverrideSet, StatusLineCtx, StatusLineItem, keymap_entry,
 };
 use lattice_runtime::{EventBus, SubscriptionId};
 
@@ -617,6 +617,41 @@ impl Mode for LspMode {
         vec![StatusLineItem { text: "lsp".to_string(), priority: 60 }]
     }
 
+    /// MO.4.a: gutter severity column. Reads `LspDiagnosticsData`
+    /// injected by the renderer for this pane's buffer URI.
+    /// Aggregates to max `GutterSeverityLevel` per line.
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        let Some(data) = ctx.service::<LspDiagnosticsData>() else {
+            return Vec::new();
+        };
+        let Some(diags) = &data.diagnostics else {
+            return Vec::new();
+        };
+        let mut per_line: std::collections::HashMap<u32, GutterSeverityLevel> =
+            Default::default();
+        for diag in diags.iter() {
+            let level = match diag.severity {
+                Some(crate::DiagnosticSeverity::ERROR) => GutterSeverityLevel::Error,
+                Some(crate::DiagnosticSeverity::WARNING) => GutterSeverityLevel::Warning,
+                Some(crate::DiagnosticSeverity::INFORMATION) => GutterSeverityLevel::Info,
+                Some(crate::DiagnosticSeverity::HINT) => GutterSeverityLevel::Hint,
+                _ => continue,
+            };
+            per_line
+                .entry(diag.range.start.line)
+                .and_modify(|e| {
+                    if level > *e {
+                        *e = level;
+                    }
+                })
+                .or_insert(level);
+        }
+        per_line
+            .into_iter()
+            .map(|(line, level)| GutterDecoration::Severity { line, level })
+            .collect()
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0);
@@ -713,6 +748,15 @@ lsp_sub_mode!(LspRenameMode, "lsp-rename-mode");
 lsp_sub_mode!(LspSymbolsMode, "lsp-symbols-mode");
 lsp_sub_mode!(LspCodeActionMode, "lsp-code-action-mode");
 lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
+
+/// Render-time service data for `LspMode::gutter_decorations`.
+/// The renderer registers one instance per pane render, populated
+/// from `rs.diagnostics.layer.diagnostics_arc(uri)` for the pane's
+/// buffer URI. `None` diagnostics means no URI mapped or no LSP
+/// attachment — no severity decorations are contributed.
+pub struct LspDiagnosticsData {
+    pub diagnostics: Option<std::sync::Arc<[crate::Diagnostic]>>,
+}
 
 /// Render-time service data for `LspProgressMode::status_line_items`.
 /// The App registers one instance per `pane_status_label` call,

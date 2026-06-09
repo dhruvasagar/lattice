@@ -1248,27 +1248,11 @@ impl EditorView {
         let total_lines_for_gutter = total_lines.max(1);
         let gutter_width = total_lines_for_gutter.to_string().len();
 
-        // 5.8.I: per-line severity lookup. URI for this pane's
-        // buffer comes from `rs_guard.buffers.uris` (slice 3c.final.B
-        // group 1: published HashMap clone of `editor.buffer_uris`,
-        // populated when LSP attaches). `None` means: unsaved
-        // scratch, no LSP attachment, or LSP-mode disabled for this
-        // buffer. The gutter then renders a blank sign column (one
-        // space) so the line-number alignment stays stable
-        // regardless of whether diagnostics are present.
+        // MO.4.a: URI + render_state used by the gutter-decoration
+        // pre-loop below to inject LspDiagnosticsData service.
         let uri = rs_guard.buffers.uris.get(&pane.buffer_id);
-        // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
-        // `RenderState` contract instead of `editor.lsp_diagnostics`
-        // directly. Symmetric with the TUI peer's
-        // `severity_for_line` migration. `load_full` is wait-free
-        // (~2ns); the returned snapshot's diagnostics layer is
-        // internally `Arc<ArcSwap<...>>`-backed so the inner
-        // `line_severity` call stays wait-free too.
         // Slice 3c.final.E.swap: render_state via App's own Arc.
         let render_state = self.app.render_state.load_full();
-        let line_severity = |line_idx: u32| -> Option<lattice_lsp::DiagnosticSeverity> {
-            uri.and_then(|u| render_state.diagnostics.layer.line_severity(u, line_idx))
-        };
 
         // 5.8.N: severity glyph + colour come from host_theme so
         // `:set ui.diagnostics.*` overrides flow through identically
@@ -1310,50 +1294,115 @@ impl EditorView {
         // `snapshot`. None for regular Documents (gutter shows
         // composed-row identity); Some(arr) for Multibuffer.
         let display_line_numbers_for_meta = pane_display_line_numbers.clone();
+        // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
+        // pane's buffer once; accumulate GutterDecoration contributions into
+        // per-line maps. Replaces per-line render_state reads inside gutter_meta.
+        let (diff_gutter, severity_gutter) = {
+            use lattice_mode::{
+                DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+                ServiceRegistry,
+            };
+            let mut services = ServiceRegistry::new();
+            // DiffDecorationData: active-doc only (sign_map is per active doc).
+            if pane.buffer_id == ad.document_buffer_id {
+                services.register(lattice_host::diff::mode::DiffDecorationData {
+                    sign_map: rs_guard.diff.sign_map.clone(),
+                });
+            }
+            // LspDiagnosticsData: inject when URI resolves (lsp-mode gate is
+            // implicit — LspMode::gutter_decorations returns empty when service absent).
+            {
+                let diagnostics = uri
+                    .and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u));
+                services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
+            }
+            let deco_ctx = DecorationCtx::new(pane.buffer_id, &services);
+            let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> =
+                Default::default();
+            let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> =
+                Default::default();
+            if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
+                let registry = &rs_guard.modes.mode_registry;
+                let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+                if let Some(major) = active.major() {
+                    all_ids.push(major);
+                }
+                all_ids.extend_from_slice(active.minors());
+                for id in all_ids {
+                    if let Some(mode) = registry.get(id) {
+                        for deco in mode.gutter_decorations(&deco_ctx) {
+                            match deco {
+                                GutterDecoration::Diff { line, kind } => {
+                                    diff_map.entry(line).or_insert(kind);
+                                }
+                                GutterDecoration::Severity { line, level } => {
+                                    sev_map
+                                        .entry(line)
+                                        .and_modify(|e| {
+                                            if level > *e {
+                                                *e = level;
+                                            }
+                                        })
+                                        .or_insert(level);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (diff_map, sev_map)
+        };
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
                 let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
-                let severity =
-                    line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
+                // MO.4.a: read from pre-built mode-walk map.
+                let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
+                    use lattice_mode::GutterSeverityLevel;
+                    let (glyph, style) = match level {
+                        GutterSeverityLevel::Error => (
+                            host_theme.diagnostic_error_glyph,
+                            host_theme.diagnostic_error_style,
+                        ),
+                        GutterSeverityLevel::Warning => (
+                            host_theme.diagnostic_warning_glyph,
+                            host_theme.diagnostic_warning_style,
+                        ),
+                        GutterSeverityLevel::Info => (
+                            host_theme.diagnostic_info_glyph,
+                            host_theme.diagnostic_info_style,
+                        ),
+                        GutterSeverityLevel::Hint => (
+                            host_theme.diagnostic_hint_glyph,
+                            host_theme.diagnostic_hint_style,
+                        ),
+                    };
+                    let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
+                    (glyph, color)
+                });
                 let display_line = display_line_numbers_for_meta
                     .as_ref()
                     .and_then(|m| m.get(line_idx).copied())
                     .unwrap_or(line_idx as u32);
-                // D.3.d.2 (2026-05-29): diff sign lookup —
-                // read through the same `RenderState::diff`
-                // substate the TUI uses. Lock-free Arc load.
-                let diff_sign = rs_guard
-                    .diff
-                    .sign_map
-                    .sign_at(line_idx as u32)
-                    .map(|kind| {
-                        use lattice_host::diff::overlay::DiffSignKind;
-                        // D.3.b.3 (2026-05-29): read sign
-                        // colours from the host theme. Glyphs
-                        // stay hardcoded (convention).
-                        let style = match kind {
-                            DiffSignKind::Add => host_theme.diff_add_sign_style,
-                            DiffSignKind::Change => host_theme.diff_change_sign_style,
-                            DiffSignKind::Remove => host_theme.diff_remove_sign_style,
-                            // D.6.f (2026-05-31): three-way Conflict.
-                            DiffSignKind::Conflict => host_theme.diff_conflict_sign_style,
-                        };
-                        // Diff-sign default styles always set `fg`;
-                        // this fallback is a safety net. Use the
-                        // Catppuccin text default the gutter uses
-                        // elsewhere (the host `Theme` has no general
-                        // foreground slot to read here).
-                        let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
-                        let glyph = match kind {
-                            DiffSignKind::Add => '+',
-                            DiffSignKind::Change => '~',
-                            DiffSignKind::Remove => '-',
-                            // D.6.f: `?` for Conflict.
-                            DiffSignKind::Conflict => '?',
-                        };
-                        (glyph, fg)
-                    });
+                // MO.4.a: read from pre-built mode-walk map.
+                let diff_sign = diff_gutter.get(&(line_idx as u32)).copied().map(|kind| {
+                    use lattice_mode::GutterDiffKind;
+                    // D.3.b.3: read sign colours from the host theme.
+                    let style = match kind {
+                        GutterDiffKind::Add => host_theme.diff_add_sign_style,
+                        GutterDiffKind::Change => host_theme.diff_change_sign_style,
+                        GutterDiffKind::Remove => host_theme.diff_remove_sign_style,
+                        GutterDiffKind::Conflict => host_theme.diff_conflict_sign_style,
+                    };
+                    let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
+                    let glyph = match kind {
+                        GutterDiffKind::Add => '+',
+                        GutterDiffKind::Change => '~',
+                        GutterDiffKind::Remove => '-',
+                        GutterDiffKind::Conflict => '?',
+                    };
+                    (glyph, fg)
+                });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     display_line,
@@ -1624,7 +1673,84 @@ impl EditorView {
                     "[scratch]".to_string()
                 }
             });
-        let status_line = format!("  {path_label}   L:{}  C:{}", cursor.line + 1, cursor.byte);
+        // MO.4.b / Option-A modeline overhaul: active pane footer shows
+        // [MODAL]  path  mode-items    line:col  lang; inactive shows
+        // path    line:col (styling difference handled by pane_chrome).
+        let status_line = {
+            let (modal_prefix, mode_suffix, lang_str) = if render_active {
+                let modal_label: &str =
+                    if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
+                        if ad.terminal_insert_active {
+                            "TERMINAL-INSERT"
+                        } else if ad.terminal_visual_active {
+                            "TERMINAL-VISUAL"
+                        } else {
+                            "TERMINAL"
+                        }
+                    } else {
+                        match ad.modal {
+                            ModalState::Normal => "NORMAL",
+                            ModalState::Insert => "INSERT",
+                            ModalState::Visual(_) => "VISUAL",
+                            ModalState::OperatorPending => "PENDING",
+                            ModalState::Command => "COMMAND",
+                            ModalState::Search(_) => "SEARCH",
+                            ModalState::Replace => "REPLACE",
+                        }
+                    };
+                // Mode-contributed items (MO.4.b) — wait-free Arc reads.
+                let mut services = lattice_mode::ServiceRegistry::new();
+                services.register(lattice_lsp::modes::LspProgressStatusData {
+                    progress: rs_guard.lsp.progress.clone(),
+                });
+                if pane.buffer_id == ad.document_buffer_id {
+                    services.register(lattice_host::diff::mode::DiffStatusData {
+                        sign_map: rs_guard.diff.sign_map.clone(),
+                    });
+                }
+                let ctx = lattice_mode::StatusLineCtx::new(pane.buffer_id, &services);
+                let mode_suffix = if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
+                    let registry = &rs_guard.modes.mode_registry;
+                    let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+                    if let Some(major) = active.major() {
+                        all_ids.push(major);
+                    }
+                    all_ids.extend_from_slice(active.minors());
+                    let mut items: Vec<lattice_mode::StatusLineItem> = all_ids
+                        .into_iter()
+                        .filter_map(|id| registry.get(id))
+                        .flat_map(|m| m.status_line_items(&ctx))
+                        .collect();
+                    items.sort_by_key(|i| i.priority);
+                    if items.is_empty() {
+                        String::new()
+                    } else {
+                        let parts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+                        format!("  {}", parts.join("  "))
+                    }
+                } else {
+                    String::new()
+                };
+                let lang = snapshot
+                    .path()
+                    .map(|p| lattice_syntax::Lang::detect_from_path(Some(p.as_path())));
+                let lang_str = match lang {
+                    Some(l) if l != lattice_syntax::Lang::Plain => {
+                        format!("  {}", l.name())
+                    }
+                    _ => String::new(),
+                };
+                (format!("[{modal_label}]  "), mode_suffix, lang_str)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
+            format!(
+                "  {modal_prefix}{path_label}{mode_suffix}   L:{}  C:{}{}",
+                cursor.line + 1,
+                cursor.byte,
+                lang_str
+            )
+        };
         // Status-bar fg/bg colours are picked inside `pane_chrome`
         // off `render_active` so every kind goes through one
         // styling path; the document arm no longer derives them
@@ -2295,7 +2421,7 @@ impl Render for EditorView {
         let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let pane_status_row_px = estimated_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let global_bottom_row_px = estimated_row_px; // modeline / cmdline content
+        let global_bottom_row_px = estimated_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
         let per_leaf_v_chrome_px =
             pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
         let per_leaf_h_chrome_px = pane_padding_h_px;
@@ -2574,41 +2700,11 @@ impl Render for EditorView {
         let ad = self.app.ad();
         let modal = ad.modal;
 
-        // 2026-05-25: terminal panes surface `TERMINAL-INSERT` /
-        // `TERMINAL-VISUAL` / `TERMINAL` on the bottom row in
-        // place of the underlying modal (which stays `Normal`
-        // while terminal-insert-mode owns input). The running
-        // program basename is rendered as the buffer *name*
-        // by `pane_status_label` (registry lookup); we don't
-        // repeat it here.
-        let modal_label: &str = if matches!(
-            ad.buffer_kind,
-            lattice_core::BufferKind::Terminal,
-        ) {
-            if ad.terminal_insert_active {
-                "TERMINAL-INSERT"
-            } else if ad.terminal_visual_active {
-                "TERMINAL-VISUAL"
-            } else {
-                "TERMINAL"
-            }
-        } else {
-            match modal {
-                ModalState::Normal => "NORMAL",
-                ModalState::Insert => "INSERT",
-                ModalState::Visual(_) => "VISUAL",
-                ModalState::OperatorPending => "PENDING",
-                ModalState::Command => "COMMAND",
-                ModalState::Search(_) => "SEARCH",
-                ModalState::Replace => "REPLACE",
-            }
-        };
         drop(ad);
-        // 5.8.C / 5.8.H: bottom global row. In Command/Search
-        // modes it shows the in-progress `:cmd` / `/pattern`
-        // minibuffer; otherwise it shows the global modal label.
-        // Per-pane path + cursor coords now live inside each
-        // pane's own status line (built in `paint_pane`).
+        // 5.8.C / 5.8.H: bottom global row. In Command/Search modes
+        // it shows the in-progress `:cmd` / `/pattern` minibuffer;
+        // otherwise it is empty — the modal indicator moved to each
+        // pane's own status footer (Option-A modeline overhaul, MO.4.b).
         // Slice 3c.final.B.7: cmdline + search-line via published
         // `modeline()` sub-state — wait-free Arc clones.
         let modeline = self.app.modeline();
@@ -2622,7 +2718,7 @@ impl Render for EditorView {
                 let pattern = modeline.search_pattern.as_deref().unwrap_or("");
                 format!("{prefix}{pattern}")
             }
-            _ => format!("  {modal_label}"),
+            _ => String::new(),
         };
         let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
 

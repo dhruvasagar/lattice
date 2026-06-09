@@ -20,10 +20,64 @@ pub struct Subscription {
     _private: (),
 }
 
-/// Stub. M.4 replaces with the real decoration-provider type.
+/// Stub. Reserved for the WIT plugin-facing contribution surface
+/// (M.10). Not used by the `Mode` trait today — see
+/// `Mode::gutter_decorations` for the live decoration path.
 #[derive(Debug, Clone)]
 pub struct DecorationProvider {
     _private: (),
+}
+
+/// Renderer-agnostic diff-sign kind for the gutter diff column.
+/// Mirrors `DiffSignKind` without importing `lattice-host`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GutterDiffKind {
+    Add,
+    Remove,
+    Change,
+    Conflict,
+}
+
+/// Renderer-agnostic diagnostic severity level for the gutter
+/// severity column. Ordered ascending by severity so `max()` selects
+/// the most severe: `Hint < Info < Warning < Error`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GutterSeverityLevel {
+    Hint,
+    Info,
+    Warning,
+    Error,
+}
+
+/// A single gutter decoration contributed by a [`crate::Mode`].
+/// Each variant maps to one physical gutter column.
+#[derive(Copy, Clone, Debug)]
+pub enum GutterDecoration {
+    /// Diff-sign column (between severity and line numbers).
+    Diff { line: u32, kind: GutterDiffKind },
+    /// LSP diagnostic severity column (leftmost gutter cell).
+    Severity { line: u32, level: GutterSeverityLevel },
+}
+
+/// Read-only context passed to [`crate::Mode::gutter_decorations`].
+/// Same dep-inversion pattern as [`StatusLineCtx`]: the App populates
+/// a `ServiceRegistry` with typed render-state snapshots; modes pull
+/// their own data via [`Self::service`].
+pub struct DecorationCtx<'a> {
+    pub buffer_id: BufferId,
+    services: &'a ServiceRegistry,
+}
+
+impl<'a> DecorationCtx<'a> {
+    pub fn new(buffer_id: BufferId, services: &'a ServiceRegistry) -> Self {
+        Self { buffer_id, services }
+    }
+
+    pub fn service<T: std::any::Any + Send + Sync>(
+        &self,
+    ) -> Option<std::sync::Arc<T>> {
+        self.services.get::<T>()
+    }
 }
 
 /// A single status-line segment contributed by a [`crate::Mode`].

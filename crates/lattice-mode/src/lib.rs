@@ -93,7 +93,8 @@ pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{
-    DecorationProvider, Keymap, KeymapBinding, StatusLineCtx, StatusLineItem, Subscription,
+    DecorationCtx, DecorationProvider, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+    Keymap, KeymapBinding, StatusLineCtx, StatusLineItem, Subscription,
 };
 pub use crate::keymap_entry::KeymapEntry;
 pub use crate::error::ModeActivationError;

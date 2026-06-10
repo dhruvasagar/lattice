@@ -107,37 +107,14 @@ pub fn register_normal_bindings(
     let mode = BindingMode::Normal;
 
     // ---- Motions: typed CommandInvocation, no count baked in.
-    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
-        (lit_char('h'), builtins.char_left),
-        (lit_special(SpecialKey::Left), builtins.char_left),
-        (lit_char('j'), builtins.line_down),
-        (lit_special(SpecialKey::Down), builtins.line_down),
-        (lit_char('k'), builtins.line_up),
-        (lit_special(SpecialKey::Up), builtins.line_up),
-        (lit_char('l'), builtins.char_right),
-        (lit_special(SpecialKey::Right), builtins.char_right),
-        (lit_char('0'), builtins.line_start),
-        (lit_special(SpecialKey::Home), builtins.line_start),
-        (lit_char('$'), builtins.line_end),
-        (lit_special(SpecialKey::End), builtins.line_end),
-        (lit_char('^'), builtins.first_non_blank),
-        (lit_char('w'), builtins.word_forward),
-        (lit_char('b'), builtins.word_backward),
-        (lit_char('e'), builtins.word_end),
-        (lit_char('W'), builtins.big_word_forward),
-        (lit_char('B'), builtins.big_word_backward),
-        (lit_char('E'), builtins.big_word_end),
-        (lit_char('}'), builtins.paragraph_forward),
-        (lit_char('{'), builtins.paragraph_backward),
-        (lit_char(')'), builtins.sentence_forward),
-        (lit_char('('), builtins.sentence_backward),
-        (lit_char('G'), builtins.goto_last_line),
-    ];
-    for (chord, motion) in motion_table {
+    // Sourced from the shared `motion_rows` table so Normal /
+    // operator-pending / Visual never drift -- a motion added there
+    // lights up in all three surfaces.
+    for (chord, motion) in motion_rows(builtins) {
         handle.bind(
             layer,
             mode,
-            std::slice::from_ref(chord),
+            std::slice::from_ref(&chord),
             CommandInvocation::of(motion.0),
             source(),
         );
@@ -1168,40 +1145,19 @@ pub fn register_operator_pending(
     let mode = BindingMode::Normal;
 
     // ---- Motion targets. Each operator's `[op_prefix..., motion_chord]`
-    // ---- resolves to `Invoke(op, Target::Motion(motion))`.
-    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
-        (lit_char('h'), builtins.char_left),
-        (lit_special(SpecialKey::Left), builtins.char_left),
-        (lit_char('l'), builtins.char_right),
-        (lit_special(SpecialKey::Right), builtins.char_right),
-        (lit_char('j'), builtins.line_down),
-        (lit_special(SpecialKey::Down), builtins.line_down),
-        (lit_char('k'), builtins.line_up),
-        (lit_special(SpecialKey::Up), builtins.line_up),
-        (lit_char('0'), builtins.line_start),
-        (lit_special(SpecialKey::Home), builtins.line_start),
-        (lit_char('$'), builtins.line_end),
-        (lit_special(SpecialKey::End), builtins.line_end),
-        (lit_char('^'), builtins.first_non_blank),
-        (lit_char('w'), builtins.word_forward),
-        (lit_char('b'), builtins.word_backward),
-        (lit_char('e'), builtins.word_end),
-        (lit_char('W'), builtins.big_word_forward),
-        (lit_char('B'), builtins.big_word_backward),
-        (lit_char('E'), builtins.big_word_end),
-        (lit_char('}'), builtins.paragraph_forward),
-        (lit_char('{'), builtins.paragraph_backward),
-        (lit_char(')'), builtins.sentence_forward),
-        (lit_char('('), builtins.sentence_backward),
-    ];
-    for (chord, motion) in motion_table {
+    // ---- resolves to `Invoke(op, Target::Motion(motion))`. Sourced
+    // ---- from the shared `motion_rows` table so a new motion works
+    // ---- as `d<motion>` / `y<motion>` / ... automatically. (This is
+    // ---- also where `dG` / `cG` / `yG` come from now -- `G` was
+    // ---- previously absent from the operator-pending list.)
+    for (chord, motion) in motion_rows(builtins) {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
-        path.push(chord.clone());
+        path.push(chord);
         handle.bind(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0).with_target(Target::Motion(*motion, Args::None)),
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion, Args::None)),
             source(),
         );
     }
@@ -1310,6 +1266,64 @@ fn register_find_char_paths(
         };
         handle.bind(layer, mode, &wild_path, invocation, source());
     }
+}
+
+/// The canonical chord -> motion table.
+///
+/// Single source of truth shared by all three motion surfaces so a
+/// new motion added here lights up everywhere with no per-surface
+/// wiring (the same single-source guarantee [`text_object_rows`]
+/// gives text objects):
+/// - Normal bare motions ([`register_normal_bindings`]) — `[chord]`
+///   -> `Invoke(motion)`.
+/// - Operator-pending targets ([`register_operator_pending`]) —
+///   `[op..., chord]` -> `Invoke(op, Target::Motion(motion))`.
+/// - Visual motions ([`crate::keymap_visual::register_visual_bindings`])
+///   — `[chord]` -> `Invoke(motion)` (the host's `SelectionChange`
+///   arm extends the active selection's head).
+///
+/// Each consumer builds its own invocation SHAPE from the shared
+/// (chord, motion) pair, exactly as the text-object binders do.
+///
+/// Argument motions (`f` / `F` / `t` / `T` find-char) are NOT here —
+/// they ride a separate wildcard-capture path
+/// ([`register_find_char_paths`]). This table is the simple, no-arg
+/// motions only.
+///
+/// Note: operator targets are charwise for every motion (the engine
+/// has no linewise-motion-target expansion yet — `dj` / `dG` delete
+/// charwise, not by whole lines); sharing this table means `dG` /
+/// `cG` / `yG` now resolve (charwise to EOF), consistent with the
+/// pre-existing charwise `dj` / `dk`.
+pub(crate) fn motion_rows(
+    builtins: &Builtins,
+) -> Vec<(ChordPattern, lattice_grammar::registry::MotionId)> {
+    vec![
+        (lit_char('h'), builtins.char_left),
+        (lit_special(SpecialKey::Left), builtins.char_left),
+        (lit_char('j'), builtins.line_down),
+        (lit_special(SpecialKey::Down), builtins.line_down),
+        (lit_char('k'), builtins.line_up),
+        (lit_special(SpecialKey::Up), builtins.line_up),
+        (lit_char('l'), builtins.char_right),
+        (lit_special(SpecialKey::Right), builtins.char_right),
+        (lit_char('0'), builtins.line_start),
+        (lit_special(SpecialKey::Home), builtins.line_start),
+        (lit_char('$'), builtins.line_end),
+        (lit_special(SpecialKey::End), builtins.line_end),
+        (lit_char('^'), builtins.first_non_blank),
+        (lit_char('w'), builtins.word_forward),
+        (lit_char('b'), builtins.word_backward),
+        (lit_char('e'), builtins.word_end),
+        (lit_char('W'), builtins.big_word_forward),
+        (lit_char('B'), builtins.big_word_backward),
+        (lit_char('E'), builtins.big_word_end),
+        (lit_char('}'), builtins.paragraph_forward),
+        (lit_char('{'), builtins.paragraph_backward),
+        (lit_char(')'), builtins.sentence_forward),
+        (lit_char('('), builtins.sentence_backward),
+        (lit_char('G'), builtins.goto_last_line),
+    ]
 }
 
 /// The canonical chord -> (inner, around) text-object table.

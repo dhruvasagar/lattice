@@ -124,6 +124,9 @@ pub enum Action {
     /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
     /// as the most recently exited Visual selection.
     ReselectLastVisual,
+    /// Vim's `o` in Visual -- swap the cursor to the other end of the
+    /// selection so motions / text objects act on that end.
+    SwapVisualEnds,
     /// Vim's `*` (Forward) and `#` (Backward) -- search for the word under
     /// the cursor in the given direction.
     SearchWordUnderCursor(SearchDirection),

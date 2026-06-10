@@ -210,6 +210,11 @@ pub enum AppEffect {
     /// kind, anchor, head). Promoted from
     /// `Action::ReselectLastVisual` in slice 8.i.1.e.
     ReselectLastVisual,
+    /// Vim's `o` in Visual mode -- swap the cursor (head) to the
+    /// other end of the selection (and back). Anchor and head trade
+    /// places so subsequent motions / text objects grow or shrink the
+    /// selection at the end the cursor now sits on.
+    SwapVisualEnds,
     /// Vim's `p`. Paste the unnamed register's contents after
     /// the cursor. Promoted from `Action::PasteAfter` in slice
     /// 8.i.1.e.

@@ -117,55 +117,27 @@ pub fn register_visual_bindings(
         source(),
     );
 
-    // Motions: each chord binds to a typed CommandInvocation.
-    // The dispatcher returns `Action::Invoke(command.clone())` --
-    // identical to the legacy `invoke(builtins.char_left)`.
-    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
-        (literal(KeyChord::char('h')), builtins.char_left),
-        (
-            literal(KeyChord::special(SpecialKey::Left)),
-            builtins.char_left,
-        ),
-        (literal(KeyChord::char('j')), builtins.line_down),
-        (
-            literal(KeyChord::special(SpecialKey::Down)),
-            builtins.line_down,
-        ),
-        (literal(KeyChord::char('k')), builtins.line_up),
-        (literal(KeyChord::special(SpecialKey::Up)), builtins.line_up),
-        (literal(KeyChord::char('l')), builtins.char_right),
-        (
-            literal(KeyChord::special(SpecialKey::Right)),
-            builtins.char_right,
-        ),
-        (literal(KeyChord::char('0')), builtins.line_start),
-        (
-            literal(KeyChord::special(SpecialKey::Home)),
-            builtins.line_start,
-        ),
-        (literal(KeyChord::char('$')), builtins.line_end),
-        (
-            literal(KeyChord::special(SpecialKey::End)),
-            builtins.line_end,
-        ),
-        (literal(KeyChord::char('^')), builtins.first_non_blank),
-        (literal(KeyChord::char('w')), builtins.word_forward),
-        (literal(KeyChord::char('b')), builtins.word_backward),
-        (literal(KeyChord::char('e')), builtins.word_end),
-        (literal(KeyChord::char('W')), builtins.big_word_forward),
-        (literal(KeyChord::char('B')), builtins.big_word_backward),
-        (literal(KeyChord::char('E')), builtins.big_word_end),
-        (literal(KeyChord::char('}')), builtins.paragraph_forward),
-        (literal(KeyChord::char('{')), builtins.paragraph_backward),
-        (literal(KeyChord::char(')')), builtins.sentence_forward),
-        (literal(KeyChord::char('(')), builtins.sentence_backward),
-        (literal(KeyChord::char('G')), builtins.goto_last_line),
-    ];
-    for (chord, motion) in motion_table {
+    // `o` -- swap the cursor to the other end of the selection so the
+    // next motion / text object alters that end (vim's Visual `o`).
+    handle.bind(
+        layer,
+        mode,
+        &[ChordPattern::Literal(KeyChord::char('o'))],
+        CommandInvocation::of(actions.swap_visual_ends),
+        source(),
+    );
+
+    // Motions: each chord binds to a typed CommandInvocation. Sourced
+    // from the SHARED `keymap_normal::motion_rows` table -- the same
+    // one Normal + operator-pending consume -- so a motion added there
+    // works in Visual automatically (the host's `SelectionChange` arm
+    // extends the active selection's head). The dispatcher returns
+    // `Action::Invoke(command.clone())`.
+    for (chord, motion) in crate::keymap_normal::motion_rows(builtins) {
         handle.bind(
             layer,
             mode,
-            std::slice::from_ref(chord),
+            std::slice::from_ref(&chord),
             CommandInvocation::of(motion.0),
             source(),
         );

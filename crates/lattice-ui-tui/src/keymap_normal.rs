@@ -255,6 +255,30 @@ mod tests {
         }
     }
 
+    /// Motion-table unification: `G` is now in the shared `motion_rows`
+    /// table, so `dG` resolves as an operator target (previously the
+    /// operator-pending list omitted `G`). Charwise to EOF, consistent
+    /// with the pre-existing charwise `dj` / `dk`.
+    #[test]
+    fn d_uppercase_g_resolves_to_delete_with_goto_last_line_target() {
+        let (h, b, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('G'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::Motion(m, _)) if m == b.goto_last_line
+                ));
+            }
+            other => panic!("expected Invoke(delete, goto_last_line), got {other:?}"),
+        }
+    }
+
     #[test]
     fn dd_resolves_to_delete_current_line() {
         let (h, b, _) = populated_handle();

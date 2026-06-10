@@ -1802,6 +1802,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::EnterVisual(kind) => editor.do_enter_visual(kind),
         Action::ExitVisual => editor.do_exit_visual(),
         Action::ReselectLastVisual => editor.do_reselect_visual(),
+        Action::SwapVisualEnds => editor.do_swap_visual_ends(),
         Action::SetMark(name) => {
             if name.is_ascii_alphabetic() || name.is_ascii_digit() {
                 editor.marks.insert(name, editor.cursor);
@@ -5077,6 +5078,7 @@ impl Editor {
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
+            AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
             AppEffect::LspDefinitionRequest => out.next_actions.push(Action::LspDefinitionRequest),
@@ -21905,6 +21907,33 @@ impl Editor {
             anchor: last.anchor,
             head: last.head,
             visual: Some(visual_kind_to_mode(last.kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
+
+    /// Vim's `o` in Visual mode: swap the cursor (head) to the other
+    /// end of the selection. Anchor and head trade places so a
+    /// following motion / text object grows or shrinks the selection
+    /// at the end the cursor now sits on.
+    ///
+    /// No-op outside Visual mode, and no-op when `visual_anchor` is
+    /// unset -- the latter naturally skips buffer kinds that keep
+    /// their Visual region elsewhere (terminal), so this needs no
+    /// `BufferKind` branch.
+    pub fn do_swap_visual_ends(&mut self) {
+        let ModalState::Visual(kind) = self.modal else {
+            return;
+        };
+        let Some(other_end) = self.visual_anchor else {
+            return;
+        };
+        let new_anchor = self.cursor;
+        self.visual_anchor = Some(new_anchor);
+        self.cursor = other_end;
+        let sel = lattice_protocol::selection::Selection {
+            anchor: new_anchor,
+            head: other_end,
+            visual: Some(visual_kind_to_mode(kind)),
         };
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
     }

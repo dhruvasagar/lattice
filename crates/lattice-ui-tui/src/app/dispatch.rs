@@ -289,6 +289,7 @@ impl App {
             | Action::EnterVisual(_)
             | Action::ExitVisual
             | Action::ReselectLastVisual
+            | Action::SwapVisualEnds
             | Action::SetMark(_)
             // 5.5.G.3: pure-editor edit-cluster arms migrated to
             // `Editor::dispatch`.

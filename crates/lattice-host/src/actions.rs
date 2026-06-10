@@ -95,6 +95,7 @@ pub struct ActionIds {
     pub completion_trigger: CommandId,
     pub snippet_expand: CommandId,
     pub exit_visual: CommandId,
+    pub swap_visual_ends: CommandId,
     pub replace_undo_last: CommandId,
     pub enter_mode_insert: CommandId,
     pub enter_mode_normal: CommandId,
@@ -549,6 +550,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:exit-visual",
             "Visual mode's `<Esc>` / `v` / `V`: exit Visual to Normal.",
             AppEffect::ExitVisual,
+        ),
+        swap_visual_ends: register_simple(
+            registry,
+            "action:swap-visual-ends",
+            "Visual mode's `o`: swap the cursor to the other end of the selection.",
+            AppEffect::SwapVisualEnds,
         ),
         replace_undo_last: register_simple(
             registry,
@@ -1280,6 +1287,7 @@ mod tests {
             (ids.completion_trigger, "action:completion-trigger"),
             (ids.snippet_expand, "action:snippet-expand"),
             (ids.exit_visual, "action:exit-visual"),
+            (ids.swap_visual_ends, "action:swap-visual-ends"),
             (ids.replace_undo_last, "action:replace-undo-last"),
             (ids.enter_mode_insert, "action:enter-mode-insert"),
             (ids.enter_mode_normal, "action:enter-mode-normal"),

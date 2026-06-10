@@ -69,7 +69,10 @@ use lattice_cells::virtual_rows::{
 };
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
-use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect};
+use lattice_grammar::{
+    CancellationToken, CommandInvocation, CommandKind, CommandRegistry, Effect,
+    execute_with_scope_resolver,
+};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
@@ -78,7 +81,7 @@ use lattice_runtime::{
     Document, DocumentSnapshot, Pending, PublishedSnapshot, RuntimeError, SnapshotCache,
 };
 // K.4.7 (2026-06-07): per-excerpt syntax highlighting.
-use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle};
+use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle, SyntaxSnapshot};
 
 // ─────────────────────────────────────────────────────────────────
 // Excerpt + identity + header
@@ -1590,16 +1593,147 @@ impl Document for MultibufferDocumentHandle {
         let mut scratch = lattice_core::Document::from_buffer(snapshot.buffer.clone());
         let buffer_id = self.inner.buffer_id;
         let registry = Arc::clone(&self.inner.registry);
-        let result = lattice_grammar::execute(
+        // N.1.5: tree-sitter text objects (`af` / `daf` / `znaf`) inside a
+        // multibuffer view resolve against the SOURCE syntax, not the
+        // composed text (which has no parse tree of its own). Build a
+        // composed↔source `ScopeResolver` from the per-excerpt source
+        // SyntaxSnapshots (K.4.7) and hand it to the dispatcher. Only
+        // built for Operator / TextObject invocations -- motions
+        // (j/k/w/...) never read it, so navigation in a big search view
+        // stays O(1) per keystroke (paramount #1).
+        let composed_resolver = if matches!(
+            registry.lookup(invocation.command).map(|s| s.kind),
+            Some(CommandKind::Operator | CommandKind::TextObject)
+        ) {
+            ComposedScopeResolver::build(&self.lock_state())
+        } else {
+            None
+        };
+        let result = execute_with_scope_resolver(
             &registry,
             &mut scratch,
             buffer_id,
             cursor,
             invocation,
             &cancel,
+            composed_resolver
+                .as_ref()
+                .map(|r| r as &dyn lattice_grammar::ScopeResolver),
         )
         .map_err(RuntimeError::Grammar);
         Pending::ready(result)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// N.1.5 — composed↔source scope resolver
+// ──────────────────────────────────────────────────────────────
+
+/// N.1.5: a [`lattice_grammar::ScopeResolver`] that bridges composed
+/// multibuffer coordinates to the per-excerpt SOURCE syntax. Tree-sitter
+/// text objects dispatched against a multibuffer view (narrow / search /
+/// project-diff) resolve their enclosing scope against the source file's
+/// parse tree — the composed text has no tree of its own — and the
+/// result is mapped back to composed coordinates so the operator applies
+/// in the view. Built per Operator/TextObject dispatch from a snapshot
+/// of the excerpt layout + source `SyntaxSnapshot`s (cheap Arc clones);
+/// see [`MultibufferDocumentHandle::dispatch_with_cancel`].
+struct ComposedScopeResolver {
+    excerpts: Vec<ComposedExcerptSpan>,
+    snapshots: HashMap<BufferId, Arc<SyntaxSnapshot>>,
+}
+
+/// One excerpt's placement: its source rows `[start_line, start_line +
+/// line_count)` occupy composed rows `[composed_offset, composed_offset
+/// + line_count)`.
+struct ComposedExcerptSpan {
+    source: BufferId,
+    start_line: u32,
+    line_count: u32,
+    composed_offset: u32,
+}
+
+impl ComposedScopeResolver {
+    /// Snapshot the excerpt layout + per-source `SyntaxSnapshot`s.
+    /// Returns `None` when no excerpt has a source `SyntaxHandle` (a
+    /// plain-text / no-language multibuffer) — the resolver would
+    /// resolve nothing, so the caller passes `None` and text objects
+    /// degrade to empty (graceful operator no-op).
+    fn build(state: &MultibufferState) -> Option<Self> {
+        let mut excerpts = Vec::with_capacity(state.excerpts.len());
+        let mut snapshots: HashMap<BufferId, Arc<SyntaxSnapshot>> = HashMap::new();
+        let mut composed_offset = 0u32;
+        for ex in &state.excerpts {
+            excerpts.push(ComposedExcerptSpan {
+                source: ex.source,
+                start_line: ex.start_line,
+                line_count: ex.line_count(),
+                composed_offset,
+            });
+            composed_offset = composed_offset.saturating_add(ex.line_count());
+            if !snapshots.contains_key(&ex.source)
+                && let Some(h) = state.source_syntax.get(&ex.source)
+            {
+                snapshots.insert(ex.source, h.snapshot());
+            }
+        }
+        if snapshots.is_empty() {
+            return None;
+        }
+        Some(Self {
+            excerpts,
+            snapshots,
+        })
+    }
+}
+
+impl lattice_grammar::ScopeResolver for ComposedScopeResolver {
+    fn scope_at(
+        &self,
+        composed_line: u32,
+        col_byte: u32,
+        suffix: &str,
+    ) -> Option<lattice_protocol::position::Range> {
+        for ex in &self.excerpts {
+            let composed_last = ex.composed_offset.saturating_add(ex.line_count);
+            if composed_line < composed_last {
+                let source_line = ex.start_line + (composed_line - ex.composed_offset);
+                let snap = self.snapshots.get(&ex.source)?;
+                let src = snap.scope_at_cursor(source_line, col_byte, suffix)?;
+                // Clamp the source range to THIS excerpt's source bounds,
+                // then map back to composed rows. A scope extending past
+                // the excerpt (a narrowed sub-region) is clipped to the
+                // visible rows; a clamped edge loses its byte column
+                // (falls to col 0) since it no longer marks a real token.
+                let ex_last = ex.start_line + ex.line_count - 1;
+                let cs = src.start.line.max(ex.start_line);
+                let ce = src.end.line.min(ex_last);
+                if cs > ce {
+                    return None;
+                }
+                let start_byte = if src.start.line >= ex.start_line {
+                    src.start.byte
+                } else {
+                    0
+                };
+                let end_byte = if src.end.line <= ex_last {
+                    src.end.byte
+                } else {
+                    0
+                };
+                return Some(lattice_protocol::position::Range::new(
+                    lattice_protocol::position::Position::new(
+                        ex.composed_offset + (cs - ex.start_line),
+                        start_byte,
+                    ),
+                    lattice_protocol::position::Position::new(
+                        ex.composed_offset + (ce - ex.start_line),
+                        end_byte,
+                    ),
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -2475,6 +2609,111 @@ mod tests {
             .translate_composed_to_source(Position::new(2, 0))
             .expect("composed (2,0) must translate");
         assert_eq!(target.1, Position::new(7, 0));
+    }
+
+    // ---- N.1.5: ComposedScopeResolver (composed↔source text objects) ----
+
+    use lattice_grammar::ScopeResolver as _;
+
+    fn rust_snapshot(src: &str) -> Arc<SyntaxSnapshot> {
+        let lr = LangRegistry::standard().unwrap();
+        let mut syntax = Syntax::for_language_with_registry(Lang::Rust, lr)
+            .unwrap()
+            .unwrap();
+        syntax.parse(src);
+        SyntaxHandle::seeded(syntax).snapshot()
+    }
+
+    #[test]
+    fn composed_resolver_maps_function_outer_to_source() {
+        // Source: a `target` fn on rows 1..=3, narrowed into a one-excerpt
+        // view (composed rows 0..=2 == source rows 1..=3).
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![ComposedExcerptSpan {
+                source: BufferId(1),
+                start_line: 1,
+                line_count: 3,
+                composed_offset: 0,
+            }],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        // Cursor at composed (1,4) == source (2,4), inside `target`'s body.
+        // `af` resolves the whole function (source rows 1..=3) and maps
+        // back to composed rows 0..=2.
+        let r = resolver.scope_at(1, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 0),
+                lattice_protocol::position::Position::new(2, 1),
+            )),
+            "af inside a narrow view resolves the source function, mapped to composed rows"
+        );
+    }
+
+    #[test]
+    fn composed_resolver_clamps_scope_to_excerpt() {
+        // Excerpt covers only source row 2 (the body line). `af` resolves
+        // the function (source 1..=3) but the result is CLAMPED to the
+        // single visible row — never out-of-bounds composed rows.
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![ComposedExcerptSpan {
+                source: BufferId(1),
+                start_line: 2,
+                line_count: 1,
+                composed_offset: 0,
+            }],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        let r = resolver.scope_at(0, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 0),
+                lattice_protocol::position::Position::new(0, 0),
+            )),
+            "a scope extending past the excerpt is clipped to the visible rows"
+        );
+    }
+
+    #[test]
+    fn composed_resolver_applies_composed_offset_for_second_excerpt() {
+        // Two excerpts from the same source: [0,0] then [1,3]. The second
+        // sits at composed_offset 1, so resolving inside it must add the
+        // offset back when mapping the source range to composed rows.
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![
+                ComposedExcerptSpan {
+                    source: BufferId(1),
+                    start_line: 0,
+                    line_count: 1,
+                    composed_offset: 0,
+                },
+                ComposedExcerptSpan {
+                    source: BufferId(1),
+                    start_line: 1,
+                    line_count: 3,
+                    composed_offset: 1,
+                },
+            ],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        // Composed row 2 lives in the second excerpt → source row 2.
+        let r = resolver.scope_at(2, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(1, 0),
+                lattice_protocol::position::Position::new(3, 1),
+            )),
+            "the second excerpt's composed_offset (1) is added to the mapped rows"
+        );
     }
 
     /// M.10.2 (2026-06-03): out-of-range composed cursor

@@ -4484,6 +4484,65 @@ impl Editor {
         }
     }
 
+    /// N.1.5: resolve the real narrow source + source line range for a
+    /// narrow triggered at composed lines `[composed_start, composed_end]`.
+    ///
+    /// When the active buffer is a multibuffer (narrow view, search
+    /// results, project-diff -- any kind), translate both endpoints to
+    /// the original source via `translate_composed_to_source` (M.10.2),
+    /// so `create_narrow_view` is ALWAYS handed a `RopeDocumentHandle`,
+    /// never an intermediate multibuffer. This is the §7 one-hop
+    /// invariant: every narrow view is exactly one hop from the file, so
+    /// edits + save + `:widen` flow straight to the source with no
+    /// fragile N-hop translation stack.
+    ///
+    /// Both endpoints must land in the same source excerpt for a
+    /// contiguous narrow -- a one-excerpt narrow view always does; a
+    /// range spanning excerpts in a multi-excerpt search view falls back
+    /// to the start endpoint's excerpt (degenerate, but never the wrong
+    /// source). Returns `(source_id, source_handle, source_start,
+    /// source_end)`, or `None` when the source has no document handle.
+    fn resolve_narrow_target(
+        &self,
+        composed_start: u32,
+        composed_end: u32,
+    ) -> Option<(
+        BufferId,
+        std::sync::Arc<dyn lattice_runtime::Document>,
+        u32,
+        u32,
+    )> {
+        let active_id = self.active_pane_buffer_id();
+        if matches!(self.active_buffer, BufferKind::Multibuffer) {
+            let mb = self
+                .services
+                .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+                .and_then(|reg| reg.handle(active_id))?;
+            let (src_a, pos_a) = mb.translate_composed_to_source(
+                lattice_protocol::position::Position::new(composed_start, 0),
+            )?;
+            let (src_b, pos_b) = mb.translate_composed_to_source(
+                lattice_protocol::position::Position::new(composed_end, 0),
+            )?;
+            let (source_id, start, end) = if src_b == src_a {
+                (
+                    src_a,
+                    pos_a.line.min(pos_b.line),
+                    pos_a.line.max(pos_b.line),
+                )
+            } else {
+                // Endpoints straddle excerpts (multi-excerpt search
+                // view): narrow the start endpoint's source only.
+                (src_a, pos_a.line, pos_a.line)
+            };
+            let handle = self.buffers.document_handle(source_id)?;
+            Some((source_id, handle, start, end))
+        } else {
+            let handle = self.buffers.document_handle(active_id)?;
+            Some((active_id, handle, composed_start, composed_end))
+        }
+    }
+
     /// Clamp [`Self::cursor`] to the active buffer's bounds. Reads
     /// from [`Self::active_text`] so it works for help / file-tree /
     /// document / oil uniformly.
@@ -5250,29 +5309,33 @@ impl Editor {
             // view-creation; the host arm is generic glue (resolve
             // range → create → activate).
             AppEffect::NarrowTrigger { range } => {
-                let source_id = self.active_pane_buffer_id();
-                let source_handle = self.buffers.document_handle(source_id);
-                match source_handle {
-                    Some(source_handle) => {
-                        let snapshot = source_handle.snapshot();
-                        let last_line = snapshot.buffer.line_count().saturating_sub(1);
-                        let cursor_line = self.active_cursor().line.min(last_line);
-                        // N.1.2: the last Visual selection (preserved
-                        // after `:` left Visual) supplies `Range::Selection`
-                        // and the `'<` / `'>` marks.
-                        let visual = self.last_visual.as_ref().map(|v| {
-                            let a = v.anchor.line.min(last_line);
-                            let h = v.head.line.min(last_line);
-                            (a.min(h), a.max(h))
-                        });
-                        let (start, end) = resolve_narrow_range(
-                            &range,
-                            cursor_line,
-                            last_line,
-                            visual,
-                            &self.marks,
-                            &snapshot.buffer,
-                        );
+                // Resolve the requested range against the ACTIVE composed
+                // buffer (works for a plain document AND a multibuffer
+                // view -- `self.document` is the active document).
+                let composed = self.document.snapshot();
+                let last_line = composed.buffer.line_count().saturating_sub(1);
+                let cursor_line = self.active_cursor().line.min(last_line);
+                // N.1.2: the last Visual selection (preserved after `:`
+                // left Visual) supplies `Range::Selection` and the `'<` /
+                // `'>` marks.
+                let visual = self.last_visual.as_ref().map(|v| {
+                    let a = v.anchor.line.min(last_line);
+                    let h = v.head.line.min(last_line);
+                    (a.min(h), a.max(h))
+                });
+                let (composed_start, composed_end) = resolve_narrow_range(
+                    &range,
+                    cursor_line,
+                    last_line,
+                    visual,
+                    &self.marks,
+                    &composed.buffer,
+                );
+                // N.1.5: translate to the real source when the active
+                // buffer is a multibuffer (one-hop invariant); identity
+                // pass-through for a plain document.
+                match self.resolve_narrow_target(composed_start, composed_end) {
+                    Some((source_id, source_handle, start, end)) => {
                         let label = self.buffers.name_of(source_id).unwrap_or_default();
                         let registry = self.registry.clone();
                         let lr = Some(self.lang_registry.clone());
@@ -5332,9 +5395,12 @@ impl Editor {
                 start_line,
                 end_line,
             } => {
-                let source_id = self.active_pane_buffer_id();
-                match self.buffers.document_handle(source_id) {
-                    Some(source_handle) => {
+                // N.1.5: when narrowing from inside a multibuffer view,
+                // `resolve_narrow_target` translates the composed span to
+                // the original source (one-hop invariant). Identity
+                // pass-through for a plain document.
+                match self.resolve_narrow_target(start_line, end_line) {
+                    Some((source_id, source_handle, start, end)) => {
                         let label = self.buffers.name_of(source_id).unwrap_or_default();
                         let registry = self.registry.clone();
                         let lr = Some(self.lang_registry.clone());
@@ -5342,8 +5408,8 @@ impl Editor {
                             self,
                             source_id,
                             source_handle,
-                            start_line,
-                            end_line,
+                            start,
+                            end,
                             &label,
                             registry,
                             lr,
@@ -5354,7 +5420,7 @@ impl Editor {
                         }
                         self.set_message(
                             EchoLevel::Info,
-                            format!("narrowed to L{}–{}", start_line + 1, end_line + 1),
+                            format!("narrowed to L{}–{}", start + 1, end + 1),
                         );
                     }
                     None => {
@@ -26698,6 +26764,64 @@ mod tests {
             lattice_picker::OpenTarget::Default,
             "picker_open_target must reset after every do_picker_accept call \
              (slice 32 one-shot guarantee)"
+        );
+    }
+
+    #[test]
+    fn stacked_narrow_targets_original_source_one_hop() {
+        // N.1.5 one-hop invariant: narrowing from inside a narrow view
+        // creates the new view on the ORIGINAL source (a
+        // RopeDocumentHandle), never the intermediate multibuffer -- so
+        // every narrow is exactly one hop from the file.
+        use lattice_grammar::AppEffect;
+
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let original_id = editor.active_pane_buffer_id();
+        let mut out = DispatchOutcome::default();
+
+        // Narrow the file to source lines [2, 5].
+        editor.apply_app_effect(
+            AppEffect::NarrowLines {
+                start_line: 2,
+                end_line: 5,
+            },
+            &mut out,
+        );
+        let narrow_a = editor.active_pane_buffer_id();
+        assert_ne!(narrow_a, original_id, "narrow A is a new view");
+        assert_eq!(editor.active_buffer, BufferKind::Multibuffer);
+
+        // From narrow A (composed rows 0..=3 == source 2..=5), narrow
+        // composed rows [0, 1] == source rows [2, 3].
+        editor.apply_app_effect(
+            AppEffect::NarrowLines {
+                start_line: 0,
+                end_line: 1,
+            },
+            &mut out,
+        );
+        let narrow_b = editor.active_pane_buffer_id();
+        assert_ne!(narrow_b, narrow_a, "narrow B is a distinct view");
+
+        // B's single excerpt sources the ORIGINAL document, not narrow A,
+        // and covers source rows [2, 3] (the translated span).
+        let mb = editor
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+            .and_then(|reg| reg.handle(narrow_b))
+            .expect("narrow B is a registered multibuffer");
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts.len(), 1, "narrow B has one excerpt");
+        assert_eq!(
+            excerpts[0].source, original_id,
+            "stacked narrow sources the ORIGINAL file, not the intermediate \
+             narrow view (one-hop invariant)"
+        );
+        assert_eq!(
+            (excerpts[0].start_line, excerpts[0].end_line),
+            (2, 3),
+            "composed [0,1] translated to source [2,3]"
         );
     }
 

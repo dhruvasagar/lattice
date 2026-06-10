@@ -457,6 +457,15 @@ kind):
 The intermediate view is neither read from nor written to. Every narrow view
 is always exactly one hop from a `RopeDocumentHandle`.
 
+> **Implementation note (N.1.5, 2026-06-10).** The steps split across two layers:
+> the text object resolves *inside* the multibuffer's own dispatch (a
+> `ComposedScopeResolver` maps composed↔source against the per-excerpt syntax, so
+> step 3 happens there rather than as a handler re-resolve), and the host handler
+> (`Editor::resolve_narrow_target`) translates the resulting line range to the
+> source and creates the view (steps 2 + 4). This also unlocks `daf` / `yaf`
+> inside *search* views, not just narrow. See the N.1.5 slice plan for the
+> mechanism.
+
 **Why this is the correct long-term design (heuristic #1).** O(n)-hop chains
 create a translation stack that diverges when an inner-hop edit hasn't propagated
 before an outer-hop reads composed coordinates. Transparent stacking eliminates

@@ -42,7 +42,7 @@ owns *when* and *in what order*.
 | **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range)                | ✅             |
 | **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅             |
 | **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`)     | ✅ (a–d; comment `aC`/`iC` deferred) |
-| **N.1.5** | Stacked narrow — transparent one-hop invariant                                        | 🗒              |
+| **N.1.5** | Stacked narrow — transparent one-hop invariant + text objects in multibuffer views   | ✅              |
 
 ---
 
@@ -353,6 +353,36 @@ see the design fragment §3.
 ### N.1.5 — Stacked narrow: transparent one-hop invariant
 
 **Depends on: N.1.3** (operator), **N.1.4** (text objects — for `znaf` in-view).
+
+**✅ landed 2026-06-10.** Shipped BOTH the one-hop invariant AND in-multibuffer
+text-object resolution (Dhruva: "one-hop + text objects in views"):
+
+- **Part 1 — one-hop invariant (`lattice-host`).** `Editor::resolve_narrow_target`
+  (dispatch.rs): when the active buffer is a multibuffer, both narrow endpoints
+  are translated to the original source via `translate_composed_to_source`
+  (M.10.2), so `create_narrow_view` is always handed a `RopeDocumentHandle`.
+  Both the `:narrow` (NarrowTrigger) and `zn` (NarrowLines) arms route through
+  it; identity pass-through for a plain document. Endpoints straddling excerpts
+  (a multi-excerpt search view) fall back to the start excerpt's source.
+  Test: `stacked_narrow_targets_original_source_one_hop`.
+- **Part 2 — text objects in multibuffer views (`lattice-multibuffer`).**
+  `ComposedScopeResolver` bridges composed↔source: `MultibufferDocumentHandle::
+  dispatch_with_cancel` builds it (gated to Operator/TextObject invocations so
+  motion navigation stays O(1)) from the per-excerpt source `SyntaxSnapshot`s
+  (K.4.7) and passes it to `execute_with_scope_resolver`. `scope_at` translates
+  composed→source, resolves against the source tree, clamps to the excerpt, and
+  maps the range back to composed coords. So `znaf` / `daf` / `yaf` inside a
+  narrow OR search view resolve the real construct, not a degenerate line. Tests:
+  `composed_resolver_maps_function_outer_to_source`, `..._clamps_scope_to_excerpt`,
+  `..._applies_composed_offset_for_second_excerpt`.
+
+The original §7 sketch (re-resolve the scope at the translated cursor in the
+handler) was superseded: resolving in the multibuffer dispatch (Part 2) keeps
+text-object resolution where it belongs (the operator already ran there); the
+handler only translates the resulting line range (Part 1). Same net effect — one
+hop to the source, with the correct construct.
+
+**Original design notes (for reference):**
 
 **What lands:**
 

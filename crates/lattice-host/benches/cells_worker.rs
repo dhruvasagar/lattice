@@ -116,6 +116,9 @@ fn rs_for(
         version,
         snapshot: Some(snapshot.clone()),
         syntax_handle: syntax.clone(),
+        // K.4.7 added per-excerpt syntax for multibuffer panes; a
+        // single-file bench pane has no excerpts, so an empty slice.
+        excerpt_syntax: Arc::from(Vec::new()),
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,

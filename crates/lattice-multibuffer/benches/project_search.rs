@@ -155,6 +155,10 @@ fn bench_first_batch(c: &mut Criterion) {
                     needle.to_string(),
                     options,
                     registry,
+                    // K.4.7 added the optional lang_registry; the
+                    // bench measures scan throughput, not per-source
+                    // highlighting, so pass None.
+                    None,
                 );
                 let _ = rx.recv().await;
             });

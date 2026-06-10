@@ -339,6 +339,12 @@ impl Editor {
         // N.1.1 (2026-06-10): `:narrow` + `:widen`. First-class — no
         // feature gate.
         lattice_multibuffer::providers::narrow::register_narrow_ex_commands(&mut registry);
+        // N.1.3 (2026-06-10): register the `zn` narrow operator SPEC
+        // (owned by the narrow provider) and capture its OperatorId;
+        // the `zn` chord is wired into the universal operator-pending
+        // layer below, right after `register_normal_bindings`.
+        let narrow_operator_id =
+            lattice_multibuffer::providers::narrow::register_narrow_operator(&mut registry);
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
@@ -1060,6 +1066,29 @@ impl Editor {
                 crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                // N.1.3 (2026-06-10): wire the narrow `zn` operator
+                // chord into the universal operator-pending layer.
+                // `zn{motion|text-object}` narrows that span; `znn`
+                // narrows the current line. The operator SPEC + apply
+                // are owned by `lattice-multibuffer::providers::narrow`;
+                // only this chord-wiring lives host-side (it needs the
+                // resolved `Builtins`).
+                crate::keymap_normal::register_operator_pending(
+                    &h,
+                    &[
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('z'),
+                        ),
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('n'),
+                        ),
+                    ],
+                    narrow_operator_id,
+                    lattice_protocol::chord::ChordPattern::Literal(
+                        lattice_protocol::chord::KeyChord::char('n'),
+                    ),
+                    &builtins,
+                );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
                 // KeymapLayer::Builtin (Normal-mode only) —
                 // <C-h><C-h> / <C-h>? open :help-for-help;

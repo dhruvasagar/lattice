@@ -217,3 +217,102 @@ pub fn register_narrow_ex_commands(registry: &mut CommandRegistry) {
         },
     );
 }
+
+/// N.1.3 (2026-06-10): register the **`zn` narrow operator** into the
+/// grammar's `CommandRegistry` and return its `OperatorId`.
+///
+/// The operator is *universal* — you narrow from any editable buffer,
+/// like `d` / `y` / `c`. Per the mode-ownership split, this crate owns
+/// the operator SPEC + `apply`; the host wires the `zn` chord to the
+/// returned `OperatorId` at the universal operator-pending layer
+/// (operator-pending composition needs the host-resolved `Builtins`,
+/// which this crate can't reach). The narrow-VIEW surface
+/// (`:widen` / `:w` / `q`) stays with `NarrowMinorMode`.
+///
+/// `apply` reads the resolved `OperatorContext.range` (the span the
+/// following motion / text object produced), converts it to an
+/// inclusive whole-line span, and emits
+/// `Effect::AppAction(AppEffect::NarrowLines { .. })`; the host arm
+/// narrows the active buffer to that span via `create_narrow_view`.
+pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_grammar::OperatorId {
+    use lattice_grammar::app_effect::AppEffect;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::registry::{OperatorContext, OperatorSpec};
+
+    registry.register_operator(
+        "operator:narrow",
+        "Narrow the editing surface to the {motion}/{text-object} that follows \
+         `zn` — a focused, editable view of that region. `znn` narrows the \
+         current line; `znip` a paragraph; `znaf` a function. `:widen` restores.",
+        OperatorSpec {
+            repeatable: false,
+            blockwise_per_row: false,
+            args_schema: vec![],
+            apply: Box::new(|ctx: &mut OperatorContext| {
+                let (start_line, end_line) = range_to_narrow_lines(
+                    ctx.range.start.line,
+                    ctx.range.start.byte,
+                    ctx.range.end.line,
+                    ctx.range.end.byte,
+                );
+                Ok(Effect::AppAction(AppEffect::NarrowLines {
+                    start_line,
+                    end_line,
+                }))
+            }),
+        },
+    )
+}
+
+/// Map an operator's resolved range (start/end `line`+`byte`) to an
+/// inclusive whole-line span for narrowing. A half-open end at column
+/// 0 means the last covered line is the previous one — the common
+/// shape for linewise / paragraph motions (e.g. `znip`, `znj`).
+fn range_to_narrow_lines(start_line: u32, start_byte: u32, end_line: u32, end_byte: u32) -> (u32, u32) {
+    let ((lo_line, _lo_byte), (hi_line, hi_byte)) = if start_line <= end_line {
+        ((start_line, start_byte), (end_line, end_byte))
+    } else {
+        ((end_line, end_byte), (start_line, start_byte))
+    };
+    let mut end = hi_line;
+    if hi_byte == 0 && end > lo_line {
+        end -= 1;
+    }
+    (lo_line, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_to_lines_mid_line_end_is_inclusive() {
+        // `znj`-like: cursor line + 1, end mid-line → covers both lines.
+        assert_eq!(range_to_narrow_lines(0, 0, 3, 5), (0, 3));
+    }
+
+    #[test]
+    fn range_to_lines_half_open_end_at_col0_drops_trailing_line() {
+        // Linewise / paragraph motions end at column 0 of the line
+        // AFTER the last content line → last covered line is the prev.
+        assert_eq!(range_to_narrow_lines(0, 0, 3, 0), (0, 2));
+    }
+
+    #[test]
+    fn range_to_lines_single_line() {
+        assert_eq!(range_to_narrow_lines(2, 0, 2, 4), (2, 2));
+    }
+
+    #[test]
+    fn range_to_lines_reversed_is_ordered() {
+        // Backwards motion (e.g. `znk`): end before start.
+        assert_eq!(range_to_narrow_lines(5, 0, 2, 0), (2, 4));
+    }
+
+    #[test]
+    fn register_narrow_operator_registers_the_operator() {
+        let mut registry = CommandRegistry::new();
+        let _op = register_narrow_operator(&mut registry);
+        assert!(registry.id_by_name("operator:narrow").is_some());
+    }
+}

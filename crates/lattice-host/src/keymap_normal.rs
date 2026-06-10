@@ -1136,7 +1136,13 @@ fn lit(chord: KeyChord) -> ChordPattern {
 /// `doubled_self` is the chord that triggers the linewise form
 /// (e.g. `'d'` for `dd`, `'U'` for `gUU`). It's the trailing key
 /// of the doubled form, not the prefix.
-fn register_operator_pending(
+///
+/// N.1.3 (2026-06-10): `pub` so boot can wire a *provider-contributed*
+/// operator's chord (the narrow `zn`) into this universal
+/// operator-pending layer. The operator SPEC + `apply` are owned by
+/// the provider crate; only this chord-wiring lives here, because
+/// operator-pending composition needs the host-resolved `Builtins`.
+pub fn register_operator_pending(
     handle: &KeymapHandle,
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,

@@ -40,7 +40,7 @@ owns *when* and *in what order*.
 | **N.1.0** | `textobjects.scm` query infrastructure + `scope_at_cursor` | ✅ |
 | **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen` | ✅ (core) |
 | **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range) | ✅ |
-| **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | 🗒 |
+| **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅ |
 | **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`) | 🗒 |
 | **N.1.5** | Stacked narrow — transparent one-hop invariant | 🗒 |
 
@@ -207,6 +207,18 @@ before the narrow opens).
 ---
 
 ### N.1.3 — The `zn` narrow operator
+
+> **✅ Landed 2026-06-10.** `register_narrow_operator → OperatorId` (spec +
+> `apply`, owned by the narrow provider; `apply` maps the resolved range to a
+> whole-line span via `range_to_narrow_lines` and emits
+> `AppEffect::NarrowLines`). Host: the `NarrowLines` arm narrows the active
+> buffer; `register_operator_pending` made `pub` and called from boot to wire
+> the `zn` chord at the **universal** operator-pending layer (`znn` = current
+> line, `zn{motion|object}` = that span) — owner split per your direction:
+> operator owned by the narrow crate, chord-wiring in lattice-host (it needs
+> the host-resolved `Builtins`). 5 tests (4 range-conversion incl. the
+> half-open-end off-by-one + registration); workspace builds clean. `znaf` etc.
+> need the tree-sitter text objects (N.1.4).
 
 **Depends on: N.1.1** (`create_narrow_view`). Independent of N.1.0/N.1.4 —
 composes with *existing* vim motions/objects on its own. Design: fragment §6.

@@ -587,6 +587,16 @@ pub enum AppEffect {
     /// restoring the full source buffer. No-op + echo when the
     /// active buffer isn't a narrow view.
     NarrowWiden,
+    /// N.1.3 (2026-06-10): the `zn` narrow operator emits this once
+    /// the operator-pending machinery has resolved its motion / text
+    /// object to a line span. Carries pre-resolved inclusive 0-based
+    /// `[start_line, end_line]` (unlike `NarrowTrigger`, which carries
+    /// an unresolved `Range`); the host arm narrows the active buffer
+    /// to that span via the same `create_narrow_view` sink.
+    NarrowLines {
+        start_line: u32,
+        end_line: u32,
+    },
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
     /// (2026-06-03) inlined the work into the host's
     /// apply_effect arm — it calls

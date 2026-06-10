@@ -5325,6 +5325,46 @@ impl Editor {
                     );
                 }
             }
+            // N.1.3 (2026-06-10): the `zn` operator resolved its
+            // motion / text object to a pre-computed line span; narrow
+            // the active buffer to it via the same sink as `:narrow`.
+            AppEffect::NarrowLines {
+                start_line,
+                end_line,
+            } => {
+                let source_id = self.active_pane_buffer_id();
+                match self.buffers.document_handle(source_id) {
+                    Some(source_handle) => {
+                        let label = self.buffers.name_of(source_id).unwrap_or_default();
+                        let registry = self.registry.clone();
+                        let lr = Some(self.lang_registry.clone());
+                        let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
+                            self,
+                            source_id,
+                            source_handle,
+                            start_line,
+                            end_line,
+                            &label,
+                            registry,
+                            lr,
+                        );
+                        if self.activate_buffer(view_id) {
+                            let signals = self.activate_buffer_state();
+                            self.enqueue_renderer_signals(signals);
+                        }
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("narrowed to L{}–{}", start_line + 1, end_line + 1),
+                        );
+                    }
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            "zn: the active buffer has no document".to_string(),
+                        );
+                    }
+                }
+            }
             // M.10.7 (2026-06-03): chord-dispatched routes are
             // mode-owned via the M.10.1.b ActionHandlerRegistry —
             // `run_invocation` intercepts before reaching the

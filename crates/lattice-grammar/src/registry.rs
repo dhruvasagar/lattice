@@ -170,6 +170,17 @@ impl std::fmt::Debug for OperatorSpec {
     }
 }
 
+/// N.1.4a (2026-06-10): resolves a tree-sitter scope at the cursor for
+/// the structural text objects (`af` / `ac` / …). Defined here so
+/// `lattice-grammar` stays free of any tree-sitter dependency — the
+/// host implements it (backed by the buffer's `SyntaxSnapshot`) and
+/// threads it into [`TextObjectContext`]. `scope_at` returns the
+/// innermost matching node's inclusive 0-based `(start_line, end_line)`,
+/// or `None` when there's no parse / no match.
+pub trait ScopeResolver {
+    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<(u32, u32)>;
+}
+
 /// Context passed to a text-object's evaluator.
 pub struct TextObjectContext<'a> {
     pub buffer: &'a Buffer,
@@ -181,6 +192,12 @@ pub struct TextObjectContext<'a> {
     /// paragraph / sentence objects that walk further can poll
     /// `cancel.check()?` on their inner loops.
     pub cancel: &'a crate::CancellationToken,
+    /// N.1.4a: tree-sitter scope resolver for the structural text
+    /// objects (`af` / `ac` / …), injected by the host (backed by the
+    /// buffer's `SyntaxSnapshot`). `None` for buffers with no syntax —
+    /// the structural objects then resolve nothing; the classic
+    /// objects (`iw`, `ap`, `i{`) never read it.
+    pub scope_resolver: Option<&'a dyn ScopeResolver>,
 }
 
 type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;

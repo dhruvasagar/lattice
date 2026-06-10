@@ -49,6 +49,26 @@ pub fn execute(
     invocation: CommandInvocation,
     cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
+    // Most callers (and any buffer with no tree-sitter parse) dispatch
+    // without a scope resolver. The structural text objects resolve
+    // nothing in that case; everything else is unaffected.
+    execute_with_scope_resolver(registry, document, buffer_id, cursor, invocation, cancel, None)
+}
+
+/// N.1.4a (2026-06-10): `execute` plus a tree-sitter `scope_resolver`
+/// for the structural text objects (`af` / `ac` / …). The host calls
+/// this with `Some(&snapshot)` (N.1.4b); the resolver threads down to
+/// the `TextObjectContext` so `af` / `ac` resolve, while the classic
+/// objects (`iw`, `ap`, `i{`) ignore it.
+pub fn execute_with_scope_resolver(
+    registry: &CommandRegistry,
+    document: &mut Document,
+    buffer_id: BufferId,
+    cursor: Position,
+    invocation: CommandInvocation,
+    cancel: &CancellationToken,
+    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
+) -> GrammarResult<Effect> {
     // Honor any pre-existing cancellation request before we start.
     cancel.check()?;
 
@@ -59,10 +79,19 @@ pub fn execute(
     match entry.spec.kind {
         CommandKind::Motion => execute_motion(document, buffer_id, cursor, &invocation, entry, cancel),
         CommandKind::TextObject => {
-            execute_text_object(document, cursor, &invocation, entry, cancel)
+            execute_text_object(document, cursor, &invocation, entry, cancel, scope_resolver)
         }
         CommandKind::Operator => {
-            execute_operator(registry, document, buffer_id, cursor, &invocation, entry, cancel)
+            execute_operator(
+                registry,
+                document,
+                buffer_id,
+                cursor,
+                &invocation,
+                entry,
+                cancel,
+                scope_resolver,
+            )
         }
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => execute_action(&invocation, entry, cancel),
@@ -184,6 +213,7 @@ fn execute_text_object(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
 ) -> GrammarResult<Effect> {
     let tobj = require_text_object(entry)?;
     let ctx = TextObjectContext {
@@ -192,6 +222,7 @@ fn execute_text_object(
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
         cancel,
+        scope_resolver,
     };
     let _range = (tobj.apply)(&ctx)?;
     // A text-object alone (no operator) is unusual; vim's behavior is to
@@ -208,6 +239,7 @@ fn execute_operator(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
@@ -233,7 +265,16 @@ fn execute_operator(
             resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
         }
         (None, Some(target)) => {
-            resolve_target(registry, document, buffer_id, cursor, target, motion_count, cancel)?
+            resolve_target(
+                registry,
+                document,
+                buffer_id,
+                cursor,
+                target,
+                motion_count,
+                cancel,
+                scope_resolver,
+            )?
         }
         (None, None) => return Err(CommandError::MissingTarget),
     };
@@ -525,6 +566,7 @@ fn resolve_target(
     target: &Target,
     count: crate::command::Count,
     cancel: &CancellationToken,
+    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -555,6 +597,7 @@ fn resolve_target(
                 count,
                 args: args.clone(),
                 cancel,
+                scope_resolver,
             };
             (tobj.apply)(&ctx)
         }

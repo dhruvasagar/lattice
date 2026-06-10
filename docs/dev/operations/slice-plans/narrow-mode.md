@@ -41,7 +41,7 @@ owns *when* and *in what order*.
 | **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen` | ✅ (core) |
 | **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range) | ✅ |
 | **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅ |
-| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`) | 🗒 |
+| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`) | 🚧 (N.1.4a ✅) |
 | **N.1.5** | Stacked narrow — transparent one-hop invariant | 🗒 |
 
 ---
@@ -282,10 +282,15 @@ see the design fragment §3.
 
 **Sub-slices:**
 
-- **N.1.4a — the `ScopeResolver` seam (`lattice-grammar`).** Add
+- **N.1.4a — the `ScopeResolver` seam (`lattice-grammar`). ✅ landed 2026-06-10.**
   `trait ScopeResolver { fn scope_at(line, col, suffix) -> Option<(u32,u32)>; }`
   + `TextObjectContext.scope_resolver: Option<&dyn ScopeResolver>`, threaded
-  through `execute_text_object`. No behaviour change yet (resolver `None`).
+  through `execute_text_object` + `execute_operator → resolve_target` (both
+  context sites). `execute()` kept as a 6-arg wrapper delegating `None`; the new
+  `execute_with_scope_resolver()` (7-arg) carries the resolver — so the ~24
+  existing grammar/test callers are untouched and N.1.4a is a behavioural no-op
+  (193 grammar tests pass, workspace builds). `ScopeResolver` +
+  `execute_with_scope_resolver` re-exported for N.1.4b.
 - **N.1.4b — host wiring (`lattice-host`).** `impl ScopeResolver for
   SyntaxSnapshot` (forwards to `scope_at_cursor`); dispatch puts the active
   buffer's snapshot into the context (needs the per-buffer snapshot — a

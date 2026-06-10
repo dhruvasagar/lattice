@@ -4503,7 +4503,7 @@ impl Editor {
     /// source). Returns `(source_id, source_handle, source_start,
     /// source_end)`, or `None` when the source has no document handle.
     fn resolve_narrow_target(
-        &self,
+        &mut self,
         composed_start: u32,
         composed_end: u32,
     ) -> Option<(
@@ -4513,11 +4513,18 @@ impl Editor {
         u32,
     )> {
         let active_id = self.active_pane_buffer_id();
-        if matches!(self.active_buffer, BufferKind::Multibuffer) {
-            let mb = self
-                .services
-                .get::<lattice_multibuffer::MultibufferRegistryHandle>()
-                .and_then(|reg| reg.handle(active_id))?;
+        // N.1.5 (review fix): the discriminant is a PROPERTY -- "does this
+        // buffer have a multibuffer handle in the registry?" -- not a
+        // `BufferKind` match (the everything-is-a-buffer rule). When it
+        // does, translate both endpoints to the original source (the
+        // one-hop invariant); otherwise narrow the plain document directly.
+        // The handle fetched for the check is the same one we translate
+        // through, so there's no redundant lookup.
+        let mb = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+            .and_then(|reg| reg.handle(active_id));
+        if let Some(mb) = mb {
             let (src_a, pos_a) = mb.translate_composed_to_source(
                 lattice_protocol::position::Position::new(composed_start, 0),
             )?;
@@ -4531,8 +4538,14 @@ impl Editor {
                     pos_a.line.max(pos_b.line),
                 )
             } else {
-                // Endpoints straddle excerpts (multi-excerpt search
-                // view): narrow the start endpoint's source only.
+                // Endpoints straddle excerpts (a multi-excerpt search
+                // view): narrow the cursor endpoint's source line. Surface
+                // it so the user isn't silently handed a one-line view.
+                self.set_message(
+                    EchoLevel::Warn,
+                    "narrow: selection crosses source boundaries; narrowed to the first line"
+                        .to_string(),
+                );
                 (src_a, pos_a.line, pos_a.line)
             };
             let handle = self.buffers.document_handle(source_id)?;

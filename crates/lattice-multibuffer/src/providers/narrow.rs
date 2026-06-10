@@ -123,7 +123,7 @@ pub fn create_narrow_view(
     let excerpt = Excerpt::new(source_id, start_line, end_line);
 
     let name = if label.is_empty() {
-        format!("*narrow:L{}-{}*", start_line + 1, end_line + 1)
+        format!("*narrow:L{}–{}*", start_line + 1, end_line + 1)
     } else {
         format!("*narrow:{label}*")
     };
@@ -185,9 +185,10 @@ pub fn register_narrow_ex_commands(registry: &mut CommandRegistry) {
 
     registry.register_ex_command(
         "narrow",
-        "Narrow the editing surface to a region: `:narrow` (current line) or \
-         `:{start},{end}narrow`. The region opens as a focused, editable view; \
-         edits propagate to the source file. `:widen` restores the full buffer.",
+        "Narrow the editing surface to a region: `:narrow` (the cursor's \
+         paragraph) or `:{start},{end}narrow`. The region opens as a focused, \
+         editable view; edits propagate to the source file. `:widen` restores \
+         the full buffer.",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
@@ -266,8 +267,17 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
 
 /// Map an operator's resolved range (start/end `line`+`byte`) to an
 /// inclusive whole-line span for narrowing. A half-open end at column
-/// 0 means the last covered line is the previous one — the common
-/// shape for linewise / paragraph motions (e.g. `znip`, `znj`).
+/// 0 means the last covered line is the previous one — the common shape
+/// for *forward* linewise / paragraph motions (`znip`, `znj`, `znG`),
+/// which is what this heuristic is tuned for.
+///
+/// Known v1 edge (review-flagged): a *backward* motion (`znk`, `zn{`)
+/// whose cursor — the higher endpoint after ordering — lands at column 0
+/// drops the cursor line, because given only `(start, end)` the function
+/// can't distinguish the cursor anchor from a half-open motion end.
+/// Backward narrows are rare; if they matter, the operator should thread
+/// the anchor through explicitly. `range_to_lines_reversed_is_ordered`
+/// pins the current behaviour.
 fn range_to_narrow_lines(start_line: u32, start_byte: u32, end_line: u32, end_byte: u32) -> (u32, u32) {
     let ((lo_line, _lo_byte), (hi_line, hi_byte)) = if start_line <= end_line {
         ((start_line, start_byte), (end_line, end_byte))

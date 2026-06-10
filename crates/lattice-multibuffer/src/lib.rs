@@ -1700,8 +1700,9 @@ impl lattice_grammar::ScopeResolver for ComposedScopeResolver {
         suffix: &str,
     ) -> Option<lattice_protocol::position::Range> {
         for ex in &self.excerpts {
-            let composed_last = ex.composed_offset.saturating_add(ex.line_count);
-            if composed_line < composed_last {
+            // First composed row PAST this excerpt (exclusive upper bound).
+            let composed_end_exclusive = ex.composed_offset.saturating_add(ex.line_count);
+            if composed_line < composed_end_exclusive {
                 let source_line = ex.start_line + (composed_line - ex.composed_offset);
                 let snap = self.snapshots.get(&ex.source)?;
                 let src = snap.scope_at_cursor(source_line, col_byte, suffix)?;
@@ -1710,7 +1711,12 @@ impl lattice_grammar::ScopeResolver for ComposedScopeResolver {
                 // the excerpt (a narrowed sub-region) is clipped to the
                 // visible rows; a clamped edge loses its byte column
                 // (falls to col 0) since it no longer marks a real token.
-                let ex_last = ex.start_line + ex.line_count - 1;
+                // `saturating_sub` guards a (shouldn't-happen) zero-line
+                // excerpt rather than underflowing to u32::MAX.
+                let ex_last = ex
+                    .start_line
+                    .saturating_add(ex.line_count)
+                    .saturating_sub(1);
                 let cs = src.start.line.max(ex.start_line);
                 let ce = src.end.line.min(ex_last);
                 if cs > ce {

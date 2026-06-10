@@ -25,3 +25,25 @@
 (with_statement) @block.outer
 (try_statement) @block.outer
 (match_statement) @block.outer
+
+; --- N.1.4c: inner bodies, parameters, and loop objects ---
+; `.inner` captures the body suite -- Python's suite is delimiter-free
+; (indentation, no braces), so `if` / `ic` are clean. Parameters fall
+; back to the bare param node (`aa` == `ia`).
+
+; Function / lambda bodies (`if`).
+(function_definition body: (block) @function.inner)
+(lambda body: (_) @function.inner)
+
+; Class body (`ic`).
+(class_definition body: (block) @class.inner)
+
+; Parameters (`aa` / `ia`) -- each named child of the parameter list.
+(parameters (_) @parameter.outer)
+(parameters (_) @parameter.inner)
+
+; Loops (`al` / `il`).
+(for_statement) @loop.outer
+(while_statement) @loop.outer
+(for_statement body: (block) @loop.inner)
+(while_statement body: (block) @loop.inner)

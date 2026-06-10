@@ -104,8 +104,12 @@ it, keeping `lattice-grammar` syntax-agnostic:
 // lattice-grammar — NEW (N.1.4)
 pub trait ScopeResolver {
     /// Innermost tree-sitter node whose capture name ends with `suffix`
-    /// containing (line, col_byte); inclusive 0-based (start_line, end_line).
-    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<(u32, u32)>;
+    /// containing (line, col_byte), as a byte-precise half-open
+    /// `[start, end)` ProtoRange (N.1.4c — line + byte *column*, not just
+    /// rows, so intra-line objects like `aa` are charwise-accurate; end
+    /// exclusive, matching tree-sitter node ranges + the operator slice
+    /// convention).
+    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 }
 
 pub struct TextObjectContext<'a> {
@@ -142,21 +146,44 @@ objects.
 
 ## 5. Resolution
 
-### 5.1 `scope_at_cursor` (shipped N.1.0)
+### 5.1 `scope_at_cursor`
 
-`SyntaxSnapshot::scope_at_cursor(line, col_byte, suffix) -> Option<(u32, u32)>`
+`SyntaxSnapshot::scope_at_cursor(line, col_byte, suffix) -> Option<ProtoRange>`
 runs the language's `textobjects.scm`, restricts the query to the cursor byte,
 and among captures whose name ends with `suffix` and whose span contains the
-cursor, returns the **smallest** (innermost). `None` when no parse, no
-`textobjects.scm`, or no match. The `.outer` queries shipped in N.1.0; the
-`.inner` captures (function/class body sub-nodes) are authored in N.1.4.
+cursor, returns the **smallest** (innermost) as a byte-precise `[start, end)`
+range. `None` when no parse, no `textobjects.scm`, or no match.
+
+Capture status: `function.outer` / `class.outer` / `block.outer` shipped in
+N.1.0 (rows only). N.1.4c (a) made the return **byte-precise** (line + byte
+column), and (b) authored the remaining captures — `function.inner`,
+`class.inner`, `parameter.outer` / `.inner`, `loop.outer` / `.inner` — for
+rust / python / javascript, each unit-tested against known snippets.
 
 ### 5.2 `a` vs `i` (outer vs inner)
 
 - **outer** (`af`/`ac`/…) = the whole construct: signature → closing brace.
   `@<obj>.outer`.
-- **inner** (`if`/`ic`/…) = the body without delimiters. `@<obj>.inner` — a
-  real sub-node (a function's block, a class's body), authored per language.
+- **inner** (`if`/`ic`/…) = the body sub-node (a function's block, a class's
+  field/declaration list, a loop's body). `@<obj>.inner`, authored per language.
+
+**v1 resolution limitations** (the single-node resolver returns a capture
+node's span verbatim; refinements are follow-ups, not blockers):
+
+- **Inner-body delimiters.** `@function.inner` / `@loop.inner` capture the body
+  *block* node, whose span **includes** its braces in brace languages
+  (rust / js). Python's suite is delimiter-free, so its inner objects are clean.
+  Delimiter-stripping (returning the span *between* `{` and `}`) is a future
+  resolver refinement.
+- **Parameter outer == inner.** `@parameter.outer` falls back to the bare
+  parameter node — the single-node resolver can't extend the span to include a
+  trailing comma/separator (nvim does this with `#make-range!` predicates Lattice
+  doesn't yet model). So `aa` and `ia` resolve identically for now. The
+  byte-precision win still holds: `daa` deletes exactly `x: i32`, not the whole
+  signature line.
+- **Visual objects** (`vaf`) are not yet bound: the builtin objects (`viw`) have
+  no Visual keymap binding either, so structural objects match that parity.
+  Visual text-object support is a separate slice covering *all* objects.
 
 ### 5.3 Comment lives in `lattice-grammar`, not this fragment
 

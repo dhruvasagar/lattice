@@ -41,7 +41,7 @@ owns *when* and *in what order*.
 | **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen`                 | ✅ (core)      |
 | **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range)                | ✅             |
 | **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅             |
-| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`)                     | 🚧 (N.1.4a ✅, N.1.4b ✅) |
+| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`)     | ✅ (a–d; comment `aC`/`iC` deferred) |
 | **N.1.5** | Stacked narrow — transparent one-hop invariant                                        | 🗒              |
 
 ---
@@ -312,12 +312,31 @@ see the design fragment §3.
   `dispatch_with_scope_resolver_threads_resolver_to_text_object` (actor test:
   resolver Some → text object sees the mock range; None → sees None). No
   text-object keys are bound yet — that is N.1.4c.
-- **N.1.4c — `.outer` objects (`lattice-syntax`).** New `lattice-syntax →
-  lattice-grammar` dep; `register_syntax_text_objects(&mut registry)` registers
-  `af`/`ac`/`aa`/`al` (`.outer`). Boot calls it. (Comment is a separate slice.)
-- **N.1.4d — `.inner` objects.** Author `@function.inner` / `@class.inner` /
-  `@parameter.inner` / `@loop.inner` captures in the `.scm` files; register
-  `if`/`ic`/`ia`/`il`; `iC` strips markers from `comment.outer`.
+- **N.1.4c+d — all 8 objects, byte-precise (`lattice-syntax` + `lattice-host`). ✅ landed 2026-06-10.**
+  Shipped `.outer` AND `.inner` together (Dhruva: "ship all outer, inner together") on a
+  byte-precise resolver (Dhruva: "byte-precise now"):
+  - **Resolver byte-precision.** `scope_at` / `scope_at_cursor` now return
+    `Option<ProtoRange>` (line + byte column, half-open `[start, end)`), not row tuples,
+    so intra-line `aa`/`ia` are charwise-accurate (`daa` deletes exactly `x: i32`, not the
+    whole signature line). Updated the N.1.4a trait + N.1.4b `impl`/mock + N.1.0 unit tests.
+  - **Captures.** Authored `@function.inner`, `@class.inner`, `@parameter.outer`/`.inner`,
+    `@loop.outer`/`.inner` for rust / python / js (the design's "all `.outer` shipped in N.1.0"
+    was wrong — only function/class/block had). Each unit-tested via `scope_at_cursor`.
+  - **Registration.** `lattice_syntax::register_syntax_text_objects(&mut registry) ->
+    SyntaxTextObjectIds` registers all 8 (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`); each apply
+    forwards to `ctx.scope_resolver.scope_at(...)`, empty-range (graceful operator no-op) on no
+    resolver / no match.
+  - **Keymap.** Boot calls `register_syntax_text_objects` (while registry is `&mut`), threads
+    `SyntaxTextObjectIds` through `register_normal_bindings` → `register_operator_pending` →
+    `register_text_object_resolutions`, which adds f/c/a/l rows to the SAME table the builtin
+    objects use (`KeymapLayer::Builtin`, op-pending only). `zn` gets them too (`znaf`).
+  - **Tests.** 14 byte-precise `scope_at_cursor` tests (3 langs); registration test; end-to-end
+    `daf_deletes_a_whole_function_end_to_end` (operator + object + real `SyntaxSnapshot` → edit).
+
+  **v1 limitations** (documented; follow-ups, not blockers): `.inner` of brace languages includes
+  the braces (python clean); `aa` == `ia` (no trailing-comma capture); no Visual binding yet (builtin
+  objects lack it too — `vaf` = a future all-objects slice). Comment (`aC`/`iC`, commentstring-driven,
+  lattice-grammar) stays its own deferred slice.
 
 **Tests:**
 - `af_selects_whole_function` (operator-agnostic via `d`/`v`).

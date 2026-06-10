@@ -37,3 +37,33 @@
 (while_expression) @block.outer
 (for_expression) @block.outer
 (loop_expression) @block.outer
+
+; --- N.1.4c: inner bodies, parameters, and loop objects ---
+; `.inner` captures the body node (block / item list). For brace-
+; delimited bodies the braces are INCLUDED (the resolver returns the
+; node span verbatim; delimiter-stripping is a future refinement).
+; `@parameter.outer` falls back to the bare parameter node -- the
+; single-node resolver can't grab a trailing comma -- so `aa` == `ia`.
+
+; Function / closure bodies (`if`).
+(function_item body: (block) @function.inner)
+(closure_expression body: (_) @function.inner)
+
+; Type bodies (`ic`).
+(struct_item body: (field_declaration_list) @class.inner)
+(enum_item body: (enum_variant_list) @class.inner)
+(union_item body: (field_declaration_list) @class.inner)
+(trait_item body: (declaration_list) @class.inner)
+(impl_item body: (declaration_list) @class.inner)
+
+; Parameters (`aa` / `ia`).
+(parameter) @parameter.outer
+(parameter) @parameter.inner
+
+; Loops (`al` / `il`). The loop node is the outer; its body block the inner.
+(for_expression) @loop.outer
+(while_expression) @loop.outer
+(loop_expression) @loop.outer
+(for_expression body: (block) @loop.inner)
+(while_expression body: (block) @loop.inner)
+(loop_expression body: (block) @loop.inner)

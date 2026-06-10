@@ -77,6 +77,7 @@ use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
+use lattice_syntax::SyntaxTextObjectIds;
 
 use crate::action::{Action, FindKind};
 use crate::actions::ActionIds;
@@ -96,7 +97,12 @@ use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, LookupResult};
 /// `bind(... CommandInvocation::of(actions.foo) ...)` as the
 /// per-batch slices land; the rest stay on the bridge until
 /// their batch's turn.
-pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, actions: &ActionIds) {
+pub fn register_normal_bindings(
+    handle: &KeymapHandle,
+    builtins: &Builtins,
+    actions: &ActionIds,
+    syntax_textobjects: &SyntaxTextObjectIds,
+) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
@@ -715,6 +721,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.delete,
         ChordPattern::Literal(KeyChord::char('d')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -722,6 +729,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.change,
         ChordPattern::Literal(KeyChord::char('c')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -729,6 +737,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.yank,
         ChordPattern::Literal(KeyChord::char('y')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -736,6 +745,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.indent_right,
         ChordPattern::Literal(KeyChord::char('>')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -743,6 +753,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.indent_left,
         ChordPattern::Literal(KeyChord::char('<')),
         builtins,
+        syntax_textobjects,
     );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
@@ -753,6 +764,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.upper,
         ChordPattern::Literal(KeyChord::char('U')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -760,6 +772,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.lower,
         ChordPattern::Literal(KeyChord::char('u')),
         builtins,
+        syntax_textobjects,
     );
     register_operator_pending(
         handle,
@@ -767,6 +780,7 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         builtins.toggle_case,
         ChordPattern::Literal(KeyChord::char('~')),
         builtins,
+        syntax_textobjects,
     );
 
     // ---- Slice 8.g.v: mark / register / find-char / macro
@@ -1148,6 +1162,7 @@ pub fn register_operator_pending(
     op: lattice_grammar::registry::OperatorId,
     doubled_self: ChordPattern,
     builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1217,7 +1232,14 @@ pub fn register_operator_pending(
         let around_chord: ChordPattern = if around { lit_char('a') } else { lit_char('i') };
         let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
         pending_path.push(around_chord.clone());
-        register_text_object_resolutions(handle, &pending_path, op, around, builtins);
+        register_text_object_resolutions(
+            handle,
+            &pending_path,
+            op,
+            around,
+            builtins,
+            syntax_textobjects,
+        );
     }
 
     // ---- Slice 8.g.v: find-char chained -- the depth-2
@@ -1300,6 +1322,7 @@ fn register_text_object_resolutions(
     op: lattice_grammar::registry::OperatorId,
     around: bool,
     builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1366,7 +1389,41 @@ fn register_text_object_resolutions(
             builtins.around_angle,
         ),
     ];
-    for (chord_aliases, inner_id, around_id) in textobj_table {
+    // N.1.4c: the structural (tree-sitter) objects resolve through the
+    // SAME operator-pending path -- `af`/`if` (function), `ac`/`ic`
+    // (class), `aa`/`ia` (parameter), `al`/`il` (loop). Their chord
+    // chars (f/c/a/l) are free in the text-object slot: find-char
+    // (`df<c>`) lives on a different post-operator path, so `daf` =
+    // d -> a(around) -> f(function) never collides. Ownership stays
+    // with lattice-syntax (it minted the ids); the host only wires the
+    // chord -> id mapping, exactly as it does for the builtin objects.
+    let syntax_table: &[(
+        &[ChordPattern],
+        lattice_grammar::registry::TextObjectId,
+        lattice_grammar::registry::TextObjectId,
+    )] = &[
+        (
+            &[lit_char('f')],
+            syntax_textobjects.inner_function,
+            syntax_textobjects.around_function,
+        ),
+        (
+            &[lit_char('c')],
+            syntax_textobjects.inner_class,
+            syntax_textobjects.around_class,
+        ),
+        (
+            &[lit_char('a')],
+            syntax_textobjects.inner_parameter,
+            syntax_textobjects.around_parameter,
+        ),
+        (
+            &[lit_char('l')],
+            syntax_textobjects.inner_loop,
+            syntax_textobjects.around_loop,
+        ),
+    ];
+    for (chord_aliases, inner_id, around_id) in textobj_table.iter().chain(syntax_table.iter()) {
         let tobj = if around { *around_id } else { *inner_id };
         for chord in chord_aliases.iter() {
             let mut path: Vec<ChordPattern> = pending_prefix.to_vec();

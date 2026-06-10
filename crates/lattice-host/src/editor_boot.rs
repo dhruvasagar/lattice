@@ -346,6 +346,14 @@ impl Editor {
         let narrow_operator_id =
             lattice_multibuffer::providers::narrow::register_narrow_operator(&mut registry);
 
+        // N.1.4c: register the structural (tree-sitter) text objects
+        // (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`) -- owned by
+        // lattice-syntax -- and capture their ids so the universal
+        // operator-pending keymap (`register_normal_bindings` + the `zn`
+        // operator below) can bind their chords. Must run while
+        // `registry` is still `&mut` (before the Arc freeze below).
+        let syntax_textobject_ids = lattice_syntax::register_syntax_text_objects(&mut registry);
+
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind
@@ -1065,7 +1073,12 @@ impl Editor {
                 crate::keymap_replace::register_replace_bindings(&h, &action_ids);
                 crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
-                crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                crate::keymap_normal::register_normal_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
                 // N.1.3 (2026-06-10): wire the narrow `zn` operator
                 // chord into the universal operator-pending layer.
                 // `zn{motion|text-object}` narrows that span; `znn`
@@ -1088,6 +1101,7 @@ impl Editor {
                         lattice_protocol::chord::KeyChord::char('n'),
                     ),
                     &builtins,
+                    &syntax_textobject_ids,
                 );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
                 // KeymapLayer::Builtin (Normal-mode only) —

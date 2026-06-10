@@ -278,9 +278,11 @@ selects everything inside the surrounding `{...}`.
 
 ### Tree-sitter text objects
 
-> **Status: arriving in the N-series.** The query substrate
-> (`textobjects.scm` + `scope_at_cursor`) landed in N.1.0; the
-> objects and the `zn` narrow operator land in N.1.3–N.1.4. Design:
+> **Status: function / class / parameter / loop objects landed
+> 2026-06-10 (N.1.4); the comment object (`aC`/`iC`) and Visual-mode
+> selection are follow-ups.** The query substrate (`textobjects.scm` +
+> `scope_at_cursor`) landed in N.1.0; the `zn` narrow operator in N.1.3.
+> Design:
 > [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
 
 The objects above are delimiter- and whitespace-based — they don't
@@ -297,12 +299,21 @@ delimiters.
 | **Class / type** | `ac` / `ic` | a `struct` / `enum` / `trait` / `impl` (Rust), `class` (Python/JS) |
 | **Parameter / arg** | `aa` / `ia` | one argument in a parameter / argument list |
 | **Loop** | `al` / `il` | a `for` / `while` / `loop` |
-| **Comment** | `aC` / `iC` | `aC` whole comment incl. markers; `iC` just the text |
+| **Comment** _(planned)_ | `aC` / `iC` | `aC` whole comment incl. markers; `iC` just the text — a separate commentstring-driven slice, not yet bound |
 
 Combine with any operator: `daf` deletes a function, `cic` changes
-a class body, `vaa` selects an argument, `yif` yanks a function
-body, `=af` reindents a function, `diC` clears a comment's text but
-keeps the `//`.
+a class body, `daa` deletes an argument, `yif` yanks a function
+body, `=af` reindents a function, and `znaf` narrows to a function
+(the `zn` narrow operator). They resolve against the live syntax
+tree, off the UI thread.
+
+**v1 notes.** Resolution is byte-precise — `daa` deletes exactly
+`x: i32`, not the whole signature line. Two rough edges for now:
+`if` / `ic` / `il` include the body's braces in brace languages
+(Python's brace-less suite is clean); and `aa` and `ia` resolve
+identically (the trailing comma isn't captured yet). Visual-mode
+selection (`vaf`) and the comment object (`aC` / `iC`) are follow-up
+slices.
 
 **Why these keys.** `t` (tag) is already a classic object, so
 class/type takes `ac`/`ic` (the nvim-treesitter convention) rather

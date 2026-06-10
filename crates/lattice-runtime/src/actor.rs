@@ -422,19 +422,28 @@ mod tests {
         use lattice_grammar::registry::{ScopeResolver, TextObjectSpec};
         use std::sync::Mutex;
 
-        // Mock resolver: returns a fixed enclosing-scope row range so the
+        // Mock resolver: returns a fixed byte-precise span so the
         // assertion can distinguish "resolver reached the context" from
         // "resolver was absent" (None).
         struct MockResolver;
         impl ScopeResolver for MockResolver {
-            fn scope_at(&self, _line: u32, _col_byte: u32, _suffix: &str) -> Option<(u32, u32)> {
-                Some((3, 9))
+            fn scope_at(
+                &self,
+                _line: u32,
+                _col_byte: u32,
+                _suffix: &str,
+            ) -> Option<lattice_protocol::position::Range> {
+                Some(lattice_protocol::position::Range::new(
+                    Position::new(3, 2),
+                    Position::new(9, 5),
+                ))
             }
         }
 
         // Outer Option = "apply ran at all"; inner Option = the
         // scope_at result the text object observed.
-        let observed: Arc<Mutex<Option<Option<(u32, u32)>>>> = Arc::new(Mutex::new(None));
+        let observed: Arc<Mutex<Option<Option<lattice_protocol::position::Range>>>> =
+            Arc::new(Mutex::new(None));
         let probe = observed.clone();
 
         let mut registry = CommandRegistry::new();
@@ -473,7 +482,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             *observed.lock().unwrap(),
-            Some(Some((3, 9))),
+            Some(Some(lattice_protocol::position::Range::new(
+                Position::new(3, 2),
+                Position::new(9, 5),
+            ))),
             "resolver passed to dispatch_with_scope_resolver must reach the text object context"
         );
 

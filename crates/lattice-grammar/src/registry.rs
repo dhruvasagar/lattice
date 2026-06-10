@@ -175,10 +175,13 @@ impl std::fmt::Debug for OperatorSpec {
 /// `lattice-grammar` stays free of any tree-sitter dependency — the
 /// host implements it (backed by the buffer's `SyntaxSnapshot`) and
 /// threads it into [`TextObjectContext`]. `scope_at` returns the
-/// innermost matching node's inclusive 0-based `(start_line, end_line)`,
-/// or `None` when there's no parse / no match.
+/// innermost matching node's byte-precise span as a half-open
+/// `[start, end)` [`ProtoRange`] (N.1.4c: byte columns, not just rows,
+/// so intra-line objects like `aa`/`ia` are charwise-accurate), or
+/// `None` when there's no parse / no match. End is exclusive, matching
+/// tree-sitter node ranges and the operator slice convention.
 pub trait ScopeResolver {
-    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<(u32, u32)>;
+    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 }
 
 /// Context passed to a text-object's evaluator.

@@ -57,6 +57,7 @@ pub mod oneshot;
 pub mod registry;
 pub mod style;
 pub mod syntax;
+pub mod text_objects;
 
 pub use crate::handle::SyntaxHandle;
 pub use crate::lang::Lang;
@@ -69,3 +70,4 @@ pub use crate::oneshot::oneshot_highlight_lines;
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};
+pub use crate::text_objects::{SyntaxTextObjectIds, register_syntax_text_objects};

@@ -289,7 +289,7 @@ impl Syntax {
         line: u32,
         col_byte: u32,
         capture_suffix: &str,
-    ) -> Option<(u32, u32)> {
+    ) -> Option<lattice_protocol::position::Range> {
         self.inner.scope_at_cursor(line, col_byte, capture_suffix)
     }
 
@@ -492,7 +492,12 @@ impl Syntax {
 /// the UI thread (paramount #1: the snapshot is immutable, the
 /// query is bounded to the cursor's 1-byte window).
 impl lattice_grammar::ScopeResolver for SyntaxSnapshot {
-    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<(u32, u32)> {
+    fn scope_at(
+        &self,
+        line: u32,
+        col_byte: u32,
+        suffix: &str,
+    ) -> Option<lattice_protocol::position::Range> {
         self.scope_at_cursor(line, col_byte, suffix)
     }
 }
@@ -724,7 +729,7 @@ impl SyntaxSnapshot {
         line: u32,
         col_byte: u32,
         capture_suffix: &str,
-    ) -> Option<(u32, u32)> {
+    ) -> Option<lattice_protocol::position::Range> {
         let tree = self.tree.as_ref()?;
         let query = self.registry.textobjects_query(self.lang.name())?;
         // Absolute cursor byte = line-start + column. `line_starts` holds
@@ -742,8 +747,12 @@ impl SyntaxSnapshot {
         // set to enclosing scopes on large files.
         cursor.set_byte_range(cursor_byte..cursor_byte.saturating_add(1));
         let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
-        // Smallest-span containing capture so far: (span_len, start_row, end_row).
-        let mut best: Option<(usize, u32, u32)> = None;
+        // Smallest-span containing capture so far: (span_len, start_pos,
+        // end_pos). N.1.4c: track byte-precise positions (line + byte
+        // column), not just rows, so intra-line objects (`aa`/`ia`) are
+        // charwise-accurate.
+        let mut best: Option<(usize, lattice_protocol::Position, lattice_protocol::Position)> =
+            None;
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let name = names[cap.index as usize];
@@ -760,8 +769,13 @@ impl SyntaxSnapshot {
                     continue;
                 }
                 let span = end - start;
-                let start_row = n.start_position().row as u32;
-                let end_row = n.end_position().row as u32;
+                // tree-sitter `Point.column` is a byte offset within the row,
+                // which is exactly `Position.byte`. `end_position` is one past
+                // the last byte (half-open), matching ProtoRange's exclusive end.
+                let sp = n.start_position();
+                let ep = n.end_position();
+                let start_pos = lattice_protocol::Position::new(sp.row as u32, sp.column as u32);
+                let end_pos = lattice_protocol::Position::new(ep.row as u32, ep.column as u32);
                 // Strictly-smaller replaces, so the first capture seen at a
                 // given span wins ties deterministically (query-pattern order).
                 let replace = match best {
@@ -769,11 +783,11 @@ impl SyntaxSnapshot {
                     None => true,
                 };
                 if replace {
-                    best = Some((span, start_row, end_row));
+                    best = Some((span, start_pos, end_pos));
                 }
             }
         }
-        best.map(|(_, s, e)| (s, e))
+        best.map(|(_, s, e)| lattice_protocol::position::Range::new(s, e))
     }
 
     /// Compute styled spans for each line in `[start_line, end_line)`.
@@ -1407,6 +1421,16 @@ const MAX: i32 = 10;\n\
 
     // ---- N.1.0: scope_at_cursor (narrow-mode tree-sitter targets) ----
 
+    /// N.1.4c: byte-precise expected-range helper. `scope_at_cursor`
+    /// now returns a half-open `[start, end)` `ProtoRange` (line + byte
+    /// column), not just rows.
+    fn rng(sl: u32, sb: u32, el: u32, eb: u32) -> Option<lattice_protocol::position::Range> {
+        Some(lattice_protocol::position::Range::new(
+            lattice_protocol::Position::new(sl, sb),
+            lattice_protocol::Position::new(el, eb),
+        ))
+    }
+
     #[test]
     fn scope_at_cursor_rust_fn_returns_correct_range() {
         // line 0: fn outer() {
@@ -1417,7 +1441,7 @@ const MAX: i32 = 10;\n\
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse(src);
         // Cursor inside the body returns the whole function_item.
-        assert_eq!(s.scope_at_cursor(1, 8, "function.outer"), Some((0, 3)));
+        assert_eq!(s.scope_at_cursor(1, 8, "function.outer"), rng(0, 0, 3, 1));
     }
 
     #[test]
@@ -1432,7 +1456,7 @@ const MAX: i32 = 10;\n\
         let src = "fn outer() {\n    let f = || {\n        1\n    };\n}\n";
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(2, 8, "function.outer"), Some((1, 3)));
+        assert_eq!(s.scope_at_cursor(2, 8, "function.outer"), rng(1, 12, 3, 5));
     }
 
     #[test]
@@ -1454,7 +1478,7 @@ const MAX: i32 = 10;\n\
         let src = "struct Point {\n    x: i32,\n    y: i32,\n}\n";
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(1, 4, "class.outer"), Some((0, 3)));
+        assert_eq!(s.scope_at_cursor(1, 4, "class.outer"), rng(0, 0, 3, 1));
         // The struct is not a function.
         assert_eq!(s.scope_at_cursor(1, 4, "function.outer"), None);
     }
@@ -1471,7 +1495,7 @@ const MAX: i32 = 10;\n\
         let src = "fn main() {\n    if x > 0 {\n        y = 1;\n    }\n}\n";
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(2, 8, "block.outer"), Some((1, 3)));
+        assert_eq!(s.scope_at_cursor(2, 8, "block.outer"), rng(1, 13, 3, 5));
     }
 
     #[test]
@@ -1497,7 +1521,133 @@ const MAX: i32 = 10;\n\
         let src = "def greet(name):\n    msg = name\n    return msg\n";
         let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(1, 4, "function.outer"), Some((0, 2)));
+        assert_eq!(s.scope_at_cursor(1, 4, "function.outer"), rng(0, 0, 2, 14));
+    }
+
+    // ---- N.1.4c: inner bodies, parameters, loops (byte-precise) ----
+
+    #[test]
+    fn scope_at_cursor_function_inner_is_body_block() {
+        // line 0: fn outer() {   <- `{` at col 11
+        // line 3: }              <- `}` at col 0, exclusive end col 1
+        let src = "fn outer() {\n    let x = 1;\n    x\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        // `if` (inner function) = the body block (braces included, v1).
+        assert_eq!(s.scope_at_cursor(1, 8, "function.inner"), rng(0, 11, 3, 1));
+        // `af` (outer) still spans the whole function_item.
+        assert_eq!(s.scope_at_cursor(1, 8, "function.outer"), rng(0, 0, 3, 1));
+    }
+
+    #[test]
+    fn scope_at_cursor_class_inner_is_field_list() {
+        // line 0: struct Point {  <- `{` at col 13
+        let src = "struct Point {\n    x: i32,\n    y: i32,\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(1, 4, "class.inner"), rng(0, 13, 3, 1));
+    }
+
+    #[test]
+    fn scope_at_cursor_parameter_byte_precise() {
+        // line 0: fn add(x: i32, y: i32) -> i32 { x + y }
+        //                ^col 7        ^col 15
+        let src = "fn add(x: i32, y: i32) -> i32 { x + y }\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        // `aa` on the first parameter -> exactly `x: i32` (cols 7..13),
+        // NOT the whole signature line -- this is the byte-precision win.
+        assert_eq!(s.scope_at_cursor(0, 7, "parameter.outer"), rng(0, 7, 0, 13));
+        assert_eq!(s.scope_at_cursor(0, 7, "parameter.inner"), rng(0, 7, 0, 13));
+        // Cursor on the second parameter resolves the second span.
+        assert_eq!(s.scope_at_cursor(0, 15, "parameter.outer"), rng(0, 15, 0, 21));
+    }
+
+    #[test]
+    fn scope_at_cursor_loop_outer_and_inner() {
+        // line 0: fn main() {
+        // line 1:     for i in 0..10 {   <- `for` col 4, body `{` col 19
+        // line 2:         x += i;
+        // line 3:     }                  <- exclusive end col 5
+        // line 4: }
+        let src = "fn main() {\n    for i in 0..10 {\n        x += i;\n    }\n}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(2, 8, "loop.outer"), rng(1, 4, 3, 5));
+        assert_eq!(s.scope_at_cursor(2, 8, "loop.inner"), rng(1, 19, 3, 5));
+    }
+
+    #[test]
+    fn scope_at_cursor_python_inner_and_parameter() {
+        // line 0: def greet(name):   <- `name` at cols 10..14
+        // line 1:     msg = name
+        // line 2:     return msg
+        let src = "def greet(name):\n    msg = name\n    return msg\n";
+        let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(0, 10, "parameter.outer"), rng(0, 10, 0, 14));
+        // Inner function = the suite body (delimiter-free in Python).
+        assert_eq!(s.scope_at_cursor(1, 4, "function.inner"), rng(1, 4, 2, 14));
+    }
+
+    #[test]
+    fn scope_at_cursor_javascript_parameter_byte_precise() {
+        // line 0: function add(x, y) { return x + y; }
+        //                      ^col 13  ^col 16
+        let src = "function add(x, y) { return x + y; }\n";
+        let mut s = Syntax::for_language(Lang::JavaScript).unwrap().unwrap();
+        s.parse(src);
+        assert_eq!(s.scope_at_cursor(0, 13, "parameter.outer"), rng(0, 13, 0, 14));
+        assert_eq!(s.scope_at_cursor(0, 16, "parameter.outer"), rng(0, 16, 0, 17));
+    }
+
+    #[test]
+    fn daf_deletes_a_whole_function_end_to_end() {
+        // N.1.4c end-to-end: operator (`d`) + structural text object
+        // (`af`) + the byte-precise scope resolver -> a real edit. Proves
+        // the whole chain below the keymap: `register_syntax_text_objects`
+        // mints `around_function`; the dispatcher resolves
+        // `Target::TextObject(around_function)` by calling the object's
+        // apply with the `SyntaxSnapshot` as `scope_resolver`; the
+        // resolved byte span feeds the delete operator.
+        use lattice_grammar::{
+            Args, CancellationToken, CommandInvocation, Target, execute_with_scope_resolver,
+        };
+
+        let src = "fn keep() {}\nfn drop_me() {\n    let x = 1;\n}\nfn also_keep() {}\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        let builtins = lattice_grammar::builtins::populate(&mut registry);
+        let ids = crate::text_objects::register_syntax_text_objects(&mut registry);
+
+        let mut doc = lattice_core::Document::from_text(src);
+        // Cursor inside `drop_me`'s body (line 2).
+        let cursor = lattice_protocol::Position::new(2, 8);
+        let inv = CommandInvocation::of(builtins.delete.0)
+            .with_target(Target::TextObject(ids.around_function, Args::None));
+        execute_with_scope_resolver(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+            // `&s.inner` is the SyntaxSnapshot; coerces to &dyn ScopeResolver.
+            Some(&s.inner),
+        )
+        .expect("daf dispatch ok");
+
+        let after = doc.text();
+        assert!(
+            !after.contains("drop_me"),
+            "`daf` should delete the whole function, got: {after:?}"
+        );
+        assert!(
+            after.contains("keep") && after.contains("also_keep"),
+            "neighbouring functions stay intact: {after:?}"
+        );
     }
 
     #[test]

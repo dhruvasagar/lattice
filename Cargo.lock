@@ -3660,6 +3660,7 @@ dependencies = [
  "lattice-cells",
  "lattice-completion",
  "lattice-core",
+ "lattice-grammar",
  "lattice-mode",
  "lattice-protocol",
  "streaming-iterator",

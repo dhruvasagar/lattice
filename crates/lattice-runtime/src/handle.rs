@@ -256,12 +256,34 @@ impl RopeDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
+        self.dispatch_with_scope_resolver(invocation, cursor, cancel, None)
+    }
+
+    /// N.1.4b (2026-06-10): the resolver-carrying dispatch entry.
+    /// Threads `scope_resolver` into [`ActorMsg::Dispatch`] so the
+    /// actor passes it to `execute_with_scope_resolver`, unlocking
+    /// tree-sitter text objects (af/ac/aa/al) on the document path.
+    /// The `Arc<dyn ScopeResolver + Send + Sync>` crosses the actor
+    /// channel as one Arc bump; the snapshot is immutable so the
+    /// actor reads it wait-free. Staleness note: the resolver
+    /// reflects the last-published syntax tree, which may trail the
+    /// actor's rope by an in-flight edit -- acceptable eventual
+    /// consistency (CLAUDE.md), never a blocking reparse on the hot
+    /// path (paramount #1).
+    pub fn dispatch_with_scope_resolver(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        scope_resolver: Option<crate::document::ScopeResolverHandle>,
+    ) -> Pending<Effect> {
         let buffer_id = self.buffer_id;
         self.send(|reply| ActorMsg::Dispatch {
             buffer_id,
             invocation,
             cursor,
             cancel,
+            scope_resolver,
             reply,
         })
     }
@@ -376,6 +398,22 @@ impl crate::document::Document for RopeDocumentHandle {
         cancel: CancellationToken,
     ) -> Pending<Effect> {
         RopeDocumentHandle::dispatch_with_cancel(self, invocation, cursor, cancel)
+    }
+
+    fn dispatch_with_scope_resolver(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        scope_resolver: Option<crate::document::ScopeResolverHandle>,
+    ) -> Pending<Effect> {
+        RopeDocumentHandle::dispatch_with_scope_resolver(
+            self,
+            invocation,
+            cursor,
+            cancel,
+            scope_resolver,
+        )
     }
 }
 

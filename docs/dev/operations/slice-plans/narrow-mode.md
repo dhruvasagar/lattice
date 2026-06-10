@@ -35,14 +35,14 @@ owns *when* and *in what order*.
 
 ## Slices
 
-| Slice | Title | Status |
-|---|---|---|
-| **N.1.0** | `textobjects.scm` query infrastructure + `scope_at_cursor` | ✅ |
-| **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen` | ✅ (core) |
-| **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range) | ✅ |
-| **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅ |
-| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`) | 🚧 (N.1.4a ✅) |
-| **N.1.5** | Stacked narrow — transparent one-hop invariant | 🗒 |
+| Slice     | Title                                                                                 | Status         |
+|-----------|---------------------------------------------------------------------------------------|----------------|
+| **N.1.0** | `textobjects.scm` query infrastructure + `scope_at_cursor`                            | ✅             |
+| **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen`                 | ✅ (core)      |
+| **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range)                | ✅             |
+| **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅             |
+| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`)                     | 🚧 (N.1.4a ✅, N.1.4b ✅) |
+| **N.1.5** | Stacked narrow — transparent one-hop invariant                                        | 🗒              |
 
 ---
 
@@ -291,10 +291,27 @@ see the design fragment §3.
   existing grammar/test callers are untouched and N.1.4a is a behavioural no-op
   (193 grammar tests pass, workspace builds). `ScopeResolver` +
   `execute_with_scope_resolver` re-exported for N.1.4b.
-- **N.1.4b — host wiring (`lattice-host`).** `impl ScopeResolver for
-  SyntaxSnapshot` (forwards to `scope_at_cursor`); dispatch puts the active
-  buffer's snapshot into the context (needs the per-buffer snapshot — a
-  read-only `syntax_handle_for(id)` accessor on the buffer-store service).
+- **N.1.4b — host wiring (`lattice-runtime` + `lattice-host`). ✅ landed 2026-06-10.**
+  `impl lattice_grammar::ScopeResolver for SyntaxSnapshot` (lattice-syntax →
+  lattice-grammar dep; forwards to `scope_at_cursor`). The resolver reaches the
+  grammar via a new `Document::dispatch_with_scope_resolver(inv, cursor, cancel,
+  Option<ScopeResolverHandle>)` trait method (default impl delegates to
+  `dispatch_with_cancel`, so the multibuffer + future kinds are a no-op until
+  wired); `RopeDocumentHandle` overrides it to put the resolver on
+  `ActorMsg::Dispatch`, and the actor calls `execute_with_scope_resolver`.
+  `ScopeResolverHandle = Arc<dyn ScopeResolver + Send + Sync>` crosses the actor
+  channel as one Arc bump (immutable snapshot, wait-free read — paramount #1).
+  The host's `dispatch_blocking` reads the existing `self.syntax` hot-path slot
+  (no new accessor needed) and passes it down; non-Document buffers pass `None`
+  or hit the default, so **no `BufferKind` branch** ([[feedback_buffers_no_special_case]]).
+  Note: the original sketch (a `syntax_handle_for(id)` buffer-store accessor +
+  "put snapshot into the context") was superseded — the snapshot is a per-dispatch
+  input, so a dispatch-time trait param is the honest model, not a side-channel
+  accessor. Narrow/multibuffer in-view text objects (per-excerpt source snapshot
+  + composed→source translation) are deferred to **N.1.5**. Wire proven by
+  `dispatch_with_scope_resolver_threads_resolver_to_text_object` (actor test:
+  resolver Some → text object sees the mock range; None → sees None). No
+  text-object keys are bound yet — that is N.1.4c.
 - **N.1.4c — `.outer` objects (`lattice-syntax`).** New `lattice-syntax →
   lattice-grammar` dep; `register_syntax_text_objects(&mut registry)` registers
   `af`/`ac`/`aa`/`al` (`.outer`). Boot calls it. (Comment is a separate slice.)
@@ -359,7 +376,7 @@ re-registration is needed; only the handler's source-resolution step is added.
 ```
 N.1.0 ✅ (scope_at_cursor — landed)
    │
-   ├──────────────────────────────────────┐
+   ├───────────────────────────────────────┐
    │                                       │
 N.1.1 (core view + `:narrow {range}`)   N.1.4 (text objects `af`/`ac`
    │     │                                  reading scope_at_cursor)

@@ -480,6 +480,23 @@ impl Syntax {
     }
 }
 
+/// N.1.4b (2026-06-10): bridge the snapshot into the grammar
+/// dispatcher's tree-sitter text-object resolution. The grammar
+/// crate defines the `ScopeResolver` trait (cursor -> enclosing
+/// scope row range) and stays tree-sitter-agnostic; this impl
+/// forwards to the snapshot's existing
+/// [`SyntaxSnapshot::scope_at_cursor`] (N.1.0). The host coerces
+/// `Arc<SyntaxSnapshot>` to `Arc<dyn ScopeResolver + Send + Sync>`
+/// and threads it through `Document::dispatch_with_scope_resolver`
+/// so `daf` / `yic` etc. resolve against the live syntax tree off
+/// the UI thread (paramount #1: the snapshot is immutable, the
+/// query is bounded to the cursor's 1-byte window).
+impl lattice_grammar::ScopeResolver for SyntaxSnapshot {
+    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<(u32, u32)> {
+        self.scope_at_cursor(line, col_byte, suffix)
+    }
+}
+
 impl SyntaxSnapshot {
     /// H.3d (2026-06-04): set `source` and recompute the memoized
     /// `line_starts` together so the two never drift. Every source

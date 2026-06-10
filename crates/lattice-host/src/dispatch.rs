@@ -12076,10 +12076,26 @@ impl Editor {
         // scratch document — a paramount-#3 (no kind-special-
         // casing in host) violation. The trait impl is now
         // honest; the kind-branch disappears.
-        lattice_runtime::block_on(self.document.dispatch_with_cancel(
+        // N.1.4b (2026-06-10): thread the active document's syntax
+        // snapshot into grammar dispatch as a `ScopeResolver` so
+        // tree-sitter text objects (af/ac/aa/al) resolve their
+        // enclosing scope against the live tree. `self.syntax` is the
+        // hot-path slot for the active Document buffer; for non-
+        // Document active buffers (oil / terminal / multibuffer) it is
+        // None, or the impl's default `dispatch_with_scope_resolver`
+        // ignores it -- so no kind-branch is needed here
+        // ([[feedback_buffers_no_special_case]]). The snapshot is an
+        // immutable Arc: passing it is one Arc bump, no UI-thread
+        // parse (paramount #1).
+        let scope_resolver: Option<lattice_runtime::ScopeResolverHandle> = self
+            .syntax
+            .as_ref()
+            .map(|h| -> lattice_runtime::ScopeResolverHandle { h.snapshot() });
+        lattice_runtime::block_on(self.document.dispatch_with_scope_resolver(
             invocation,
             self.cursor,
             lattice_protocol::CancellationToken::never(),
+            scope_resolver,
         ))
     }
 

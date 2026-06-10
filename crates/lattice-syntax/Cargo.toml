@@ -9,6 +9,12 @@ license.workspace = true
 arc-swap = { workspace = true }
 lattice-cells = { path = "../lattice-cells" }
 lattice-core = { path = "../lattice-core" }
+# N.1.4b (2026-06-10): `impl lattice_grammar::ScopeResolver for
+# SyntaxSnapshot` bridges the syntax tree into the grammar
+# dispatcher's tree-sitter text-object resolution (af/ac/aa/al).
+# The dependency points syntax -> grammar (not the reverse), so
+# lattice-grammar stays tree-sitter-agnostic.
+lattice-grammar = { path = "../lattice-grammar" }
 # CSM.6: tree-sitter-completion-mode owns the local-symbol
 # completion source. lattice-mode is already a dep (for the
 # language major modes); lattice-completion provides the

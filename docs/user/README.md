@@ -44,6 +44,7 @@ same surface).
 | File tree & Oil (browse / edit the filesystem; oil-style writable directory listing; icons + colors)        | [filetree-oil.md](filetree-oil.md)  | ✅     |
 | Multibuffer views (excerpts composed into one editable buffer; the substrate behind search + project diff)  | [multibuffer.md](multibuffer.md)    | ✅     |
 | Project search (`:search`, streaming results multibuffer, `<CR>` jump-to-source, `gr` refresh)              | [project-search.md](project-search.md) | ✅  |
+| Narrow mode (`zn` operator, `:narrow` / `:widen`, edit-in-view → source, stacked one-hop, `znaf` in view)   | [narrow-mode.md](narrow-mode.md)    | ✅     |
 | Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
 | Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |

@@ -1312,10 +1312,126 @@ fn register_find_char_paths(
     }
 }
 
+/// The canonical chord -> (inner, around) text-object table.
+///
+/// Single source of truth shared by the Normal-mode operator-pending
+/// resolver ([`register_text_object_resolutions`]) and the Visual-mode
+/// binder ([`crate::keymap_visual::register_visual_bindings`]) so the
+/// two surfaces NEVER drift: a new object or alias added here is
+/// picked up by `daf` / `yiw` AND `vaf` / `viw` alike, with zero
+/// per-object code on either side.
+///
+/// Builtin objects (`w` / `W` / `p` / `s` / `t` / quotes / brackets /
+/// `C`) and the tree-sitter structural objects (`f` / `c` / `a` / `l`,
+/// N.1.4c) live in one list. The chord chars never collide: find-char
+/// (`df<c>`) rides a different post-operator path, so `daf` =
+/// d -> a(around) -> f(function) never clashes with `dfc`. Ownership
+/// of the structural ids stays with lattice-syntax (it minted them);
+/// the host only wires chord -> id, exactly as for the builtin objects.
+///
+/// Each row is `(chord aliases, inner id, around id)`.
+pub(crate) fn text_object_rows(
+    builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
+) -> Vec<(
+    Vec<ChordPattern>,
+    lattice_grammar::registry::TextObjectId,
+    lattice_grammar::registry::TextObjectId,
+)> {
+    vec![
+        (vec![lit_char('w')], builtins.inner_word, builtins.around_word),
+        (
+            vec![lit_char('W')],
+            builtins.inner_big_word,
+            builtins.around_big_word,
+        ),
+        (
+            vec![lit_char('p')],
+            builtins.inner_paragraph,
+            builtins.around_paragraph,
+        ),
+        (
+            vec![lit_char('s')],
+            builtins.inner_sentence,
+            builtins.around_sentence,
+        ),
+        (vec![lit_char('t')], builtins.inner_tag, builtins.around_tag),
+        (
+            vec![lit_char('"')],
+            builtins.inner_quote_double,
+            builtins.around_quote_double,
+        ),
+        (
+            vec![lit_char('\'')],
+            builtins.inner_quote_single,
+            builtins.around_quote_single,
+        ),
+        (
+            vec![lit_char('`')],
+            builtins.inner_quote_backtick,
+            builtins.around_quote_backtick,
+        ),
+        // Paren aliases: `(`, `)`, `b`.
+        (
+            vec![lit_char('('), lit_char(')'), lit_char('b')],
+            builtins.inner_paren,
+            builtins.around_paren,
+        ),
+        // Bracket aliases: `[`, `]`.
+        (
+            vec![lit_char('['), lit_char(']')],
+            builtins.inner_bracket,
+            builtins.around_bracket,
+        ),
+        // Brace aliases: `{`, `}`, `B`.
+        (
+            vec![lit_char('{'), lit_char('}'), lit_char('B')],
+            builtins.inner_brace,
+            builtins.around_brace,
+        ),
+        // Angle aliases: `<`, `>`.
+        (
+            vec![lit_char('<'), lit_char('>')],
+            builtins.inner_angle,
+            builtins.around_angle,
+        ),
+        // N.1.6: comment object -- capital `C` (lowercase `c` is class,
+        // N.1.4). `aC` = the comment block incl. markers; `iC` = its text.
+        (
+            vec![lit_char('C')],
+            builtins.inner_comment,
+            builtins.around_comment,
+        ),
+        // N.1.4c: tree-sitter structural objects.
+        (
+            vec![lit_char('f')],
+            syntax_textobjects.inner_function,
+            syntax_textobjects.around_function,
+        ),
+        (
+            vec![lit_char('c')],
+            syntax_textobjects.inner_class,
+            syntax_textobjects.around_class,
+        ),
+        (
+            vec![lit_char('a')],
+            syntax_textobjects.inner_parameter,
+            syntax_textobjects.around_parameter,
+        ),
+        (
+            vec![lit_char('l')],
+            syntax_textobjects.inner_loop,
+            syntax_textobjects.around_loop,
+        ),
+    ]
+}
+
 /// Register every text-object resolution path under
 /// `pending_prefix` (which already ends in `i` or `a`). For each
 /// text-object chord (with all its aliases), bind to the
-/// corresponding inner / around `TextObjectId`.
+/// corresponding inner / around `TextObjectId`. Rows come from the
+/// shared [`text_object_rows`] table -- the same table the Visual-mode
+/// binder consumes, so operator-pending and Visual never drift.
 fn register_text_object_resolutions(
     handle: &KeymapHandle,
     pending_prefix: &[ChordPattern],
@@ -1327,112 +1443,9 @@ fn register_text_object_resolutions(
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
-    let textobj_table: &[(
-        &[ChordPattern],
-        lattice_grammar::registry::TextObjectId,
-        lattice_grammar::registry::TextObjectId,
-    )] = &[
-        (&[lit_char('w')], builtins.inner_word, builtins.around_word),
-        (
-            &[lit_char('W')],
-            builtins.inner_big_word,
-            builtins.around_big_word,
-        ),
-        (
-            &[lit_char('p')],
-            builtins.inner_paragraph,
-            builtins.around_paragraph,
-        ),
-        (
-            &[lit_char('s')],
-            builtins.inner_sentence,
-            builtins.around_sentence,
-        ),
-        (&[lit_char('t')], builtins.inner_tag, builtins.around_tag),
-        (
-            &[lit_char('"')],
-            builtins.inner_quote_double,
-            builtins.around_quote_double,
-        ),
-        (
-            &[lit_char('\'')],
-            builtins.inner_quote_single,
-            builtins.around_quote_single,
-        ),
-        (
-            &[lit_char('`')],
-            builtins.inner_quote_backtick,
-            builtins.around_quote_backtick,
-        ),
-        // Paren aliases: `(`, `)`, `b`.
-        (
-            &[lit_char('('), lit_char(')'), lit_char('b')],
-            builtins.inner_paren,
-            builtins.around_paren,
-        ),
-        // Bracket aliases: `[`, `]`.
-        (
-            &[lit_char('['), lit_char(']')],
-            builtins.inner_bracket,
-            builtins.around_bracket,
-        ),
-        // Brace aliases: `{`, `}`, `B`.
-        (
-            &[lit_char('{'), lit_char('}'), lit_char('B')],
-            builtins.inner_brace,
-            builtins.around_brace,
-        ),
-        // Angle aliases: `<`, `>`.
-        (
-            &[lit_char('<'), lit_char('>')],
-            builtins.inner_angle,
-            builtins.around_angle,
-        ),
-        // N.1.6: comment object -- capital `C` (lowercase `c` is class,
-        // N.1.4). `aC` = the comment block incl. markers; `iC` = its text.
-        (
-            &[lit_char('C')],
-            builtins.inner_comment,
-            builtins.around_comment,
-        ),
-    ];
-    // N.1.4c: the structural (tree-sitter) objects resolve through the
-    // SAME operator-pending path -- `af`/`if` (function), `ac`/`ic`
-    // (class), `aa`/`ia` (parameter), `al`/`il` (loop). Their chord
-    // chars (f/c/a/l) are free in the text-object slot: find-char
-    // (`df<c>`) lives on a different post-operator path, so `daf` =
-    // d -> a(around) -> f(function) never collides. Ownership stays
-    // with lattice-syntax (it minted the ids); the host only wires the
-    // chord -> id mapping, exactly as it does for the builtin objects.
-    let syntax_table: &[(
-        &[ChordPattern],
-        lattice_grammar::registry::TextObjectId,
-        lattice_grammar::registry::TextObjectId,
-    )] = &[
-        (
-            &[lit_char('f')],
-            syntax_textobjects.inner_function,
-            syntax_textobjects.around_function,
-        ),
-        (
-            &[lit_char('c')],
-            syntax_textobjects.inner_class,
-            syntax_textobjects.around_class,
-        ),
-        (
-            &[lit_char('a')],
-            syntax_textobjects.inner_parameter,
-            syntax_textobjects.around_parameter,
-        ),
-        (
-            &[lit_char('l')],
-            syntax_textobjects.inner_loop,
-            syntax_textobjects.around_loop,
-        ),
-    ];
-    for (chord_aliases, inner_id, around_id) in textobj_table.iter().chain(syntax_table.iter()) {
-        let tobj = if around { *around_id } else { *inner_id };
-        for chord in chord_aliases.iter() {
+    for (chord_aliases, inner_id, around_id) in text_object_rows(builtins, syntax_textobjects) {
+        let tobj = if around { around_id } else { inner_id };
+        for chord in &chord_aliases {
             let mut path: Vec<ChordPattern> = pending_prefix.to_vec();
             path.push(chord.clone());
             handle.bind(
@@ -1642,7 +1655,7 @@ fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
 /// `@X`, plus the operator-prefixed `dfX` etc.) capture the
 /// matched char; this helper applies it to the placeholder
 /// stashed in the bound action.
-fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
+pub(crate) fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
     // Fold any captured wildcard char into `Args::Char(c)` so the
     // bound `ActionSpec`'s apply closure can see it. Validation
     // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);

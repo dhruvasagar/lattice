@@ -273,15 +273,20 @@ Combine with any operator: `daw` deletes a word + whitespace,
 yanks a brace block including the braces, `>>i{` indents
 inside a brace block (without the braces).
 
-In Visual mode, text objects extend the selection: `vi{`
-selects everything inside the surrounding `{...}`.
+In Visual mode, any text object sets the selection to its span:
+`vi{` selects everything inside the surrounding `{...}`, `vaw` a
+word with its whitespace, `vap` a paragraph. The structural and
+comment objects below work the same way (`vaf`, `vaC`, …). There
+is no per-object Visual handling — every object in the grammar
+selects uniformly.
 
 ### Tree-sitter text objects
 
 > **Status: function / class / parameter / loop + comment objects landed
-> 2026-06-10 (N.1.4–N.1.6); Visual-mode selection is the remaining
-> follow-up.** The query substrate (`textobjects.scm` +
-> `scope_at_cursor`) landed in N.1.0; the `zn` narrow operator in N.1.3.
+> 2026-06-10 (N.1.4–N.1.6); Visual-mode selection (`viw` / `vaf` / `vaC`
+> / …) landed the same day in the visual-foundation slice.** The query
+> substrate (`textobjects.scm` + `scope_at_cursor`) landed in N.1.0; the
+> `zn` narrow operator in N.1.3.
 > Design:
 > [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
 
@@ -313,9 +318,10 @@ tree, off the UI thread.
 (Python's brace-less suite is clean); and `aa` and `ia` resolve
 identically (the trailing comma isn't captured yet). The comment
 object scans line comments (`//`, `#`); block comments (`/* */`) and
-trailing comments are a follow-up. The remaining cross-cutting
-follow-up is Visual-mode text objects (`vaf` / `vaC` / …) — which will
-apply to *every* object uniformly, not just these.
+trailing comments are a follow-up. Visual-mode selection applies to
+*every* object uniformly (`vaf` / `vaC` / `viw` / …) — the Visual
+binder iterates the same grammar table the operators do, so there is
+no per-object code.
 
 **Why these keys.** `t` (tag) is already a classic object, so
 class/type takes `ac`/`ic` (the nvim-treesitter convention) rather

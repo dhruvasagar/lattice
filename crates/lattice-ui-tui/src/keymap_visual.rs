@@ -16,6 +16,7 @@ mod tests {
     use crate::keymap_registry::KeymapHandle;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use lattice_grammar::{CommandRegistry, VisualKind, builtins::Builtins, builtins::populate};
+    use lattice_syntax::SyntaxTextObjectIds;
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyChord {
         let raw = KeyEvent {
@@ -27,29 +28,36 @@ mod tests {
         crate::chord::from_event(&raw).expect("test event converts to a chord")
     }
 
-    fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
+    fn fixture() -> (CommandRegistry, Builtins, ActionIds, SyntaxTextObjectIds) {
         let mut r = CommandRegistry::new();
         let b = populate(&mut r);
         let a = crate::actions::populate(&mut r, &b);
-        (r, b, a)
+        let so = lattice_syntax::register_syntax_text_objects(&mut r);
+        (r, b, a, so)
     }
 
-    fn populated_handle(b: &Builtins, a: &ActionIds) -> KeymapHandle {
+    fn populated_handle(b: &Builtins, a: &ActionIds, so: &SyntaxTextObjectIds) -> KeymapHandle {
         let h = KeymapHandle::new();
-        register_visual_bindings(&h, b, a);
+        register_visual_bindings(&h, b, a, so);
         h
+    }
+
+    /// Dispatch a fresh (non-mid-sequence) Visual chord -- empty
+    /// `partial_chord`. The bulk of the catalog is single-key.
+    fn dv(h: &KeymapHandle, chord: &KeyChord, kind: VisualKind) -> Action {
+        dispatch_visual(h, chord, kind, &[])
     }
 
     #[test]
     fn esc_exits_visual_in_all_kinds() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
         for kind in [
             VisualKind::Charwise,
             VisualKind::Linewise,
             VisualKind::Blockwise,
         ] {
-            let r = dispatch_visual(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), kind);
+            let r = dv(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), kind);
             match r {
                 Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
                 other => panic!("kind={kind:?}: expected Invoke(exit_visual), got {other:?}"),
@@ -59,9 +67,9 @@ mod tests {
 
     #[test]
     fn lowercase_v_toggles_out_of_visual() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('v'), KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -74,9 +82,9 @@ mod tests {
 
     #[test]
     fn uppercase_v_toggles_out_of_visual() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('V'), KeyModifiers::NONE),
             VisualKind::Linewise,
@@ -89,9 +97,9 @@ mod tests {
 
     #[test]
     fn motion_h_invokes_char_left() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -104,9 +112,9 @@ mod tests {
 
     #[test]
     fn arrow_left_aliases_to_char_left() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Left, KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -119,9 +127,9 @@ mod tests {
 
     #[test]
     fn delete_in_visual_carries_selection_range() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -137,9 +145,9 @@ mod tests {
 
     #[test]
     fn x_in_visual_aliases_to_delete() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -152,9 +160,9 @@ mod tests {
 
     #[test]
     fn s_in_visual_aliases_to_change() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('s'), KeyModifiers::NONE),
             VisualKind::Charwise,
@@ -167,24 +175,24 @@ mod tests {
 
     #[test]
     fn capital_i_only_in_blockwise() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
         // Charwise: I has no binding -> None.
-        let r = dispatch_visual(
+        let r = dv(
             &h,
             &ev(KeyCode::Char('I'), KeyModifiers::NONE),
             VisualKind::Charwise,
         );
         assert!(matches!(r, Action::None), "charwise I: {r:?}");
         // Linewise: same.
-        let r = dispatch_visual(
+        let r = dv(
             &h,
             &ev(KeyCode::Char('I'), KeyModifiers::NONE),
             VisualKind::Linewise,
         );
         assert!(matches!(r, Action::None), "linewise I: {r:?}");
         // Blockwise: I -> EnterBlockVisualInsert.
-        let r = dispatch_visual(
+        let r = dv(
             &h,
             &ev(KeyCode::Char('I'), KeyModifiers::NONE),
             VisualKind::Blockwise,
@@ -197,15 +205,15 @@ mod tests {
 
     #[test]
     fn capital_a_only_in_blockwise() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('A'), KeyModifiers::NONE),
             VisualKind::Charwise,
         );
         assert!(matches!(r, Action::None));
-        let r = dispatch_visual(
+        let r = dv(
             &h,
             &ev(KeyCode::Char('A'), KeyModifiers::NONE),
             VisualKind::Blockwise,
@@ -215,9 +223,9 @@ mod tests {
 
     #[test]
     fn ctrl_modifier_yields_none() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::CONTROL),
             VisualKind::Charwise,
@@ -231,9 +239,9 @@ mod tests {
     /// short-circuited CONTROL.
     #[test]
     fn alt_h_in_visual_invokes_char_left() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-        let r = dispatch_visual(
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::ALT),
             VisualKind::Charwise,
@@ -242,5 +250,164 @@ mod tests {
             Action::Invoke(inv) => assert_eq!(inv.command, b.char_left.0),
             other => panic!("expected Invoke(char_left), got {other:?}"),
         }
+    }
+
+    // ---- Text objects in Visual mode (visual-foundation slice).
+    //
+    // `viw` / `vaw` / `vi{` / `vaf` / `vaC` ... are two-key chords
+    // (`i` / `a` prefix + object char) resolved via the same
+    // partial-chord machinery Normal mode uses. The first key absorbs
+    // into the host's `partial_chord`; the second resolves the pair.
+    // There is NO per-object code -- every row in
+    // `keymap_normal::text_object_rows` works automatically.
+
+    /// Bare `i` (in Visual) is a text-object prefix: it must absorb
+    /// into `partial_chord`, not no-op.
+    #[test]
+    fn bare_i_absorbs_as_text_object_prefix() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
+            &h,
+            &ev(KeyCode::Char('i'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+        );
+        match r {
+            Action::AbsorbPartialChord(c) => {
+                assert_eq!(c, ev(KeyCode::Char('i'), KeyModifiers::NONE));
+            }
+            other => panic!("expected AbsorbPartialChord(i), got {other:?}"),
+        }
+    }
+
+    /// Bare `a` likewise absorbs as a text-object prefix.
+    #[test]
+    fn bare_a_absorbs_as_text_object_prefix() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
+            &h,
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+        );
+        assert!(
+            matches!(r, Action::AbsorbPartialChord(_)),
+            "expected AbsorbPartialChord(a), got {r:?}"
+        );
+    }
+
+    /// `viw` -> with `partial_chord = [i]`, the `w` resolves to a
+    /// bare `inner_word` text-object invocation (no operator, no
+    /// range -- the grammar's `execute_text_object` sets the span).
+    #[test]
+    fn viw_resolves_to_bare_inner_word() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('w'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.inner_word.0);
+                assert!(inv.range.is_none(), "bare text object carries no range");
+                assert!(inv.target.is_none(), "bare text object carries no target");
+            }
+            other => panic!("expected Invoke(inner_word), got {other:?}"),
+        }
+    }
+
+    /// `vaw` -> around-word via the `a` prefix.
+    #[test]
+    fn vaw_resolves_to_bare_around_word() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('w'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, b.around_word.0),
+            other => panic!("expected Invoke(around_word), got {other:?}"),
+        }
+    }
+
+    /// `vi{` -> inner brace (a bracket-family alias). Confirms the
+    /// shared table's alias rows reach Visual mode too.
+    #[test]
+    fn vi_brace_resolves_to_inner_brace() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('{'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, b.inner_brace.0),
+            other => panic!("expected Invoke(inner_brace), got {other:?}"),
+        }
+    }
+
+    /// `vaf` -> around-function: the tree-sitter structural object,
+    /// proving the syntax rows are wired identically in Visual.
+    #[test]
+    fn vaf_resolves_to_around_function() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('f'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, so.around_function.0),
+            other => panic!("expected Invoke(around_function), got {other:?}"),
+        }
+    }
+
+    /// `vaC` -> around-comment (the N.1.6 comment object), capital C.
+    #[test]
+    fn va_capital_c_resolves_to_around_comment() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('C'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, b.around_comment.0),
+            other => panic!("expected Invoke(around_comment), got {other:?}"),
+        }
+    }
+
+    /// Garbage after a text-object prefix aborts (returns `None`), so
+    /// the host clears `partial_chord` -- matching vim cancelling the
+    /// prefix on an unbound second key.
+    #[test]
+    fn unbound_after_prefix_yields_none() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('z'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        assert!(matches!(r, Action::None), "expected None, got {r:?}");
     }
 }

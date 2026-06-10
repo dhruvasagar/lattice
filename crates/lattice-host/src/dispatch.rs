@@ -2333,15 +2333,31 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // 5.5.E.4: motion / selection-class effects emit a
             // SelectionSet; the host syncs `editor.cursor` to the
             // primary head. In Visual mode, the dispatcher's
-            // `replace_primary(Selection::cursor(...))` would
-            // collapse the selection -- refresh the actor's
-            // selection set with the preserved anchor so the
+            // `replace_primary(...)` would otherwise collapse the
+            // selection -- refresh the actor's selection set so the
             // extension survives.
-            let new_head = set.primary().head;
+            //
+            // The SHAPE of the incoming primary is the generic
+            // discriminant, with NO per-object branching (a text
+            // object never gets special-cased here):
+            //   * anchor == head -> a motion (`Selection::cursor`):
+            //     keep the running visual anchor and extend the head.
+            //   * anchor != head -> a text object resolved a full span
+            //     (`viw` / `vaf` / `vaC` / `vac` ...): adopt BOTH
+            //     endpoints, so the selection jumps to the object and
+            //     subsequent motions extend from the object's start.
+            let primary = *set.primary();
+            let new_head = primary.head;
             editor.cursor = new_head;
             if let ModalState::Visual(kind) = editor.modal {
+                let anchor = if primary.anchor != primary.head {
+                    editor.visual_anchor = Some(primary.anchor);
+                    primary.anchor
+                } else {
+                    editor.visual_anchor.unwrap_or(new_head)
+                };
                 let sel = Selection {
-                    anchor: editor.visual_anchor.unwrap_or(new_head),
+                    anchor,
                     head: new_head,
                     visual: Some(visual_kind_to_mode(kind)),
                 };

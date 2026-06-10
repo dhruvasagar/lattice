@@ -1071,7 +1071,12 @@ impl Editor {
             keymap: {
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h, &action_ids);
-                crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
+                crate::keymap_visual::register_visual_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(
                     &h,

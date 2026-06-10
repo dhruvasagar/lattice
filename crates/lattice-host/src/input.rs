@@ -385,7 +385,9 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // pre-lookup in `dispatch_visual` until the architecture's
         // minor-mode-on-Visual layer push lands. The drift test
         // in `keymap_visual::tests` is the regression net.
-        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &chord, kind),
+        ModalState::Visual(kind) => {
+            dispatch_visual(ctx.keymap, &chord, kind, ctx.partial_chord)
+        }
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`

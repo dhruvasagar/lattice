@@ -60,15 +60,24 @@ mod tests {
     /// register against the same ids so trie-bound
     /// `CommandInvocation` ids stay in lockstep with what each
     /// test compares against.
-    fn shared_init() -> &'static (Builtins, crate::actions::ActionIds) {
+    fn shared_init() -> &'static (
+        Builtins,
+        crate::actions::ActionIds,
+        lattice_syntax::SyntaxTextObjectIds,
+    ) {
         use std::sync::OnceLock;
-        static INIT: OnceLock<(Builtins, crate::actions::ActionIds)> = OnceLock::new();
+        static INIT: OnceLock<(
+            Builtins,
+            crate::actions::ActionIds,
+            lattice_syntax::SyntaxTextObjectIds,
+        )> = OnceLock::new();
         INIT.get_or_init(|| {
             let mut r = CommandRegistry::new();
             let b = populate(&mut r);
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
             let a = crate::actions::populate(&mut r, &b);
-            (b, a)
+            let so = lattice_syntax::register_syntax_text_objects(&mut r);
+            (b, a, so)
         })
     }
 
@@ -80,6 +89,10 @@ mod tests {
         &shared_init().1
     }
 
+    fn shared_syntax_textobjects() -> &'static lattice_syntax::SyntaxTextObjectIds {
+        &shared_init().2
+    }
+
     /// Build a fresh `KeymapHandle` populated with every catalog
     /// the per-mode dispatchers consult: Replace, Visual, Insert,
     /// Normal. Each scenario-specific helper below starts from
@@ -88,10 +101,11 @@ mod tests {
         let h = KeymapHandle::new();
         let b = shared_builtins();
         let a = shared_actions();
+        let so = shared_syntax_textobjects();
         crate::keymap_replace::register_replace_bindings(&h, a);
-        crate::keymap_visual::register_visual_bindings(&h, b, a);
+        crate::keymap_visual::register_visual_bindings(&h, b, a, so);
         crate::keymap_insert::register_insert_bindings(&h, a);
-        crate::keymap_normal::register_normal_bindings(&h, b, a);
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
         h
     }
 

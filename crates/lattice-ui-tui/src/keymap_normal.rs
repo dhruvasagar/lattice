@@ -71,9 +71,10 @@ mod tests {
     }
 
     fn populated_handle() -> (KeymapHandle, Builtins, ActionIds) {
-        let (_, b, a) = fixture();
+        let (mut r, b, a) = fixture();
+        let so = lattice_syntax::register_syntax_text_objects(&mut r);
         let h = KeymapHandle::new();
-        register_normal_bindings(&h, &b, &a);
+        register_normal_bindings(&h, &b, &a, &so);
         (h, b, a)
     }
 

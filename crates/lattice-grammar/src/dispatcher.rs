@@ -234,11 +234,31 @@ fn execute_text_object(
         scope_resolver: env.scope_resolver,
         comment_syntax: env.comment_syntax,
     };
-    let _range = (tobj.apply)(&ctx)?;
-    // A text-object alone (no operator) is unusual; vim's behavior is to
-    // expand the visual selection. Phase 1 returns Effect::None until the
-    // visual-mode integration lands.
-    Ok(Effect::None)
+    let range = (tobj.apply)(&ctx)?;
+    // A bare text object (no operator) sets the selection to the object's
+    // span -- this is how Visual mode's `viw` / `vaf` / `vaC` work, and it
+    // is fully generic: the dispatcher does not branch on which object was
+    // resolved. The object returns a half-open `[start, end)`; charwise
+    // visual is inclusive of the head, so we place the head one byte before
+    // `end`. A later operator (`d` / `y` / `c`) re-extends to `end` via
+    // `resolve_grammar_range(Range::Selection)`, matching vim exactly.
+    if range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let buffer = document.buffer();
+    let head = buffer
+        .position_to_byte(range.end)
+        .ok()
+        .filter(|&b| b > 0)
+        .and_then(|b| buffer.byte_to_position(b - 1).ok())
+        .unwrap_or(range.start);
+    let mut selections = document.selections().clone();
+    selections.replace_primary(lattice_protocol::selection::Selection {
+        anchor: range.start,
+        head,
+        visual: None,
+    });
+    Ok(Effect::SelectionChange(selections))
 }
 
 fn execute_operator(
@@ -765,5 +785,41 @@ mod tests {
             ),
             "unexpected error: {err:?}"
         );
+    }
+
+    /// Visual-foundation slice: a *bare* text object (no operator)
+    /// must set the selection to the object's span rather than
+    /// no-op. This is what drives Visual mode's `viw` / `vaw` /
+    /// `vaf`. The object returns a half-open `[start, end)`; the
+    /// resulting charwise selection is inclusive of the head, so
+    /// the head lands one byte before `end` and a later operator
+    /// re-extends via `resolve_grammar_range(Range::Selection)`.
+    #[test]
+    fn bare_text_object_sets_selection_to_object_span() {
+        let mut registry = CommandRegistry::new();
+        let builtins = crate::builtins::populate(&mut registry);
+        let mut doc = lattice_core::Document::from_text("foo bar baz");
+        // Cursor on the `b` of "bar" (line 0, byte 4).
+        let cursor = Position::new(0, 4);
+        let inv = CommandInvocation::of(builtins.inner_word.0);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::SelectionChange(set) => {
+                let p = set.primary();
+                // inner-word "bar" = bytes [4, 7); charwise head = 6.
+                assert_eq!(p.anchor, Position::new(0, 4), "anchor at word start");
+                assert_eq!(p.head, Position::new(0, 6), "head one byte before end");
+                assert!(p.visual.is_none(), "bare object leaves the kind to the host");
+            }
+            other => panic!("expected Effect::SelectionChange, got {other:?}"),
+        }
     }
 }

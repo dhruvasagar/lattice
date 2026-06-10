@@ -322,9 +322,22 @@ impl Drop for MultibufferInner {
 /// forwarder task doesn't need to re-walk the row translation
 /// (which may have shifted by the time the task runs).
 #[derive(Debug)]
-struct SourceForwardMsg {
-    source_handle: Arc<dyn Document>,
-    source_edit: Edit,
+enum SourceForwardMsg {
+    /// Propagate a composed-coordinate edit to its source actor.
+    Edit {
+        source_handle: Arc<dyn Document>,
+        source_edit: Edit,
+    },
+    /// Save-flush barrier (2026-06-10). Sent by
+    /// [`MultibufferDocumentHandle::save`] through the SAME FIFO
+    /// channel as edits, so by the time the forwarder pops it every
+    /// prior edit has been applied to (and `await`ed on) its source
+    /// actor. The forwarder then signals `done`, telling `save()` the
+    /// sources are current — without this, `:w` would race the async
+    /// forwarder and persist stale sources (drop the last keystrokes).
+    Flush {
+        done: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 struct MultibufferState {
@@ -482,10 +495,24 @@ impl MultibufferDocumentHandle {
             tokio::sync::mpsc::unbounded_channel::<SourceForwardMsg>();
         lattice_runtime::shared_runtime().spawn(async move {
             while let Some(msg) = source_forward_rx.recv().await {
-                // Discard the AppliedEdit — the multibuffer's
-                // local composed_doc is already authoritative.
-                // Best-effort propagation.
-                let _ = msg.source_handle.apply_edit(msg.source_edit).await;
+                match msg {
+                    // Discard the AppliedEdit — the multibuffer's
+                    // local composed_doc is already authoritative.
+                    // Best-effort propagation.
+                    SourceForwardMsg::Edit {
+                        source_handle,
+                        source_edit,
+                    } => {
+                        let _ = source_handle.apply_edit(source_edit).await;
+                    }
+                    // FIFO: every prior Edit was applied + awaited
+                    // above, so the sources are now current. Signal
+                    // `save()` to proceed (best-effort — a dropped
+                    // `done` just means save() falls through).
+                    SourceForwardMsg::Flush { done } => {
+                        let _ = done.send(());
+                    }
+                }
             }
         });
 
@@ -1204,7 +1231,7 @@ impl Document for MultibufferDocumentHandle {
         let state = self.lock_state();
         let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
             let source_edit = build_source_edit(&target, &edit);
-            SourceForwardMsg {
+            SourceForwardMsg::Edit {
                 source_handle: target.source_handle.clone(),
                 source_edit,
             }
@@ -1271,7 +1298,7 @@ impl Document for MultibufferDocumentHandle {
             let state = self.lock_state();
             let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
                 let source_edit = build_source_edit(&target, &edit);
-                SourceForwardMsg {
+                SourceForwardMsg::Edit {
                     source_handle: target.source_handle.clone(),
                     source_edit,
                 }
@@ -1376,10 +1403,67 @@ impl Document for MultibufferDocumentHandle {
     }
 
     fn save(&self) -> Pending<std::path::PathBuf> {
-        // Multibuffers aren't on-disk files; `:w` is a no-op
-        // until a provider attaches save semantics (e.g.
-        // M.6 SearchProvider's "save all sources" wrapper).
-        Pending::ready(Err(RuntimeError::ReadOnly))
+        // 2026-06-10: save every dirty source back to disk. Generic
+        // for ALL multibuffer views (narrow, project-search, future
+        // diff / references): the host's `save_blocking` calls this
+        // `Document::save` uniformly, so `:w` persists the underlying
+        // files with no kind-branch.
+        //
+        // Edits reach sources ASYNC via the source-forwarder, so we
+        // FLUSH it first — a barrier sent through the same FIFO
+        // channel guarantees every queued edit has been applied to
+        // (and awaited on) its source actor before we read + save the
+        // sources. Without the flush, `:w` races the forwarder and
+        // could persist a source missing the user's last keystrokes.
+        let sources: Vec<Arc<dyn Document>> = {
+            let state = self.lock_state();
+            state.sources.values().cloned().collect()
+        };
+        let forward_tx = self.inner.source_forward_tx.clone();
+        Pending::spawn(async move {
+            // Flush barrier. Best-effort: if the forwarder is gone the
+            // send fails and we fall through (sources are as current
+            // as they can be); if `done` is dropped the await errors
+            // and we likewise proceed.
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            if forward_tx
+                .send(SourceForwardMsg::Flush { done: done_tx })
+                .is_ok()
+            {
+                let _ = done_rx.await;
+            }
+
+            // Save each dirty source; report the first saved path for
+            // the `:w` echo. A view whose sources are all clean reports
+            // the first source's path as a no-op success (matching
+            // vim's `:w` on an unmodified buffer); an empty view (no
+            // sources) is `ReadOnly`.
+            let mut saved_path: Option<std::path::PathBuf> = None;
+            let mut fallback_path: Option<std::path::PathBuf> = None;
+            let mut last_err: Option<RuntimeError> = None;
+            for source in &sources {
+                if fallback_path.is_none() {
+                    fallback_path = source.path();
+                }
+                if !source.dirty() {
+                    continue;
+                }
+                match source.save().await {
+                    Ok(path) => {
+                        saved_path.get_or_insert(path);
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+            saved_path
+                .or(fallback_path)
+                .ok_or(RuntimeError::ReadOnly)
+        })
     }
 
     fn save_as(&self, _path: std::path::PathBuf) -> Pending<()> {
@@ -2003,20 +2087,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn save_still_rejected_post_m3() {
-        // M.3 (2026-06-01): apply_edit / undo / redo now
-        // propagate. K.4.5 (2026-06-02): set_selections now
-        // stores composed-coordinate selections (see
-        // `set_selections_stores_composed_selections_post_k_4_5`).
-        // save / save_as / dispatch_with_cancel still stay
-        // rejected per the design comments in `impl Document`
-        // (`:w` is no-op until a provider attaches save
-        // semantics; grammar dispatch runs at the host layer).
+    async fn save_is_readonly_for_a_pathless_view() {
+        // A path-less in-memory source has nothing to persist on
+        // disk, so `:w` on such a view is `ReadOnly`. Real
+        // file-backed sources DO save now — see
+        // `save_persists_view_edits_to_the_source_file`.
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
+    }
+
+    /// 2026-06-10: editing a multibuffer view and calling `save()`
+    /// flushes the source-forwarder and persists the edit to the
+    /// source FILE on disk — the generic `:w`-saves-sources path that
+    /// narrow + project-search both rely on. The flush is load-
+    /// bearing: without it `save()` would race the async forwarder
+    /// and write the pre-edit source.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_persists_view_edits_to_the_source_file() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lattice-mb-save-{unique}.txt"));
+        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let id = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text("alpha\nbeta\ngamma\n")
+            .with_path(path.clone())
+            .build();
+        let handle = spawn_document(id, doc, empty_registry());
+        let source: Arc<dyn Document> = Arc::new(handle);
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, source);
+        let excerpts = vec![Excerpt::new(id, 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Insert "X" at the start of row 1 in the composed view.
+        mb.apply_edit(Edit::insert(Position::new(1, 0), "X"))
+            .await
+            .expect("edit applies");
+
+        // save() flushes the forwarder (so the source has the edit)
+        // then writes the source file back to disk.
+        let saved = mb.save().await.expect("save ok");
+        assert_eq!(saved, path);
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, "alpha\nXbeta\ngamma\n");
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test(flavor = "multi_thread")]

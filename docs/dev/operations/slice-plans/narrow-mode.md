@@ -108,14 +108,21 @@ no multibuffer types leak into the syntax crate.
 > (lattice-grammar) + host arms (range resolver, guarded `:widen`) + boot
 > wiring. 5 integration tests green; workspace builds clean.
 >
-> **Deferred to N.1.1.b** (design gaps surfaced during build, see below):
-> - **`:w`-saves-source** — `:w` is an *ex-command* (`ex:write` →
->   `Effect::SaveBuffer`), NOT an action, so it can't be intercepted via
->   `ActionHandlerRegistry` (as the design §8 assumed). The clean fix is a
->   generic `MultibufferDocumentHandle::save()` that saves dirty sources
->   (today it's rejected per `save_still_rejected_post_m3`), gated to narrow
->   semantics — a substrate decision, not host glue. Until then narrow edits
->   propagate to the source (M.3); save the source by switching to it or `:wa`.
+> **✅ `:w`-saves-source — RESOLVED 2026-06-10** (generic multibuffer save).
+> The original design §8 assumed `:w` could be intercepted via
+> `ActionHandlerRegistry`, but `:w` is an *ex-command* (`ex:write` →
+> `Effect::SaveBuffer` → `save_blocking` → `document.save()`), not an action.
+> The clean fix was therefore generic, not narrow-specific:
+> `MultibufferDocumentHandle::save()` now **flushes the source-forwarder then
+> saves every dirty source** (was hard-`Err(ReadOnly)`). Because the host calls
+> `document.save()` uniformly, `:w` now persists the underlying files from
+> **any** multibuffer view — narrow, project-search, future diff/references.
+> The forwarder flush (a barrier through the FIFO source-forward channel) is
+> load-bearing: without it `:w` would race the async propagation and drop the
+> last keystrokes. Tests: `save_persists_view_edits_to_the_source_file` (real
+> file-on-disk) + `save_is_readonly_for_a_pathless_view`.
+>
+> **Deferred to N.1.1.b:**
 > - **`q` → widen chord** — needs `action:narrow-widen` in `actions::populate`
 >   + a `NarrowMinorMode` keymap + ActionHandlerRegistry handler. `:widen`
 >   (guarded ex-command) covers the close path for now.

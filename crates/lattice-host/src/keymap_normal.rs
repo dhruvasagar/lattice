@@ -1388,6 +1388,13 @@ fn register_text_object_resolutions(
             builtins.inner_angle,
             builtins.around_angle,
         ),
+        // N.1.6: comment object -- capital `C` (lowercase `c` is class,
+        // N.1.4). `aC` = the comment block incl. markers; `iC` = its text.
+        (
+            &[lit_char('C')],
+            builtins.inner_comment,
+            builtins.around_comment,
+        ),
     ];
     // N.1.4c: the structural (tree-sitter) objects resolve through the
     // SAME operator-pending path -- `af`/`if` (function), `ac`/`ic`

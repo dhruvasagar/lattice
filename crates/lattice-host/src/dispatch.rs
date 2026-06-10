@@ -12142,26 +12142,33 @@ impl Editor {
         // scratch document — a paramount-#3 (no kind-special-
         // casing in host) violation. The trait impl is now
         // honest; the kind-branch disappears.
-        // N.1.4b (2026-06-10): thread the active document's syntax
-        // snapshot into grammar dispatch as a `ScopeResolver` so
-        // tree-sitter text objects (af/ac/aa/al) resolve their
-        // enclosing scope against the live tree. `self.syntax` is the
-        // hot-path slot for the active Document buffer; for non-
-        // Document active buffers (oil / terminal / multibuffer) it is
-        // None, or the impl's default `dispatch_with_scope_resolver`
-        // ignores it -- so no kind-branch is needed here
-        // ([[feedback_buffers_no_special_case]]). The snapshot is an
-        // immutable Arc: passing it is one Arc bump, no UI-thread
-        // parse (paramount #1).
+        // N.1.4b / N.1.6 (2026-06-10): build the per-dispatch
+        // `DispatchEnv` -- the active document's syntax snapshot (a
+        // tree-sitter `ScopeResolver` for af/ac/aa/al) + the language's
+        // comment leader (for aC/iC). `self.syntax` is the hot-path slot
+        // for the active Document buffer; for non-Document active buffers
+        // (oil / terminal / multibuffer) the env is empty, or the impl's
+        // default `dispatch_with_env` ignores it -- so no kind-branch is
+        // needed here ([[feedback_buffers_no_special_case]]). The snapshot
+        // is an immutable Arc (one Arc bump, no UI-thread parse --
+        // paramount #1); the comment leader is a small Arc'd string.
         let scope_resolver: Option<lattice_runtime::ScopeResolverHandle> = self
             .syntax
             .as_ref()
             .map(|h| -> lattice_runtime::ScopeResolverHandle { h.snapshot() });
-        lattice_runtime::block_on(self.document.dispatch_with_scope_resolver(
+        let comment_syntax = {
+            let cs = lattice_syntax::Lang::detect_from_path(self.document.path().as_deref())
+                .comment_syntax();
+            cs.line.is_some().then(|| std::sync::Arc::new(cs))
+        };
+        lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
             self.cursor,
             lattice_protocol::CancellationToken::never(),
-            scope_resolver,
+            lattice_runtime::DispatchEnv {
+                scope_resolver,
+                comment_syntax,
+            },
         ))
     }
 

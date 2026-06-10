@@ -49,25 +49,34 @@ pub fn execute(
     invocation: CommandInvocation,
     cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
-    // Most callers (and any buffer with no tree-sitter parse) dispatch
-    // without a scope resolver. The structural text objects resolve
-    // nothing in that case; everything else is unaffected.
-    execute_with_scope_resolver(registry, document, buffer_id, cursor, invocation, cancel, None)
+    // Most callers (and any buffer with no tree-sitter parse / no
+    // comment syntax) dispatch with an empty env. The structural +
+    // comment text objects resolve nothing in that case; everything
+    // else is unaffected.
+    execute_with_env(
+        registry,
+        document,
+        buffer_id,
+        cursor,
+        invocation,
+        cancel,
+        crate::registry::TextObjectEnv::default(),
+    )
 }
 
-/// N.1.4a (2026-06-10): `execute` plus a tree-sitter `scope_resolver`
-/// for the structural text objects (`af` / `ac` / …). The host calls
-/// this with `Some(&snapshot)` (N.1.4b); the resolver threads down to
-/// the `TextObjectContext` so `af` / `ac` resolve, while the classic
-/// objects (`iw`, `ap`, `i{`) ignore it.
-pub fn execute_with_scope_resolver(
+/// N.1.4a / N.1.6 (2026-06-10): `execute` plus the per-dispatch
+/// [`TextObjectEnv`](crate::registry::TextObjectEnv) — the tree-sitter
+/// `scope_resolver` (`af`/`ac`) and the `comment_syntax` (`aC`/`iC`).
+/// The host builds the env (N.1.4b / N.1.6) and threads it down to the
+/// `TextObjectContext`; the classic objects (`iw`, `ap`, `i{`) ignore it.
+pub fn execute_with_env(
     registry: &CommandRegistry,
     document: &mut Document,
     buffer_id: BufferId,
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
-    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     // Honor any pre-existing cancellation request before we start.
     cancel.check()?;
@@ -79,7 +88,7 @@ pub fn execute_with_scope_resolver(
     match entry.spec.kind {
         CommandKind::Motion => execute_motion(document, buffer_id, cursor, &invocation, entry, cancel),
         CommandKind::TextObject => {
-            execute_text_object(document, cursor, &invocation, entry, cancel, scope_resolver)
+            execute_text_object(document, cursor, &invocation, entry, cancel, env)
         }
         CommandKind::Operator => {
             execute_operator(
@@ -90,7 +99,7 @@ pub fn execute_with_scope_resolver(
                 &invocation,
                 entry,
                 cancel,
-                scope_resolver,
+                env,
             )
         }
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
@@ -213,7 +222,7 @@ fn execute_text_object(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let tobj = require_text_object(entry)?;
     let ctx = TextObjectContext {
@@ -222,7 +231,8 @@ fn execute_text_object(
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
         cancel,
-        scope_resolver,
+        scope_resolver: env.scope_resolver,
+        comment_syntax: env.comment_syntax,
     };
     let _range = (tobj.apply)(&ctx)?;
     // A text-object alone (no operator) is unusual; vim's behavior is to
@@ -239,7 +249,7 @@ fn execute_operator(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
@@ -273,7 +283,7 @@ fn execute_operator(
                 target,
                 motion_count,
                 cancel,
-                scope_resolver,
+                env,
             )?
         }
         (None, None) => return Err(CommandError::MissingTarget),
@@ -566,7 +576,7 @@ fn resolve_target(
     target: &Target,
     count: crate::command::Count,
     cancel: &CancellationToken,
-    scope_resolver: Option<&dyn crate::registry::ScopeResolver>,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -597,7 +607,8 @@ fn resolve_target(
                 count,
                 args: args.clone(),
                 cancel,
-                scope_resolver,
+                scope_resolver: env.scope_resolver,
+                comment_syntax: env.comment_syntax,
             };
             (tobj.apply)(&ctx)
         }

@@ -73,7 +73,7 @@ pub mod runtime;
 pub mod snapshot;
 
 pub use actor::DocumentActor;
-pub use document::{ActiveDocument, Document, ScopeResolverHandle};
+pub use document::{ActiveDocument, DispatchEnv, Document, ScopeResolverHandle};
 pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{RopeDocumentHandle, spawn_document};
 // M.2.b.1 (2026-05-31): multibuffer types moved out to the

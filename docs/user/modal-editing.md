@@ -278,9 +278,9 @@ selects everything inside the surrounding `{...}`.
 
 ### Tree-sitter text objects
 
-> **Status: function / class / parameter / loop objects landed
-> 2026-06-10 (N.1.4); the comment object (`aC`/`iC`) and Visual-mode
-> selection are follow-ups.** The query substrate (`textobjects.scm` +
+> **Status: function / class / parameter / loop + comment objects landed
+> 2026-06-10 (N.1.4–N.1.6); Visual-mode selection is the remaining
+> follow-up.** The query substrate (`textobjects.scm` +
 > `scope_at_cursor`) landed in N.1.0; the `zn` narrow operator in N.1.3.
 > Design:
 > [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
@@ -299,7 +299,7 @@ delimiters.
 | **Class / type** | `ac` / `ic` | a `struct` / `enum` / `trait` / `impl` (Rust), `class` (Python/JS) |
 | **Parameter / arg** | `aa` / `ia` | one argument in a parameter / argument list |
 | **Loop** | `al` / `il` | a `for` / `while` / `loop` |
-| **Comment** _(planned)_ | `aC` / `iC` | `aC` whole comment incl. markers; `iC` just the text — a separate commentstring-driven slice, not yet bound |
+| **Comment** | `aC` / `iC` | `aC` the comment block incl. markers; `iC` the comment text (first line's leader stripped). Commentstring-driven — any language with a known line-comment leader, no parse tree needed |
 
 Combine with any operator: `daf` deletes a function, `cic` changes
 a class body, `daa` deletes an argument, `yif` yanks a function
@@ -311,9 +311,11 @@ tree, off the UI thread.
 `x: i32`, not the whole signature line. Two rough edges for now:
 `if` / `ic` / `il` include the body's braces in brace languages
 (Python's brace-less suite is clean); and `aa` and `ia` resolve
-identically (the trailing comma isn't captured yet). Visual-mode
-selection (`vaf`) and the comment object (`aC` / `iC`) are follow-up
-slices.
+identically (the trailing comma isn't captured yet). The comment
+object scans line comments (`//`, `#`); block comments (`/* */`) and
+trailing comments are a follow-up. The remaining cross-cutting
+follow-up is Visual-mode text objects (`vaf` / `vaC` / …) — which will
+apply to *every* object uniformly, not just these.
 
 **Why these keys.** `t` (tag) is already a classic object, so
 class/type takes `ac`/`ic` (the nvim-treesitter convention) rather

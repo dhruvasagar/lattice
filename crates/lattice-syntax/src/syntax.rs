@@ -1611,7 +1611,7 @@ const MAX: i32 = 10;\n\
         // apply with the `SyntaxSnapshot` as `scope_resolver`; the
         // resolved byte span feeds the delete operator.
         use lattice_grammar::{
-            Args, CancellationToken, CommandInvocation, Target, execute_with_scope_resolver,
+            Args, CancellationToken, CommandInvocation, Target, TextObjectEnv, execute_with_env,
         };
 
         let src = "fn keep() {}\nfn drop_me() {\n    let x = 1;\n}\nfn also_keep() {}\n";
@@ -1627,15 +1627,18 @@ const MAX: i32 = 10;\n\
         let cursor = lattice_protocol::Position::new(2, 8);
         let inv = CommandInvocation::of(builtins.delete.0)
             .with_target(Target::TextObject(ids.around_function, Args::None));
-        execute_with_scope_resolver(
+        execute_with_env(
             &registry,
             &mut doc,
             lattice_core::BufferId(0),
             cursor,
             inv,
             &CancellationToken::never(),
-            // `&s.inner` is the SyntaxSnapshot; coerces to &dyn ScopeResolver.
-            Some(&s.inner),
+            TextObjectEnv {
+                // `&s.inner` is the SyntaxSnapshot; coerces to &dyn ScopeResolver.
+                scope_resolver: Some(&s.inner),
+                comment_syntax: None,
+            },
         )
         .expect("daf dispatch ok");
 

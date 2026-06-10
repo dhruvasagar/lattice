@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use lattice_core::{Buffer, CoreError, Document};
 use lattice_grammar::{
-    CancellationToken, CommandInvocation, CommandRegistry, Effect, execute_with_scope_resolver,
+    CancellationToken, CommandInvocation, CommandRegistry, Effect, execute_with_env,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
@@ -114,12 +114,12 @@ pub(crate) enum ActorMsg {
         invocation: CommandInvocation,
         cursor: Position,
         cancel: CancellationToken,
-        /// N.1.4b (2026-06-10): optional tree-sitter scope resolver
-        /// (the active document's `Arc<SyntaxSnapshot>`) for
-        /// text-object resolution (af/ac/aa/al). `None` for buffers
-        /// with no syntax tree. Crosses the channel as one Arc bump;
-        /// the snapshot is immutable so the actor reads it wait-free.
-        scope_resolver: Option<crate::document::ScopeResolverHandle>,
+        /// N.1.4b / N.1.6 (2026-06-10): the per-dispatch text-object
+        /// env — the tree-sitter `scope_resolver` (af/ac/aa/al) + the
+        /// `comment_syntax` (aC/iC). Empty for buffers with no syntax /
+        /// no leader. Crosses the channel as Arc bumps; the snapshot is
+        /// immutable so the actor reads it wait-free.
+        env: crate::document::DispatchEnv,
         reply: oneshot::Sender<Result<Effect, RuntimeError>>,
     },
 }
@@ -217,28 +217,32 @@ impl DocumentActor {
                 invocation,
                 cursor,
                 cancel,
-                scope_resolver,
+                env,
                 reply,
             } => {
-                // N.1.4b (2026-06-10): drop the `+ Send + Sync` auto
-                // traits the channel required down to the bare
-                // `&dyn ScopeResolver` the grammar dispatcher takes.
-                // `None` when the buffer has no syntax tree -- the
-                // structural text objects (af/ac/aa/al) then resolve
-                // nothing; the classic objects never read it.
-                let resolver: Option<&dyn lattice_grammar::ScopeResolver> =
-                    match scope_resolver.as_deref() {
+                // N.1.4b / N.1.6 (2026-06-10): borrow the owned env's Arc
+                // handles into the grammar's `TextObjectEnv`, dropping the
+                // `+ Send + Sync` auto traits the channel required. Empty
+                // fields when the buffer has no syntax / no comment leader
+                // -- the structural + comment objects then resolve nothing;
+                // the classic objects never read it.
+                let scope_resolver: Option<&dyn lattice_grammar::ScopeResolver> =
+                    match env.scope_resolver.as_deref() {
                         Some(r) => Some(r),
                         None => None,
                     };
-                let result = execute_with_scope_resolver(
+                let to_env = lattice_grammar::TextObjectEnv {
+                    scope_resolver,
+                    comment_syntax: env.comment_syntax.as_deref(),
+                };
+                let result = execute_with_env(
                     &self.registry,
                     &mut self.document,
                     buffer_id,
                     cursor,
                     invocation,
                     &cancel,
-                    resolver,
+                    to_env,
                 )
                 .map_err(RuntimeError::Grammar);
                 self.publish();
@@ -472,11 +476,14 @@ mod tests {
         // and scope_at returns the mock range.
         let resolver: crate::document::ScopeResolverHandle = Arc::new(MockResolver);
         handle
-            .dispatch_with_scope_resolver(
+            .dispatch_with_env(
                 CommandInvocation::of(tobj.0),
                 Position::ZERO,
                 CancellationToken::never(),
-                Some(resolver),
+                crate::document::DispatchEnv {
+                    scope_resolver: Some(resolver),
+                    comment_syntax: None,
+                },
             )
             .await
             .unwrap();

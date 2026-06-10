@@ -41,8 +41,9 @@ owns *when* and *in what order*.
 | **N.1.1** | `create_narrow_view` + NarrowMinorMode + `:narrow {range}` + `:widen`                 | ✅ (core)      |
 | **N.1.2** | `:narrow` from Visual selection / cursor paragraph (no explicit range)                | ✅             |
 | **N.1.3** | The **`zn` narrow operator** (operator-pending; composes with any motion/text-object) | ✅             |
-| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`)     | ✅ (a–d; comment `aC`/`iC` deferred) |
+| **N.1.4** | Tree-sitter text objects as grammar objects (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`)     | ✅ (a–d)        |
 | **N.1.5** | Stacked narrow — transparent one-hop invariant + text objects in multibuffer views   | ✅              |
+| **N.1.6** | Comment text object (`aC`/`iC`) — commentstring-driven + `TextObjectEnv` seam        | ✅              |
 
 ---
 
@@ -417,6 +418,40 @@ re-registration is needed; only the handler's source-resolution step is added.
   updates on the next recompose tick (M.4).
 - `narrow_depth_is_always_one` — 3× `znaf`; every resulting narrow view has a
   single `RopeDocumentHandle` source.
+
+---
+
+### N.1.6 — Comment text object (`aC` / `iC`) + `TextObjectEnv` seam
+
+**✅ landed 2026-06-10.** The comment object is the exception in the text-object
+catalog: **commentstring-driven, NOT tree-sitter** (works for any language with a
+known line-comment leader, even with no parse tree), so it lives in
+`lattice-grammar` with the classic objects, not in `lattice-syntax`.
+
+- **Seam (Dhruva: "go with (C)").** The dispatch seam now threads ONE
+  `TextObjectEnv { scope_resolver, comment_syntax }` instead of the lone N.1.4
+  `scope_resolver` param — the cleaner long-term fit over a widening parameter
+  list. `execute_with_scope_resolver → execute_with_env`;
+  `Document::dispatch_with_scope_resolver → dispatch_with_env(DispatchEnv)` (owned,
+  Arc-carried across the actor channel); the host's `dispatch_blocking` builds the
+  env (snapshot + `Lang::comment_syntax`). `TextObjectContext` gains a
+  `comment_syntax` field; the existing `scope_resolver` reads are untouched.
+- **Data + source.** `CommentSyntax { line, block }` (lattice-grammar);
+  `Lang::comment_syntax()` (lattice-syntax) supplies per-language defaults
+  (rust/js `//`, python `#`; markdown/plain none). A user-overridable
+  `commentstring` option is a follow-up.
+- **Objects (lattice-grammar builtins).** `aC` = the contiguous run of full
+  comment lines, markers included; `iC` = the comment text with the first line's
+  leader stripped. No leader / cursor not on a comment line → empty range →
+  operator no-op. Bound via the op-pending table on the capital-`C` chord.
+- **Tests.** `comment_object_around_keeps_markers_inner_strips_leader`,
+  `comment_object_no_leader_is_a_noop` (grammar). The `TextObjectEnv` refactor is
+  covered by the renamed N.1.4b/N.1.5 wire tests.
+
+**v1 limits (documented):** line comments only (`/* */` block + trailing comments
+deferred); multi-line `iC` includes interior leaders; no comment objects inside
+multibuffer views yet (the env's `comment_syntax` is `None` there); no Visual
+binding (a cross-cutting follow-up for all objects).
 
 ---
 

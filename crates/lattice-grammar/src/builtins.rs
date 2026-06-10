@@ -532,6 +532,25 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    // N.1.6: comment text objects (commentstring-driven; the leader is
+    // injected per-buffer via `TextObjectContext.comment_syntax`).
+    let inner_comment = registry.register_text_object(
+        "text-object:inner-comment",
+        "Inner comment -- the comment text with the first line's leader stripped (`iC`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_comment),
+            args_schema: vec![],
+        },
+    );
+    let around_comment = registry.register_text_object(
+        "text-object:around-comment",
+        "A comment -- the contiguous run of comment lines including the markers (`aC`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_comment),
+            args_schema: vec![],
+        },
+    );
+
     Builtins {
         word_forward,
         word_backward,
@@ -588,6 +607,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         around_big_word,
         inner_angle,
         around_angle,
+        inner_comment,
+        around_comment,
     }
 }
 
@@ -648,6 +669,8 @@ pub struct Builtins {
     pub around_big_word: TextObjectId,
     pub inner_angle: TextObjectId,
     pub around_angle: TextObjectId,
+    pub inner_comment: TextObjectId,
+    pub around_comment: TextObjectId,
 }
 
 // ---- Motion: word-forward ----
@@ -1484,6 +1507,85 @@ fn text_object_around_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, C
     }
 }
 
+// ---- N.1.6: comment text objects (aC / iC) ----
+//
+// Commentstring-driven, NOT tree-sitter (works for any language with a
+// known line-comment leader, even without a parse tree). `aC` = the
+// contiguous run of full comment lines (markers included); `iC` = the
+// comment text (the first line's leader stripped). The leader comes from
+// `ctx.comment_syntax.line`, populated by the host from the active
+// buffer's language. No leader (plain buffer / unknown language) or a
+// cursor not on a comment line -> empty range -> the paired operator
+// no-ops, matching vim's "daC with no comment does nothing".
+
+/// True when `line`'s first non-whitespace run starts with `leader`.
+/// `///` and `//!` match because they begin with `//`.
+fn line_is_comment(buffer: &lattice_core::Buffer, line: u32, leader: &str) -> bool {
+    buffer
+        .line(line)
+        .map(|t| t.trim_start().starts_with(leader))
+        .unwrap_or(false)
+}
+
+/// Byte offset on `line` of the comment CONTENT: just past the leader
+/// and one optional following space. `    // foo` (leader `//`) returns
+/// the offset of `foo`.
+fn comment_content_start(buffer: &lattice_core::Buffer, line: u32, leader: &str) -> u32 {
+    let Some(text) = buffer.line(line) else {
+        return 0;
+    };
+    let indent = text.len() - text.trim_start().len();
+    let mut off = indent + leader.len();
+    if text.as_bytes().get(off) == Some(&b' ') {
+        off += 1;
+    }
+    off.min(text.len()) as u32
+}
+
+/// Shared scan for `aC` / `iC`: expand over the contiguous run of full
+/// comment lines containing the cursor. `aC` (`inner = false`) starts at
+/// column 0; `iC` (`inner = true`) starts after the first line's leader.
+/// Both end at the last comment line's content end (matching the
+/// paragraph objects' linewise-ish shape).
+fn comment_text_object(ctx: &TextObjectContext, inner: bool) -> Result<ProtoRange, CommandError> {
+    let Some(leader) = ctx.comment_syntax.and_then(|c| c.line.as_deref()) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let line_count = ctx.buffer.line_count();
+    if leader.is_empty() || line_count == 0 {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    }
+    let cursor_line = ctx.at.line.min(line_count - 1);
+    if !line_is_comment(ctx.buffer, cursor_line, leader) {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    }
+    let mut start = cursor_line;
+    while start > 0 && line_is_comment(ctx.buffer, start - 1, leader) {
+        start -= 1;
+    }
+    let mut end = cursor_line;
+    while end + 1 < line_count && line_is_comment(ctx.buffer, end + 1, leader) {
+        end += 1;
+    }
+    let start_byte = if inner {
+        comment_content_start(ctx.buffer, start, leader)
+    } else {
+        0
+    };
+    Ok(ProtoRange::new(
+        Position::new(start, start_byte),
+        Position::new(end, line_byte_len(ctx.buffer, end)),
+    ))
+}
+
+fn text_object_around_comment(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    comment_text_object(ctx, false)
+}
+
+fn text_object_inner_comment(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    comment_text_object(ctx, true)
+}
+
 // ---- Text objects ----
 //
 // Each text object computes a `ProtoRange` covering the relevant span
@@ -2137,6 +2239,105 @@ mod tests {
         let b = populate(&mut r);
         let d = Document::from_text(text);
         (r, b, d)
+    }
+
+    #[test]
+    fn comment_object_around_keeps_markers_inner_strips_leader() {
+        use crate::dispatcher::execute_with_env;
+        use crate::registry::{CommentSyntax, TextObjectEnv};
+        // line 1 `    // first`, line 2 `    // second` form one block.
+        let src = "fn f() {\n    // first\n    // second\n    let x = 1;\n}\n";
+        let (registry, b, mut doc) = fixture(src);
+        let cs = CommentSyntax {
+            line: Some("//".to_string()),
+            block: None,
+        };
+        let cancel = CancellationToken::never();
+        let cursor = Position::new(1, 8); // on `// first`
+        // The yank operator yields `Effect::Many([Yank-unnamed,
+        // Yank-numbered])`; pull the content out of whichever shape.
+        fn yanked(eff: Effect) -> String {
+            match eff {
+                Effect::Yank { content, .. } => content,
+                Effect::Many(effs) => effs
+                    .into_iter()
+                    .find_map(|e| match e {
+                        Effect::Yank { content, .. } => Some(content),
+                        _ => None,
+                    })
+                    .expect("a Yank inside Many"),
+                other => panic!("expected a Yank, got {other:?}"),
+            }
+        }
+
+        // yaC -> the whole comment block (lines 1-2), markers included.
+        let inv = CommandInvocation::of(b.yank.0)
+            .with_target(Target::TextObject(b.around_comment, crate::args::Args::None));
+        let eff = execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &cancel,
+            TextObjectEnv {
+                scope_resolver: None,
+                comment_syntax: Some(&cs),
+            },
+        )
+        .unwrap();
+        let content = yanked(eff);
+        assert!(
+            content.contains("// first") && content.contains("// second"),
+            "aC yanks the comment block including markers, got {content:?}"
+        );
+
+        // yiC -> the comment text; the first line's leader is stripped.
+        let inv = CommandInvocation::of(b.yank.0)
+            .with_target(Target::TextObject(b.inner_comment, crate::args::Args::None));
+        let eff = execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &cancel,
+            TextObjectEnv {
+                scope_resolver: None,
+                comment_syntax: Some(&cs),
+            },
+        )
+        .unwrap();
+        let content = yanked(eff);
+        assert!(
+            content.starts_with("first"),
+            "iC strips the first line's leader (no `//`), got {content:?}"
+        );
+    }
+
+    #[test]
+    fn comment_object_no_leader_is_a_noop() {
+        // No comment_syntax in the env -> empty range -> the operator
+        // no-ops (vim's `daC` with no comment does nothing).
+        use crate::dispatcher::execute_with_env;
+        use crate::registry::TextObjectEnv;
+        let src = "// a comment\n";
+        let (registry, b, mut doc) = fixture(src);
+        let cancel = CancellationToken::never();
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.around_comment, crate::args::Args::None));
+        let eff = execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 3),
+            inv,
+            &cancel,
+            TextObjectEnv::default(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None), "no leader -> no-op");
+        assert_eq!(doc.text(), src, "document unchanged");
     }
 
     #[test]

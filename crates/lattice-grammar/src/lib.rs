@@ -42,7 +42,7 @@ pub use crate::app_effect::{AppEffect, PaneDirection, ScrollPos, ViewportPos};
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
-pub use crate::dispatcher::{execute, execute_motion_only, execute_with_scope_resolver};
+pub use crate::dispatcher::{execute, execute_motion_only, execute_with_env};
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::introspect::{
@@ -53,9 +53,9 @@ pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
-    ActionContext, ActionSpec, CommandRegistration, CommandRegistry, ExCommandContext,
-    ExCommandSpec, MotionSpec, OperatorContext, OperatorSpec, ScopeResolver, SurfaceForm,
-    TextObjectSpec,
+    ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax,
+    ExCommandContext, ExCommandSpec, MotionSpec, OperatorContext, OperatorSpec, ScopeResolver,
+    SurfaceForm, TextObjectEnv, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

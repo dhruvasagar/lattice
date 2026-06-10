@@ -70,8 +70,7 @@ use lattice_cells::virtual_rows::{
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
 use lattice_grammar::{
-    CancellationToken, CommandInvocation, CommandKind, CommandRegistry, Effect,
-    execute_with_scope_resolver,
+    CancellationToken, CommandInvocation, CommandKind, CommandRegistry, Effect, execute_with_env,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -1609,16 +1608,22 @@ impl Document for MultibufferDocumentHandle {
         } else {
             None
         };
-        let result = execute_with_scope_resolver(
+        let result = execute_with_env(
             &registry,
             &mut scratch,
             buffer_id,
             cursor,
             invocation,
             &cancel,
-            composed_resolver
-                .as_ref()
-                .map(|r| r as &dyn lattice_grammar::ScopeResolver),
+            lattice_grammar::TextObjectEnv {
+                scope_resolver: composed_resolver
+                    .as_ref()
+                    .map(|r| r as &dyn lattice_grammar::ScopeResolver),
+                // Comment objects inside multibuffer views would resolve
+                // the per-excerpt source's comment leader -- deferred (a
+                // follow-up, like N.1.5's scope resolver was). v1: None.
+                comment_syntax: None,
+            },
         )
         .map_err(RuntimeError::Grammar);
         Pending::ready(result)

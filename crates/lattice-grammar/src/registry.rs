@@ -184,6 +184,35 @@ pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 }
 
+/// N.1.6 (2026-06-10): per-buffer comment-leader descriptor for the
+/// comment text objects (`aC` / `iC`). Commentstring-driven (NOT
+/// tree-sitter) so it works for any language with a known leader, even
+/// without a parse tree. The host populates it from the active buffer's
+/// language (`Lang::comment_syntax`); `None` (or `line: None`) means the
+/// comment objects resolve nothing (graceful operator no-op).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommentSyntax {
+    /// Line-comment leader, e.g. `"//"` (rust / js) or `"#"` (python).
+    pub line: Option<String>,
+    /// Block-comment delimiters, e.g. `("/*", "*/")`. Reserved for a
+    /// follow-up; v1 comment objects use `line` only.
+    pub block: Option<(String, String)>,
+}
+
+/// N.1.6 (2026-06-10): the per-dispatch environment threaded to text
+/// objects. Bundles the inputs a text object's `apply` may read — the
+/// tree-sitter `scope_resolver` (`af`/`ac`, N.1.4) and the
+/// `comment_syntax` (`aC`/`iC`) — into ONE value so the dispatch seam
+/// carries a single env rather than a widening parameter list (the
+/// long-term-fit choice over parallel params). `Copy` (both fields are
+/// borrows); `default()` is the no-input case — the classic objects
+/// (`iw`/`ap`/`i{`) ignore the env entirely.
+#[derive(Clone, Copy, Default)]
+pub struct TextObjectEnv<'a> {
+    pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    pub comment_syntax: Option<&'a CommentSyntax>,
+}
+
 /// Context passed to a text-object's evaluator.
 pub struct TextObjectContext<'a> {
     pub buffer: &'a Buffer,
@@ -201,6 +230,11 @@ pub struct TextObjectContext<'a> {
     /// the structural objects then resolve nothing; the classic
     /// objects (`iw`, `ap`, `i{`) never read it.
     pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    /// N.1.6: comment-leader descriptor for the comment objects
+    /// (`aC` / `iC`), injected by the host from the active buffer's
+    /// language. `None` (or `line: None`) ⇒ the comment objects resolve
+    /// nothing. Only `aC` / `iC` read it.
+    pub comment_syntax: Option<&'a CommentSyntax>,
 }
 
 type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;

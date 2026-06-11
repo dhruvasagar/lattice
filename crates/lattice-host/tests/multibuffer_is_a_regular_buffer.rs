@@ -525,23 +525,33 @@ fn virtual_row_matrix_carries_excerpt_headers() {
     let (mut editor, view_id) = boot_with_multibuffer();
     activate_pane(&mut editor, view_id);
 
-    // After create_multibuffer_view, the header provider
+    // After create_multibuffer_view, the excerpt-header provider
     // should be registered against view_id. Confirm via the
     // public snapshot API.
+    //
+    // M.6.5 (2026-06-08): create_multibuffer_view also registers a
+    // view-status headerline provider, so there are two providers
+    // against the view now. Select the K.4.6 excerpt-header provider
+    // by its deterministic id rather than asserting a single
+    // registration.
     let providers = editor.virtual_row_providers.snapshot(view_id);
     assert_eq!(
         providers.len(),
-        1,
-        "create_multibuffer_view should have registered \
-         exactly one virtual-row provider (the multibuffer \
-         header provider) — got {}",
+        2,
+        "create_multibuffer_view should register the excerpt-header \
+         provider + the view-status headerline provider — got {}",
         providers.len()
     );
+    let header_id = lattice_multibuffer::multibuffer_excerpt_header_provider_id(view_id);
+    let header_provider = providers
+        .iter()
+        .find(|p| p.id() == header_id)
+        .expect("the excerpt-header provider must be registered against the view");
 
     // The provider's collect() emits one VirtualRow per excerpt.
     // The test's synthetic multibuffer has two excerpts so
     // exactly two header rows should land in the matrix.
-    let rows = providers[0].collect();
+    let rows = header_provider.collect();
     assert_eq!(
         rows.len(),
         2,

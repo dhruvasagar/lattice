@@ -23,21 +23,27 @@ Triggered by a snippet-mode review (2026-06-11). Two findings drove it:
 
 ## Slices
 
-### SN.1 — green the snippet test harness 🗒 (do first; part of "triage reds")
+### SN.1 — green the snippet test harness ✅ (done; part of "triage reds")
 
-The 8 failing `snippet_*` tests (`input::tests`, `keymap_insert::tests`) are
-**test-harness staleness, not a production regression**: `push_snippet_layer_via_k24`
-pushes the snippet layer but `dispatch_insert(&h, …, &[])` supplies no
-active-mode context, so under K.1.c the layer is filtered out and `Tab` falls
-through to base insert (`insert_tab`) instead of `snippet_next_placeholder`.
-Production is fine — `sync_keymap_overlays` activates via `activate_minor`.
+The failing `snippet_*` tests (`input::tests`, `keymap_insert::tests`) were
+**test-harness staleness, not a production regression**. Root cause: the test
+helpers minted `ActionIds` from one `CommandRegistry` but built the snippet
+mode-keymap layer from a *second*, throwaway registry — and `CommandId`s are
+only stable *within* one registry instance, so the layer resolved
+`action:snippet-next-placeholder` to a different id than the assertions
+expected. `Tab` therefore fell through to base insert.
 
-- Drive the snippet tests through the real activation context (mark the
-  snippet mode active for the test buffer, mirroring `sync_keymap_overlays`),
-  or assert against the active-mode-scoped dispatch the production path uses.
-- **Independent of the rest of this plan** — unblocks the red immediately.
-- Artifacts: tests (the 8, re-greened); no bench / design / error-handling
-  surface (harness only).
+- Fix: keep the registry that minted the shared `ActionIds` alive
+  (`shared_init()` now returns `(CommandRegistry, …)`), and translate the
+  snippet layer against that *same* registry via
+  `translate_mode_keymaps(h, &mr, shared_registry())`. Production was always
+  fine — `sync_keymap_overlays` activates via `activate_minor` against the live
+  registry.
+- **Independent of the rest of this plan** — unblocked the red immediately. All
+  27 `lattice-ui-tui` snippet tests pass; the only remaining `lattice-ui-tui`
+  reds are the documented out-of-scope clusters below (tutor ×2, arg-slot ×3).
+- Artifacts: tests (the snippet cluster, re-greened); no bench / design /
+  error-handling surface (harness only).
 
 ### EF.1 — implement `EventFilter`'s reserved fields 🗒 (generic foundation)
 
@@ -126,7 +132,7 @@ should need zero `Editor::` methods + zero host registrations).
 	EF.1 ─┬─> MA.1 ──> MA.2 ─┐
 	      │                  ├─> SN.3
 	SN.2 ─┴──────────────────┘
-	SN.1  (independent — land first to green the reds)
+	SN.1 ✅ (independent — landed first to green the reds)
 
 ## Out of scope (separate triage)
 

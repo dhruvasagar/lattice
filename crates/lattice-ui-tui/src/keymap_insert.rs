@@ -29,15 +29,31 @@ mod tests {
     /// Process-wide shared `ActionIds`. Built once on first
     /// access. The IDs are stable for the duration of a test
     /// run so cross-test handle-and-id comparisons hold.
-    fn shared_actions() -> &'static ActionIds {
+    /// Process-wide shared `(registry, actions)`, built once. The
+    /// registry is kept (not discarded) so the snippet mode-keymap
+    /// layer can be translated against the SAME registry that minted
+    /// `shared_actions()` -- `CommandId`s are only stable *within* one
+    /// registry instance, so a layer built from a second registry
+    /// would resolve `action:snippet-next-placeholder` to a different
+    /// id than the test asserts.
+    fn shared_init() -> &'static (lattice_grammar::CommandRegistry, ActionIds) {
         use std::sync::OnceLock;
-        static A: OnceLock<ActionIds> = OnceLock::new();
-        A.get_or_init(|| {
+        static INIT: OnceLock<(lattice_grammar::CommandRegistry, ActionIds)> = OnceLock::new();
+        INIT.get_or_init(|| {
             let mut r = lattice_grammar::CommandRegistry::new();
             let b = lattice_grammar::builtins::populate(&mut r);
             let _ = lattice_grammar::ex_commands::populate(&mut r);
-            crate::actions::populate(&mut r, &b)
+            let a = crate::actions::populate(&mut r, &b);
+            (r, a)
         })
+    }
+
+    fn shared_actions() -> &'static ActionIds {
+        &shared_init().1
+    }
+
+    fn shared_registry() -> &'static lattice_grammar::CommandRegistry {
+        &shared_init().0
     }
 
     fn populated_handle() -> KeymapHandle {
@@ -59,14 +75,13 @@ mod tests {
     /// Push the `active-snippet-mode` layer via the K.2.4 translation path
     /// so the test uses the same mechanism as editor boot.
     fn push_snippet_layer_via_k24(h: &KeymapHandle) {
-        let mut r = lattice_grammar::CommandRegistry::new();
-        let b = lattice_grammar::builtins::populate(&mut r);
-        let _ = lattice_grammar::ex_commands::populate(&mut r);
-        crate::actions::populate(&mut r, &b);
+        // Translate the snippet mode keymap against the SHARED registry
+        // (not a fresh one) so its bindings resolve `action:snippet-*`
+        // to the same `CommandId`s `shared_actions()` exposes.
         let mut mr = lattice_mode::ModeRegistry::new();
         mr.register(lattice_snippet::modes::SnippetActiveMode)
             .expect("register active-snippet-mode");
-        lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, &r);
+        lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, shared_registry());
     }
 
     fn populated_handle_with_snippet() -> KeymapHandle {

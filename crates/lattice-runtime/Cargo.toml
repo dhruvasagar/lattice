@@ -10,6 +10,13 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-cells = { path = "../lattice-cells" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
+# EF.1: `EventFilter.major_modes` is keyed by `ModeId`, which lives
+# in `lattice-keymap` (interned-string mode identity; keymap has no
+# upstream dep on the runtime, so this adds no cycle).
+lattice-keymap = { path = "../lattice-keymap" }
+# EF.1: `EventFilter.path_glob` compiles its patterns through
+# `glob::compile_glob_set`; `globset` runs N patterns in one pass.
+globset = { workspace = true }
 tokio = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
@@ -35,6 +42,13 @@ criterion = { workspace = true }
 
 [[bench]]
 name = "actor"
+harness = false
+
+# EF.1: publish dispatch stays O(subscribers-of-kind) -- the
+# reserved filter fields (path_glob / major_modes / predicate)
+# add a per-candidate constant check, they do not widen the scan.
+[[bench]]
+name = "event_filter"
 harness = false
 
 [lints]

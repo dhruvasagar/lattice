@@ -137,26 +137,10 @@ impl WatcherIgnoreMatcher {
                 ),
             }
         }
-        let mut gb = globset::GlobSetBuilder::new();
-        for pat in DEFAULT_EXCLUDE_GLOBS {
-            match globset::Glob::new(pat) {
-                Ok(g) => {
-                    gb.add(g);
-                }
-                Err(e) => tracing::warn!(
-                    pattern = pat,
-                    error = %e,
-                    "lsp_watcher: default exclude glob parse failed (skipping)"
-                ),
-            }
-        }
-        let defaults = gb.build().unwrap_or_else(|e| {
-            tracing::warn!(
-                error = %e,
-                "lsp_watcher: default GlobSet build failed (falling back to empty set)"
-            );
-            globset::GlobSet::empty()
-        });
+        // EF.1: one shared parse-skip-build policy (warn + skip a
+        // bad pattern, empty-set fallback on build failure) instead
+        // of a hand-rolled loop here.
+        let defaults = lattice_runtime::compile_glob_set(DEFAULT_EXCLUDE_GLOBS.iter().copied());
         Self { per_root, defaults }
     }
 

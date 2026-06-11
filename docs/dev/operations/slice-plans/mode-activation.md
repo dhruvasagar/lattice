@@ -45,20 +45,35 @@ expected. `Tab` therefore fell through to base insert.
 - Artifacts: tests (the snippet cluster, re-greened); no bench / design /
   error-handling surface (harness only).
 
-### EF.1 — implement `EventFilter`'s reserved fields 🗒 (generic foundation)
+### EF.1 — implement `EventFilter`'s reserved fields ✅ (generic foundation)
 
-- Add `path_glob: Option<GlobSet>`, `major_modes: Option<Vec<ModeId>>`,
-  `predicate: Option<Arc<dyn Fn(&Event) -> bool + Send + Sync>>` to
-  `lattice_runtime::EventFilter`; AND-combine, checked on the already-`kinds`-bucketed
-  candidates (publish scan must not widen — bench gate).
-- Extract / reuse **one** glob util (lattice-lsp's file-watcher already
-  globs; consolidate rather than add a third). Shared by `path_glob` and the
-  MA.2 resolver.
+- ✅ Added `path_glob: Option<GlobSet>`, `major_modes: Option<Vec<ModeId>>`,
+  `predicate: Option<EventPredicate>` (`= Arc<dyn Fn(&Event) -> bool + Send +
+  Sync>`) to `lattice_runtime::EventFilter`. AND-combined via a per-`Subscription`
+  `ExtraFilter` checked at publish time on the already-`kinds`-bucketed
+  candidates (`snapshot_bucket` / `queue_invocations` skip non-matching subs).
+  Builder methods `with_path_glob` / `with_major_modes` / `with_predicate`;
+  `kind`/`kinds`/`any` unchanged so all existing callers are source-compatible.
+- ✅ `major_modes` matching reads `event_major_mode(&Event)`, which returns
+  `None` for every current variant — MA.1's `MajorEntered { major }` adds the
+  arm. Until then a `major_modes`-constrained filter matches nothing (correct
+  "only inside these majors" semantics). `event_path` backs `path_glob`.
+- ✅ One shared glob util: `lattice_runtime::glob::compile_glob_set`
+  (re-exported at crate root). `lattice-host::lsp_watcher` migrated to it
+  (removed its hand-rolled parse-skip-build loop); reused by `path_glob` and
+  available to the MA.2 resolver. `lattice-lsp::file_watcher` keeps its
+  index-aligned per-watcher matcher (different shape — not a third generic copy).
+- **Locking note (audit M1):** the extra filter (incl. `predicate`) is
+  evaluated under the bus mutex during the snapshot phase; `tx.send` still runs
+  lock-dropped. `EventPredicate` rustdoc documents the non-reentrancy contract.
 - Depends on: nothing. Useful beyond modes (any filtered subscription).
-- Artifacts: design (§7.4 + EventFilter rustdoc) · bench (publish dispatch
-  stays O(subscribers-of-kind), filter fields don't widen it) · tests
-  (each field + AND-combination + `None`-is-unconstrained) · graceful (bad
-  glob → `tracing::warn!` + skip the subscription, never panic).
+- Artifacts: ✅ design (§7.4 contract + EventFilter / EventPredicate rustdoc) ·
+  ✅ bench (`benches/event_filter.rs`: publish stays O(subscribers-of-kind),
+  `path_glob` adds a per-candidate constant — verified ~linear in subscriber
+  count) · ✅ tests (each field + AND-combination + `None`-unconstrained +
+  pathless-event rejection + invocation-target gating + glob util good/bad/empty)
+  · ✅ graceful (bad glob → `tracing::warn!` + skip, build failure → empty set,
+  never panic).
 
 ### MA.1 — `Mode::subscriptions()` + registration wiring + filterable lifecycle events 🗒
 
@@ -129,9 +144,9 @@ should need zero `Editor::` methods + zero host registrations).
 
 ## Dependency graph
 
-	EF.1 ─┬─> MA.1 ──> MA.2 ─┐
-	      │                  ├─> SN.3
-	SN.2 ─┴──────────────────┘
+	EF.1 ✅─┬─> MA.1 ──> MA.2 ─┐
+	        │                  ├─> SN.3
+	SN.2 ───┴──────────────────┘
 	SN.1 ✅ (independent — landed first to green the reds)
 
 ## Out of scope (separate triage)

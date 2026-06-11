@@ -8,9 +8,14 @@
 //!
 //! ## v1 scope
 //!
-//! - Filters by [`lattice_protocol::EventKind`] only. Document
-//!   pattern, major-mode, and predicate filters are declared in
-//!   the design doc and stay TODO until callers need them.
+//! - Filters by [`lattice_protocol::EventKind`] for bucketing, then
+//!   AND-combines the reserved [`EventFilter`] fields (`path_glob`,
+//!   `major_modes`, `predicate`) at publish time on the candidates
+//!   the kind bucket already selected (EF.1). Mode activation is the
+//!   caller that needed them (mode-architecture.md §7.4); the checks
+//!   are per-candidate constants, so dispatch stays
+//!   O(subscribers-of-kind) -- the filter fields never widen the
+//!   publish scan.
 //! - Sinks are [`SubscriptionTarget::Channel`] (an `mpsc::Sender`)
 //!   or [`SubscriptionTarget::Invocation`] (a `CommandInvocation`
 //!   the bus runs through the document actor's dispatch when the
@@ -45,11 +50,14 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use globset::GlobSet;
 use lattice_grammar::CommandInvocation;
+use lattice_keymap::ModeId;
 use lattice_protocol::event_registry::Event as TypedEvent;
 use lattice_protocol::{Event, EventKind};
 use tokio::sync::mpsc;
@@ -75,15 +83,62 @@ impl SubscriptionId {
     }
 }
 
-/// Filter applied at publish time. v1 honors `kinds` only; the
-/// other fields are reserved (the design declares them in §5.10).
-#[derive(Debug, Default, Clone)]
+/// A caller-supplied escape-hatch predicate (the `predicate` field
+/// of [`EventFilter`]). Returns `true` to keep the event.
+///
+/// **Contract (locking discipline, audit M1).** The predicate is
+/// evaluated *under the bus mutex* during the publish snapshot
+/// phase, before the lock is dropped for delivery. It must be cheap
+/// and MUST NOT re-enter the bus (no `subscribe` / `publish` /
+/// `subscription_count` from inside it) -- doing so would deadlock
+/// on the inner mutex. Modes prefer the declarative `path_glob` /
+/// `major_modes` fields (mode-architecture.md §7.4); `predicate` is
+/// for the rare case those can't express (`init.rs` custom rules).
+pub type EventPredicate = Arc<dyn Fn(&Event) -> bool + Send + Sync>;
+
+/// Filter applied at publish time. `kinds` buckets the
+/// subscription; the remaining fields (EF.1) AND-combine on top --
+/// every `Some` field must match for the event to be delivered, a
+/// `None` field is unconstrained. Mode activation
+/// (mode-architecture.md §7.4) is the caller these reserved fields
+/// were declared for.
+#[derive(Default, Clone)]
 pub struct EventFilter {
     /// Kinds this subscription cares about. `None` means "all
-    /// kinds" -- the wildcard. v1 callers should always pass
+    /// kinds" -- the wildcard. Callers should always pass
     /// `Some(...)` to keep dispatch indexed; the wildcard is
     /// supported for one-off debugging / introspection sinks.
     pub kinds: Option<Vec<EventKind>>,
+    /// Restrict to events whose path matches this set (e.g.
+    /// `**/*.rs` for a Rust major-mode resolver). `None` is
+    /// unconstrained. Events with no path (e.g. `BeforeQuit`,
+    /// scratch-buffer opens) never match a `Some` glob. Build the
+    /// set via [`crate::compile_glob_set`].
+    pub path_glob: Option<GlobSet>,
+    /// Restrict to events whose buffer is in one of these major
+    /// modes -- the minor-mode allowlist of §7.4. `None` is
+    /// unconstrained. No `Event` variant carries a major mode yet
+    /// (MA.1 lands `MajorEntered { major }`); until then a `Some`
+    /// allowlist matches nothing, which is the correct semantics
+    /// for "only fire inside these majors."
+    pub major_modes: Option<Vec<ModeId>>,
+    /// Escape-hatch predicate. `None` is unconstrained. See
+    /// [`EventPredicate`] for the locking contract -- it runs under
+    /// the bus mutex and must not re-enter the bus.
+    pub predicate: Option<EventPredicate>,
+}
+
+impl std::fmt::Debug for EventFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `predicate` is an opaque closure; report only its
+        // presence so the rest of the filter stays inspectable.
+        f.debug_struct("EventFilter")
+            .field("kinds", &self.kinds)
+            .field("path_glob", &self.path_glob)
+            .field("major_modes", &self.major_modes)
+            .field("predicate", &self.predicate.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 impl EventFilter {
@@ -91,17 +146,93 @@ impl EventFilter {
     pub fn kind(k: EventKind) -> Self {
         Self {
             kinds: Some(vec![k]),
+            ..Default::default()
         }
     }
 
     /// Convenience: subscribe to a list of kinds.
     pub fn kinds(ks: Vec<EventKind>) -> Self {
-        Self { kinds: Some(ks) }
+        Self {
+            kinds: Some(ks),
+            ..Default::default()
+        }
     }
 
     /// Wildcard: every event.
     pub fn any() -> Self {
-        Self { kinds: None }
+        Self {
+            kinds: None,
+            ..Default::default()
+        }
+    }
+
+    /// Builder: AND a path-glob constraint onto this filter.
+    pub fn with_path_glob(mut self, glob: GlobSet) -> Self {
+        self.path_glob = Some(glob);
+        self
+    }
+
+    /// Builder: AND a major-mode allowlist onto this filter.
+    pub fn with_major_modes(mut self, modes: Vec<ModeId>) -> Self {
+        self.major_modes = Some(modes);
+        self
+    }
+
+    /// Builder: AND an escape-hatch predicate onto this filter. See
+    /// [`EventPredicate`] for the locking contract.
+    pub fn with_predicate(mut self, predicate: EventPredicate) -> Self {
+        self.predicate = Some(predicate);
+        self
+    }
+}
+
+/// The non-`kinds` portion of an [`EventFilter`], stored per
+/// [`Subscription`] so the publish path can AND-check it against the
+/// event after the kind bucket has already selected the candidate.
+/// `kinds` is consumed by bucketing in [`EventBus::subscribe`] and
+/// never re-checked, so it is not carried here.
+#[derive(Clone, Default)]
+struct ExtraFilter {
+    path_glob: Option<GlobSet>,
+    major_modes: Option<Vec<ModeId>>,
+    predicate: Option<EventPredicate>,
+}
+
+impl std::fmt::Debug for ExtraFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtraFilter")
+            .field("path_glob", &self.path_glob)
+            .field("major_modes", &self.major_modes)
+            .field("predicate", &self.predicate.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+impl ExtraFilter {
+    /// `true` if every constrained field matches `event`. An
+    /// all-`None` filter (the common case) is unconstrained and
+    /// returns `true` immediately. Evaluated under the bus mutex --
+    /// see [`EventPredicate`] for the predicate's non-reentrancy
+    /// contract.
+    fn matches(&self, event: &Event) -> bool {
+        if let Some(glob) = &self.path_glob {
+            match event_path(event) {
+                Some(path) if glob.is_match(path) => {}
+                // No path, or path doesn't match: a path-constrained
+                // filter rejects.
+                _ => return false,
+            }
+        }
+        if let Some(allow) = &self.major_modes {
+            match event_major_mode(event) {
+                Some(major) if allow.iter().any(|id| id.as_str() == major) => {}
+                _ => return false,
+            }
+        }
+        if self.predicate.as_ref().is_some_and(|p| !p(event)) {
+            return false;
+        }
+        true
     }
 }
 
@@ -124,6 +255,10 @@ pub enum SubscriptionTarget {
 struct Subscription {
     id: SubscriptionId,
     target: SubscriptionTarget,
+    /// EF.1: the non-`kinds` filter fields, AND-checked against the
+    /// event at publish time (after the kind bucket selected this
+    /// subscription as a candidate).
+    extra: ExtraFilter,
 }
 
 #[derive(Default)]
@@ -192,20 +327,41 @@ impl EventBus {
     /// Register a sink. Returns the id for [`Self::unsubscribe`].
     pub fn subscribe(&self, filter: EventFilter, target: SubscriptionTarget) -> SubscriptionId {
         let id = SubscriptionId::next();
+        let EventFilter {
+            kinds,
+            path_glob,
+            major_modes,
+            predicate,
+        } = filter;
+        // EF.1: the non-`kinds` fields ride along on each
+        // Subscription so publish can AND-check them. Cloned per
+        // kind bucket for multi-kind subscriptions (Arc / small-Vec
+        // clones; the common all-`None` case is free).
+        let extra = ExtraFilter {
+            path_glob,
+            major_modes,
+            predicate,
+        };
         let mut inner = self.inner.lock().expect("EventBus poisoned");
-        match filter.kinds {
+        match kinds {
             Some(kinds) => {
                 // Multi-kind subscriptions register once per kind
                 // bucket so dispatch never has to re-check the
-                // filter for the kind it already matched on.
+                // *kind* for the bucket it already matched on (the
+                // extra fields are still checked per event).
                 for k in kinds {
                     inner.by_kind.entry(k).or_default().push(Subscription {
                         id,
                         target: target.clone(),
+                        extra: extra.clone(),
                     });
                 }
             }
-            None => inner.wildcard.push(Subscription { id, target }),
+            None => inner.wildcard.push(Subscription {
+                id,
+                target,
+                extra,
+            }),
         }
         id
     }
@@ -256,6 +412,12 @@ impl EventBus {
     /// `publish` call ordering across this caller's subscribers is
     /// still preserved, which is the only guarantee callers have
     /// ever been entitled to.
+    ///
+    /// EF.1: the reserved [`EventFilter`] fields are AND-checked
+    /// during the snapshot phase (under the lock) so only matching
+    /// subscribers are snapshotted / queued. A `predicate` therefore
+    /// runs under the bus mutex -- see [`EventPredicate`] for its
+    /// non-reentrancy contract.
     pub fn publish(&self, event: Event) {
         let kind = event.kind();
 
@@ -282,15 +444,15 @@ impl EventBus {
             } = &mut *inner;
 
             if let Some(bucket) = by_kind.get(&kind) {
-                snapshot_bucket(bucket, &mut channel_targets);
+                snapshot_bucket(bucket, &event, &mut channel_targets);
                 // Invocation targets: queue under the lock so we
                 // don't race with `drain_pending_invocations`.
                 // They never touch the network / channels so the
                 // cost is purely the clone, which is acceptable.
-                queue_invocations(bucket, pending_invocations);
+                queue_invocations(bucket, &event, pending_invocations);
             }
-            snapshot_bucket(wildcard, &mut channel_targets);
-            queue_invocations(wildcard, pending_invocations);
+            snapshot_bucket(wildcard, &event, &mut channel_targets);
+            queue_invocations(wildcard, &event, pending_invocations);
 
             channel_targets
         };
@@ -432,26 +594,79 @@ impl EventBus {
 /// Snapshot the channel senders out of one bucket so the caller
 /// can dispatch with the bus lock dropped. Cheap clone --
 /// `UnboundedSender` is internally `Arc`-backed.
+///
+/// EF.1: a subscription whose [`ExtraFilter`] rejects `event` is
+/// skipped (its `path_glob` / `major_modes` / `predicate` didn't
+/// match). The kind bucket already matched the kind; this is the
+/// per-candidate constant the publish scan adds without widening.
 fn snapshot_bucket(
     bucket: &[Subscription],
+    event: &Event,
     out: &mut Vec<(SubscriptionId, mpsc::UnboundedSender<Event>)>,
 ) {
     for sub in bucket {
+        if !sub.extra.matches(event) {
+            continue;
+        }
         if let SubscriptionTarget::Channel(tx) = &sub.target {
             out.push((sub.id, tx.clone()));
         }
     }
 }
 
-/// Push every Invocation target in `bucket` onto `pending`. Stays
-/// under the bus lock (the caller holds it) because
-/// `pending_invocations` is the same field
+/// Push every Invocation target in `bucket` whose [`ExtraFilter`]
+/// matches `event` onto `pending`. Stays under the bus lock (the
+/// caller holds it) because `pending_invocations` is the same field
 /// [`EventBus::drain_pending_invocations`] empties.
-fn queue_invocations(bucket: &[Subscription], pending: &mut Vec<CommandInvocation>) {
+fn queue_invocations(bucket: &[Subscription], event: &Event, pending: &mut Vec<CommandInvocation>) {
     for sub in bucket {
+        if !sub.extra.matches(event) {
+            continue;
+        }
         if let SubscriptionTarget::Invocation(inv) = &sub.target {
             pending.push(inv.clone());
         }
+    }
+}
+
+/// The filesystem path an event refers to, if any. EF.1's
+/// `path_glob` filter matches against this. Events with no
+/// associated path (`BeforeQuit`, `ModalModeChanged`,
+/// `OptionChanged`, scratch-buffer opens) return `None`.
+fn event_path(event: &Event) -> Option<&Path> {
+    match event {
+        Event::DocumentOpened { path, .. } => path.as_deref(),
+        Event::DocumentChanged { path, .. } => path.as_deref(),
+        Event::BeforeSave { path, .. } => Some(path.as_path()),
+        Event::DocumentSaved { path, .. } => Some(path.as_path()),
+        Event::DocumentClosed { .. }
+        | Event::SelectionsChanged { .. }
+        | Event::ModalModeChanged { .. }
+        | Event::BeforeQuit
+        | Event::OptionChanged { .. } => None,
+    }
+}
+
+/// The major-mode name the event's buffer is in, if the event
+/// carries one. EF.1's `major_modes` filter matches against this.
+///
+/// No `Event` variant carries a major mode yet: MA.1 lands
+/// `MajorEntered { major }` (mode-architecture.md §7.4, slice plan
+/// MA.1) and adds its arm here returning `Some(major)`. Until then
+/// every event is major-mode-agnostic, so a `major_modes`-constrained
+/// filter matches nothing -- the correct semantics for a minor mode
+/// that should only fire inside specific majors.
+fn event_major_mode(event: &Event) -> Option<&str> {
+    match event {
+        Event::DocumentOpened { .. }
+        | Event::DocumentClosed { .. }
+        | Event::BeforeSave { .. }
+        | Event::DocumentSaved { .. }
+        | Event::DocumentChanged { .. }
+        | Event::SelectionsChanged { .. }
+        | Event::ModalModeChanged { .. }
+        | Event::BeforeQuit
+        | Event::OptionChanged { .. } => None,
     }
 }
 
@@ -692,6 +907,155 @@ mod tests {
         bus.publish(make_event());
         assert_eq!(bus.drain_pending_invocations().len(), 2);
         assert_eq!(bus.subscription_count(), 1);
+    }
+
+    // EF.1: reserved-filter-field tests (path_glob / major_modes /
+    // predicate + AND-combination + None-is-unconstrained).
+
+    fn saved_with_path(path: &str) -> Event {
+        Event::DocumentSaved {
+            id: DocumentId::new(1),
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn path_glob_filter_delivers_only_matching_paths() {
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved)
+                .with_path_glob(crate::compile_glob_set(["**/*.rs"])),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        // Non-matching path: filtered out.
+        bus.publish(saved_with_path("notes/todo.md"));
+        assert!(rx.try_recv().is_err(), "*.md must not match **/*.rs");
+
+        // Matching path: delivered.
+        bus.publish(saved_with_path("src/lib.rs"));
+        assert!(matches!(rx.try_recv(), Ok(Event::DocumentSaved { .. })));
+    }
+
+    #[test]
+    fn path_glob_filter_rejects_event_with_no_path() {
+        // A path-constrained subscription must not fire for an event
+        // that carries no path (BeforeQuit). "Constrained on path"
+        // means "only path-bearing events that match."
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kinds(vec![EventKind::DocumentSaved, EventKind::BeforeQuit])
+                .with_path_glob(crate::compile_glob_set(["**/*.rs"])),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        bus.publish(Event::BeforeQuit);
+        assert!(rx.try_recv().is_err(), "pathless event can't match a glob");
+    }
+
+    #[test]
+    fn major_modes_filter_matches_nothing_until_events_carry_a_major() {
+        // No Event variant carries a major mode yet (MA.1 lands
+        // MajorEntered). A major-mode-constrained filter is therefore
+        // satisfiable by no current event -- the documented seam.
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved)
+                .with_major_modes(vec![ModeId::new("rust-mode")]),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        bus.publish(saved_with_path("src/lib.rs"));
+        assert!(
+            rx.try_recv().is_err(),
+            "no current event carries a major mode, so the allowlist matches nothing"
+        );
+    }
+
+    #[test]
+    fn predicate_filter_gates_delivery() {
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pred: EventPredicate = Arc::new(|e: &Event| {
+            matches!(e, Event::DocumentSaved { path, .. } if path.ends_with("keep.rs"))
+        });
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved).with_predicate(pred),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        bus.publish(saved_with_path("src/drop.rs"));
+        assert!(rx.try_recv().is_err(), "predicate rejected this event");
+
+        bus.publish(saved_with_path("src/keep.rs"));
+        assert!(matches!(rx.try_recv(), Ok(Event::DocumentSaved { .. })));
+    }
+
+    #[test]
+    fn extra_fields_and_combine() {
+        // path_glob AND predicate: both must pass.
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pred: EventPredicate = Arc::new(|e: &Event| {
+            matches!(e, Event::DocumentSaved { path, .. } if path.starts_with("src/"))
+        });
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved)
+                .with_path_glob(crate::compile_glob_set(["**/*.rs"]))
+                .with_predicate(pred),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        // Matches glob (*.rs) but fails predicate (not under src/).
+        bus.publish(saved_with_path("tests/it.rs"));
+        assert!(rx.try_recv().is_err(), "predicate half of the AND failed");
+
+        // Fails glob (*.md) though it would pass predicate (src/).
+        bus.publish(saved_with_path("src/readme.md"));
+        assert!(rx.try_recv().is_err(), "glob half of the AND failed");
+
+        // Both pass.
+        bus.publish(saved_with_path("src/lib.rs"));
+        assert!(matches!(rx.try_recv(), Ok(Event::DocumentSaved { .. })));
+    }
+
+    #[test]
+    fn no_extra_fields_is_unconstrained() {
+        // The common case: a kinds-only filter delivers every event
+        // of that kind (extra fields all None short-circuit to true).
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved),
+            SubscriptionTarget::Channel(tx),
+        );
+        bus.publish(saved_with_path("any/where.xyz"));
+        assert!(matches!(rx.try_recv(), Ok(Event::DocumentSaved { .. })));
+    }
+
+    #[test]
+    fn extra_filter_applies_to_invocation_targets_too() {
+        // The AND-check gates Invocation targets identically to
+        // Channel targets (both flow through ExtraFilter::matches).
+        let bus = EventBus::new();
+        let inv = CommandInvocation::of(CommandId::new(99));
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved)
+                .with_path_glob(crate::compile_glob_set(["**/*.rs"])),
+            SubscriptionTarget::Invocation(inv),
+        );
+
+        bus.publish(saved_with_path("doc.md"));
+        assert!(
+            bus.drain_pending_invocations().is_empty(),
+            "non-matching path must not queue the invocation"
+        );
+
+        bus.publish(saved_with_path("src/lib.rs"));
+        assert_eq!(bus.drain_pending_invocations().len(), 1);
     }
 
     // M.5.3.a: typed-event surface tests. Declared at module

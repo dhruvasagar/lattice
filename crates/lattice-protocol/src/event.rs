@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::DocumentId;
+use crate::ids::{BufferId, DocumentId};
 use crate::position::Range;
 use crate::selection::SelectionSet;
 
@@ -94,6 +94,37 @@ pub enum Event {
         old: Option<String>,
         new: String,
     },
+    /// A major mode became the active major on `buffer` (published
+    /// *after* the mode's `on_activate` resolved, so subscribers see
+    /// a consistent state). `major` is the major mode's canonical
+    /// name (e.g. `rust-mode`) -- carried as a `String` so the
+    /// protocol layer stays free of the `ModeId` type, mirroring
+    /// [`Self::ModalModeChanged`].
+    ///
+    /// This is the event minor-mode activation triggers filter on:
+    /// `EventFilter.major_modes` matches against `major`
+    /// (mode-architecture.md §7.4). Published by the mode
+    /// dispatcher's cascade task (MA.1); supersedes the prior typed
+    /// `ModeEvent::MajorEntered` so the EF.1 filter machinery applies.
+    MajorEntered { buffer: BufferId, major: String },
+    /// The active major mode on `buffer` is about to be deactivated
+    /// (published *before* the mode's Guard drops, so subscribers can
+    /// inspect what's being torn down). Pairs with
+    /// [`Self::MajorEntered`] for minor-mode teardown. `major` is the
+    /// canonical name of the major being torn down.
+    MajorExiting { buffer: BufferId, major: String },
+    /// A minor mode was activated on `buffer` (published *after* its
+    /// `on_activate` resolved). `minor` is the minor mode's canonical
+    /// name. The full observable mode-lifecycle quartet
+    /// (`MajorEntered`/`MajorExiting`/`MinorActivated`/`MinorDeactivated`)
+    /// lives on this `Event` enum (design.md §5.10.1) so hooks /
+    /// `EventFilter` apply uniformly; only the internal
+    /// `ModeActivationFailed` / `OptionConflict` cascade signals stay
+    /// on the typed `lattice_mode::ModeEvent` bus.
+    MinorActivated { buffer: BufferId, minor: String },
+    /// A minor mode was deactivated on `buffer` (published *before*
+    /// its Guard drops). `minor` is the minor mode's canonical name.
+    MinorDeactivated { buffer: BufferId, minor: String },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -119,6 +150,10 @@ impl Event {
             Event::ModalModeChanged { .. } => EventKind::ModalModeChanged,
             Event::BeforeQuit => EventKind::BeforeQuit,
             Event::OptionChanged { .. } => EventKind::OptionChanged,
+            Event::MajorEntered { .. } => EventKind::MajorEntered,
+            Event::MajorExiting { .. } => EventKind::MajorExiting,
+            Event::MinorActivated { .. } => EventKind::MinorActivated,
+            Event::MinorDeactivated { .. } => EventKind::MinorDeactivated,
         }
     }
 }
@@ -137,6 +172,10 @@ pub enum EventKind {
     ModalModeChanged,
     BeforeQuit,
     OptionChanged,
+    MajorEntered,
+    MajorExiting,
+    MinorActivated,
+    MinorDeactivated,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

@@ -25,6 +25,46 @@ pub enum ModeKind {
     Minor,
 }
 
+/// A minor mode's *default* auto-activation policy — the allowlist of
+/// major modes it activates inside, as the mode itself ships it
+/// (mode-architecture.md §7.4). The host's minor-activation resolver
+/// subscribes once to [`lattice_protocol::Event::MajorEntered`] and,
+/// for each registered minor whose policy [`admits`](Self::admits)
+/// the entered major, activates it.
+///
+/// This is the mode's *declared default*. Config
+/// (`<mode>.activation = global | <allowlist> | off`) folds over it;
+/// that fold is the host's job (SN.3), not the mode's. The default on
+/// the `Mode` trait is [`Manual`](Self::Manual): a mode auto-activates
+/// nowhere until it opts in or the user does. Leaving the onus on the
+/// user is a legitimate choice — some modes won't ship a sensible
+/// default and shouldn't guess.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ActivationPolicy {
+    /// Never auto-activate; only explicit (user / host / `:<mode>`)
+    /// activation turns the mode on. The trait default.
+    #[default]
+    Manual,
+    /// Auto-activate on every buffer that enters any major mode.
+    Global,
+    /// Auto-activate only when the entered major's id is in this
+    /// allowlist. An empty list behaves like [`Manual`](Self::Manual)
+    /// (matches no major).
+    Majors(Vec<ModeId>),
+}
+
+impl ActivationPolicy {
+    /// Does this policy auto-activate when a buffer enters the major
+    /// mode named `major`?
+    pub fn admits(&self, major: &str) -> bool {
+        match self {
+            Self::Manual => false,
+            Self::Global => true,
+            Self::Majors(allow) => allow.iter().any(|m| m.as_str() == major),
+        }
+    }
+}
+
 /// Pinned, boxed, send-able future for `Mode::on_activate`.
 ///
 /// The explicit `Pin<Box<dyn Future + Send>>` desugaring (rather
@@ -231,6 +271,19 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// MA.1: a *minor* mode's default auto-activation policy
+    /// (mode-architecture.md §7.4). The host's minor-activation
+    /// resolver reads this for every registered minor when a buffer
+    /// enters a major mode, and activates those whose policy
+    /// [`admits`](ActivationPolicy::admits) the entered major. The
+    /// default is [`ActivationPolicy::Manual`] — auto-activate
+    /// nowhere until the mode or the user opts in. Ignored for major
+    /// modes (a buffer's major is chosen by the major resolver, not
+    /// this allowlist).
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::Manual
+    }
+
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative
     /// contributions. Returns an owned [`Guard`](Self::Guard)
@@ -287,6 +340,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn implies(&self) -> &[ModeId];
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
+    fn activation_policy(&self) -> ActivationPolicy;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
@@ -340,6 +394,9 @@ impl<M: Mode> DynMode for M {
     }
     fn invocation_runner(&self) -> Option<ModeId> {
         <M as Mode>::invocation_runner(self)
+    }
+    fn activation_policy(&self) -> ActivationPolicy {
+        <M as Mode>::activation_policy(self)
     }
 
     fn on_activate_dyn<'a>(

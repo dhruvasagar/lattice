@@ -75,23 +75,43 @@ expected. `Tab` therefore fell through to base insert.
   · ✅ graceful (bad glob → `tracing::warn!` + skip, build failure → empty set,
   never panic).
 
-### MA.1 — `Mode::subscriptions()` + registration wiring + filterable lifecycle events 🗒
+### MA.1 — filterable lifecycle events + `activation_policy()` + registry resolver query ✅ (substrate)
 
-- Land `Mode::subscriptions(&self) -> Vec<ModeSubscription>` as a defaulted
-  trait method (the doc trait surface already declares it; make it real).
-  `ModeSubscription { filter: EventFilter, action: SubscriptionAction }`.
-- `ModeRegistry::register` wires each subscription to the bus **once** at
-  registration (needs bus access — pass it in, or a `wire_subscriptions(bus)`
-  follow-up call).
-- **Decision (§7.4 open item):** make the `MajorEntered` / `MajorExiting`
-  lifecycle events filterable by major-mode id. Lean: land them as `Event`
-  variants (+ `EventKind`) so `EventFilter.major_modes` applies directly,
-  rather than extending the typed-event path with filters.
+**Decision B (2026-06-12, user-confirmed).** Two stale assumptions in the
+original plan were corrected at slice start (verify-before-recommending):
+(1) `Mode::subscriptions()` doesn't exist — it was *removed* in MO.4.c
+(reactive subscriptions are `on_activate` + Guard, a while-active mechanism;
+the activation trigger is a distinct while-inactive concept). (2) Lifecycle
+events were typed `ModeEvent`, not `Event` enum, so EF.1's filter didn't reach
+them. The chosen model is a **single host resolver + mode-declared allowlist**
+(not per-mode subscriptions) — see §7.4 (rewritten).
+
+What landed (substrate; the host resolver wiring is MA.2):
+
+- ✅ The four observable lifecycle events moved to the `Event` enum:
+  `MajorEntered` / `MajorExiting { buffer, major: String }` +
+  `MinorActivated` / `MinorDeactivated { buffer, minor: String }` (+ `EventKind`
+  + `kind()`). `event_major_mode` reads `major`, so EF.1's `major_modes` filter
+  lights up end-to-end. The dispatcher now `publish`es all four on the enum bus;
+  only the **internal** `ModeActivationFailed` / `OptionConflict` cascade /
+  rollback signals stay typed (`ModeEvent`). Rationale: the split "major public,
+  minor private" had no principled basis (design.md §5.10.1 lists all four as
+  the public catalog) and forced awkward dual-bus test plumbing — one lifecycle
+  bus is the cleaner seam. Registry tests migrated to a `subscribe_lifecycle`
+  helper on the `Event` bus; failure tests keep the typed `subscribe_mode_events`.
+- ✅ `ActivationPolicy` (`Manual` default / `Global` / `Majors([ModeId])`) +
+  `ActivationPolicy::admits(major)`; `Mode::activation_policy()` defaulted
+  `Manual` + `DynMode` mirror + blanket impl.
+- ✅ `ModeRegistry::auto_activatable_minors(major) -> Vec<ModeId>` — the (B)
+  resolver core: walks registered minors, filters by kind + `admits`.
 - Depends on: EF.1 (the `major_modes` filter).
-- Artifacts: design (§5.1 + §7.4) · bench (registration wiring is O(subs),
-  one-time) · tests (subscription fires only for filtered kinds + major-mode
-  match; deactivation on `MajorExiting`) · graceful (subscription handler
-  error → log + drop, never poisons the bus).
+- Artifacts: ✅ design (§5.1 trait sketch + §7.4 rewritten to the resolver
+  model) · ✅ tests (`event_major_mode` positive/negative via EF.1 filter in
+  `events.rs`; `ActivationPolicy::admits`; `auto_activatable_minors` kind+policy
+  filtering; migrated major-lifecycle registry tests) · graceful (unchanged —
+  resolver query is pure; no new failure surface). No bench (registration no
+  longer wires per-mode subscriptions; the resolver is one boot subscription +
+  an O(minors) walk on a rare event — benched when MA.2 lands the wiring).
 
 ### MA.2 — major-mode resolver on `DocumentOpened` 🗒
 
@@ -144,10 +164,15 @@ should need zero `Editor::` methods + zero host registrations).
 
 ## Dependency graph
 
-	EF.1 ✅─┬─> MA.1 ──> MA.2 ─┐
-	        │                  ├─> SN.3
-	SN.2 ───┴──────────────────┘
+	EF.1 ✅─┬─> MA.1 ✅ ──> MA.2 ─┐
+	        │                     ├─> SN.3
+	SN.2 ───┴─────────────────────┘
 	SN.1 ✅ (independent — landed first to green the reds)
+
+Note (decision B): MA.2 now also owns the **host minor-activation resolver**
+wiring (subscribe once to `Event::MajorEntered` → `auto_activatable_minors` →
+`activate_minor`), alongside its original major-selection-on-`DocumentOpened`
+scope. MA.1 delivered the substrate that resolver consumes.
 
 ## Out of scope (separate triage)
 

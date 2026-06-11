@@ -3624,9 +3624,11 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "globset",
  "lattice-cells",
  "lattice-core",
  "lattice-grammar",
+ "lattice-keymap",
  "lattice-protocol",
  "linkme",
  "thiserror 2.0.18",

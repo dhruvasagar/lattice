@@ -643,21 +643,30 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::SelectionsChanged { .. }
         | Event::ModalModeChanged { .. }
         | Event::BeforeQuit
-        | Event::OptionChanged { .. } => None,
+        | Event::OptionChanged { .. }
+        // Lifecycle events carry a buffer + mode name, not a path;
+        // they are filtered via `major_modes`, not `path_glob`.
+        | Event::MajorEntered { .. }
+        | Event::MajorExiting { .. }
+        | Event::MinorActivated { .. }
+        | Event::MinorDeactivated { .. } => None,
     }
 }
 
 /// The major-mode name the event's buffer is in, if the event
 /// carries one. EF.1's `major_modes` filter matches against this.
 ///
-/// No `Event` variant carries a major mode yet: MA.1 lands
-/// `MajorEntered { major }` (mode-architecture.md §7.4, slice plan
-/// MA.1) and adds its arm here returning `Some(major)`. Until then
-/// every event is major-mode-agnostic, so a `major_modes`-constrained
-/// filter matches nothing -- the correct semantics for a minor mode
-/// that should only fire inside specific majors.
+/// MA.1: `MajorEntered` / `MajorExiting` carry the major-mode name;
+/// every other variant is major-mode-agnostic and returns `None`, so
+/// a `major_modes`-constrained filter only ever matches the two
+/// lifecycle events -- the correct semantics for a minor mode that
+/// should fire when a buffer enters / exits specific majors
+/// (mode-architecture.md §7.4).
 fn event_major_mode(event: &Event) -> Option<&str> {
     match event {
+        Event::MajorEntered { major, .. } | Event::MajorExiting { major, .. } => Some(major),
+        // Minor lifecycle carries the *minor* name, not the major the
+        // buffer is in, so a `major_modes` filter never matches it.
         Event::DocumentOpened { .. }
         | Event::DocumentClosed { .. }
         | Event::BeforeSave { .. }
@@ -666,7 +675,9 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::SelectionsChanged { .. }
         | Event::ModalModeChanged { .. }
         | Event::BeforeQuit
-        | Event::OptionChanged { .. } => None,
+        | Event::OptionChanged { .. }
+        | Event::MinorActivated { .. }
+        | Event::MinorDeactivated { .. } => None,
     }
 }
 
@@ -955,15 +966,43 @@ mod tests {
         assert!(rx.try_recv().is_err(), "pathless event can't match a glob");
     }
 
+    fn major_entered(major: &str) -> Event {
+        Event::MajorEntered {
+            buffer: lattice_protocol::ids::BufferId::new(1),
+            major: major.to_string(),
+        }
+    }
+
     #[test]
-    fn major_modes_filter_matches_nothing_until_events_carry_a_major() {
-        // No Event variant carries a major mode yet (MA.1 lands
-        // MajorEntered). A major-mode-constrained filter is therefore
-        // satisfiable by no current event -- the documented seam.
+    fn major_modes_filter_delivers_only_allowlisted_majors() {
+        // MA.1: MajorEntered carries the major-mode name, so a
+        // major_modes-constrained filter fires only when the entered
+        // major is in the allowlist.
         let bus = EventBus::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         bus.subscribe(
-            EventFilter::kind(EventKind::DocumentSaved)
+            EventFilter::kind(EventKind::MajorEntered)
+                .with_major_modes(vec![ModeId::new("rust-mode")]),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        // Not in the allowlist: filtered out.
+        bus.publish(major_entered("python-mode"));
+        assert!(rx.try_recv().is_err(), "python-mode is not allowlisted");
+
+        // In the allowlist: delivered.
+        bus.publish(major_entered("rust-mode"));
+        assert!(matches!(rx.try_recv(), Ok(Event::MajorEntered { .. })));
+    }
+
+    #[test]
+    fn major_modes_filter_rejects_event_with_no_major() {
+        // An event that carries no major (DocumentSaved) never
+        // matches a major-mode-constrained filter.
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kinds(vec![EventKind::MajorEntered, EventKind::DocumentSaved])
                 .with_major_modes(vec![ModeId::new("rust-mode")]),
             SubscriptionTarget::Channel(tx),
         );
@@ -971,7 +1010,7 @@ mod tests {
         bus.publish(saved_with_path("src/lib.rs"));
         assert!(
             rx.try_recv().is_err(),
-            "no current event carries a major mode, so the allowlist matches nothing"
+            "DocumentSaved carries no major, so a major_modes filter rejects it"
         );
     }
 

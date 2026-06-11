@@ -1613,6 +1613,93 @@ pair. The epoch counter resolves the race lock-free; the
 spawned task's `try_insert` is a single `std::sync::Mutex`
 acquisition (already needed for the store map).
 
+### 7.4 Activation triggers — what *fires* activation (no mode-set scan)
+
+§7.2 covers the activation *flow* once the dispatcher has decided to
+activate a mode. This section pins *what makes the decision*, and the
+load-bearing constraint behind it: **activation is never an O(modes)
+scan.** As the mode set grows (every language, every feature minor, every
+plugin), any scheme that polls every mode per buffer-lifecycle event ("do
+you apply here?") couples the host to all modes and, on the buffer-switch
+path, risks a dropped frame (paramount #1). Activation is driven by
+*subscriptions* — bounded by who subscribed to the firing event, not by the
+mode count. This is the §7 intro made concrete: lifecycle rides the event
+bus with the same filter machinery as any typed event.
+
+Two triggers, matching the two mode kinds (the emacs parallel — `auto-mode-alist`
+for major, hooks for minor):
+
+**Major mode — an ordered resolver on `DocumentOpened`.** A buffer has
+exactly one major mode (§3.1); a broadcast filter can't express
+first-match-wins, so major-mode selection is a thin ordered resolver
+subscribed to `Event::DocumentOpened`:
+
+	1. Run registered major-mode matchers in priority order; first wins.
+	2. Built-in language modes reuse `lattice_syntax::Lang::detect_from_path`;
+	   plugin majors supply a `path_glob` / content predicate -- the *same*
+	   glob util `EventFilter.path_glob` uses, one matcher not two.
+	3. Drive the winner's activation (§7.2); that emits `MajorEntered`.
+
+O(major-modes), on open only, declarative, async — the `auto-mode-alist`
+shape, and the one place a scan legitimately survives. Nothing per-keystroke.
+
+**Minor mode — a filtered subscription on `MajorEntered`.** A minor mode
+declares (via `Mode::subscriptions()`, §5.1) a subscription filtered to the
+major modes it serves; the bus fires it only for buffers whose just-entered
+major mode is in the allowlist, and the async handler calls `activate_minor`
+(§7.2). A paired `MajorExiting` / `DocumentClosed` subscription deactivates.
+Many minors activate independently — no arbitration. For the filter to apply
+to `MajorEntered`, the lifecycle events must be filterable by major-mode id
+(slice plan decides: land them as `Event` variants so `EventFilter` applies,
+vs. extend the typed-event path with filters).
+
+**`EventFilter` — implement the reserved fields, don't fork a matcher.**
+`lattice_runtime::EventFilter` honors `kinds` only today; `path_glob`,
+`major_modes`, and `predicate` are *reserved* in its own module doc
+("declared… stay TODO until callers need them"). Mode activation is that
+caller. Implement them — AND-combined, checked on the already-`kinds`-bucketed
+candidates so the publish scan never widens — rather than a parallel matcher
+type that would duplicate the filter the bus already dispatches on.
+`predicate` is the escape hatch; modes prefer the declarative fields so the
+bus can reason about them.
+
+**Subscriptions wired once, at registration.** `ModeRegistry::register`
+reads `mode.subscriptions()` and wires each to the bus at registration time
+(modes are dynamic / WASM-registered; mirrors emacs autoload + load-time hook
+registration). After that the bus does indexed O(subscribers-of-kind)
+dispatch; nothing re-scans the mode set.
+
+**Allowlist is explicit; a mode may default to none.** Activation criteria
+are never inferred from the runtime registry ("activate where snippets
+exist"). A mode declares a *default* allowlist in `subscriptions()`, which
+MAY be empty — then it activates nowhere until the user opts in. Leaving the
+onus on the user is a legitimate mode choice (some modes won't ship a
+sensible default and shouldn't guess). TOML carries the policy
+(`<mode>.activation = global | <allowlist> | off`); the host folds the option
+into the subscription's `major_modes` filter and re-folds on an
+`OptionChanged` subscription so `:set` is live. `init.rs` (WASM, bus access)
+is the programmable override — custom predicate, force-global, disable.
+
+**Async / off-UI-thread (paramount #1).** Subscription handlers run async
+(modes are tokio tasks, §7.1 / design §5.7); activation work never runs
+inline on a publish that originates on the render path. The bus drops its
+mutex before dispatch (audit M1); handlers must not block it.
+
+**Worked example — snippet.** `SnippetCompletionMode` subscribes to
+`MajorEntered` filtered by its config-driven, possibly-empty language
+allowlist; today's buffer-*kind* auto-activation (language-blind, via
+`auto_activated_minors_for_buffer_kind`) is replaced by this language-aware
+subscription. `SnippetActiveMode` (the `<Tab>` placeholder-nav mode) is
+already correctly session-transient (activated by `sync_keymap_overlays`
+while `active_snippet.is_some()`) and is unchanged.
+
+**Rejected: `Mode::wants_buffer(ctx) -> bool` polled over all modes.**
+O(modes) per lifecycle event, host coupled to every mode, a sync scan on the
+buffer-switch path risks a frame block. Rejected on paramount #1 + heuristic
+#1; the subscription model is the merit win. This *was* the obvious option;
+the substrate's reserved `EventFilter` is the third option that fits the
+goals and removes the duplication.
+
 ## 8. Crate placement
 
 Three shapes evaluated:

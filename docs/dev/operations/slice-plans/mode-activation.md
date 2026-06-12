@@ -152,21 +152,56 @@ What landed:
   `auto_activated_minors_for_buffer_kind` path still coexists (idempotent) and
   SN.3 migrates snippet off it onto a declared policy.
 
-### SN.2 — close the snippet ownership half-migration 🗒
+### SN.2 — close the snippet ownership half-migration 🚧
 
 The snippet *keymap* is already mode-owned (`SnippetActiveMode::keymap()` in
-`lattice-snippet`). The **action registration** (`lattice-host/actions.rs`:
-`action:snippet-*`) and **handlers** (`Editor::do_snippet_*`) are host-owned —
-the half-migration the standing rule forbids (acid test: a provider crate
-should need zero `Editor::` methods + zero host registrations).
+`lattice-snippet`). The **handlers** (`Editor::do_snippet_*`) are host-owned —
+the half-migration the standing rule forbids. Move the handler bodies
+`lattice-host → lattice-snippet` via the `ActionHandlerRegistry` substrate
+(§5.3 — the path the project-search provider already uses;
+`ActionContext → Effect`, no `&mut Editor`).
 
-- Move snippet action registration + handler bodies `lattice-host →
-  lattice-snippet` via the `ActionHandlerRegistry` substrate (§5.3 — the path
-  LSP/diff already use). Host keeps only generic primitives.
-- Depends on: nothing hard; can run parallel to EF/MA. Best landed before SN.3
-  so the activation work touches a mode-owned snippet surface.
-- Artifacts: design (§5.3) · bench (n/a) · tests (snippet Tab/leave dispatch
-  through the mode's registered handlers) · graceful (unchanged).
+**Boundary correction (2026-06-12, confirmed with the user).** Investigation
+found the three snippet actions split across *two* modes by trigger context:
+
+- **`<Tab>` / `<S-Tab>` (next/prev placeholder)** fire *while a snippet is
+  active* → owned by **`SnippetActiveMode`**. This is SN.2.
+- **`<C-x><C-s>` (expand)** is a base insert binding that fires *when no
+  snippet is active yet* — a *completion*-mode operation. It additionally needs
+  `snippet_registry` + buffer text + the `expand_snippet` splice. It belongs to
+  **`SnippetCompletionMode`** and migrates in **SN.3** (where that mode is built
+  out + activated language-awarely). Cramming it into `SnippetActiveMode` would
+  be a mis-migration (handler only registered while a snippet runs).
+
+Sub-sliced (the session is host state ~15 readers touch, so relocation comes
+first):
+
+- **SN.2a ✅ (committed `7a897a79`)** — relocate the live session off the
+  `Editor` into a `lattice_snippet::SnippetSession` service
+  (`Arc<Mutex<Option<ActiveSnippet>>>`, registered in `ServiceRegistry`). The
+  `ActionHandlerRegistry` seam gives a handler only `&ActionContext` (no
+  `&mut Editor`), so the session both the host (expand) and the mode (nav)
+  mutate must live in a shared service. `Editor.active_snippet` → service; all
+  ~15 host readers + ui-tui snippet-test assertions migrated. Host nav handlers
+  read the service (still host-side this step). 27 ui-tui snippet tests green.
+- **SN.2b 🗒 (remaining)** — migrate the two nav handlers into
+  `SnippetActiveMode`; remove the host `Action` surface. De-risked steps:
+  1. add a `lattice-grammar` dep to `lattice-snippet` (name/construct `Effect`);
+  2. the two handlers as `ActionContext → Effect` closures — advance the session
+     via `ctx.service::<SnippetSessionHandle>()`, get the document via
+     `ctx.service::<BufferStoreHandle>()` for byte→position, return
+     `Effect::SelectionChange` (and `clear()` on walk-off-`$0`);
+  3. `SnippetActiveMode::Guard` `()` → holds the two `ActionHandlerRegistration`
+     tokens; register in `on_activate` (resolve `action:snippet-next/prev-placeholder`
+     → `CommandId` via `CommandRegistryHandle`, the search-provider template);
+  4. host cleanup: delete `Editor::do_snippet_next/prev_placeholder`, the
+     `Action::SnippetNext/PrevPlaceholder` variants + their dispatch arms + the
+     `CommandId → Action` mapping (so the chord flows through the wired
+     `ActionHandlerRegistry` lookup, `dispatch.rs:26017`). Keep `snippet_expand`.
+- Depends on: nothing hard; SN.2a landed independently. Best fully closed
+  before SN.3 so the activation work touches a mode-owned snippet surface.
+- Artifacts: design (§5.3) · bench (n/a) · tests (✅ 27 snippet tests green
+  through SN.2a; SN.2b adds a handler-level dispatch test) · graceful (unchanged).
 
 ### SN.3 — snippet language-aware activation 🗒 (the payoff)
 
@@ -187,7 +222,7 @@ should need zero `Editor::` methods + zero host registrations).
 
 	EF.1 ✅─┬─> MA.1 ✅ ──> MA.2 ✅ ─┐
 	        │                        ├─> SN.3
-	SN.2 ───┴────────────────────────┘
+	SN.2 🚧─┴────────────────────────┘   (SN.2a ✅ · SN.2b 🗒)
 	SN.1 ✅ (independent — landed first to green the reds)
 
 Note (decision B): MA.2 is the **host minor-activation resolver** (subscribe

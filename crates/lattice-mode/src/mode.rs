@@ -54,12 +54,20 @@ pub enum ActivationPolicy {
 }
 
 impl ActivationPolicy {
-    /// Does this policy auto-activate when a buffer enters the major
-    /// mode named `major`?
-    pub fn admits(&self, major: &str) -> bool {
+    /// Does this policy auto-activate when a buffer of kind
+    /// `buffer_kind` enters the major mode named `major`?
+    ///
+    /// `Global` is scoped to **real document buffers**
+    /// ([`BufferKind::Document`]) — "global" means every code/text
+    /// buffer, not the synthetic UI buffers (file tree, help,
+    /// `*messages*`, terminal, …). A mode that genuinely wants to
+    /// activate inside a synthetic buffer names that buffer's major
+    /// explicitly via `Majors([..])`, which is kind-independent (an
+    /// explicit opt-in is honored anywhere).
+    pub fn admits(&self, major: &str, buffer_kind: BufferKind) -> bool {
         match self {
             Self::Manual => false,
-            Self::Global => true,
+            Self::Global => buffer_kind == BufferKind::Document,
             Self::Majors(allow) => allow.iter().any(|m| m.as_str() == major),
         }
     }

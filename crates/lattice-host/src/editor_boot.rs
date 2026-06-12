@@ -408,6 +408,17 @@ impl Editor {
         let (mode_lifecycle_tx, mode_lifecycle_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModeEvent>();
         event_bus.subscribe_typed(mode_lifecycle_tx);
+        // MA.2: minor-activation resolver input. One channel
+        // subscribed to `Event::MajorEntered`; the per-tick
+        // `drain_minor_activation` reads it, looks up each buffer's
+        // kind, and auto-activates the minors whose ActivationPolicy
+        // admits the entered major (Global gated to document buffers).
+        let (major_entered_tx, major_entered_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::MajorEntered),
+            lattice_runtime::SubscriptionTarget::Channel(major_entered_tx),
+        );
         // Inlay-hint refresh.
         let (lsp_inlay_refresh_tx, lsp_inlay_refresh_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
@@ -1293,6 +1304,7 @@ impl Editor {
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
+            pending_major_entered_rx: Some(major_entered_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),
             semantic_tokens_refresh_pending: std::collections::HashSet::new(),

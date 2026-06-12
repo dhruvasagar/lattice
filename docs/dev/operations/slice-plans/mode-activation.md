@@ -113,23 +113,44 @@ What landed (substrate; the host resolver wiring is MA.2):
   longer wires per-mode subscriptions; the resolver is one boot subscription +
   an O(minors) walk on a rare event — benched when MA.2 lands the wiring).
 
-### MA.2 — major-mode resolver on `DocumentOpened` 🗒
+### MA.2 — host minor-activation resolver ✅
 
-- Ordered resolver subscribed to `Event::DocumentOpened`: run registered
-  major-mode matchers by priority, first wins, activate it, emit
-  `MajorEntered`.
-- Built-in language modes reuse `lattice_syntax::Lang::detect_from_path`;
-  plugin majors use `path_glob` (the EF.1 util).
-- **Open item:** how much of a formal "major mode" exists today vs. just
-  `Lang` detection for syntax — confirm at slice start (this may be partly
-  greenfield; today's syntax attach is language-detection without a
-  registered major `Mode`). If major modes aren't yet first-class, MA.2 may
-  reduce to "publish `MajorEntered` from the existing Lang-detection point"
-  and the full resolver lands with the major-mode migration (§10).
-- Depends on: MA.1 (`MajorEntered` event).
-- Artifacts: design (§3.1 + §7.4) · bench (resolver is O(major-modes) on open
-  only) · tests (priority order, first-match, no-match → Plain) · graceful
-  (no matcher → Plain/no major mode, never panic).
+**Open item resolved at slice start.** Documents already activate a major:
+`Editor::activate_major_for_buffer_kind(id, Document)` detects the language
+(`Lang::detect_from_path`), resolves a major via `resolve_major_mode`
+(language major, else `text-mode` fallback), and `activate_major` publishes
+`Event::MajorEntered`. So the original "ordered major resolver on
+`DocumentOpened`" was unnecessary — documents (and every other kind) already
+emit `MajorEntered`. What MA.2 actually needed was the *minor* side: the
+single host resolver that consumes `MajorEntered` (decision B).
+
+What landed:
+
+- ✅ `pending_major_entered_rx`: one channel subscribed to
+  `EventKind::MajorEntered` at boot (editor_boot.rs), mirroring the
+  `pending_mode_lifecycle_rx` rollback channel.
+- ✅ `Editor::drain_minor_activation` (per-tick, beside
+  `drain_mode_lifecycle_events`): drains `MajorEntered`, looks up
+  `buffers.kind_of(id)`, queries `auto_activatable_minors(major, kind)`,
+  calls `activate_mode_by_id` for each. Idempotent (already-active minors
+  no-op); unknown buffers skipped, never panic.
+- ✅ Kind-aware policy (refines MA.1's API): `ActivationPolicy::admits(major,
+  kind)` + `auto_activatable_minors(major, kind)` — **`Global` minors only in
+  real document buffers** (`BufferKind::Document`), per the user (2026-06-12);
+  `Majors([..])` stays kind-independent (explicit opt-in works in synthetic
+  buffers too).
+- Depends on: MA.1 (the `MajorEntered` event + `auto_activatable_minors`).
+- Artifacts: ✅ design (§7.4 resolver + Global-document gate) · ✅ bench
+  (`benches/activation_resolver.rs`: `auto_activatable_minors` O(minors) on a
+  rare event; per-tick is O(1) `try_recv` when idle) · ✅ tests (lattice-mode:
+  `admits` kind-gate, `auto_activatable_minors` Global-in-doc / gated-in-Help;
+  lattice-host: `major_entered_resolver_activates_global_minor_on_document`
+  end-to-end wiring + non-matching-allowlist negative) · ✅ graceful
+  (unknown buffer → skip).
+- **Deferred (follow-up, not blocking):** re-evaluation / deactivation on
+  *major switch* (a buffer changing language) — rare; the existing kind-based
+  `auto_activated_minors_for_buffer_kind` path still coexists (idempotent) and
+  SN.3 migrates snippet off it onto a declared policy.
 
 ### SN.2 — close the snippet ownership half-migration 🗒
 
@@ -164,15 +185,19 @@ should need zero `Editor::` methods + zero host registrations).
 
 ## Dependency graph
 
-	EF.1 ✅─┬─> MA.1 ✅ ──> MA.2 ─┐
-	        │                     ├─> SN.3
-	SN.2 ───┴─────────────────────┘
+	EF.1 ✅─┬─> MA.1 ✅ ──> MA.2 ✅ ─┐
+	        │                        ├─> SN.3
+	SN.2 ───┴────────────────────────┘
 	SN.1 ✅ (independent — landed first to green the reds)
 
-Note (decision B): MA.2 now also owns the **host minor-activation resolver**
-wiring (subscribe once to `Event::MajorEntered` → `auto_activatable_minors` →
-`activate_minor`), alongside its original major-selection-on-`DocumentOpened`
-scope. MA.1 delivered the substrate that resolver consumes.
+Note (decision B): MA.2 is the **host minor-activation resolver** (subscribe
+once to `Event::MajorEntered` → `auto_activatable_minors(major, kind)` →
+`activate_mode_by_id`, with `Global` gated to document buffers). The original
+"major-selection-on-`DocumentOpened`" scope turned out unnecessary —
+documents already activate a major + emit `MajorEntered` via
+`activate_major_for_buffer_kind`. Remaining: SN.2 (snippet ownership
+half-migration) and SN.3 (snippet declares an `ActivationPolicy` + config fold
+→ the language-aware payoff).
 
 ## Out of scope (separate triage)
 

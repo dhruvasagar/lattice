@@ -10772,6 +10772,7 @@ impl Editor {
         signals.extend(self.drain_pending_signature_help());
         signals.extend(self.drain_pending_definitions());
         signals.extend(self.drain_mode_lifecycle_events());
+        signals.extend(self.drain_minor_activation());
         self.drain_pending_references();
         self.drain_pending_symbols();
         // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
@@ -11868,6 +11869,45 @@ impl Editor {
         let mut signals = Vec::new();
         for (buffer_id, mode_id) in to_rollback {
             signals.extend(self.deactivate_mode_by_id(buffer_id, mode_id));
+        }
+        signals
+    }
+
+    /// MA.2: the minor-activation resolver (mode-architecture.md
+    /// §7.4, decision B). Drains `Event::MajorEntered` and
+    /// auto-activates each registered minor whose `ActivationPolicy`
+    /// admits the just-entered major on that buffer's kind — `Global`
+    /// minors only in real document buffers, `Majors([..])` minors
+    /// whenever the major matches. One subscription + an O(minors)
+    /// registry walk on a *rare* event (buffer open / major switch),
+    /// never per-keystroke.
+    ///
+    /// Mirrors [`Self::drain_mode_lifecycle_events`]: drain the
+    /// receiver into a plain list first (so the per-minor
+    /// `activate_mode_by_id` calls don't conflict with the receiver
+    /// borrow), then activate. `activate_mode_by_id` is idempotent, so
+    /// a minor already active (e.g. via the kind-based path) is a
+    /// no-op. Unknown buffers (no `kind_of`) are skipped, not panicked.
+    pub fn drain_minor_activation(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_major_entered_rx.take() else {
+            return Vec::new();
+        };
+        let mut to_activate: Vec<(BufferId, lattice_mode::ModeId)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let lattice_protocol::Event::MajorEntered { buffer, major } = evt {
+                let buffer_id = BufferId(buffer.raw() as u32);
+                let Some(kind) = self.buffers.kind_of(buffer_id) else {
+                    continue;
+                };
+                for minor_id in self.mode_registry.auto_activatable_minors(&major, kind) {
+                    to_activate.push((buffer_id, minor_id));
+                }
+            }
+        }
+        self.pending_major_entered_rx = Some(rx);
+        let mut signals = Vec::new();
+        for (buffer_id, mode_id) in to_activate {
+            signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
         }
         signals
     }
@@ -29114,6 +29154,97 @@ mod tests {
         crate::diff::mode::register_diff_modes(&mut registry);
         editor.mode_registry = std::sync::Arc::new(registry);
         editor
+    }
+
+    // ── MA.2: minor-activation resolver wiring ──────────────────
+    // The decision logic (ActivationPolicy::admits kind-gate,
+    // auto_activatable_minors) is unit-tested in lattice-mode. These
+    // tests assert the host glue: Event::MajorEntered → kind lookup →
+    // auto_activatable_minors → activate_mode_by_id.
+
+    /// A marker minor mode with a configurable ActivationPolicy.
+    struct PolicyMinor {
+        id: lattice_mode::ModeId,
+        policy: lattice_mode::ActivationPolicy,
+    }
+    impl lattice_mode::Mode for PolicyMinor {
+        type Guard = ();
+        fn id(&self) -> lattice_mode::ModeId {
+            self.id
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            lattice_mode::ModeKind::Minor
+        }
+        fn activation_policy(&self) -> lattice_mode::ActivationPolicy {
+            self.policy.clone()
+        }
+        fn on_activate(
+            &self,
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn minor_active_on(
+        editor: &crate::editor::Editor,
+        buffer: lattice_core::BufferId,
+        mode: lattice_mode::ModeId,
+    ) -> bool {
+        editor
+            .active_modes
+            .get(&buffer)
+            .map(|am| am.has_minor(mode))
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn major_entered_resolver_activates_global_minor_on_document() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        let doc = editor.document_buffer_id;
+        // Sanity: the boot buffer is a real document buffer (the
+        // resolver's Global gate keys on this).
+        assert_eq!(editor.buffers.kind_of(doc), Some(lattice_core::BufferKind::Document));
+
+        let global_id = lattice_mode::ModeId::new("test-global-minor");
+        let rusty_id = lattice_mode::ModeId::new("test-rust-minor");
+        let mut registry = lattice_mode::ModeRegistry::new();
+        registry
+            .register(PolicyMinor {
+                id: global_id,
+                policy: lattice_mode::ActivationPolicy::Global,
+            })
+            .unwrap();
+        registry
+            .register(PolicyMinor {
+                id: rusty_id,
+                policy: lattice_mode::ActivationPolicy::Majors(vec![lattice_mode::ModeId::new(
+                    "rust-mode",
+                )]),
+            })
+            .unwrap();
+        editor.mode_registry = std::sync::Arc::new(registry);
+
+        // Clear any MajorEntered the boot path already queued, so we
+        // assert against exactly the event we publish.
+        let _ = editor.drain_minor_activation();
+
+        // A document enters its (text) major.
+        let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
+        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
+            buffer: proto,
+            major: "text-mode".into(),
+        });
+        let _ = editor.drain_minor_activation();
+
+        assert!(
+            minor_active_on(&editor, doc, global_id),
+            "Global minor must auto-activate on a document buffer"
+        );
+        assert!(
+            !minor_active_on(&editor, doc, rusty_id),
+            "a Majors([rust-mode]) minor must NOT activate under text-mode"
+        );
     }
 
     /// Inline session activates diff-mode on the *current*

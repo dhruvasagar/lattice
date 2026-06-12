@@ -1659,6 +1659,15 @@ minors and returns those whose (config-folded) policy admits the entered major
 `DocumentClosed` handler deactivates. This is O(registered minors) on a *rare*
 event (buffer open / major switch), never per-keystroke.
 
+`Global` is scoped to **real document buffers** (`BufferKind::Document`):
+"global" means every code/text buffer, not the synthetic UI buffers (file
+tree, help, `*messages*`, terminal, multibuffer). The resolver passes the
+buffer's kind to `auto_activatable_minors(major, kind)`, and
+`ActivationPolicy::admits` gates `Global` on `kind == Document`. A mode that
+genuinely wants to live inside a synthetic buffer names that buffer's major
+explicitly via `Majors([..])`, which is kind-independent — an explicit opt-in
+is honored anywhere. (MA.2; decided with the user 2026-06-12.)
+
 Why a single resolver rather than one bus subscription per minor (the shape an
 earlier draft of this section described): both are O(minors) per `MajorEntered`,
 but the per-mode subscription still needs a generic host driver to reach

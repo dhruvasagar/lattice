@@ -159,14 +159,17 @@ impl ModeRegistry {
         self.modes.iter().map(|(id, mode)| (*id, mode.kind()))
     }
 
-    /// MA.1: the minor modes whose declared
+    /// MA.1/MA.2: the minor modes whose declared
     /// [`ActivationPolicy`](crate::ActivationPolicy) auto-activates
-    /// when a buffer enters the major mode named `major`. This is the
-    /// core of the (B) host resolver (mode-architecture.md §7.4): the
-    /// host subscribes once to
+    /// when a buffer of kind `buffer_kind` enters the major mode named
+    /// `major`. This is the core of the (B) host resolver
+    /// (mode-architecture.md §7.4): the host subscribes once to
     /// [`lattice_protocol::Event::MajorEntered`] and activates each
     /// minor this returns. O(registered minors) on a *rare* event
     /// (buffer open / major switch), never per-keystroke.
+    ///
+    /// `buffer_kind` gates `Global` minors to real document buffers
+    /// (see [`ActivationPolicy::admits`](crate::ActivationPolicy::admits)).
     ///
     /// Reads each minor's *declared default* policy. The config fold
     /// (`<mode>.activation`) is layered by the host before this is
@@ -174,11 +177,11 @@ impl ModeRegistry {
     ///
     /// Order is `HashMap`-undefined; callers that need determinism
     /// sort the result.
-    pub fn auto_activatable_minors(&self, major: &str) -> Vec<ModeId> {
+    pub fn auto_activatable_minors(&self, major: &str, buffer_kind: BufferKind) -> Vec<ModeId> {
         self.modes
             .iter()
             .filter(|(_, mode)| mode.kind() == ModeKind::Minor)
-            .filter(|(_, mode)| mode.activation_policy().admits(major))
+            .filter(|(_, mode)| mode.activation_policy().admits(major, buffer_kind))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -832,14 +835,27 @@ mod tests {
     #[test]
     fn activation_policy_admits_matches_expected_majors() {
         use crate::ActivationPolicy;
-        assert!(!ActivationPolicy::Manual.admits("rust-mode"));
-        assert!(ActivationPolicy::Global.admits("rust-mode"));
-        assert!(ActivationPolicy::Global.admits("python-mode"));
+        let doc = BufferKind::Document;
+        assert!(!ActivationPolicy::Manual.admits("rust-mode", doc));
+        // Global: every major, but only in real document buffers.
+        assert!(ActivationPolicy::Global.admits("rust-mode", doc));
+        assert!(ActivationPolicy::Global.admits("python-mode", doc));
+        assert!(
+            !ActivationPolicy::Global.admits("help-mode", BufferKind::Help),
+            "Global is scoped to document buffers — never fires in synthetic UI buffers"
+        );
+        // Majors allowlist: kind-independent (explicit opt-in works
+        // even inside a synthetic buffer's major).
         let allow = ActivationPolicy::Majors(vec![ModeId::new("rust-mode")]);
-        assert!(allow.admits("rust-mode"));
-        assert!(!allow.admits("python-mode"));
+        assert!(allow.admits("rust-mode", doc));
+        assert!(!allow.admits("python-mode", doc));
+        assert!(
+            ActivationPolicy::Majors(vec![ModeId::new("help-mode")])
+                .admits("help-mode", BufferKind::Help),
+            "an explicit major allowlist activates inside that major regardless of kind"
+        );
         // An empty allowlist matches nothing (Manual-equivalent).
-        assert!(!ActivationPolicy::Majors(vec![]).admits("rust-mode"));
+        assert!(!ActivationPolicy::Majors(vec![]).admits("rust-mode", doc));
     }
 
     #[test]
@@ -864,17 +880,29 @@ mod tests {
             )
             .unwrap();
 
-        let mut for_rust = r.auto_activatable_minors("rust-mode");
+        let mut for_rust = r.auto_activatable_minors("rust-mode", BufferKind::Document);
         for_rust.sort();
         let mut expected = vec![global, rusty];
         expected.sort();
-        assert_eq!(for_rust, expected, "global + allowlisted minors fire for rust");
+        assert_eq!(
+            for_rust, expected,
+            "global + allowlisted minors fire for a rust document"
+        );
 
         // For a non-allowlisted major only the Global minor fires.
         assert_eq!(
-            r.auto_activatable_minors("python-mode"),
+            r.auto_activatable_minors("python-mode", BufferKind::Document),
             vec![global],
-            "only the global minor fires for python"
+            "only the global minor fires for a python document"
+        );
+
+        // MA.2: in a synthetic buffer (Help) the Global minor is
+        // gated out; only an explicit major allowlist would fire (none
+        // here targets help-mode), so nothing activates.
+        assert!(
+            r.auto_activatable_minors("help-mode", BufferKind::Help)
+                .is_empty(),
+            "Global minors must not auto-activate in synthetic buffers"
         );
     }
 

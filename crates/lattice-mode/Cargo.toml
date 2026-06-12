@@ -81,6 +81,14 @@ arc-swap = { workspace = true }
 # runtime; `time` for `tokio::time::sleep` used by the cascade
 # rollback tests (registry.rs:1436).
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+# MA.2: bench the minor-activation resolver's registry walk
+# (`auto_activatable_minors`) so its O(registered-minors) scaling on a
+# rare lifecycle event stays visible in CI.
+criterion = { workspace = true }
+
+[[bench]]
+name = "activation_resolver"
+harness = false
 
 [lints]
 workspace = true

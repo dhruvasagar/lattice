@@ -1426,6 +1426,12 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::events::LspBufferDetached>>,
     pub pending_mode_lifecycle_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
+    /// MA.2: receives `Event::MajorEntered` so the per-tick
+    /// minor-activation resolver (`drain_minor_activation`) can
+    /// auto-activate minors whose `ActivationPolicy` admits the
+    /// just-entered major on this buffer's kind.
+    pub pending_major_entered_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     pub pending_insert_completion_lsp_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
     pub pending_insert_completion_lsp_token: Option<CancellationToken>,

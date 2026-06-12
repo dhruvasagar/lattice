@@ -769,7 +769,7 @@ impl Editor {
                 macro_recording: self.macro_recording.is_some(),
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
-                snippet_active: self.active_snippet.is_some(),
+                snippet_active: self.snippet_session.is_active(),
                 // Terminal-mode T2.a: published so the translate
                 // layer can build TranslateContext from the
                 // snapshot without reaching into active_modes.
@@ -1793,7 +1793,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::SnippetLeave => {
             // Snippet body has no host-side helper -- the App arm
             // was literally these two field writes.
-            editor.active_snippet = None;
+            editor.snippet_session.clear();
             editor.modal = ModalState::Normal;
         }
         // 5.5.G.2: pure-editor visual + mark arms. Bodies migrated
@@ -5749,7 +5749,7 @@ impl Editor {
             chord_capture: self.auto_submit_after_chord,
             picker_open: false,
             insert_completion_open: false,
-            snippet_active: self.active_snippet.is_some(),
+            snippet_active: self.snippet_session.is_active(),
             terminal_insert_active: false,
             terminal_esc_exits: false,
             terminal_app_cursor_keys: false,
@@ -11301,7 +11301,7 @@ impl Editor {
     /// snippet" gating in `input::translate`.
     pub fn sync_keymap_overlays(&mut self) {
         let want_popup = self.insert_completion.is_some();
-        let want_snippet = self.active_snippet.is_some();
+        let want_snippet = self.snippet_session.is_active();
         let have_popup = self.completion_popup_layer.is_some();
 
         let buffer_id = self.document_buffer_id;
@@ -15520,13 +15520,17 @@ impl Editor {
     /// placeholder group; close the session if we've walked off
     /// the end.
     pub fn do_snippet_next_placeholder(&mut self) {
-        let Some(active) = self.active_snippet.as_mut() else {
-            return;
-        };
-        let next = active.next().cloned();
-        match next {
-            Some(group) => self.move_cursor_to_snippet_group(&group),
-            None => self.active_snippet = None,
+        let group = self.snippet_session.with_mut(|s| {
+            let active = s.as_mut()?;
+            let next = active.next().cloned();
+            if next.is_none() {
+                // Walked off the end (`$0`): the session ends.
+                *s = None;
+            }
+            next
+        });
+        if let Some(group) = group {
+            self.move_cursor_to_snippet_group(&group);
         }
     }
 
@@ -15688,10 +15692,10 @@ impl Editor {
 
     /// `<S-Tab>` -- step to the previous placeholder.
     pub fn do_snippet_prev_placeholder(&mut self) {
-        let Some(active) = self.active_snippet.as_mut() else {
-            return;
-        };
-        if let Some(group) = active.prev().cloned() {
+        let group = self
+            .snippet_session
+            .with_mut(|s| s.as_mut().and_then(|a| a.prev().cloned()));
+        if let Some(group) = group {
             self.move_cursor_to_snippet_group(&group);
         }
     }
@@ -15805,7 +15809,7 @@ impl Editor {
             {
                 self.cursor = pos;
             }
-            self.active_snippet = Some(active);
+            self.snippet_session.set(active);
             self.modal = ModalState::Insert;
         } else {
             self.cursor = applied.inserted_range.end;
@@ -19297,7 +19301,7 @@ impl Editor {
             {
                 self.cursor = pos;
             }
-            self.active_snippet = Some(active);
+            self.snippet_session.set(active);
             self.modal = lattice_grammar::ModalState::Insert;
         } else {
             self.cursor = main_applied.inserted_range.end;

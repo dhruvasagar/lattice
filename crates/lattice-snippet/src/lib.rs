@@ -41,10 +41,12 @@ pub mod parse;
 pub mod picker_sources;
 pub mod registry;
 pub mod render;
+pub mod session;
 pub mod token;
 pub mod variables;
 
 pub use crate::active::{ActiveSnippet, TabstopGroup};
+pub use crate::session::{SnippetSession, SnippetSessionHandle};
 pub use crate::load::{LoadError, load_pack, load_pack_from_str};
 pub use crate::modes::{
     SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,

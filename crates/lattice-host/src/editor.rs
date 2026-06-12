@@ -892,11 +892,13 @@ pub struct Editor {
     /// `true` while the active insert-completion popup is in
     /// path-completion mode (Phase 4.2.g.6 (2/2)).
     pub completion_in_path_context: bool,
-    /// Live snippet expansion. `Some` while a snippet is
-    /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
-    /// Dropped on `$0` consumption / `<Esc>` / cursor moving
-    /// outside the snippet's tabstop ranges.
-    pub active_snippet: Option<lattice_snippet::ActiveSnippet>,
+    /// Live snippet expansion (SN.2: relocated to a shared
+    /// `SnippetSession` service so the `SnippetActiveMode`-owned
+    /// `<Tab>` / `<S-Tab>` handlers can reach it). Active while a
+    /// snippet is expanding; the session ends on `$0` consumption /
+    /// `<Esc>` / cursor leaving the tabstop ranges. The same `Arc` is
+    /// registered in `ServiceRegistry` under `SnippetSessionHandle`.
+    pub snippet_session: lattice_snippet::SnippetSessionHandle,
     /// Per-language directories from which snippet packs are
     /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
     pub snippet_dirs: Vec<PathBuf>,

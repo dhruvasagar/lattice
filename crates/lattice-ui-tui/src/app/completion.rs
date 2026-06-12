@@ -445,8 +445,8 @@ mod tests {
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
         // Active snippet present, focused on $1.
-        let active = a.editor.active_snippet.as_ref().expect("snippet active");
-        assert_eq!(active.current_index(), Some(1));
+        let snippet_index = a.editor.snippet_session.with_mut(|s| s.as_ref().expect("snippet active").current_index());
+        assert_eq!(snippet_index, Some(1));
         // Cursor at start of `i`.
         assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
@@ -466,23 +466,23 @@ mod tests {
         a.do_snippet_expand_at_cursor();
         // Now at $1.
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
             Some(1)
         );
         a.do_snippet_next_placeholder();
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
             Some(2)
         );
         a.do_snippet_next_placeholder();
         // $0 is the exit; at this point we're focused on it.
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
             Some(0)
         );
         a.do_snippet_next_placeholder();
         // Past $0 -> snippet dropped.
-        assert!(a.editor.active_snippet.is_none());
+        assert!(!a.editor.snippet_session.is_active());
     }
 
     #[test]
@@ -494,12 +494,12 @@ mod tests {
         a.do_snippet_expand_at_cursor();
         a.do_snippet_next_placeholder();
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
             Some(2)
         );
         a.do_snippet_prev_placeholder();
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
             Some(1)
         );
     }
@@ -510,7 +510,7 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
         a.do_snippet_expand_at_cursor();
-        assert!(a.editor.active_snippet.is_none());
+        assert!(!a.editor.snippet_session.is_active());
         // Buffer unchanged.
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
@@ -522,7 +522,7 @@ mod tests {
         // Stay in Normal -- guard inside `do_snippet_expand_at_cursor`.
         install_snippet(&mut a, "*", "for-loop", "for", "for $1 {}");
         a.do_snippet_expand_at_cursor();
-        assert!(a.editor.active_snippet.is_none());
+        assert!(!a.editor.snippet_session.is_active());
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for");
     }
 
@@ -575,8 +575,8 @@ mod tests {
         // Popup closed; active snippet is in flight focused on
         // $1; buffer reflects expansion.
         assert!(a.editor.insert_completion.is_none());
-        let active = a.editor.active_snippet.as_ref().expect("active snippet");
-        assert_eq!(active.current_index(), Some(1));
+        let snippet_index = a.editor.snippet_session.with_mut(|s| s.as_ref().expect("active snippet").current_index());
+        assert_eq!(snippet_index, Some(1));
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");
     }

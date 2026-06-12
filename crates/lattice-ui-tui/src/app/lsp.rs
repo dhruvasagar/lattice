@@ -5525,7 +5525,7 @@ mod tests {
             "snippet expanded: `{after_accept}`"
         );
         // Active snippet focused on $1 ("i").
-        assert!(a.editor.active_snippet.is_some(), "active snippet started");
+        assert!(a.editor.snippet_session.is_active(), "active snippet started");
         // Undo ONCE -> both the auto-import AND the snippet
         // expansion revert.
         a.undo_blocking().expect("undo");

@@ -419,6 +419,12 @@ impl Editor {
             lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::MajorEntered),
             lattice_runtime::SubscriptionTarget::Channel(major_entered_tx),
         );
+        // SN.2: the live snippet session, shared between the host
+        // (creates it on expand) and `SnippetActiveMode`'s
+        // `<Tab>`/`<S-Tab>` handlers (navigate it). The same Arc is
+        // both stored on the Editor and registered in ServiceRegistry.
+        let snippet_session: lattice_snippet::SnippetSessionHandle =
+            Arc::new(lattice_snippet::SnippetSession::new());
         // Inlay-hint refresh.
         let (lsp_inlay_refresh_tx, lsp_inlay_refresh_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
@@ -1058,6 +1064,11 @@ impl Editor {
                     crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()),
                 );
                 s.register::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
+                // SN.2: register the live snippet session so
+                // `SnippetActiveMode`'s `<Tab>`/`<S-Tab>` handlers can
+                // reach it from `on_activate`. Same Arc as the
+                // `Editor.snippet_session` field (set below).
+                s.register::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the
@@ -1319,7 +1330,7 @@ impl Editor {
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
             completion_in_path_context: false,
-            active_snippet: None,
+            snippet_session,
             snippet_dirs: Vec::new(),
             // M.7: use the pre-created Arc so the `services:` block
             // and `fold_registry` field share identity.

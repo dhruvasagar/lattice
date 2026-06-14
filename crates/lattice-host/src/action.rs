@@ -124,6 +124,20 @@ pub enum Action {
     /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
     /// as the most recently exited Visual selection.
     ReselectLastVisual,
+    /// SN.3d Select mode — a bare printable key replaces the whole
+    /// selection with this char and drops into Insert (one undo step).
+    /// The load-bearing new behaviour: see
+    /// `docs/dev/architecture/select-mode.md` §3. Emitted only by
+    /// `translate_select`'s printable fallthrough; the host handler
+    /// (`do_select_overtype`) lands it as a single `Edit::replace`.
+    SelectOvertype(char),
+    /// SN.3d Select-mode `<Esc>` — collapse the selection to a cursor
+    /// and drop to Normal (the Select analogue of [`Self::ExitVisual`]).
+    ExitSelect,
+    /// SN.3d `<C-g>` — toggle between `Visual(k)` and `Select(k)`,
+    /// preserving the selection geometry (reserved in both modes for
+    /// this toggle). One handler flips whichever of the two is active.
+    ToggleVisualSelect,
     /// Vim's `o` in Visual -- swap the cursor to the other end of the
     /// selection so motions / text objects act on that end.
     SwapVisualEnds,

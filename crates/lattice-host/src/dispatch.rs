@@ -1521,6 +1521,12 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::PasteText(_)
             | Action::EnterVisual(_)
             | Action::ExitVisual
+            // SN.3d.1: Select overtypes the buffer; exit/toggle change
+            // selection state — gated off read-only help buffers like
+            // their Visual peers.
+            | Action::SelectOvertype(_)
+            | Action::ExitSelect
+            | Action::ToggleVisualSelect
             | Action::ReselectLastVisual
             | Action::JoinLines { .. }
             | Action::ToggleCaseAtCursor
@@ -1808,6 +1814,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // `do_exit_visual` / `do_reselect_visual` cluster.
         Action::EnterVisual(kind) => editor.do_enter_visual(kind),
         Action::ExitVisual => editor.do_exit_visual(),
+        // SN.3d.1 Select mode (Visual's sibling — see select-mode.md).
+        Action::SelectOvertype(c) => editor.do_select_overtype(c),
+        Action::ExitSelect => editor.do_exit_select(),
+        Action::ToggleVisualSelect => editor.do_toggle_visual_select(),
         Action::ReselectLastVisual => editor.do_reselect_visual(),
         Action::SwapVisualEnds => editor.do_swap_visual_ends(),
         Action::SetMark(name) => {
@@ -21975,6 +21985,84 @@ impl Editor {
         }
     }
 
+    /// SN.3d.1 Select-mode overtype: a printable key in Select replaces
+    /// the whole selection with that char and drops into Insert. The
+    /// load-bearing new behaviour (select-mode.md §3).
+    ///
+    /// **One replace-range edit, NOT delete-then-insert.** The char is
+    /// the replacement text of a single `Edit::replace(span → c)`, so a
+    /// single `u` undoes the whole overtype. Two effects
+    /// (`Effect::Many([delete, insert])`) would risk two undo units.
+    ///
+    /// Graceful: a degenerate / unresolvable selection range falls back
+    /// to a plain insert-at-cursor — the keystroke is never dropped and
+    /// the editor never panics (select-mode.md §9).
+    pub fn do_select_overtype(&mut self, c: char) {
+        // Defensive: only meaningful in Select. A stray call from any
+        // other state is a no-op, never a panic.
+        if !matches!(self.modal, ModalState::Select(_)) {
+            return;
+        }
+        let range = {
+            let sels = self.document.selections();
+            crate::visual::selection_extent(sels.primary())
+        };
+        let mut buf = [0u8; 4];
+        let s: &str = c.encode_utf8(&mut buf);
+        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, &*s)) {
+            Ok(applied) => self.cursor = applied.inserted_range.end,
+            Err(_) => {
+                if let Ok(applied) = self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &*s))
+                {
+                    self.cursor = applied.inserted_range.end;
+                }
+            }
+        }
+        // Collapse the selection and land in Insert at the new cursor.
+        self.visual_anchor = None;
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(self.cursor),
+        ));
+        self.enter_mode(ModalState::Insert);
+    }
+
+    /// SN.3d.1 Select-mode `<Esc>`: capture the selection as
+    /// `last_visual` (so `gv` can restore it), collapse to a cursor at
+    /// the current head, and drop to Normal. The Select analogue of
+    /// [`Self::do_exit_visual`]; no terminal branch because Select is a
+    /// document-only state (terminals carry Visual on the buffer).
+    pub fn do_exit_select(&mut self) {
+        if let ModalState::Select(kind) = self.modal {
+            let sels = self.document.selections();
+            let sel = sels.primary();
+            self.last_visual = Some(crate::state::LastVisual {
+                anchor: sel.anchor,
+                head: sel.head,
+                kind,
+            });
+        }
+        self.modal = ModalState::Normal;
+        self.visual_anchor = None;
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(self.cursor),
+        ));
+    }
+
+    /// SN.3d.1 `<C-g>`: flip `Visual(k)` ↔ `Select(k)`, preserving the
+    /// selection geometry. The selection set + `visual_anchor` are
+    /// untouched — Select shares Visual's extent verbatim
+    /// (select-mode.md §2), so the toggle is a pure modal pivot. One
+    /// handler serves both directions (the Select `<C-g>` and the
+    /// Visual `<C-g>` entry chord wired in d.2).
+    pub fn do_toggle_visual_select(&mut self) {
+        match self.modal {
+            ModalState::Visual(kind) => self.modal = ModalState::Select(kind),
+            ModalState::Select(kind) => self.modal = ModalState::Visual(kind),
+            _ => {}
+        }
+    }
+
     /// `gv` -- restore the prior selection captured by `do_exit_visual`,
     /// or echo an error if there's no captured visual to reselect.
     pub fn do_reselect_visual(&mut self) {
@@ -30737,6 +30825,112 @@ mod tests {
         assert!(
             !text.contains("[+]"),
             ":ls output must not contain [+] for *messages*: {text}"
+        );
+    }
+
+    // ── SN.3d.1: Select-mode host handlers ──────────────────────
+    //
+    // The dispatch-table mapping (printable → SelectOvertype etc.)
+    // is covered in `keymap_select::tests`; these exercise the
+    // *handler bodies* end-to-end on a real `Editor`.
+
+    fn select_over(text: &str, anchor: (u32, u32), head: (u32, u32)) -> Editor {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        let mut editor = Editor::boot(lattice_core::Document::from_text(text));
+        editor.modal = ModalState::Select(lattice_grammar::VisualKind::Charwise);
+        let sel = Selection {
+            anchor: Position::new(anchor.0, anchor.1),
+            head: Position::new(head.0, head.1),
+            visual: Some(VisualMode::Charwise),
+        };
+        editor.set_selections_blocking(SelectionSet::single(sel));
+        editor.cursor = Position::new(head.0, head.1);
+        editor
+    }
+
+    #[test]
+    fn select_overtype_replaces_whole_span_as_one_undo() {
+        use lattice_protocol::position::Position;
+        // Charwise selection "hello" — head is inclusive (byte 4),
+        // so `selection_extent` spans 0..5.
+        let mut editor = select_over("hello world\n", (0, 0), (0, 4));
+        editor.do_select_overtype('X');
+        assert_eq!(
+            editor.document.text(),
+            "X world\n",
+            "the whole selection is replaced by the typed char"
+        );
+        assert_eq!(
+            editor.cursor,
+            Position::new(0, 1),
+            "cursor lands after the inserted char (Insert position)"
+        );
+        assert!(
+            matches!(editor.modal, ModalState::Insert),
+            "overtype drops into Insert"
+        );
+        // ONE replace-range edit ⇒ a single `u` restores the whole
+        // span (select-mode.md §3). Not delete-then-insert.
+        let _ = editor.undo_blocking();
+        assert_eq!(
+            editor.document.text(),
+            "hello world\n",
+            "a single undo restores the entire overtyped span"
+        );
+    }
+
+    #[test]
+    fn select_overtype_on_empty_buffer_is_graceful() {
+        // Degenerate selection at the start of an empty line: the
+        // overtype must never panic and must not drop the keystroke
+        // (select-mode.md §9).
+        let mut editor = select_over("\n", (0, 0), (0, 0));
+        editor.do_select_overtype('Z');
+        assert!(
+            editor.document.text().contains('Z'),
+            "the typed char still lands"
+        );
+        assert!(matches!(editor.modal, ModalState::Insert));
+    }
+
+    #[test]
+    fn exit_select_collapses_to_normal_and_stashes_gv() {
+        let mut editor = select_over("hello\n", (0, 0), (0, 4));
+        editor.do_exit_select();
+        assert!(
+            matches!(editor.modal, ModalState::Normal),
+            "<Esc> in Select returns to Normal"
+        );
+        assert!(
+            editor.last_visual.is_some(),
+            "the prior selection is captured so `gv` can restore it"
+        );
+    }
+
+    #[test]
+    fn toggle_flips_visual_and_select_both_ways() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        editor.do_enter_visual(lattice_grammar::VisualKind::Charwise);
+        assert!(matches!(
+            editor.modal,
+            ModalState::Visual(lattice_grammar::VisualKind::Charwise)
+        ));
+        editor.do_toggle_visual_select();
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "<C-g> from Visual enters Select, same kind"
+        );
+        editor.do_toggle_visual_select();
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Visual(lattice_grammar::VisualKind::Charwise)
+            ),
+            "<C-g> from Select returns to Visual, same kind"
         );
     }
 }

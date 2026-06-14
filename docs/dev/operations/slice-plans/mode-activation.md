@@ -511,15 +511,37 @@ of the expand/leave migration and carries its own risk surface.
   as a `CommandInvocation`.
 
   **Sub-slices (sketch, sequenced at build):**
-  - **(d.0)** `ModalState::Select` + `BindingMode::Select` + `is_select()` /
-    scoped `selection_is_active()` predicates **+ the exhaustive-match audit**:
-    fill every `ModalState` match that needs a `Select` arm (`cursor_shape.rs`
-    `=> Block`, the `input.rs` dispatch hub, GPUI `window.rs`, TUI `render.rs`,
-    TUI `app/*`), and audit each `Visual(kind)` site for a sibling `Select(kind)`
-    arm. Ships the Visual≡Select parity test.
-  - **(d.1)** `translate_select` dispatch (genuinely new logic — `dispatch_visual`
-    has no printable fallthrough) + the replace-and-insert printable fallthrough
-    as a **single replace-edit** (single-undo) + `<Esc>`/`<C-g>`/`<C-o>` controls.
+  - **(d.0) ✅ (`cd5f9cb9`)** `ModalState::Select(VisualKind)` + `is_select()`
+    (grammar) + `BindingMode::Select` (keymap, label/all/count 22→23). The
+    exhaustive-match audit used the compiler as the tool: only **two** sites were
+    truly exhaustive `ModalState` matches — `cursor_shape.rs` (`Select(_) => Block`
+    + a Visual≡Select parity test) and the TUI status tag (`Select(_) => "SELECT"`,
+    kind-agnostic like `"VISUAL"`). The ~677 other `ModalState::` use-sites are
+    constructions / `matches!` / `_`-arms; the `Visual(kind)`-sibling sites
+    (selection render, status) that *should* treat `Select` identically but won't
+    fail to compile are d.2 work (render parity). `selection_is_active()` was
+    **deferred** per no-speculative-abstraction — verified zero production
+    `is_visual()` callers (production branches via `matches!` directly), and
+    Select can't dispatch operators, so no consumer exists yet.
+  - **(d.1) ✅** `translate_select` dispatch (`keymap_select.rs`, new module) —
+    genuinely new logic: a bound motion/exit wins, an **unbound printable falls
+    through to overtype** (`dispatch_visual` has no such fallthrough; the
+    reference is `dispatch_insert`'s `literal_text_fallback`). Control chords:
+    `<Esc>` → `ExitSelect`, `<C-g>` → `ToggleVisualSelect` (one handler flips
+    Visual↔Select either way, selection preserved), `<C-o>` → swallowed
+    (post-MVP per §3). New `Action`s: `SelectOvertype(char)` / `ExitSelect` /
+    `ToggleVisualSelect`. Host handlers: `do_select_overtype` lands the overtype
+    as **one `Edit::replace(span → c)`** (single undo, verified by test) then
+    `enter_mode(Insert)`; `do_exit_select` collapses + stashes `last_visual` for
+    `gv`; `do_toggle_visual_select` is a pure modal pivot. Selection geometry
+    extracted to one shared `visual::selection_extent` helper (Visual + Select,
+    no drift — §2). Routing arm `Select(kind) => translate_select` added in
+    `input.rs` (was the `_ => Action::None` catch-all). Graceful: overtype on a
+    degenerate selection falls back to insert-at-cursor, never panics.
+    Tests: 6 dispatch (`keymap_select`) + 4 host-handler (overtype single-undo,
+    empty-buffer graceful, exit→Normal+gv, toggle both ways). No new bench —
+    the overtype is one edit, same cost class as Visual `c`; the keystroke→glyph
+    bench covers the dispatch path holistically.
   - **(d.2)** entry chords (`gh`/`gH`/`g<C-h>` under the `AfterG` table; Visual
     `<C-g>` toggle — confirm `<C-g>` is free in Visual first) + status-line +
     TUI/GPUI selection-render **and** cursor-shape parity (grammar→terminal
@@ -635,11 +657,16 @@ K.1.c gating + leave relocation, `ad33b2f9`), SN.3c.2b (`fall_through` binding
 primitive + snippet `<Esc>` + `:describe-key`, `3df8521b`; e2e test `b89f53c5`;
 design fragment keymap-architecture §14 `7283502e`). SN.3f ✅ (`4b49b810`),
 SN.3g ✅ (`687ed1c3`). SN.3e ✅ (buffer-keyed snippet session, 2026-06-14).
-SN.3d 🗒 **designed** (vim Select mode — see
+SN.3d 🚧 **building** (vim Select mode — see
 [select-mode.md](../../architecture/select-mode.md), `b14b2fc7` + review-tightening
-`db10ba4b`), not built.
-**Remaining work: SN.3d (build Select mode) — now unblocked (SN.3e landed first
-per the locked sequencing).**
+`db10ba4b`). **d.0 ✅** (`cd5f9cb9`: `ModalState::Select` + `BindingMode::Select`
++ exhaustive-match audit + cursor-shape parity test). **d.1 ✅** (`translate_select`
+dispatch + printable-overtype single replace-edit + `<Esc>`/`<C-g>`/`<C-o>`
+controls + `do_select_overtype`/`do_exit_select`/`do_toggle_visual_select` host
+handlers + shared `selection_extent`; 10 tests).
+**Remaining work: SN.3d.2** (entry chords `gh`/`gH`/`g<C-h>` + `register_select_bindings`
++ Visual≡Select parity test + TUI/GPUI selection-render + status-line +
+`:describe-mode` + macro record/replay) **then SN.3d.3** (snippet consumer + doc-debt).
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

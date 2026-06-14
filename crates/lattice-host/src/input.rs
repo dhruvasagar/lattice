@@ -390,6 +390,12 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         ModalState::Visual(kind) => {
             dispatch_visual(ctx.keymap, &chord, kind, ctx.partial_chord)
         }
+        // SN.3d.1: Select mode — Visual's sibling with inverted typing
+        // semantics. Genuinely new dispatch (a bare printable overtypes
+        // the selection); see `keymap_select::translate_select`.
+        ModalState::Select(kind) => {
+            crate::keymap_select::translate_select(ctx.keymap, &chord, kind, ctx.partial_chord)
+        }
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`

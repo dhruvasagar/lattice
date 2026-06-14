@@ -539,6 +539,20 @@ impl Mode for SnippetActiveMode {
                     );
                     registrations.push(action_handlers.register(id, handler));
                 }
+            } else {
+                // SN.3f: the handlers tolerate missing services (unit
+                // harnesses that activate the mode without full boot
+                // wiring), but a *production* boot that reaches here has
+                // a mis-wired ServiceRegistry and the snippet chords
+                // will dead — surface it. `debug!` not `info!` per
+                // `feedback_log_levels` (per-activation, opt-in via
+                // `--log-level debug`).
+                tracing::debug!(
+                    target: "lattice_snippet::modes",
+                    "active-snippet-mode: nav/leave handlers not registered — \
+                     SnippetSession / CommandRegistry / ActionHandlerRegistry \
+                     service absent; <Tab>/<S-Tab>/<Esc> will fall through"
+                );
             }
 
             Ok(SnippetActiveModeGuard {
@@ -1016,6 +1030,26 @@ mod tests {
         assert_eq!(handlers.registered_count(), 0);
         assert!(handlers.lookup(next_id).is_none());
         assert!(handlers.lookup(leave_id).is_none());
+    }
+
+    /// SN.3f: when a required service is absent (here:
+    /// `CommandRegistryHandle`), `on_activate` skips handler
+    /// registration entirely — the mode still activates (guard
+    /// returned, keymap-scoping works) but no handlers land, and it
+    /// logs a `debug!` on the skip path. Asserts the skip via the
+    /// (present) action-handler registry staying empty.
+    #[test]
+    fn on_activate_skips_registration_when_a_service_is_absent() {
+        let session: SnippetSessionHandle = Arc::new(crate::session::SnippetSession::new());
+        let action_handlers: ActionHandlerRegistryHandle =
+            Arc::new(lattice_mode::ActionHandlerRegistry::new());
+        let mut services = lattice_mode::ServiceRegistry::new();
+        services.register::<SnippetSessionHandle>(session);
+        services.register::<ActionHandlerRegistryHandle>(action_handlers.clone());
+        // No `CommandRegistryHandle` registered → the `if let` fails →
+        // the skip branch runs.
+        let _guard = activate_mode(Arc::new(services));
+        assert_eq!(action_handlers.registered_count(), 0);
     }
 
     /// `<Tab>` walks `$1 -> $2 -> $0`, then a fourth fire walks off

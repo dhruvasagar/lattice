@@ -10,6 +10,8 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# SN.3f: `debug!` on the `active-snippet-mode` handler-skip path.
+tracing = { workspace = true }
 # CSM.5: lattice-snippet owns `SnippetCompletionMode` (the
 # `Mode` adapter) + `SnippetCompletionSource` (the
 # `SyncCompletionSource` impl). Neither lattice-mode nor

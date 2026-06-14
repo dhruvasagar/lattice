@@ -37,7 +37,12 @@
 //! - `<Tab>` -> `Action::Insert("\t")`
 //! - `<C-Space>` -> [`Action::CompletionTrigger`]
 //! - `[<C-x>, <C-o>]` -> [`Action::CompletionTrigger`] (omni-completion)
-//! - `[<C-x>, <C-s>]` -> [`Action::SnippetExpand`]
+//!
+//! SN.3c.1 (2026-06-14): `[<C-x>, <C-s>]` (snippet-expand) is no
+//! longer a Builtin binding — it lives on `snippet-mode`'s `keymap()`
+//! (`KeymapLayer::MinorMode("snippet-mode")`). `<C-x>` stays a partial
+//! prefix because that mode's layer (boot-pushed) provides the
+//! `<C-x><C-s>` terminal.
 //!
 //! `<C-x>` itself is a *partial* trie node (no terminal binding;
 //! children only). Lookup at `[<C-x>]` returns
@@ -175,16 +180,14 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
     // `<C-Space>` is the sole popup-open trigger; per-source
     // filter chords live inside `completion-popup-mode` (CSM.K2).
-    // `<C-x><C-s>` (snippet-expand-at-cursor) is independent of
-    // the popup family and stays.
-    // <C-x><C-s> -- direct snippet expansion.
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('s'))],
-        CommandInvocation::of(actions.snippet_expand),
-        source(),
-    );
+    // SN.3c.1 (2026-06-14): `<C-x><C-s>` (snippet-expand) moved off
+    // Builtin onto `snippet-mode`'s `keymap()` at
+    // `KeymapLayer::MinorMode("snippet-mode")` — the chord choice now
+    // lives with the mode that owns the behavior
+    // (`feedback_mode_owns_its_surface`). `<C-x>` is no longer a live
+    // Builtin prefix; the merged trie still resolves it as a `Partial`
+    // through the (boot-pushed) snippet-mode layer, so the two-key
+    // chord still absorbs + dispatches via `dispatch_insert`.
 }
 
 /// Build the completion-popup minor-mode layer's binding set.

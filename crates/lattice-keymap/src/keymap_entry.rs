@@ -378,7 +378,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         // inside `completion-popup-mode`, contributed via each
         // source mode's `popup_filter_chord` field).
         keymap_entry! { mode: Insert, chord: "<C-Space>", doc: "Manual completion trigger -- opens the popup with sources matching the prefix at the cursor" },
-        keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family. `<C-x><C-s>` (snippet-expand-at-cursor) is the only live chord today." },
+        keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family. `<C-x><C-s>` (snippet-expand-at-cursor) is the only live chord today, contributed by `snippet-mode` (SN.3c.1), not Builtin." },
         // Completion-popup minor mode -- bindings active only
         // while `App.insert_completion.is_some()`. Override
         // Insert-mode + Normal-mode meanings (notably <C-d>)

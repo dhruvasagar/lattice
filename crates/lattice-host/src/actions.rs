@@ -539,11 +539,21 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Insert mode's `<C-Space>` / `<C-x><C-o>`: trigger the completion popup.",
             AppEffect::CompletionTrigger,
         ),
-        snippet_expand: register_simple(
-            registry,
+        // SN.3c.1 (2026-06-14): the CommandSpec stays (the
+        // `snippet-mode` chord binds it + the mode's global
+        // `ActionHandlerRegistry` handler keys on it), but its
+        // `apply` is now a dead `Effect::None`: the handler always
+        // intercepts before the grammar Action gate, so this body
+        // never runs. Kept (not deleted) so the `CommandId` resolves
+        // for the chord binding + handler registration.
+        snippet_expand: registry.register_action(
             "action:snippet-expand",
-            "Insert mode's `<C-x><C-s>`: direct snippet expansion.",
-            AppEffect::SnippetExpand,
+            "Insert mode's `<C-x><C-s>`: direct snippet expansion (mode-owned; \
+             `snippet-mode`'s handler emits `Effect::ExpandSnippet`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         exit_visual: register_simple(
             registry,

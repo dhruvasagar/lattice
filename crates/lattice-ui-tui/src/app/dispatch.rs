@@ -434,8 +434,8 @@ impl App {
             // payload, so it lives in its own ignore-binding arm
             // below.)
             | Action::LspDocumentSymbolRequest
-            // 5.5.SNIPPET.1: `<C-x><C-s>` snippet expand migrated.
-            | Action::SnippetExpand
+            // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed —
+            // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // Phase 5.8.AF.5 / Slice 3c.final.C: renderer-side
             // non-dispatch mutation lifts. Bodies live in
             // `Editor::dispatch`'s match; the App wrapper just
@@ -555,9 +555,8 @@ impl App {
             | Action::CompletionFilterToSource(_)
             | Action::CompletionFilterClear
             | Action::CompletionAcceptThenInsert(_) => {}
-            // 5.5.SNIPPET.1: `Action::SnippetExpand` migrated to
-            // `Editor::dispatch`; routed through the grouped no-op
-            // above.
+            // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed;
+            // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`
             // migrated to `Editor::dispatch`.
             // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
@@ -1019,7 +1018,11 @@ impl App {
             Effect::LspComplete => self.mutate_editor_with(move |e| e.lsp_completion_request()),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
-            Effect::SnippetExpand => self.mutate_editor_with(move |e| e.do_snippet_expand_at_cursor()),
+            // SN.3c.1: mode-owned `<C-x><C-s>` emits the trigger range;
+            // the host resolves + expands (`expand_snippet_from_range`).
+            Effect::ExpandSnippet { replace_range } => {
+                self.mutate_editor_with(move |e| e.expand_snippet_from_range(replace_range))
+            }
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
             // 5.5.F.3: `DescribeEvents` / `DescribeEvent` /
@@ -1202,7 +1205,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -1300,7 +1303,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

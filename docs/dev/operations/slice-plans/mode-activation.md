@@ -345,9 +345,27 @@ Sub-slices:
     global handler resolves for any buffer; survives an unrelated mode's
     activate/deactivate) · no bench/doc beyond this entry.
 
-  - **SN.3c.1 🗒 — snippet uses it (expand migration). FINALIZED 2026-06-14**
+  - **SN.3c.1 ✅ (2026-06-14) — snippet uses it (expand migration).**
     (design refined during build; supersedes the earlier `{ snippet_name,
     replace_range }` shape and the `:snippet-expand`/`RunModeAction` plan).
+    As landed: `<C-x><C-s>` moved off Builtin onto `SnippetMode::keymap()`
+    (`KeymapLayer::MinorMode("snippet-mode")`, Insert); `SnippetMode::action_handlers()`
+    contributes one *global* handler bound to `action:snippet-expand` that does the
+    word-prefix scan (`snippet_trigger_range`, pure + unit-tested) and emits
+    `Effect::ExpandSnippet { replace_range }`. The host arm
+    (`Editor::expand_snippet_from_range`) owns resolution + expansion (language +
+    registry + variables + splice via `expand_snippet`). Removed:
+    `do_snippet_expand_at_cursor`, `Action::SnippetExpand`, `AppEffect::SnippetExpand`,
+    `Effect::SnippetExpand`, the `:snippet-expand` ex-command + `ExBuiltins.snippet_expand`,
+    the `<C-x><C-s>` Builtin binding, and the `App::do_snippet_expand_at_cursor` delegate.
+    `action:snippet-expand` CommandSpec kept (chord binds it + handler keys on it); its
+    `apply` is a dead `Effect::None`. TUI+GPUI parity: both peers' apply arms call
+    `expand_snippet_from_range`; classifier matches updated. Tests: lattice-snippet 92 ✅
+    (+6 SN.3c.1: keymap/handler/trigger-range ×4 + no-op-when-buffer-unavailable);
+    host green bar (1 pre-existing arg-slot red unrelated); ui-tui 1464 ✅ / 5 pre-existing
+    reds (tutor ×2, arg-slot ×3); gpui builds. Docs synced (`docs/user/completion.md`,
+    `docs/dev/architecture/insert-completion.md`). **Original FINALIZED design follows
+    (preserved for rationale):**
     1. **Binding.** `<C-x><C-s>` moves off Builtin (`keymap_insert.rs`) onto
        `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`
        (Insert mode); K.1.c gates it to `snippet-mode`-active buffers.

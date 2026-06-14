@@ -81,6 +81,12 @@ mod tests {
         let mut mr = lattice_mode::ModeRegistry::new();
         mr.register(lattice_snippet::modes::SnippetActiveMode)
             .expect("register active-snippet-mode");
+        // SN.3c.1: `snippet-mode` owns the `<C-x><C-s>` expand chord
+        // (Insert) via `keymap()`. Register it here too so the
+        // translated layer carries the chord — mirrors boot, where
+        // `<C-x><C-s>` is no longer a Builtin binding.
+        mr.register(lattice_snippet::modes::SnippetMode::new())
+            .expect("register snippet-mode");
         lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, shared_registry());
     }
 
@@ -183,13 +189,17 @@ mod tests {
     #[test]
     fn ctrl_x_in_base_insert_absorbs_partial_chord() {
         // Slice 8.i.4.b: pressing `<C-x>` returns
-        // `Action::AbsorbPartialChord(<C-x>)` instead of
-        // `Action::SetPending(Pending::AfterCtrlX)`. The trie's
-        // `Partial` result drives the App's `partial_chord`
-        // stack; the next keystroke runs through `dispatch_insert`
-        // with that prefix and resolves `<C-x><C-o>` /
-        // `<C-x><C-s>`.
-        let h = populated_handle();
+        // `Action::AbsorbPartialChord(<C-x>)`. The trie's `Partial`
+        // result drives the App's `partial_chord` stack; the next
+        // keystroke runs through `dispatch_insert` with that prefix
+        // and resolves `<C-x><C-s>`.
+        //
+        // SN.3c.1: `<C-x>` is a partial prefix ONLY because
+        // `snippet-mode`'s layer provides the `<C-x><C-s>` terminal —
+        // it's no longer Builtin. Use the snippet-layer handle so the
+        // merged trie sees the prefix (matches boot, where the layer
+        // is pushed).
+        let h = populated_handle_with_snippet();
         let r = dispatch_insert(&h, &ev(KeyCode::Char('x'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::ctrl('x')),
@@ -216,7 +226,11 @@ mod tests {
 
     #[test]
     fn ctrl_x_then_ctrl_s_resolves_to_snippet_expand() {
-        let h = populated_handle();
+        // SN.3c.1: `<C-x><C-s>` is contributed by `snippet-mode`'s
+        // layer (not Builtin), so resolve against the snippet-layer
+        // handle — same merged trie the editor sees once the layer is
+        // boot-pushed.
+        let h = populated_handle_with_snippet();
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
@@ -411,10 +425,18 @@ mod tests {
 
     #[test]
     fn popup_ctrl_x_falls_through_to_base_insert_partial_chord() {
-        // Slice 8.i.4.b: the popup layer doesn't bind <C-x>;
-        // lookup falls through to base Insert which has it as a
-        // partial node, returning `AbsorbPartialChord(<C-x>)`.
-        let h = populated_handle_with_popup();
+        // Slice 8.i.4.b: the popup layer doesn't bind <C-x>; lookup
+        // falls through to the `<C-x>` partial node, returning
+        // `AbsorbPartialChord(<C-x>)`.
+        //
+        // SN.3c.1: that partial node is no longer Builtin — it's
+        // contributed by `snippet-mode`'s `<C-x><C-s>` layer. In
+        // production both layers coexist (snippet-mode is Global on
+        // every document buffer, popup-mode is active while the popup
+        // is open), so the fixture pushes both. The assertion still
+        // protects the same property: the popup layer must not shadow
+        // the `<C-x>` partial.
+        let h = populated_handle_with_both();
         let r = dispatch_insert(&h, &ev(KeyCode::Char('x'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::ctrl('x')),

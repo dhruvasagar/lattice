@@ -464,13 +464,21 @@ pub enum Effect {
     /// needed) and applies the action's WorkspaceEdit /
     /// command. Phase 4.3.
     LspCodeAction,
-    /// `:snippet-expand` -- direct snippet expansion at the
-    /// cursor (Phase 4.2.g.4). Looks up the word at the
-    /// cursor in the per-language snippet registry; expands
-    /// the first matching snippet without surfacing the
-    /// completion popup. No-op when no snippet matches.
-    /// Surface-form alias of the `<C-x><C-s>` chord.
-    SnippetExpand,
+    /// SN.3c.1: direct snippet expansion over a known trigger
+    /// range. The mode-owned `<C-x><C-s>` handler
+    /// (`snippet-mode`'s `action_handlers()`) does the word-prefix
+    /// scan and emits this with `replace_range = token-start..cursor`;
+    /// the **host** owns resolution + expansion (language detection,
+    /// registry lookup, variable render, buffer splice + session
+    /// install) via `Editor::expand_snippet_from_range`. A deliberate
+    /// first-party effect: the typed `Effect` enum stays a host-owned
+    /// vocabulary (`feedback_effect_vocabulary_is_host_boundary`) —
+    /// the mode owns the *trigger*, the host owns the *expansion
+    /// mechanics*. No-op (quiet info echo) when no snippet matches the
+    /// prefix.
+    ExpandSnippet {
+        replace_range: lattice_protocol::position::Range,
+    },
     /// `:reload-snippets` -- re-read every snippet file from
     /// disk and rebuild the per-language registry (Phase
     /// 4.2.g.4). Useful after editing a `.code-snippets` /

@@ -287,11 +287,11 @@ pub enum AppEffect {
     /// keeps its legacy `bind_action` registration until that
     /// helper picks up `CommandInvocation` (separate scope).
     CompletionTrigger,
-    /// Insert mode's `<C-x><C-s>`. Direct snippet expansion at
-    /// the cursor (matches the longest snippet prefix without
-    /// surfacing the completion popup). Promoted from
-    /// `Action::SnippetExpand` in slice 8.i.1.g.
-    SnippetExpand,
+    // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed.
+    // `<C-x><C-s>` is now mode-owned (`snippet-mode`'s `keymap()` +
+    // `action_handlers()`): the handler scans the word prefix and
+    // emits `Effect::ExpandSnippet { replace_range }`, which the host
+    // resolves + expands. No host `Action` / `AppEffect` round-trip.
     /// Visual mode's `<Esc>` / `v` / `V`. Exit Visual to Normal,
     /// collapsing the selection. Promoted from `Action::ExitVisual`
     /// in slice 8.i.1.h.

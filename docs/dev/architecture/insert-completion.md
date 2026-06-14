@@ -597,7 +597,7 @@ resolve to ex-commands; users override via
 | `<C-x><C-o>` | `ex:completion-trigger` | Manual trigger |
 | `<C-Space>` | `ex:completion-trigger` | Manual trigger (alternate) |
 | `<Tab>` | smart-tab | Trigger if cursor is right after a word char; insert tab otherwise |
-| `<C-x><C-s>` | `ex:snippet-expand` | Snippet-only expansion (skips the popup; expands a snippet matching the word at cursor, if any) |
+| `<C-x><C-s>` | n/a (mode-owned chord; no ex-command form — SN.3c.1) | Snippet-only expansion (skips the popup; expands a snippet matching the word at cursor, if any). Contributed by `snippet-mode` (`keymap()` + `action_handlers()` → `Effect::ExpandSnippet`), not Builtin. |
 
 ### 6.3 Default keymap (active-snippet minor mode)
 
@@ -648,7 +648,6 @@ or from `init.rs`:
 | `ex:completion-scroll-docs-down` | `:complete-docs-down` | |
 | `ex:completion-scroll-docs-up` | `:complete-docs-up` | |
 | `ex:completion-accept-then-insert` | n/a (commit-char internal; commands surface accept then `feedkey` separately) | |
-| `ex:snippet-expand` | `:snippet-expand` | Optional `<word>` arg; without, expands the snippet at cursor |
 | `ex:snippet-next-placeholder` | `:snippet-next` | |
 | `ex:snippet-prev-placeholder` | `:snippet-prev` | |
 | `ex:snippet-leave` | `:snippet-leave` | |
@@ -911,11 +910,14 @@ words / etc. results, accept any of them. The
 host routes the candidate through the snippet engine
 instead of the plain insert path.
 
-The dedicated `<C-x><C-s>` chord (`:snippet-expand`) is the
-escape hatch for "I know the snippet's prefix; expand it
-without seeing the popup." It looks up the prefix at cursor
-in the registry, expands directly, and skips the popup
-entirely.
+The dedicated `<C-x><C-s>` chord is the escape hatch for "I
+know the snippet's prefix; expand it without seeing the
+popup." It looks up the prefix at cursor in the registry,
+expands directly, and skips the popup entirely. As of
+SN.3c.1 the chord is mode-owned (`snippet-mode`'s `keymap()`
+binds it; its `action_handlers()` scans the word prefix and
+emits `Effect::ExpandSnippet`, which the host resolves +
+expands) — there is no `:snippet-expand` ex-command.
 
 ---
 
@@ -1195,7 +1197,8 @@ Deliverables:
 - Snippet registry loads bundled + friendly-snippets-style
   packs + user + project snippets in priority order.
 - `gen:snippet` source feeds into the unified popup.
-- `<C-x><C-s>` (`:snippet-expand`) for direct expansion.
+- `<C-x><C-s>` (mode-owned chord, no ex-command form) for
+  direct expansion.
 - Choice placeholders open an inline mini-picker;
   transformation placeholders re-evaluate per-edit.
 - LSP item routing: `insertTextFormat == Snippet` items go

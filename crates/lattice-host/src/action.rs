@@ -297,12 +297,10 @@ pub enum Action {
     /// action keeps the input layer ignorant of commit-char
     /// state -- the App reads it once at apply time.
     CompletionAcceptThenInsert(char),
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase
-    /// 4.2.g.4). Looks up the word at the cursor in the
-    /// per-language snippet registry; expands the matching
-    /// snippet directly without surfacing the popup. No-op
-    /// when no snippet matches.
-    SnippetExpand,
+    // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
+    // `<C-x><C-s>` is mode-owned now (`snippet-mode`'s `keymap()` +
+    // `action_handlers()` emit `Effect::ExpandSnippet`); no host
+    // `Action` round-trip. (`feedback_mode_owns_its_surface`.)
     // SN.2b (2026-06-12): `SnippetNextPlaceholder` /
     // `SnippetPrevPlaceholder` removed — `<Tab>` / `<S-Tab>`
     // placeholder navigation is mode-owned

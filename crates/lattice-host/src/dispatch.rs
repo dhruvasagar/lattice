@@ -2127,8 +2127,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // stay App-side (picker machinery still resident there).
         Action::LspDocumentSymbolRequest => editor.lsp_document_symbol_request(),
         Action::LspWorkspaceSymbolRequest(query) => editor.lsp_workspace_symbol_request(&query),
-        // 5.5.SNIPPET.1: `<C-x><C-s>` -- direct snippet expansion.
-        Action::SnippetExpand => editor.do_snippet_expand_at_cursor(),
+        // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
+        // `<C-x><C-s>` is mode-owned now — `snippet-mode`'s
+        // `ActionHandlerRegistry` handler emits
+        // `Effect::ExpandSnippet`, resolved by the host effect arm.
         // 5.5.G.23: keystone — every operator / motion / text-object /
         // ex-command dispatch flows through here. `run_invocation`
         // selects the runner (action / oil / help / file-tree /
@@ -5111,7 +5113,8 @@ impl Editor {
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
-            AppEffect::SnippetExpand => out.next_actions.push(Action::SnippetExpand),
+            // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed
+            // — `<C-x><C-s>` no longer round-trips through a host Action.
             AppEffect::ExitVisual => out.next_actions.push(Action::ExitVisual),
             AppEffect::ReplaceUndoLast => out.next_actions.push(Action::ReplaceUndoLast),
             AppEffect::EnterMode(state) => out.next_actions.push(Action::EnterMode(state)),
@@ -15534,9 +15537,15 @@ impl Editor {
     }
 }
 
-/// 5.5.SNIPPET.1: pure-editor snippet expansion. With
-/// `active_language_id` and `is_word_char_byte` now host-side,
-/// `do_snippet_expand_at_cursor` migrates here too.
+/// 5.5.SNIPPET.1: pure-editor snippet expansion.
+///
+/// SN.3c.1 (2026-06-14): the chord trigger + word-prefix scan moved
+/// to `snippet-mode` (`lattice-snippet`); the host keeps only the
+/// *expansion mechanics* as `Editor::expand_snippet_from_range`
+/// (language detection + registry lookup + variable render + splice),
+/// invoked by the `Effect::ExpandSnippet { replace_range }` arm. The
+/// old `do_snippet_expand_at_cursor` (which also did the scan) is gone
+/// (`feedback_mode_owns_its_surface`).
 ///
 /// SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder navigation
 /// (`do_snippet_next/prev_placeholder` + `move_cursor_to_snippet_group`)
@@ -15805,27 +15814,31 @@ impl Editor {
         }
     }
 
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
-    /// Looks up the word at the cursor in the per-language snippet
-    /// registry; expands the matching snippet directly without
-    /// surfacing the popup.
-    pub fn do_snippet_expand_at_cursor(&mut self) {
-        if !matches!(self.modal, ModalState::Insert) {
-            return;
-        }
+    /// SN.3c.1: host-owned snippet resolution + expansion for a
+    /// known trigger range. The mode-owned `<C-x><C-s>` handler
+    /// (`snippet-mode`'s `action_handlers()`) does the word-prefix
+    /// scan and emits `Effect::ExpandSnippet { replace_range }`; this
+    /// host arm owns the *expansion mechanics*: `prefix` = the buffer
+    /// text inside `replace_range`; `language` =
+    /// [`active_language_id`](Self::active_language_id) (host-owned
+    /// path→language detection — duplicating it in the mode would be
+    /// worse, so the mode does NOT resolve the snippet); lookup
+    /// `(language, prefix)` then the `"*"` bucket; render with the
+    /// host-owned `VariableContext`; reuse
+    /// [`expand_snippet`](Self::expand_snippet) for the splice +
+    /// session + cursor. The range end IS the cursor (the handler
+    /// emits `token-start..cursor` and the cursor hasn't moved), so
+    /// `expand_snippet`'s `anchor..cursor` replace is correct.
+    /// Graceful: no prefix / no matching snippet → quiet info echo.
+    pub fn expand_snippet_from_range(&mut self, replace_range: lattice_protocol::position::Range) {
         let snap = self.document.snapshot();
-        let line_text = snap.buffer.line(self.cursor.line).unwrap_or_default();
-        let bytes = line_text.as_bytes();
-        let cursor_byte = self.cursor.byte as usize;
-        let mut start = cursor_byte;
-        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        let anchor = lattice_protocol::position::Position::new(self.cursor.line, start as u32);
-        let prefix: String = line_text
-            .get(start..cursor_byte.min(line_text.len()))
-            .unwrap_or("")
-            .to_string();
+        let line_text = snap
+            .buffer
+            .line(replace_range.start.line)
+            .unwrap_or_default();
+        let start = (replace_range.start.byte as usize).min(line_text.len());
+        let end = (replace_range.end.byte as usize).min(line_text.len());
+        let prefix: String = line_text.get(start..end).unwrap_or("").to_string();
         if prefix.is_empty() {
             self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
             return;
@@ -15844,7 +15857,7 @@ impl Editor {
             self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
             return;
         };
-        self.expand_snippet(&snippet.body, anchor);
+        self.expand_snippet(&snippet.body, replace_range.start);
     }
 }
 
@@ -25174,7 +25187,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -25273,7 +25286,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

@@ -41,15 +41,12 @@ use super::SnippetCandidateMeta;
 use lattice_host::dispatch::EffectiveCompletionConfig;
 
 impl App {
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
-    /// 5.5.SNIPPET.1: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_expand_at_cursor`].
-    /// Delegate retained for direct test callers in this file and
-    /// for the `Effect::SnippetExpand` route through `App::apply`.
-    pub fn do_snippet_expand_at_cursor(&mut self) {
-        // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(|e| e.do_snippet_expand_at_cursor());
-    }
+    // SN.3c.1 (2026-06-14): the `do_snippet_expand_at_cursor` App
+    // delegate is gone. `<C-x><C-s>` is mode-owned now — `snippet-mode`
+    // contributes the chord (`keymap()`) + a global handler
+    // (`action_handlers()`) that emits `Effect::ExpandSnippet`; the
+    // host resolves + expands via `Editor::expand_snippet_from_range`,
+    // which the `Effect::ExpandSnippet` apply arm calls directly.
 
     // SN.2b (2026-06-12): the `do_snippet_next/prev_placeholder`
     // App delegates are gone. `<Tab>` / `<S-Tab>` placeholder
@@ -419,12 +416,21 @@ mod tests {
         assert_ne!(f, v);
     }
 
+    // SN.3c.1 (2026-06-14): the expand path is now driven by the
+    // host's `Editor::expand_snippet_from_range(replace_range)` — the
+    // mode-owned `<C-x><C-s>` handler scans the word prefix and emits
+    // `Effect::ExpandSnippet { replace_range }`; these tests exercise
+    // the host's resolution + expansion mechanics by calling it with
+    // the range the scan would produce (`token-start..cursor`). The
+    // scan itself (range computation) is covered in
+    // `lattice_snippet::modes` (`trigger_range_*`).
+
     #[test]
-    fn snippet_expand_at_cursor_splices_body_and_focuses_first_tabstop() {
-        // Buffer: `for `; cursor sits past the prefix `for`
-        // so the lookup picks it up. After expansion we
-        // expect the snippet's literal text in the buffer
-        // and an active snippet pointing at $1.
+    fn snippet_expand_from_range_splices_body_and_focuses_first_tabstop() {
+        // Buffer: `for`; the trigger range covers the prefix `for`
+        // (token-start..cursor = (0,0)..(0,3)). After expansion we
+        // expect the snippet's literal text in the buffer and an
+        // active snippet pointing at $1.
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
@@ -435,7 +441,10 @@ mod tests {
             "for",
             "for ${1:i} in ${2:iter} { $0 }",
         );
-        a.do_snippet_expand_at_cursor();
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
         // Buffer text should be the rendered snippet.
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
@@ -452,30 +461,29 @@ mod tests {
     // `lattice_snippet::modes` as a handler-level dispatch test —
     // the `<Tab>` / `<S-Tab>` bodies are now `active-snippet-mode`
     // `ActionHandlerRegistry` closures, so the session-transition
-    // coverage belongs where the handlers live. The expand path
-    // below stays host-resident (`do_snippet_expand_at_cursor`).
+    // coverage belongs where the handlers live.
 
     #[test]
-    fn snippet_expand_with_no_match_is_a_no_op() {
+    fn snippet_expand_from_range_with_no_match_is_a_no_op() {
         let mut a = app_with("xyz", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        a.do_snippet_expand_at_cursor();
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
         assert!(!a.editor.snippet_session.is_active());
         // Buffer unchanged.
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
 
-    #[test]
-    fn snippet_expand_outside_insert_mode_is_a_no_op() {
-        let mut a = app_with("for", 10);
-        a.editor.cursor = Position::new(0, 3);
-        // Stay in Normal -- guard inside `do_snippet_expand_at_cursor`.
-        install_snippet(&mut a, "*", "for-loop", "for", "for $1 {}");
-        a.do_snippet_expand_at_cursor();
-        assert!(!a.editor.snippet_session.is_active());
-        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for");
-    }
+    // SN.3c.1 (2026-06-14): the old `snippet_expand_outside_insert_mode_is_a_no_op`
+    // test is retired. The Insert-mode guard moved off the host method
+    // onto the keymap layer — `<C-x><C-s>` is an Insert-only entry on
+    // `snippet-mode`'s `keymap()`, so the chord cannot fire in Normal
+    // mode and `expand_snippet_from_range` no longer carries a modal
+    // check. Modal scoping is now a keymap concern, not a host-method
+    // concern.
 
     #[test]
     fn completion_trigger_includes_snippet_candidate_for_matching_prefix() {

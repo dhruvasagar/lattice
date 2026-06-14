@@ -174,10 +174,10 @@ current snippet state until reopened.
 - **Through the popup.** `gen:snippet` contributes candidates
   to the unified popup. Select one and `<C-y>` / `<Tab>` /
   `<CR>` expands the body and starts placeholder navigation.
-- **Direct chord.** `<C-x><C-s>` (or `:snippet-expand`) looks
-  up the word at the cursor in the per-language registry and
-  expands the first match without surfacing the popup. Quiet
-  no-op when no snippet matches.
+- **Direct chord.** `<C-x><C-s>` looks up the word at the
+  cursor in the per-language registry and expands the first
+  match without surfacing the popup. Quiet no-op when no
+  snippet matches.
 
 LSP-supplied items whose `insertTextFormat` is `Snippet` route
 through the same engine — the server's templated `insertText`
@@ -256,8 +256,10 @@ strings (joined with `\n`). Top-level keys are snippet names.
 
 | Command | What it does |
 |---|---|
-| `:snippet-expand` | Direct expansion at the cursor — alias of `<C-x><C-s>`. |
 | `:reload-snippets` | Re-read every configured snippet directory and rebuild the registry. |
+
+Direct expansion has no ex-command form — use the `<C-x><C-s>`
+chord (contributed by `snippet-mode`).
 
 ## Tree-sitter symbols (Phase 4.2.g.6)
 

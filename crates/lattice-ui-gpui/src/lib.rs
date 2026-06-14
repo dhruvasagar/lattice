@@ -1090,7 +1090,12 @@ impl GpuiApp {
             // them through the same dispatch.
             Effect::LspSignatureHelp => self.mutate_editor(|e| e.lsp_signature_help_request()),
             Effect::LspComplete => self.mutate_editor(|e| e.lsp_completion_request()),
-            Effect::SnippetExpand => self.mutate_editor(|e| e.do_snippet_expand_at_cursor()),
+            // SN.3c.1: mode-owned `<C-x><C-s>` emits the trigger
+            // range; the host resolves + expands (peer parity with
+            // TUI). `feedback_tui_gpui_parity`.
+            Effect::ExpandSnippet { replace_range } => {
+                self.mutate_editor(move |e| e.expand_snippet_from_range(replace_range))
+            }
             // 5.5.LSP.5: symbol helpers host-side; both peers reach
             // them through the same dispatch.
             Effect::LspDocumentSymbol => self.mutate_editor(|e| e.lsp_document_symbol_request()),

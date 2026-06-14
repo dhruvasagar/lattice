@@ -126,6 +126,32 @@ mod tests {
         H.get_or_init(build_base_keymap)
     }
 
+    /// SN.3c.1: base keymap + the *Global* `snippet-mode` layer only
+    /// (NOT `active-snippet-mode`). `snippet-mode` is active on every
+    /// document buffer (`ActivationPolicy::Global`), so a base Insert
+    /// keymap in a real document carries its single contributed chord
+    /// — the `<C-x><C-s>` expand prefix. Pushing only `snippet-mode`
+    /// (not the session-scoped `active-snippet-mode`) keeps `<Tab>` /
+    /// `<S-Tab>` resolving to their base Insert meanings, so this is
+    /// the faithful model for the catalog drift check's non-popup,
+    /// non-active-session Insert descriptors (notably `<C-x>`).
+    fn shared_keymap_base_with_snippet_mode() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            let mut mr = lattice_mode::ModeRegistry::new();
+            mr.register(lattice_snippet::modes::SnippetMode::new())
+                .expect("register snippet-mode");
+            lattice_host::keymap_mode_contributions::translate_mode_keymaps(
+                &h,
+                &mr,
+                shared_registry(),
+            );
+            h
+        })
+    }
+
     /// Base keymap + completion-popup minor-mode layer.
     fn shared_keymap_with_popup() -> &'static KeymapHandle {
         use std::sync::OnceLock;
@@ -151,6 +177,11 @@ mod tests {
         let mut mr = lattice_mode::ModeRegistry::new();
         mr.register(lattice_snippet::modes::SnippetActiveMode)
             .expect("register active-snippet-mode");
+        // SN.3c.1: `snippet-mode` owns the `<C-x><C-s>` expand chord
+        // (Insert). Register it so the translated layer carries the
+        // chord — `<C-x><C-s>` is no longer a Builtin binding.
+        mr.register(lattice_snippet::modes::SnippetMode::new())
+            .expect("register snippet-mode");
         lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, shared_registry());
     }
 
@@ -1640,7 +1671,11 @@ mod tests {
         } else if snippet_active {
             shared_keymap_with_snippet()
         } else {
-            shared_keymap_base()
+            // SN.3c.1: snippet-mode is Global, so a document buffer's
+            // base Insert keymap carries its `<C-x><C-s>` expand prefix.
+            // Use the base + snippet-mode layer so descriptors like
+            // `<C-x>` resolve (the partial node moved off Builtin).
+            shared_keymap_base_with_snippet_mode()
         };
         let mut partial_chord: Vec<crate::chord::KeyChord> = Vec::new();
         let mut last = Action::None;
@@ -1880,8 +1915,14 @@ mod tests {
     #[test]
     fn ctrl_x_in_insert_absorbs_partial_chord() {
         // Slice 8.i.4.b: `<C-x>` migrated to partial_chord.
+        // SN.3c.1: `<C-x>` is a partial prefix only because
+        // `snippet-mode`'s `<C-x><C-s>` layer provides the terminal
+        // (no longer Builtin) — dispatch against the snippet-layer
+        // keymap, matching boot where the layer is pushed.
         let (_, b) = fixture();
-        let action = translate(ctx(ModalState::Insert, &b), ctrl(KeyCode::Char('x')));
+        let mut cx = ctx(ModalState::Insert, &b);
+        cx.keymap = shared_keymap_with_snippet();
+        let action = translate(cx, ctrl(KeyCode::Char('x')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::ctrl('x')
@@ -2204,12 +2245,15 @@ mod tests {
 
     #[test]
     fn ctrl_x_ctrl_s_resolves_to_snippet_expand() {
+        // SN.3c.1: `<C-x><C-s>` is contributed by `snippet-mode`'s
+        // layer (not Builtin) — dispatch against the snippet-layer
+        // keymap the editor sees once boot pushes the layer.
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Insert, &[crate::chord::KeyChord::ctrl('x')], &b),
-            ctrl(KeyCode::Char('s')),
-        ) {
+        let partial = [crate::chord::KeyChord::ctrl('x')];
+        let mut cx = ctx_partial(ModalState::Insert, &partial, &b);
+        cx.keymap = shared_keymap_with_snippet();
+        match translate(cx, ctrl(KeyCode::Char('s'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
             other => panic!("expected Invoke(snippet_expand), got {other:?}"),
         }

@@ -26,10 +26,12 @@ use lattice_completion::{
 use lattice_config::OptionOverrideSet;
 use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
-    keymap_entry, ActionContext, ActionHandler, ActionHandlerRegistration,
-    ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle, CapabilitySet, Keymap,
-    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+    keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
+    ActionHandlerRegistration, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
+    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    ModeRegistry,
 };
+use lattice_protocol::position::{Position, Range};
 use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::activation::SnippetActivationPolicyHandle;
@@ -205,6 +207,51 @@ impl Default for SnippetMode {
     }
 }
 
+/// SN.3c.1: word-byte predicate for the `<C-x><C-s>` trigger-token
+/// scan. Mirrors the host's `is_word_char_byte` (`*` / `#` family)
+/// — `[A-Za-z0-9_]`. Kept local so the mode's expand handler owns
+/// its full scan logic without reaching into the host.
+fn is_snippet_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// SN.3c.1: pure trigger-token scan. Given the cursor's line text
+/// and the cursor position, return the `replace_range` covering the
+/// word immediately before the cursor (`token-start..cursor`), or
+/// `None` when there is no word prefix. Kept pure (no buffer store)
+/// so the scan is unit-testable with a plain `&str` — mirrors how
+/// `snippet_group_cursor_effect` is extracted for the nav handlers.
+fn snippet_trigger_range(line_text: &str, cursor: Position) -> Option<Range> {
+    let bytes = line_text.as_bytes();
+    let cursor_byte = (cursor.byte as usize).min(bytes.len());
+    let mut start = cursor_byte;
+    while start > 0 && is_snippet_word_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == cursor_byte {
+        return None;
+    }
+    Some(Range::new(Position::new(cursor.line, start as u32), cursor))
+}
+
+/// SN.3c.1: `snippet-mode`'s single Insert-mode binding —
+/// `<C-x><C-s>` → `action:snippet-expand`. Migrated off the
+/// Builtin Insert keymap (`lattice-host::keymap_insert`) so the
+/// chord choice lives with the mode that owns the behavior
+/// (`feedback_mode_owns_its_surface`). K.1.c scopes it to
+/// `snippet-mode`-active buffers.
+fn snippet_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![keymap_entry!(
+            mode: Insert,
+            chord: "<C-x><C-s>",
+            doc: "Expand the snippet whose prefix matches the word before the cursor.",
+            cmd: "action:snippet-expand"
+        )]
+    })
+}
+
 impl Mode for SnippetMode {
     type Guard = ();
     fn id(&self) -> ModeId {
@@ -231,6 +278,44 @@ impl Mode for SnippetMode {
     /// exactly the buffers where snippets are enabled.
     fn implies(&self) -> &[ModeId] {
         &self.implies
+    }
+    /// SN.3c.1: contribute the `<C-x><C-s>` direct-expand chord.
+    /// Registered at boot under `KeymapLayer::MinorMode("snippet-mode")`
+    /// (Insert mode); K.1.c gates it to `snippet-mode`-active buffers.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(snippet_mode_keymap_entries())
+    }
+    /// SN.3c.1: the *global* (buffer-agnostic) expand handler. Bound to
+    /// `action:snippet-expand`, registered ONCE at boot by the host's
+    /// `register_mode_action_handlers` walk (NOT per-`on_activate` —
+    /// `snippet-mode` is active on many buffers at once and the
+    /// `ActionHandlerRegistry` is keyed by `CommandId` alone, so a
+    /// per-activation registration would let one buffer closing evict
+    /// the handler for all the others; see
+    /// `feedback_effect_vocabulary_is_host_boundary`).
+    ///
+    /// The handler does ONLY the word-prefix scan: read the active
+    /// buffer's line at `ctx.cursor` via the `BufferStoreHandle`, walk
+    /// back over word bytes to the trigger token's start, and emit
+    /// `Effect::ExpandSnippet { replace_range: token-start..cursor }`.
+    /// The host owns resolution + expansion (language + registry +
+    /// variables + splice). Returns `None` (no effect) when there is no
+    /// word prefix at the cursor.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        let handler: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let store = ctx.services.get::<BufferStoreHandle>()?;
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.raw() as u32);
+            let handle = store.handle_for(buffer_id)?;
+            let line_text = handle.snapshot().buffer.line(ctx.cursor.line).unwrap_or_default();
+            // No word prefix → `None` (no effect); otherwise hand the
+            // host the trigger range to resolve + expand.
+            snippet_trigger_range(&line_text, ctx.cursor)
+                .map(|replace_range| Effect::ExpandSnippet { replace_range })
+        });
+        vec![ActionHandlerContribution {
+            action_name: "action:snippet-expand",
+            handler,
+        }]
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
@@ -625,6 +710,73 @@ mod tests {
         // Its implied dependency is registered too, so activation
         // won't fail the implies-tree validation.
         assert!(registry.is_registered(SnippetCompletionMode::mode_id()));
+    }
+
+    // ---- SN.3c.1: `snippet-mode` owns the `<C-x><C-s>` expand
+    //      trigger (chord + word-prefix scan; host owns the
+    //      resolution + expansion). ----
+
+    #[test]
+    fn snippet_mode_keymap_binds_ctrl_x_ctrl_s_to_expand() {
+        use lattice_mode::Mode as _;
+        let km = SnippetMode::new().keymap();
+        assert_eq!(km.entries.len(), 1);
+        let entry = &km.entries[0];
+        assert_eq!(entry.chord, "<C-x><C-s>");
+        assert_eq!(entry.command, Some("action:snippet-expand"));
+        assert_eq!(entry.mode, lattice_mode::BindingMode::Insert);
+    }
+
+    #[test]
+    fn snippet_mode_contributes_one_global_expand_handler() {
+        use lattice_mode::Mode as _;
+        let handlers = SnippetMode::new().action_handlers();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].action_name, "action:snippet-expand");
+    }
+
+    #[test]
+    fn trigger_range_covers_word_before_cursor() {
+        // "for" with the cursor after the `r` → replace_range
+        // (0,0)..(0,3) covering the whole token.
+        let r = snippet_trigger_range("for", Position::new(0, 3)).expect("word prefix");
+        assert_eq!(r, Range::new(Position::new(0, 0), Position::new(0, 3)));
+    }
+
+    #[test]
+    fn trigger_range_starts_at_word_boundary_not_line_start() {
+        // "let for" cursor after the second word → token starts at
+        // byte 4 (`f`), not the line start.
+        let r = snippet_trigger_range("let for", Position::new(0, 7)).expect("word prefix");
+        assert_eq!(r, Range::new(Position::new(0, 4), Position::new(0, 7)));
+    }
+
+    #[test]
+    fn trigger_range_is_none_without_a_word_prefix() {
+        // Cursor at column 0 → nothing before it.
+        assert!(snippet_trigger_range("for", Position::new(0, 0)).is_none());
+        // Cursor right after whitespace → no word byte behind it.
+        assert!(snippet_trigger_range("a ", Position::new(0, 2)).is_none());
+    }
+
+    /// Graceful: when the buffer store can't resolve the active
+    /// buffer (`handle_for` returns `None`), the expand handler is a
+    /// quiet no-op rather than a panic.
+    #[test]
+    fn expand_handler_is_a_no_op_when_buffer_unavailable() {
+        use lattice_mode::Mode as _;
+        let handler = SnippetMode::new().action_handlers().remove(0).handler;
+        let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(NullBufferStore);
+        let mut services = lattice_mode::ServiceRegistry::new();
+        services.register::<BufferStoreHandle>(BufferStoreHandle::new(store));
+        let events = lattice_runtime::EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(1),
+            cursor: Position::new(0, 3),
+            services: &services,
+            events: &events,
+        };
+        assert!(handler(&ctx).is_none());
     }
 
     // ---- SN.2b: `active-snippet-mode` placeholder-navigation

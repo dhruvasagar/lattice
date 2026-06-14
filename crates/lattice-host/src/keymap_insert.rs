@@ -398,14 +398,19 @@ pub fn dispatch_insert(
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
         path.push(chord);
         return match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
-            LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
+            LookupResult::Bound { command, captured } => {
+                bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
+            }
             _ => Action::None,
         };
     }
 
     let chord = normalize_for_insert_lookup(*chord);
-    match handle.lookup_with_context(BindingMode::Insert, &[chord], active_minor_modes) {
-        LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
+    let path = [chord];
+    match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
+        LookupResult::Bound { command, captured } => {
+            bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
+        }
         LookupResult::Partial => {
             // Slice 8.i.4.b: every trie `Partial` in Insert mode
             // (currently only `<C-x>`) absorbs into
@@ -416,6 +421,74 @@ pub fn dispatch_insert(
             Action::AbsorbPartialChord(chord)
         }
         LookupResult::Unbound => literal_text_fallback(&chord),
+    }
+}
+
+/// SN.3c.2b: resolve a `Bound` result into an `Action`, honoring
+/// `fall_through`. When the bound binding is `fall_through` and lives on
+/// a `MinorMode(m)` layer, run its action AND THEN re-resolve the same
+/// chord with `m` peeled out of the active set, chaining the native
+/// binding's action after it. Bounded: each hop removes a layer, so the
+/// recursion terminates at `Builtin` — it cannot loop the way vim's
+/// `:map` can.
+fn bound_or_fall_through(
+    handle: &KeymapHandle,
+    path: &[KeyChord],
+    active_minor_modes: &[ModeId],
+    command: &Arc<BoundCommand>,
+    captured: &[char],
+) -> Action {
+    let action = action_from_bound(command, captured);
+    if !command.fall_through {
+        return action;
+    }
+    // Peel the binding's own mode out of the active set and re-resolve
+    // the same chord against the layers below — the native binding.
+    let peeled: Vec<ModeId> = match command.layer {
+        KeymapLayer::MinorMode(m) => {
+            active_minor_modes.iter().copied().filter(|x| *x != m).collect()
+        }
+        // A fall_through binding on a non-minor layer has nothing above
+        // it to peel; treat as no continuation (defensive — entries set
+        // fall_through only on mode layers).
+        _ => return action,
+    };
+    chain_actions(action, resolve_native_action(handle, path, &peeled))
+}
+
+/// SN.3c.2b: re-resolve a chord for a fall-through continuation,
+/// returning the native binding's `Action` (recursing if that binding
+/// is itself `fall_through`). `Unbound` / `Partial` → `Action::None`:
+/// the mode action already ran; there is simply nothing native to
+/// continue to (so we must NOT fall back to literal-text insertion
+/// here, which would type the chord's character).
+fn resolve_native_action(
+    handle: &KeymapHandle,
+    path: &[KeyChord],
+    active_minor_modes: &[ModeId],
+) -> Action {
+    match handle.lookup_with_context(BindingMode::Insert, path, active_minor_modes) {
+        LookupResult::Bound { command, captured } => {
+            bound_or_fall_through(handle, path, active_minor_modes, &command, &captured)
+        }
+        _ => Action::None,
+    }
+}
+
+/// SN.3c.2b: sequence two actions, flattening nested chains and
+/// dropping a `None` continuation so a single-action result stays a
+/// plain `Action` (no `Chain` wrapper unless there is genuinely a
+/// chain).
+fn chain_actions(first: Action, rest: Action) -> Action {
+    match rest {
+        Action::None => first,
+        Action::Chain(mut v) => {
+            let mut out = Vec::with_capacity(v.len() + 1);
+            out.push(first);
+            out.append(&mut v);
+            Action::Chain(out)
+        }
+        other => Action::Chain(vec![first, other]),
     }
 }
 

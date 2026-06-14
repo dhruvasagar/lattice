@@ -35,17 +35,33 @@ macro_rules! keymap_entry {
     { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr $(,)? } => {
         $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: None }
     };
+    // String-literal sugar + fall_through (SN.3c.2b).
+    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal, fall_through: $ft:expr $(,)? } => {
+        $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: Some($cmd), fall_through: $ft }
+    };
     // String-literal sugar: `cmd: "name"` -> `cmd: Some("name")`.
     { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal $(,)? } => {
         $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: Some($cmd) }
     };
-    // Explicit form: `cmd: None` or `cmd: Some(...)`.
+    // Explicit form + fall_through (SN.3c.2b).
+    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr, fall_through: $ft:expr $(,)? } => {
+        $crate::keymap_entry::KeymapEntry::__new(
+            $chord,
+            $crate::BindingMode::$mode,
+            $doc,
+            $cmd,
+            $ft,
+            $crate::keymap_entry::__builtin_source(file!(), line!()),
+        )
+    };
+    // Explicit form: `cmd: None` or `cmd: Some(...)`. fall_through defaults false.
     { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr $(,)? } => {
         $crate::keymap_entry::KeymapEntry::__new(
             $chord,
             $crate::BindingMode::$mode,
             $doc,
             $cmd,
+            false,
             $crate::keymap_entry::__builtin_source(file!(), line!()),
         )
     };

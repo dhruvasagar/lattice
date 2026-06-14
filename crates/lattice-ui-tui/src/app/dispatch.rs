@@ -254,6 +254,16 @@ impl App {
             .unwrap_or(false);
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
         match action {
+            // SN.3c.2b: a fall-through binding resolves to a sequence
+            // (mode action, then native). Apply each sub-action through
+            // the full apply path so renderer-level sub-actions
+            // (completion, etc.) and editor Invokes both route
+            // correctly.
+            Action::Chain(actions) => {
+                for a in actions {
+                    self.apply(a);
+                }
+            }
             // Phase 5.5.C: helper-free arms moved to
             // `Editor::dispatch`'s match. Grouped no-op here keeps
             // the exhaustiveness check satisfied without splitting

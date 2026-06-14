@@ -51,6 +51,11 @@ pub struct KeymapBinding {
     /// directly. Plugin and runtime `:bind` callers can attach
     /// docs via [`Self::with_doc`].
     pub doc: Option<&'static str>,
+    /// SN.3c.2b: `:map`-style augment-and-continue, carried from the
+    /// owning [`KeymapEntry::fall_through`] through to the
+    /// [`crate::BoundCommand`] the registry stores. `false` by default;
+    /// see [`crate::BoundCommand::fall_through`] for the semantics.
+    pub fall_through: bool,
 }
 
 impl KeymapBinding {
@@ -72,6 +77,7 @@ impl KeymapBinding {
             command,
             source,
             doc: None,
+            fall_through: false,
         }
     }
 
@@ -80,6 +86,14 @@ impl KeymapBinding {
     /// sites can chain `KeymapBinding::new(...).with_doc("...")`.
     pub fn with_doc(mut self, doc: &'static str) -> Self {
         self.doc = Some(doc);
+        self
+    }
+
+    /// SN.3c.2b: set the augment-and-continue flag (see
+    /// [`crate::BoundCommand::fall_through`]). Builder shape so the
+    /// table-form translation can chain it off the entry.
+    pub fn with_fall_through(mut self, fall_through: bool) -> Self {
+        self.fall_through = fall_through;
         self
     }
 }

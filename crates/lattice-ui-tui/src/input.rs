@@ -2232,13 +2232,23 @@ mod tests {
     }
 
     #[test]
-    fn snippet_active_esc_leaves_snippet() {
+    fn snippet_active_esc_leaves_snippet_then_falls_through() {
+        // SN.3c.2b: `<Esc>` is `fall_through` — clear the snippet, then
+        // continue to the native `<Esc>` (enter-normal). The full
+        // `translate` path resolves it to a Chain.
         let (_, b) = fixture();
         let a = shared_actions();
         let r = translate(ctx_snippet_active(&b), key(KeyCode::Esc));
         match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_leave),
-            other => panic!("expected Invoke(snippet_leave), got {other:?}"),
+            Action::Chain(v) => match (v.first(), v.get(1)) {
+                (Some(Action::Invoke(leave)), Some(Action::Invoke(native))) => {
+                    assert_eq!(leave.command, a.snippet_leave);
+                    assert_eq!(native.command, a.enter_mode_normal);
+                    assert_eq!(v.len(), 2);
+                }
+                _ => panic!("expected Chain([snippet_leave, enter_mode_normal]), got {v:?}"),
+            },
+            other => panic!("expected Chain, got {other:?}"),
         }
     }
 

@@ -679,4 +679,13 @@ pub enum Action {
     /// Clear `pending_redraw` after the renderer has cleared the
     /// terminal buffer in response to `<C-l>` (`RedrawScreen`).
     AcknowledgeRedraw,
+    /// SN.3c.2b: run a sequence of actions in order. Produced by
+    /// `dispatch_insert` for a `fall_through` binding —
+    /// `[mode_action, native_action]` — where the mode's chord
+    /// augments a native chord (`active-snippet-mode`'s `<Esc>` clears
+    /// the session, then continues to the builtin `<Esc>` → exit
+    /// insert). The renderer's `apply` applies each in order. General
+    /// (not snippet-specific): any future binding that wants to run +
+    /// continue resolves to a `Chain`.
+    Chain(Vec<Action>),
 }

@@ -163,11 +163,16 @@ fn group_bindings_into_tries(
 ) -> HashMap<BindingMode, KeymapTrie> {
     let mut by_mode: HashMap<BindingMode, KeymapTrie> = HashMap::new();
     for binding in bindings {
-        let bound = Arc::new(BoundCommand::from_invocation(
-            binding.command.clone(),
-            binding.source.clone(),
-            layer,
-        ));
+        let bound = Arc::new(
+            BoundCommand::from_invocation(
+                binding.command.clone(),
+                binding.source.clone(),
+                layer,
+            )
+            // SN.3c.2b: propagate augment-and-continue onto the stored
+            // BoundCommand the lookup returns.
+            .with_fall_through(binding.fall_through),
+        );
         by_mode
             .entry(binding.mode)
             .or_default()
@@ -234,7 +239,10 @@ fn resolve_entries_into_bindings(
             CommandInvocation::of(cmd_id),
             entry.source().clone(),
         )
-        .with_doc(entry.doc);
+        .with_doc(entry.doc)
+        // SN.3c.2b: carry the entry's augment-and-continue flag through
+        // to the BoundCommand so the dispatcher can re-resolve.
+        .with_fall_through(entry.fall_through);
         out.push(binding);
     }
     out

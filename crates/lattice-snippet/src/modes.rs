@@ -24,7 +24,7 @@ use lattice_completion::{
     InsertContext, RawCandidate, SourceId, SyncCompletionSource,
 };
 use lattice_config::OptionOverrideSet;
-use lattice_grammar::{CommandRegistryHandle, Effect, ModalState};
+use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
     keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
     ActionHandlerRegistration, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
@@ -338,11 +338,17 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "Move to the previous placeholder in the active snippet session.",
                 cmd: "action:snippet-prev-placeholder"
             ),
+            // SN.3c.2b: `fall_through: true` — leaving a snippet is
+            // augment-and-continue, not replace. The handler clears the
+            // session, then the dispatcher continues to whatever `<Esc>`
+            // natively does (builtin → exit insert, or the user's
+            // rebind). The mode never hardcodes the native meaning.
             keymap_entry!(
                 mode: Insert,
                 chord: "<Esc>",
-                doc: "Exit the active snippet session and return to Normal mode.",
-                cmd: "action:snippet-leave"
+                doc: "Leave the active snippet session, then exit insert (falls through to the native <Esc>).",
+                cmd: "action:snippet-leave",
+                fall_through: true
             ),
         ]
     })
@@ -507,23 +513,28 @@ impl Mode for SnippetActiveMode {
                     registrations.push(action_handlers.register(id, handler));
                 }
 
-                // `<Esc>` — exit the snippet session (SN.3c.2).
+                // `<Esc>` — leave the snippet session (SN.3c.2).
                 // Per-buffer + session-tied (the binding only fires
                 // while a snippet is live on this buffer), so it lives
                 // here in `on_activate` alongside the nav handlers, not
-                // as a global handler. The body clears the shared
-                // session (the host's overlay reconciler then sees
+                // as a global handler. The body does ONLY the
+                // mode-specific part — clear the shared session (the
+                // host's overlay reconciler then sees
                 // `is_active() == false` and deactivates this mode,
-                // dropping these registrations) and returns to Normal
-                // via `Effect::EnterMode` — mirroring base Insert's
-                // `<Esc>`, which this mode's layer shadows. No buffer
-                // store needed, so it registers independent of it.
+                // dropping these registrations). Exiting insert is NOT
+                // hardcoded here: SN.3c.2b marks the `<Esc>` binding
+                // `fall_through: true`, so after this handler runs the
+                // dispatcher re-resolves `<Esc>` against the layers
+                // below and runs the native binding too (builtin
+                // `<Esc>` → exit insert, or the user's rebind). The mode
+                // owns the augmentation; the host owns the native
+                // meaning. No buffer store needed.
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-leave") {
                     let session = session.clone();
                     let handler: ActionHandler = Arc::new(
                         move |_ctx: &ActionContext<'_>| -> Option<Effect> {
                             session.with_mut(|s| *s = None);
-                            Some(Effect::EnterMode(ModalState::Normal))
+                            Some(Effect::None)
                         },
                     );
                     registrations.push(action_handlers.register(id, handler));
@@ -1058,20 +1069,23 @@ mod tests {
         assert!(!session.is_active());
     }
 
-    /// SN.3c.2: `<Esc>` (leave) clears the live session and returns
-    /// `Effect::EnterMode(Normal)` — the migrated `Action::SnippetLeave`
-    /// behaviour (session clear + modal flip), now mode-owned. The
-    /// host's overlay reconciler sees `is_active() == false` next
-    /// cycle and deactivates the mode.
+    /// SN.3c.2b: `<Esc>` (leave) clears the live session and returns
+    /// `Effect::None` — the *only* job of the mode handler. Exiting
+    /// insert is not its concern: the `<Esc>` binding is
+    /// `fall_through: true`, so the dispatcher continues to the native
+    /// `<Esc>` after this handler runs (covered by the host-level
+    /// `dispatch_insert` fall-through test). The host's overlay
+    /// reconciler sees `is_active() == false` next cycle and
+    /// deactivates the mode.
     #[test]
-    fn leave_handler_clears_session_and_enters_normal() {
+    fn leave_handler_clears_session() {
         let (services, session, handlers, _next_id, _prev_id, leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
         install_active_session(&session);
         assert!(session.is_active());
 
         let effect = fire(&handlers, leave_id, &services);
-        assert!(matches!(effect, Some(Effect::EnterMode(ModalState::Normal))));
+        assert!(matches!(effect, Some(Effect::None)));
         assert!(!session.is_active()); // session cleared
     }
 }

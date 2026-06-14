@@ -1668,6 +1668,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     }
     match action {
         Action::None => {}
+        // SN.3c.2b: a fall-through binding resolves to a sequence
+        // (mode action, then native). Apply each in order — sub-actions
+        // (e.g. `Invoke(snippet-leave)` then `Invoke(enter-normal)`)
+        // route through the same dispatcher.
+        Action::Chain(actions) => {
+            for a in actions {
+                handle_action(editor, a, _out);
+            }
+        }
         // ---- Slice 3c.final.C: renderer non-dispatch mutations ----
         Action::SetViewportHeight(h) => {
             editor.viewport_height = h.max(1);
@@ -23215,7 +23224,14 @@ impl Editor {
                     .unwrap_or_else(|| {
                         format!("{:?}", winner.command.command.command)
                     });
-                lines.push(format!("  → {cmd_name}  (fires now)"));
+                // SN.3c.2b: a `fall_through` winner augments-and-continues
+                // — flag it and render the continuation chain below.
+                let fires = if winner.command.fall_through {
+                    "(fires now → falls through ↓)"
+                } else {
+                    "(fires now)"
+                };
+                lines.push(format!("  → {cmd_name}  {fires}"));
                 lines.push(format!(
                     "    layer: {}",
                     self.keymap.layer_label_string(winner.layer),
@@ -23224,6 +23240,33 @@ impl Editor {
                     "    source: {}",
                     winner.command.source.as_link(),
                 ));
+                // SN.3c.2b: walk the fall-through continuation — each
+                // active hit below a `fall_through` one runs too, until
+                // a non-fall-through binding (or the bottom) stops it.
+                let active_desc: Vec<&lattice_keymap::LayerHit> =
+                    resolution.hits.iter().rev().filter(|h| h.active).collect();
+                for i in 1..active_desc.len() {
+                    if !active_desc[i - 1].command.fall_through {
+                        break;
+                    }
+                    let hit = active_desc[i];
+                    let next_name = self
+                        .registry
+                        .lookup(hit.command.command.command)
+                        .map(|spec| spec.name.clone())
+                        .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
+                    let tail = if hit.command.fall_through {
+                        " → falls through ↓"
+                    } else {
+                        ""
+                    };
+                    lines.push(format!("  ↳ then: {next_name}{tail}"));
+                    lines.push(format!(
+                        "    layer: {}",
+                        self.keymap.layer_label_string(hit.layer),
+                    ));
+                    lines.push(format!("    source: {}", hit.command.source.as_link()));
+                }
             } else {
                 lines.push(
                     "  (registered but not active — \
@@ -23237,10 +23280,12 @@ impl Editor {
                 lines.push(String::new());
                 lines.push("  All layers (ascending priority):".to_string());
                 for hit in &resolution.hits {
-                    let status = if hit.active {
-                        "[active]"
-                    } else {
-                        "[inactive]"
+                    // SN.3c.2b: surface `fall_through` alongside activeness.
+                    let status = match (hit.active, hit.command.fall_through) {
+                        (true, true) => "[active · fall-through]",
+                        (true, false) => "[active]",
+                        (false, true) => "[inactive · fall-through]",
+                        (false, false) => "[inactive]",
                     };
                     let cmd_name = self
                         .registry
@@ -29796,6 +29841,68 @@ mod tests {
         assert!(
             body.contains("registered but not active"),
             "inactive minor-mode binding must show 'registered but not active', got:\n{body}"
+        );
+    }
+
+    /// SN.3c.2b: `:describe-key` surfaces a binding's `fall_through`
+    /// flag in the layer trace so the augment-and-continue behavior is
+    /// introspectable (§5.11). Mirrors the inactive-minor test above:
+    /// pushes a `fall_through` `<Esc>` binding on an (inactive) minor
+    /// layer and asserts the trace tags it `fall-through`.
+    #[test]
+    fn describe_key_surfaces_fall_through_flag() {
+        use crate::keymap_registry::PushLayerKind;
+        use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
+        use lattice_grammar::CommandInvocation;
+        use lattice_grammar::SourceLocation;
+        use lattice_mode::mode::ModeId;
+        use lattice_protocol::ids::CommandId;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let editor = crate::editor::Editor::default();
+        let snippet_mode = ModeId::new("active-snippet-mode");
+        let esc = ChordPattern::Literal(crate::chord::KeyChord::special(
+            crate::chord::SpecialKey::Esc,
+        ));
+
+        // Builtin (always-on) `<Esc>` → the native binding it would fall
+        // through TO, so the trace has >1 layer and the "All layers"
+        // block (which carries the fall-through tag) renders.
+        editor.keymap.bind(
+            KeymapLayer::Builtin,
+            crate::keymap::BindingMode::Insert,
+            std::slice::from_ref(&esc),
+            CommandInvocation::of(CommandId::new(0xE17E)),
+            SourceLocation::synthetic("test:builtin.esc"),
+        );
+
+        // Minor-layer `<Esc>` with `fall_through: true`.
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        trie.insert(
+            std::slice::from_ref(&esc),
+            Arc::new(
+                BoundCommand::from_invocation(
+                    CommandInvocation::of(CommandId::new(0x5EFF)),
+                    SourceLocation::synthetic("test:active-snippet.esc"),
+                    KeymapLayer::MinorMode(snippet_mode),
+                )
+                .with_fall_through(true),
+            ),
+        );
+        bindings.insert(crate::keymap::BindingMode::Insert, trie);
+        editor.keymap.push_layer(
+            PushLayerKind::MinorMode(snippet_mode),
+            "active-snippet-mode",
+            bindings,
+        );
+
+        let content = editor.build_describe_key_content("i_<Esc>");
+        let body = content.lines().join("\n");
+        assert!(
+            body.contains("fall-through"),
+            "describe-key must surface the fall_through flag, got:\n{body}"
         );
     }
 

@@ -301,16 +301,134 @@ Sub-slices:
     (`do_set` → cascade → folded policy across all three modes). 86 snippet ✅
     (76 → +8 activation +2 modes); host snippet tests ✅; config
     group-uniqueness ✅; gpui builds (no renderer surface touched).
-- **SN.3c 🗒** — migrate `<C-x><C-s>` (binding + handler) onto `SnippetMode`.
-  Needs a buffer-mutating `Effect::ExpandSnippet { … }` because the
-  `ActionHandlerRegistry` seam gives a handler only `&ActionContext` (no
-  `&mut Editor`): the mode handler decides *which* snippet + renders it; the
-  host applies the splice + session setup. The `<CR>`-accept path already
-  creates the session → the reconciler lights `active-snippet-mode`.
-- Depends on: EF.1, MA.1, MA.2, SN.2, SN-activation reconciler.
-- Artifacts: design (this section) · bench (n/a — activation is lifecycle-time)
-  · tests (per sub-slice) · graceful (unknown language → no matching major →
-  no activation, no panic).
+- **SN.3c 🗒** — close the expand/leave ownership half-migration. SN.2b moved
+  the *nav* handlers (`<Tab>`/`<S-Tab>`) into `active-snippet-mode`, but the
+  *expand* and *leave* handlers are still host-side. Per
+  `feedback_mode_owns_its_surface`, leaving them there is a half-migration
+  (chord-in-mode-or-Builtin, body-in-host). **Locked from the 2026-06-14
+  review (finding A): all four pieces move in this slice — partial migration
+  does NOT satisfy the rule.**
+  1. **Binding.** `<C-x><C-s>` moves off the host (`keymap_insert.rs`, Builtin)
+     onto `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`.
+     `<C-x><C-s>` only makes sense where snippets are enabled — binding it to
+     the gate is the correct scope (and stops it firing in non-snippet
+     buffers). K.1.c then gates the chord to `snippet-mode`-active buffers.
+  2. **Prefix-scan + lookup handler.** The body of
+     `Editor::do_snippet_expand_at_cursor` (word-prefix scan back from the
+     cursor, registry lookup by `(language, prefix)` then `"*"` fallback)
+     becomes an `ActionHandler` closure registered by `SnippetMode::on_activate`
+     on the `ActionHandlerRegistry` substrate — the same seam the nav handlers
+     use. The closure reads buffer text via `ctx` + `BufferStoreHandle` and the
+     registry via the shared `Arc<SharedSnippetRegistry>` (which `SnippetMode`
+     will need to capture, like `SnippetCompletionSource` does).
+  3. **Splice + session + cursor via `Effect::ExpandSnippet`.** The seam gives
+     the handler only `&ActionContext` (no `&mut Editor`), so the buffer
+     mutation crosses back to the host as a typed effect. **Locked shape
+     (review finding A, cursor-asymmetry):**
+
+     ```
+     Effect::ExpandSnippet { snippet_name: String, replace_range: Range }
+     ```
+
+     The mode handler decides *which* snippet (resolves the name) and *what
+     it replaces* (the prefix range); the **host** re-resolves the body via
+     `snippet_registry.by_name` (the accept path already does this), renders
+     with its host-owned `VariableContext` (`TM_FILENAME` etc. — must stay
+     host-side), applies the splice, installs the session
+     (`snippet_session.set`), and derives the cursor from the splice result.
+     Rationale: the mode can't see the post-splice buffer, so it must NOT
+     pre-compute the cursor — mirror the nav handlers' division (mode decides
+     intent, host's generic pipeline moves the cursor). Carrying the *name*
+     (not the rendered body) keeps variable resolution + the registry as the
+     single source of truth host-side.
+  4. **Leave handler.** `action:snippet-leave` (the `<Esc>` body) moves from
+     the host into `active-snippet-mode` alongside the nav handlers — the
+     `<Esc>` *binding* is already in `snippet_active_keymap_entries()`, so only
+     the handler body is outstanding. It clears the session
+     (`SnippetSession::clear`) and returns to Normal; the reconciler then
+     deactivates `active-snippet-mode` (drops the Guard). Without this, SN.3c
+     leaves the exact half-migration the slice exists to close.
+
+  Acid test (from the standing rule): after SN.3c, no `Editor::do_snippet_*`
+  expand/leave method and no `Action::SnippetExpand`/host snippet-leave action
+  remain in `lattice-host`; the only host snippet surface is the generic
+  `Effect::ExpandSnippet` arm (splice + variable render + session install).
+  The `<CR>`-accept path already creates the session via `expand_snippet`, so
+  that host entry point stays (it is not chord-owned) — SN.3c factors the
+  shared splice/render/session helper so both `<CR>`-accept and
+  `Effect::ExpandSnippet` call it.
+  - TUI+GPUI parity (`feedback_tui_gpui_parity`): `Effect::ExpandSnippet` is a
+    new `Effect` variant → both the TUI effect classifier (`app/dispatch.rs`,
+    replacing the current `Effect::SnippetExpand` arm) and the GPUI
+    effect-classifier match arm update in the same patch.
+  - Depends on: EF.1, MA.1, MA.2, SN.2, SN.3a, SN.3b, SN-activation reconciler.
+  - Artifacts: design (this section) · bench (n/a — expand is keystroke-rare,
+    off the render path) · tests (mode-owned expand handler resolves the
+    snippet + emits `Effect::ExpandSnippet`; host arm splices + installs
+    session; leave clears + deactivates; `<C-x><C-s>` no-ops in a
+    non-`snippet-mode` buffer) · graceful (no prefix / no matching snippet →
+    quiet info echo, no panic).
+
+### SN.3 follow-ups (from the 2026-06-14 review)
+
+Filed as their own slices rather than folded into SN.3c — each is independent
+of the expand/leave migration and carries its own risk surface.
+
+- **SN.3d 🗒 — select the placeholder default on focus (finding B; UX).**
+  `snippet_group_cursor_effect` (`lattice-snippet/src/modes.rs`) currently
+  emits a zero-width `Selection::cursor(range.start)`, so the cursor lands at
+  the *start* of a `${1:default}` placeholder and typing inserts before the
+  default instead of replacing it. VSCode / LSP / UltiSnips all *select* the
+  placeholder so the first keystroke replaces it. Per `feedback_convention_first`
+  (selection muscle-memory is cross-editor), emit a selection spanning the
+  group's first range (`Selection` from `range.start`..`range.end`) and enter
+  Visual-select-on-typing semantics so overtype works. Empty placeholders
+  (`$1`, zero-width range) stay a bare cursor. **Doc debt to fix in the same
+  slice:** `docs/user/completion.md` and the `active-snippet-mode` doc-comment
+  both already claim "keep typing inside a placeholder to overtype the
+  default" — true only once this lands. Mirrors must keep the selection on the
+  *focused* group only. Artifacts: tests (multi-char default → selection;
+  empty placeholder → cursor; mirror edit still ripples) · TUI+GPUI parity if
+  the selection-render path differs · graceful.
+
+- **SN.3e 🗒 — key the snippet session by buffer (finding C; latent
+  correctness).** `SnippetSession` is one global `Option<ActiveSnippet>` and
+  `snippet_active_predicate` is buffer-agnostic, so starting a snippet in
+  buffer A then switching to B lights `active-snippet-mode` on B and routes
+  `<Tab>` to A's tabstops against B's cursor. The 2026-06-13 reconciler note
+  already flagged "a single global slot whose activation target isn't in any
+  event payload." Fix: key the session by `BufferId`
+  (`HashMap<BufferId, ActiveSnippet>`) and make `snippet_active_predicate`
+  buffer-scoped (the reconciler passes the buffer it's reconciling), OR
+  suspend/clear on buffer switch — decide at slice time (the per-buffer map is
+  the genuinely-better long-term design per heuristic #1; everything-is-a-buffer
+  implies snippet state is buffer-local, not a global singleton). Real-world
+  hit rate is low (snippets are short-lived), hence not blocking. Artifacts:
+  tests (two buffers, concurrent/interleaved sessions; switch mid-expansion
+  doesn't misroute `<Tab>`) · graceful · note: this touches the
+  `SnippetSessionHandle` service shape, so audit the ~15 host readers.
+
+- **SN.3f 🗒 — diagnose silent handler-skip (finding D; observability).**
+  `SnippetActiveMode::on_activate` (and SN.3c's `SnippetMode::on_activate`)
+  silently register no handlers when `CommandRegistryHandle` /
+  `ActionHandlerRegistryHandle` / session services are absent. The
+  "tolerate test harness" intent is right, but a mis-wired production boot
+  would dead-chord with no signal. Add a single `tracing::debug!` on the skip
+  path ("active-snippet-mode: nav handlers not registered — services absent")
+  — `debug!` not `info!` per `feedback_log_levels`. No behavior change; pure
+  observability. Artifacts: test (skip path is hit when a service is absent)
+  · no bench/doc.
+
+- **SN.3g 🗒 — minor cleanups (finding E; cosmetic).** Low-risk tidy, batch:
+  (1) the snippet completion-source `default_priority: 150` literal
+  (`modes.rs`) duplicates `completion.source.snippet.priority`'s default in
+  `core_options.rs` — hoist to a shared `const` (or read the option default)
+  so the two can't drift; (2) replace the `ctx.buffer_id.raw() as u32`
+  narrowing casts (`modes.rs`) with a `lattice_core::BufferId` conversion
+  helper (protocol id is u64, core is u32 — unchecked truncation, safe today
+  but a footgun); (3) delete `SnippetCompletionMode::options()` — it returns
+  the trait default `OptionOverrideSet::default()`, redundant noise.
+  Artifacts: tests stay green (behavior-preserving) · no bench/doc.
 
 ## Dependency graph
 
@@ -324,9 +442,10 @@ once to `Event::MajorEntered` → `auto_activatable_minors(major, kind)` →
 `activate_mode_by_id`, with `Global` gated to document buffers). The original
 "major-selection-on-`DocumentOpened`" scope turned out unnecessary —
 documents already activate a major + emit `MajorEntered` via
-`activate_major_for_buffer_kind`. Remaining: SN.3 (snippet declares an
-`ActivationPolicy` + config fold → the language-aware payoff). SN.2 (snippet
-ownership half-migration) closed 2026-06-12.
+`activate_major_for_buffer_kind`. SN.2 (snippet ownership half-migration)
+closed 2026-06-12; SN.3a/SN.3b (the `snippet-mode` gate + config-driven
+policy — the language-aware payoff) landed 2026-06-14. Remaining: SN.3c
+(close the expand/leave half-migration) + the SN.3d–SN.3g review follow-ups.
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

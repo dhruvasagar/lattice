@@ -769,7 +769,7 @@ impl Editor {
                 macro_recording: self.macro_recording.is_some(),
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
-                snippet_active: self.snippet_session.is_active(),
+                snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                 // Terminal-mode T2.a: published so the translate
                 // layer can build TranslateContext from the
                 // snapshot without reaching into active_modes.
@@ -5769,7 +5769,7 @@ impl Editor {
             chord_capture: self.auto_submit_after_chord,
             picker_open: false,
             insert_completion_open: false,
-            snippet_active: self.snippet_session.is_active(),
+            snippet_active: self.snippet_session.is_active(self.document_buffer_id),
             terminal_insert_active: false,
             terminal_esc_exits: false,
             terminal_app_cursor_keys: false,
@@ -11344,7 +11344,10 @@ impl Editor {
         let session_minors: Vec<crate::editor::SessionBackedMinor> =
             self.session_backed_minors.clone();
         for minor in &session_minors {
-            let want = (minor.active)();
+            // SN.3e: scope the predicate to the buffer being reconciled
+            // (`buffer_id == self.document_buffer_id`), so a snippet live
+            // in another buffer never activates the mode here.
+            let want = (minor.active)(buffer_id);
             let have = active.has_minor(minor.mode_id);
             if want && !have {
                 let _ = self.mode_registry.activate_minor(
@@ -15815,7 +15818,7 @@ impl Editor {
             {
                 self.cursor = pos;
             }
-            self.snippet_session.set(active);
+            self.snippet_session.set(self.document_buffer_id, active);
             self.modal = ModalState::Insert;
         } else {
             self.cursor = applied.inserted_range.end;
@@ -19362,7 +19365,7 @@ impl Editor {
             {
                 self.cursor = pos;
             }
-            self.snippet_session.set(active);
+            self.snippet_session.set(self.document_buffer_id, active);
             self.modal = lattice_grammar::ModalState::Insert;
         } else {
             self.cursor = main_applied.inserted_range.end;

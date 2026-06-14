@@ -304,20 +304,23 @@ impl std::fmt::Debug for CellsWake {
 /// `feedback_mode_owns_its_surface`.
 #[derive(Clone)]
 pub struct SessionBackedMinor {
-    /// `true` ⇒ the mode should be active on the active buffer.
-    pub active: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    /// `true` ⇒ the mode should be active on the **given buffer**.
+    /// SN.3e: the predicate is buffer-scoped so a session live in one
+    /// buffer never activates the mode in another; `sync_keymap_overlays`
+    /// passes the buffer it is reconciling.
+    pub active: std::sync::Arc<dyn Fn(lattice_core::BufferId) -> bool + Send + Sync>,
     /// The minor mode toggled by `active`.
     pub mode_id: lattice_mode::ModeId,
 }
 
 impl std::fmt::Debug for SessionBackedMinor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The predicate closure isn't Debug; report its current
-        // value + the mode it drives instead.
+        // The predicate closure isn't Debug and is now buffer-scoped
+        // (no buffer to evaluate against here); report the mode it
+        // drives instead.
         f.debug_struct("SessionBackedMinor")
-            .field("active", &(self.active)())
             .field("mode_id", &self.mode_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

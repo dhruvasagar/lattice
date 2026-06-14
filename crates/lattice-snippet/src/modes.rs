@@ -482,21 +482,21 @@ impl Mode for SnippetActiveMode {
                     let store = buffer_store.clone();
                     let handler: ActionHandler = Arc::new(
                         move |ctx: &ActionContext<'_>| -> Option<Effect> {
-                            let group = session.with_mut(|s| {
+                            let buffer_id = core_buffer_id(ctx.buffer_id);
+                            let group = session.with_mut(buffer_id, |s| {
                                 let active = s.as_mut()?;
                                 let next = active.next().cloned();
                                 if next.is_none() {
                                     // Walked off `$0`: the session
-                                    // ends. The host's overlay
-                                    // reconciler sees `is_active()
-                                    // == false` next cycle and
-                                    // deactivates this mode.
+                                    // ends for this buffer. The host's
+                                    // overlay reconciler sees
+                                    // `is_active(buffer) == false` next
+                                    // cycle and deactivates this mode.
                                     *s = None;
                                 }
                                 next
                             })?;
                             let store = store.as_ref()?;
-                            let buffer_id = core_buffer_id(ctx.buffer_id);
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
                         },
@@ -512,10 +512,10 @@ impl Mode for SnippetActiveMode {
                     let store = buffer_store.clone();
                     let handler: ActionHandler = Arc::new(
                         move |ctx: &ActionContext<'_>| -> Option<Effect> {
-                            let group = session
-                                .with_mut(|s| s.as_mut().and_then(|a| a.prev().cloned()))?;
-                            let store = store.as_ref()?;
                             let buffer_id = core_buffer_id(ctx.buffer_id);
+                            let group = session
+                                .with_mut(buffer_id, |s| s.as_mut().and_then(|a| a.prev().cloned()))?;
+                            let store = store.as_ref()?;
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
                         },
@@ -542,8 +542,8 @@ impl Mode for SnippetActiveMode {
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-leave") {
                     let session = session.clone();
                     let handler: ActionHandler = Arc::new(
-                        move |_ctx: &ActionContext<'_>| -> Option<Effect> {
-                            session.with_mut(|s| *s = None);
+                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                            session.clear(core_buffer_id(ctx.buffer_id));
                             Some(Effect::None)
                         },
                     );
@@ -988,11 +988,23 @@ mod tests {
     /// session focused on `$1` (mirrors `Editor::expand_snippet`'s
     /// `focus_first` step), so `<Tab>` starts from `$1`.
     fn install_active_session(session: &SnippetSessionHandle) {
+        // Keyed under the same buffer `fire`'s `ActionContext` uses
+        // (`BufferId::new(1)` → `core_buffer_id` → core `BufferId(1)`),
+        // so the handlers and the test reads agree on the buffer.
+        install_active_session_in(session, lattice_core::BufferId(1));
+    }
+
+    /// Install a fresh `for ${1:i} in ${2:iter} { $0 }` session in
+    /// `buffer`, focused on `$1` (SN.3e multi-buffer tests).
+    fn install_active_session_in(
+        session: &SnippetSessionHandle,
+        buffer: lattice_core::BufferId,
+    ) {
         let body = crate::parse("for ${1:i} in ${2:iter} { $0 }").expect("parse");
         let rendered = crate::render::render(&body, &crate::VariableContext::default());
         let mut active = ActiveSnippet::from_render(&rendered, 0);
         active.focus_first();
-        session.set(active);
+        session.set(buffer, active);
     }
 
     fn fire(
@@ -1000,12 +1012,23 @@ mod tests {
         id: lattice_protocol::ids::CommandId,
         services: &lattice_mode::ServiceRegistry,
     ) -> Option<Effect> {
+        fire_in(handlers, id, services, lattice_protocol::ids::BufferId::new(1))
+    }
+
+    /// As [`fire`], but the synthetic `ActionContext` reports `buffer`
+    /// — so a handler keys its session lookup on that buffer (SN.3e).
+    fn fire_in(
+        handlers: &ActionHandlerRegistryHandle,
+        id: lattice_protocol::ids::CommandId,
+        services: &lattice_mode::ServiceRegistry,
+        buffer: lattice_protocol::ids::BufferId,
+    ) -> Option<Effect> {
         // The snippet handlers read only `ctx.buffer_id` (captured
         // session + store come from `on_activate`), so a throwaway
         // events bus + the wired services satisfy the context.
         let events = lattice_runtime::EventBus::new();
         let ctx = ActionContext {
-            buffer_id: lattice_protocol::ids::BufferId::new(1),
+            buffer_id: buffer,
             cursor: Position::new(0, 0),
             services,
             events: &events,
@@ -1072,7 +1095,7 @@ mod tests {
         install_active_session(&session);
 
         let idx = |s: &SnippetSessionHandle| {
-            s.with_mut(|o| o.as_ref().and_then(ActiveSnippet::current_index))
+            s.with_mut(lattice_core::BufferId(1), |o| o.as_ref().and_then(ActiveSnippet::current_index))
         };
         assert_eq!(idx(&session), Some(1)); // focused on $1
         fire(&handlers, next_id, &services);
@@ -1080,7 +1103,7 @@ mod tests {
         fire(&handlers, next_id, &services);
         assert_eq!(idx(&session), Some(0)); // $0 exit tabstop
         fire(&handlers, next_id, &services);
-        assert!(!session.is_active()); // walked off $0 -> session ended
+        assert!(!session.is_active(lattice_core::BufferId(1))); // walked off $0 -> session ended
     }
 
     /// `<S-Tab>` walks back a placeholder and never ends the
@@ -1092,13 +1115,13 @@ mod tests {
         install_active_session(&session);
 
         let idx = |s: &SnippetSessionHandle| {
-            s.with_mut(|o| o.as_ref().and_then(ActiveSnippet::current_index))
+            s.with_mut(lattice_core::BufferId(1), |o| o.as_ref().and_then(ActiveSnippet::current_index))
         };
         fire(&handlers, next_id, &services);
         assert_eq!(idx(&session), Some(2));
         fire(&handlers, prev_id, &services);
         assert_eq!(idx(&session), Some(1));
-        assert!(session.is_active());
+        assert!(session.is_active(lattice_core::BufferId(1)));
     }
 
     /// With no live session the handlers are inert (no panic, no
@@ -1107,10 +1130,10 @@ mod tests {
     fn handlers_are_noop_without_an_active_session() {
         let (services, session, handlers, next_id, prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
-        assert!(!session.is_active());
+        assert!(!session.is_active(lattice_core::BufferId(1)));
         assert!(fire(&handlers, next_id, &services).is_none());
         assert!(fire(&handlers, prev_id, &services).is_none());
-        assert!(!session.is_active());
+        assert!(!session.is_active(lattice_core::BufferId(1)));
     }
 
     /// SN.3c.2b: `<Esc>` (leave) clears the live session and returns
@@ -1126,10 +1149,50 @@ mod tests {
         let (services, session, handlers, _next_id, _prev_id, leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
         install_active_session(&session);
-        assert!(session.is_active());
+        assert!(session.is_active(lattice_core::BufferId(1)));
 
         let effect = fire(&handlers, leave_id, &services);
         assert!(matches!(effect, Some(Effect::None)));
-        assert!(!session.is_active()); // session cleared
+        assert!(!session.is_active(lattice_core::BufferId(1))); // session cleared
+    }
+
+    /// SN.3e: two buffers each carry their own live session. `<Tab>`
+    /// fired in buffer A advances A's tabstops only — B's session is
+    /// untouched, and clearing one leaves the other live. Before SN.3e
+    /// the single global slot misrouted this: starting a snippet in A
+    /// then acting in B drove `<Tab>` against A's tabstops.
+    #[test]
+    fn sessions_are_isolated_per_buffer() {
+        use lattice_core::BufferId as Core;
+        use lattice_protocol::ids::BufferId as Proto;
+
+        let (services, session, handlers, next_id, _prev_id, _leave_id) = wire_services();
+        let _guard = activate_mode(services.clone());
+
+        // Two buffers, two independent sessions, both focused on `$1`.
+        install_active_session_in(&session, Core(1));
+        install_active_session_in(&session, Core(2));
+
+        let idx = |s: &SnippetSessionHandle, b: Core| {
+            s.with_mut(b, |o| o.as_ref().and_then(ActiveSnippet::current_index))
+        };
+        assert_eq!(idx(&session, Core(1)), Some(1));
+        assert_eq!(idx(&session, Core(2)), Some(1));
+
+        // Advance A (`<Tab>` with `ctx.buffer_id` = proto 1). The
+        // handler keys `with_mut` on core 1; B (core 2) is untouched.
+        fire_in(&handlers, next_id, &services, Proto::new(1));
+        assert_eq!(idx(&session, Core(1)), Some(2), "A advanced");
+        assert_eq!(idx(&session, Core(2)), Some(1), "B never moved");
+
+        // Switch to B and advance — A stays put.
+        fire_in(&handlers, next_id, &services, Proto::new(2));
+        assert_eq!(idx(&session, Core(2)), Some(2), "B advanced");
+        assert_eq!(idx(&session, Core(1)), Some(2), "A unchanged");
+
+        // Clearing A leaves B's session live.
+        session.clear(Core(1));
+        assert!(!session.is_active(Core(1)));
+        assert!(session.is_active(Core(2)));
     }
 }

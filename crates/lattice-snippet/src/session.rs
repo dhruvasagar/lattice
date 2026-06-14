@@ -15,27 +15,40 @@
 //! mode handler can reach: this service, registered in the
 //! `ServiceRegistry` under [`SnippetSessionHandle`].
 //!
-//! One `Mutex` guards the `Option<ActiveSnippet>`. Snippet operations
-//! are rare (per `<Tab>`, never per render), so the lock is
-//! uncontended and off any hot path.
+//! SN.3e: the session is keyed **by buffer**
+//! (`HashMap<BufferId, ActiveSnippet>`), not a single global slot.
+//! Before SN.3e a snippet started in buffer A then switching to B lit
+//! `active-snippet-mode` on B and routed `<Tab>` to A's tabstops
+//! against B's cursor (the predicate + slot were buffer-agnostic).
+//! Snippet state is buffer-local (everything-is-a-buffer ⇒ per-buffer,
+//! not a singleton), so every operation names its buffer: handlers use
+//! `core_buffer_id(ctx.buffer_id)`, host paths use the document buffer.
+//!
+//! One `Mutex` guards the map. Snippet operations are rare (per
+//! `<Tab>`, never per render), so the lock is uncontended and off any
+//! hot path.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use lattice_core::BufferId;
 
 use crate::active::ActiveSnippet;
 
-/// The live snippet session (`None` when no snippet is expanding).
+/// The live snippet sessions, keyed by the buffer each is expanding in
+/// (a buffer is absent from the map when no snippet is live there).
 #[derive(Default)]
 pub struct SnippetSession {
-    inner: Mutex<Option<ActiveSnippet>>,
+    inner: Mutex<HashMap<BufferId, ActiveSnippet>>,
 }
 
 impl std::fmt::Debug for SnippetSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `try_lock` so a `{:?}` on the owning `Editor` can never
         // deadlock against a concurrent navigation lock.
-        let active = self.inner.try_lock().map(|g| g.is_some());
+        let active = self.inner.try_lock().map(|g| g.len());
         f.debug_struct("SnippetSession")
-            .field("active", &active)
+            .field("active_buffers", &active)
             .finish()
     }
 }
@@ -50,31 +63,43 @@ impl SnippetSession {
         Self::default()
     }
 
-    /// `true` while a snippet is expanding. Backs the host's many
-    /// `active_snippet.is_some()` readers (keymap overlay sync,
-    /// render state, …).
-    pub fn is_active(&self) -> bool {
-        self.lock().is_some()
+    /// `true` while a snippet is expanding **in `buffer`**. Backs the
+    /// host's many readers (keymap overlay sync, render state, …),
+    /// each of which names the buffer it cares about so a session in
+    /// one buffer never activates the mode in another.
+    pub fn is_active(&self, buffer: BufferId) -> bool {
+        self.lock().contains_key(&buffer)
     }
 
-    /// Install a freshly-expanded session, replacing any prior one.
-    pub fn set(&self, active: ActiveSnippet) {
-        *self.lock() = Some(active);
+    /// Install a freshly-expanded session in `buffer`, replacing any
+    /// prior session for that same buffer.
+    pub fn set(&self, buffer: BufferId, active: ActiveSnippet) {
+        self.lock().insert(buffer, active);
     }
 
-    /// End the session (reached `$0`, or the buffer/mode tore down).
-    pub fn clear(&self) {
-        *self.lock() = None;
+    /// End the session in `buffer` (reached `$0`, or the buffer/mode
+    /// tore down). A no-op if `buffer` had no live session.
+    pub fn clear(&self, buffer: BufferId) {
+        self.lock().remove(&buffer);
     }
 
-    /// Mutate the live session in place. The closure sees the whole
-    /// `Option` so it can advance the focused tabstop *and* end the
-    /// session (set it to `None`) in one critical section.
-    pub fn with_mut<R>(&self, f: impl FnOnce(&mut Option<ActiveSnippet>) -> R) -> R {
-        f(&mut self.lock())
+    /// Mutate the live session for `buffer` in place. The closure sees
+    /// an `Option` so it can advance the focused tabstop *and* end the
+    /// session (set it to `None`) in one critical section — setting it
+    /// to `None` removes the buffer's entry from the map.
+    pub fn with_mut<R>(&self, buffer: BufferId, f: impl FnOnce(&mut Option<ActiveSnippet>) -> R) -> R {
+        let mut map = self.lock();
+        // Present the entry as an `Option` so the existing closure
+        // contract (`*s = None` ends the session) is preserved exactly.
+        let mut slot = map.remove(&buffer);
+        let r = f(&mut slot);
+        if let Some(active) = slot {
+            map.insert(buffer, active);
+        }
+        r
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<ActiveSnippet>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<BufferId, ActiveSnippet>> {
         self.inner.lock().expect("SnippetSession mutex poisoned")
     }
 }
@@ -89,8 +114,8 @@ impl SnippetSession {
 /// `feedback_mode_owns_its_surface`.
 pub fn snippet_active_predicate(
     session: SnippetSessionHandle,
-) -> Arc<dyn Fn() -> bool + Send + Sync> {
-    Arc::new(move || session.is_active())
+) -> Arc<dyn Fn(BufferId) -> bool + Send + Sync> {
+    Arc::new(move |buffer| session.is_active(buffer))
 }
 
 #[cfg(test)]
@@ -98,11 +123,27 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    fn buf(n: u32) -> BufferId {
+        BufferId(n)
+    }
+
     #[test]
     fn empty_session_is_inactive() {
         let s = SnippetSession::new();
-        assert!(!s.is_active());
-        s.clear();
-        assert!(!s.is_active());
+        assert!(!s.is_active(buf(0)));
+        s.clear(buf(0));
+        assert!(!s.is_active(buf(0)));
+    }
+
+    #[test]
+    fn unknown_buffer_is_inactive_never_panics() {
+        let s = SnippetSession::new();
+        // `is_active` / `clear` / `with_mut` on a buffer with no live
+        // session are graceful no-ops (SN.3e.2 graceful contract).
+        assert!(!s.is_active(buf(42)));
+        s.clear(buf(42));
+        let seen = s.with_mut(buf(42), |slot| slot.is_some());
+        assert!(!seen);
+        assert!(!s.is_active(buf(42)));
     }
 }

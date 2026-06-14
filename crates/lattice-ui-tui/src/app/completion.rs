@@ -449,7 +449,7 @@ mod tests {
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
         // Active snippet present, focused on $1.
-        let snippet_index = a.editor.snippet_session.with_mut(|s| s.as_ref().expect("snippet active").current_index());
+        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("snippet active").current_index());
         assert_eq!(snippet_index, Some(1));
         // Cursor at start of `i`.
         assert_eq!(a.editor.cursor, Position::new(0, 4));
@@ -488,7 +488,7 @@ mod tests {
         // activates on the buffer (mirrors the per-apply reconcile).
         a.sync_keymap_overlays();
         assert!(
-            a.editor.snippet_session.is_active(),
+            a.editor.snippet_session.is_active(a.editor.document_buffer_id),
             "snippet session live after expand"
         );
         let minors = a
@@ -506,7 +506,7 @@ mod tests {
         press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(
-            !a.editor.snippet_session.is_active(),
+            !a.editor.snippet_session.is_active(a.editor.document_buffer_id),
             "leave handler cleared the session"
         );
         assert_eq!(
@@ -525,7 +525,7 @@ mod tests {
             Position::new(0, 0),
             Position::new(0, 3),
         ));
-        assert!(!a.editor.snippet_session.is_active());
+        assert!(!a.editor.snippet_session.is_active(a.editor.document_buffer_id));
         // Buffer unchanged.
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
@@ -587,7 +587,7 @@ mod tests {
         // Popup closed; active snippet is in flight focused on
         // $1; buffer reflects expansion.
         assert!(a.editor.insert_completion.is_none());
-        let snippet_index = a.editor.snippet_session.with_mut(|s| s.as_ref().expect("active snippet").current_index());
+        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("active snippet").current_index());
         assert_eq!(snippet_index, Some(1));
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");

@@ -534,8 +534,8 @@ of the expand/leave migration and carries its own risk surface.
   Depends on: nothing hard; orthogonal to SN.3e. **Sequencing: SN.3e lands
   first** (per the user) — a smaller, design-settled refactor — then SN.3d.
 
-- **SN.3e 🗒 — key the snippet session by buffer (finding C; latent
-  correctness). Design LOCKED + scoped 2026-06-14; ready to execute cold.**
+- **SN.3e ✅ (2026-06-14) — key the snippet session by buffer (finding C; latent
+  correctness).**
   `SnippetSession` is one global `Option<ActiveSnippet>` and
   `snippet_active_predicate` is buffer-agnostic, so starting a snippet in
   buffer A then switching to B lights `active-snippet-mode` on B and routes
@@ -548,44 +548,48 @@ of the expand/leave migration and carries its own risk surface.
   heuristic #1 (everything-is-a-buffer ⇒ snippet state is buffer-local, not a
   global singleton).
 
-  **Scope discovered (2026-06-14):** this is a *substrate* refactor, not just
-  the snippet crate. Two cross-cutting pieces beyond the ~50 mechanical reader
-  edits:
-  1. **`SnippetSession` type + 4-method API** (`session.rs`):
-     `Mutex<Option<ActiveSnippet>>` → `Mutex<HashMap<BufferId, ActiveSnippet>>`;
-     `is_active` / `set` / `clear` / `with_mut` each gain a `BufferId` arg.
-  2. **The generic reconciler predicate changes shape.**
-     `snippet_active_predicate` returns `Arc<dyn Fn() -> bool>`, stored in
-     `Editor`'s `SessionBackedMinor.active: Arc<dyn Fn() -> bool>` and called
-     by `sync_keymap_overlays`. To scope activation per buffer that becomes
-     `Arc<dyn Fn(BufferId) -> bool>` — a change to the **generic host
-     reconciler** and *every* `SessionBackedMinor` consumer (incl. the
-     completion-popup minor, which currently reads host-owned
-     `insert_completion` state), not just snippets.
-  3. **~50 reader sites** across 5 files (`editor_boot.rs`, `editor.rs`,
-     `dispatch.rs`, ui-tui `app/completion.rs`, ui-tui `app/lsp.rs`) — mostly
-     mechanical (`is_active()` → `is_active(buf)`), but each must thread the
-     right buffer: the mode handlers use `ctx.buffer_id`; the host paths use
-     the active buffer (`active_buffer_id()`).
+  **Key type (decided at build):** the map is keyed by `lattice_core::BufferId`
+  — both producers reach it (mode handlers via the existing
+  `core_buffer_id(ctx.buffer_id)`; host paths use `self.document_buffer_id`,
+  which is exactly what `sync_keymap_overlays` reconciles against, so the
+  set-key always equals the check-key). The protocol↔core split flagged in
+  SN.3g is handled at the one conversion site already in `modes.rs`.
 
-  **Sub-slices (each lands green):**
-  - **SN.3e.0** — `SnippetSession` → buffer-keyed map + buffer-scoped API;
-    update the snippet-crate + host readers to pass the buffer (handlers:
-    `ctx.buffer_id`; host expand/leave: active buffer).
-  - **SN.3e.1** — generalize `SessionBackedMinor.active` to
-    `Fn(BufferId) -> bool`; `sync_keymap_overlays` passes the buffer it's
-    reconciling; update both consumers (the snippet predicate becomes
-    `snippet_active_predicate(handle) -> Fn(BufferId)`, and the inline
-    completion-popup minor predicate takes-and-ignores the buffer or reads its
-    host state per-buffer).
-  - **SN.3e.2** — tests: two buffers with concurrent/interleaved sessions;
-    switch mid-expansion doesn't misroute `<Tab>` (A's tabstops never fire
-    against B); the SN.3c.2b e2e `<Esc>` still passes; graceful (unknown
-    buffer → inactive, never panics).
+  **Scope (as built):** smaller than the original "~50 reader" estimate — most
+  of those were test sites. Production surface was ~8 call sites + the predicate
+  + the generic reconciler. SN.3e.0 and SN.3e.1 are **compile-coupled** (changing
+  `is_active()` → `is_active(buffer)` forces the predicate *and* the reconciler
+  call to change together), so they landed as one green commit; SN.3e.2 (the
+  multi-buffer test) followed.
 
-  Depends on: nothing hard; orthogonal to SN.3d. Real-world hit rate is low
-  (snippets are short-lived), hence not blocking. **Sequencing: lands before
-  SN.3d** (per the user).
+  **Sub-slices:**
+  - **SN.3e.0 ✅ + SN.3e.1 ✅ (one commit)** — `SnippetSession` →
+    `Mutex<HashMap<BufferId, ActiveSnippet>>`; `is_active` / `set` / `clear` /
+    `with_mut` each take a `BufferId` (`with_mut` removes-then-reinserts so the
+    `*s = None` "end session" closure contract is preserved exactly).
+    `snippet_active_predicate` → `Arc<dyn Fn(BufferId) -> bool>`;
+    `SessionBackedMinor.active` generalized to `Fn(BufferId) -> bool` and its
+    `Debug` impl no longer evaluates the closure (no buffer in scope).
+    `sync_keymap_overlays` passes the buffer it reconciles (`document_buffer_id`).
+    Readers threaded: snippet handlers (`<Tab>`/`<S-Tab>` `with_mut`, `<Esc>`
+    now `clear(core_buffer_id(ctx.buffer_id))`); host expand ×2 + render-snapshot
+    ×2 use `document_buffer_id`; ui-tui test reads use `a.editor.document_buffer_id`.
+    The completion-popup minor is **inline** in `sync_keymap_overlays` (reads
+    host `insert_completion`), not a `SessionBackedMinor`, so it needed no change.
+  - **SN.3e.2 ✅** — `sessions_are_isolated_per_buffer` (two buffers, interleaved
+    `<Tab>`: A advances, B never moves; clearing A leaves B live) +
+    `unknown_buffer_is_inactive_never_panics` (graceful). The SN.3c.2b e2e `<Esc>`
+    still passes.
+
+  Tests: 96 `lattice-snippet` ✅ (+1 isolation +1 graceful); host 713 ✅ /
+  1 pre-existing red (`arm_missing_arg_prompt_canonical_name_works`, K.3.2,
+  unrelated); ui-tui snippet 25 ✅, esc/fall-through e2e ✅ (the only ui-tui reds
+  are the documented arg-slot/tutor clusters). `cargo check --tests` clean across
+  snippet + host + ui-tui; gpui untouched (nav/session flow through the
+  renderer-agnostic registry).
+
+  Depends on: nothing hard; orthogonal to SN.3d. **Next: SN.3d (build Select
+  mode), now unblocked.**
 
 - **SN.3f 🗒 — diagnose silent handler-skip (finding D; observability).**
   `SnippetActiveMode::on_activate` (and SN.3c's `SnippetMode::on_activate`)
@@ -630,10 +634,12 @@ SN.3c.1 (mode-owned `<C-x><C-s>` expand, `873fde26`), SN.3c.2a (insert-mode
 K.1.c gating + leave relocation, `ad33b2f9`), SN.3c.2b (`fall_through` binding
 primitive + snippet `<Esc>` + `:describe-key`, `3df8521b`; e2e test `b89f53c5`;
 design fragment keymap-architecture §14 `7283502e`). SN.3f ✅ (`4b49b810`),
-SN.3g ✅ (`687ed1c3`). SN.3d 🗒 **designed** (vim Select mode — see
-[select-mode.md](../../architecture/select-mode.md), `b14b2fc7`), not built.
-**Remaining work: SN.3e (buffer-keyed session, ready to execute cold — the
-sub-slice plan above is locked) → then SN.3d (build Select mode).**
+SN.3g ✅ (`687ed1c3`). SN.3e ✅ (buffer-keyed snippet session, 2026-06-14).
+SN.3d 🗒 **designed** (vim Select mode — see
+[select-mode.md](../../architecture/select-mode.md), `b14b2fc7` + review-tightening
+`db10ba4b`), not built.
+**Remaining work: SN.3d (build Select mode) — now unblocked (SN.3e landed first
+per the locked sequencing).**
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

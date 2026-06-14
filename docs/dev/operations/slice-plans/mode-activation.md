@@ -572,7 +572,29 @@ of the expand/leave migration and carries its own risk surface.
     parity tests in `dispatch::tests` (`select_publishes_same_selection_range_as_visual`,
     `select_blockwise_publishes_block_extents_like_visual`). Host Select suite 19/19;
     GPUI builds clean with `--features window`.
-  - **(d.2c)** `:describe-mode select` + macro record/replay. *(next)*
+  - **(d.2c) ✅** describe-surface + macro record/replay — **plus two
+    half-migration fixes uncovered here**. *Describe-surface*: modal states are
+    deliberately NOT mode-registry entries (the two axes don't collapse), so
+    `:describe-mode select` is the wrong home — Visual isn't a registered mode
+    either. The describe-surface for modal states is the `modal-editing` help
+    topic (`docs/user/modal-editing.md`, `:help modal-editing`); documented Select
+    there mirroring Visual (modes table row, `gh`/`gH`/`g<C-h>` + `<C-g>`-toggle
+    quick-ref rows, a dedicated `## Select mode` section, frontmatter summary).
+    *Macro record/replay*: the recorder captures `Action`s (not keystrokes), and
+    the printable→overtype is `Action::SelectOvertype(c)` — captured like an
+    Insert char; Select entry rides the same `Invoke → EnterSelect` path as
+    Visual's `v`. Test `select_overtype_records_and_replays_faithfully`
+    (`app/macros.rs`) records enter→motion→overtype and replays in the SAME app
+    (recorded `Invoke` embeds a registry-local `CommandId` — macros are not
+    portable across registries; restore via undo + replay). **Half-migration
+    fixes** (d.2a bound Select's motions but two handlers still gated on
+    `Visual(_)` only): (1) the `Effect::SelectionChange` host arm in `dispatch.rs`
+    now extends the selection for `Visual(_) | Select(_)` — without this, motions
+    in Select COLLAPSED the selection instead of extending it; (2)
+    `do_swap_visual_ends` (`o`, bound in Select) now fires for both. Host test
+    `motion_extends_and_swap_ends_work_in_select`. Host Select suite 20/20;
+    ui-tui macros 10/10; help 48/48; no new reds (full host 732✅/1 pre-existing
+    K.3.2; ui-tui 1466✅/5 pre-existing env cluster).
   - **(d.3)** snippet consumer (`snippet_group_cursor_effect` → enter Select over
     multi-char defaults via `Effect::Many([SelectionChange, EnterMode(Select)])`)
     + the doc-debt fix. Mirrors keep the selection on the *focused* group only;

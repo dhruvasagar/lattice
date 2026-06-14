@@ -24,7 +24,7 @@ mod tests {
 
     use crate::app::test_helpers::app_with;
     use crate::app::*;
-    use lattice_grammar::{Args, CommandInvocation, ModalState, Target};
+    use lattice_grammar::{Args, CommandInvocation, ModalState, Target, VisualKind};
 
     #[test]
     fn start_macro_record_seeds_recording_state() {
@@ -78,6 +78,66 @@ mod tests {
         // Replay -> deletes another word.
         a.apply(Action::PlayMacro('a'));
         assert_eq!(a.editor.document.text(), "");
+    }
+
+    #[test]
+    fn select_overtype_records_and_replays_faithfully() {
+        // SN.3d.2c: a Select-mode overtype must be recordable + replayable.
+        // The recorder captures `Action`s (not raw keystrokes), and the
+        // printable→overtype fall-through is `Action::SelectOvertype(c)`,
+        // so it lands in the stream like an Insert char. Record a real
+        // sequence — enter Select, a motion that EXTENDS the selection,
+        // then overtype — and prove a fresh app replays it byte-for-byte.
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        a.apply(Action::EnterSelect(VisualKind::Charwise));
+        // `e` (word_end) from col 0 lands on 'o' of "hello" (0,4); the
+        // charwise selection then spans 0..5 ("hello", head-inclusive).
+        a.apply(Action::Invoke(CommandInvocation::of(a.editor.builtins.word_end.0)));
+        a.apply(Action::SelectOvertype('X'));
+        a.apply(Action::StopMacroRecord);
+        assert_eq!(
+            a.editor.document.text(),
+            "X world",
+            "overtype replaces the whole extended selection with the typed char"
+        );
+
+        // The novel surface is captured: the recorded stream carries the
+        // overtype (and the Select entry), not raw keystrokes.
+        let recorded = a.editor.macros.get(&'a').cloned().expect("macro 'a' recorded");
+        assert!(
+            recorded
+                .iter()
+                .any(|act| matches!(act, Action::SelectOvertype('X'))),
+            "the overtype is recorded as a replayable action"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|act| matches!(act, Action::EnterSelect(VisualKind::Charwise))),
+            "Select entry is recorded"
+        );
+
+        // Faithful replay must happen in the SAME app: a recorded
+        // `Invoke` embeds a `CommandId` from this registry, and CommandIds
+        // are not portable across registry instances (a fresh app assigns
+        // its own) — vim macros replay against the same command table.
+        // Restore the pre-overtype buffer (the overtype is a single
+        // replace-edit ⇒ one undo) + cursor, then replay.
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::Undo);
+        assert_eq!(
+            a.editor.document.text(),
+            "hello world",
+            "undo restores the whole overtyped span in one step"
+        );
+        a.editor.set_cursor(lattice_protocol::position::Position::new(0, 0));
+        a.apply(Action::PlayMacro('a'));
+        assert_eq!(
+            a.editor.document.text(),
+            "X world",
+            "replay reproduces the Select overtype exactly"
+        );
     }
 
     #[test]

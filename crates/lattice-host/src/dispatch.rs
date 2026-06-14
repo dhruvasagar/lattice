@@ -2373,7 +2373,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             let primary = *set.primary();
             let new_head = primary.head;
             editor.cursor = new_head;
-            if let ModalState::Visual(kind) = editor.modal {
+            // SN.3d: Select extends its selection on motion exactly like
+            // Visual — same anchor/head bookkeeping, same `visual` kind on
+            // the resulting `Selection`. Gating this on `Visual(_)` alone
+            // would leave Select's bound motions collapsing the selection
+            // (a half-migration: d.2a bound the motions, this is the
+            // handler that makes them extend).
+            let active_kind = match editor.modal {
+                ModalState::Visual(kind) | ModalState::Select(kind) => Some(kind),
+                _ => None,
+            };
+            if let Some(kind) = active_kind {
                 let anchor = if primary.anchor != primary.head {
                     editor.visual_anchor = Some(primary.anchor);
                     primary.anchor
@@ -22135,12 +22145,14 @@ impl Editor {
     /// following motion / text object grows or shrinks the selection
     /// at the end the cursor now sits on.
     ///
-    /// No-op outside Visual mode, and no-op when `visual_anchor` is
-    /// unset -- the latter naturally skips buffer kinds that keep
-    /// their Visual region elsewhere (terminal), so this needs no
-    /// `BufferKind` branch.
+    /// No-op outside Visual / Select mode, and no-op when
+    /// `visual_anchor` is unset -- the latter naturally skips buffer
+    /// kinds that keep their Visual region elsewhere (terminal), so
+    /// this needs no `BufferKind` branch. SN.3d: `o` is bound in Select
+    /// too (it shares Visual's selection geometry), so the swap fires
+    /// for both states.
     pub fn do_swap_visual_ends(&mut self) {
-        let ModalState::Visual(kind) = self.modal else {
+        let (ModalState::Visual(kind) | ModalState::Select(kind)) = self.modal else {
             return;
         };
         let Some(other_end) = self.visual_anchor else {
@@ -31041,6 +31053,44 @@ mod tests {
                 vis_block.end_col
             ),
             "Select's per-line column band matches Visual's"
+        );
+    }
+
+    // SN.3d.2c: a motion in Select EXTENDS the selection (same as Visual)
+    // — it does not collapse to a bare cursor. Half-migration guard: d.2a
+    // bound the motions into `BindingMode::Select`; this asserts the
+    // `Effect::SelectionChange` host arm actually extends them, and that
+    // `o` (also bound in Select) swaps the ends.
+    #[test]
+    fn motion_extends_and_swap_ends_work_in_select() {
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.set_cursor(Position::new(0, 0));
+        editor.do_enter_select(lattice_grammar::VisualKind::Charwise);
+
+        // `e` (word_end) lands on 'o' of "hello" (0,4); in Select the
+        // selection extends anchor(0,0)..head(0,4) instead of collapsing.
+        let mut out = DispatchOutcome::default();
+        editor.run_invocation(
+            lattice_grammar::CommandInvocation::of(editor.builtins.word_end.0),
+            &mut out,
+        );
+        {
+            let sels = editor.document.selections();
+            let p = sels.primary();
+            assert_eq!(p.anchor, Position::new(0, 0), "anchor stays at the entry point");
+            assert_eq!(p.head, Position::new(0, 4), "head extends to word_end");
+            assert!(p.visual.is_some(), "the extended selection keeps a visual kind");
+        }
+
+        // `o` swaps ends: cursor jumps to the anchor end, anchor adopts
+        // the old head.
+        editor.do_swap_visual_ends();
+        assert_eq!(editor.cursor, Position::new(0, 0), "o moves the cursor to the anchor end");
+        assert_eq!(
+            editor.visual_anchor,
+            Some(Position::new(0, 4)),
+            "o moves the anchor to the old head"
         );
     }
 }

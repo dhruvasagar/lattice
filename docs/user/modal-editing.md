@@ -1,5 +1,5 @@
 ---
-summary: "Modal editing: Normal / Insert / Visual / Command / Search / Replace, the vim grammar (operators + motions + text objects + counts), and registers / marks / macros."
+summary: "Modal editing: Normal / Insert / Visual / Select / Command / Search / Replace, the vim grammar (operators + motions + text objects + counts), and registers / marks / macros."
 related: [operator:, motion:, text-object:, register, mark, macro]
 ---
 
@@ -25,6 +25,7 @@ edges around modes that you'll find familiar but cleaner.
 | **Insert**         | Bar (`|`)   | Type — keystrokes go into the buffer            |
 | **Replace**        | Underline   | Type — overwrites instead of inserting          |
 | **Visual** (3 sub) | Highlight   | Select a range; next operator acts on it        |
+| **Select** (3 sub) | Highlight   | Like Visual, but typing **replaces** the selection and drops to Insert |
 | **Operator-Pending** (transient) | Block | Awaiting motion / text-object after `d`/`y`/`c`/etc. |
 | **Command**        | Bar at `:` line | Typing an ex-command (`:w`, `:set`, ...)     |
 | **Search**         | Bar at `/` line | Typing a search pattern (`/foo`, `?bar`)     |
@@ -55,18 +56,29 @@ selection.
 | `v`                                     | Visual (charwise)                                   |
 | `V`                                     | Visual (linewise)                                   |
 | `<C-v>` (or `<C-q>`)                    | Visual (blockwise)                                  |
+| `gh`                                    | Select (charwise)                                   |
+| `gH`                                    | Select (linewise)                                   |
+| `g<C-h>`                                | Select (blockwise)                                  |
 | `:`                                     | Command                                             |
 | `/` / `?`                               | Search forward / backward                           |
 | `gv`                                    | Re-select the previous Visual selection             |
 
-| From Insert / Replace / Visual / Command / Search | To       |
-|---------------------------------------------------|----------|
-| `<Esc>`                                           | Normal   |
+| From Insert / Replace / Visual / Select / Command / Search | To       |
+|-----------------------------------------------------------|----------|
+| `<Esc>`                                                   | Normal   |
 
 | From Visual | To                                                                              |
 |-------------|---------------------------------------------------------------------------------|
 | `v`/`V`/`<C-v>` | Switch among Visual sub-modes (or drop to Normal if same kind)              |
 | `o`             | Swap selection anchor and cursor (extends to the *other* end)              |
+| `<C-g>`         | Toggle to Select (same selection, inverted typing)                         |
+| `<Esc>`         | Drop selection → Normal                                                     |
+
+| From Select | To                                                                              |
+|-------------|---------------------------------------------------------------------------------|
+| any printable key | Replace the selection with that char → Insert                             |
+| `o`             | Swap selection anchor and cursor                                            |
+| `<C-g>`         | Toggle back to Visual (same selection)                                      |
 | `<Esc>`         | Drop selection → Normal                                                     |
 
 ---
@@ -383,6 +395,44 @@ In blockwise Visual:
 
 The whole replicate session is one undo unit — `u` once
 reverts the entire block edit.
+
+---
+
+## Select mode
+
+Select is Visual's twin: identical selection geometry (same
+anchor/head, same three sub-modes, same motions and text
+objects extend it), but **inverted typing**. In Visual you
+press an operator (`d`, `c`, `y`); in Select you just type, and
+the typed character *replaces* the whole selection and drops
+you into Insert. It mirrors the "type-to-replace selection"
+behaviour of conventional editors, and it's the substrate vim
+snippet expansion uses to highlight an editable placeholder.
+
+| Mode      | Enter        | Selects                                         |
+|-----------|--------------|-------------------------------------------------|
+| Charwise  | `gh`         | Char-by-char from anchor to cursor              |
+| Linewise  | `gH`         | Whole lines from anchor's line to cursor's line |
+| Blockwise | `g<C-h>`     | Rectangle anchored at anchor, extending to cursor |
+
+Once in Select:
+
+- Any motion or text object extends the selection — exactly as
+  in Visual (`w`, `e`, `}`, `iw`, `af`, …).
+- Typing any **printable** character replaces the selection
+  with that character and switches to Insert. The replace +
+  insert is a **single undo unit** — one `u` restores the
+  original span.
+- `o` swaps anchor and cursor (extend from the other end).
+- `<C-g>` toggles back to Visual without losing the selection;
+  from Visual, `<C-g>` toggles *into* Select. The selection is
+  preserved across the toggle either way.
+- `<Esc>` drops the selection and returns to Normal (the
+  dropped selection is remembered, so `gv` re-selects it).
+
+Operators do **not** apply in Select — the keys that would be
+operators in Visual are printable characters, so they overtype.
+That's the whole point: Select is for "select, then type over."
 
 ---
 

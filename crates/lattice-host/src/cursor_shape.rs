@@ -38,7 +38,12 @@ impl CursorShape {
         match modal {
             ModalState::Insert | ModalState::Command | ModalState::Search(_) => Self::Bar,
             ModalState::Replace => Self::Underline,
-            ModalState::Normal | ModalState::Visual(_) | ModalState::OperatorPending => Self::Block,
+            // SN.3d: Select shares Visual's Block cursor — the
+            // selection conveys the mode; the cursor matches Visual.
+            ModalState::Normal
+            | ModalState::Visual(_)
+            | ModalState::Select(_)
+            | ModalState::OperatorPending => Self::Block,
         }
     }
 }
@@ -65,6 +70,27 @@ mod tests {
         ] {
             assert_eq!(
                 CursorShape::for_mode(ModalState::Visual(k)),
+                CursorShape::Block
+            );
+        }
+    }
+
+    /// SN.3d parity: Select mode uses the same Block cursor as Visual
+    /// for every kind — Select must never diverge from Visual here.
+    #[test]
+    fn select_all_kinds_use_block_matching_visual() {
+        for k in [
+            VisualKind::Charwise,
+            VisualKind::Linewise,
+            VisualKind::Blockwise,
+        ] {
+            assert_eq!(
+                CursorShape::for_mode(ModalState::Select(k)),
+                CursorShape::for_mode(ModalState::Visual(k)),
+                "Select({k:?}) cursor must match Visual({k:?})"
+            );
+            assert_eq!(
+                CursorShape::for_mode(ModalState::Select(k)),
                 CursorShape::Block
             );
         }

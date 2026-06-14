@@ -198,6 +198,9 @@ impl App {
             ModalState::Normal => "NORMAL",
             ModalState::Insert => "INSERT",
             ModalState::Visual(_) => "VISUAL",
+            // SN.3d: kind-agnostic here, mirroring Visual (the kind is
+            // not distinguished in this short tag for either mode).
+            ModalState::Select(_) => "SELECT",
             ModalState::OperatorPending => "O-PEND",
             ModalState::Command => "CMD",
             ModalState::Search(_) => "SEARCH",

@@ -13,6 +13,12 @@ pub enum ModalState {
     Normal,
     Insert,
     Visual(VisualKind),
+    /// Vim Select mode (SN.3d). Same selection *geometry* as
+    /// [`Self::Visual`] (the `VisualKind` is reused verbatim), but
+    /// inverted typing semantics: a printable key replaces the whole
+    /// selection and drops into Insert. See
+    /// `docs/dev/architecture/select-mode.md`.
+    Select(VisualKind),
     OperatorPending,
     Command,
     Search(SearchDirection),
@@ -38,6 +44,17 @@ impl ModalState {
     /// supply `Range::Selection` as a default when no explicit range is given.
     pub fn is_visual(self) -> bool {
         matches!(self, ModalState::Visual(_))
+    }
+
+    /// Whether this state is Select mode (SN.3d), in any of charwise /
+    /// linewise / blockwise. Select shares Visual's selection geometry
+    /// but overtypes on a printable key. Kept distinct from
+    /// [`Self::is_visual`] because the *dispatch* differs; callers that
+    /// care only about "is a selection live" should gain an explicit
+    /// `selection_is_active` helper when one is first needed (no
+    /// production caller exists yet — see select-mode.md §2).
+    pub fn is_select(self) -> bool {
+        matches!(self, ModalState::Select(_))
     }
 
     /// Whether this state expects more input to complete a pending operator.
@@ -70,12 +87,35 @@ mod tests {
         for s in [
             ModalState::Normal,
             ModalState::Insert,
+            ModalState::Select(VisualKind::Charwise),
             ModalState::OperatorPending,
             ModalState::Command,
             ModalState::Search(SearchDirection::Forward),
             ModalState::Replace,
         ] {
             assert!(!s.is_visual(), "{s:?} should not be visual");
+        }
+    }
+
+    #[test]
+    fn select_predicate_recognises_each_kind_and_excludes_others() {
+        for kind in [
+            VisualKind::Charwise,
+            VisualKind::Linewise,
+            VisualKind::Blockwise,
+        ] {
+            let s = ModalState::Select(kind);
+            assert!(s.is_select());
+            // Select is NOT Visual — the dispatch differs even though
+            // the geometry is shared.
+            assert!(!s.is_visual());
+        }
+        for s in [
+            ModalState::Normal,
+            ModalState::Visual(VisualKind::Charwise),
+            ModalState::Insert,
+        ] {
+            assert!(!s.is_select(), "{s:?} should not be select");
         }
     }
 

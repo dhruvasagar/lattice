@@ -83,8 +83,8 @@ pub mod registry;
 pub mod services;
 
 pub use crate::action_handler_registry::{
-    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistry,
-    ActionHandlerRegistryHandle,
+    ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
+    ActionHandlerRegistry, ActionHandlerRegistryHandle,
 };
 pub use crate::active::ActiveModes;
 pub use crate::activator::ModeActivator;

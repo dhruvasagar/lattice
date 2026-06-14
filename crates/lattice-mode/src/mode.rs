@@ -7,6 +7,7 @@ use std::pin::Pin;
 
 pub use lattice_keymap::ModeId;
 
+use crate::action_handler_registry::ActionHandlerContribution;
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
 use crate::contributions::{
@@ -228,6 +229,22 @@ pub trait Mode: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// SN.3c.0: *global* (buffer-agnostic) action handlers this
+    /// mode contributes. The host walks every registered mode's
+    /// `action_handlers()` once at boot, resolves each
+    /// `action_name` → `CommandId`, registers the handler in the
+    /// `ActionHandlerRegistry`, and holds the tokens for the app's
+    /// lifetime. Use this for handlers that read the active
+    /// buffer / cursor / services from the `ActionContext` at call
+    /// time and close over no per-buffer state (e.g. snippet
+    /// expand). Per-buffer, session-scoped handlers register in
+    /// [`on_activate`](Self::on_activate) instead, so their tokens
+    /// drop with the Guard. Default: none. See
+    /// `feedback_effect_vocabulary_is_host_boundary`.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        Vec::new()
+    }
+
     /// Capabilities the mode requires. Validated at activation;
     /// missing capability ⇒
     /// [`ModeActivationError::MissingCapability`], never silent
@@ -343,6 +360,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem>;
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution>;
     fn required_capabilities(&self) -> CapabilitySet;
     fn conflicts_with(&self) -> &[ModeId];
     fn implies(&self) -> &[ModeId];
@@ -387,6 +405,9 @@ impl<M: Mode> DynMode for M {
     }
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
         <M as Mode>::completion_sources(self)
+    }
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        <M as Mode>::action_handlers(self)
     }
     fn required_capabilities(&self) -> CapabilitySet {
         <M as Mode>::required_capabilities(self)

@@ -1015,6 +1015,23 @@ impl Editor {
             ));
         }
 
+        // SN.3c.0: the shared action-handler registry. Created here
+        // (not inside the `services:` block below) so the boot walk
+        // can register modes' declarative *global* action handlers
+        // (`Mode::action_handlers()`) and the resulting app-lifetime
+        // tokens land on `Editor.global_action_handler_regs`. The
+        // same Arc is registered as a service so per-buffer handlers
+        // still register from `on_activate`. See
+        // `mode_action_handlers::register_mode_action_handlers`.
+        let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
+            Arc::new(lattice_mode::ActionHandlerRegistry::new());
+        let global_action_handler_regs =
+            crate::mode_action_handlers::register_mode_action_handlers(
+                &action_handlers,
+                &mode_registry,
+                &registry,
+            );
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1076,8 +1093,10 @@ impl Editor {
                 // serves every mode activation. See
                 // `mode-architecture.md` §5.3 +
                 // `feedback_mode_owns_its_surface`.
-                let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
-                    Arc::new(lattice_mode::ActionHandlerRegistry::new());
+                // SN.3c.0: reuse the Arc created above (after the
+                // boot action-handler walk); register it as a service
+                // so per-buffer handlers still register from
+                // `on_activate`.
                 s.register::<lattice_mode::ActionHandlerRegistryHandle>(
                     action_handlers.clone(),
                 );
@@ -1361,6 +1380,7 @@ impl Editor {
             insert_completion: None,
             snippet_registry: snippet_registry_handle,
             snippet_activation_policy,
+            global_action_handler_regs,
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: HashMap::new(),
             pending_config_structural_sections: std::collections::BTreeMap::new(),

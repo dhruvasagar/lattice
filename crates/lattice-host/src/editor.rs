@@ -897,6 +897,13 @@ pub struct Editor {
     /// `apply_option_cascade` arm fold config into it via
     /// `lattice_snippet::fold_activation_policy`.
     pub snippet_activation_policy: lattice_snippet::SnippetActivationPolicyHandle,
+    /// SN.3c.0: app-lifetime registration tokens for modes'
+    /// declarative *global* action handlers (`Mode::action_handlers()`,
+    /// registered once at boot by
+    /// [`crate::mode_action_handlers::register_mode_action_handlers`]).
+    /// Held here so the handlers stay registered for the editor's
+    /// whole lifetime; dropped at shutdown when `Editor` drops.
+    pub global_action_handler_regs: Vec<lattice_mode::ActionHandlerRegistration>,
     /// Sidecar metadata for snippet candidates in the active
     /// insert-completion popup.
     /// CSM.5: retired. Snippet candidates now carry their stable

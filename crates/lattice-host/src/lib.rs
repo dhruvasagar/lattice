@@ -125,6 +125,7 @@ pub mod keymap_visual;
 // contributions and inserts them into the matcher trie.
 pub mod lsp_helpers;
 pub mod lsp_watcher;
+pub mod mode_action_handlers;
 pub mod modes;
 pub mod oil;
 pub mod pane;

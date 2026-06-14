@@ -345,36 +345,59 @@ Sub-slices:
     global handler resolves for any buffer; survives an unrelated mode's
     activate/deactivate) · no bench/doc beyond this entry.
 
-  - **SN.3c.1 🗒 — snippet uses it (expand migration).**
+  - **SN.3c.1 🗒 — snippet uses it (expand migration). FINALIZED 2026-06-14**
+    (design refined during build; supersedes the earlier `{ snippet_name,
+    replace_range }` shape and the `:snippet-expand`/`RunModeAction` plan).
     1. **Binding.** `<C-x><C-s>` moves off Builtin (`keymap_insert.rs`) onto
-       `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`;
-       K.1.c gates the chord to `snippet-mode`-active buffers.
-    2. **Handler.** `SnippetMode::action_handlers()` returns the expand handler
-       (the `do_snippet_expand_at_cursor` body: word-prefix scan, registry
-       lookup by `(language, prefix)` then `"*"`). `SnippetMode` captures the
-       shared `Arc<SharedSnippetRegistry>` (like `SnippetCompletionSource`);
-       the closure resolves `BufferStoreHandle` from `ActionContext.services`
-       and reads `ctx.cursor`.
-    3. **`Effect::ExpandSnippet { snippet_name: String, replace_range: Range }`**
-       (locked shape). Mode decides *which* snippet (name) + *what it replaces*
-       (range); the **host** re-resolves the body via `snippet_registry.by_name`,
-       renders with its host-owned `VariableContext` (`TM_FILENAME` etc.),
-       splices, installs the session (`snippet_session.set`), and derives the
-       cursor from the splice result — the mode can't see the post-splice
-       buffer, so it must NOT pre-compute the cursor (mirrors the nav handlers'
-       division). This is a deliberate **first-party** effect: the typed
-       `Effect` enum stays a host-owned vocabulary by design (see
-       `feedback_effect_vocabulary_is_host_boundary`); modes own *actions +
-       handler bodies*, not effects.
-    4. **Remove** `Editor::do_snippet_expand_at_cursor`, `Action::SnippetExpand`,
-       `AppEffect::SnippetExpand`, and the `<C-x><C-s>` Builtin binding. Factor
-       the host splice/render/session into a shared helper
-       (`expand_snippet_by_name`) so both the `<CR>`-accept path (host-side,
-       not chord-owned — stays) and the `Effect::ExpandSnippet` arm call it.
-    - TUI+GPUI parity (`feedback_tui_gpui_parity`): `Effect::ExpandSnippet` is a
-      new variant → update both the TUI effect classifier (`app/dispatch.rs`,
-      replacing the current `Effect::SnippetExpand` arm) and the GPUI
-      effect-classifier arm in the same patch.
+       `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`
+       (Insert mode); K.1.c gates it to `snippet-mode`-active buffers.
+    2. **Handler.** `SnippetMode::action_handlers()` returns a handler bound to
+       `action:snippet-expand` that does ONLY the word-prefix scan: read the
+       line at `ctx.cursor` via `BufferStoreHandle` (from
+       `ActionContext.services`), walk back over word chars to find the trigger
+       token's start, and emit `Effect::ExpandSnippet { replace_range }`
+       (token-start..cursor). Returns `None` (no effect) when there's no word
+       prefix. **No registry / language in the mode** — see point 3 for why.
+    3. **`Effect::ExpandSnippet { replace_range: Range }`** (final shape — just
+       the range). The **host** arm owns resolution + expansion: prefix = buffer
+       text in `replace_range`; `language = active_language_id()` (host-owned
+       path→language detection — duplicating it in the mode is worse, so the
+       mode does NOT resolve the snippet); lookup `(language, prefix)` then
+       `"*"` in `self.snippet_registry`; render with host-owned `VariableContext`;
+       reuse existing `Editor::expand_snippet(&body, replace_range.start)` for
+       splice + session + cursor (the range end IS the cursor, so the existing
+       `anchor..cursor` replace is correct). Graceful: no match → quiet info
+       echo. This is a deliberate **first-party** effect (typed `Effect` stays a
+       host-owned vocabulary — `feedback_effect_vocabulary_is_host_boundary`);
+       the mode owns the *trigger* (chord + token scan), the host owns the
+       first-party *expansion mechanics* (language + registry + variables +
+       buffer mutation).
+    4. **Remove** `Editor::do_snippet_expand_at_cursor` (its body splits: scan →
+       mode handler; lookup+expand → the `Effect::ExpandSnippet` host arm),
+       `Action::SnippetExpand`, `AppEffect::SnippetExpand`, `Effect::SnippetExpand`,
+       the `:snippet-expand` ex-command (UX-useless per Dhruva 2026-06-14), and
+       the `<C-x><C-s>` Builtin binding. `action:snippet-expand` CommandSpec
+       stays (the chord binds it + the handler keys on it); its apply becomes a
+       dead `Effect::None` (the ActionHandlerRegistry handler always intercepts).
+       The `<CR>`-accept path keeps calling `expand_snippet` directly (host-side,
+       not chord-owned).
+    - **`RunModeAction` NOT built.** A generic "ex-command/programmatic → mode
+      action" effect would be dead code with no caller once `:snippet-expand` is
+      removed, violating the no-speculative-abstraction rule. The reusable
+      plugin-facing API already ships: `Mode::action_handlers()` (SN.3c.0) +
+      `Mode::keymap()` + the generic ActionHandlerRegistry dispatch let any mode
+      own + trigger an action via a chord with zero host knowledge;
+      `Effect::ExpandSnippet` is the reusable expansion primitive a handler can
+      emit. Programmatic ex-command-by-name invocation of a mode action is a
+      broader ex-command/action unification to build when a concrete caller
+      lands (ex-commands-go-mode-owned, or the WASM plugin host). Tracked in
+      `feedback_effect_vocabulary_is_host_boundary`.
+    - TUI+GPUI parity (`feedback_tui_gpui_parity`): `Effect::SnippetExpand` →
+      `Effect::ExpandSnippet { replace_range }` in both peers' apply arms
+      (the peer arm calls `e.expand_snippet_from_range(replace_range)` — the
+      host helper wrapping resolve+expand) and in the exhaustive
+      `effect_*` classifier matches (host `dispatch.rs` + TUI `app/dispatch.rs`
+      + GPUI).
 
   - **SN.3c.2 🗒 — leave migration.** `action:snippet-leave`'s body moves from
     the host (`Action::SnippetLeave` / `AppEffect::SnippetLeave`) into

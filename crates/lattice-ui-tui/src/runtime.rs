@@ -78,6 +78,10 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     let workspace_root = lattice_host::editor::Editor::workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     app.apply_per_language_toml_overrides();
+    // built-ins 2026-06-13: load embedded + user snippet packs once
+    // at startup (after config so `snippet_dirs` overrides apply).
+    // Quiet — logs, no echo.
+    app.load_snippets_at_startup();
     // T.5: `--tutor [N]` opens the tutor buffer before the first draw.
     if let Some(n) = startup_lesson {
         app.open_tutor(n);

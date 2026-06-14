@@ -351,6 +351,10 @@ impl GpuiApp {
         let workspace_root = Editor::workspace_root_from_cwd();
         let _ = editor.load_persistent_config(workspace_root.as_deref());
         editor.apply_per_language_toml_overrides();
+        // built-ins 2026-06-13: load embedded + user snippet packs
+        // once at startup (parity with the TUI runtime). Quiet —
+        // logs, no echo.
+        editor.load_snippets_at_startup();
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 

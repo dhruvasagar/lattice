@@ -34,7 +34,9 @@
 //! any rope or buffer; the host wires [`ActiveSnippet`] to its
 //! buffer-mutation pipeline.
 
+pub mod activation;
 pub mod active;
+pub mod builtins;
 pub mod load;
 pub mod modes;
 pub mod parse;
@@ -45,12 +47,17 @@ pub mod session;
 pub mod token;
 pub mod variables;
 
+pub use crate::activation::{
+    fold_activation_policy, SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle,
+    SnippetLanguages,
+};
 pub use crate::active::{ActiveSnippet, TabstopGroup};
-pub use crate::session::{SnippetSession, SnippetSessionHandle};
+pub use crate::builtins::{builtin_packs, load_builtins, load_builtins_into};
+pub use crate::session::{snippet_active_predicate, SnippetSession, SnippetSessionHandle};
 pub use crate::load::{LoadError, load_pack, load_pack_from_str};
 pub use crate::modes::{
     SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,
-    SnippetCompletionSource, register_snippet_modes,
+    SnippetCompletionSource, SnippetMode, register_snippet_modes,
 };
 pub use crate::parse::{ParseError, parse};
 pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};

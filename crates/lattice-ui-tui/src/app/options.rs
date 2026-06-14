@@ -1073,11 +1073,19 @@ mod tests {
     }
 
     #[test]
-    fn reload_snippets_with_no_dirs_reports_empty() {
+    fn reload_snippets_with_no_user_dirs_loads_builtins_only() {
         let mut a = app_with("", 10);
+        // Isolate from the developer's real
+        // `~/.config/lattice/snippets` (the default dir) so the
+        // count is deterministic.
+        a.editor.snippet_dirs.clear();
         a.do_reload_snippets();
-        // Idle; registry stays empty. Message echoed at Info.
-        assert_eq!(a.editor.snippet_registry.load().len(), 0);
+        // Built-ins are always present; with no user dirs the
+        // registry is exactly the embedded built-in set (built-ins
+        // 2026-06-12: reload no longer wipes to empty).
+        let builtins = lattice_snippet::load_builtins().len();
+        assert!(builtins > 0, "built-in packs are non-empty");
+        assert_eq!(a.editor.snippet_registry.load().len(), builtins);
     }
 
     #[test]
@@ -1098,11 +1106,16 @@ mod tests {
             r#"{ "rust-for": { "prefix": "for", "body": "for $1 {}" } }"#,
         )
         .unwrap();
+        let builtins = lattice_snippet::load_builtins().len();
         let mut a = app_with("", 10);
+        // Isolate from the real user dir, then point only at the
+        // tempdir so the user-pack count is deterministic.
+        a.editor.snippet_dirs.clear();
         a.editor.snippet_dirs.push(dir.clone());
         a.do_reload_snippets();
-        // 2 snippets registered total (one per language).
-        assert_eq!(a.editor.snippet_registry.load().len(), 2);
+        // Built-ins + the 2 user snippets from the tempdir (one
+        // per language slot).
+        assert_eq!(a.editor.snippet_registry.load().len(), builtins + 2);
         assert!(
             !a.editor
                 .snippet_registry

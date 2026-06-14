@@ -117,6 +117,58 @@ Snippets are templates with **placeholders** you cycle
 through. The engine implements TextMate / LSP snippet syntax,
 so VS Code's `friendly-snippets` pack drops in unchanged.
 
+### Where snippets come from
+
+A small **built-in** set ships with the editor and is available
+from the first keystroke — no install step. It covers common
+Rust scaffolding (`fn`, `for`, `match`, `impl`, `struct`,
+`test`, …) plus a few language-agnostic ones (`todo`, `fixme`,
+`date`, `uuid`).
+
+To add your own, drop friendly-snippets-style `<language>.json`
+packs into **`~/.config/lattice/snippets/`** (`_global.json` →
+all languages) and run **`:reload-snippets`**. The reload always
+rebuilds from the built-ins first, then layers your packs on top
+— so your additions augment (or override, by reusing a prefix)
+the built-ins rather than replacing them. The echo reports the
+split, e.g. `reloaded 24 snippets (22 built-in + 2 user)`.
+
+### Where snippets activate
+
+Snippets are gated by a minor mode (`snippet-mode`) whose
+activation is controlled by two options:
+
+| Option | Values | Default | Meaning |
+|---|---|---|---|
+| `snippet.activation` | `global` · `supported-languages` · `off` | `global` | Which buffers get snippets. |
+| `snippet.languages` | comma-separated language ids | *(empty)* | Allowlist consulted only when `activation = supported-languages`. |
+
+With the default `global`, every document buffer has snippets
+enabled — but the source still self-filters by language, so a
+Rust buffer only ever sees Rust (+ `_global`) snippets. `global`
+means "each buffer sees *its own* language's snippets", not "all
+snippets everywhere".
+
+To restrict snippets to specific languages, set
+`snippet.activation = supported-languages` and list the
+languages:
+
+```toml
+[snippet]
+activation = "supported-languages"
+languages  = "rust,python"   # note: a string, not a TOML list
+```
+
+Each id `L` maps to the major mode `L-mode`, so only languages
+with a registered major mode match. `snippet.activation = off`
+disables auto-activation entirely.
+
+Both keys are live-settable (`:set snippet.activation=off`,
+`:set snippet.languages=rust,python`); `:set snippet.activation=`
+then `<Tab>` completes the three values. A change takes effect
+for buffers opened *afterward* — buffers already open keep their
+current snippet state until reopened.
+
 ### Two ways to expand
 
 - **Through the popup.** `gen:snippet` contributes candidates

@@ -237,6 +237,18 @@ impl OptionGroup for Search {
         "Project-search options: `:search` clustering, context lines, scan limits.";
 }
 
+/// Snippet-engine options. SN.3b (2026-06-14): `snippet.activation`
+/// + `snippet.languages` are declared by `SnippetMode` in
+/// `lattice-snippet`; this group is the customize/listing umbrella
+/// (`:customize snippet`). Same shape as `Search` above — group
+/// here, options in the owning mode's crate.
+pub struct Snippet;
+impl OptionGroup for Snippet {
+    const NAME: &'static str = "snippet";
+    const DOC: &'static str =
+        "Snippet engine: activation policy + supported-language allowlist.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -290,6 +302,9 @@ static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
 #[linkme::distributed_slice(GROUP_DECLS)]
 static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Search>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static SNIPPET_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Snippet>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -309,6 +324,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Appearance::NAME));
     assert!(!ends_with_mode_suffix(Terminal::NAME));
     assert!(!ends_with_mode_suffix(Search::NAME));
+    assert!(!ends_with_mode_suffix(Snippet::NAME));
 };
 
 #[cfg(test)]

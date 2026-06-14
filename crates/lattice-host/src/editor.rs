@@ -294,6 +294,33 @@ impl std::fmt::Debug for CellsWake {
     }
 }
 
+/// A minor mode whose active/inactive state is driven by a
+/// predicate reading a shared, mode-owned session service —
+/// reconciled on the active buffer each `sync_keymap_overlays`
+/// cycle. Modes contribute these at boot so the generic
+/// overlay-sync carries no subsystem-specific knowledge:
+/// `active-snippet-mode` keys off the shared `SnippetSession`
+/// (`lattice_snippet::snippet_active_predicate`). See
+/// `feedback_mode_owns_its_surface`.
+#[derive(Clone)]
+pub struct SessionBackedMinor {
+    /// `true` ⇒ the mode should be active on the active buffer.
+    pub active: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    /// The minor mode toggled by `active`.
+    pub mode_id: lattice_mode::ModeId,
+}
+
+impl std::fmt::Debug for SessionBackedMinor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The predicate closure isn't Debug; report its current
+        // value + the mode it drives instead.
+        f.debug_struct("SessionBackedMinor")
+            .field("active", &(self.active)())
+            .field("mode_id", &self.mode_id)
+            .finish()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Perf plan B.4: identity-preserving sub-state cache for
@@ -862,6 +889,14 @@ pub struct Editor {
     /// reload path swaps the inner via `.store()` so the mode's
     /// next produce sees the fresh data.
     pub snippet_registry: Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
+    /// SN.3b: shared cell holding the folded `snippet-mode`
+    /// [`ActivationPolicy`](lattice_mode::ActivationPolicy).
+    /// `register_snippet_modes` creates it (default `Global`) and the
+    /// `snippet-mode` gate reads it on every `MajorEntered`; boot +
+    /// the `snippet.activation` / `snippet.languages`
+    /// `apply_option_cascade` arm fold config into it via
+    /// `lattice_snippet::fold_activation_policy`.
+    pub snippet_activation_policy: lattice_snippet::SnippetActivationPolicyHandle,
     /// Sidecar metadata for snippet candidates in the active
     /// insert-completion popup.
     /// CSM.5: retired. Snippet candidates now carry their stable
@@ -899,6 +934,16 @@ pub struct Editor {
     /// `<Esc>` / cursor leaving the tabstop ranges. The same `Arc` is
     /// registered in `ServiceRegistry` under `SnippetSessionHandle`.
     pub snippet_session: lattice_snippet::SnippetSessionHandle,
+    /// Session-backed minor modes reconciled on the active buffer
+    /// each `sync_keymap_overlays` cycle (one entry per
+    /// service-driven minor). Each pairs a predicate — reading a
+    /// shared, mode-owned session service — with the minor's
+    /// `ModeId`; the mode is active iff its predicate is true. Modes
+    /// contribute these at boot (`active-snippet-mode` keys off the
+    /// shared `SnippetSession`), so the generic overlay-sync carries
+    /// no subsystem-specific `is_active()` literal
+    /// (`feedback_mode_owns_its_surface`).
+    pub session_backed_minors: Vec<SessionBackedMinor>,
     /// Per-language directories from which snippet packs are
     /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
     pub snippet_dirs: Vec<PathBuf>,

@@ -20,12 +20,28 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# SN.2b: `active-snippet-mode` owns its `<Tab>` / `<S-Tab>`
+# placeholder-navigation handler bodies (relocated off the host
+# per `feedback_mode_owns_its_surface`). The handlers register as
+# `ActionContext -> Effect` closures on the `ActionHandlerRegistry`
+# substrate, so the crate needs `lattice-grammar` to name + build
+# `Effect`. Already transitive through `lattice-mode`, so the
+# direct edge is cycle-free. (`lattice-runtime`'s `Document` /
+# `DocumentSnapshot` reach us transitively via
+# `BufferStore::handle_for`'s return type — no direct dep needed.)
+lattice-grammar = { path = "../lattice-grammar" }
 # P.10: lattice-snippet hosts `SnippetsSource` (the
 # `:picker snippets` generator) so the feature-crate
 # registration pattern -- "sources live where their state
 # lives" -- holds at this seam. Cycle-free: lattice-picker
 # doesn't depend back on lattice-snippet.
 lattice-picker = { path = "../lattice-picker" }
+
+[dev-dependencies]
+# SN.2b handler-level dispatch test: building a `ModeContext` to
+# drive `SnippetActiveMode::on_activate` needs `EventBus` (not
+# re-exported by `lattice-mode`). Test-only.
+lattice-runtime = { path = "../lattice-runtime" }
 
 [lints]
 workspace = true

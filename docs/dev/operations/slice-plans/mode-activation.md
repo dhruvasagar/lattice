@@ -152,7 +152,7 @@ What landed:
   `auto_activated_minors_for_buffer_kind` path still coexists (idempotent) and
   SN.3 migrates snippet off it onto a declared policy.
 
-### SN.2 — close the snippet ownership half-migration 🚧
+### SN.2 — close the snippet ownership half-migration ✅ (SN.2a + SN.2b landed)
 
 The snippet *keymap* is already mode-owned (`SnippetActiveMode::keymap()` in
 `lattice-snippet`). The **handlers** (`Editor::do_snippet_*`) are host-owned —
@@ -184,45 +184,139 @@ first):
   mutate must live in a shared service. `Editor.active_snippet` → service; all
   ~15 host readers + ui-tui snippet-test assertions migrated. Host nav handlers
   read the service (still host-side this step). 27 ui-tui snippet tests green.
-- **SN.2b 🗒 (remaining)** — migrate the two nav handlers into
-  `SnippetActiveMode`; remove the host `Action` surface. De-risked steps:
-  1. add a `lattice-grammar` dep to `lattice-snippet` (name/construct `Effect`);
-  2. the two handlers as `ActionContext → Effect` closures — advance the session
-     via `ctx.service::<SnippetSessionHandle>()`, get the document via
-     `ctx.service::<BufferStoreHandle>()` for byte→position, return
-     `Effect::SelectionChange` (and `clear()` on walk-off-`$0`);
-  3. `SnippetActiveMode::Guard` `()` → holds the two `ActionHandlerRegistration`
-     tokens; register in `on_activate` (resolve `action:snippet-next/prev-placeholder`
-     → `CommandId` via `CommandRegistryHandle`, the search-provider template);
-  4. host cleanup: delete `Editor::do_snippet_next/prev_placeholder`, the
-     `Action::SnippetNext/PrevPlaceholder` variants + their dispatch arms + the
-     `CommandId → Action` mapping (so the chord flows through the wired
-     `ActionHandlerRegistry` lookup, `dispatch.rs:26017`). Keep `snippet_expand`.
-- Depends on: nothing hard; SN.2a landed independently. Best fully closed
-  before SN.3 so the activation work touches a mode-owned snippet surface.
-- Artifacts: design (§5.3) · bench (n/a) · tests (✅ 27 snippet tests green
-  through SN.2a; SN.2b adds a handler-level dispatch test) · graceful (unchanged).
+- **SN.2b ✅ (2026-06-12)** — migrated the two nav handlers into
+  `SnippetActiveMode`; removed the host `Action` surface. As landed:
+  1. `lattice-snippet` gained a `lattice-grammar` dep (name/construct `Effect`).
+     `lattice-runtime` proved unnecessary as a *direct* dep — `Document` /
+     `DocumentSnapshot` reach the handler transitively via
+     `BufferStore::handle_for`'s return type; it's a `[dev-dependencies]` entry
+     only (the handler-level test builds a `ModeContext`, which needs `EventBus`).
+  2. The two handlers are `ActionContext → Effect` closures in
+     `SnippetActiveMode::on_activate`: advance the shared `SnippetSession`
+     (`<Tab>` clears it on walk-off-`$0`), resolve the new cursor via
+     `BufferStoreHandle → snapshot → byte_to_position`, return
+     `Effect::SelectionChange`. The cursor math is a free fn
+     (`snippet_group_cursor_effect(&Buffer, &TabstopGroup)`) so it's unit-testable
+     without a store.
+  3. `SnippetActiveMode::Guard` `()` → `SnippetActiveModeGuard` holding the two
+     `ActionHandlerRegistration` tokens; `on_activate` resolves
+     `action:snippet-next/prev-placeholder` → `CommandId` via
+     `CommandRegistryHandle` and registers on `ActionHandlerRegistryHandle` (the
+     search-provider template).
+  4. Host cleanup: deleted `Editor::do_snippet_next/prev_placeholder` +
+     `move_cursor_to_snippet_group`, the `Action::SnippetNext/PrevPlaceholder`
+     variants + their dispatch arm, and removed them from the ui-tui App
+     dispatch band. The `AppEffect::SnippetNext/PrevPlaceholder` arms became
+     no-ops (kept because `register_simple` still registers the action specs —
+     same shape as the post-M.10.x `SearchJumpToSource` / `SearchRefresh` arms).
+     The chord now flows through the generic `ActionHandlerRegistry` lookup
+     (`dispatch.rs` `run_document_invocation`). `snippet_expand` kept host-side.
+  - Tests: the two ui-tui nav tests relocated to `lattice_snippet::modes` as a
+    handler-level dispatch test (6 tests: cursor-effect math ×2, registration +
+    drop-unregister, `<Tab>` walk-through-+-drop-on-`$0`, `<S-Tab>` walk-back,
+    no-session no-op). 70 `lattice-snippet` tests green; host + ui-tui +
+    **gpui** build clean. GPUI needed no change — the nav now flows through the
+    renderer-agnostic `ActionHandlerRegistry`, so the migration *removed*
+    renderer surface rather than adding a per-renderer arm.
+- Depends on: nothing hard; SN.2a landed independently. Closed before SN.3 so
+  the activation work touches a mode-owned snippet surface.
+- Artifacts: design (§5.3) · bench (n/a — nav is per-`<Tab>`, off any hot path)
+  · tests (✅ handler-level dispatch test in `lattice-snippet`) · graceful
+  (handlers tolerate missing services / missing buffer → no-op).
 
-### SN.3 — snippet language-aware activation 🗒 (the payoff)
+### SN.3 — snippet language-aware activation 🚧 (the payoff)
 
-- `SnippetCompletionMode::subscriptions()` returns a `MajorEntered`
-  subscription filtered by its language allowlist; drop the language-blind
-  `auto_activated_minors_for_buffer_kind` path for snippet.
-- Config: `snippet.activation = global | supported-languages | off` +
-  `snippet.languages = [...]`. Host folds the option into the subscription's
-  `major_modes` filter; re-fold on the `OptionChanged` subscription (`:set`
-  live). **Default allowlist may be empty** → user opts in (§7.4).
-- Depends on: EF.1, MA.1, MA.2, SN.2.
-- Artifacts: design (§7.4 worked example) · bench (n/a — activation is
-  lifecycle-time) · tests (activates only for allowlisted languages; `off` →
-  never; `global` → everywhere; `:set` live re-fold; empty default → no
-  activation) · graceful (unknown language in allowlist → log + skip).
+**Three-mode decomposition (confirmed with the user 2026-06-14).** The old
+plan put `<C-x><C-s>` on `SnippetCompletionMode` and drove activation off a
+`subscriptions()` method that was never built. Corrected:
+
+- **`snippet-mode`** (new) — the "snippets enabled here" gate. Owns `<C-x><C-s>`
+  direct-expand. Carries the config-driven `ActivationPolicy`. `implies`
+  `snippet-completion-mode` so the source rides the same language gate.
+- **`snippet-completion-mode`** (exists) — provides the `gen:snippet`
+  completion *source* only. No activation policy of its own; rides
+  `snippet-mode`'s `implies`.
+- **`active-snippet-mode`** (exists, SN.2b) — in-flight placeholder nav; lit by
+  the session-backed reconciler (SN-activation slice) when a snippet expands
+  (via `<C-x><C-s>` or `<CR>`-accept of a `gen:snippet` candidate).
+
+Substrate note: the landed mechanism is `Mode::activation_policy() ->
+ActivationPolicy` (`Manual`/`Global`/`Majors([mode_ids])`) resolved on
+`MajorEntered` by `auto_activatable_minors` (MA.1/MA.2) — NOT `subscriptions()`.
+
+**Default `snippet.activation = global`** (not the old empty-allowlist
+opt-in): the snippet *source* already self-filters by language
+(`matching_prefix(lang, …)` + `*`), so `Global` means "each buffer sees its own
+language's snippets", not "all snippets everywhere". With built-in packs now
+shipped, `global` keeps them working out of the box; `supported-languages` /
+`off` stay as opt-in restrictions. `supported-languages` resolves to
+`Majors([<lang>-mode …])`, which only matches *registered* major modes (today:
+rust / python / javascript / markdown) — `global` has no such dependency, which
+is why it's the right default for "support all major languages" now.
+
+Sub-slices:
+
+- **SN.3a ✅ (2026-06-14)** — `SnippetMode` (minor) with a static
+  `ActivationPolicy::Global` + `implies snippet-completion-mode`; registered in
+  `register_snippet_modes`. Dropped `SnippetCompletionMode` from the
+  language-blind `auto_activated_minors_for_buffer_kind` list — the source now
+  rides the gate via the resolver. Behavior-preserving (Global = the old
+  every-Document activation). `<C-x><C-s>` unchanged (still host-bound).
+  Tests: lattice-snippet (id/kind, default-Global, implies, registration) +
+  host integration (`major_entered_resolver_activates_snippet_mode_and_implied_source`:
+  Document → Global activates + implied source rides). 76 snippet ✅; host
+  708 ✅ / 1 pre-existing red; ui-tui 5 pre-existing reds; gpui builds.
+- **SN.3b ✅ (2026-06-14)** — `SnippetMode::activation_policy()` is now
+  config-driven. The mode holds a shared `SnippetActivationPolicyHandle`
+  (`Arc<ArcSwap<ActivationPolicy>>`, default `Global`) it reads on every
+  resolver call; `register_snippet_modes` creates the cell and returns it.
+  Boot folds `snippet.activation` + `snippet.languages` into it
+  (`editor_boot.rs`, before the `Editor {…}` literal); `apply_option_cascade`
+  gains a `"snippet.activation" | "snippet.languages"` arm that re-folds
+  (`:set` live). New buffers pick up the live policy on their next
+  `MajorEntered` (the resolver reads `activation_policy()` live —
+  `registry.rs:184`).
+  - **Mode-ownership:** the two options + the `SnippetActivationMode` enum +
+    `fold_activation_policy` live in `lattice-snippet` (`activation.rs`); the
+    `Snippet` option-group lives in `lattice-config::group` (same split as
+    `search.context_size`). The host arm is a thin call into the mode-owned
+    fold (same shape as the `messages.filter` arm) — no policy meaning leaks
+    host-side.
+  - **Decision — `snippet.languages` is a comma-separated `String`, not a
+    list.** The typed-option loader rejects TOML arrays for scalar options
+    (`loader::apply_scalar` warns + skips) and no list `OptionType` exists;
+    adding one is a separate lift out of SN.3b scope. TOML:
+    `snippet.languages = "rust,python"`; `:set snippet.languages=rust,python`.
+    `snippet.activation` IS a typed enum (closed 3-value set), so
+    `:set snippet.activation=<Tab>` self-documents like `foldmethod`.
+  - **Decision — not retroactive.** `:set` changes apply on the next
+    `MajorEntered`, per spec; already-open buffers are not re-resolved. Known
+    follow-up: a policy change could iterate open document buffers and
+    activate/deactivate `snippet-mode`, but that touches the mode-guard
+    lifecycle and is deferred.
+  - Tests: `lattice-snippet` `activation::tests` (parse/format/enumerate +
+    fold for global/off/supported-languages incl. empty-list graceful case) +
+    `modes::tests` (live-cell read; `register_snippet_modes` returns a Global
+    default) + host `dispatch::tests::set_snippet_activation_refolds_the_policy_cell`
+    (`do_set` → cascade → folded policy across all three modes). 86 snippet ✅
+    (76 → +8 activation +2 modes); host snippet tests ✅; config
+    group-uniqueness ✅; gpui builds (no renderer surface touched).
+- **SN.3c 🗒** — migrate `<C-x><C-s>` (binding + handler) onto `SnippetMode`.
+  Needs a buffer-mutating `Effect::ExpandSnippet { … }` because the
+  `ActionHandlerRegistry` seam gives a handler only `&ActionContext` (no
+  `&mut Editor`): the mode handler decides *which* snippet + renders it; the
+  host applies the splice + session setup. The `<CR>`-accept path already
+  creates the session → the reconciler lights `active-snippet-mode`.
+- Depends on: EF.1, MA.1, MA.2, SN.2, SN-activation reconciler.
+- Artifacts: design (this section) · bench (n/a — activation is lifecycle-time)
+  · tests (per sub-slice) · graceful (unknown language → no matching major →
+  no activation, no panic).
 
 ## Dependency graph
 
 	EF.1 ✅─┬─> MA.1 ✅ ──> MA.2 ✅ ─┐
 	        │                        ├─> SN.3
-	SN.2 🚧─┴────────────────────────┘   (SN.2a ✅ · SN.2b 🗒)
+	SN.2 ✅─┴────────────────────────┘   (SN.2a ✅ · SN.2b ✅)
 	SN.1 ✅ (independent — landed first to green the reds)
 
 Note (decision B): MA.2 is the **host minor-activation resolver** (subscribe
@@ -230,9 +324,43 @@ once to `Event::MajorEntered` → `auto_activatable_minors(major, kind)` →
 `activate_mode_by_id`, with `Global` gated to document buffers). The original
 "major-selection-on-`DocumentOpened`" scope turned out unnecessary —
 documents already activate a major + emit `MajorEntered` via
-`activate_major_for_buffer_kind`. Remaining: SN.2 (snippet ownership
-half-migration) and SN.3 (snippet declares an `ActivationPolicy` + config fold
-→ the language-aware payoff).
+`activate_major_for_buffer_kind`. Remaining: SN.3 (snippet declares an
+`ActivationPolicy` + config fold → the language-aware payoff). SN.2 (snippet
+ownership half-migration) closed 2026-06-12.
+
+**Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
+`Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`
+to activate / deactivate `active-snippet-mode` — a snippet-specific seam in a
+generic host method (the activation-side half-migration).
+
+Decision: a **generic session-backed-minor reconciler** (B), not the typed-event
+path (C). The session is a single global slot whose activation target (the
+active buffer) isn't in any event payload, and the synchronous poll has a real
+UX property the event path would lose — it reconciles in the *same* apply cycle
+that expands the snippet, so the next `<Tab>` always lands (an event→channel→
+per-tick-drain path opens a one-tick window against the keystroke contract).
+(B) removes the exact rule violation while keeping that synchronous,
+drift-proof reconcile.
+
+As landed:
+- `Editor` gained a generic `session_backed_minors: Vec<SessionBackedMinor>`
+  (`{ active: Arc<dyn Fn() -> bool + Send + Sync>, mode_id }`); `sync_keymap_overlays`
+  loops it, toggling each minor on the active buffer via `activate_minor` /
+  `deactivate_minor`. No `snippet_session.is_active()` / `SnippetActiveMode`
+  literal remains in the generic method.
+- `lattice-snippet` owns the policy: `snippet_active_predicate(SnippetSessionHandle)`
+  returns the `|| session.is_active()` closure. The host pairs it with
+  `SnippetActiveMode::mode_id()` at the boot composition root — `activate_minor`
+  *mechanism* stays host machinery (it mutates host-owned per-buffer mode state).
+- The completion-popup minor stays inline (its predicate reads host-owned
+  `insert_completion` state, legitimately a host concern — not mode-owned data).
+- Behavior preserved: 6 `snippet_active_*` ui-tui tests + the SN.2b handler
+  tests green; the snippet path activates on expand and deactivates on
+  `<Esc>` / walk-off-`$0` exactly as before.
+
+Remaining for SN.3: `SnippetCompletionMode` taking over the `<C-x><C-s>` expand
+binding + language-aware activation (the predicate stays; only *who creates the
+session* moves from the host into the completion mode).
 
 ## Out of scope (separate triage)
 

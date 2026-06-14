@@ -303,13 +303,11 @@ pub enum Action {
     /// snippet directly without surfacing the popup. No-op
     /// when no snippet matches.
     SnippetExpand,
-    /// `<Tab>` inside the active-snippet minor mode -- jump
-    /// to the next placeholder. Returns to no-op when at
-    /// `$0`; the minor mode then deactivates.
-    SnippetNextPlaceholder,
-    /// `<S-Tab>` inside the active-snippet minor mode --
-    /// jump to the previous placeholder.
-    SnippetPrevPlaceholder,
+    // SN.2b (2026-06-12): `SnippetNextPlaceholder` /
+    // `SnippetPrevPlaceholder` removed — `<Tab>` / `<S-Tab>`
+    // placeholder navigation is mode-owned
+    // (`active-snippet-mode`'s `ActionHandlerRegistry` closures),
+    // not a host `Action`.
     /// `<Esc>` while a snippet is active -- exit the snippet
     /// (placeholders become plain text); also exits Insert
     /// per vim convention.

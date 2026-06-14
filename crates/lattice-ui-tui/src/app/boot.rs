@@ -199,6 +199,17 @@ impl App {
         }
     }
 
+    /// Load built-in + user snippet packs into the registry at
+    /// startup (built-ins 2026-06-13). Delegates to
+    /// [`lattice_host::dispatch::Editor::load_snippets_at_startup`].
+    /// Called by the runtime right after `load_persistent_config`
+    /// so a fresh editor has its snippet set ready; quiet (logs, no
+    /// echo). Kept out of `App::new` so test `App`s start with an
+    /// empty registry.
+    pub fn load_snippets_at_startup(&mut self) {
+        self.mutate_editor(|e| e.load_snippets_at_startup());
+    }
+
     /// T.5: open the tutor at lesson `lesson`. Called from
     /// `lattice-cli` when `--tutor [N]` is passed; fires after
     /// `load_persistent_config` so user config lands first.

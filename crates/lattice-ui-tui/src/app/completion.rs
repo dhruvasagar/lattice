@@ -51,20 +51,15 @@ impl App {
         self.mutate_editor(|e| e.do_snippet_expand_at_cursor());
     }
 
-    /// `<Tab>` while a snippet is active -- jump to the next
-    /// placeholder. Exits the snippet on `$0`.
-    /// 5.5.G.8: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_next_placeholder`].
-    /// Delegate retained for direct test callers in this file.
-    pub fn do_snippet_next_placeholder(&mut self) {
-        self.mutate_editor(|e| e.do_snippet_next_placeholder());
-    }
-
-    /// 5.5.G.8: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_prev_placeholder`].
-    pub fn do_snippet_prev_placeholder(&mut self) {
-        self.mutate_editor(|e| e.do_snippet_prev_placeholder());
-    }
+    // SN.2b (2026-06-12): the `do_snippet_next/prev_placeholder`
+    // App delegates are gone. `<Tab>` / `<S-Tab>` placeholder
+    // navigation is mode-owned — `active-snippet-mode` registers
+    // `ActionContext -> Effect` closures on the
+    // `ActionHandlerRegistry`, and the real chord flows through
+    // the host's generic dispatch → registry-lookup path (the
+    // same path the project-search `<CR>` / `gr` chords use). The
+    // authoritative handler-level test lives in
+    // `lattice_snippet::modes`.
 
     /// `:reload-snippets` -- 5.8.AF.3: body migrated to
     /// [`lattice_host::dispatch::Editor::do_reload_snippets`].
@@ -451,58 +446,14 @@ mod tests {
         assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
-    #[test]
-    fn snippet_next_placeholder_walks_through_groups_and_drops_on_zero() {
-        let mut a = app_with("for", 10);
-        a.editor.modal = ModalState::Insert;
-        a.editor.cursor = Position::new(0, 3);
-        install_snippet(
-            &mut a,
-            "*",
-            "for-loop",
-            "for",
-            "for ${1:i} in ${2:iter} { $0 }",
-        );
-        a.do_snippet_expand_at_cursor();
-        // Now at $1.
-        assert_eq!(
-            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
-            Some(1)
-        );
-        a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
-            Some(2)
-        );
-        a.do_snippet_next_placeholder();
-        // $0 is the exit; at this point we're focused on it.
-        assert_eq!(
-            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
-            Some(0)
-        );
-        a.do_snippet_next_placeholder();
-        // Past $0 -> snippet dropped.
-        assert!(!a.editor.snippet_session.is_active());
-    }
-
-    #[test]
-    fn snippet_prev_placeholder_walks_back() {
-        let mut a = app_with("for", 10);
-        a.editor.modal = ModalState::Insert;
-        a.editor.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
-        a.do_snippet_expand_at_cursor();
-        a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
-            Some(2)
-        );
-        a.do_snippet_prev_placeholder();
-        assert_eq!(
-            a.editor.snippet_session.with_mut(|s| s.as_ref().unwrap().current_index()),
-            Some(1)
-        );
-    }
+    // SN.2b (2026-06-12): the placeholder-navigation tests
+    // (`snippet_next_placeholder_walks_through_groups_and_drops_on_zero`,
+    // `snippet_prev_placeholder_walks_back`) moved to
+    // `lattice_snippet::modes` as a handler-level dispatch test —
+    // the `<Tab>` / `<S-Tab>` bodies are now `active-snippet-mode`
+    // `ActionHandlerRegistry` closures, so the session-transition
+    // coverage belongs where the handlers live. The expand path
+    // below stays host-resident (`do_snippet_expand_at_cursor`).
 
     #[test]
     fn snippet_expand_with_no_match_is_a_no_op() {

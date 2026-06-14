@@ -359,9 +359,10 @@ impl App {
             | Action::JumpToMarkExact(_)
             | Action::JumpHistoryBack
             | Action::JumpHistoryForward
-            // 5.5.G.8: snippet placeholder navigation arms.
-            | Action::SnippetNextPlaceholder
-            | Action::SnippetPrevPlaceholder
+            // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+            // navigation is mode-owned (`active-snippet-mode`'s
+            // `ActionHandlerRegistry` closures); the
+            // `Action::SnippetNext/PrevPlaceholder` variants are gone.
             // D.5.b (2026-05-30): diff-mode `do` is
             // host-resident — `Editor::do_diff_get` resolves
             // the hunk under cursor and replaces the

@@ -79,6 +79,20 @@ impl SnippetSession {
     }
 }
 
+/// Predicate for the host's generic session-backed-minor
+/// reconciler: `active-snippet-mode` should be active on the
+/// active buffer exactly while a snippet session is live. The host
+/// pairs this with `SnippetActiveMode::mode_id()` at boot and
+/// reconciles it each overlay-sync cycle — so the host's generic
+/// sync carries no `snippet_session.is_active()` literal. Keeps the
+/// "when is my mode active?" policy in this crate per
+/// `feedback_mode_owns_its_surface`.
+pub fn snippet_active_predicate(
+    session: SnippetSessionHandle,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(move || session.is_active())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -1935,9 +1935,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::JumpToMarkExact(name) => editor.do_jump_mark(name, true),
         Action::JumpHistoryBack => editor.do_jump_history(-1),
         Action::JumpHistoryForward => editor.do_jump_history(1),
-        // 5.5.G.8: snippet placeholder navigation.
-        Action::SnippetNextPlaceholder => editor.do_snippet_next_placeholder(),
-        Action::SnippetPrevPlaceholder => editor.do_snippet_prev_placeholder(),
+        // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+        // navigation is mode-owned (`active-snippet-mode`'s
+        // `ActionHandlerRegistry` closures); the
+        // `Action::SnippetNext/PrevPlaceholder` arms + the
+        // `Editor::do_snippet_*` bodies are gone.
         // D.5.b: diff-mode `do` — resolve the hunk under
         // the cursor and rewrite the current side to match
         // the baseline.
@@ -5218,12 +5220,19 @@ impl Editor {
             AppEffect::CompletionAcceptThenInsert(c) => {
                 out.next_actions.push(Action::CompletionAcceptThenInsert(c))
             }
-            AppEffect::SnippetNextPlaceholder => {
-                out.next_actions.push(Action::SnippetNextPlaceholder)
-            }
-            AppEffect::SnippetPrevPlaceholder => {
-                out.next_actions.push(Action::SnippetPrevPlaceholder)
-            }
+            // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+            // navigation is now mode-owned. `active-snippet-mode`
+            // registers `ActionContext -> Effect` handlers on the
+            // `ActionHandlerRegistry`, which the chord dispatcher
+            // consults BEFORE this AppEffect path
+            // (`run_document_invocation`). These arms are dead
+            // fallbacks kept as no-ops because `register_simple`
+            // still registers the action specs that return these
+            // AppEffects (same shape as `SearchJumpToSource` /
+            // `SearchRefresh` post-M.10.x). The `Action::Snippet*`
+            // variants + `Editor::do_snippet_*` bodies are gone.
+            AppEffect::SnippetNextPlaceholder => {}
+            AppEffect::SnippetPrevPlaceholder => {}
             AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
@@ -11301,37 +11310,51 @@ impl Editor {
     /// snippet" gating in `input::translate`.
     pub fn sync_keymap_overlays(&mut self) {
         let want_popup = self.insert_completion.is_some();
-        let want_snippet = self.snippet_session.is_active();
         let have_popup = self.completion_popup_layer.is_some();
 
         let buffer_id = self.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
 
-        // MO.3: `active-snippet-mode` now uses K.2.4-registered keymap entries
-        // + `activate_minor` / `deactivate_minor` for K.1.c scoping, matching
-        // the same pattern as LspMode (MO.1). No push_layer/pop_layer needed.
-        let snippet_mode_id = lattice_snippet::modes::SnippetActiveMode::mode_id();
-        let have_snippet = active.has_minor(snippet_mode_id);
-        if want_snippet && !have_snippet {
-            let _ = self.mode_registry.activate_minor(
-                &mut active,
-                &self.mode_guards,
-                &self.config,
-                &self.event_bus,
-                &self.services,
-                proto_id,
-                snippet_mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            );
-        } else if !want_snippet && have_snippet {
-            let _ = self.mode_registry.deactivate_minor(
-                &mut active,
-                &self.mode_guards,
-                &self.event_bus,
-                proto_id,
-                snippet_mode_id,
-            );
+        // Session-backed minor modes: reconcile each registered
+        // `(predicate, mode-id)` on the active buffer — the mode is
+        // active iff its predicate is true. Modes contribute these
+        // at boot (`active-snippet-mode` keys off the shared
+        // `SnippetSession` via `snippet_active_predicate`), so this
+        // generic method carries no subsystem-specific
+        // `is_active()` literal (`feedback_mode_owns_its_surface`).
+        // MO.3: minors use K.2.4-registered keymap entries +
+        // `activate_minor` / `deactivate_minor` for K.1.c scoping
+        // (same pattern as LspMode); no push_layer/pop_layer.
+        //
+        // Snapshot the (cheap-`Arc`) entries first so the
+        // `&self.*` borrows the activate/deactivate calls need
+        // don't conflict with iterating `self.session_backed_minors`.
+        let session_minors: Vec<crate::editor::SessionBackedMinor> =
+            self.session_backed_minors.clone();
+        for minor in &session_minors {
+            let want = (minor.active)();
+            let have = active.has_minor(minor.mode_id);
+            if want && !have {
+                let _ = self.mode_registry.activate_minor(
+                    &mut active,
+                    &self.mode_guards,
+                    &self.config,
+                    &self.event_bus,
+                    &self.services,
+                    proto_id,
+                    minor.mode_id,
+                    lattice_mode::CapabilitySet::empty(),
+                );
+            } else if !want && have {
+                let _ = self.mode_registry.deactivate_minor(
+                    &mut active,
+                    &self.mode_guards,
+                    &self.event_bus,
+                    proto_id,
+                    minor.mode_id,
+                );
+            }
         }
 
         // CSM.K1: bring `completion-popup-mode` activation in line
@@ -15511,29 +15534,16 @@ impl Editor {
     }
 }
 
-/// 5.5.G.8 + 5.5.SNIPPET.1: pure-editor snippet placeholder
-/// navigation and snippet expansion. With `active_language_id`
-/// and `is_word_char_byte` now host-side, `do_snippet_expand_at_cursor`
-/// migrates here too.
+/// 5.5.SNIPPET.1: pure-editor snippet expansion. With
+/// `active_language_id` and `is_word_char_byte` now host-side,
+/// `do_snippet_expand_at_cursor` migrates here too.
+///
+/// SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder navigation
+/// (`do_snippet_next/prev_placeholder` + `move_cursor_to_snippet_group`)
+/// relocated to `active-snippet-mode` in `lattice-snippet` — the
+/// mode that owns the chords now owns the handler bodies
+/// (`feedback_mode_owns_its_surface`).
 impl Editor {
-    /// `<Tab>` while a snippet is active -- step to the next
-    /// placeholder group; close the session if we've walked off
-    /// the end.
-    pub fn do_snippet_next_placeholder(&mut self) {
-        let group = self.snippet_session.with_mut(|s| {
-            let active = s.as_mut()?;
-            let next = active.next().cloned();
-            if next.is_none() {
-                // Walked off the end (`$0`): the session ends.
-                *s = None;
-            }
-            next
-        });
-        if let Some(group) = group {
-            self.move_cursor_to_snippet_group(&group);
-        }
-    }
-
     /// D.5.b (2026-05-30): handler for the diff-mode `do`
     /// (diff-get) chord. Reads the active document's cursor
     /// row, asks the diff subsystem to compute the get-edit
@@ -15687,27 +15697,6 @@ impl Editor {
                 );
             }
             crate::diff::subsystem::DiffPutOutcome::Nothing => {}
-        }
-    }
-
-    /// `<S-Tab>` -- step to the previous placeholder.
-    pub fn do_snippet_prev_placeholder(&mut self) {
-        let group = self
-            .snippet_session
-            .with_mut(|s| s.as_mut().and_then(|a| a.prev().cloned()));
-        if let Some(group) = group {
-            self.move_cursor_to_snippet_group(&group);
-        }
-    }
-
-    /// Move the cursor to the start of `group.ranges.first()`.
-    fn move_cursor_to_snippet_group(&mut self, group: &lattice_snippet::TabstopGroup) {
-        let Some(first) = group.ranges.first() else {
-            return;
-        };
-        let snap = self.document.snapshot();
-        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
-            self.cursor = pos;
         }
     }
 
@@ -19069,27 +19058,33 @@ impl Editor {
         })
     }
 
-    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
-    /// configured snippet directory and rebuild the per-language
-    /// registry. The previous registry is replaced atomically;
-    /// if no directories are configured the user gets a clear
-    /// "no snippet sources configured" echo so the no-op doesn't
-    /// look like a silent failure. Phase 5.8.AF.3.
-    pub fn do_reload_snippets(&mut self) {
-        if self.snippet_dirs.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no snippet sources configured (set App::snippet_dirs)",
-            );
-            return;
-        }
-        let mut next = lattice_snippet::SnippetRegistry::new();
-        let mut total = 0usize;
+    /// Build the snippet registry: embedded built-ins first, then
+    /// user packs from `snippet_dirs` overlaid on top (so user packs
+    /// augment / override the built-ins rather than replacing them).
+    /// A configured dir that doesn't exist yet is skipped silently
+    /// (the default `~/.config/lattice/snippets` is absent on a
+    /// fresh install — not an error); other read / parse failures
+    /// accumulate in the returned `errors`. Pure read (no `&mut`,
+    /// no side effects beyond filesystem reads); the caller stores
+    /// the registry and reports. Shared by `do_reload_snippets`
+    /// (echoes, user-initiated) and `load_snippets_at_startup`
+    /// (quiet, boot).
+    fn build_snippet_registry(
+        &self,
+    ) -> (lattice_snippet::SnippetRegistry, usize, usize, Vec<String>) {
+        let mut next = lattice_snippet::load_builtins();
+        let builtin_total = next.len();
+        let mut user_total = 0usize;
         let mut errors: Vec<String> = Vec::new();
-        let dirs = self.snippet_dirs.clone();
-        for dir in &dirs {
+        for dir in &self.snippet_dirs {
             let entries = match std::fs::read_dir(dir) {
                 Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Default user dir simply doesn't exist yet —
+                    // not an error, the user just hasn't added any
+                    // packs.
+                    continue;
+                }
                 Err(e) => {
                     errors.push(format!("{}: {e}", dir.display()));
                     continue;
@@ -19122,7 +19117,7 @@ impl Editor {
                     Ok(snips) => {
                         for s in snips {
                             next.insert(&language, s);
-                            total += 1;
+                            user_total += 1;
                         }
                     }
                     Err(e) => {
@@ -19131,17 +19126,62 @@ impl Editor {
                 }
             }
         }
+        (next, builtin_total, user_total, errors)
+    }
+
+    /// `:reload-snippets` (Phase 4.2.g.4) -- rebuild the registry
+    /// (built-ins + user packs) and echo a summary. The previous
+    /// registry is replaced atomically. User-initiated, so it
+    /// echoes; read failures surface so a genuine problem doesn't
+    /// look like a silent no-op. Phase 5.8.AF.3 / built-ins
+    /// 2026-06-12.
+    pub fn do_reload_snippets(&mut self) {
+        let (next, builtin_total, user_total, errors) = self.build_snippet_registry();
+        let total = next.len();
         self.snippet_registry.store(std::sync::Arc::new(next));
         if errors.is_empty() {
-            self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "reloaded {total} snippets ({builtin_total} built-in + {user_total} user)"
+                ),
+            );
         } else {
             self.set_message(
                 EchoLevel::Warn,
                 format!(
-                    "reloaded {total} snippets ({} error(s); first: {})",
+                    "reloaded {total} snippets ({builtin_total} built-in + {user_total} user; \
+                     {} error(s); first: {})",
                     errors.len(),
                     errors[0]
                 ),
+            );
+        }
+    }
+
+    /// Load built-ins + user snippet packs into the live registry at
+    /// **startup**. Quiet — the user didn't ask, so it logs (debug /
+    /// warn) instead of echoing. Production entry points (TUI
+    /// `runtime`, GPUI `lib`) call this once after
+    /// `load_persistent_config`. Test `App`s that skip it keep an
+    /// empty registry, so completion tests stay isolated from the
+    /// built-in snippet set unless they opt in via `:reload-snippets`.
+    /// (built-ins 2026-06-13)
+    pub fn load_snippets_at_startup(&mut self) {
+        let (next, builtin_total, user_total, errors) = self.build_snippet_registry();
+        let total = next.len();
+        self.snippet_registry.store(std::sync::Arc::new(next));
+        if errors.is_empty() {
+            tracing::debug!(
+                target: "lattice_host::snippet",
+                total, builtin_total, user_total,
+                "loaded snippets at startup"
+            );
+        } else {
+            tracing::warn!(
+                target: "lattice_host::snippet",
+                total, builtin_total, user_total, ?errors,
+                "loaded snippets at startup with errors"
             );
         }
     }
@@ -22653,6 +22693,30 @@ impl Editor {
                         format!("messages.filter reload skipped: {e}"),
                     );
                 }
+            }
+            "snippet.activation" | "snippet.languages" => {
+                // SN.3b: re-fold the snippet activation policy into
+                // the shared cell the `snippet-mode` gate reads. The
+                // mode-owned fold (`lattice_snippet::fold_activation_policy`)
+                // maps `snippet.activation` + `snippet.languages` to
+                // an `ActivationPolicy`; storing it makes the next
+                // `MajorEntered` resolve with the new policy. Already-
+                // open buffers are not retroactively re-resolved
+                // (SN.3b scope) — the change applies on their next
+                // major entry.
+                let activation = self
+                    .config
+                    .get_typed::<lattice_snippet::SnippetActivation>()
+                    .map(|v| *v)
+                    .unwrap_or_default();
+                let languages = self
+                    .config
+                    .get_typed::<lattice_snippet::SnippetLanguages>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_default();
+                self.snippet_activation_policy.store(std::sync::Arc::new(
+                    lattice_snippet::fold_activation_policy(activation, &languages),
+                ));
             }
             n if n.starts_with("ui.") => {
                 // Sync the host-side neutral theme first, then
@@ -29248,6 +29312,88 @@ mod tests {
         assert!(
             !minor_active_on(&editor, doc, rusty_id),
             "a Majors([rust-mode]) minor must NOT activate under text-mode"
+        );
+    }
+
+    /// SN.3a: the real `snippet-mode` (Global) auto-activates on a
+    /// document via the resolver, and its `implies`
+    /// `snippet-completion-mode` (the source provider) rides the
+    /// gate — proving the source reaches the buffer even though it
+    /// was dropped from the language-blind
+    /// `auto_activated_minors_for_buffer_kind` list.
+    #[tokio::test]
+    async fn major_entered_resolver_activates_snippet_mode_and_implied_source() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        let doc = editor.document_buffer_id;
+        assert_eq!(
+            editor.buffers.kind_of(doc),
+            Some(lattice_core::BufferKind::Document)
+        );
+        // Clear boot-queued events, then publish a clean MajorEntered.
+        let _ = editor.drain_minor_activation();
+        let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
+        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
+            buffer: proto,
+            major: "text-mode".into(),
+        });
+        let _ = editor.drain_minor_activation();
+
+        assert!(
+            minor_active_on(&editor, doc, lattice_snippet::SnippetMode::mode_id()),
+            "snippet-mode (Global) auto-activates on a document"
+        );
+        assert!(
+            minor_active_on(&editor, doc, lattice_snippet::SnippetCompletionMode::mode_id()),
+            "implied snippet-completion-mode rides snippet-mode's gate"
+        );
+    }
+
+    /// SN.3b: `:set snippet.activation=...` (and `snippet.languages`)
+    /// re-folds the shared policy cell the `snippet-mode` gate reads.
+    /// The resolver reads that cell live (proven in
+    /// `lattice_snippet::modes` tests + `auto_activatable_minors`),
+    /// so this exercises the host's fold seam end-to-end:
+    /// `do_set` → `apply_option_cascade` → folded `ActivationPolicy`.
+    #[tokio::test]
+    async fn set_snippet_activation_refolds_the_policy_cell() {
+        use lattice_mode::{ActivationPolicy, ModeId};
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        // Boot default (`snippet.activation = global`) → Global.
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Global,
+            "boot folds the default `global` to Global"
+        );
+
+        let _ = editor.do_set("snippet.activation=off");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Manual,
+            "`off` folds to Manual (never auto-activate)"
+        );
+
+        // `supported-languages` + a language list → Majors([<lang>-mode]).
+        let _ = editor.do_set("snippet.languages=rust,python");
+        let _ = editor.do_set("snippet.activation=supported-languages");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Majors(vec![ModeId::new("rust-mode"), ModeId::new("python-mode")]),
+            "`supported-languages` maps the language list to `<lang>-mode` majors"
+        );
+
+        // Editing only the language list re-folds too (same arm).
+        let _ = editor.do_set("snippet.languages=rust");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Majors(vec![ModeId::new("rust-mode")]),
+            "editing `snippet.languages` alone re-folds under the active mode"
+        );
+
+        // Back to global clears the language gating.
+        let _ = editor.do_set("snippet.activation=global");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Global,
         );
     }
 

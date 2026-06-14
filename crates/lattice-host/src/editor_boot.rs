@@ -243,6 +243,15 @@ impl Editor {
         // field below holds. `:reload-snippets` updates the inner
         // via `.store()`; the mode + source see the fresh data on
         // the next produce().
+        //
+        // Constructed empty; the embedded built-in packs + user
+        // packs load at the production startup seam via
+        // `Editor::load_snippets_at_startup` (called from the TUI /
+        // GPUI entry points alongside `load_persistent_config`), NOT
+        // here. Keeping content-loading out of the constructor means
+        // test `App`s start with an empty registry — completion
+        // tests stay isolated from the built-in snippet set unless
+        // they opt in via `:reload-snippets`.
         let snippet_registry_handle: Arc<ArcSwap<SnippetRegistry>> =
             Arc::new(ArcSwap::from_pointee(SnippetRegistry::new()));
 
@@ -259,6 +268,11 @@ impl Editor {
         // registry first so we can iterate it and register a
         // `:<mode-name>` toggle ex-command per mode. The mode
         // registry is then wrapped in `Arc`.
+        // SN.3b: captured out of the registry-build block so boot
+        // can fold `snippet.activation` / `snippet.languages` into
+        // it (below) and `Editor` can hold the clone the cascade
+        // re-folds.
+        let snippet_activation_policy;
         let mode_registry = {
             let mut mr = ModeRegistry::new();
             lattice_mode::register_foundation_modes(&mut mr);
@@ -269,7 +283,8 @@ impl Editor {
             lattice_lsp::completion::register_lsp_completion_mode(&mut mr, lsp.clone());
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
-            lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
+            snippet_activation_policy =
+                lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
             // Issue #40 / Terminal-mode T1: register the
             // `terminal-mode` major so option contributions
             // (ReadOnly + NoFile) apply to Terminal buffers.
@@ -980,6 +995,26 @@ impl Editor {
             crate::fold_provider::FoldRegistry::with_builtins(),
         ));
 
+        // SN.3b: fold the loaded `snippet.activation` /
+        // `snippet.languages` config into the shared policy cell so
+        // the `snippet-mode` gate resolves with the user's settings
+        // from the first buffer onward. Defaults (`global` / empty)
+        // reproduce the pre-SN.3b Global behavior. Re-folded live on
+        // `:set` via `apply_option_cascade`.
+        {
+            let activation = config
+                .get_typed::<lattice_snippet::SnippetActivation>()
+                .map(|v| *v)
+                .unwrap_or_default();
+            let languages = config
+                .get_typed::<lattice_snippet::SnippetLanguages>()
+                .map(|v| (*v).clone())
+                .unwrap_or_default();
+            snippet_activation_policy.store(std::sync::Arc::new(
+                lattice_snippet::fold_activation_policy(activation, &languages),
+            ));
+        }
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1325,13 +1360,37 @@ impl Editor {
             popup_back_stack: Vec::new(),
             insert_completion: None,
             snippet_registry: snippet_registry_handle,
+            snippet_activation_policy,
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: HashMap::new(),
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
             completion_in_path_context: false,
+            // Generic session-backed-minor registration (composition
+            // root): the host reconciles `active-snippet-mode` from
+            // the shared `SnippetSession` predicate each overlay-sync
+            // (`Editor::sync_keymap_overlays`) instead of a
+            // snippet-specific block. `feedback_mode_owns_its_surface`:
+            // the "when is my mode active?" policy lives in
+            // `lattice-snippet` (`snippet_active_predicate`); the host
+            // runs a generic loop. Clone the handle so
+            // `snippet_session` still moves into its own field below.
+            session_backed_minors: vec![crate::editor::SessionBackedMinor {
+                active: lattice_snippet::snippet_active_predicate(snippet_session.clone()),
+                mode_id: lattice_snippet::modes::SnippetActiveMode::mode_id(),
+            }],
             snippet_session,
-            snippet_dirs: Vec::new(),
+            // Default user snippet dir: `~/.config/lattice/snippets`
+            // (the same config root as `lattice.toml`, via
+            // `dirs::config_dir`). `:reload-snippets` merges any
+            // `<language>.json` packs here on top of the embedded
+            // built-ins. Absent dir → skipped gracefully by the
+            // reload path (not an error — the user just hasn't
+            // added any packs).
+            snippet_dirs: dirs::config_dir()
+                .map(|d| d.join("lattice").join("snippets"))
+                .into_iter()
+                .collect(),
             // M.7: use the pre-created Arc so the `services:` block
             // and `fold_registry` field share identity.
             fold_registry,

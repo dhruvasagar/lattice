@@ -301,73 +301,103 @@ Sub-slices:
     (`do_set` → cascade → folded policy across all three modes). 86 snippet ✅
     (76 → +8 activation +2 modes); host snippet tests ✅; config
     group-uniqueness ✅; gpui builds (no renderer surface touched).
-- **SN.3c 🗒** — close the expand/leave ownership half-migration. SN.2b moved
+- **SN.3c 🗒 — close the expand/leave ownership half-migration.** SN.2b moved
   the *nav* handlers (`<Tab>`/`<S-Tab>`) into `active-snippet-mode`, but the
-  *expand* and *leave* handlers are still host-side. Per
-  `feedback_mode_owns_its_surface`, leaving them there is a half-migration
-  (chord-in-mode-or-Builtin, body-in-host). **Locked from the 2026-06-14
-  review (finding A): all four pieces move in this slice — partial migration
-  does NOT satisfy the rule.**
-  1. **Binding.** `<C-x><C-s>` moves off the host (`keymap_insert.rs`, Builtin)
-     onto `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`.
-     `<C-x><C-s>` only makes sense where snippets are enabled — binding it to
-     the gate is the correct scope (and stops it firing in non-snippet
-     buffers). K.1.c then gates the chord to `snippet-mode`-active buffers.
-  2. **Prefix-scan + lookup handler.** The body of
-     `Editor::do_snippet_expand_at_cursor` (word-prefix scan back from the
-     cursor, registry lookup by `(language, prefix)` then `"*"` fallback)
-     becomes an `ActionHandler` closure registered by `SnippetMode::on_activate`
-     on the `ActionHandlerRegistry` substrate — the same seam the nav handlers
-     use. The closure reads buffer text via `ctx` + `BufferStoreHandle` and the
-     registry via the shared `Arc<SharedSnippetRegistry>` (which `SnippetMode`
-     will need to capture, like `SnippetCompletionSource` does).
-  3. **Splice + session + cursor via `Effect::ExpandSnippet`.** The seam gives
-     the handler only `&ActionContext` (no `&mut Editor`), so the buffer
-     mutation crosses back to the host as a typed effect. **Locked shape
-     (review finding A, cursor-asymmetry):**
+  *expand* and *leave* handlers are still host-side
+  (`Editor::do_snippet_expand_at_cursor` + `Action::SnippetExpand` +
+  `AppEffect::SnippetExpand`; `Action::SnippetLeave`). Per
+  `feedback_mode_owns_its_surface` that is a half-migration; SN.3c removes all
+  of it.
 
-     ```
-     Effect::ExpandSnippet { snippet_name: String, replace_range: Range }
-     ```
+  **Design decided 2026-06-14 (see `feedback_effect_vocabulary_is_host_boundary`).**
+  The review's first instinct — register the expand handler in
+  `SnippetMode::on_activate` — is **wrong**: `snippet-mode` is active on *every*
+  document buffer at once, but `ActionHandlerRegistry` is keyed by `CommandId`
+  alone (global, non-refcounted, `unregister` removes the key). Per-buffer
+  `on_activate` registration of a multi-buffer mode would let one buffer
+  closing evict the handler for all the others. The expand handler is
+  **buffer-agnostic** (reads the active buffer/cursor from `ActionContext` at
+  call time, closes over no per-buffer state), so it is a single **global**
+  handler — registration *site* must match handler *scope*. Nav/leave are
+  genuinely per-buffer (tied to a live session) and stay in `on_activate`.
 
-     The mode handler decides *which* snippet (resolves the name) and *what
-     it replaces* (the prefix range); the **host** re-resolves the body via
-     `snippet_registry.by_name` (the accept path already does this), renders
-     with its host-owned `VariableContext` (`TM_FILENAME` etc. — must stay
-     host-side), applies the splice, installs the session
-     (`snippet_session.set`), and derives the cursor from the splice result.
-     Rationale: the mode can't see the post-splice buffer, so it must NOT
-     pre-compute the cursor — mirror the nav handlers' division (mode decides
-     intent, host's generic pipeline moves the cursor). Carrying the *name*
-     (not the rendered body) keeps variable resolution + the registry as the
-     single source of truth host-side.
-  4. **Leave handler.** `action:snippet-leave` (the `<Esc>` body) moves from
-     the host into `active-snippet-mode` alongside the nav handlers — the
-     `<Esc>` *binding* is already in `snippet_active_keymap_entries()`, so only
-     the handler body is outstanding. It clears the session
-     (`SnippetSession::clear`) and returns to Normal; the reconciler then
-     deactivates `active-snippet-mode` (drops the Guard). Without this, SN.3c
-     leaves the exact half-migration the slice exists to close.
+  Split into three sub-slices:
 
-  Acid test (from the standing rule): after SN.3c, no `Editor::do_snippet_*`
-  expand/leave method and no `Action::SnippetExpand`/host snippet-leave action
+  - **SN.3c.0 🗒 — declarative `Mode::action_handlers()` (mode-agnostic
+    substrate).** Add a declarative trait method (default empty), forwarded
+    through `DynMode`, joining `keymap()` / `completion_sources()`:
+
+    ```
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> { Vec::new() }
+    // ActionHandlerContribution { action_name: &'static str, handler: ActionHandler }
+    ```
+
+    The boot loop already walks the mode registry to apply `keymap()`
+    (`translate_mode_keymaps`); a sibling walk applies `action_handlers()`:
+    resolve each `action_name` → `CommandId` via the command registry,
+    `ActionHandlerRegistry::register(id, handler)`, collect the tokens into an
+    app-lifetime `Vec<ActionHandlerRegistration>` on `Editor` (registered once,
+    dropped at shutdown). This is the reusable, mode-agnostic path for
+    **global** action handlers — a standalone `register_snippet_global_handlers`
+    fn was rejected because per-mode host wiring fails the mode-ownership acid
+    test (a new provider crate must require ZERO host additions). Per-buffer
+    handlers keep using `on_activate` + Guard. Artifacts: tests (a contributed
+    global handler resolves for any buffer; survives an unrelated mode's
+    activate/deactivate) · no bench/doc beyond this entry.
+
+  - **SN.3c.1 🗒 — snippet uses it (expand migration).**
+    1. **Binding.** `<C-x><C-s>` moves off Builtin (`keymap_insert.rs`) onto
+       `SnippetMode::keymap()` at `KeymapLayer::MinorMode("snippet-mode")`;
+       K.1.c gates the chord to `snippet-mode`-active buffers.
+    2. **Handler.** `SnippetMode::action_handlers()` returns the expand handler
+       (the `do_snippet_expand_at_cursor` body: word-prefix scan, registry
+       lookup by `(language, prefix)` then `"*"`). `SnippetMode` captures the
+       shared `Arc<SharedSnippetRegistry>` (like `SnippetCompletionSource`);
+       the closure resolves `BufferStoreHandle` from `ActionContext.services`
+       and reads `ctx.cursor`.
+    3. **`Effect::ExpandSnippet { snippet_name: String, replace_range: Range }`**
+       (locked shape). Mode decides *which* snippet (name) + *what it replaces*
+       (range); the **host** re-resolves the body via `snippet_registry.by_name`,
+       renders with its host-owned `VariableContext` (`TM_FILENAME` etc.),
+       splices, installs the session (`snippet_session.set`), and derives the
+       cursor from the splice result — the mode can't see the post-splice
+       buffer, so it must NOT pre-compute the cursor (mirrors the nav handlers'
+       division). This is a deliberate **first-party** effect: the typed
+       `Effect` enum stays a host-owned vocabulary by design (see
+       `feedback_effect_vocabulary_is_host_boundary`); modes own *actions +
+       handler bodies*, not effects.
+    4. **Remove** `Editor::do_snippet_expand_at_cursor`, `Action::SnippetExpand`,
+       `AppEffect::SnippetExpand`, and the `<C-x><C-s>` Builtin binding. Factor
+       the host splice/render/session into a shared helper
+       (`expand_snippet_by_name`) so both the `<CR>`-accept path (host-side,
+       not chord-owned — stays) and the `Effect::ExpandSnippet` arm call it.
+    - TUI+GPUI parity (`feedback_tui_gpui_parity`): `Effect::ExpandSnippet` is a
+      new variant → update both the TUI effect classifier (`app/dispatch.rs`,
+      replacing the current `Effect::SnippetExpand` arm) and the GPUI
+      effect-classifier arm in the same patch.
+
+  - **SN.3c.2 🗒 — leave migration.** `action:snippet-leave`'s body moves from
+    the host (`Action::SnippetLeave` / `AppEffect::SnippetLeave`) into
+    `active-snippet-mode::on_activate` alongside the nav handlers (per-buffer,
+    sound). The `<Esc>` binding is already in `snippet_active_keymap_entries()`;
+    only the body is outstanding. It clears the session
+    (`SnippetSession::clear`); the reconciler then deactivates the mode.
+
+  Acid test (standing rule): after SN.3c.2, no `Editor::do_snippet_*`
+  expand/leave method and no `Action::SnippetExpand` / `Action::SnippetLeave`
   remain in `lattice-host`; the only host snippet surface is the generic
   `Effect::ExpandSnippet` arm (splice + variable render + session install).
-  The `<CR>`-accept path already creates the session via `expand_snippet`, so
-  that host entry point stays (it is not chord-owned) — SN.3c factors the
-  shared splice/render/session helper so both `<CR>`-accept and
-  `Effect::ExpandSnippet` call it.
-  - TUI+GPUI parity (`feedback_tui_gpui_parity`): `Effect::ExpandSnippet` is a
-    new `Effect` variant → both the TUI effect classifier (`app/dispatch.rs`,
-    replacing the current `Effect::SnippetExpand` arm) and the GPUI
-    effect-classifier match arm update in the same patch.
   - Depends on: EF.1, MA.1, MA.2, SN.2, SN.3a, SN.3b, SN-activation reconciler.
   - Artifacts: design (this section) · bench (n/a — expand is keystroke-rare,
-    off the render path) · tests (mode-owned expand handler resolves the
-    snippet + emits `Effect::ExpandSnippet`; host arm splices + installs
-    session; leave clears + deactivates; `<C-x><C-s>` no-ops in a
-    non-`snippet-mode` buffer) · graceful (no prefix / no matching snippet →
-    quiet info echo, no panic).
+    off the render path) · tests (per sub-slice: substrate walk; mode-owned
+    expand emits `Effect::ExpandSnippet`; host arm splices + installs session;
+    leave clears + deactivates; `<C-x><C-s>` no-ops in a non-`snippet-mode`
+    buffer) · graceful (no prefix / no matching snippet → quiet info echo).
+  - **WASM-stage revisit (Dhruva, 2026-06-14):** plugins cannot require ANY
+    host wiring or per-feature handling, so the first-party `Effect::ExpandSnippet`
+    exception must be re-examined at the plugin phase, when the Effect boundary
+    becomes a capability-gated extension contract (§9 / deferred M.10), not a
+    closed enum. Tracked in `feedback_effect_vocabulary_is_host_boundary`.
 
 ### SN.3 follow-ups (from the 2026-06-14 review)
 

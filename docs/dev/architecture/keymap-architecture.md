@@ -1742,6 +1742,150 @@ reflect what `lookup_with_context` would return for the same
 two paths produces `:describe-key` output that contradicts actual
 dispatch behaviour.
 
+## 14. Fall-through bindings — augment-and-continue (SN.3c.2b)
+
+By default a binding **replaces** its chord: the highest-priority
+active layer wins (§4), and lower layers are shadowed. That is the
+right model for most overrides — `active-snippet-mode`'s `<Tab>` *means*
+next-placeholder while a snippet is live, fully replacing `insert-tab`.
+
+But some bindings want to **augment, not replace**: do something, then
+defer to whatever the chord natively does. The motivating case is
+`active-snippet-mode`'s `<Esc>` — leaving a live snippet should clear
+the session *and* exit insert, without the mode hardcoding what `<Esc>`
+means (the user may have rebound it). A mode that owns the binding
+should not have to own the native semantics it sits above.
+
+`fall_through` is that primitive. It is mode-agnostic and plugin-facing:
+any mode (today) or WASM plugin (§5.5) can layer behaviour onto a native
+chord without knowing — or breaking — the binding below it.
+
+### 14.1 Contract
+
+A binding declared `fall_through: true` resolves as: **run this
+binding's action, then re-resolve the same chord against the layers
+*below* this one (this binding's owning mode peeled out of the active
+set) and run the native binding too** — recursing if that binding is
+itself `fall_through`.
+
+- **Bounded, unlike vim's `:map`.** Each hop strictly removes a layer
+  from the active set (monotonically shrinking), so the chain always
+  terminates at `Builtin`. It cannot loop the way `:map a b` / `:map b
+  a` can. The boolean's "true" therefore means *chain-down* (compose
+  through lower layers); there is deliberately no `:noremap`-style
+  "skip intermediates, jump straight to builtin" variant — no caller
+  needs it, and adding it would be a speculative `enum Continuation`
+  lift to make only when a concrete second behaviour lands.
+- **Order is mode-effect-first, then native.** "Do something, then
+  follow through." For leave: clear the session, *then* exit insert.
+- **Mode owns the trigger + augmentation; host owns native
+  resolution.** The mode declares the flag on its `KeymapEntry` and
+  supplies the handler body; the dispatcher owns the peel-and-re-resolve
+  mechanism. This keeps the mode-ownership split intact — a mode never
+  reaches into "what `<Esc>` natively does".
+
+### 14.2 Data model
+
+`fall_through` is a property of the **binding**, not the handler. The
+handler (keyed by `CommandId` in the `ActionHandlerRegistry`) does not
+know which chord fired it, so it cannot re-resolve "the same chord below
+me" — the dispatcher can. So the flag rides the binding all the way
+down, defaulting `false` at every hop:
+
+```
+KeymapEntry.fall_through            (declared; `keymap_entry!{ …, fall_through: true }`)
+  → KeymapBinding.fall_through       (resolve_entries_into_bindings, .with_fall_through)
+  → BoundCommand.fall_through        (group_bindings_into_tries, .with_fall_through)
+  → LookupResult::Bound / LayerHit   (handed back by lookup_with_context / resolve_trace)
+```
+
+Every `from_invocation` / `KeymapBinding::new` call site stays
+source-compatible (the field defaults `false`); opt-in is a
+`.with_fall_through(true)` builder or the `fall_through:` macro form.
+
+### 14.3 Resolution mechanism (the keymap part)
+
+In `dispatch_insert`, a `Bound` result whose `command.fall_through` is
+set and whose `command.layer` is `MinorMode(m)`:
+
+1. produces the mode action via `action_from_bound`;
+2. re-runs `lookup_with_context(Insert, chord, active_modes − m)` — the
+   native binding for the same chord with this mode peeled out;
+3. returns the two folded into an `Action::Chain`.
+
+`resolve_native_action` performs step 2 and recurses on a further
+`fall_through`; `Unbound` / `Partial` there → `Action::None` (the mode
+action already ran, there is simply nothing native to continue to — it
+must *not* fall back to literal-text insertion). `chain_actions`
+flattens nested chains and drops a `None` tail, so a binding with no
+native below it stays a plain single action (no spurious `Chain`
+wrapper). The re-resolution **is** the mechanism — there is no
+snippet-specific or chord-specific branch anywhere in the dispatcher.
+
+### 14.4 Continuation execution — `Action::Chain`
+
+```rust
+// crates/lattice-host/src/action.rs
+Action::Chain(Vec<Action>),   // run each sub-action in order
+```
+
+`dispatch_insert` resolves a fall-through to `Chain([mode_action,
+native_action])`. The renderer applies the chain in order:
+
+- host `handle_action` loops the sub-actions (`Invoke(snippet-leave)`
+  then `Invoke(enter-normal)`, each routing through `run_invocation`);
+- the TUI `App::apply` loops `self.apply(a)` so renderer-level
+  sub-actions also route correctly;
+- the GPUI peer needs no special arm — `Chain` falls through its
+  `dispatch_action` intercept to `Editor::dispatch` → the host loop.
+
+`Chain` is general: any future binding (or the eventual ex-command /
+macro layers) that needs "run X, then Y" resolves to one.
+
+**Rejected — `next_actions` channel (option B).** Return the mode
+`Invoke` carrying the peeled chord + mode, and have the host re-resolve
+post-dispatch and push the native onto `DispatchOutcome.next_actions`.
+This avoids a new `Action` variant but smears re-resolution state
+(chord, mode-to-peel, keymap) through `CommandInvocation`, coupling the
+invocation to the lookup it should be independent of. `Chain` keeps the
+re-resolution where the keymap context lives (`dispatch_insert`) and
+makes the continuation a plain, inspectable action list. (Heuristic #1.)
+
+### 14.5 Introspection (`:describe-key`)
+
+The flag is visible — augment-and-continue is not hidden host magic
+(§5.11, design.md). `:describe-key <chord>` (which already renders the
+per-layer trace with `[active]` / `[inactive]` from §13.2) gains:
+
+- a winner tag — `→ action:snippet-leave  (fires now → falls through ↓)`;
+- the continuation chain — `↳ then: action:enter-mode-normal` lines,
+  walked from `resolution.hits` (the next active hit below each
+  `fall_through` one);
+- layer-trace tags — `[active · fall-through]` /
+  `[inactive · fall-through]`.
+
+So a user who hits `<Esc>` in a snippet and sees both the session clear
+and insert exit can run `:describe-key i_<Esc>` and read exactly why,
+layer by layer.
+
+### 14.6 Paramount-goal alignment
+
+- **#2 (extensibility).** `fall_through` is a first-class binding
+  primitive any mode/plugin uses to compose onto a native chord without
+  owning its meaning — capability-gated plugin keymaps (§5.5) inherit it
+  for free.
+- **#3 (extensible modal editing).** Augment-vs-replace is expressed
+  declaratively in the keymap; the grammar composes through layers
+  rather than each mode re-implementing native behaviour.
+- **Performance (#1).** The extra `lookup_with_context` runs *only* for
+  a `fall_through` winner (rare, keystroke-driven, off any render path).
+  Non-fall-through dispatch is byte-for-byte unchanged — one extra
+  branch on the already-resolved `BoundCommand`.
+
+See the slice plan
+([mode-activation](../operations/slice-plans/mode-activation.md), SN.3c.2b)
+for sequencing and the landed commit.
+
 ## See also
 
 - [slice plan: lattice-keymap crate + layer-trace](../operations/slice-plans/keymap-impl-plan.md) -- T1-T13 sequencing.

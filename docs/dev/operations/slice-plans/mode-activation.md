@@ -417,12 +417,40 @@ Sub-slices:
       `effect_*` classifier matches (host `dispatch.rs` + TUI `app/dispatch.rs`
       + GPUI).
 
-  - **SN.3c.2 🗒 — leave migration.** `action:snippet-leave`'s body moves from
-    the host (`Action::SnippetLeave` / `AppEffect::SnippetLeave`) into
-    `active-snippet-mode::on_activate` alongside the nav handlers (per-buffer,
-    sound). The `<Esc>` binding is already in `snippet_active_keymap_entries()`;
-    only the body is outstanding. It clears the session
-    (`SnippetSession::clear`); the reconciler then deactivates the mode.
+  - **SN.3c.2 ✅ (2026-06-14) — leave migration.** Landed in two sub-slices
+    after the build surfaced a pre-existing insert-mode gating gap (the leave
+    `<Esc>` exposed it):
+
+    - **SN.3c.2a ✅ (`ad33b2f9`) — gate insert-mode dispatch + relocate leave.**
+      `dispatch_insert` never had the K.1.c per-buffer minor-mode gate Normal
+      mode has (D.5) — it called `handle.lookup`, which folds in EVERY
+      registered minor layer unconditionally, so `active-snippet-mode`'s
+      `<Tab>`/`<S-Tab>`/`<Esc>` shadowed base Insert in every buffer (live bug:
+      `<Tab>` in plain insert inserted nothing). Fix: `dispatch_insert` threads
+      `active_minor_modes` → `lookup_with_context`. The leave body moved into
+      `active-snippet-mode::on_activate` (clears the session); removed
+      `Action::SnippetLeave` / `AppEffect::SnippetLeave` + the dispatch arm.
+      Interim: the handler hardcoded `Effect::EnterMode(Normal)` to exit insert.
+    - **SN.3c.2b ✅ (`3df8521b`) — `fall_through` binding primitive + snippet
+      `<Esc>` uses it.** `:map`-style augment-and-continue: a binding marked
+      `fall_through: true` runs its action, then the dispatcher re-resolves the
+      same chord with the owning mode peeled out of the active set and runs the
+      native binding too (bounded — each hop peels a layer, terminating at
+      Builtin; cannot loop like vim `:map`). Threads `KeymapEntry.fall_through`
+      (+ macro form) → `KeymapBinding` → `BoundCommand` →
+      `LookupResult`/`KeymapResolution`. Continuation executes via a new
+      `Action::Chain(Vec<Action>)` (`dispatch_insert` returns
+      `Chain([mode_action, native_action])`; applied in order by host
+      `handle_action` + the TUI `App::apply`; GPUI routes through
+      `Editor::dispatch`). `active-snippet-mode`'s `<Esc>` is now
+      `fall_through: true`; the leave handler returns `Effect::None` (session
+      clear only) — exiting insert is the native `<Esc>` via the continuation,
+      so the mode no longer hardcodes what `<Esc>` means (a user rebind
+      composes). `:describe-key` surfaces it: `(fires now → falls through ↓)`
+      on the winner, `↳ then: …` continuation lines, and
+      `[active · fall-through]` / `[inactive · fall-through]` layer tags.
+      The `fall_through` API is mode-agnostic + plugin-facing (any mode/plugin
+      can augment a native chord without owning its meaning).
 
   Acid test (standing rule): after SN.3c.2, no `Editor::do_snippet_*`
   expand/leave method and no `Action::SnippetExpand` / `Action::SnippetLeave`

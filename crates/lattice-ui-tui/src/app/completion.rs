@@ -297,7 +297,7 @@ mod tests {
     use crate::app::completion_kind_glyph;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, app_with_path, fresh_path_workspace, install_snippet,
-        open_popup_with_top_text, set_rust_syntax,
+        open_popup_with_top_text, press, set_rust_syntax,
     };
     use crate::app::*;
 
@@ -462,6 +462,59 @@ mod tests {
     // the `<Tab>` / `<S-Tab>` bodies are now `active-snippet-mode`
     // `ActionHandlerRegistry` closures, so the session-transition
     // coverage belongs where the handlers live.
+
+    /// SN.3c.2b: end-to-end keystroke proof of the `<Esc>` fall-through.
+    /// Expand a snippet (session live), reconcile so
+    /// `active-snippet-mode` activates, then drive `<Esc>` through the
+    /// full `translate` → `App::apply` path. The mode's `<Esc>` is
+    /// `fall_through: true`, so `dispatch_insert` resolves it to a
+    /// `Chain([snippet-leave, enter-normal])`; `App::apply` runs both —
+    /// the leave handler clears the session AND the native `<Esc>` exits
+    /// insert. Exercises the whole pipeline the unit tests cover in
+    /// pieces (gating → fall-through resolution → Chain apply).
+    #[test]
+    fn snippet_esc_clears_session_and_exits_insert_end_to_end() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        // Reconcile session-backed minors so `active-snippet-mode`
+        // activates on the buffer (mirrors the per-apply reconcile).
+        a.sync_keymap_overlays();
+        assert!(
+            a.editor.snippet_session.is_active(),
+            "snippet session live after expand"
+        );
+        let minors = a
+            .editor
+            .active_modes
+            .get(&a.editor.document_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+        assert!(
+            minors.contains(&lattice_snippet::modes::SnippetActiveMode::mode_id()),
+            "active-snippet-mode must be active so <Esc> resolves to the fall_through binding, got {minors:?}"
+        );
+
+        // The real keystroke: <Esc> through translate + apply.
+        press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(
+            !a.editor.snippet_session.is_active(),
+            "leave handler cleared the session"
+        );
+        assert_eq!(
+            a.editor.modal,
+            ModalState::Normal,
+            "fall-through continued to the native <Esc> → exit insert"
+        );
+    }
 
     #[test]
     fn snippet_expand_from_range_with_no_match_is_a_no_op() {

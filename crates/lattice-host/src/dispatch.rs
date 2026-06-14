@@ -30979,4 +30979,68 @@ mod tests {
             "<C-g> from Select returns to Visual, same kind"
         );
     }
+
+    // SN.3d.2b: Select reuses Visual's selection geometry verbatim, so
+    // the render-publish surface (`visual_selection_range` /
+    // `visual_block_extents`, read by both renderer peers via the
+    // published `ActiveDocumentRenderState`) must fire for Select with
+    // byte-identical extents — otherwise Select selections would be
+    // invisible. Same anchor/head ⇒ same painted span, regardless of
+    // which of the two modes owns it.
+    #[test]
+    fn select_publishes_same_selection_range_as_visual() {
+        // Identical (anchor, head); only the modal flag differs.
+        let mut vis = select_over("hello world\n", (0, 0), (0, 4));
+        vis.modal = ModalState::Visual(lattice_grammar::VisualKind::Charwise);
+        let sel = select_over("hello world\n", (0, 0), (0, 4));
+
+        let vis_range = vis
+            .visual_selection_range()
+            .expect("Visual publishes a range");
+        let sel_range = sel
+            .visual_selection_range()
+            .expect("Select must publish a range too, or it renders invisibly");
+        assert_eq!(
+            sel_range, vis_range,
+            "Select's painted span is byte-identical to Visual's"
+        );
+    }
+
+    #[test]
+    fn select_blockwise_publishes_block_extents_like_visual() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        let build = |modal: ModalState| {
+            let mut editor =
+                Editor::boot(lattice_core::Document::from_text("hello\nworld\nthere\n"));
+            editor.modal = modal;
+            editor.set_selections_blocking(SelectionSet::single(Selection {
+                anchor: Position::new(0, 1),
+                head: Position::new(2, 3),
+                visual: Some(VisualMode::Blockwise),
+            }));
+            editor
+        };
+        let vis = build(ModalState::Visual(lattice_grammar::VisualKind::Blockwise));
+        let sel = build(ModalState::Select(lattice_grammar::VisualKind::Blockwise));
+        let vis_block = vis.visual_block_extents().expect("Visual block extents");
+        let sel_block = sel
+            .visual_block_extents()
+            .expect("Select(Blockwise) must publish a block band too");
+        assert_eq!(
+            (
+                sel_block.start_line,
+                sel_block.end_line,
+                sel_block.start_col,
+                sel_block.end_col
+            ),
+            (
+                vis_block.start_line,
+                vis_block.end_line,
+                vis_block.start_col,
+                vis_block.end_col
+            ),
+            "Select's per-line column band matches Visual's"
+        );
+    }
 }

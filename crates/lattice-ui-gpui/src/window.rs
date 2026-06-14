@@ -1693,6 +1693,9 @@ impl EditorView {
                             ModalState::Normal => "NORMAL",
                             ModalState::Insert => "INSERT",
                             ModalState::Visual(_) => "VISUAL",
+                            // SN.3d: kind-agnostic, mirroring Visual (TUI peer
+                            // `app/mode.rs::modal_label` does the same).
+                            ModalState::Select(_) => "SELECT",
                             ModalState::OperatorPending => "PENDING",
                             ModalState::Command => "COMMAND",
                             ModalState::Search(_) => "SEARCH",

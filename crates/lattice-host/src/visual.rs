@@ -90,7 +90,11 @@ impl Editor {
         if matches!(self.active_buffer, BufferKind::Terminal) {
             return self.terminal_visual_selection_range();
         }
-        if !matches!(self.modal, ModalState::Visual(_)) {
+        // Select mode (SN.3d) reuses Visual's selection geometry
+        // verbatim — same anchor/head, same `selection_extent`. The
+        // only difference is the typing semantics, not the painted
+        // span, so the render publish surface fires for both.
+        if !matches!(self.modal, ModalState::Visual(_) | ModalState::Select(_)) {
             return None;
         }
         let sels = self.document.selections();
@@ -114,7 +118,10 @@ impl Editor {
         if matches!(self.active_buffer, BufferKind::Terminal) {
             return self.terminal_visual_block_extents();
         }
-        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+        if !matches!(
+            self.modal,
+            ModalState::Visual(VisualKind::Blockwise) | ModalState::Select(VisualKind::Blockwise)
+        ) {
             return None;
         }
         let sels = self.document.selections();

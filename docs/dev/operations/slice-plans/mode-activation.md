@@ -555,8 +555,23 @@ of the expand/leave migration and carries its own risk surface.
     binds identically in Select; `o` + `iw` parity; **operators bind in Visual but
     stay UNBOUND in Select** (they overtype). 8 new tests (4 parity + entry handler
     + the d.1 dispatch set).
-  - **(d.2b)** status-line + TUI/GPUI selection-render **and** cursor-shape parity
-    (grammar→terminal `VisualKind` conversion on the Select arm). *(next)*
+  - **(d.2b) ✅** status-line + TUI/GPUI selection-render + cursor-shape parity.
+    The render-publish surface (`Editor::visual_selection_range` /
+    `visual_block_extents` in `visual.rs`) was the single seam — both gates now
+    fire for `ModalState::Select(_)` (blockwise gate for `Select(Blockwise)`), so
+    Select selections flow to BOTH renderer peers through the existing published
+    `ActiveDocumentRenderState.{visual_range,visual_block_extents}` with ZERO
+    paint-arm change (TUI `render.rs` and GPUI `window.rs`/`editor_element.rs`
+    already read those fields). Status label: TUI `app/mode.rs::modal_label`
+    already returned kind-agnostic `"SELECT"` (d.0); added the matching
+    `ModalState::Select(_) => "SELECT"` arm to GPUI `window.rs`'s status-line match
+    (it was the only non-exhaustive peer). Cursor shape was already done in d.0
+    (`cursor_shape.rs`: Select shares Visual's Block cursor, with a parity test).
+    No `-- SELECT LINE/BLOCK --` long-form variants — Visual itself is kind-agnostic
+    in the short tag, and Select mirrors Visual (standing rule). 2 new render-publish
+    parity tests in `dispatch::tests` (`select_publishes_same_selection_range_as_visual`,
+    `select_blockwise_publishes_block_extents_like_visual`). Host Select suite 19/19;
+    GPUI builds clean with `--features window`.
   - **(d.2c)** `:describe-mode select` + macro record/replay. *(next)*
   - **(d.3)** snippet consumer (`snippet_group_cursor_effect` → enter Select over
     multi-char defaults via `Effect::Many([SelectionChange, EnterMode(Select)])`)

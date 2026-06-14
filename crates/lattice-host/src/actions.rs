@@ -1084,11 +1084,20 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Active-snippet `<S-Tab>`: jump to the previous placeholder.",
             AppEffect::SnippetPrevPlaceholder,
         ),
-        snippet_leave: register_simple(
-            registry,
+        // SN.3c.2 (2026-06-14): the CommandSpec stays (the
+        // `active-snippet-mode` chord binds it + the mode's
+        // per-buffer `ActionHandlerRegistry` handler keys on it), but
+        // its `apply` is now a dead `Effect::None`: the handler always
+        // intercepts before the grammar Action gate, so this body
+        // never runs. Same shape as `snippet_expand` (SN.3c.1).
+        snippet_leave: registry.register_action(
             "action:snippet-leave",
-            "Active-snippet `<Esc>`: exit the snippet.",
-            AppEffect::SnippetLeave,
+            "Active-snippet `<Esc>`: exit the snippet (mode-owned; \
+             `active-snippet-mode`'s handler clears the session + enters Normal).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         search_jump_to_source: register_simple(
             registry,

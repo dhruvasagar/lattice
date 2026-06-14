@@ -24,7 +24,7 @@ use lattice_completion::{
     InsertContext, RawCandidate, SourceId, SyncCompletionSource,
 };
 use lattice_config::OptionOverrideSet;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::{CommandRegistryHandle, Effect, ModalState};
 use lattice_mode::{
     keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
     ActionHandlerRegistration, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
@@ -365,9 +365,14 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
 /// substrate (the path the project-search provider already uses),
 /// advancing the shared [`SnippetSession`](crate::SnippetSession)
 /// service and returning `Effect::SelectionChange` so the host's
-/// generic effect pipeline moves the cursor. `<Esc>`
-/// (`action:snippet-leave`) stays a host-side action for now (it
-/// migrates with `SnippetCompletionMode` in SN.3).
+/// generic effect pipeline moves the cursor.
+///
+/// **SN.3c.2 (2026-06-14):** `<Esc>` (`action:snippet-leave`) now
+/// owns its body here too — a third per-buffer handler that clears
+/// the shared session and returns `Effect::EnterMode(Normal)`. The
+/// old `Editor::dispatch` `Action::SnippetLeave` arm (session clear +
+/// modal flip) + `Action::SnippetLeave` / `AppEffect::SnippetLeave`
+/// are gone (`feedback_mode_owns_its_surface`).
 ///
 /// Replaces the old `push_layer` / `pop_layer` push mechanism
 /// (MO.3). The host's `sync_keymap_overlays` calls
@@ -387,12 +392,12 @@ impl SnippetActiveMode {
     }
 }
 
-/// RAII guard for [`SnippetActiveMode`]. Holds the two
-/// `ActionHandlerRegistration` tokens for the `<Tab>` / `<S-Tab>`
-/// handlers; dropping it (on mode deactivation) drops the tokens,
-/// each of which unregisters its closure from the
-/// `ActionHandlerRegistry` so the chord falls through to
-/// "unhandled" once no snippet is live.
+/// RAII guard for [`SnippetActiveMode`]. Holds the
+/// `ActionHandlerRegistration` tokens for the `<Tab>` / `<S-Tab>` /
+/// `<Esc>` handlers (SN.3c.2 added `<Esc>`); dropping it (on mode
+/// deactivation) drops the tokens, each of which unregisters its
+/// closure from the `ActionHandlerRegistry` so the chord falls
+/// through to "unhandled" once no snippet is live.
 pub struct SnippetActiveModeGuard {
     _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
@@ -497,6 +502,28 @@ impl Mode for SnippetActiveMode {
                             let buffer_id = lattice_core::BufferId(ctx.buffer_id.raw() as u32);
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
+                        },
+                    );
+                    registrations.push(action_handlers.register(id, handler));
+                }
+
+                // `<Esc>` — exit the snippet session (SN.3c.2).
+                // Per-buffer + session-tied (the binding only fires
+                // while a snippet is live on this buffer), so it lives
+                // here in `on_activate` alongside the nav handlers, not
+                // as a global handler. The body clears the shared
+                // session (the host's overlay reconciler then sees
+                // `is_active() == false` and deactivates this mode,
+                // dropping these registrations) and returns to Normal
+                // via `Effect::EnterMode` — mirroring base Insert's
+                // `<Esc>`, which this mode's layer shadows. No buffer
+                // store needed, so it registers independent of it.
+                if let Some(id) = cmd_registry.id_by_name("action:snippet-leave") {
+                    let session = session.clone();
+                    let handler: ActionHandler = Arc::new(
+                        move |_ctx: &ActionContext<'_>| -> Option<Effect> {
+                            session.with_mut(|s| *s = None);
+                            Some(Effect::EnterMode(ModalState::Normal))
                         },
                     );
                     registrations.push(action_handlers.register(id, handler));
@@ -870,6 +897,7 @@ mod tests {
         ActionHandlerRegistryHandle,
         lattice_protocol::ids::CommandId,
         lattice_protocol::ids::CommandId,
+        lattice_protocol::ids::CommandId,
     ) {
         use lattice_grammar::{ActionSpec, CommandRegistry};
 
@@ -895,6 +923,15 @@ mod tests {
                 args_schema: vec![],
             },
         );
+        // SN.3c.2: the `<Esc>` leave handler keys on this id.
+        let leave_id = cmd.register_action(
+            "action:snippet-leave",
+            "leave snippet",
+            ActionSpec {
+                apply: Box::new(|_| Ok(Effect::None)),
+                args_schema: vec![],
+            },
+        );
 
         let mut services = lattice_mode::ServiceRegistry::new();
         services.register::<SnippetSessionHandle>(session.clone());
@@ -902,7 +939,14 @@ mod tests {
         services.register::<CommandRegistryHandle>(Arc::new(cmd));
         services.register::<ActionHandlerRegistryHandle>(action_handlers.clone());
 
-        (Arc::new(services), session, action_handlers, next_id, prev_id)
+        (
+            Arc::new(services),
+            session,
+            action_handlers,
+            next_id,
+            prev_id,
+            leave_id,
+        )
     }
 
     /// Install a freshly-expanded `for ${1:i} in ${2:iter} { $0 }`
@@ -946,18 +990,21 @@ mod tests {
         lattice_runtime::block_on(SnippetActiveMode.on_activate(ctx)).expect("activate")
     }
 
-    /// `on_activate` registers exactly the two nav handlers, and
-    /// dropping the Guard unregisters them.
+    /// `on_activate` registers exactly the three handlers (`<Tab>` /
+    /// `<S-Tab>` nav + SN.3c.2's `<Esc>` leave), and dropping the
+    /// Guard unregisters them all.
     #[test]
-    fn on_activate_registers_two_handlers_and_drop_unregisters() {
-        let (services, _session, handlers, next_id, prev_id) = wire_services();
+    fn on_activate_registers_three_handlers_and_drop_unregisters() {
+        let (services, _session, handlers, next_id, prev_id, leave_id) = wire_services();
         let guard = activate_mode(services);
-        assert_eq!(handlers.registered_count(), 2);
+        assert_eq!(handlers.registered_count(), 3);
         assert!(handlers.lookup(next_id).is_some());
         assert!(handlers.lookup(prev_id).is_some());
+        assert!(handlers.lookup(leave_id).is_some());
         drop(guard);
         assert_eq!(handlers.registered_count(), 0);
         assert!(handlers.lookup(next_id).is_none());
+        assert!(handlers.lookup(leave_id).is_none());
     }
 
     /// `<Tab>` walks `$1 -> $2 -> $0`, then a fourth fire walks off
@@ -965,7 +1012,7 @@ mod tests {
     /// `do_snippet_next_placeholder` behaviour.
     #[test]
     fn next_handler_walks_through_groups_and_drops_on_zero() {
-        let (services, session, handlers, next_id, _prev_id) = wire_services();
+        let (services, session, handlers, next_id, _prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
         install_active_session(&session);
 
@@ -985,7 +1032,7 @@ mod tests {
     /// session — the migrated `do_snippet_prev_placeholder`.
     #[test]
     fn prev_handler_walks_back() {
-        let (services, session, handlers, next_id, prev_id) = wire_services();
+        let (services, session, handlers, next_id, prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
         install_active_session(&session);
 
@@ -1003,11 +1050,28 @@ mod tests {
     /// effect, session stays empty).
     #[test]
     fn handlers_are_noop_without_an_active_session() {
-        let (services, session, handlers, next_id, prev_id) = wire_services();
+        let (services, session, handlers, next_id, prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
         assert!(!session.is_active());
         assert!(fire(&handlers, next_id, &services).is_none());
         assert!(fire(&handlers, prev_id, &services).is_none());
         assert!(!session.is_active());
+    }
+
+    /// SN.3c.2: `<Esc>` (leave) clears the live session and returns
+    /// `Effect::EnterMode(Normal)` — the migrated `Action::SnippetLeave`
+    /// behaviour (session clear + modal flip), now mode-owned. The
+    /// host's overlay reconciler sees `is_active() == false` next
+    /// cycle and deactivates the mode.
+    #[test]
+    fn leave_handler_clears_session_and_enters_normal() {
+        let (services, session, handlers, _next_id, _prev_id, leave_id) = wire_services();
+        let _guard = activate_mode(services.clone());
+        install_active_session(&session);
+        assert!(session.is_active());
+
+        let effect = fire(&handlers, leave_id, &services);
+        assert!(matches!(effect, Some(Effect::EnterMode(ModalState::Normal))));
+        assert!(!session.is_active()); // session cleared
     }
 }

@@ -306,10 +306,11 @@ pub enum Action {
     // placeholder navigation is mode-owned
     // (`active-snippet-mode`'s `ActionHandlerRegistry` closures),
     // not a host `Action`.
-    /// `<Esc>` while a snippet is active -- exit the snippet
-    /// (placeholders become plain text); also exits Insert
-    /// per vim convention.
-    SnippetLeave,
+    // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed.
+    // `<Esc>` while a snippet is active is mode-owned now
+    // (`active-snippet-mode`'s per-buffer handler clears the
+    // session + returns `Effect::EnterMode(Normal)`); no host
+    // `Action` round-trip. (`feedback_mode_owns_its_surface`.)
     /// D.5.b (2026-05-30): diff-mode `do` operator. Resolves
     /// the hunk under the cursor on the current side of the
     /// active `DiffSession` for the current buffer and

@@ -376,7 +376,19 @@ pub fn dispatch_insert(
     handle: &KeymapHandle,
     chord: &KeyChord,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[ModeId],
 ) -> Action {
+    // SN.3c.2a (2026-06-14): Insert-mode dispatch is now K.1.c-gated,
+    // mirroring `translate_normal`. Previously this used
+    // `handle.lookup`, which folds in EVERY registered minor-mode
+    // layer unconditionally (`registry.rs`: `lookup` treats all
+    // `minor_mode_tries` keys as active) — so an inactive minor mode's
+    // Insert bindings (e.g. `active-snippet-mode`'s `<Tab>` / `<Esc>`)
+    // shadowed base Insert in every buffer. Routing through
+    // `lookup_with_context` with the active buffer's minor set scopes
+    // those bindings to buffers where the mode is actually active, the
+    // same per-buffer guarantee Normal mode already had.
+    //
     // Slice 8.i.4: partial-chord dispatch wins when a previous
     // keystroke absorbed a prefix into `App::partial_chord`.
     // This drives the `<C-x>` family (`<C-x><C-o>` /
@@ -385,14 +397,14 @@ pub fn dispatch_insert(
         let chord = normalize_for_insert_lookup(*chord);
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
         path.push(chord);
-        return match handle.lookup(BindingMode::Insert, &path) {
+        return match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
             LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
             _ => Action::None,
         };
     }
 
     let chord = normalize_for_insert_lookup(*chord);
-    match handle.lookup(BindingMode::Insert, &[chord]) {
+    match handle.lookup_with_context(BindingMode::Insert, &[chord], active_minor_modes) {
         LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
         LookupResult::Partial => {
             // Slice 8.i.4.b: every trie `Partial` in Insert mode

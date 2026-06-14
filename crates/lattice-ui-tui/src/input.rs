@@ -152,6 +152,48 @@ mod tests {
         })
     }
 
+    // SN.3c.2a: per-fixture active-minor-mode sets, paired with the
+    // `shared_keymap_*` handles above. Insert dispatch is now K.1.c-gated
+    // (`dispatch_insert` threads `active_minor_modes`), so a test that
+    // pushes a minor layer must also name that mode as active — exactly
+    // the per-buffer gate production applies. `&'static` so they satisfy
+    // `TranslateContext.active_minor_modes: &'a [ModeId]`.
+    fn popup_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| vec![crate::keymap_insert::completion_popup_mode_id()])
+    }
+    /// The Global `snippet-mode` only — for base Insert in a document
+    /// buffer (carries the `<C-x><C-s>` expand prefix), no live session.
+    fn snippet_mode_only() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| vec![lattice_snippet::modes::SnippetMode::mode_id()])
+    }
+    /// `snippet-mode` + `active-snippet-mode` — a live snippet session.
+    fn snippet_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| {
+            vec![
+                lattice_snippet::modes::SnippetMode::mode_id(),
+                lattice_snippet::modes::SnippetActiveMode::mode_id(),
+            ]
+        })
+    }
+    /// Both overlays active: snippet session + completion popup.
+    fn both_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| {
+            vec![
+                lattice_snippet::modes::SnippetMode::mode_id(),
+                lattice_snippet::modes::SnippetActiveMode::mode_id(),
+                crate::keymap_insert::completion_popup_mode_id(),
+            ]
+        })
+    }
+
     /// Base keymap + completion-popup minor-mode layer.
     fn shared_keymap_with_popup() -> &'static KeymapHandle {
         use std::sync::OnceLock;
@@ -1666,17 +1708,22 @@ mod tests {
         // onto the registry. Pick the scenario-matched shared
         // keymap so the descriptor's chord resolves through the
         // intended layer.
-        let keymap_for_mode: &'static KeymapHandle = if insert_completion_open {
-            shared_keymap_with_popup()
-        } else if snippet_active {
-            shared_keymap_with_snippet()
-        } else {
-            // SN.3c.1: snippet-mode is Global, so a document buffer's
-            // base Insert keymap carries its `<C-x><C-s>` expand prefix.
-            // Use the base + snippet-mode layer so descriptors like
-            // `<C-x>` resolve (the partial node moved off Builtin).
-            shared_keymap_base_with_snippet_mode()
-        };
+        // SN.3c.2a: the keymap AND its active-minor set move together —
+        // Insert dispatch is K.1.c-gated now, so pushing a layer without
+        // naming its mode active would leave the chord unresolved.
+        let (keymap_for_mode, active_for_mode): (&'static KeymapHandle, &'static [lattice_mode::ModeId]) =
+            if insert_completion_open {
+                (shared_keymap_with_popup(), popup_minor_modes())
+            } else if snippet_active {
+                (shared_keymap_with_snippet(), snippet_minor_modes())
+            } else {
+                // SN.3c.1: snippet-mode is Global, so a document buffer's
+                // base Insert keymap carries its `<C-x><C-s>` expand prefix.
+                // Use the base + snippet-mode layer (mode named active) so
+                // descriptors like `<C-x>` resolve (the partial node moved
+                // off Builtin).
+                (shared_keymap_base_with_snippet_mode(), snippet_mode_only())
+            };
         let mut partial_chord: Vec<crate::chord::KeyChord> = Vec::new();
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -1699,7 +1746,7 @@ mod tests {
                 terminal_insert_exit_pending: false,
             terminal_visual_active: false,
                 partial_chord: &partial_chord,
-                active_minor_modes: &[],
+                active_minor_modes: active_for_mode,
             };
             last = translate(ctx, event);
             // Mirror `App::apply`'s partial_chord lifecycle
@@ -1898,7 +1945,8 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
-            active_minor_modes: &[],
+            // SN.3c.2a: popup layer is gated on this mode being active.
+            active_minor_modes: popup_minor_modes(),
         }
     }
 
@@ -1922,6 +1970,7 @@ mod tests {
         let (_, b) = fixture();
         let mut cx = ctx(ModalState::Insert, &b);
         cx.keymap = shared_keymap_with_snippet();
+        cx.active_minor_modes = snippet_minor_modes();
         let action = translate(cx, ctrl(KeyCode::Char('x')));
         assert!(matches!(
             action,
@@ -2151,7 +2200,8 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
-            active_minor_modes: &[],
+            // SN.3c.2a: snippet layers gated on these modes being active.
+            active_minor_modes: snippet_minor_modes(),
         }
     }
 
@@ -2218,6 +2268,7 @@ mod tests {
         let mut ctx = ctx_snippet_active(&b);
         ctx.insert_completion_open = true;
         ctx.keymap = shared_keymap_with_both_overlays();
+        ctx.active_minor_modes = both_minor_modes();
         let action = translate(ctx, key(KeyCode::Tab));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
@@ -2253,6 +2304,7 @@ mod tests {
         let partial = [crate::chord::KeyChord::ctrl('x')];
         let mut cx = ctx_partial(ModalState::Insert, &partial, &b);
         cx.keymap = shared_keymap_with_snippet();
+        cx.active_minor_modes = snippet_minor_modes();
         match translate(cx, ctrl(KeyCode::Char('s'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
             other => panic!("expected Invoke(snippet_expand), got {other:?}"),

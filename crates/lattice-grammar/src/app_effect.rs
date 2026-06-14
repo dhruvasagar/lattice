@@ -532,9 +532,14 @@ pub enum AppEffect {
     /// (`<S-Tab>`). Promoted from
     /// `Action::SnippetPrevPlaceholder` in slice 8.i.4.e.
     SnippetPrevPlaceholder,
-    /// Active-snippet overlay: exit the snippet (`<Esc>`).
-    /// Promoted from `Action::SnippetLeave` in slice 8.i.4.e.
-    SnippetLeave,
+    // SN.3c.2 (2026-06-14): `AppEffect::SnippetLeave` removed.
+    // `<Esc>` is mode-owned now (`active-snippet-mode`'s
+    // `keymap()` binds it + a per-buffer closure in `on_activate`
+    // clears the session + returns `Effect::EnterMode(Normal)`);
+    // no host `Action` / `AppEffect` round-trip. (Unlike the nav
+    // placeholders, which keep their `register_simple`-produced
+    // AppEffect variants as no-ops, leave switched to
+    // `register_action`, so this variant had no producer left.)
     /// Completion-popup overlay: restrict candidates to a single
     /// source. The string is the `SourceId` (e.g.
     /// `"gen:buffer-words"`, `"gen:lsp-completion"`). Bound to

@@ -283,7 +283,8 @@ impl App {
             | Action::GotoPrevFold
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
-            | Action::SnippetLeave
+            // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed —
+            // `<Esc>` is mode-owned (`active-snippet-mode` handler).
             // 5.5.G.2: pure-editor visual + mark arms migrated to
             // `Editor::dispatch`.
             | Action::EnterVisual(_)

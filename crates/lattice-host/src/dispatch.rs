@@ -1790,12 +1790,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::GotoPrevFold => editor.do_goto_fold(false),
         Action::StartMacroRecord(reg) => editor.do_start_macro_record(reg),
         Action::StopMacroRecord => editor.do_stop_macro_record(),
-        Action::SnippetLeave => {
-            // Snippet body has no host-side helper -- the App arm
-            // was literally these two field writes.
-            editor.snippet_session.clear();
-            editor.modal = ModalState::Normal;
-        }
+        // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed.
+        // `<Esc>` is mode-owned now — `active-snippet-mode`'s
+        // per-buffer handler clears the session + returns
+        // `Effect::EnterMode(Normal)` (`feedback_mode_owns_its_surface`).
         // 5.5.G.2: pure-editor visual + mark arms. Bodies migrated
         // to [`Editor`] alongside the existing `do_enter_visual` /
         // `do_exit_visual` / `do_reselect_visual` cluster.
@@ -5236,7 +5234,8 @@ impl Editor {
             // variants + `Editor::do_snippet_*` bodies are gone.
             AppEffect::SnippetNextPlaceholder => {}
             AppEffect::SnippetPrevPlaceholder => {}
-            AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
+            // SN.3c.2 (2026-06-14): `AppEffect::SnippetLeave` removed —
+            // `<Esc>` no longer round-trips through a host Action.
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
             AppEffect::TutorAdvance => {

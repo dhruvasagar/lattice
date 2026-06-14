@@ -103,6 +103,10 @@ pub struct ActionIds {
     pub enter_visual_charwise: CommandId,
     pub enter_visual_linewise: CommandId,
     pub enter_visual_blockwise: CommandId,
+    /// SN.3d Select-mode entry chords `gh` / `gH` / `g<C-h>`.
+    pub enter_select_charwise: CommandId,
+    pub enter_select_linewise: CommandId,
+    pub enter_select_blockwise: CommandId,
     pub enter_search_forward: CommandId,
     pub enter_search_backward: CommandId,
     pub search_word_under_cursor_forward: CommandId,
@@ -608,6 +612,24 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:enter-visual-blockwise",
             "Vim's `<C-v>` / `<C-q>`: enter blockwise Visual at the current cursor.",
             AppEffect::EnterVisual(VisualKind::Blockwise),
+        ),
+        enter_select_charwise: register_simple(
+            registry,
+            "action:enter-select-charwise",
+            "Vim's `gh`: enter charwise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Charwise),
+        ),
+        enter_select_linewise: register_simple(
+            registry,
+            "action:enter-select-linewise",
+            "Vim's `gH`: enter linewise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Linewise),
+        ),
+        enter_select_blockwise: register_simple(
+            registry,
+            "action:enter-select-blockwise",
+            "Vim's `g<C-h>`: enter blockwise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Blockwise),
         ),
         enter_search_forward: register_simple(
             registry,

@@ -469,6 +469,31 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.reselect_last_visual),
         source(),
     );
+    // SN.3d Select-mode entry: `gh` charwise, `gH` linewise,
+    // `g<C-h>` blockwise — the Select analogues of `v` / `V` / `<C-v>`.
+    // CTRL is preserved by `normalize_for_normal_lookup`, so
+    // `g<C-h>` does not collide with `gh`.
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('h')],
+        CommandInvocation::of(actions.enter_select_charwise),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('H')],
+        CommandInvocation::of(actions.enter_select_linewise),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit(KeyChord::ctrl('h'))],
+        CommandInvocation::of(actions.enter_select_blockwise),
+        source(),
+    );
     // Issue #29 (2026-05-22): `gt` next tab, `gT` previous tab.
     // For `{N}gt` (absolute tab target), the count is picked
     // up via the existing chord-count prefix mechanism — the

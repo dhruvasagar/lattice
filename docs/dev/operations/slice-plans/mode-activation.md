@@ -542,11 +542,22 @@ of the expand/leave migration and carries its own risk surface.
     empty-buffer graceful, exit→Normal+gv, toggle both ways). No new bench —
     the overtype is one edit, same cost class as Visual `c`; the keystroke→glyph
     bench covers the dispatch path holistically.
-  - **(d.2)** entry chords (`gh`/`gH`/`g<C-h>` under the `AfterG` table; Visual
-    `<C-g>` toggle — confirm `<C-g>` is free in Visual first) + status-line +
-    TUI/GPUI selection-render **and** cursor-shape parity (grammar→terminal
-    `VisualKind` conversion on the Select arm) + `:describe-mode` + macro
-    record/replay.
+  - **(d.2a) ✅** entry chords + bindings + parity. `gh`/`gH`/`g<C-h>` bound in
+    Normal (`[g,h]`/`[g,H]`/`[g,<C-h>]`) → `AppEffect::EnterSelect(kind)` →
+    `Action::EnterSelect` → `do_enter_select` (anchors a zero-width selection,
+    mirrors `do_enter_visual`). CTRL is preserved by `normalize_for_normal_lookup`
+    so `g<C-h>` ≠ `gh`. Visual `<C-g>` → `ToggleVisualSelect` as a hardcoded
+    intercept in `dispatch_visual` (before the CTRL short-circuit), symmetric with
+    `translate_select`'s `<C-g>` — no new Effect needed; `<C-g>` confirmed free in
+    Visual. `register_select_bindings` (motions + `o` + text-objects from the
+    SHARED `motion_rows`/`text_object_rows`; NO operators, NO exits) wired in
+    `editor_boot`. **Parity test** (`keymap_select::tests`): every Visual motion
+    binds identically in Select; `o` + `iw` parity; **operators bind in Visual but
+    stay UNBOUND in Select** (they overtype). 8 new tests (4 parity + entry handler
+    + the d.1 dispatch set).
+  - **(d.2b)** status-line + TUI/GPUI selection-render **and** cursor-shape parity
+    (grammar→terminal `VisualKind` conversion on the Select arm). *(next)*
+  - **(d.2c)** `:describe-mode select` + macro record/replay. *(next)*
   - **(d.3)** snippet consumer (`snippet_group_cursor_effect` → enter Select over
     multi-char defaults via `Effect::Many([SelectionChange, EnterMode(Select)])`)
     + the doc-debt fix. Mirrors keep the selection on the *focused* group only;

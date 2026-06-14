@@ -299,6 +299,13 @@ impl App {
             // `Editor::dispatch`.
             | Action::EnterVisual(_)
             | Action::ExitVisual
+            // SN.3d: Select-mode arms are pure-editor (handled in
+            // `Editor::dispatch`); grouped no-op here like their Visual
+            // peers.
+            | Action::EnterSelect(_)
+            | Action::SelectOvertype(_)
+            | Action::ExitSelect
+            | Action::ToggleVisualSelect
             | Action::ReselectLastVisual
             | Action::SwapVisualEnds
             | Action::SetMark(_)

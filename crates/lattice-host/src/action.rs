@@ -124,6 +124,10 @@ pub enum Action {
     /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
     /// as the most recently exited Visual selection.
     ReselectLastVisual,
+    /// SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`) — anchor a
+    /// zero-width Select selection of the named kind at the cursor,
+    /// mirroring [`Self::EnterVisual`]. Typing then overtypes it.
+    EnterSelect(VisualKind),
     /// SN.3d Select mode — a bare printable key replaces the whole
     /// selection with this char and drops into Insert (one undo step).
     /// The load-bearing new behaviour: see

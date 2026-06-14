@@ -254,6 +254,14 @@ pub fn dispatch_visual(
     kind: VisualKind,
     partial_chord: &[KeyChord],
 ) -> Action {
+    // SN.3d.2: `<C-g>` toggles Visual → Select (reserved in both modes
+    // for the toggle; select-mode.md §4). Must precede the CONTROL
+    // short-circuit below — symmetric with `translate_select`, which
+    // handles `<C-g>` as a hardcoded mode-control chord on the Select
+    // side. `<C-g>` is otherwise unbound in Visual today.
+    if chord.mods.ctrl() && matches!(chord.key, crate::chord::KeyKind::Char('g')) {
+        return Action::ToggleVisualSelect;
+    }
     if chord.mods.ctrl() {
         return Action::None;
     }

@@ -1153,6 +1153,15 @@ impl Editor {
                     &action_ids,
                     &syntax_textobject_ids,
                 );
+                // SN.3d.2: Select mode's motion/text-object table —
+                // duplicated from Visual, kept honest by the parity test
+                // in `keymap_select` (select-mode.md §4).
+                crate::keymap_select::register_select_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(
                     &h,

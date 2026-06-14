@@ -1521,9 +1521,10 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::PasteText(_)
             | Action::EnterVisual(_)
             | Action::ExitVisual
-            // SN.3d.1: Select overtypes the buffer; exit/toggle change
+            // SN.3d: Select entry/overtype/exit/toggle change buffer or
             // selection state — gated off read-only help buffers like
             // their Visual peers.
+            | Action::EnterSelect(_)
             | Action::SelectOvertype(_)
             | Action::ExitSelect
             | Action::ToggleVisualSelect
@@ -1814,7 +1815,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // `do_exit_visual` / `do_reselect_visual` cluster.
         Action::EnterVisual(kind) => editor.do_enter_visual(kind),
         Action::ExitVisual => editor.do_exit_visual(),
-        // SN.3d.1 Select mode (Visual's sibling — see select-mode.md).
+        // SN.3d Select mode (Visual's sibling — see select-mode.md).
+        Action::EnterSelect(kind) => editor.do_enter_select(kind),
         Action::SelectOvertype(c) => editor.do_select_overtype(c),
         Action::ExitSelect => editor.do_exit_select(),
         Action::ToggleVisualSelect => editor.do_toggle_visual_select(),
@@ -5136,6 +5138,8 @@ impl Editor {
             AppEffect::ReplaceUndoLast => out.next_actions.push(Action::ReplaceUndoLast),
             AppEffect::EnterMode(state) => out.next_actions.push(Action::EnterMode(state)),
             AppEffect::EnterVisual(kind) => out.next_actions.push(Action::EnterVisual(kind)),
+            // SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`).
+            AppEffect::EnterSelect(kind) => out.next_actions.push(Action::EnterSelect(kind)),
             AppEffect::EnterSearch(dir) => out.next_actions.push(Action::EnterSearch(dir)),
             AppEffect::SearchWordUnderCursor(dir) => {
                 out.next_actions.push(Action::SearchWordUnderCursor(dir))
@@ -21985,6 +21989,25 @@ impl Editor {
         }
     }
 
+    /// SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`): anchor a
+    /// zero-width Select selection of the given kind at the cursor,
+    /// mirroring [`Self::do_enter_visual`]'s fresh-entry path. Typing
+    /// then overtypes; motions extend. No toggle/switch semantics — the
+    /// entry chords always fresh-anchor (the Visual↔Select toggle is
+    /// `<C-g>` → [`Self::do_toggle_visual_select`]); programmatic entry
+    /// (snippets) sets the selection explicitly and uses
+    /// `EnterMode(Select(k))` instead (select-mode.md §3).
+    pub fn do_enter_select(&mut self, kind: lattice_grammar::VisualKind) {
+        self.modal = ModalState::Select(kind);
+        self.visual_anchor = Some(self.cursor);
+        let sel = lattice_protocol::selection::Selection {
+            anchor: self.cursor,
+            head: self.cursor,
+            visual: Some(visual_kind_to_mode(kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
+
     /// SN.3d.1 Select-mode overtype: a printable key in Select replaces
     /// the whole selection with that char and drops into Insert. The
     /// load-bearing new behaviour (select-mode.md §3).
@@ -30906,6 +30929,29 @@ mod tests {
             editor.last_visual.is_some(),
             "the prior selection is captured so `gv` can restore it"
         );
+    }
+
+    #[test]
+    fn enter_select_anchors_zero_width_selection_at_cursor() {
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        editor.cursor = Position::new(0, 2);
+        editor.do_enter_select(lattice_grammar::VisualKind::Charwise);
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "gh enters Select(Charwise)"
+        );
+        assert_eq!(
+            editor.visual_anchor,
+            Some(Position::new(0, 2)),
+            "selection is anchored at the cursor"
+        );
+        let sels = editor.document.selections();
+        let sel = sels.primary();
+        assert_eq!(sel.anchor, sel.head, "fresh entry is a zero-width selection");
     }
 
     #[test]

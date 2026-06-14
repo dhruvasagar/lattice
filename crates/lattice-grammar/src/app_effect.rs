@@ -315,6 +315,15 @@ pub enum AppEffect {
     /// as [`Self::EnterMode`]: distinct `CommandId` per kind,
     /// payload rides in the AppEffect.
     EnterVisual(VisualKind),
+    /// Vim's `gh` / `gH` / `g<C-h>` -- enter Select mode (SN.3d) with
+    /// the named kind, anchored at the current cursor. Same encoding as
+    /// [`Self::EnterVisual`]: distinct `CommandId` per kind, payload
+    /// rides in the AppEffect. The host handler (`do_enter_select`)
+    /// anchors a zero-width selection like `do_enter_visual` does —
+    /// typing then overtypes it. Programmatic entry (snippets) instead
+    /// uses `EnterMode(Select(k))` with an explicit selection already
+    /// set; see `docs/dev/architecture/select-mode.md` §3.
+    EnterSelect(VisualKind),
     /// Vim's `/` / `?` -- enter the Search minibuffer in the
     /// named direction. Promoted from `Action::EnterSearch(_)`
     /// in slice 8.i.2.b. Same encoding as [`Self::EnterMode`]:

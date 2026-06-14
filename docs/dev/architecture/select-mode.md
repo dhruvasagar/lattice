@@ -50,9 +50,29 @@ pub enum ModalState {
 `VisualKind` (`Charwise` / `Linewise` / `Blockwise`) is reused verbatim —
 the selection *geometry* is identical to Visual; only keystroke dispatch
 differs. `ModalState` gains an `is_select()` predicate beside `is_visual()`;
-a `selection_is_active()` helper (`is_visual() || is_select()`) backs the
-callers that supply `Range::Selection` as a default range, so an active
-Select selection is a valid operator target too.
+a `selection_is_active()` helper (`is_visual() || is_select()`) is added for
+the *subset* of `Range::Selection`-default callers that genuinely also fire in
+Select.
+
+**Do NOT blanket-rename every `is_visual()` caller to
+`selection_is_active()`.** In Select, printables overtype — you cannot invoke
+an operator, so most operator-dispatch callers stay Visual-only. The only path
+that runs a Normal-style operator against a *Select* selection is `<C-o>`
+(one-shot Normal, post-MVP). A blanket replace is therefore a silent
+behaviour change at Visual-only sites. Audit each `is_visual()` caller and
+convert per-site, with a one-line reason; the default is "leave as
+`is_visual()`".
+
+**Blast radius (heuristic #4 — confirm the impact surface).** Adding a
+`ModalState` variant is not "just another arm". There are ~677 `ModalState::`
+use-sites across the tree; several are *exhaustive* matches that hard-break the
+build until they gain a `Select` arm (e.g. `lattice-host/src/cursor_shape.rs`
+matches all variants with no catch-all). The quieter risk is the
+`ModalState::Visual(kind)` sites that *should* treat `Select(kind)` identically
+(selection render, cursor shape, `Range::Selection` default) but won't
+fail to compile if they silently ignore it — a Visual arm without a sibling
+Select arm is a latent bug. The slice plan carries the audit + parity test as
+explicit work (see slice plan SN.3d.0 and the §9 audit item).
 
 Keymap side (`lattice-keymap/src/binding_mode.rs`):
 
@@ -95,34 +115,79 @@ Exit / within:
 The **printable → replace + Insert** step is the load-bearing new behaviour
 and it lives entirely in the Select dispatch path (`translate_select` +
 the host handler), NOT in `do_insert_text`. Insert mode stays unaware of
-selections; Select mode owns "a keystroke here means overtype". The replace
-+ insert is a single coalesced edit so one `u` undoes the whole overtype.
+selections; Select mode owns "a keystroke here means overtype".
+
+**Pin the edit shape — it is ONE replace-range edit, not delete-then-insert.**
+The overtype emits a single edit that replaces the selection span with the
+typed char (the char becomes the replacement text), plus `EnterMode(Insert)`
+with the cursor placed after the char. Concretely a single
+`Effect::Edits([replace(span → c)])`, **not** `Effect::Many([delete, insert])`
+(two effects risk two undo units). `Document::apply_edit_batch` already lands a
+batch as one undoable unit, so a single `u` undoes the whole overtype. Describe
+the behaviour as "delete + insert" for the user, but implement it as one edit.
+
+Note `translate_select` is **genuinely new dispatch logic**, not "`dispatch_visual`
+plus a tweak": `dispatch_visual` has no literal-printable fallthrough (an unbound
+printable in Visual is a no-op). The right reference for the fallthrough is
+`dispatch_insert`'s `literal_text_fallback`, mapped to the replace-and-insert
+edit above.
 
 ## 4. Keymap + dispatch
 
-- A `BindingMode::Select` chord table. Motions and selection-extending
-  chords are shared with Visual conceptually but registered under the Select
-  layer (the catalog can generate both from one source to avoid drift —
-  decided at implementation time). `<Esc>`, `<C-g>`, `<C-o>` are the
-  mode-control chords.
+- A `BindingMode::Select` chord table. Motions and selection-extending chords
+  are conceptually shared with Visual but must be registered under the Select
+  layer too. Today Visual bindings are registered *imperatively* in
+  `register_visual_bindings` (`lattice-host/src/keymap_visual.rs`); a
+  hand-copied Select layer would drift the moment a Visual motion is added.
+  **Decision (LOCKED): duplicate the registration in a parallel
+  `register_select_bindings`, guarded by a parity test** asserting every
+  `BindingMode::Visual` motion/extension binding has a `BindingMode::Select`
+  counterpart. The parity test — not a shared source list — is the drift guard:
+  it fails loudly the moment the two layers diverge, keeps each registration
+  function readable on its own, and avoids a speculative shared-list abstraction
+  before a second consumer exists (heuristic #1 — no rewrite-for-its-own-sake;
+  the test carries the merit). `<Esc>`, `<C-g>`, `<C-o>` are the mode-control
+  chords. **`<C-g>` is reserved in both Visual and Select for the toggle** —
+  confirm it is not already bound in Visual before wiring (it appears free
+  today; vim's Normal `<C-g>` file-info is unrelated and unaffected).
+- Entry chords `gh` / `gH` / `g<C-h>` register under the **`AfterG`** table
+  (the `g` prefix), not the Visual/Select layers; confirm `AfterG` accepts a
+  ctrl-modified second key for `g<C-h>`.
 - Bare printable characters are **not** individually bound; the Select
   dispatcher's fallthrough (mirroring `dispatch_insert`'s
   `literal_text_fallback`) maps "an unbound printable in Select" to the
-  replace-and-insert action.
-- Dispatch threads through the same `translate(ctx, event)` entry point as
-  every other mode (`ModalState::Select => translate_select(...)`), so the
-  renderer/runtime integration is unchanged — Select is just another arm.
+  replace-and-insert edit (§3).
+- Dispatch threads through the renderer-neutral host entry point
+  (`lattice-host/src/input.rs` `translate`, shared by both the TUI and GPUI
+  chord adapters), with a new `ModalState::Select(kind) => translate_select(...)`
+  arm beside the existing `Visual(kind) => dispatch_visual(...)` arm — so the
+  *dispatch* hub is one new arm, but see §2 (blast radius) for the many other
+  `ModalState` match sites that also need a Select arm.
 
 ## 5. Rendering + introspection
 
 - **Selection highlight:** Select renders the selection exactly like Visual
   (same decoration path) — the user sees the placeholder/field highlighted.
-  TUI + GPUI parity: both peers already render `Visual` selections; the
-  Select arm reuses that path (one match arm each), no new render surface.
+  TUI + GPUI parity (`feedback_tui_gpui_parity`, same patch): both peers
+  already render `Visual` selections, so the Select arm reuses each path —
+  TUI per-kind predicate in `lattice-ui-tui/src/render.rs` (~the `match v.kind`
+  reversed-cell block), GPUI decoration-background path keyed on `ModalState`
+  in `lattice-ui-gpui/src/window.rs` + `editor_element.rs`. **Gotcha:** there
+  are two `VisualKind` types — `lattice_grammar::VisualKind` and
+  `lattice_terminal::VisualKind` (the render path converts grammar→terminal);
+  the Select render arm needs the same conversion plumbed.
+- **Cursor shape:** `cursor_shape.rs` is an *exhaustive* match and will not
+  compile without a `Select(_)` arm. Decision: `Select(_) => Block`
+  (Visual-parity) — the selection conveys the mode; the cursor matches Visual.
 - **Status line:** `-- SELECT --` / `-- SELECT LINE --` / `-- SELECT
   BLOCK --`, beside the existing `-- VISUAL --` family.
 - **`:describe-mode select`** + the help catalog document the mode and its
   chords like every other modal state (§5.11).
+- **Macros:** macros record `CommandInvocation` sequences, not keystrokes
+  (design.md). The printable→overtype is a dispatcher fallthrough, not a bound
+  command, so it must emit a *recordable* invocation (the same way Insert's
+  literal-text path does) — otherwise replay can't reproduce a Select overtype.
+  Covered by a record+replay test (§9).
 
 ## 6. How snippets consume it (SN.3d's actual payoff)
 
@@ -138,6 +203,16 @@ to overtype). No new snippet↔grammar coupling: the snippet only knows
 This makes the existing doc/comment claim — "keep typing inside a
 placeholder to overtype the default" (`docs/user/completion.md`, the
 `active-snippet-mode` doc-comment) — finally true.
+
+**The real interaction risk lives here.** Overtyping a focused `${1:default}`
+replaces the whole "default" span in one edit, then lands in Insert. The
+snippet session's marker/range tracking must (a) resync tabstop 1's range to the
+new text and (b) ripple to its mirrors. This is the same marker-adjust path as
+typing-in-Insert-at-a-placeholder, but the whole-span replace is the stress
+case — it is the thing most likely to break and must be tested directly (§9).
+Because **SN.3e (buffer-keyed session) lands first**, the Select-entry
+`Effect::SelectionChange` must target the *reconciled* buffer, not a global
+slot.
 
 ## 7. Rejected alternatives
 
@@ -180,12 +255,25 @@ placeholder to overtype the default" (`docs/user/completion.md`, the
 ## 9. Surface this slice ships (four-artefacts)
 
 - **Design:** this fragment.
+- **Impact-surface audit (heuristic #4):** enumerate every exhaustive
+  `ModalState` match that needs a `Select` arm (`cursor_shape.rs`, the
+  `input.rs` dispatch hub, GPUI `window.rs`, TUI `render.rs`, the TUI `app/*`
+  band); and audit each `ModalState::Visual(kind)` site for whether it needs a
+  sibling `Select(kind)` arm. Ship a **parity test**: Select behaves like
+  Visual everywhere geometry-only behaviour is expected (selection render,
+  cursor shape, `Range::Selection` default), and every `BindingMode::Visual`
+  motion/extension binding has a `BindingMode::Select` counterpart.
 - **Tests:** state-machine transitions (enter from Normal/Visual/programmatic;
-  printable → replace+Insert with single-undo; motion extends; `<Esc>` →
-  Normal; `<C-g>` ↔ Visual); empty-placeholder → cursor; snippet focus enters
-  Select over a multi-char default and a mirror edit still ripples; failure
-  modes (printable in an empty selection is a plain insert).
-- **TUI + GPUI parity:** selection-render + status-line arms in lockstep.
+  printable → **single replace-edit + Insert** with single-undo; motion
+  extends; `<Esc>` → Normal; `<C-g>` ↔ Visual); empty-placeholder → cursor;
+  snippet focus enters Select over a multi-char default whose tabstop has ≥1
+  mirror — assert the mirror updates **and** a subsequent `<Tab>` lands on the
+  correct post-overtype range; macro record+replay of a Select overtype
+  reproduces it; failure modes (printable in an empty selection is a plain
+  insert).
+- **TUI + GPUI parity:** selection-render + status-line + cursor-shape arms in
+  lockstep, with the grammar→terminal `VisualKind` conversion plumbed on the
+  Select render arm.
 - **Graceful:** Select with a degenerate (zero-width) selection behaves as
   Insert-at-cursor, never panics.
 

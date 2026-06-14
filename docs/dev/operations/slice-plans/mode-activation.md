@@ -493,14 +493,44 @@ of the expand/leave migration and carries its own risk surface.
   paramount-goal alignment). **Doc debt fixed by this slice:**
   `docs/user/completion.md` + the `active-snippet-mode` doc-comment already
   claim "keep typing inside a placeholder to overtype the default" — true once
-  Select mode + the snippet consumer land. **Sub-slices (sketch, sequenced at
-  build):** (d.0) `ModalState::Select` + `BindingMode::Select` + predicates;
-  (d.1) `translate_select` dispatch + the replace-and-insert printable
-  fallthrough (single-undo) + `<Esc>`/`<C-g>` controls; (d.2) entry chords
-  (`gh`/`gH`/`g<C-h>`, Visual `<C-g>` toggle) + status-line + TUI/GPUI
-  selection-render parity + `:describe-mode`; (d.3) snippet consumer
-  (`snippet_group_cursor_effect` → enter Select over multi-char defaults) +
-  the doc-debt fix. Mirrors keep the selection on the *focused* group only.
+  Select mode + the snippet consumer land.
+
+  **Review tightening (2026-06-14, folded into the design fragment).** Before
+  building, the design now pins five things the original sketch left open:
+  (1) adding `ModalState::Select` is **not** "just another arm" — ~677
+  `ModalState::` use-sites, several exhaustive (e.g. `cursor_shape.rs`); the
+  audit + a Visual≡Select parity test are explicit work (d.0). (2) The
+  Visual/Select motion-table is **duplicated** (`register_select_bindings`
+  parallels `register_visual_bindings`) **guarded by a parity test** — LOCKED;
+  the test is the drift guard, no speculative shared-list abstraction. (3) The
+  overtype is **one replace-range edit** (`Effect::Edits([replace(span → c)])`),
+  not `Effect::Many([delete, insert])` — single undo via `apply_edit_batch`.
+  (4) `selection_is_active()` is **not** a blanket `is_visual()` rename — Select
+  can't dispatch operators (printables overtype), so convert callers per-site.
+  (5) `cursor_shape.rs` `Select(_) => Block`; macros must record the overtype
+  as a `CommandInvocation`.
+
+  **Sub-slices (sketch, sequenced at build):**
+  - **(d.0)** `ModalState::Select` + `BindingMode::Select` + `is_select()` /
+    scoped `selection_is_active()` predicates **+ the exhaustive-match audit**:
+    fill every `ModalState` match that needs a `Select` arm (`cursor_shape.rs`
+    `=> Block`, the `input.rs` dispatch hub, GPUI `window.rs`, TUI `render.rs`,
+    TUI `app/*`), and audit each `Visual(kind)` site for a sibling `Select(kind)`
+    arm. Ships the Visual≡Select parity test.
+  - **(d.1)** `translate_select` dispatch (genuinely new logic — `dispatch_visual`
+    has no printable fallthrough) + the replace-and-insert printable fallthrough
+    as a **single replace-edit** (single-undo) + `<Esc>`/`<C-g>`/`<C-o>` controls.
+  - **(d.2)** entry chords (`gh`/`gH`/`g<C-h>` under the `AfterG` table; Visual
+    `<C-g>` toggle — confirm `<C-g>` is free in Visual first) + status-line +
+    TUI/GPUI selection-render **and** cursor-shape parity (grammar→terminal
+    `VisualKind` conversion on the Select arm) + `:describe-mode` + macro
+    record/replay.
+  - **(d.3)** snippet consumer (`snippet_group_cursor_effect` → enter Select over
+    multi-char defaults via `Effect::Many([SelectionChange, EnterMode(Select)])`)
+    + the doc-debt fix. Mirrors keep the selection on the *focused* group only;
+    test that overtyping a default with ≥1 mirror ripples **and** a later `<Tab>`
+    lands on the correct post-overtype range. Select-entry `SelectionChange`
+    targets the reconciled buffer (SN.3e is in by now).
   Depends on: nothing hard; orthogonal to SN.3e. **Sequencing: SN.3e lands
   first** (per the user) — a smaller, design-settled refactor — then SN.3d.
 

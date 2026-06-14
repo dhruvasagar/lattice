@@ -233,6 +233,12 @@ crate::options! {
 
 // ---- Completion group: insert-completion knobs ----
 
+/// SN.3g: single source for the `gen:snippet` source default priority,
+/// shared by `completion.source.snippet.priority`'s default (below) and
+/// `lattice-snippet`'s `SnippetCompletionMode` contribution, so the two
+/// can't drift. Above buffer-words, below LSP.
+pub const COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY: i64 = 150;
+
 crate::options! {
     group = crate::Completion;
 
@@ -256,11 +262,12 @@ crate::options! {
     pub CompletionSourceLspPriority: i64 = 200;
 
     /// Priority bucket for the `gen:snippet` insert-mode source.
-    /// Default 150 -- above buffer-words, below LSP. Per-language
-    /// overrides land in 4.2.g.5 (3/3); today the value is global.
+    /// Default [`COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY`] (150) --
+    /// above buffer-words, below LSP. Per-language overrides land in
+    /// 4.2.g.5 (3/3); today the value is global.
     #[name("completion.source.snippet.priority")]
     #[validate(validate_completion_priority)]
-    pub CompletionSourceSnippetPriority: i64 = 150;
+    pub CompletionSourceSnippetPriority: i64 = COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 
     /// Priority bucket for the `gen:buffer-words` insert-mode
     /// source. Default 100 -- baseline; LSP and snippets both

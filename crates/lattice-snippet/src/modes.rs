@@ -23,7 +23,6 @@ use lattice_completion::{
     CandidateData, CandidateKind, CompletionSourceContribution, CompletionSourceKind,
     InsertContext, RawCandidate, SourceId, SyncCompletionSource,
 };
-use lattice_config::OptionOverrideSet;
 use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
     keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
@@ -125,16 +124,19 @@ impl Mode for SnippetCompletionMode {
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
     }
-    fn options(&self) -> OptionOverrideSet {
-        OptionOverrideSet::default()
-    }
+    // SN.3g: `options()` override removed — it returned the `Mode`
+    // trait default (`OptionOverrideSet::default()`), redundant noise.
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
             id: SourceId::new(SNIPPET_COMPLETION_SOURCE_ID),
-            default_priority: 150,
+            // SN.3g: single source with the option default so the two
+            // can't drift (was a bare `150` literal duplicating
+            // `completion.source.snippet.priority`'s default). The
+            // option is `i64`; the contribution field is `u32`.
+            default_priority: lattice_config::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY as u32,
             auto_trigger: true,
             trigger_chars: Vec::new(),
             popup_filter_chord: None,
@@ -205,6 +207,14 @@ impl Default for SnippetMode {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// SN.3g: narrow a protocol `BufferId` (u64) to the core `BufferId`
+/// (u32) the `BufferStore` is keyed by. Centralizes the unchecked
+/// truncation — safe today (ids are small) but a footgun when inlined
+/// at each call site.
+fn core_buffer_id(id: lattice_protocol::ids::BufferId) -> lattice_core::BufferId {
+    lattice_core::BufferId(id.raw() as u32)
 }
 
 /// SN.3c.1: word-byte predicate for the `<C-x><C-s>` trigger-token
@@ -304,7 +314,7 @@ impl Mode for SnippetMode {
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
         let handler: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
             let store = ctx.services.get::<BufferStoreHandle>()?;
-            let buffer_id = lattice_core::BufferId(ctx.buffer_id.raw() as u32);
+            let buffer_id = core_buffer_id(ctx.buffer_id);
             let handle = store.handle_for(buffer_id)?;
             let line_text = handle.snapshot().buffer.line(ctx.cursor.line).unwrap_or_default();
             // No word prefix → `None` (no effect); otherwise hand the
@@ -486,7 +496,7 @@ impl Mode for SnippetActiveMode {
                                 next
                             })?;
                             let store = store.as_ref()?;
-                            let buffer_id = lattice_core::BufferId(ctx.buffer_id.raw() as u32);
+                            let buffer_id = core_buffer_id(ctx.buffer_id);
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
                         },
@@ -505,7 +515,7 @@ impl Mode for SnippetActiveMode {
                             let group = session
                                 .with_mut(|s| s.as_mut().and_then(|a| a.prev().cloned()))?;
                             let store = store.as_ref()?;
-                            let buffer_id = lattice_core::BufferId(ctx.buffer_id.raw() as u32);
+                            let buffer_id = core_buffer_id(ctx.buffer_id);
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
                         },

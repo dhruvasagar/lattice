@@ -114,6 +114,7 @@ pub use completion::OptionsGenerator;
 // crate root for ergonomic type-keyed access.
 // Callers write `config.get_typed::<lattice_config::Tabstop>()`
 // instead of the longer `lattice_config::core_options::Tabstop`.
+pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,

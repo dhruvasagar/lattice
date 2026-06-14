@@ -473,22 +473,36 @@ Sub-slices:
 Filed as their own slices rather than folded into SN.3c — each is independent
 of the expand/leave migration and carries its own risk surface.
 
-- **SN.3d 🗒 — select the placeholder default on focus (finding B; UX).**
-  `snippet_group_cursor_effect` (`lattice-snippet/src/modes.rs`) currently
-  emits a zero-width `Selection::cursor(range.start)`, so the cursor lands at
-  the *start* of a `${1:default}` placeholder and typing inserts before the
-  default instead of replacing it. VSCode / LSP / UltiSnips all *select* the
-  placeholder so the first keystroke replaces it. Per `feedback_convention_first`
-  (selection muscle-memory is cross-editor), emit a selection spanning the
-  group's first range (`Selection` from `range.start`..`range.end`) and enter
-  Visual-select-on-typing semantics so overtype works. Empty placeholders
-  (`$1`, zero-width range) stay a bare cursor. **Doc debt to fix in the same
-  slice:** `docs/user/completion.md` and the `active-snippet-mode` doc-comment
-  both already claim "keep typing inside a placeholder to overtype the
-  default" — true only once this lands. Mirrors must keep the selection on the
-  *focused* group only. Artifacts: tests (multi-char default → selection;
-  empty placeholder → cursor; mirror edit still ripples) · TUI+GPUI parity if
-  the selection-render path differs · graceful.
+- **SN.3d 🗒 — build vim Select mode (core), snippets consume it (finding B;
+  UX). Design LOCKED 2026-06-14 (user): a dedicated vim grammar mode, NOT a
+  snippet feature.** The bug: `snippet_group_cursor_effect`
+  (`lattice-snippet/src/modes.rs`) emits a zero-width
+  `Selection::cursor(range.start)`, so the cursor lands at the *start* of a
+  `${1:default}` and typing inserts before the default. The fix is **not** a
+  snippet patch — `do_insert_text` does not overtype a selection, and bolting
+  that on would couple snippets to a workaround. Instead build **vim Select
+  mode** as a first-class `ModalState::Select(VisualKind)` /
+  `BindingMode::Select`: same selection extent as Visual, but a printable key
+  replaces the selection and drops into Insert. It's a reusable primitive
+  (rename, template fields, "select word & replace"), decoupled from snippets
+  entirely. Snippets become one *consumer*: a non-empty placeholder emits
+  `Effect::Many([SelectionChange(span), EnterMode(Select(Charwise))])`; empty
+  placeholders (`$1`) keep the bare Insert cursor. Design fragment:
+  [`../../architecture/select-mode.md`](../../architecture/select-mode.md)
+  (contract, state machine, keymap/dispatch, render, rejected alternatives,
+  paramount-goal alignment). **Doc debt fixed by this slice:**
+  `docs/user/completion.md` + the `active-snippet-mode` doc-comment already
+  claim "keep typing inside a placeholder to overtype the default" — true once
+  Select mode + the snippet consumer land. **Sub-slices (sketch, sequenced at
+  build):** (d.0) `ModalState::Select` + `BindingMode::Select` + predicates;
+  (d.1) `translate_select` dispatch + the replace-and-insert printable
+  fallthrough (single-undo) + `<Esc>`/`<C-g>` controls; (d.2) entry chords
+  (`gh`/`gH`/`g<C-h>`, Visual `<C-g>` toggle) + status-line + TUI/GPUI
+  selection-render parity + `:describe-mode`; (d.3) snippet consumer
+  (`snippet_group_cursor_effect` → enter Select over multi-char defaults) +
+  the doc-debt fix. Mirrors keep the selection on the *focused* group only.
+  Depends on: nothing hard; orthogonal to SN.3e. **Sequencing: SN.3e lands
+  first** (per the user) — a smaller, design-settled refactor — then SN.3d.
 
 - **SN.3e 🗒 — key the snippet session by buffer (finding C; latent
   correctness).** `SnippetSession` is one global `Option<ActiveSnippet>` and

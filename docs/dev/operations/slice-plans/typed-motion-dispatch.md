@@ -1,70 +1,46 @@
-# Typed motion dispatch — slice plan
+# Unified command dispatch — slice plan
 
 Sequencing for [typed-motion-dispatch.md](../../architecture/typed-motion-dispatch.md)
 (design: the *what* and *why*). This file is the *when* and *in what order*.
 
-Goal: naked motions invoked through the unified command API / `:` line move the
-cursor on a normal document buffer, via a single vim-correct path
-(`Effect::CursorMove`, honored per modal frame), collapsing the current
-keystroke-vs-typed dual motion path. Operators are explicitly out of scope
-(design §5).
+Goal: ONE host-side command-dispatch entry (`Editor::dispatch_invocation`)
+consumed by the keymap, the `:` line, and (eventually) plugins — no thin
+`:`-only duplicate. See the design doc §1–§2.
 
-Approach **(C)** is LOCKED (2026-06-15, Dhruva): the principled `Effect::CursorMove`
-unification, chosen over the (B) ex-path patch because it encodes vim's
-motion-target grammar rather than blessing the two-path split. See design §3–§4.
+> **History:** this plan originally scoped an `Effect::CursorMove`
+> unification on the premise that `:` motions didn't execute. That premise
+> was **wrong** (motions did move the cursor; the duplication was the two
+> dispatchers). The plan was re-grounded 2026-06-15 to the actual gap.
 
 ## Slices
 
-- **TMD.0 🗒 — pin the gap.** A failing test: `:motion:goto-first-line` (and
-  `:motion:word-forward`) submitted on a multi-line normal buffer leaves the
-  cursor unmoved. Lands red, documents the bug, becomes the acceptance test for
-  TMD.2. (Host integration test.)
-- **TMD.1 🗒 — `Effect::CursorMove(Position)` + host honoring (both renderers).**
-  Add the variant to the grammar `Effect` enum. Host effect pipeline
-  (`apply_effect_host`) honors it per modal frame: Normal → `self.cursor` +
-  collapse primary selection + jump-history for jump-class motions; Visual/Select
-  → move head, keep anchor; terminal/synthetic → `sync_terminal_nav_cursor_from_doc`.
-  TUI **and** GPUI effect classifiers updated in THIS patch
-  (`feedback_tui_gpui_parity`; grep gate on `lattice-ui-gpui`). No emitter yet —
-  the variant is dead but the tree is green. Host tests per frame.
-- **TMD.2 🗒 — `execute_motion` emits `CursorMove`.** Flip the grammar's
-  bare-motion return from `SelectionChange(cursor)` to `CursorMove(target)`.
-  Bare motions now move the cursor through `execute()` in every frame, so the
-  `:` / typed path works — TMD.0 goes green. Remove the now-redundant
-  "SelectionChange adopted only in Visual/Select" handling *for motions* (text
-  objects keep `SelectionChange`). Grammar unit tests + integration: count
-  (`:3motion:line-down`), Visual head-extend via `:`, empty-buffer no-op.
-- **TMD.3 🗒 — collapse the dual path.** Route `run_document_invocation`'s
-  motion branch (and any other `execute_motion_only` + manual-`self.cursor`
-  caller) through the single `CursorMove`-application helper, retiring the
-  bespoke host cursor-set. One motion-application path for keystroke + typed +
-  terminal. Verify keystroke motions, `:` motions, and terminal-nav motions all
-  still behave (regression net: existing motion tests stay green).
-- **TMD.4 🗒 — re-enable motion completion.** Drop the motion filter in
-  `gen:commands` (`builtins/generators.rs` ~L232) so `:describe-command` /
-  `:apropos` complete the whole grammar surface. Restore the `motion:*`
+- **UD.1 ✅ — consolidate dispatch** (`2b598bf6`). Renamed `run_invocation`
+  → `Editor::dispatch_invocation` (the rich path); `execute_ex_line` now
+  routes the parsed invocation through it instead of a thin
+  `dispatch_blocking + apply_effect_host` (deleting the duplicated goto
+  jump-history). Keymap (`Action::Invoke`), `:`, and macro replay all call
+  the one entry. Full suite green (host 748, ui-tui 1474); +1 acceptance
+  test (`ex_line_motion_routes_through_unified_dispatch`).
+
+- **UD.2 🗒 — re-enable motion completion (DECISION PENDING).** With UD.1,
+  motions are actionable via `:`, so the `gen:commands` motion filter's
+  "not actionable" rationale no longer holds for motions. Re-enabling their
+  completion in `:describe-command` / `:apropos` is now a **UX call** (do
+  motions belong in `:`-completion?) — awaiting Dhruva. If yes: drop the
+  motion filter at `builtins/generators.rs` (~L232), restore the `motion:*`
   expectation in `arg_slot_completion_for_describe_command_shows_command_names`
-  (parked in commit `17fb3d77`). Operators stay filtered (still not actionable —
-  separate initiative). Update the generator's own filter test.
-- **TMD.5 🗒 — docs + ledger.** Mark slices ✅ as they land; update the
-  todo.org entry ("make motion/operator commands actionable…") to point at this
-  plan and narrow it to the operators-remaining follow-up.
+  (parked in `17fb3d77`), update the generator's filter test. Operators stay
+  filtered (no-target = genuinely not actionable).
 
-## Sequencing notes
-
-- TMD.0 before TMD.1/2 (red-first; it is the acceptance test).
-- TMD.1 must land green with no emitter (additive); TMD.2 flips the emitter so
-  motions never break mid-slice. Splitting them keeps each commit green and
-  isolates the renderer-parity change from the behavior change.
-- TMD.3 is the unification; it can land after TMD.2 (motions already work) and
-  is the slice most likely to surface latent assumptions about the two paths —
-  keep its diff reviewable and lean on the existing motion test corpus.
-- TMD.4 depends only on TMD.2 (motions actionable) — it can land before or after
-  TMD.3.
+- **UD.3 🗒 — `Effect::CursorMove` (DEFERRED, design §3).** A clean
+  motion-target effect for the plugin contract. No behavior win today (the
+  `SelectionChange` path works through the unified dispatch); revisit at the
+  plugin-host stage when the extension effect-vocabulary is designed. Not
+  scheduled.
 
 ## Out of scope (separate initiative)
 
-- **Operators via `:`** (`operator:delete` + target). Needs a target-argument /
-  ex-range design; tracked separately. Operators remain completion-filtered.
-- **`Effect::CursorMove { target, motion_type }`** and multi-cursor targets —
-  deferred per design §4; grow the variant when a consumer needs it.
+- **Operators via `:`** (`operator:delete` + target) — needs a
+  target-argument / ex-range design; operators remain completion-filtered.
+- **Plugin host call** — `dispatch_invocation` is the entry plugins will
+  call (capability-gated); lands with the WASM plugin host.

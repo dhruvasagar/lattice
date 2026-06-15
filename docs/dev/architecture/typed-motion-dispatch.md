@@ -1,165 +1,115 @@
-# Typed motion dispatch — motions are actionable via the unified command API
+# Unified command dispatch — one path for `:`, the keymap, and plugins
 
-**Status:** designed 2026-06-15, not yet implemented. Slice sequencing lives in
-[the typed-motion-dispatch slice plan](../operations/slice-plans/typed-motion-dispatch.md).
+**Status:** landed 2026-06-15 (the consolidation). Slice sequencing +
+remaining items live in
+[the slice plan](../operations/slice-plans/typed-motion-dispatch.md).
 
-## 1. The gap
+> **Correction (2026-06-15).** An earlier revision of this doc claimed
+> "`:motion:*` does not execute the motion." That was **wrong** — verified
+> empirically. A `:`-invoked motion *does* move the cursor: `execute()`
+> returns `Effect::SelectionChange(cursor)`, `handle_effect` sets
+> `self.cursor`, and `build_render_state` publishes `cursor: self.cursor`
+> (dispatch.rs:757), which is what the active pane renders. The real
+> problem was architectural, below.
 
-A motion invoked through the typed command API — `:motion:goto-first-line`,
-`:motion:word-forward`, a plugin calling `execute(...)`, a replayed
-`CommandInvocation` — parses correctly but **does not move the cursor** on a
-normal document buffer. This is why `gen:commands` filters motions out of
-completion (offering a command that no-ops when invoked is misleading), which is
-what surfaced the gap (see the parked
-`arg_slot_completion_for_describe_command` test).
+## 1. The real gap — two dispatchers
 
-The cause is two divergent motion-execution paths:
+`CommandInvocation` is the universal currency: motions, operators, text
+objects, ex-commands, and plugin contributions all share it and flow
+through one `execute(...)` (design.md §5.2.1). But the *host-side* dispatch
+had split into two entries:
 
-- **Keystroke path** — `run_document_invocation` detects `CommandKind::Motion`
-  and calls `lattice_grammar::execute_motion_only`, then writes
-  `self.cursor = new_pos` by hand (`dispatch.rs`).
-- **Typed / `:` path** — `execute_ex_line → dispatch_blocking →
-  lattice_grammar::execute()`. `execute()` *does* route
-  `CommandKind::Motion → execute_motion`, but that returns
-  `Effect::SelectionChange(cursor)`, and the host's `SelectionChange` arm only
-  adopts the cursor **when modal is Visual/Select**. After a `:` submit you are
-  in Normal, so the effect is dropped. `execute_ex_line`'s own comment records
-  the smell: *"The ex path bypasses run_invocation."* `:N` / `:gg` / `:G`
-  half-work only because they special-case jump-history before the dropped
-  effect.
+- **Keymap** (`Action::Invoke`) → `run_invocation`: the rich path — mode
+  action-handlers → per-kind buffer runner → grammar Action gate →
+  `run_document_invocation` (jump-history, find/till capture for `;`/`,`,
+  count + fold-aware expansion, dot-repeat recording, visual-exit,
+  cursor-clamp) → `dispatch_blocking` → `apply_effect_host`.
+- **`:` line** (`execute_ex_line`) → a **thin re-implementation**: it
+  duplicated the goto jump-history push, then ran `dispatch_blocking` +
+  `apply_effect_host` and *skipped everything else*.
 
-So the cursor-moving wiring lives on one path; the unified `execute()` lives on
-the other. The grammar IS the public command API (paramount #3); a motion that
-the API can name but cannot perform breaks that contract.
+So a `:`-invoked (or plugin-invoked) motion moved the cursor but silently
+skipped fold-opening, find-repeat capture, and dot-repeat — second-class
+to the same motion typed as a keystroke. That asymmetry — duplicate effort,
+no single API — is what this work removes.
 
-## 2. Why this is a vim-grammar question, not a host patch
+## 2. The consolidation (landed)
 
-In vim's grammar a motion is not an action — it is a **primitive that yields a
-target** (a position, plus a motion type: charwise/linewise,
-inclusive/exclusive). What *happens* with that target is decided by the
-grammatical frame the motion appears in:
+One entry, consumed by every caller:
 
-| Frame | Effect of the motion's target |
-| --- | --- |
-| bare (no operator), Normal | cursor jumps to the target; selection collapses to it |
-| operator pending (`d` / `y` / `c` + motion) | operator acts on `[start, target)` |
-| Visual / Select | selection head moves to the target; anchor fixed (extend) |
+- `run_invocation` is renamed **`Editor::dispatch_invocation(inv, out)`** —
+  the single command-dispatch path. (`dispatch(Action)` already owns the
+  Action-level name; the invocation-level entry takes the `_invocation`
+  suffix.)
+- `execute_ex_line` parses the `:` line and routes the invocation straight
+  through `dispatch_invocation`. The thin ex-only path and its duplicated
+  jump-history push are deleted.
+- The keymap already calls it (`Action::Invoke`). Plugins will call the
+  same method (capability-gated host call) when the WASM host lands.
 
-The operator-pending frame never reaches the bare-motion return — `execute()`
-dispatches an operator invocation to `execute_operator`, which resolves the
-motion as a *range* internally. So the only thing a **bare** motion's result
-needs to express is "this is the target position"; the host then applies it
-according to the current modal frame.
+Result: a motion or command behaves *identically* whoever invokes it —
+keymap, `:`, macro replay, plugin. No `:`-specific subset.
 
-That is exactly what the current design gets wrong by reusing
-`Effect::SelectionChange` (a full selection set, only honored in Visual/Select)
-to carry a bare motion's target. The fix is to give the bare-motion result its
-own effect that the host honors **in every frame**, the way vim's grammar
-honors a motion in every frame.
+This is the unified-dispatch design decision (§5.2.1) finally holding for
+the *host* dispatch layer, not just the grammar `execute()`.
 
-## 3. The model: `Effect::CursorMove`
+## 3. Effects: `SelectionChange` carries the motion target (today)
 
-Introduce a distinct grammar effect:
+A bare motion's result is surfaced as `Effect::SelectionChange(cursor)` and
+`handle_effect` decodes it per modal frame — Normal: move the cursor;
+Visual/Select: extend the head, keep the anchor (the `anchor == head`
+discriminant). This already gives vim-correct, frame-dependent behavior
+(motion = target; the frame decides the effect), and it now runs through
+the single dispatch for every caller.
 
-```rust
-Effect::CursorMove(Position)   // "the motion resolved to this target"
-```
+**Deferred: `Effect::CursorMove(Position)`.** A distinct motion-target
+effect (motion = point, vs `SelectionChange` = span) would be a *cleaner
+contract* for the eventual plugin API — a plugin gets back "the motion
+landed here," not "a selection set whose anchor happens to equal its head."
+It was scoped here but is **not implemented**: with the dispatch unified and
+motions already working through `SelectionChange`, it carries no behavior
+win today, only a new `Effect` variant + both renderers' classifiers
+(heuristic #1 — no rewrite without a concrete merit win). Revisit when the
+plugin effect-vocabulary is designed (the plugin host stage), where the
+explicit contract earns its cost.
 
-- `execute_motion` returns `CursorMove(target)` instead of
-  `SelectionChange(cursor)`. The motion's intrinsic output (a target) now has an
-  effect that means exactly that, and nothing more.
-- The host honors `CursorMove` **per modal frame**, mirroring vim:
-  - **Normal** → set `self.cursor` (+ pane cursor), collapse the primary
-    selection to it, push jump-history for jump-class motions (`gg` / `G` /
-    `{` / `}` / `%` / search — the existing `push_position_history` policy).
-  - **Visual / Select** → move the selection **head** to the target, keep the
-    anchor (extend), exactly as a motion does inside a visual selection today.
-  - **Terminal / synthetic (read-only)** → apply against the SyntheticDoc and
-    run `sync_terminal_nav_cursor_from_doc`, the existing terminal-nav sync.
-- **Text objects keep `SelectionChange`.** A bare text object (`viw`, `vaf`)
-  genuinely sets a *span*; that is a selection change, not a cursor move. The
-  `CursorMove` / `SelectionChange` split is itself meaningful: motion → point,
-  text object → span. The dispatcher does not branch on *which* motion or object
-  — only on the kind, as it already does.
+## 4. Completion (open question, not closed here)
 
-With `CursorMove` honored uniformly, **both** the keystroke path and the typed /
-`:` path can flow through the single `execute()` and get identical, vim-correct
-behavior. The bespoke `self.cursor = new_pos` wiring in `run_document_invocation`
-and the `SelectionChange`-only-in-Visual special case both retire — the two
-motion paths collapse into one. That collapse is the actual win: it is the
-unified-dispatch design decision (`§5.2.1`, "operators, motions, text objects,
-ex-commands … share `CommandInvocation` and flow through one `execute(...)`")
-finally holding for motions.
+`gen:commands` filters motions/operators out of `:describe-command` /
+`:apropos` completion, on the rationale that they "aren't actionable." With
+the consolidation, **motions *are* actionable** via `:` (and identically to
+keystrokes). So the rationale no longer holds for motions, and re-enabling
+their completion is now a UX decision rather than a correctness one — see
+the slice plan. Operators stay filtered until naked-operator-with-target
+dispatch is designed (a separate initiative; an operator with no target is
+genuinely not actionable).
 
-## 4. Rejected alternatives
+## 5. Rejected alternatives
 
-- **(A) Make the host adopt `SelectionChange`'s cursor in Normal mode too.**
-  Rejected: `SelectionChange` is emitted by many sources (text objects, plugins,
-  async selection updates); honoring it as a Normal-mode cursor move everywhere
-  has a wide blast radius and would move the cursor on selection updates that are
-  not motions. It patches the symptom and leaves the dual-path / dual-meaning
-  smell intact (heuristic #1).
-- **(B) Wire only the `:` path to `execute_motion_only` + `self.cursor`.**
-  Rejected as the *end state* (though a valid smaller step): it makes `:`
-  motions work but blesses the two-path split rather than collapsing it — the
-  typed path and the keystroke path keep separate motion executors. It does not
-  encode the vim grammar (motion = target, frame decides effect); it just copies
-  the keystroke patch onto the ex path. Chosen against per the explicit
-  direction to avoid an intermediate patchy solution.
-- **A motion-type-aware `CursorMove { target, motion_type }`.** Deferred, not
-  rejected: the bare-motion frames here (Normal jump, Visual head-extend) only
-  need the target position; charwise/linewise/inclusive/exclusive distinctions
-  matter to the *operator* frame, which resolves the motion as a range in
-  `execute_operator` and never sees `CursorMove`. If a future bare-motion
-  consumer needs the motion type, the variant can grow a field then.
-- **Multi-cursor motion (`CursorMove(Vec<Position>)`).** Deferred: today
-  `execute_motion` only `replace_primary`s, so motions are single-cursor already
-  — `CursorMove(Position)` is no regression. When multi-cursor lands, the effect
-  can carry a per-cursor target set.
-
-## 5. Scope boundary — motions now, operators later
-
-This design covers **naked motions**. Operators (`operator:delete`,
-`operator:yank`) are deliberately out of scope: a naked operator is meaningless
-without a *target* (a motion, text object, or range), so making them actionable
-via `:` is a target-argument design that overlaps the ex-range work, not a
-cursor-move question. Operators stay filtered from completion until that
-separate initiative lands. Text objects already produce a `SelectionChange`
-span and are unaffected.
+- **(A) Adopt `SelectionChange`'s cursor in Normal as a special host
+  branch / patch the pane cursor.** Rejected: chased a non-bug (the pane
+  cursor stash isn't what the active pane renders) and would not address the
+  actual duplication (two dispatchers).
+- **(B) Wire only the `:` path to a second motion executor.** Rejected: it
+  blesses the split instead of collapsing it — the opposite of one API.
+- **(C) Introduce `Effect::CursorMove` now.** Deferred (§3): real as a
+  plugin-contract refinement, but no behavior merit once dispatch is
+  unified — premature.
 
 ## 6. Paramount-goal alignment
 
-> **UX (higher court):** no visible change until a typed motion is used; then it
-> behaves identically to the key-bound motion (same cursor move, same
-> jump-history). No flicker, no unedited-content change — `CursorMove` moves only
-> the cursor/head.
-> **Paramount #3 (extensible vim modal editing):** the direct payoff — the
-> grammar genuinely IS the public command API; every registered motion is
-> invocable through the unified dispatch, and adding a motion lights it up on
-> both the keystroke and typed paths with zero per-motion host wiring.
-> **Paramount #2 (extensibility):** plugins / `init.rs` / macros that call
-> `execute(motion)` get real cursor movement, not a dropped effect.
-> **Paramount #1 (performance):** `CursorMove` is a point; applying it is O(1),
-> no new per-frame work.
-> **Heuristic #1 (long-term fit, on merit):** collapses two motion paths into
-> one — the genuinely-better design, not a patch. The merit is the unification +
-> vim-faithful framing, not novelty.
-> **Heuristic #2 (paramount, not other editors):** anchored on Lattice's own
-> unified-dispatch decision and vim's motion-target grammar, not "editor X does
-> it."
-
-## 7. Cross-renderer + test discipline
-
-- `Effect::CursorMove` is a new `Effect` variant → the TUI effect classifier and
-  the **GPUI** effect classifier are updated **in the same patch**
-  (`feedback_tui_gpui_parity`); end-of-slice grep
-  `grep -rn "Effect::CursorMove" crates/lattice-ui-gpui/` must be non-empty.
-- Tests cover all three frames (Normal jump, Visual/Select head-extend,
-  terminal sync), count (`:3motion:line-down`), and graceful failure (motion on
-  an empty buffer echoes nothing, never panics).
+> **UX (higher court):** no visible change — `:` motions already moved the
+> cursor; they now additionally get fold-open / find-repeat / dot-repeat,
+> matching keystrokes. No flicker, no unedited-content change.
+> **Paramount #3 (extensible vim modal editing):** the grammar IS the
+> public command API — one host dispatch for every invocation source.
+> **Paramount #2 (extensibility):** plugins consume the same
+> `dispatch_invocation`; no per-source wiring.
+> **Heuristic #1 (long-term fit):** collapses two dispatchers into one —
+> the merit is the unification, not novelty. `CursorMove` is *not* added
+> precisely because it lacks a merit win today.
 
 ## See also
 
-- [typed-motion-dispatch slice plan](../operations/slice-plans/typed-motion-dispatch.md)
+- [slice plan](../operations/slice-plans/typed-motion-dispatch.md)
 - design.md §5.2.1 (unified command / grammar dispatch)
-- [select-mode.md](select-mode.md) (sibling Select-mode dispatch work)

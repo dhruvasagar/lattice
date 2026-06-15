@@ -30561,6 +30561,27 @@ mod tests {
     }
 
     #[test]
+    fn ex_line_operator_with_target_mutates_via_unified_dispatch() {
+        // UD: an operator WITH a target invoked on the `:` line flows
+        // through the same `dispatch_invocation` -> `execute_operator`
+        // path as the keystroke `dw`, resolving the motion as a range and
+        // committing the edit. Both the space-separated and canonical
+        // forms parse to the same operator+motion invocation.
+        for line in ["operator delete word-forward", "operator:delete motion:word-forward"] {
+            let document = lattice_core::Document::from_text("hello world\n");
+            let mut editor = Editor::boot(document);
+            editor.cursor = lattice_protocol::position::Position::new(0, 0);
+            let mut out = DispatchOutcome::default();
+            editor.execute_ex_line(line, &mut out);
+            assert_eq!(
+                editor.document.snapshot().buffer.as_string(),
+                "world\n",
+                "`:{line}` should delete the first word via the unified dispatch"
+            );
+        }
+    }
+
+    #[test]
     fn ex_line_motion_routes_through_unified_dispatch() {
         // UD (unified dispatch): a motion typed on the `:` line is
         // dispatched through the SAME `dispatch_invocation` the keymap

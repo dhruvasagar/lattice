@@ -36,11 +36,13 @@
   dispatch is unified (`Editor::dispatch_invocation`; `:`, keymap, plugins
   all route through it), and `gen:commands` now completes `motion:*`. See
   docs/dev/architecture/typed-motion-dispatch.md (UD.1 + UD.2).
-- [ ] make OPERATOR commands actionable via the typed command API
-  (`:operator:delete` + a target). Needs a target-argument / ex-range
-  design; operators stay completion-filtered until then. (Motions: done
-  above. `Effect::CursorMove` clean-vocab is deferred to the plugin-host
-  stage — see typed-motion-dispatch.md §3.)
+- [ ] (low value) operator COMPLETION via `:`. Operators WITH a target
+  already dispatch (`:operator delete word-forward` works via the unified
+  path); only completing the two-part `:operator <op> <target>` form is
+  missing, and it's low value vs the `dw` / `ci"` keystroke grammar.
+  Possible small polish: a helpful error for a naked `:operator:delete`.
+  (Motions: done. `Effect::CursorMove` clean-vocab deferred to the
+  plugin-host stage — see typed-motion-dispatch.md §3.)
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
 - [ ] auto indent

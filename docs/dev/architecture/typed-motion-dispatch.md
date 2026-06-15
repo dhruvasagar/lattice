@@ -80,10 +80,20 @@ keystrokes), so the old "not actionable" rationale for excluding them from
 completion no longer holds. `gen:commands` (`CommandsGenerator`) now emits
 `CommandKind::Motion` candidates alongside ex-commands, so `:`-completion and
 `:describe-command` / `:apropos` surface `motion:line-down` etc. (with their
-`motion:` prefix — the invocable name). **Operators / text-objects stay
-filtered**: an operator with no target is genuinely not standalone-actionable
-(naked-operator-with-target dispatch is a separate initiative). The boundary
-is pinned by the generator's filter test (motions in, operators out).
+`motion:` prefix — the invocable name).
+
+**Operators stay out of completion — but they *are* dispatchable.** An
+operator WITH a target already runs via `:` through the same unified path:
+`:operator delete word-forward` (or canonical
+`:operator:delete motion:word-forward`) resolves the motion as a range and
+commits the edit, exactly like the keystroke `dw` (verified by
+`ex_line_operator_with_target_mutates_via_unified_dispatch`). They are
+excluded from *completion* not because they "don't work" but because (a) a
+bare `operator:delete` candidate is misleading — it needs a target to do
+anything; and (b) completing the full `:operator <op> <target>` form is a
+two-part (operator + target) problem of low value, since the keystroke
+grammar (`dw`, `ci"`) is the ergonomic path. The generator's filter test
+pins the boundary (motions in, operators out of completion).
 
 ## 5. Rejected alternatives
 

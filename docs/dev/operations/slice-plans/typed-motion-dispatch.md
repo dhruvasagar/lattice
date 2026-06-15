@@ -38,9 +38,15 @@ consumed by the keymap, the `:` line, and (eventually) plugins — no thin
   plugin-host stage when the extension effect-vocabulary is designed. Not
   scheduled.
 
-## Out of scope (separate initiative)
+## Out of scope (separate / low-value)
 
-- **Operators via `:`** (`operator:delete` + target) — needs a
-  target-argument / ex-range design; operators remain completion-filtered.
+- **Operator *completion*.** Operators WITH a target already *dispatch* via
+  `:` through the unified path (`:operator delete word-forward` deletes a
+  word, verified by `ex_line_operator_with_target_mutates_via_unified_dispatch`)
+  — no target-argument/ex-range design is needed for that. What's missing is
+  only *completion* of the two-part `:operator <op> <target>` form, which is
+  low value (the keystroke grammar `dw` / `ci"` is the ergonomic path), so
+  operators stay out of `gen:commands`. A helpful error for a *naked*
+  `:operator:delete` (no target) is a possible small polish.
 - **Plugin host call** — `dispatch_invocation` is the entry plugins will
   call (capability-gated); lands with the WASM plugin host.

@@ -41,16 +41,32 @@ impl CandidateGenerator for CommandsGenerator {
             .filter_map(|name| {
                 let id = ctx.registry.id_by_name(name)?;
                 let spec = ctx.registry.lookup(id)?;
-                // Only include ex-commands (not action:* entries which
-                // are internal actions not executable from the `:` line).
-                let ex = ctx.registry.ex_command_spec(id)?;
-                // Filter delimiter-only commands -- they have no
-                // useful keyword-form completion target.
-                if matches!(ex.surface_form, lattice_grammar::SurfaceForm::Delimiter { .. }) {
-                    return None;
+                // UD.2: include ex-commands AND motions. Both are
+                // invocable from the `:` line — `:w`, `:motion:line-down`
+                // — and now behave identically to a keystroke (the host
+                // dispatch is unified; see typed-motion-dispatch.md).
+                // Operators / text-objects / internal `action:*` entries
+                // are NOT actionable standalone via `:` (an operator
+                // needs a target) and stay filtered.
+                match spec.kind {
+                    lattice_grammar::CommandKind::ExCommand => {
+                        // Delimiter-only commands (`:s/.../`, `:g/.../`)
+                        // have no useful keyword-form completion target.
+                        let ex = ctx.registry.ex_command_spec(id)?;
+                        if matches!(
+                            ex.surface_form,
+                            lattice_grammar::SurfaceForm::Delimiter { .. }
+                        ) {
+                            return None;
+                        }
+                    }
+                    lattice_grammar::CommandKind::Motion => {}
+                    _ => return None,
                 }
-                // User-facing name: strip the `ex:` namespace prefix
-                // so completions show `oil` not `ex:oil`.
+                // User-facing name: strip the `ex:` namespace prefix so
+                // ex-commands show `oil` not `ex:oil`. Motions keep their
+                // `motion:` prefix — that IS what the user types
+                // (`:motion:line-down`).
                 let display_name = spec
                     .name
                     .strip_prefix("ex:")
@@ -229,10 +245,17 @@ mod tests {
         assert!(candidates.len() > 10, "expected multiple ex-commands");
         // Spot-check: write should appear (it's an ex-command).
         assert!(candidates.iter().any(|c| c.text == "write"));
-        // Motions/operators are not ex-commands and must not appear.
+        // UD.2: motions ARE invocable via `:` (unified dispatch), so they
+        // appear with their `motion:` prefix.
         assert!(
-            !candidates.iter().any(|c| c.text == "motion:line-down"),
-            "motions are not ex-commands and must be filtered out",
+            candidates.iter().any(|c| c.text == "motion:line-down"),
+            "motions are actionable via `:` and must be completable",
+        );
+        // Operators are NOT actionable standalone (they need a target) and
+        // stay filtered — the boundary the filter draws.
+        assert!(
+            !candidates.iter().any(|c| c.text.starts_with("operator:")),
+            "operators are not standalone-actionable and must be filtered out",
         );
     }
 

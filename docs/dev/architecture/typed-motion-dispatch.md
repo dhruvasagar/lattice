@@ -73,16 +73,17 @@ win today, only a new `Effect` variant + both renderers' classifiers
 plugin effect-vocabulary is designed (the plugin host stage), where the
 explicit contract earns its cost.
 
-## 4. Completion (open question, not closed here)
+## 4. Completion (resolved — motions in)
 
-`gen:commands` filters motions/operators out of `:describe-command` /
-`:apropos` completion, on the rationale that they "aren't actionable." With
-the consolidation, **motions *are* actionable** via `:` (and identically to
-keystrokes). So the rationale no longer holds for motions, and re-enabling
-their completion is now a UX decision rather than a correctness one — see
-the slice plan. Operators stay filtered until naked-operator-with-target
-dispatch is designed (a separate initiative; an operator with no target is
-genuinely not actionable).
+With the consolidation, **motions *are* actionable** via `:` (identically to
+keystrokes), so the old "not actionable" rationale for excluding them from
+completion no longer holds. `gen:commands` (`CommandsGenerator`) now emits
+`CommandKind::Motion` candidates alongside ex-commands, so `:`-completion and
+`:describe-command` / `:apropos` surface `motion:line-down` etc. (with their
+`motion:` prefix — the invocable name). **Operators / text-objects stay
+filtered**: an operator with no target is genuinely not standalone-actionable
+(naked-operator-with-target dispatch is a separate initiative). The boundary
+is pinned by the generator's filter test (motions in, operators out).
 
 ## 5. Rejected alternatives
 

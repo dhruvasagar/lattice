@@ -22,15 +22,15 @@ consumed by the keymap, the `:` line, and (eventually) plugins — no thin
   the one entry. Full suite green (host 748, ui-tui 1474); +1 acceptance
   test (`ex_line_motion_routes_through_unified_dispatch`).
 
-- **UD.2 🗒 — re-enable motion completion (DECISION PENDING).** With UD.1,
-  motions are actionable via `:`, so the `gen:commands` motion filter's
-  "not actionable" rationale no longer holds for motions. Re-enabling their
-  completion in `:describe-command` / `:apropos` is now a **UX call** (do
-  motions belong in `:`-completion?) — awaiting Dhruva. If yes: drop the
-  motion filter at `builtins/generators.rs` (~L232), restore the `motion:*`
-  expectation in `arg_slot_completion_for_describe_command_shows_command_names`
-  (parked in `17fb3d77`), update the generator's filter test. Operators stay
-  filtered (no-target = genuinely not actionable).
+- **UD.2 ✅ — re-enable motion completion.** `CommandsGenerator`
+  (`gen:commands`) now emits `CommandKind::Motion` candidates alongside
+  ex-commands (it matched `ExCommand` only before). Motions keep their
+  `motion:` prefix (the name the user types); ex-commands still strip `ex:`.
+  Operators / text-objects / `action:*` stay filtered (an operator with no
+  target is not standalone-actionable). Restored the `motion:*` expectation
+  in `arg_slot_completion_for_describe_command_shows_command_names` +
+  `accept_in_arg_slot_*` (parked in `17fb3d77`); updated the generator's own
+  filter test to pin the new boundary (motions in, operators out).
 
 - **UD.3 🗒 — `Effect::CursorMove` (DEFERRED, design §3).** A clean
   motion-target effect for the plugin contract. No behavior win today (the

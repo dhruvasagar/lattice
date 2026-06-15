@@ -2159,7 +2159,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // renderer-coupled tail). The renderer-coupled tail still
         // runs through `App::apply_effect_app_arms` (drained by the
         // dispatch wrapper after `editor.dispatch` returns).
-        Action::Invoke(inv) => editor.run_invocation(inv, _out),
+        Action::Invoke(inv) => editor.dispatch_invocation(inv, _out),
         // 5.5.G.23.insert: Insert-mode text input. Host applies the
         // edit + drives insert-completion / sigHelp / onTypeFormatting
         // autopilots; LSP follow-ups defer through `out.next_actions`
@@ -5886,22 +5886,17 @@ impl Editor {
     /// `out.effects` for the renderer-coupled tail).
     pub fn execute_ex_line(&mut self, line: &str, out: &mut DispatchOutcome) {
         match crate::excommand::parse(line, &self.registry) {
-            Ok(inv) => {
-                // `:N` and bare `:G` / `:gg` invoked from the ex line
-                // must push jump history just like their key-bound
-                // equivalents (handled in `run_invocation`). The ex
-                // path bypasses `run_invocation`, so we push here.
-                let is_goto = inv.command == self.builtins.goto_last_line.0
-                    || inv.command == self.builtins.goto_first_line.0;
-                if is_goto {
-                    let cur = self.cursor;
-                    self.push_position_history(cur, PositionSource::AutoJump);
-                }
-                match self.dispatch_blocking(inv) {
-                    Ok(eff) => apply_effect_host(self, eff, out),
-                    Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
-                }
-            }
+            // UD (unified dispatch): route the parsed invocation through
+            // the SINGLE command-dispatch entry — the same path the
+            // keymap's `Action::Invoke` (and, eventually, plugins) use.
+            // The ex line no longer re-implements a thin subset: it used
+            // to push jump-history itself and then run `dispatch_blocking`
+            // + `apply_effect_host`, skipping the find/till capture, fold
+            // expansion, dot-repeat recording and visual-exit that
+            // `dispatch_invocation`'s document path performs. `:N` / `:gg`
+            // / `:G` now get jump-history from that path too (it pushes
+            // for jump-class motions), so the duplicated push is gone.
+            Ok(inv) => self.dispatch_invocation(inv, out),
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
@@ -6207,7 +6202,7 @@ impl Editor {
             return;
         };
         let insert_replay = self.last_insert.clone();
-        self.run_invocation(inv, out);
+        self.dispatch_invocation(inv, out);
         if matches!(self.modal, ModalState::Insert)
             && let Some(text) = insert_replay
         {
@@ -6244,7 +6239,7 @@ impl Editor {
         };
         let inv = lattice_grammar::CommandInvocation::of(cmd_id)
             .with_args(lattice_grammar::Args::Char(last.target));
-        self.run_invocation(inv, out);
+        self.dispatch_invocation(inv, out);
     }
 
     /// 5.5.G.23.insert: host-side text insertion at the cursor (the
@@ -26193,7 +26188,16 @@ impl Editor {
     /// [`apply_effect_host`] (recursive `Effect::Many` flatten +
     /// host migrated-arm pass + push to `out.effects` for the
     /// renderer-coupled tail).
-    pub fn run_invocation(
+    /// UD (unified dispatch): the single command-dispatch entry. Every
+    /// `CommandInvocation` — from the keymap (`Action::Invoke`), the `:`
+    /// line (`execute_ex_line`), macro replay, and (eventually) plugins —
+    /// flows through here: missing-arg arming, mode-contributed
+    /// action-handlers, the per-kind buffer runner, the grammar Action
+    /// gate, and the rich document path (`run_document_invocation`:
+    /// jump-history, find/till capture, count + fold expansion,
+    /// dot-repeat, visual-exit). There is no second, thinner dispatcher —
+    /// `:` and plugins get identical treatment to a keystroke.
+    pub fn dispatch_invocation(
         &mut self,
         inv: lattice_grammar::CommandInvocation,
         out: &mut DispatchOutcome,
@@ -30557,6 +30561,28 @@ mod tests {
     }
 
     #[test]
+    fn ex_line_motion_routes_through_unified_dispatch() {
+        // UD (unified dispatch): a motion typed on the `:` line is
+        // dispatched through the SAME `dispatch_invocation` the keymap
+        // uses (no thin ex-only path), so `:motion:*` moves the cursor
+        // exactly like the key-bound motion.
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\n");
+        let mut editor = Editor::boot(document);
+        editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("motion:goto-last-line", &mut out);
+        assert_eq!(
+            editor.cursor.line, 4,
+            ":motion:goto-last-line moves to the last line"
+        );
+        editor.execute_ex_line("motion:goto-first-line", &mut out);
+        assert_eq!(
+            editor.cursor.line, 0,
+            ":motion:goto-first-line moves to the first line"
+        );
+    }
+
+    #[test]
     fn run_invocation_arms_prompt_when_required_arg_missing() {
         // The user-reported regression: a keymap binding invokes
         // `ex:describe-key` with no args (the K.3.2 binding
@@ -30572,7 +30598,7 @@ mod tests {
             .expect("ex:describe-key registered by ex_commands::populate");
         let inv = lattice_grammar::CommandInvocation::of(describe_key_id);
         let mut out = DispatchOutcome::default();
-        editor.run_invocation(inv, &mut out);
+        editor.dispatch_invocation(inv, &mut out);
         assert_eq!(
             editor.command_line, "describe-key ",
             "run_invocation must arm the prompt with the alias form"
@@ -30595,7 +30621,7 @@ mod tests {
             .expect("ex:describe-command registered");
         let inv = lattice_grammar::CommandInvocation::of(id);
         let mut out = DispatchOutcome::default();
-        editor.run_invocation(inv, &mut out);
+        editor.dispatch_invocation(inv, &mut out);
         assert_eq!(editor.command_line, "describe-command ");
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
         assert!(
@@ -31098,7 +31124,7 @@ mod tests {
         // `e` (word_end) lands on 'o' of "hello" (0,4); in Select the
         // selection extends anchor(0,0)..head(0,4) instead of collapsing.
         let mut out = DispatchOutcome::default();
-        editor.run_invocation(
+        editor.dispatch_invocation(
             lattice_grammar::CommandInvocation::of(editor.builtins.word_end.0),
             &mut out,
         );

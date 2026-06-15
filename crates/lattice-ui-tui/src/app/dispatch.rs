@@ -754,7 +754,7 @@ impl App {
         // return it so the renderer can drain its effects/signals.
         let mut out = self.mutate_editor_with(move |e| {
             let mut out = lattice_host::dispatch::DispatchOutcome::default();
-            e.run_invocation(inv, &mut out);
+            e.dispatch_invocation(inv, &mut out);
             out
         });
         for effect in std::mem::take(&mut out.effects) {

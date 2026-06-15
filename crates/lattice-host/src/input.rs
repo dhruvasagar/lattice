@@ -393,9 +393,19 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // SN.3d.1: Select mode — Visual's sibling with inverted typing
         // semantics. Genuinely new dispatch (a bare printable overtypes
         // the selection); see `keymap_select::translate_select`.
-        ModalState::Select(kind) => {
-            crate::keymap_select::translate_select(ctx.keymap, &chord, kind, ctx.partial_chord)
-        }
+        // SN.3d.4: unlike Visual above, Select DOES consult active
+        // minor-mode keymaps (it takes `ctx.active_minor_modes`), so a
+        // mode that focuses a span — the snippet placeholder default —
+        // keeps its `<Tab>` / `<S-Tab>` / `<Esc>` bindings live in
+        // Select exactly as in Insert. Visual's minor-mode layer push
+        // is still outstanding (the comment above).
+        ModalState::Select(kind) => crate::keymap_select::translate_select(
+            ctx.keymap,
+            &chord,
+            kind,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`

@@ -47,6 +47,8 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_syntax::SyntaxTextObjectIds;
 
+use lattice_mode::mode::ModeId;
+
 use crate::action::Action;
 use crate::actions::ActionIds;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
@@ -145,6 +147,38 @@ pub fn translate_select(
     chord: &KeyChord,
     _kind: VisualKind,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[ModeId],
+) -> Action {
+    // 0. SN.3d.4: active minor-mode bindings own the chord first —
+    //    the same `KeymapLayer::MinorMode` consultation Insert mode
+    //    does (`dispatch_insert`), now wired for Select. A snippet
+    //    placeholder focused in Select keeps `<Tab>` / `<S-Tab>`
+    //    (navigate, keeping the default) and `<Esc>` (leave the
+    //    snippet — a `fall_through` binding that then runs the native
+    //    `<Esc>` = `ExitSelect`) live. Without this, those bindings
+    //    were dead the moment a default-bearing placeholder selected,
+    //    because Select dispatch never consulted minor layers and its
+    //    `<Esc>` was hardcoded below. We intercept ONLY a winner that
+    //    lives on a minor layer; a base-table `Bound` is a motion /
+    //    text-object that `native_select_action` resolves.
+    if let Some(action) = minor_select_action(handle, chord, partial_chord, active_minor_modes) {
+        return action;
+    }
+    native_select_action(handle, chord, partial_chord)
+}
+
+/// SN.3d.4: the native (minor-free) Select dispatch — the original
+/// `translate_select` body. Resolves the hardcoded mode-control chords,
+/// the base `BindingMode::Select` motion / text-object table, and the
+/// printable-overtype fallthrough. Used both as the normal path (when
+/// no active minor binding claims the chord) AND as the `fall_through`
+/// continuation for a minor `<Esc>` (mode action THEN `ExitSelect`).
+/// Being minor-free, it cannot re-enter `minor_select_action`, so the
+/// fall-through never loops or fires the mode action twice.
+fn native_select_action(
+    handle: &KeymapHandle,
+    chord: &KeyChord,
+    partial_chord: &[KeyChord],
 ) -> Action {
     // 1. Mode-control chords. `<Esc>` exits to Normal even mid-
     //    text-object (abandons any absorbed prefix — there are no
@@ -191,6 +225,57 @@ pub fn translate_select(
         LookupResult::Partial => Action::AbsorbPartialChord(looked_up),
         LookupResult::Unbound => printable_overtype_fallback(chord),
     }
+}
+
+/// SN.3d.4: resolve an active minor-mode binding for the chord in
+/// Select mode, or `None` to defer to `native_select_action`.
+///
+/// Mirrors `dispatch_insert`'s minor-layer consultation: look the chord
+/// up WITH the active minor set, but act only when the winner lives on
+/// a `KeymapLayer::MinorMode` layer — a `Bound` on the base Select
+/// table is a motion / text-object the native path owns. A
+/// `fall_through` minor binding (the snippet `<Esc>`) runs its mode
+/// action and then chains the native Select action for the same chord.
+fn minor_select_action(
+    handle: &KeymapHandle,
+    chord: &KeyChord,
+    partial_chord: &[KeyChord],
+    active_minor_modes: &[ModeId],
+) -> Option<Action> {
+    if active_minor_modes.is_empty() {
+        return None;
+    }
+    // Minor bindings are keyed like Insert's (keep CTRL + SHIFT) so
+    // `<S-Tab>` stays distinct from `<Tab>`; the base-Select normalize
+    // strips SHIFT and would collapse the two.
+    let looked_up = crate::keymap_insert::normalize_for_insert_lookup(*chord);
+    let path: Vec<KeyChord> = if partial_chord.is_empty() {
+        vec![looked_up]
+    } else {
+        let mut p = partial_chord.to_vec();
+        p.push(looked_up);
+        p
+    };
+    let LookupResult::Bound { command, captured } =
+        handle.lookup_with_context(BindingMode::Select, &path, active_minor_modes)
+    else {
+        return None;
+    };
+    // Only a minor-layer winner is mode-owned; a base-table `Bound`
+    // defers to `native_select_action`.
+    if !matches!(command.layer, KeymapLayer::MinorMode(_)) {
+        return None;
+    }
+    let action = crate::keymap_normal::action_from_bound_with_capture(&command, &captured);
+    if !command.fall_through {
+        return Some(action);
+    }
+    // `fall_through`: mode action, then the NATIVE continuation for the
+    // chord (`<Esc>` → `ExitSelect`). Native is minor-free, so no loop.
+    Some(crate::keymap_insert::chain_actions(
+        action,
+        native_select_action(handle, chord, partial_chord),
+    ))
 }
 
 /// The Select fallthrough: a bare printable overtypes the selection.
@@ -270,14 +355,14 @@ mod tests {
     fn bare_printable_overtypes() {
         let h = empty_handle();
         assert!(matches!(
-            translate_select(&h, &KeyChord::char('x'), VisualKind::Charwise, &[]),
+            translate_select(&h, &KeyChord::char('x'), VisualKind::Charwise, &[], &[]),
             Action::SelectOvertype('x')
         ));
         // A letter that is a Visual *operator* (`d`) still overtypes in
         // Select — operators are NOT registered in the Select table, so
         // it falls through. This is the inverted-semantics core.
         assert!(matches!(
-            translate_select(&h, &KeyChord::char('d'), VisualKind::Charwise, &[]),
+            translate_select(&h, &KeyChord::char('d'), VisualKind::Charwise, &[], &[]),
             Action::SelectOvertype('d')
         ));
     }
@@ -290,6 +375,7 @@ mod tests {
                 &h,
                 &KeyChord::special(SpecialKey::Esc),
                 VisualKind::Linewise,
+                &[],
                 &[]
             ),
             Action::ExitSelect
@@ -300,7 +386,7 @@ mod tests {
     fn ctrl_g_toggles_to_visual() {
         let h = empty_handle();
         assert!(matches!(
-            translate_select(&h, &KeyChord::ctrl('g'), VisualKind::Charwise, &[]),
+            translate_select(&h, &KeyChord::ctrl('g'), VisualKind::Charwise, &[], &[]),
             Action::ToggleVisualSelect
         ));
     }
@@ -309,7 +395,7 @@ mod tests {
     fn ctrl_o_is_swallowed_post_mvp() {
         let h = empty_handle();
         assert!(matches!(
-            translate_select(&h, &KeyChord::ctrl('o'), VisualKind::Charwise, &[]),
+            translate_select(&h, &KeyChord::ctrl('o'), VisualKind::Charwise, &[], &[]),
             Action::None
         ));
     }
@@ -318,7 +404,7 @@ mod tests {
     fn other_control_chords_are_noops() {
         let h = empty_handle();
         assert!(matches!(
-            translate_select(&h, &KeyChord::ctrl('w'), VisualKind::Charwise, &[]),
+            translate_select(&h, &KeyChord::ctrl('w'), VisualKind::Charwise, &[], &[]),
             Action::None
         ));
     }
@@ -333,6 +419,7 @@ mod tests {
                 &h,
                 &KeyChord::special(SpecialKey::Tab),
                 VisualKind::Charwise,
+                &[],
                 &[]
             ),
             Action::None

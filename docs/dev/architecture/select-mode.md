@@ -157,6 +157,19 @@ edit above.
   dispatcher's fallthrough (mirroring `dispatch_insert`'s
   `literal_text_fallback`) maps "an unbound printable in Select" to the
   replace-and-insert edit (§3).
+- **Select consults active minor-mode keymaps (SN.3d.4).** Like
+  `dispatch_insert` — and unlike `dispatch_visual`, whose minor-mode
+  layer push is still outstanding — `translate_select` takes
+  `active_minor_modes` and looks the chord up against the active minor
+  layers FIRST. It intercepts only a winner on a `KeymapLayer::MinorMode`
+  layer (a base-table `Bound` is a motion/text-object the native path
+  owns). A `fall_through` minor binding runs its mode action and then
+  chains the *native* Select action for the same chord — so the snippet
+  `<Esc>` clears the session and then falls through to the hardcoded
+  `<Esc>` → `ExitSelect`. This is what makes a mode that focuses a span
+  (the snippet placeholder default, §6) own its full chord surface in
+  Select, not just Insert — no half-migration
+  (`feedback_mode_owns_its_surface`).
 - Dispatch threads through the renderer-neutral host entry point
   (`lattice-host/src/input.rs` `translate`, shared by both the TUI and GPUI
   chord adapters), with a new `ModalState::Select(kind) => translate_select(...)`
@@ -213,6 +226,18 @@ case — it is the thing most likely to break and must be tested directly (§9).
 Because **SN.3e (buffer-keyed session) lands first**, the Select-entry
 `Effect::SelectionChange` must target the *reconciled* buffer, not a global
 slot.
+
+**Navigation + leave must stay live in Select (SN.3d.4).** Selecting the
+default is only half the flow: the user must still be able to `<Tab>` /
+`<S-Tab>` *past* a placeholder (keeping its default) and `<Esc>` to leave the
+snippet — while a placeholder is Select-focused. The snippet minor mode
+therefore registers the same `<Tab>` / `<S-Tab>` / `<Esc>` bindings for
+`BindingMode::Select` as it does for Insert, and Select dispatch consults
+active minor-mode keymaps (§4) so they fire. Without this the bindings would be
+dead the instant a default-bearing placeholder selected — the snippet would own
+its surface in Insert but not in Select, exactly the half-migration
+`feedback_mode_owns_its_surface` forbids. `<Esc>` is `fall_through`: clear the
+session, then `ExitSelect` → Normal.
 
 ## 7. Rejected alternatives
 

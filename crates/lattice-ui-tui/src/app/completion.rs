@@ -573,6 +573,57 @@ mod tests {
         );
     }
 
+    /// SN.3d.4: `<Tab>` navigates between placeholders WHILE a
+    /// default-bearing placeholder is focused in Select — proving the
+    /// snippet minor-mode bindings are live in Select, not just Insert.
+    /// Tabbing past a default keeps it (no overtype), landing on the
+    /// next placeholder, still in Select.
+    #[test]
+    fn snippet_tab_navigates_between_placeholders_in_select_mode() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        a.sync_keymap_overlays();
+        assert_eq!(
+            a.editor.document.snapshot().buffer.as_string(),
+            "for i in iter {  }"
+        );
+        // First placeholder `i` (bytes 4..5) selected in Select.
+        assert!(matches!(
+            a.editor.modal,
+            ModalState::Select(lattice_grammar::VisualKind::Charwise)
+        ));
+
+        // <Tab> through translate + apply: navigate to placeholder 2
+        // WITHOUT overtyping `i`.
+        press(&mut a, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        // `i` is untouched; we're on `iter` (bytes 9..13), still Select.
+        assert_eq!(
+            a.editor.document.snapshot().buffer.as_string(),
+            "for i in iter {  }",
+            "tabbing past a default keeps it"
+        );
+        assert!(
+            matches!(
+                a.editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "next placeholder is focused in Select, got {:?}",
+            a.editor.modal
+        );
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 9), "anchor at `iter` start");
+        assert_eq!(sel.head, Position::new(0, 12), "head on `iter` last byte");
+    }
+
     #[test]
     fn snippet_expand_from_range_with_no_match_is_a_no_op() {
         let mut a = app_with("xyz", 10);

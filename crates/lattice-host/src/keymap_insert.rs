@@ -479,7 +479,12 @@ fn resolve_native_action(
 /// dropping a `None` continuation so a single-action result stays a
 /// plain `Action` (no `Chain` wrapper unless there is genuinely a
 /// chain).
-fn chain_actions(first: Action, rest: Action) -> Action {
+///
+/// SN.3d.4: `pub(crate)` so Select-mode fall-through
+/// (`keymap_select::minor_select_action`) reuses the same chaining
+/// primitive — a `fall_through` minor binding sequences its mode
+/// action with the native continuation identically in both modes.
+pub(crate) fn chain_actions(first: Action, rest: Action) -> Action {
     match rest {
         Action::None => first,
         Action::Chain(mut v) => {
@@ -493,7 +498,14 @@ fn chain_actions(first: Action, rest: Action) -> Action {
 }
 
 /// Mode-specific modifier strip. See module docstring's table.
-fn normalize_for_insert_lookup(chord: KeyChord) -> KeyChord {
+///
+/// SN.3d.4: `pub(crate)` so the Select-mode minor-binding lookup
+/// (`keymap_select::minor_select_action`) normalizes chords the SAME
+/// way — minor-mode bindings (e.g. the snippet `<Tab>` / `<S-Tab>` /
+/// `<Esc>`) are keyed identically regardless of the host modal, so
+/// `<S-Tab>` must keep SHIFT in Select too (the base-Select normalize
+/// strips it, which would collapse `<S-Tab>` into `<Tab>`).
+pub(crate) fn normalize_for_insert_lookup(chord: KeyChord) -> KeyChord {
     // Strip ALT and SUPER on every chord -- no Insert binding
     // (base or overlay) uses them. Keep CTRL and SHIFT to
     // distinguish `<C-y>` from `y` and `<S-Tab>` from `<Tab>`.

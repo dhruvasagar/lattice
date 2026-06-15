@@ -360,6 +360,37 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
                 cmd: "action:snippet-leave",
                 fall_through: true
             ),
+            // SN.3d.4: the SAME three bindings in Select mode. A
+            // placeholder with a non-empty default is focused in
+            // charwise Select (so the next printable overtypes it —
+            // `snippet_group_cursor_effect`), and these keep
+            // navigation + leave live there too. The host's Select
+            // dispatch (`keymap_select::translate_select`) consults
+            // active minor-mode layers exactly as Insert does, so a
+            // mode that selects a span owns its full chord surface in
+            // BOTH modes — no half-migration. `<Esc>` stays
+            // `fall_through`: the leave handler clears the session and
+            // the dispatcher continues to the native Select `<Esc>`
+            // (`ExitSelect` → Normal).
+            keymap_entry!(
+                mode: Select,
+                chord: "<Tab>",
+                doc: "Move to the next placeholder in the active snippet session.",
+                cmd: "action:snippet-next-placeholder"
+            ),
+            keymap_entry!(
+                mode: Select,
+                chord: "<S-Tab>",
+                doc: "Move to the previous placeholder in the active snippet session.",
+                cmd: "action:snippet-prev-placeholder"
+            ),
+            keymap_entry!(
+                mode: Select,
+                chord: "<Esc>",
+                doc: "Leave the active snippet session, then exit Select (falls through to the native <Esc>).",
+                cmd: "action:snippet-leave",
+                fall_through: true
+            ),
         ]
     })
 }
@@ -725,10 +756,25 @@ mod tests {
     }
 
     #[test]
-    fn active_snippet_mode_keymap_has_three_entries() {
+    fn active_snippet_mode_keymap_has_insert_and_select_entries() {
+        use lattice_mode::BindingMode;
         use lattice_mode::Mode as _;
         let km = SnippetActiveMode.keymap();
-        assert_eq!(km.entries.len(), 3);
+        // SN.3d.4: <Tab> / <S-Tab> / <Esc> in BOTH Insert and Select
+        // (a default-bearing placeholder is focused in Select).
+        assert_eq!(km.entries.len(), 6);
+        let select_count = km
+            .entries
+            .iter()
+            .filter(|e| e.mode == BindingMode::Select)
+            .count();
+        let insert_count = km
+            .entries
+            .iter()
+            .filter(|e| e.mode == BindingMode::Insert)
+            .count();
+        assert_eq!(insert_count, 3, "three Insert bindings");
+        assert_eq!(select_count, 3, "three Select bindings");
     }
 
     #[test]

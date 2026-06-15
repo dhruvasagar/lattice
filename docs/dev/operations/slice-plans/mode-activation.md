@@ -722,6 +722,19 @@ charwise Select (`snippet_group_cursor_effect` returns
 `Editor::expand_snippet` mirrors it on initial expand) so the next printable
 key overtypes the whole default and drops to Insert; an empty tabstop keeps a
 bare Insert cursor. Plus doc-debt (`docs/user/completion.md`); 2 ui-tui tests.
+**d.4 ✅** (2026-06-15) — **minor-mode keymaps in Select.** d.3 selected the
+default but left the snippet `<Tab>`/`<S-Tab>`/`<Esc>` (all `mode: Insert`)
+dead whenever a placeholder was Select-focused: `translate_select` never
+consulted minor layers and its `<Esc>` was hardcoded. Fix: `translate_select`
+takes `active_minor_modes` and consults minor-mode keymaps first (mirroring
+`dispatch_insert`), intercepting only `MinorMode`-layer winners; a
+`fall_through` minor `<Esc>` chains snippet-leave with the native `ExitSelect`.
+The snippet mode registers the same three bindings for `BindingMode::Select`
+(auto-wired via `translate_mode_keymaps`, no host glue). GPUI inherits it
+through the shared `input::translate`. Closes the `snippet_esc` regression; +2
+end-to-end tests (`<Esc>`-leaves + `<Tab>`-navigates in Select), keymap-entry
+test updated. Visual's minor-mode layer push remains outstanding (separate).
+See [select-mode.md](../../architecture/select-mode.md) §4 + §6.
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

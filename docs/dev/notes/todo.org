@@ -32,6 +32,13 @@
   - [X] It should resolve to `:<command> |` for the user to enter
     arguments if the command requires arguments or just execute them
     if they don't take arguments
+- [ ] make motion/operator commands actionable via the typed command API
+  (e.g. `:motion:goto-first-line` should execute the motion, not just
+  parse). Once naked motions/operators are invocable, re-enable them in
+  `gen:commands` completion so `:describe-command` (and `:apropos`)
+  complete the whole grammar surface — currently they are filtered out
+  of completion precisely because invoking them via `:` is a no-op.
+  (See `arg_slot_completion_for_describe_command_shows_command_names`.)
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
 - [ ] auto indent

@@ -2412,18 +2412,26 @@ mod tests {
 
     #[test]
     fn arg_slot_completion_for_describe_command_shows_command_names() {
-        // After "describe-command moti", the slot is arg 0 with
-        // completion source "gen:commands" -- popup should list
-        // motion:* commands.
-        let mut a = app_in_command_mode("describe-command moti");
+        // After "describe-command descr", the slot is arg 0 with
+        // completion source "gen:commands" -- popup should list the
+        // actionable `describe-*` ex-commands.
+        //
+        // Motions/operators are intentionally EXCLUDED from
+        // completion: they are not invocable via `:` (e.g.
+        // `:motion:goto-first-line` does not execute the motion), so
+        // offering them would be misleading. Once the typed command
+        // API can execute naked motions/operators they become
+        // completable here too -- see todo.org "make motion/operator
+        // commands actionable via the typed command API".
+        let mut a = app_in_command_mode("describe-command descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a.editor.completion_state.as_ref().expect("popup");
         assert!(
             state
                 .candidates
                 .iter()
-                .any(|c| c.raw.text.starts_with("motion:")),
-            "expected motion:* candidates: {:?}",
+                .any(|c| c.raw.text.starts_with("describe-")),
+            "expected describe-* candidates: {:?}",
             state
                 .candidates
                 .iter()
@@ -2434,15 +2442,18 @@ mod tests {
 
     #[test]
     fn accept_in_arg_slot_replaces_only_the_arg_prefix() {
-        let mut a = app_in_command_mode("describe-command moti");
+        let mut a = app_in_command_mode("describe-command descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineAcceptCompletion);
-        // Should now be "describe-command motion:..." -- the
-        // command word + space preserved; only `moti` replaced.
+        // Should now be "describe-command describe-..." -- the
+        // command word + space preserved; only the `descr` arg
+        // prefix replaced.
         assert!(
             a.editor
                 .command_line
-                .starts_with("describe-command motion:")
+                .starts_with("describe-command describe-"),
+            "got: {:?}",
+            a.editor.command_line
         );
     }
 

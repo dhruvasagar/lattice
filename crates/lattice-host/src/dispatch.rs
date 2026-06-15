@@ -30522,13 +30522,16 @@ mod tests {
     #[test]
     fn arm_missing_arg_prompt_canonical_name_works() {
         // The canonical CommandRegistry name (with `ex:` prefix)
-        // should also resolve — same prompt is armed, with the
-        // canonical form in the cmdline.
+        // should also resolve. The armed cmdline always shows the
+        // user-facing name with the `ex:` namespace prefix STRIPPED
+        // (the prefix is internal and must never leak into the
+        // command line the user types into) — so passing the
+        // canonical form arms `describe-key `, identical to the alias.
         let document = lattice_core::Document::empty();
         let mut editor = Editor::boot(document);
         let armed = editor.arm_missing_arg_prompt("ex:describe-key");
         assert!(armed);
-        assert_eq!(editor.command_line, "ex:describe-key ");
+        assert_eq!(editor.command_line, "describe-key ");
     }
 
     #[test]

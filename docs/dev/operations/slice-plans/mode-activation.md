@@ -764,7 +764,9 @@ The other pre-existing reds discovered alongside the snippet cluster are
 
 - **Arg-slot completion (×3)** — `arg_slot_completion_*`,
   `typing_after_popup_*`; same `describe-command` family as the host K.3.2 red
-  (`arm_missing_arg_prompt_canonical_name_works`).
+  `arm_missing_arg_prompt_canonical_name_works` (the host red is now FIXED
+  2026-06-15: the test was stale — it expected the internal `ex:` prefix to
+  leak into the cmdline; the 2026-06-08 picker refactor deliberately strips it).
 - **Help tutor (×2)** — `tutor_*` (lesson temp-file / content).
 
 These do not block mode activation and are not part of this plan.

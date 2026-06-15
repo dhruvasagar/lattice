@@ -195,11 +195,16 @@ overrides three Insert-mode keys until the snippet exits:
 | `<S-Tab>` | Jump to previous placeholder | `:snippet-prev` |
 | `<Esc>` | Exit snippet (placeholders become plain text) and return to Normal | `:snippet-leave` |
 
-Other keys fall through to the regular Insert handlers, so you
-can keep typing inside a placeholder to overtype the default.
-The minor mode yields to the completion popup when both are
-open: `<Tab>` accepts a candidate first, then snippet
-navigation resumes.
+When you land on a placeholder that has a **default**
+(`${1:value}`), its text is **selected** (the buffer enters
+[Select mode](help:modal-editing)) — so the first character you
+type **replaces the whole default** and drops you into Insert,
+the conventional "type to replace the placeholder" behaviour. To
+keep the default instead, just start editing it: any motion or
+`<Tab>` leaves it untouched. An **empty** tabstop (`$1`) places a
+bare Insert cursor — there is nothing to overtype. The minor mode
+yields to the completion popup when both are open: `<Tab>`
+accepts a candidate first, then snippet navigation resumes.
 
 ### Snippet syntax (TextMate / LSP)
 

@@ -23,7 +23,7 @@ use lattice_completion::{
     CandidateData, CandidateKind, CompletionSourceContribution, CompletionSourceKind,
     InsertContext, RawCandidate, SourceId, SyncCompletionSource,
 };
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::{CommandRegistryHandle, Effect, ModalState, VisualKind};
 use lattice_mode::{
     keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
     ActionHandlerRegistration, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
@@ -31,7 +31,7 @@ use lattice_mode::{
     ModeRegistry,
 };
 use lattice_protocol::position::{Position, Range};
-use lattice_protocol::selection::{Selection, SelectionSet};
+use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 
 use crate::activation::SnippetActivationPolicyHandle;
 use crate::active::TabstopGroup;
@@ -380,8 +380,16 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
 /// `ActionContext -> Effect` closures on the `ActionHandlerRegistry`
 /// substrate (the path the project-search provider already uses),
 /// advancing the shared [`SnippetSession`](crate::SnippetSession)
-/// service and returning `Effect::SelectionChange` so the host's
-/// generic effect pipeline moves the cursor.
+/// service and returning a cursor effect through the host's generic
+/// effect pipeline (see `snippet_group_cursor_effect`).
+///
+/// **SN.3d.3 (2026-06-15):** that cursor effect now consumes Select
+/// mode. A placeholder with a non-empty default returns
+/// `Effect::Many([EnterMode(Select(Charwise)), SelectionChange(span)])`
+/// so the default is SELECTED and the next printable key overtypes the
+/// whole thing (then drops to Insert). An empty tabstop still returns a
+/// bare `Effect::SelectionChange` cursor. The host's initial-expand
+/// focus (`Editor::expand_snippet`) mirrors this directly.
 ///
 /// **SN.3c.2 (2026-06-14):** `<Esc>` (`action:snippet-leave`) now
 /// owns its body here too — a third per-buffer handler that clears
@@ -430,10 +438,34 @@ pub struct SnippetActiveModeGuard {
 /// [`lattice_core::Buffer`].
 fn snippet_group_cursor_effect(buffer: &lattice_core::Buffer, group: &TabstopGroup) -> Option<Effect> {
     let first = group.ranges.first()?;
-    let pos = buffer.byte_to_position(first.start).ok()?;
-    Some(Effect::SelectionChange(SelectionSet::single(
-        Selection::cursor(pos),
-    )))
+    let start = buffer.byte_to_position(first.start).ok()?;
+    if first.end > first.start {
+        // SN.3d.3: a non-empty placeholder default is SELECTED so the
+        // next printable key overtypes the whole default in one keystroke
+        // (the edit then ripples to the group's mirrors through the
+        // existing tabstop tracking). Charwise Select with the head on the
+        // placeholder's LAST byte (inclusive-head convention) makes
+        // `selection_extent` span exactly `[start, end)`. `EnterMode`
+        // FIRST: the host's `Effect::SelectionChange` arm only adopts a
+        // span (and sets `visual_anchor`) once modal is Visual/Select, so
+        // the mode flip must land before the selection.
+        let head = buffer.byte_to_position(first.end - 1).ok()?;
+        let sel = Selection {
+            anchor: start,
+            head,
+            visual: Some(VisualMode::Charwise),
+        };
+        Some(Effect::Many(vec![
+            Effect::EnterMode(ModalState::Select(VisualKind::Charwise)),
+            Effect::SelectionChange(SelectionSet::single(sel)),
+        ]))
+    } else {
+        // Empty tabstop (`$1` / `${1:}`): nothing to overtype, so keep the
+        // bare Insert cursor — do NOT enter Select on a zero-width stop.
+        Some(Effect::SelectionChange(SelectionSet::single(
+            Selection::cursor(start),
+        )))
+    }
 }
 
 impl Mode for SnippetActiveMode {
@@ -844,24 +876,61 @@ mod tests {
     // ---- SN.2b: `active-snippet-mode` placeholder-navigation
     //      handler bodies (relocated off the host). ----
 
-    /// Pure unit test of the cursor-effect helper: a focused
-    /// tabstop group whose first mirror range starts at byte 4 in
-    /// `"for i in iter {}"` yields a `SelectionChange` whose
-    /// primary head is `(line 0, byte 4)` — the `i`.
+    /// SN.3d.3: a focused tabstop with a non-empty default (`"iter"`
+    /// at bytes 9..13 in `"for i in iter {}"`) SELECTS the default and
+    /// enters Select so a printable key overtypes it. `EnterMode` is
+    /// emitted before the `SelectionChange`. The charwise selection's
+    /// head sits on the LAST byte of the default (12), so the host's
+    /// `selection_extent` spans exactly `[9, 13)`.
     #[test]
-    fn cursor_effect_targets_first_range_start() {
+    fn cursor_effect_selects_non_empty_default_and_enters_select() {
         let buffer = Buffer::from_text("for i in iter {}");
         let group = TabstopGroup {
             index: 1,
-            ranges: vec![4..5],
+            ranges: vec![9..13],
             has_default: true,
             is_choice: false,
         };
         match snippet_group_cursor_effect(&buffer, &group).expect("effect") {
-            Effect::SelectionChange(set) => {
-                assert_eq!(set.primary().head, Position::new(0, 4));
+            Effect::Many(effects) => {
+                assert!(
+                    matches!(
+                        effects.first(),
+                        Some(Effect::EnterMode(ModalState::Select(VisualKind::Charwise)))
+                    ),
+                    "must enter Select FIRST so the selection arm adopts the span"
+                );
+                match effects.get(1) {
+                    Some(Effect::SelectionChange(set)) => {
+                        let p = set.primary();
+                        assert_eq!(p.anchor, Position::new(0, 9), "anchor = default start");
+                        assert_eq!(p.head, Position::new(0, 12), "head = default's last byte");
+                    }
+                    other => panic!("expected SelectionChange second, got {other:?}"),
+                }
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected Effect::Many, got {other:?}"),
+        }
+    }
+
+    /// SN.3d.3: an EMPTY tabstop (`$1`, zero-width range) keeps the bare
+    /// Insert cursor — no Select, nothing to overtype.
+    #[test]
+    fn cursor_effect_empty_tabstop_keeps_bare_cursor() {
+        let buffer = Buffer::from_text("for i in iter {}");
+        let group = TabstopGroup {
+            index: 1,
+            ranges: vec![4..4],
+            has_default: false,
+            is_choice: false,
+        };
+        match snippet_group_cursor_effect(&buffer, &group).expect("effect") {
+            Effect::SelectionChange(set) => {
+                let p = set.primary();
+                assert_eq!(p.anchor, p.head, "bare cursor: zero-width");
+                assert_eq!(p.head, Position::new(0, 4));
+            }
+            other => panic!("expected a bare SelectionChange, got {other:?}"),
         }
     }
 

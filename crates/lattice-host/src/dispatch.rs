@@ -15832,18 +15832,42 @@ impl Editor {
             .unwrap_or_default();
         if !rendered.tabstops.is_empty() {
             let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            // SN.3d.3: focus the first tabstop. A non-empty placeholder
+            // default is SELECTED (charwise Select) so the next printable
+            // key overtypes it — same UX as the `<Tab>` nav path
+            // (`snippet_group_cursor_effect`), but here the host mutates
+            // state directly (the expansion callers don't thread a
+            // `DispatchOutcome`, so routing through the effect pipeline
+            // would be invasive). An empty tabstop keeps the bare Insert
+            // cursor.
+            let mut entered_select = false;
             if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
+                && let Some(first) = group.ranges.first().cloned()
             {
-                self.cursor = pos;
+                let buffer = self.document.snapshot().buffer.clone();
+                if let Ok(start) = buffer.byte_to_position(first.start) {
+                    if first.end > first.start
+                        && let Ok(head) = buffer.byte_to_position(first.end - 1)
+                    {
+                        self.set_selections_blocking(SelectionSet::single(Selection {
+                            anchor: start,
+                            head,
+                            visual: Some(VisualMode::Charwise),
+                        }));
+                        self.visual_anchor = Some(start);
+                        self.cursor = head;
+                        self.modal = ModalState::Select(VisualKind::Charwise);
+                        entered_select = true;
+                    }
+                    if !entered_select {
+                        self.cursor = start;
+                    }
+                }
             }
             self.snippet_session.set(self.document_buffer_id, active);
-            self.modal = ModalState::Insert;
+            if !entered_select {
+                self.modal = ModalState::Insert;
+            }
         } else {
             self.cursor = applied.inserted_range.end;
         }

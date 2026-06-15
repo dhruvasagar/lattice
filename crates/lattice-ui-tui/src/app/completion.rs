@@ -455,6 +455,63 @@ mod tests {
         assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
+    /// SN.3d.3: expanding a snippet whose first placeholder has a
+    /// MULTI-char default selects the default in Select mode, so the
+    /// next printable key overtypes the whole thing and drops to Insert
+    /// — the conventional "type-to-replace-placeholder" snippet UX.
+    #[test]
+    fn snippet_expand_selects_multichar_default_then_overtypes() {
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:iter} {}");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        // Rendered with the default; "iter" (bytes 4..8) is SELECTED and
+        // the buffer is in Select mode.
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for iter {}");
+        assert!(
+            matches!(a.editor.modal, ModalState::Select(lattice_grammar::VisualKind::Charwise)),
+            "first multi-char placeholder focuses in Select, got {:?}",
+            a.editor.modal
+        );
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 4), "anchor at default start");
+        assert_eq!(sel.head, Position::new(0, 7), "head on the default's last byte");
+
+        // A printable key overtypes the whole default and lands in Insert.
+        a.apply(Action::SelectOvertype('x'));
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for x {}");
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "overtype drops to Insert, got {:?}",
+            a.editor.modal
+        );
+    }
+
+    /// SN.3d.3: an EMPTY first tabstop (`$1`) keeps the bare Insert
+    /// cursor — there is nothing to overtype, so we do NOT enter Select.
+    #[test]
+    fn snippet_expand_empty_tabstop_stays_in_insert() {
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "call", "for", "foo($1)");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo()");
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "empty tabstop keeps Insert, got {:?}",
+            a.editor.modal
+        );
+        assert_eq!(a.editor.cursor, Position::new(0, 4), "cursor inside the parens");
+    }
+
     // SN.2b (2026-06-12): the placeholder-navigation tests
     // (`snippet_next_placeholder_walks_through_groups_and_drops_on_zero`,
     // `snippet_prev_placeholder_walks_back`) moved to

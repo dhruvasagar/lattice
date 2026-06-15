@@ -37,6 +37,7 @@
 - [ ] auto indent
 - [ ] auto formatting
 - [ ] GPUI: Zooming Text
+- [ ] Spell Check
 
 * Plugins
 - [ ] plugin manager
@@ -45,6 +46,7 @@
 - [ ] Org Mode
 - [ ] lsp context
 - [ ] which key
+- [ ] Dictionary lookup
 
 * Issues
 - [X] GUI: cursor scrolls past viewport

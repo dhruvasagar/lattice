@@ -705,16 +705,23 @@ K.1.c gating + leave relocation, `ad33b2f9`), SN.3c.2b (`fall_through` binding
 primitive + snippet `<Esc>` + `:describe-key`, `3df8521b`; e2e test `b89f53c5`;
 design fragment keymap-architecture §14 `7283502e`). SN.3f ✅ (`4b49b810`),
 SN.3g ✅ (`687ed1c3`). SN.3e ✅ (buffer-keyed snippet session, 2026-06-14).
-SN.3d 🚧 **building** (vim Select mode — see
+SN.3d ✅ **complete** (vim Select mode — see
 [select-mode.md](../../architecture/select-mode.md), `b14b2fc7` + review-tightening
 `db10ba4b`). **d.0 ✅** (`cd5f9cb9`: `ModalState::Select` + `BindingMode::Select`
 + exhaustive-match audit + cursor-shape parity test). **d.1 ✅** (`translate_select`
 dispatch + printable-overtype single replace-edit + `<Esc>`/`<C-g>`/`<C-o>`
 controls + `do_select_overtype`/`do_exit_select`/`do_toggle_visual_select` host
 handlers + shared `selection_extent`; 10 tests).
-**Remaining work: SN.3d.2** (entry chords `gh`/`gH`/`g<C-h>` + `register_select_bindings`
-+ Visual≡Select parity test + TUI/GPUI selection-render + status-line +
-`:describe-mode` + macro record/replay) **then SN.3d.3** (snippet consumer + doc-debt).
+**d.2 ✅** — d.2a (`7a3f9628`: entry chords `gh`/`gH`/`g<C-h>` +
+`register_select_bindings` + Visual≡Select parity test), d.2b (`a8d135ea`:
+TUI/GPUI selection-render + status-line label), d.2c (`4d6c3f83`:
+`:describe-mode` docs + macro record/replay; two half-migration fixes).
+**d.3 ✅** — snippet consumer: a non-empty placeholder default focuses in
+charwise Select (`snippet_group_cursor_effect` returns
+`Effect::Many([EnterMode(Select), SelectionChange])` on the `<Tab>`-nav path;
+`Editor::expand_snippet` mirrors it on initial expand) so the next printable
+key overtypes the whole default and drops to Insert; an empty tabstop keeps a
+bare Insert cursor. Plus doc-debt (`docs/user/completion.md`); 2 ui-tui tests.
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

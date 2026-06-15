@@ -947,18 +947,28 @@ mod tests {
         let mut a = app_in_command_mode("descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
         assert!(a.editor.completion_state.is_some());
+        // Opening the popup inserts the longest common prefix of the
+        // matches (vim-wildmenu style): every `describe-*` command
+        // shares `describe-`, so the cmdline extends to it. The
+        // `descr` the user typed is preserved as `original_line` for
+        // dismiss-restore; see `open_completion_popup`.
+        assert_eq!(a.editor.command_line, "describe-");
         let initial_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
 
-        a.apply(Action::CommandLineAppend('i'));
+        // Typing keeps the popup open and re-runs the pipeline against
+        // the longer prefix (no second LCP rewrite — refresh only
+        // refilters).
+        a.apply(Action::CommandLineAppend('k'));
         assert!(
             a.editor.completion_state.is_some(),
             "popup must stay open while filtering"
         );
-        assert_eq!(a.editor.command_line, "descri");
+        assert_eq!(a.editor.command_line, "describe-k");
         // Typing narrows the prefix -> candidate set should shrink
-        // or stay equal, never grow.
+        // or stay equal, never grow (only `describe-key` survives).
         let narrowed = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(narrowed <= initial_count);
+        assert!(narrowed >= 1, "describe-key still matches `describe-k`");
         // Selection resets to first match (the candidate set
         // changed; previous index would be meaningless).
         assert_eq!(a.editor.completion_state.as_ref().unwrap().selected, 0);

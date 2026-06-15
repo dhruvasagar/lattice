@@ -1667,7 +1667,8 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.do_tutor(None);
         // The active document path now points at the temp file.
-        let path = std::env::temp_dir().join("lattice-tutor-lesson-1.txt");
+        // Lessons are markdown (`do_tutor` writes `…-lesson-N.md`).
+        let path = std::env::temp_dir().join("lattice-tutor-lesson-1.md");
         assert!(
             path.exists(),
             "tutor should have written lesson file at {path:?}",
@@ -1675,7 +1676,7 @@ mod tests {
         // The file's content should match the embedded lesson.
         let written = std::fs::read_to_string(&path).expect("read lesson file");
         assert!(written.contains("Welcome to the Lattice Tutor"));
-        assert!(written.contains("Lesson 1.1"));
+        assert!(written.contains("Lesson 1: Basic Motions"));
         // Cleanup.
         let _ = std::fs::remove_file(&path);
     }
@@ -1686,7 +1687,8 @@ mod tests {
         a.do_tutor(Some(99));
         let msg = a.editor.last_message.as_ref().expect("error echo");
         assert_eq!(msg.level, EchoLevel::Error);
-        assert!(msg.text.contains("lesson 99 doesn't exist yet"));
+        // Host wording: "lesson 99 doesn't exist (lessons 1-5 available); …".
+        assert!(msg.text.contains("lesson 99 doesn't exist"));
     }
 
     #[test]

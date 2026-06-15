@@ -224,7 +224,7 @@ first):
   · tests (✅ handler-level dispatch test in `lattice-snippet`) · graceful
   (handlers tolerate missing services / missing buffer → no-op).
 
-### SN.3 — snippet language-aware activation 🚧 (the payoff)
+### SN.3 — snippet language-aware activation ✅ (the payoff)
 
 **Three-mode decomposition (confirmed with the user 2026-06-14).** The old
 plan put `<C-x><C-s>` on `SnippetCompletionMode` and drove activation off a
@@ -301,7 +301,7 @@ Sub-slices:
     (`do_set` → cascade → folded policy across all three modes). 86 snippet ✅
     (76 → +8 activation +2 modes); host snippet tests ✅; config
     group-uniqueness ✅; gpui builds (no renderer surface touched).
-- **SN.3c 🗒 — close the expand/leave ownership half-migration.** SN.2b moved
+- **SN.3c ✅ — close the expand/leave ownership half-migration.** SN.2b moved
   the *nav* handlers (`<Tab>`/`<S-Tab>`) into `active-snippet-mode`, but the
   *expand* and *leave* handlers are still host-side
   (`Editor::do_snippet_expand_at_cursor` + `Action::SnippetExpand` +
@@ -323,7 +323,7 @@ Sub-slices:
 
   Split into three sub-slices:
 
-  - **SN.3c.0 🗒 — declarative `Mode::action_handlers()` (mode-agnostic
+  - **SN.3c.0 ✅ — declarative `Mode::action_handlers()` (mode-agnostic
     substrate).** Add a declarative trait method (default empty), forwarded
     through `DynMode`, joining `keymap()` / `completion_sources()`:
 
@@ -473,7 +473,7 @@ Sub-slices:
 Filed as their own slices rather than folded into SN.3c — each is independent
 of the expand/leave migration and carries its own risk surface.
 
-- **SN.3d 🗒 — build vim Select mode (core), snippets consume it (finding B;
+- **SN.3d ✅ — build vim Select mode (core), snippets consume it (finding B;
   UX). Design LOCKED 2026-06-14 (user): a dedicated vim grammar mode, NOT a
   snippet feature.** The bug: `snippet_group_cursor_effect`
   (`lattice-snippet/src/modes.rs`) emits a zero-width
@@ -661,7 +661,7 @@ of the expand/leave migration and carries its own risk surface.
   Depends on: nothing hard; orthogonal to SN.3d. **Next: SN.3d (build Select
   mode), now unblocked.**
 
-- **SN.3f 🗒 — diagnose silent handler-skip (finding D; observability).**
+- **SN.3f ✅ — diagnose silent handler-skip (finding D; observability).**
   `SnippetActiveMode::on_activate` (and SN.3c's `SnippetMode::on_activate`)
   silently register no handlers when `CommandRegistryHandle` /
   `ActionHandlerRegistryHandle` / session services are absent. The
@@ -672,7 +672,7 @@ of the expand/leave migration and carries its own risk surface.
   observability. Artifacts: test (skip path is hit when a service is absent)
   · no bench/doc.
 
-- **SN.3g 🗒 — minor cleanups (finding E; cosmetic).** Low-risk tidy, batch:
+- **SN.3g ✅ — minor cleanups (finding E; cosmetic).** Low-risk tidy, batch:
   (1) the snippet completion-source `default_priority: 150` literal
   (`modes.rs`) duplicates `completion.source.snippet.priority`'s default in
   `core_options.rs` — hoist to a shared `const` (or read the option default)
@@ -766,9 +766,27 @@ As landed:
   tests green; the snippet path activates on expand and deactivates on
   `<Esc>` / walk-off-`$0` exactly as before.
 
-Remaining for SN.3: `SnippetCompletionMode` taking over the `<C-x><C-s>` expand
-binding + language-aware activation (the predicate stays; only *who creates the
-session* moves from the host into the completion mode).
+**SN.3 complete (2026-06-16).** No work remains. The 2026-06-14 "remaining"
+note (below) is fully addressed:
+- **`<C-x><C-s>` expand binding** is mode-owned — `SnippetCompletionMode`
+  carries it and the expand action-handler (the word-prefix scan →
+  `Effect::ExpandSnippet`); SN.3c.1 moved it off the host's Builtin Insert
+  layer (`keymap_insert.rs:183`), and `SnippetMode` `implies`
+  `SnippetCompletionMode` so it rides the language gate.
+- **Language-aware activation** is wired via `SnippetMode`'s config-driven
+  `ActivationPolicy` (`snippet.activation` / `snippet.languages`, SN.3a/3b).
+- **Session creation correctly stays host-side**, via `Effect::ExpandSnippet`.
+  The original note imagined moving creation into the mode, but that is
+  *superseded* by `feedback_effect_vocabulary_is_host_boundary`: Effects are
+  the host-owned boundary and the snippet splice must go through
+  `Effect::Edits` anyway, so `Effect::ExpandSnippet` is the right seam, not a
+  half-migration. The mode owns the binding + handler body + the trigger
+  scan; the host owns effect application — full mode-ownership, no remainder.
+
+Earlier note (now resolved, kept for history): "Remaining for SN.3:
+`SnippetCompletionMode` taking over the `<C-x><C-s>` expand binding +
+language-aware activation (the predicate stays; only *who creates the
+session* moves from the host into the completion mode)."
 
 ## Out of scope (separate triage)
 

@@ -34,11 +34,13 @@
     if they don't take arguments
 - [ ] make motion/operator commands actionable via the typed command API
   (e.g. `:motion:goto-first-line` should execute the motion, not just
-  parse). Once naked motions/operators are invocable, re-enable them in
-  `gen:commands` completion so `:describe-command` (and `:apropos`)
-  complete the whole grammar surface — currently they are filtered out
-  of completion precisely because invoking them via `:` is a no-op.
-  (See `arg_slot_completion_for_describe_command_shows_command_names`.)
+  parse). Motions: SCOPED — approach (C) `Effect::CursorMove` unification,
+  see docs/dev/architecture/typed-motion-dispatch.md + slice plan
+  docs/dev/operations/slice-plans/typed-motion-dispatch.md (TMD.0–TMD.5).
+  TMD.4 re-enables motions in `gen:commands` completion + restores the
+  `motion:*` expectation parked in `arg_slot_completion_for_describe_command`.
+  Operators (`operator:delete` + target) remain a separate follow-up
+  (need target-arg/ex-range design); they stay completion-filtered until then.
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
 - [ ] auto indent

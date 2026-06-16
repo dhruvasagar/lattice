@@ -1,6 +1,11 @@
 # Narrow Mode — Slice Plan
 
-> **Status: 🚧 In progress.** N.1.0 ✅ landed (2026-06-10). N.1.1+ pending.
+> **Status: ✅ Complete (2026-06-16).** N.1.0–N.1.6 all landed (2026-06-10).
+> Remaining items are documented minor-polish *deferrals*, each reachable
+> another way and not blocking: `i(` / `i{` keys (use classic objects +
+> `zn`+motion), N.1.1.b headerline label-from-path (uses the buffer name
+> today), and folds-on-inactive (waits on per-buffer fold state). The
+> `zn` operator + the 8 tree-sitter text objects are the shipped surface.
 
 Sequencing companion to
 [`docs/dev/architecture/narrow-mode.md`](../../architecture/narrow-mode.md).

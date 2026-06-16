@@ -117,6 +117,21 @@ pub fn register_visual_bindings(
         source(),
     );
 
+    // `:` -- enter the command line from Visual (vim's `:'<,'>`). The
+    // `EnterCommandLine` handler is Visual-aware: it captures the
+    // selection into `last_visual` (so `'<` / `'>` and `Range::Selection`
+    // resolve to it) and prefills the cmdline with `'<,'>`. Without this
+    // binding `:` was unbound in Visual → `dispatch_visual` returned
+    // `Action::None`, so you could not invoke ANY command (`:s`,
+    // `:narrow`, `:w`, …) from a selection.
+    handle.bind(
+        layer,
+        mode,
+        &[ChordPattern::Literal(KeyChord::char(':'))],
+        CommandInvocation::of(actions.enter_command_line),
+        source(),
+    );
+
     // `o` -- swap the cursor to the other end of the selection so the
     // next motion / text object alters that end (vim's Visual `o`).
     handle.bind(

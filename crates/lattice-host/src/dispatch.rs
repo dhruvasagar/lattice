@@ -2066,7 +2066,24 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // history-step arms walk `command_history` cursor and
         // restore the pending unfinished line on the lower bound.
         Action::EnterCommandLine => {
-            editor.command_line.clear();
+            // Vim's Visual `:` → `:'<,'>`. When entering the command line
+            // from Visual, capture the selection into `last_visual` (the
+            // single source `'<` / `'>` and `Range::Selection` resolve
+            // from — see `resolve_grammar_range` + the narrow handler) and
+            // prefill the cmdline with the range, so `:s`, `:narrow`, etc.
+            // operate on the selection. From Normal the line starts blank.
+            if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal {
+                let sel = *editor.document.selections().primary();
+                editor.last_visual = Some(crate::state::LastVisual {
+                    anchor: sel.anchor,
+                    head: sel.head,
+                    kind,
+                });
+                editor.visual_anchor = None;
+                editor.command_line = "'<,'>".to_string();
+            } else {
+                editor.command_line.clear();
+            }
             editor.modal = ModalState::Command;
             editor.last_message = None;
             // Q16: opening the cmdline dismisses STATE A help
@@ -30579,6 +30596,72 @@ mod tests {
                 "`:{line}` should delete the first word via the unified dispatch"
             );
         }
+    }
+
+    #[test]
+    fn visual_colon_enters_command_line_with_range_prefill() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        let document = lattice_core::Document::from_text("aaa\nbbb\nccc\nddd\n");
+        let mut editor = Editor::boot(document);
+        // Enter Visual linewise selecting lines 1..=2.
+        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+        editor.visual_anchor = Some(Position::new(1, 0));
+        editor.cursor = Position::new(2, 0);
+        editor.set_selections_blocking(SelectionSet::single(Selection {
+            anchor: Position::new(1, 0),
+            head: Position::new(2, 0),
+            visual: Some(lattice_protocol::selection::VisualMode::Linewise),
+        }));
+        // `:` from Visual.
+        let _ = editor.dispatch(Action::EnterCommandLine);
+        assert!(
+            matches!(editor.modal, ModalState::Command),
+            "Visual `:` must enter Command mode, got {:?}",
+            editor.modal
+        );
+        assert_eq!(
+            editor.command_line, "'<,'>",
+            "Visual `:` prefills the visual range (vim's `:'<,'>`)"
+        );
+        let lv = editor.last_visual.as_ref().expect("last_visual captured");
+        assert_eq!(lv.anchor, Position::new(1, 0));
+        assert_eq!(lv.head, Position::new(2, 0));
+        // The captured `last_visual` is what `'<` / `'>` and
+        // `Range::Selection` resolve from (`resolve_grammar_range`
+        // dispatch.rs ~13659; the narrow handler ~5396), so the typed
+        // `:'<,'>narrow` / `:'<,'>...` now operates on the selection.
+    }
+
+    #[test]
+    fn visual_narrow_narrows_the_selection_end_to_end() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        // The user's reported scenario: select lines in Visual, then
+        // `:narrow`. Before the Visual `:` binding this was impossible
+        // (`:` was unbound in Visual).
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\n");
+        let mut editor = Editor::boot(document);
+        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+        editor.visual_anchor = Some(Position::new(1, 0));
+        editor.cursor = Position::new(2, 0);
+        editor.set_selections_blocking(SelectionSet::single(Selection {
+            anchor: Position::new(1, 0),
+            head: Position::new(2, 0),
+            visual: Some(VisualMode::Linewise),
+        }));
+        // `:` (prefills `'<,'>` + captures the selection) then `narrow`.
+        let _ = editor.dispatch(Action::EnterCommandLine);
+        editor.command_line.push_str("narrow");
+        let mut out = DispatchOutcome::default();
+        let line = editor.command_line.clone();
+        editor.execute_ex_line(&line, &mut out);
+        let msg = editor.last_message.as_ref().expect("narrow echo present");
+        assert!(
+            msg.text.contains("narrowed to L2"),
+            "`:'<,'>narrow` should narrow the selected lines (L2–3), got: {:?}",
+            msg.text
+        );
     }
 
     #[test]

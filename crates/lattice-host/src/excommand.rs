@@ -52,6 +52,18 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
         return Err(ExCommandError::Empty);
     }
 
+    // Vim's Visual `:` prefills the cmdline with `'<,'>` (the visual
+    // range). Strip that prefix and mark the resulting invocation
+    // `Range::Selection`, which resolves from `last_visual` (captured when
+    // `:` left Visual — `resolve_grammar_range` + the narrow handler read
+    // it). Lets `:'<,'>narrow` and other range-honoring commands act on
+    // the selection. (General `%` / `1,5` line-range prefixes are a
+    // separate enhancement; substitute keeps its own scope model.)
+    if let Some(rest) = trimmed.strip_prefix("'<,'>") {
+        let inner = parse(rest, registry)?;
+        return Ok(inner.with_range(Range::Selection));
+    }
+
     // Bare line number: `:42` → go to line 42 (same as `42G`).
     // Checked before keyword parse; pure digits are not valid command
     // names so there's no ambiguity. `:0` is treated as `:1`.

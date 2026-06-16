@@ -223,6 +223,20 @@ gives us:
 The drift test that catches descriptor / behaviour divergence
 becomes obsolete because the descriptor IS the behaviour.
 
+**Multi-mode entries (B-field).** A `KeymapEntry` carries
+`modes: &'static [BindingMode]`, not a single mode. The
+`keymap_entry!` macro accepts either a single mode (`mode: Normal`,
+which sugars to a one-element slice — existing call sites are
+unchanged) or a bracketed list (`mode: [Normal, Visual]`). The
+startup translation pass (`resolve_entries_into_bindings`) fans the
+slice out into one `KeymapBinding` per mode — the trie is per-mode,
+so a multi-mode entry is N bindings sharing chord / command /
+source. `:describe-key` shows one entry naming all its modes
+(`zn  (Normal, Visual)`); `:keymap` lists it under each mode group.
+This keeps a multi-mode mapping a single declarative entity instead
+of forcing the author to repeat the chord per mode. The two
+imperative / builder peers are in §5.6.
+
 ## 4. Lookup path (the keystroke hot path)
 
 ```
@@ -375,6 +389,38 @@ keymap.bind(KeymapLayer::PluginA, BindingMode::Normal, "]f", motion.id)?;
 
 This is the architectural seam paramount goal #3 has been
 asking for since day one.
+
+### 5.6 Multi-mode bindings (one chord, several modes)
+
+A chord that means the same thing in several modes is declared
+ONCE, across all three registration paths. The trie stays per-mode;
+the multi-mode surface is sugar that fans out into per-mode inserts:
+
+- **Catalog (declarative):** the `keymap_entry!` `mode: [..]` form
+  (§3.5). `keymap_entry! { mode: [Normal, Visual], chord: "zn",
+  doc: "...", cmd: "operator:narrow" }` is one entry, fanned out by
+  `resolve_entries_into_bindings` into a binding per mode.
+- **Builder:** `Keymap::bind_chord_modes(&[BindingMode], chord,
+  command)` — the multi-mode peer of `bind_chord`; pushes one
+  `KeymapBinding` per mode. For a mode's `keymap()` contribution.
+- **Imperative:** `KeymapHandle::bind_modes(layer, &[BindingMode],
+  path, command, source)` — inserts into every named mode's trie
+  under one lock and rebuilds the merged trie + reverse cache ONCE
+  (not per mode). For `init.rs` / host helpers binding directly.
+
+There is deliberately NO `:map` / `:nmap` / `:vmap` ex-command
+family: `init.rs` and plugins use the typed API (or the WIT
+`bind`), so a separate string-command surface would be a redundant
+second way to do the same thing (heuristic #1). A single mode is
+just a one-element slice — the single-mode forms (`bind`,
+`bind_chord`, `mode: Normal`) stay the common case and are
+unchanged.
+
+Note this is distinct from an *operator* acting on the Visual
+selection (§7.2, upgrade 3): that is intrinsic to being an operator
+and is generated per-operator, NOT a multi-mode binding of the same
+`CommandInvocation` (the Normal op-pending and Visual forms carry
+different `Range` / target semantics).
 
 ## 6. Conflict resolution + provenance
 

@@ -1779,15 +1779,18 @@ mod tests {
         // retires.
         let (_, b) = fixture();
         for entry in crate::keymap::default_keymap() {
-            let action = simulate_chord(entry.chord, entry.mode, &b);
-            assert!(
-                !matches!(action, Action::None),
-                "keymap descriptor `{}` ({}) doc=`{}` produced Action::None -- \
-                 binding may have been removed or moved",
-                entry.chord,
-                entry.mode.label(),
-                entry.doc,
-            );
+            // B-field: an entry may be live in several modes; check each.
+            for &mode in entry.modes {
+                let action = simulate_chord(entry.chord, mode, &b);
+                assert!(
+                    !matches!(action, Action::None),
+                    "keymap descriptor `{}` ({}) doc=`{}` produced Action::None -- \
+                     binding may have been removed or moved",
+                    entry.chord,
+                    mode.label(),
+                    entry.doc,
+                );
+            }
         }
     }
 
@@ -1820,7 +1823,7 @@ mod tests {
                  not found in CommandRegistry. Possible rename or \
                  typo; catalog is out of sync with the registry.",
                 entry.chord,
-                entry.mode.label(),
+                entry.modes_label(),
                 name,
             );
         }

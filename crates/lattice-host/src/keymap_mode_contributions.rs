@@ -216,7 +216,7 @@ fn resolve_entries_into_bindings(
             tracing::warn!(
                 chord = entry.chord,
                 command = name,
-                mode = ?entry.mode,
+                modes = ?entry.modes,
                 "keymap_entry: command name not registered in CommandRegistry; skipping binding",
             );
             continue;
@@ -227,23 +227,29 @@ fn resolve_entries_into_bindings(
                 tracing::warn!(
                     chord = entry.chord,
                     error = %err,
-                    mode = ?entry.mode,
+                    modes = ?entry.modes,
                     "keymap_entry: chord string failed to parse; skipping binding",
                 );
                 continue;
             }
         };
-        let binding = KeymapBinding::new(
-            entry.mode,
-            chords,
-            CommandInvocation::of(cmd_id),
-            entry.source().clone(),
-        )
-        .with_doc(entry.doc)
-        // SN.3c.2b: carry the entry's augment-and-continue flag through
-        // to the BoundCommand so the dispatcher can re-resolve.
-        .with_fall_through(entry.fall_through);
-        out.push(binding);
+        // B-field fan-out: an entry carries `modes: &[BindingMode]`
+        // (single-mode rows are a one-element slice). Emit one binding
+        // per mode — the registry trie is per-mode, so a multi-mode
+        // entry becomes N bindings sharing chord / command / source.
+        for &mode in entry.modes {
+            let binding = KeymapBinding::new(
+                mode,
+                chords.clone(),
+                CommandInvocation::of(cmd_id),
+                entry.source().clone(),
+            )
+            .with_doc(entry.doc)
+            // SN.3c.2b: carry the entry's augment-and-continue flag
+            // through to the BoundCommand so the dispatcher can re-resolve.
+            .with_fall_through(entry.fall_through);
+            out.push(binding);
+        }
     }
     out
 }
@@ -443,6 +449,40 @@ mod tests {
                 assert_eq!(command.command, visual_cmd, "Visual-mode binding");
             }
             other => panic!("expected Visual Bound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_mode_entry_fans_out_into_one_binding_per_mode() {
+        // B-field: a SINGLE `mode: [Normal, Visual]` catalog entry must
+        // resolve in BOTH modes — `resolve_entries_into_bindings` fans the
+        // entry's `modes` slice into one KeymapBinding per mode.
+        static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+        let entries = ENTRIES.get_or_init(|| {
+            vec![lattice_mode::keymap_entry! {
+                mode: [Normal, Visual],
+                chord: "z",
+                doc: "B-field multi-mode fixture",
+                cmd: "motion:line-down"
+            }]
+        });
+        let h = KeymapHandle::new();
+        let keymap = Keymap::from_entries(entries.as_slice());
+        let mut registry = ModeRegistry::new();
+        let mode_id = registry
+            .register(test_mode("test-mode/bfield", keymap))
+            .expect("register");
+
+        translate_mode_keymaps(&h, &registry, &registry_with_builtins());
+
+        for mode in [BindingMode::Normal, BindingMode::Visual] {
+            assert!(
+                matches!(
+                    lookup(&h, mode, &[mode_id], &[KeyChord::char('z')]),
+                    LookupResult::Bound { .. }
+                ),
+                "multi-mode entry must bind in {mode:?}"
+            );
         }
     }
 

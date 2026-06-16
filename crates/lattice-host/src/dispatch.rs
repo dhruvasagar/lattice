@@ -23520,7 +23520,11 @@ impl Editor {
             BindingMode::Help,
         ];
         for entry in entries() {
-            by_mode.entry(entry.mode.label()).or_default().push(entry);
+            // B-field: an entry may be live in several modes; list it
+            // under each mode group in the `:keymap` output.
+            for mode in entry.modes {
+                by_mode.entry(mode.label()).or_default().push(entry);
+            }
         }
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(

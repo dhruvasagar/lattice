@@ -253,6 +253,42 @@ impl Keymap {
         let source = SourceLocation::builtin_file(loc.file(), loc.line());
         self.bind(KeymapBinding::new(mode, chords, command, source))
     }
+
+    /// Bind one chord across SEVERAL modes — the declarative multi-mode
+    /// peer of [`Self::bind_chord`]. Pushes one [`KeymapBinding`] per
+    /// mode (the registry trie is per-mode), so `:describe-key` sees the
+    /// chord in each named mode. `modes` must be non-empty.
+    ///
+    /// The imperative peer is [`crate::KeymapHandle::bind_modes`]; the
+    /// `keymap_entry!` `mode: [..]` catalog form is the static-table peer.
+    /// Same parse-or-panic discipline + caller-location capture as
+    /// [`Self::bind_chord`].
+    #[track_caller]
+    pub fn bind_chord_modes(
+        mut self,
+        modes: &[BindingMode],
+        chord: &str,
+        command: CommandInvocation,
+    ) -> Self {
+        let chords: Vec<ChordPattern> = lattice_protocol::parse_chord_sequence(chord)
+            .unwrap_or_else(|e| {
+                panic!("bind_chord_modes: chord {chord:?} failed to parse: {e}")
+            })
+            .into_iter()
+            .map(ChordPattern::Literal)
+            .collect();
+        let loc = std::panic::Location::caller();
+        let source = SourceLocation::builtin_file(loc.file(), loc.line());
+        for &mode in modes {
+            self.bindings.push(KeymapBinding::new(
+                mode,
+                chords.clone(),
+                command.clone(),
+                source.clone(),
+            ));
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +328,21 @@ mod tests {
         );
         let km = Keymap::new().bind(a.clone()).bind(b.clone());
         assert_eq!(km.bindings, vec![a, b]);
+    }
+
+    #[test]
+    fn bind_chord_modes_pushes_one_binding_per_mode() {
+        let km = Keymap::new().bind_chord_modes(
+            &[BindingMode::Normal, BindingMode::Visual],
+            "zn",
+            synthetic_invocation(),
+        );
+        assert_eq!(km.bindings.len(), 2, "one binding per named mode");
+        assert_eq!(km.bindings[0].mode, BindingMode::Normal);
+        assert_eq!(km.bindings[1].mode, BindingMode::Visual);
+        // Same parsed chord sequence + command in both.
+        assert_eq!(km.bindings[0].chords, km.bindings[1].chords);
+        assert_eq!(km.bindings[0].command, km.bindings[1].command);
     }
 
     #[test]

@@ -766,12 +766,12 @@ mod tests {
         let select_count = km
             .entries
             .iter()
-            .filter(|e| e.mode == BindingMode::Select)
+            .filter(|e| e.modes.contains(&BindingMode::Select))
             .count();
         let insert_count = km
             .entries
             .iter()
-            .filter(|e| e.mode == BindingMode::Insert)
+            .filter(|e| e.modes.contains(&BindingMode::Insert))
             .count();
         assert_eq!(insert_count, 3, "three Insert bindings");
         assert_eq!(select_count, 3, "three Select bindings");
@@ -864,7 +864,7 @@ mod tests {
         let entry = &km.entries[0];
         assert_eq!(entry.chord, "<C-x><C-s>");
         assert_eq!(entry.command, Some("action:snippet-expand"));
-        assert_eq!(entry.mode, lattice_mode::BindingMode::Insert);
+        assert_eq!(entry.modes, [lattice_mode::BindingMode::Insert].as_slice());
     }
 
     #[test]

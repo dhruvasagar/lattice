@@ -43,7 +43,13 @@ use crate::BindingMode;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeymapEntry {
     pub chord: &'static str,
-    pub mode: BindingMode,
+    /// The binding-modes this row is live in. A single-mode row
+    /// (`mode: Normal`) carries a one-element slice; a multi-mode row
+    /// (`mode: [Normal, Visual]`) carries one element per mode. The
+    /// host translation pass (`resolve_entries_into_bindings`) fans this
+    /// out into one `KeymapBinding` per mode, so the per-mode trie and
+    /// `:describe-key` see each mode independently. Always non-empty.
+    pub modes: &'static [BindingMode],
     pub doc: &'static str,
     /// Canonical name in the `CommandRegistry`. `None` for synthetic
     /// actions (`PushDigit`, `SetPending`, `StartMacroRecord`, ...) that
@@ -86,20 +92,31 @@ impl KeymapEntry {
     #[doc(hidden)]
     pub fn __new(
         chord: &'static str,
-        mode: BindingMode,
+        modes: &'static [BindingMode],
         doc: &'static str,
         command: Option<&'static str>,
         fall_through: bool,
         source: lattice_grammar::SourceLocation,
     ) -> Self {
+        debug_assert!(!modes.is_empty(), "keymap_entry! requires at least one mode");
         Self {
             chord,
-            mode,
+            modes,
             doc,
             command,
             fall_through,
             source,
         }
+    }
+
+    /// Human-readable mode list for `:describe-key` / `:keymap` and
+    /// diagnostics — e.g. `"Normal"` or `"Normal, Visual"`.
+    pub fn modes_label(&self) -> String {
+        self.modes
+            .iter()
+            .map(|m| m.label())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -118,7 +135,7 @@ impl lattice_grammar::Introspectable for KeymapEntry {
     }
 
     fn identifier(&self) -> String {
-        format!("{}  ({})", self.chord, self.mode.label())
+        format!("{}  ({})", self.chord, self.modes_label())
     }
 
     fn doc(&self) -> &str {
@@ -151,11 +168,18 @@ impl lattice_grammar::Introspectable for KeymapEntry {
 }
 
 /// Construct a [`KeymapEntry`] with the row's source location captured
-/// at the macro invocation site. Three forms:
+/// at the macro invocation site. Forms:
 ///
 /// - `keymap_entry! { mode: Normal, chord: "j", doc: "Move down", cmd: "motion:line-down" }`
 /// - `keymap_entry! { mode: Help, chord: "j", doc: "Scroll down" }`  (no cmd, defaults to None)
 /// - `keymap_entry! { mode: Normal, chord: "x", doc: "Custom", cmd: Some("plugin:foo") }`  (explicit Option)
+/// - `keymap_entry! { mode: [Normal, Visual], chord: "zn", doc: "Narrow", cmd: "operator:narrow" }`  (multi-mode)
+///
+/// The `mode:` slot accepts a single mode (`Normal`) or a bracketed list
+/// (`[Normal, Visual]`). A single mode sugars to a one-element slice, so
+/// there is ONE code path: every entry carries `modes: &[BindingMode]`,
+/// and the host translation pass fans it out into one binding per mode.
+/// Existing single-mode call sites are unchanged.
 ///
 /// Expansion goes through [`KeymapEntry::__new`] so the `source` field
 /// stays private — callers cannot bypass per-row provenance by
@@ -170,23 +194,43 @@ impl lattice_grammar::Introspectable for KeymapEntry {
 /// `lattice_mode::keymap_entry! { … }`, or `lattice_host::keymap_entry!`.
 #[macro_export]
 macro_rules! keymap_entry {
+    // ----- Entry arms: match the `mode:` slot FRESH (single ident or a
+    // ----- bracketed list), normalize it to a parenthesized
+    // ----- `&[BindingMode]` slice token, and forward to `@build` with
+    // ----- the rest of the fields. Matching mode here — never after a
+    // ----- `:tt` forward — sidesteps the macro_rules gotcha where an
+    // ----- interpolated `:tt` won't re-match as `:ident` / `[..]`. The
+    // ----- single form becomes a one-element slice so there is ONE code
+    // ----- path (B-field): every entry carries a mode slice, fanned out
+    // ----- into one binding per mode by the host translation pass.
+    { mode: $m:ident, $($rest:tt)* } => {
+        $crate::keymap_entry!(@build (&[$crate::BindingMode::$m]) $($rest)*)
+    };
+    { mode: [ $($m:ident),+ $(,)? ], $($rest:tt)* } => {
+        $crate::keymap_entry!(@build (&[$($crate::BindingMode::$m),+]) $($rest)*)
+    };
+
+    // ----- `@build`: `$modes` is the parenthesized slice token built
+    // ----- above and is only ever EMITTED (re-matched as `:tt`, which is
+    // ----- always safe), never destructured. These arms normalize the
+    // ----- `cmd:` sugar exactly as before, then call `__new`.
     // No-cmd form: defaults command to None.
-    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr $(,)? } => {
-        $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: None }
+    (@build $modes:tt chord: $chord:expr, doc: $doc:expr $(,)?) => {
+        $crate::keymap_entry!(@build $modes chord: $chord, doc: $doc, cmd: None)
     };
     // String-literal sugar + fall_through (SN.3c.2b).
-    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal, fall_through: $ft:expr $(,)? } => {
-        $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: Some($cmd), fall_through: $ft }
+    (@build $modes:tt chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal, fall_through: $ft:expr $(,)?) => {
+        $crate::keymap_entry!(@build $modes chord: $chord, doc: $doc, cmd: Some($cmd), fall_through: $ft)
     };
     // String-literal sugar: `cmd: "name"` -> `cmd: Some("name")`.
-    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal $(,)? } => {
-        $crate::keymap_entry! { mode: $mode, chord: $chord, doc: $doc, cmd: Some($cmd) }
+    (@build $modes:tt chord: $chord:expr, doc: $doc:expr, cmd: $cmd:literal $(,)?) => {
+        $crate::keymap_entry!(@build $modes chord: $chord, doc: $doc, cmd: Some($cmd))
     };
     // Explicit form + fall_through (SN.3c.2b).
-    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr, fall_through: $ft:expr $(,)? } => {
+    (@build $modes:tt chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr, fall_through: $ft:expr $(,)?) => {
         $crate::keymap_entry::KeymapEntry::__new(
             $chord,
-            $crate::BindingMode::$mode,
+            $modes,
             $doc,
             $cmd,
             $ft,
@@ -194,10 +238,10 @@ macro_rules! keymap_entry {
         )
     };
     // Explicit form: `cmd: None` or `cmd: Some(...)`. fall_through defaults false.
-    { mode: $mode:ident, chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr $(,)? } => {
+    (@build $modes:tt chord: $chord:expr, doc: $doc:expr, cmd: $cmd:expr $(,)?) => {
         $crate::keymap_entry::KeymapEntry::__new(
             $chord,
-            $crate::BindingMode::$mode,
+            $modes,
             $doc,
             $cmd,
             false,
@@ -490,7 +534,7 @@ mod tests {
         // routing, so it doesn't appear as a separate descriptor.
         let hits = lookup("j");
         assert_eq!(hits.len(), 2);
-        let modes: HashSet<_> = hits.iter().map(|e| e.mode).collect();
+        let modes: HashSet<_> = hits.iter().flat_map(|e| e.modes.iter().copied()).collect();
         assert!(modes.contains(&BindingMode::Normal));
         assert!(modes.contains(&BindingMode::Visual));
     }
@@ -498,6 +542,48 @@ mod tests {
     #[test]
     fn lookup_unknown_chord_is_empty() {
         assert!(lookup("nope-not-a-chord").is_empty());
+    }
+
+    #[test]
+    fn macro_single_mode_sugars_to_one_element_slice() {
+        // B-field backwards compat: `mode: X` still works and produces a
+        // one-element `modes` slice (no call-site churn).
+        let e = keymap_entry! { mode: Normal, chord: "zz", doc: "center", cmd: None };
+        assert_eq!(e.modes, [BindingMode::Normal].as_slice());
+        assert_eq!(e.modes_label(), "Normal");
+    }
+
+    #[test]
+    fn macro_multi_mode_builds_a_slice_in_order() {
+        // `mode: [..]` is the new multi-mode form — one entry, several
+        // modes, fanned out into one binding per mode by the host.
+        let e = keymap_entry! {
+            mode: [Normal, Visual],
+            chord: "zn",
+            doc: "narrow",
+            cmd: "operator:narrow"
+        };
+        assert_eq!(
+            e.modes,
+            [BindingMode::Normal, BindingMode::Visual].as_slice()
+        );
+        assert_eq!(e.command, Some("operator:narrow"));
+        assert_eq!(e.modes_label(), "Normal, Visual");
+    }
+
+    #[test]
+    fn macro_multi_mode_carries_fall_through() {
+        // The multi-mode form composes with every existing cmd / sugar /
+        // fall_through arm.
+        let e = keymap_entry! {
+            mode: [Insert, Select],
+            chord: "<Esc>",
+            doc: "leave",
+            cmd: "action:snippet-leave",
+            fall_through: true
+        };
+        assert_eq!(e.modes, [BindingMode::Insert, BindingMode::Select].as_slice());
+        assert!(e.fall_through);
     }
 
     #[test]
@@ -516,7 +602,7 @@ mod tests {
                     registry.id_by_name(name).is_some(),
                     "binding `{}` ({}) claims `{}` but registry has no such command",
                     entry.chord,
-                    entry.mode.label(),
+                    entry.modes_label(),
                     name
                 );
             }
@@ -529,12 +615,14 @@ mod tests {
         // the same lookup -- a bug.
         let mut seen: HashSet<(&str, BindingMode)> = HashSet::new();
         for entry in default_keymap() {
-            assert!(
-                seen.insert((entry.chord, entry.mode)),
-                "duplicate keymap entry: chord={} mode={:?}",
-                entry.chord,
-                entry.mode
-            );
+            for mode in entry.modes {
+                assert!(
+                    seen.insert((entry.chord, *mode)),
+                    "duplicate keymap entry: chord={} mode={:?}",
+                    entry.chord,
+                    mode
+                );
+            }
         }
     }
 
@@ -550,7 +638,7 @@ mod tests {
                 lattice_grammar::SourceLayer::Builtin,
                 "entry `{}` ({}) source layer should be Builtin",
                 entry.chord,
-                entry.mode.label()
+                entry.modes_label()
             );
             match &entry.source().kind {
                 lattice_grammar::SourceKind::File { path, line } => {
@@ -559,13 +647,13 @@ mod tests {
                         "expected source path to contain `keymap_entry.rs`, got `{}` (entry `{}` {})",
                         path.display(),
                         entry.chord,
-                        entry.mode.label(),
+                        entry.modes_label(),
                     );
                     assert!(
                         line.is_some(),
                         "entry `{}` ({}) has no captured line",
                         entry.chord,
-                        entry.mode.label()
+                        entry.modes_label()
                     );
                 }
                 other => panic!("expected File source kind, got {other:?}"),
@@ -597,9 +685,9 @@ mod tests {
                     a_line != b_line,
                     "adjacent entries `{}` ({}) and `{}` ({}) both captured line {a_line}",
                     a.chord,
-                    a.mode.label(),
+                    a.modes_label(),
                     b.chord,
-                    b.mode.label(),
+                    b.modes_label(),
                 );
             }
         }

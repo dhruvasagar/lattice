@@ -360,10 +360,16 @@ The narrow **provider crate owns the whole surface** —
 
 1. the operator spec via `register_operator("operator:narrow", …)`,
 2. a narrow `ActionId` + a handler closure via `ActionHandlerRegistry` (M.10.1),
-3. the `zn` operator-pending keybinding, via a host-exposed generic primitive
-   `register_operator_pending_chord(handle, chord, operator_id)` (the one new
-   host seam — today operator-pending chords are hard-wired in
-   `keymap_normal.rs`; exposing the registration is itself a paramount-#3 win).
+3. the `zn` operator keybinding, via the host-exposed generic primitive
+   `keymap_normal::register_operator_bindings(handle, op_prefix, operator_id, …)`
+   called from boot (it needs the host-resolved `Builtins`). This one call wires
+   the operator across BOTH modes from a single registration — the Normal
+   operator-pending family (`znn`, `zn{motion|object}`) AND the Visual
+   selection-bind (`op.with_range(Range::Selection)`), because an operator acts
+   on the selection by design (see `keymap-architecture.md` §7.2, upgrade 3).
+   Exposing operator-binding registration to providers is itself a paramount-#3
+   win. *(The earlier sketch named a narrower `register_operator_pending_chord`
+   Normal-only seam; the cross-mode `register_operator_bindings` subsumed it.)*
 
 The operator can only emit an `Effect` (its `apply` sees only `&mut Document`),
 and minting a buffer needs host services — so `apply` emits the **generic**

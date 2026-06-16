@@ -333,6 +333,18 @@ mod tests {
             &action_ids,
             &syntax_textobjects,
         );
+        // Operators bind into Visual via `register_operator_bindings` (called by
+        // `register_normal_bindings`), not `register_visual_bindings` --
+        // an operator acts on the selection by design. The parity test
+        // below (`operators_bind_in_visual_but_never_in_select`) reads
+        // those Visual operator binds, so the full Normal catalog must
+        // be registered here too.
+        crate::keymap_normal::register_normal_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+        );
         register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
         h
     }

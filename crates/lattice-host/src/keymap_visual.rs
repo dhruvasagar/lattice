@@ -36,12 +36,19 @@
 //!   to `CommandInvocation::of(motion.0)` -- the
 //!   non-`legacy_action` path; the dispatcher returns
 //!   `Action::Invoke(command.command.clone())`.
-//! - **Operators on selection**: `d` / `x` (delete), `c` / `s`
-//!   (change), `y` (yank), `>` (indent right), `<` (indent
-//!   left). Each binds to
-//!   `CommandInvocation::of(op.0).with_range(Range::Selection)`
-//!   -- the operator dispatcher's range walker resolves
-//!   `Range::Selection` against the active visual selection.
+//! - **Operators on selection**: an operator acts on the active
+//!   selection BY DESIGN, so its Visual binding is generated once at
+//!   operator registration, NOT hand-listed here. Every operator
+//!   ([`crate::keymap_normal::register_operator_bindings`] -- builtin `d` / `c`
+//!   / `y` / `>` / `<`, case `gU` / `gu` / `g~`, contributed `zn`, ...)
+//!   binds its trigger chord to
+//!   `CommandInvocation::of(op.0).with_range(Range::Selection)`; the
+//!   operator dispatcher's range walker resolves `Range::Selection`
+//!   against the active visual selection. The ONLY operator entries
+//!   that remain in [`register_visual_bindings`] are the two
+//!   Visual-only ALIASES `x` -> delete and `s` -> change (in Normal
+//!   `x` / `s` are different commands, so they are not the operators'
+//!   trigger chord and cannot come from the registration).
 //! - **Text objects** (set the selection to the object's span):
 //!   `i<obj>` / `a<obj>` for every object in the SHARED
 //!   [`crate::keymap_normal::text_object_rows`] table -- `viw`,
@@ -158,18 +165,24 @@ pub fn register_visual_bindings(
         );
     }
 
-    // Operators on the selection. `Range::Selection` resolves at
-    // dispatch time to the active visual region.
-    let operator_table: &[(ChordPattern, lattice_grammar::registry::OperatorId)] = &[
-        (literal(KeyChord::char('d')), builtins.delete),
+    // Visual-only operator ALIASES. The canonical operator trigger
+    // chords (`d` / `c` / `y` / `>` / `<`, case `gU` / `gu` / `g~`,
+    // contributed `zn`, ...) are deliberately NOT listed here: every
+    // operator gets its Visual selection-bind intrinsically from
+    // [`crate::keymap_normal::register_operator_bindings`] -- an operator acts on
+    // the active selection BY DESIGN, so the binding is generated once
+    // per operator at registration, uniformly across builtin and
+    // contributed operators. What remains here are the two chords that
+    // are operators ONLY in Visual: in Normal `x` is delete-char and `s`
+    // is substitute, so they are not the delete / change operators'
+    // trigger chord and cannot be derived from the operator registration.
+    // `Range::Selection` resolves at dispatch time to the active visual
+    // region.
+    let operator_aliases: &[(ChordPattern, lattice_grammar::registry::OperatorId)] = &[
         (literal(KeyChord::char('x')), builtins.delete),
-        (literal(KeyChord::char('c')), builtins.change),
         (literal(KeyChord::char('s')), builtins.change),
-        (literal(KeyChord::char('y')), builtins.yank),
-        (literal(KeyChord::char('>')), builtins.indent_right),
-        (literal(KeyChord::char('<')), builtins.indent_left),
     ];
-    for (chord, op) in operator_table {
+    for (chord, op) in operator_aliases {
         handle.bind(
             layer,
             mode,

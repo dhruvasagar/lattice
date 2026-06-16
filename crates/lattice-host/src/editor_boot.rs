@@ -1176,7 +1176,7 @@ impl Editor {
                 // are owned by `lattice-multibuffer::providers::narrow`;
                 // only this chord-wiring lives host-side (it needs the
                 // resolved `Builtins`).
-                crate::keymap_normal::register_operator_pending(
+                crate::keymap_normal::register_operator_bindings(
                     &h,
                     &[
                         lattice_protocol::chord::ChordPattern::Literal(

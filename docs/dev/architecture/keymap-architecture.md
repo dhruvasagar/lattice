@@ -418,7 +418,7 @@ internal node with a child `w` (and `e`, `b`, `0`, `$`, `iw`,
 sets `Pending::Operator(d)` and waits for the next chord. On
 `w`, lookup of `[d, w]` returns `Bound(delete-with-target=word-forward)`.
 
-Two upgrades over today's hand-rolled state machine:
+Upgrades over today's hand-rolled state machine:
 
 1. **No special-case Pending branches** for each operator. `d`,
    `y`, `c`, `>`, `<`, `gU`, `gu`, `g~` all encode the same
@@ -427,6 +427,25 @@ Two upgrades over today's hand-rolled state machine:
    sub-trees for free.** A `sort-lines` operator registered
    by a plugin can register its bindings as `[s, l]` (or
    whatever); the dispatcher walks the trie identically.
+3. **Operators act on the Visual selection BY DESIGN — both
+   modes from one registration.** An operator is not merely an
+   op-pending prefix in Normal; in Visual the same trigger chord
+   applies the operator to the active selection
+   (`op.with_range(Range::Selection)`) and exits Visual. That is
+   intrinsic to *being* an operator, not a per-operator Visual
+   binding. `keymap_normal::register_operator_bindings` emits BOTH
+   surfaces from one call — the Normal op-pending family AND the
+   Visual selection-bind — uniformly for builtin
+   (`d`/`c`/`y`/`>`/`<`, `gU`/`gu`/`g~`) and contributed (narrow's
+   `zn`) operators alike. The grammar stays chord-agnostic
+   (`OperatorId`s, never keys), so this uniform generation lives at
+   the host keymap layer where chord→command already lives. It
+   subsumes the old hand-rolled Visual `operator_table`; the only
+   Visual operator entries NOT generated this way are the two
+   genuine Visual-only aliases `x`→delete and `s`→change (in Normal
+   `x`/`s` are different commands, so they cannot be derived from
+   the operator registration). A contributed operator reaches
+   Visual with zero host edits.
 
 ### 7.3 Marks, registers, find-char
 

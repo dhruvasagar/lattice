@@ -39,6 +39,13 @@ mod tests {
     fn populated_handle(b: &Builtins, a: &ActionIds, so: &SyntaxTextObjectIds) -> KeymapHandle {
         let h = KeymapHandle::new();
         register_visual_bindings(&h, b, a, so);
+        // Operators (`d` / `c` / `y` / `>` / `<`) bind into Visual via
+        // `register_operator_bindings` (called by `register_normal_bindings`), not
+        // `register_visual_bindings` -- an operator acts on the selection
+        // by design. Tests here dispatch those operator chords in Visual,
+        // so the Normal catalog must be registered too. The `x` / `s`
+        // Visual-only aliases still come from `register_visual_bindings`.
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
         h
     }
 
@@ -170,6 +177,58 @@ mod tests {
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, b.change.0),
             other => panic!("expected Invoke(change), got {other:?}"),
+        }
+    }
+
+    /// Concern #1 contract: an operator acts on the Visual selection BY
+    /// DESIGN. A contributed, MULTI-KEY operator (narrow's `zn` shape)
+    /// registered through `register_operator_bindings` resolves in Visual to
+    /// `op.with_range(Selection)` with ZERO per-operator Visual binding
+    /// hand-listed — exactly the path `d`/`c`/`y` now use. Reuses
+    /// `b.delete`'s OperatorId under the novel `zn` prefix; the contract
+    /// under test is keymap generation across modes, not the effect.
+    #[test]
+    fn contributed_operator_acts_on_visual_selection_by_design() {
+        let (_, b, a, so) = fixture();
+        let _ = &a;
+        let h = KeymapHandle::new();
+        let z = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('z'));
+        let n = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('n'));
+        crate::keymap_normal::register_operator_bindings(&h, &[z, n.clone()], b.delete, n, &b, &so);
+
+        // Visual `zn`: `z` absorbs as a partial, `n` resolves the pair to
+        // the operator carrying `Range::Selection`.
+        let prefix = [ev(KeyCode::Char('z'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('n'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(
+                    matches!(inv.range, Some(lattice_grammar::Range::Selection)),
+                    "a contributed operator must carry Range::Selection in Visual"
+                );
+            }
+            other => panic!("expected Invoke(op, Selection), got {other:?}"),
+        }
+
+        // ...and the SAME registration still yields the Normal
+        // operator-pending family: `zn` + motion `j` targets the motion.
+        // Proves one `register_operator_bindings` call wires BOTH modes — Visual
+        // selection-operability is intrinsic, not a second binding.
+        let znj = lattice_host::keymap_normal::lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('z'), KeyChord::char('n')],
+            &KeyChord::char('j'),
+            &[],
+        );
+        match znj {
+            Action::Invoke(inv) => assert_eq!(inv.command, b.delete.0),
+            other => panic!("expected Normal `znj` Invoke(op), got {other:?}"),
         }
     }
 

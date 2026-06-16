@@ -218,13 +218,22 @@ before the narrow opens).
 > `apply`, owned by the narrow provider; `apply` maps the resolved range to a
 > whole-line span via `range_to_narrow_lines` and emits
 > `AppEffect::NarrowLines`). Host: the `NarrowLines` arm narrows the active
-> buffer; `register_operator_pending` made `pub` and called from boot to wire
-> the `zn` chord at the **universal** operator-pending layer (`znn` = current
-> line, `zn{motion|object}` = that span) — owner split per your direction:
-> operator owned by the narrow crate, chord-wiring in lattice-host (it needs
-> the host-resolved `Builtins`). 5 tests (4 range-conversion incl. the
-> half-open-end off-by-one + registration); workspace builds clean. `znaf` etc.
-> need the tree-sitter text objects (N.1.4).
+> buffer; `register_operator_bindings` (formerly `register_operator_pending`)
+> made `pub` and called from boot to wire the `zn` chord at the **universal**
+> operator-pending layer (`znn` = current line, `zn{motion|object}` = that
+> span) — owner split per your direction: operator owned by the narrow crate,
+> chord-wiring in lattice-host (it needs the host-resolved `Builtins`). 5 tests
+> (4 range-conversion incl. the half-open-end off-by-one + registration);
+> workspace builds clean. `znaf` etc. need the tree-sitter text objects (N.1.4).
+>
+> **✅ `zn` in Visual — delivered 2026-06-16 (operators-act-on-selection
+> refactor).** `register_operator_pending` was renamed `register_operator_bindings`
+> and now emits, from the SAME call, the Normal op-pending family AND a Visual
+> selection-bind (`op.with_range(Range::Selection)`) — an operator acts on the
+> selection by design, uniformly for builtin + contributed operators. So a
+> Visual selection + `zn` narrows the selection with zero narrow-specific Visual
+> wiring; the planned `register_operator_pending_chord` Visual-op seam is moot.
+> See `keymap-architecture.md` §7.2 (upgrade 3).
 
 **Depends on: N.1.1** (`create_narrow_view`). Independent of N.1.0/N.1.4 —
 composes with *existing* vim motions/objects on its own. Design: fragment §6.
@@ -333,7 +342,7 @@ see the design fragment §3.
     forwards to `ctx.scope_resolver.scope_at(...)`, empty-range (graceful operator no-op) on no
     resolver / no match.
   - **Keymap.** Boot calls `register_syntax_text_objects` (while registry is `&mut`), threads
-    `SyntaxTextObjectIds` through `register_normal_bindings` → `register_operator_pending` →
+    `SyntaxTextObjectIds` through `register_normal_bindings` → `register_operator_bindings` →
     `register_text_object_resolutions`, which adds f/c/a/l rows to the SAME table the builtin
     objects use (`KeymapLayer::Builtin`, op-pending only). `zn` gets them too (`znaf`).
   - **Tests.** 14 byte-precise `scope_at_cursor` tests (3 langs); registration test; end-to-end

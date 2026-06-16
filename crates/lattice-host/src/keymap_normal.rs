@@ -717,7 +717,7 @@ pub fn register_normal_bindings(
     // so this slice just extends the path with depth-3 (motion /
     // doubled / text-object pending / find-char pending) and
     // depth-4 (text-object resolution) entries.
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('d')],
         builtins.delete,
@@ -725,7 +725,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('c')],
         builtins.change,
@@ -733,7 +733,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('y')],
         builtins.yank,
@@ -741,7 +741,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('>')],
         builtins.indent_right,
@@ -749,7 +749,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('<')],
         builtins.indent_left,
@@ -760,7 +760,7 @@ pub fn register_normal_bindings(
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
     // operate on the current line.
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('U')],
         builtins.upper,
@@ -768,7 +768,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('u')],
         builtins.lower,
@@ -776,7 +776,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('~')],
         builtins.toggle_case,
@@ -1158,7 +1158,7 @@ fn lit(chord: KeyChord) -> ChordPattern {
 /// operator-pending layer. The operator SPEC + `apply` are owned by
 /// the provider crate; only this chord-wiring lives here, because
 /// operator-pending composition needs the host-resolved `Builtins`.
-pub fn register_operator_pending(
+pub fn register_operator_bindings(
     handle: &KeymapHandle,
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
@@ -1229,6 +1229,28 @@ pub fn register_operator_pending(
     // ---- resolves to a typed `Invoke(op,
     // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
     register_find_char_paths(handle, op_prefix, Some(op), builtins);
+
+    // ---- Visual mode: an operator acts on the active selection BY
+    // ---- DESIGN. Pressing the operator's trigger chord in Visual
+    // ---- dispatches `op.with_range(Range::Selection)` (the same proven
+    // ---- path `d`/`c`/`y` already use; the dispatcher's `Selection`
+    // ---- walker resolves it against the live visual region and exits
+    // ---- Visual). This is intrinsic to *being* an operator, not a
+    // ---- per-operator Visual binding -- so EVERY operator registered
+    // ---- through this helper gets selection-operability uniformly:
+    // ---- builtin `d`/`c`/`y`/`>`/`<`, case `gU`/`gu`/`g~`, AND
+    // ---- contributed operators (narrow's `zn`). The old hand-rolled
+    // ---- Visual operator list in `keymap_visual` is gone; only the two
+    // ---- genuine Visual-only aliases (`x`->delete, `s`->change) remain
+    // ---- there, because in Normal `x`/`s` mean different commands and
+    // ---- so are not this operator's trigger chord.
+    handle.bind(
+        layer,
+        BindingMode::Visual,
+        op_prefix,
+        CommandInvocation::of(op.0).with_range(lattice_grammar::Range::Selection),
+        source(),
+    );
 }
 
 /// Register the four find-char chord paths under `prefix`. When
@@ -1301,7 +1323,7 @@ fn register_find_char_paths(
 /// gives text objects):
 /// - Normal bare motions ([`register_normal_bindings`]) — `[chord]`
 ///   -> `Invoke(motion)`.
-/// - Operator-pending targets ([`register_operator_pending`]) —
+/// - Operator-pending targets ([`register_operator_bindings`]) —
 ///   `[op..., chord]` -> `Invoke(op, Target::Motion(motion))`.
 /// - Visual motions ([`crate::keymap_visual::register_visual_bindings`])
 ///   — `[chord]` -> `Invoke(motion)` (the host's `SelectionChange`

@@ -59,6 +59,53 @@ The full design is in [`docs/dev/architecture/design.md`](docs/dev/architecture/
 
 ---
 
+## Versus Zed
+
+Vim/Emacs/VS Code above are the *feature* benchmarks. The closest *architectural*
+peer is **Zed** — same substrate lineage (Rust, Tree-sitter, rope-backed, GPU via
+**GPUI**, the framework Zed authored), and lattice borrows Zed's **multibuffer**
+(excerpts from many buffers in one view). The remaining differences are
+fundamental, not cosmetic:
+
+| Axis | Lattice | Zed |
+|---|---|---|
+| **Editor ↔ UI** | Editor runs on its **own dedicated thread**; the renderer is a pure consumer of a published per-pane `DisplayMatrix`. `&mut Editor` escaping the actor is **compile-time impossible** | Editor state lives in GPUI's **entity graph on the main thread**; heavy work is offloaded to background executors |
+| **Renderer** | `Renderer` trait — **TUI is a first-class peer** (headless / SSH) beside the GPUI peer; both consume the *same* `DisplayMatrix` | **GPU-only**; no headless / TUI path |
+| **Editing model** | Strict **vim grammar IS the public command API**; motions / operators / text-objects are extensible from WASM | **Not modal by default** (Vim is a mode layer); core editing is fixed Rust |
+| **Buffers** | **Everything is a buffer** — file tree, diagnostics, terminal, REPL — atop multibuffer | Multibuffer (excerpts), but file-tree / terminal are **bespoke panels** |
+| **Extensibility** | WASM Component Model — **any language**, capability-gated, fuel-limited, crash-isolated | WASM extensions (languages / themes / slash-commands); core editing is not extensible at the grammar level |
+| **Collaboration** | None (single-user, deliberate scope) | **CRDT real-time multiplayer** — the rope is a CRDT; its headline feature |
+| **Latency discipline** | keystroke→glyph **ratcheted in CI**; UI thread does **zero** I/O / parse / shape | GPU-smooth + SumTree for huge files; no public per-keystroke CI gate |
+
+**What the differences buy — and cost:**
+
+- **Lattice's bet is architectural rigidity *as a guarantee*.** The editor/renderer
+  split is compile-time-enforced, so the UI literally cannot block on editor work
+  (or vice-versa) and keystroke→glyph is bounded by construction, not by care.
+  Everything-is-a-buffer makes one set of motions/commands work *uniformly*
+  everywhere — the terminal is a real `Document`, so vim motions, search, marks,
+  and text objects apply to it with no bespoke code. **Cost:** no collaboration
+  story, younger and less polished, and the actor discipline adds ceremony to
+  cross-feature data flow.
+- **Zed's bet is a shared entity graph + GPU polish + real-time collaboration.**
+  Keeping editor state *with* the UI makes cross-feature data flow ergonomic and
+  made CRDT multiplayer tractable; GPUI + SumTree deliver gorgeous, fast rendering
+  on huge files. **Cost:** GPU is required (no SSH / headless), modal editing is a
+  bolt-on rather than the core grammar, and core editing isn't user-extensible.
+
+In one line: lattice aims for **Zed's substrate discipline + Neovim's grammar +
+Emacs's extensibility model, with the UI-thread guarantee moved into the type
+system** — at the explicit, current cost of Zed's collaboration and maturity.
+
+> **Why not Helix here?** Helix shares Rust, Tree-sitter, and ropey, but those are
+> substrate *libraries*, not architecture — and on everything that matters the two
+> are opposite: vim verb-object grammar vs Helix's Kakoune-lineage selection-first
+> model; config-as-code (WASM) vs TOML-only; plugin-first vs none-yet;
+> actor-threaded vs single event-loop; GPU + TUI-peer vs TUI-only. It's a useful
+> *contrast*, not an architectural peer.
+
+---
+
 ## Paramount goals
 
 In priority order when they conflict:

@@ -28657,6 +28657,84 @@ mod tests {
         );
     }
 
+    /// DR.4 (decoration-retention): a PURE focus change — toggling which
+    /// pane is active, with no edit and no resize — must recompute ZERO
+    /// visible Document panes. The cells worker's own decision is the
+    /// proof: `recompute_pane` returns `CacheHit` ("inputs' version
+    /// matches the published matrix; worker does nothing", leaving the
+    /// matrix bit-identical). If a focus toggle ever bumped a cells
+    /// version axis (an active-keyed field creeping into the per-pane
+    /// inputs), the worker would return `Recomputed` and this test fails.
+    ///
+    /// `pane_tree.set_active` deliberately bumps the PANE-TREE version
+    /// (layout), but that is NOT a cells version axis — decorations are
+    /// buffer-intrinsic and survive a focus change untouched. This is the
+    /// DR invariant: "focus change does ZERO decoration recompute." It is
+    /// the focus-path sibling of `recompute_with_matching_version_is_cache_hit`
+    /// (same version → CacheHit) and the inverse of
+    /// `version_bump_rebuilds_matrix`.
+    #[test]
+    fn focus_toggle_does_not_recompute_pane_cells() {
+        use crate::cells_worker::{WhitespaceConfig, WorkerDecision, recompute_pane};
+        use lattice_core::ui::pane::SplitOrientation;
+
+        // Both panes inherit the booted (registered) buffer, so each gets a
+        // real snapshot in `build_cells_panes` (unlike the synthetic
+        // `BufferId(99)` in `vsplit_two_buffers`, which would `Clear`).
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(20));
+        editor.do_split_pane(SplitOrientation::Vertical);
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            2,
+            "precondition: vertical split produced two Document panes"
+        );
+
+        let theme = crate::ui::theme::Theme::default();
+        let ws = WhitespaceConfig::default();
+
+        // Prime the panes' matrices. Matrices are keyed by `buffer_id`
+        // (`cells_matrix_for`), so the two panes sharing the booted buffer
+        // share ONE matrix: the first pane to touch it reports `Recomputed`,
+        // the sibling is already a `CacheHit`. Require that priming did real
+        // work somewhere — otherwise the post-toggle `CacheHit` would be
+        // vacuous (empty matrix at version ZERO matching empty inputs).
+        let primed: Vec<WorkerDecision> = editor
+            .build_cells_panes(None)
+            .iter()
+            .map(|pane| recompute_pane(pane, &theme, &ws))
+            .collect();
+        assert!(
+            primed.iter().any(|d| matches!(
+                d,
+                WorkerDecision::Recomputed | WorkerDecision::RecomputedIncremental
+            )),
+            "precondition: priming must materialise the matrix (a real build \
+             at a non-zero version), got {primed:?}"
+        );
+
+        // Pure focus change: toggle the active pane. No edit, no resize.
+        let start = editor.pane_tree.active_index();
+        let other = if start == 0 { 1 } else { 0 };
+        assert!(
+            editor.pane_tree.set_active(other),
+            "focus toggled to pane index {other}"
+        );
+
+        // Re-derive the inputs (this reads the NEW active state) and
+        // recompute: EVERY pane must be a CacheHit — the focus change bumped
+        // no cells version axis, so the worker short-circuits. Zero
+        // decoration recompute on focus.
+        for pane in editor.build_cells_panes(None).iter() {
+            assert_eq!(
+                recompute_pane(pane, &theme, &ws),
+                WorkerDecision::CacheHit,
+                "focus toggle recomputed pane {:?} — DR invariant violated \
+                 (a cells version axis is keyed on focus / active state)",
+                pane.pane_id,
+            );
+        }
+    }
+
     // ── D.4.d.2.0: virtual_rows_matrices registry ───────────
 
     /// Mirror of [`cells_matrix_for_active_doc_shares_field_arc`]

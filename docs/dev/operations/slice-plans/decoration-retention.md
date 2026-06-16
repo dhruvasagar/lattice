@@ -18,8 +18,8 @@ producers, then collapse the inactive render fork. (Scope chosen over
 |----------|----------------------------------------------------------------------------------------|--------|
 | **DR.1** | **Retain + repaint.** Stop the teardown and render the full decoration set on inactive panes; focus-gain frame already carries it (no keystroke). | ✅ |
 | **DR.2** | **One producer (retire `pane_highlights`).** Both renderers read the per-pane retained `DisplayMatrix` for inactive panes (the producer already existed per-pane — see Premise below); the redundant `pane_highlights` span producer + its per-frame refresh are deleted. `:redraw` stays the forceful clean-slate escape hatch. | ✅ |
-| **DR.3** | **One render path.** Collapse `draw_inactive_document` / inactive-compose fork into the shared path; inactive = opacity + no interaction state only. | 🚧 |
-| **DR.4** | **Four-artefact close.** Bench proving zero decoration recompute on focus change; design/doc finalize; parity audit. | 🗒 |
+| **DR.3** | **One render path.** Collapse `draw_inactive_document` / inactive-compose fork into the shared path; inactive = opacity + no interaction state only. | ✅ |
+| **DR.4** | **Four-artefact close.** Bench proving zero decoration recompute on focus change; design/doc finalize; parity audit. | ✅ |
 
 ## DR.1 — Retain + repaint
 
@@ -170,7 +170,7 @@ Depends on DR.1's retention guarantee.
 
 ## DR.3 — One render path
 
-**Working tree (2026-06-05) — tests green, not yet committed.**
+**✅ Landed (`278740e5`).**
 
 `draw_inactive_document` (TUI) is now a 30-line thin entry that builds
 `PaneComposeCtx { is_active: false, … }` and delegates to
@@ -206,14 +206,35 @@ was already in the DR.3 target shape before this slice.
 Depends on DR.2 (both paths must source the same per-buffer decoration
 product).
 
-## DR.4 — Four-artefact close
+## DR.4 — Four-artefact close ✅
 
-- **Bench:** focus-change decoration recompute == 0 (assert no reparse
-  request, no span re-slice, no cells rebuild on pure focus toggle).
-- **Doc:** finalize the design fragment; record any rejected-path that
-  became the chosen path during DR.1–DR.3.
-- **Parity audit:** `grep` the renderer match arms / sourcing sites to
-  confirm no remaining focus-keyed decoration branch in either peer.
+- **Bench ✅** — `focus_toggle_does_not_recompute_pane_cells`
+  (`dispatch.rs` tests). A two-pane vertical split, prime each pane's
+  matrix, then a PURE focus toggle (`pane_tree.set_active`, no edit / no
+  resize) → assert `recompute_pane` returns `WorkerDecision::CacheHit` for
+  every visible Document pane. No new instrumentation: the cells worker's
+  existing `WorkerDecision` (`CacheHit` = "version matches the published
+  matrix; worker does nothing", leaving it bit-identical) IS the
+  zero-recompute signal — adding hot-path counters just to prove zero
+  overhead would itself violate paramount #1. The focus-path sibling of
+  `recompute_with_matching_version_is_cache_hit` and the inverse of
+  `version_bump_rebuilds_matrix`. Note `set_active` bumps the *pane-tree*
+  version (layout), which is deliberately NOT a cells version axis —
+  `build_cells_panes` stamps `MatrixVersion` purely from buffer-intrinsic
+  axes (text / syntax-snapshot / inlay / folds / theme / whitespace), none
+  focus-keyed — so the matrix survives a focus change untouched.
+- **Parity audit ✅** — `pane_highlights` and `refresh_pane_highlights`
+  survive only in explanatory comments (no live producer or call; the
+  runtime call is commented out); `draw_inactive_document` is the ~30-line
+  thin wrapper delegating to `compose_pane_lines`; the remaining
+  `is_active` gates are interaction-state only (visual selection,
+  hlsearch, substitute preview, ghost text, cursor-line), NOT decoration
+  recompute. No focus-keyed decoration branch remains in either peer; GPUI
+  was already in the target shape (DR.2).
+- **Doc ✅** — markers above corrected (DR.3 was committed but still marked
+  🚧); the DR.2 premise-correction (the per-pane producer already existed
+  — the bug was a renderer-read gate, not a missing producer) is recorded
+  in the DR.2 section as the chosen-over-original path.
 
 ## Sequencing
 

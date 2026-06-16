@@ -22,9 +22,9 @@ counterpart.
 ## 1. Build, launch, baseline
 
 - [ ] `cargo build --release` succeeds without warnings
-- [ ] `cargo test --workspace` passes (current baseline:
-      1392 ui-tui + 257 host + 23 gpui tests; all 22 crates green
-      as of `3c.final.E.swap`)
+- [ ] `cargo test --workspace` passes (recent baseline:
+      1475 ui-tui + 738 host + 99 keymap + 25 gpui tests; all crates
+      green as of 2026-06-16 — re-snapshot the totals on the next sweep)
 - [ ] `cargo clippy --workspace --all-targets` clean
 - [ ] `cargo fmt --all -- --check` clean
 - [ ] `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace` clean
@@ -167,6 +167,21 @@ User doc: lattice's operator grammar mirrors vim.
 - [ ] `c3l` changes 3 chars
 - [ ] `y$` yanks to end-of-line
 
+### Operators on the Visual selection
+
+Every operator acts on the active selection BY DESIGN (one registration
+wires both Normal op-pending and Visual). Select a range with `v` / `V` /
+`<C-v>`, then:
+
+- [ ] `d` / `x` deletes the selection
+- [ ] `c` / `s` changes the selection (delete + Insert)
+- [ ] `y` yanks the selection
+- [ ] `>` / `<` indents / dedents the selected lines
+- [ ] `gU` / `gu` / `g~` upper / lower / toggle-case the selection
+- [ ] `zn` narrows to the selection (the narrow operator works in Visual
+      too — see §28)
+- [ ] After applying, the editor returns to Normal mode
+
 ---
 
 ## 5. Text objects
@@ -182,6 +197,22 @@ User doc: lattice's operator grammar mirrors vim.
 - [ ] `dap` / `dip` — around / inner paragraph
 - [ ] `das` / `dis` — around / inner sentence
 - [ ] All also work with `c`, `y`, `>`, `<`, `gU`, `gu`
+
+### Tree-sitter text objects (open a `.rs` / `.py` / `.js` file)
+
+Universal grammar objects owned by `lattice-syntax`; compose with every
+operator and with `zn`. Innermost-wins on nesting.
+
+- [ ] `daf` / `dif` — delete a / inner function
+- [ ] `dac` / `dic` — delete a / inner class / struct / type
+- [ ] `daa` / `dia` — delete a / inner parameter (charwise-accurate, e.g.
+      `daa` deletes exactly `x: i32`, not the whole line)
+- [ ] `dal` / `dil` — delete a / inner loop
+- [ ] `daC` / `diC` — delete a / inner comment (commentstring-driven;
+      `aC` keeps the markers, `iC` strips the leader)
+- [ ] `vaf` selects the whole function (objects work in Visual too)
+- [ ] `yaf` on a nested closure inside a fn targets the innermost (closure)
+- [ ] `daf` with the cursor outside any function is a no-op (no edit / bell)
 
 ---
 
@@ -841,6 +872,49 @@ Latest measured numbers:
 - [ ] Lines with `§` / `中` / emoji render correctly
 - [ ] Cursor lands on the first cell of a wide glyph after motion
 - [ ] Search / substitute correctly handles multibyte ranges
+
+---
+
+## 28. Narrow mode (`zn`)
+
+User doc: design fragment
+[`../architecture/narrow-mode.md`](../architecture/narrow-mode.md).
+
+Open a `.rs` file with a few functions.
+
+- [ ] `znip` narrows to the current paragraph (one-excerpt view opens)
+- [ ] `zni{` narrows to the surrounding brace block
+- [ ] `znG` narrows from the cursor to end-of-file
+- [ ] `3znj` narrows the cursor line plus 3 below
+- [ ] `znaf` narrows to the whole function (tree-sitter object + operator)
+- [ ] The narrow view's gutter shows the SOURCE line numbers
+- [ ] Syntax highlighting is live inside the narrow view
+- [ ] Editing a line in the narrow view propagates to the source buffer
+- [ ] `:w` inside the narrow view saves the underlying source file on disk
+- [ ] `:widen` closes the narrow view
+- [ ] `:42,67narrow<CR>` narrows to an explicit line range
+- [ ] In Visual mode, selecting lines then `zn` narrows the selection
+- [ ] `:'<,'>narrow` (from Visual `:`) also narrows the selection
+- [ ] From inside a narrow view, `znac` opens a new narrow on the struct in
+      the ORIGINAL file (stacked narrow stays one hop from the source)
+- [ ] Two narrows over the same file, side by side: editing one updates the
+      other on the next tick
+
+---
+
+## 29. Decoration retention across focus (DR.x)
+
+- [ ] Split (`<C-w>v`) with two `.rs` buffers, both syntax-highlighted +
+      inlay hints + diagnostics visible
+- [ ] `<C-w>w` to the other pane: the now-inactive pane KEEPS its full
+      syntax / inlay / diagnostic decorations (only opacity dims if
+      `ui.dim_inactive=true`)
+- [ ] Focusing back does NOT require a keystroke to repaint — decorations
+      were never torn down
+- [ ] Editing in one pane leaves the other pane's decorations stable
+      (unchanged lines never lose their cues)
+- [ ] `:redraw<CR>` is the deliberate clean-slate escape hatch (forces a
+      full rebuild)
 
 ---
 

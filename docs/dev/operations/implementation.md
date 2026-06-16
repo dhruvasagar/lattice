@@ -4303,7 +4303,9 @@ architecture §10 for the rationale.
 
   **K.2.4.A polish + unification sub-arc:**
   K.2.4.A.0.1 `keymap_entry!` + `KeymapEntry` substrate move
-  to `lattice-mode::keymap_entry` (commit `4f763d5`);
+  to `lattice-mode::keymap_entry` (commit `4f763d5`; later
+  superseded by `a7c7799b` — single definition back in
+  `lattice-keymap`, re-exported by lattice-mode, no duplicate);
   K.2.4.A.0.2 `Keymap::from_entries()` +
   `KeymapBinding.doc` (commit `6461f56`); K.2.4.A.0.3
   translation pass entry resolution
@@ -5127,21 +5129,23 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-Workspace tests as of the last commit. Coverage by crate:
+Coverage by crate. Crates marked `(2026-06-16)` were re-verified this
+session; the rest are from the prior snapshot and want a re-run.
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 39    |
 | lattice-core (incl. integration) | 128   |
 | lattice-grammar                  | 191   |
+| lattice-keymap                   | 99 (2026-06-16) |
 | lattice-completion               | 124   |
 | lattice-config                   | 118   |
 | lattice-syntax                   | 82    |
 | lattice-runtime                  | 43    |
 | lattice-lsp                      | 183   |
 | lattice-picker                   | 48    |
-| lattice-ui-tui                   | 1403  |
-| lattice-host                     | 263   |
+| lattice-ui-tui                   | 1475 (2026-06-16) |
+| lattice-host                     | 738 (2026-06-16) |
 | lattice-ui-gpui                  | 25    |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
@@ -5194,7 +5198,7 @@ field already on `Editor`); `:set` continues to write the global layer.
 
 ---
 
-## narrow-mode N.1 + tree-sitter text objects (in design, 2026-06-10)
+## narrow-mode N.1 + tree-sitter text objects (✅ complete, 2026-06-10)
 
 Design fragments:
 [`../architecture/narrow-mode.md`](../architecture/narrow-mode.md) (the `zn`
@@ -5215,14 +5219,43 @@ host variants. Tree-sitter **text objects** (`af`/`if`, `ac`/`ic`, `aa`/`ia`,
 plus one new `ScopeResolver` seam in `lattice-grammar`; they compose with every
 operator (`daf`, `vic`, `znaf`), not just narrow.
 
+All slices landed 2026-06-10 (statuses live in the slice plan; this table
+mirrors the final state):
+
 | Slice | Title | Status |
 |---|---|---|
-| **N.1.0** | `textobjects.scm` (`.outer`) + `scope_at_cursor` (lattice-syntax) | ✅ 2026-06-10 |
-| **N.1.1** | `create_narrow_view` + `NarrowMinorMode` + `:narrow {range}` + `:widen` | 🗒 |
-| **N.1.2** | `:narrow` from Visual selection / cursor paragraph | 🗒 |
-| **N.1.3** | The `zn` narrow operator (operator-pending; composes with any motion/object) | 🗒 |
-| **N.1.4** | Tree-sitter text objects as first-class grammar objects (`ScopeResolver` seam + `af`/`ac`/`aa`/`al`/`aC` + `.inner`) | 🗒 |
-| **N.1.5** | Transparent stacked narrow — one-hop invariant to `RopeDocumentHandle` | 🗒 |
+| **N.1.0** | `textobjects.scm` (`.outer`) + `scope_at_cursor` (lattice-syntax) | ✅ |
+| **N.1.1** | `create_narrow_view` + `NarrowMinorMode` + `:narrow {range}` + `:widen` | ✅ |
+| **N.1.2** | `:narrow` from Visual selection / cursor paragraph | ✅ |
+| **N.1.3** | The `zn` narrow operator (operator-pending; composes with any motion/object) | ✅ |
+| **N.1.4** | Tree-sitter text objects as first-class grammar objects (`ScopeResolver` seam + `af`/`ac`/`aa`/`al`/`aC` + `.inner`) | ✅ |
+| **N.1.5** | Transparent stacked narrow — one-hop invariant to `RopeDocumentHandle` | ✅ |
+| **N.1.6** | Comment text object (`aC`/`iC`) — commentstring-driven + `TextObjectEnv` seam | ✅ |
+
+**Follow-on keymap work (2026-06-16).** Surfacing `zn` in Visual mode led to
+three keymap-architecture landings (design in
+[`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)):
+
+- **Operators act on the Visual selection BY DESIGN** (`fa372b8f`). An
+  operator's selection-operability is intrinsic, generated once per operator
+  by `keymap_normal::register_operator_bindings` (Normal op-pending family +
+  Visual `op.with_range(Range::Selection)`), not a per-operator Visual
+  binding. The hand-rolled Visual `operator_table` is gone; builtin
+  `d`/`c`/`y`/`>`/`<`, case `gU`/`gu`/`g~`, and contributed `zn` all get it
+  uniformly — so a Visual selection + `zn` narrows the selection with zero
+  narrow-specific wiring (the `:'<,'>narrow` path from `852e95e1` still works
+  too). §7.2 upgrade 3.
+- **Multi-mode binding API (B-field)** (`9b79b9da`) for NON-operator chords
+  that mean the same thing across modes: `KeymapHandle::bind_modes`,
+  `Keymap::bind_chord_modes`, and `keymap_entry! { mode: [Normal, Visual] }`.
+  `KeymapEntry.mode` → `modes: &[BindingMode]` (single-mode sugars to a
+  one-element slice; existing call sites unchanged); the translation pass fans
+  one entry into one binding per mode. §3.5 + §5.6.
+- **Single `keymap_entry!` definition** (`a7c7799b`): the duplicate copy in
+  `lattice-mode` is gone — it re-exports the canonical lattice-keymap macro
+  (`pub use lattice_keymap::keymap_entry`). Supersedes K.2.4.A.0.1's
+  move-to-lattice-mode note. `$crate` resolves to `lattice_keymap`
+  transitively, so mode crates need no direct dep.
 
 See also:
 [`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md)

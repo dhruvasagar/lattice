@@ -17,8 +17,11 @@ and no shaping.
 > cross-cutting improvements: O(viewport) incremental highlight + cell
 > build (flat to 100k lines), soft-wrap on both renderers, event-driven
 > TUI loop (100ms poll retired), decoration retention across focus changes
-> (inactive panes keep full syntax/inlay/diagnostic set), multibuffer
-> excerpt display, and a diff foundation. The WASM plugin host arrives
+> (inactive panes keep full syntax/inlay/diagnostic set, proven zero-recompute
+> on focus), multibuffer excerpt display, narrow mode (`zn`) with tree-sitter
+> text objects (`af`/`ac`/`aa`/`al`/`aC`), operators that act on the Visual
+> selection by design, a multi-mode keybinding API, and a diff foundation. The
+> WASM plugin host arrives
 > in Phase 7. See
 > [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
 > for the per-feature ledger.

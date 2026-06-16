@@ -97,6 +97,11 @@ In one line: lattice aims for **Zed's substrate discipline + Neovim's grammar +
 Emacs's extensibility model, with the UI-thread guarantee moved into the type
 system** — at the explicit, current cost of Zed's collaboration and maturity.
 
+The full architectural comparison — the mode-architecture deep-dive, the
+honest assessment, and the one "decide early" item (CRDT-vs-rope, if
+collaboration is ever in scope) — is in
+[`docs/dev/architecture/comparison-zed.md`](docs/dev/architecture/comparison-zed.md).
+
 > **Why not Helix here?** Helix shares Rust, Tree-sitter, and ropey, but those are
 > substrate *libraries*, not architecture — and on everything that matters the two
 > are opposite: vim verb-object grammar vs Helix's Kakoune-lineage selection-first

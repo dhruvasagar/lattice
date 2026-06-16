@@ -6,6 +6,17 @@ The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status per
 slice lives in [`../implementation.md`](../implementation.md).
 
+> **Status: 🗒 planned — design complete, implementation NOT started
+> (verified-from-source 2026-06-17).** The design fragment + this plan
+> exist (`ea302a6b`), and the lower-level `CancellationToken` substrate is
+> in place (grammar/runtime/actor plumbing + cooperative scan checks). But
+> the user-facing CG.1–CG.4 work is unbuilt: no `Action::Cancel`, no
+> `arm_cancel()` / `cancel_foreground()` / `active_cancel`, and `<C-g>` is
+> NOT bound to foreground cancellation. CG.5 (stack-based multi-op) is
+> explicitly deferred behind a future status-line/progress subsystem.
+> **This is the most valuable small Phase-4-adjacent item still open** —
+> CG.3 surfaces `<C-g>` cancellation of in-flight LSP commands.
+
 Each slice ships green-on-merge with the four artefacts CLAUDE.md
 mandates: architecture doc (updated as needed), benchmark coverage
 where load-bearing, test coverage of new scenarios + failure modes,

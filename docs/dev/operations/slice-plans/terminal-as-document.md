@@ -6,6 +6,21 @@ The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status
 per slice lives in [`../implementation.md`](../implementation.md).
 
+> **Status: ✅ feature-complete (verified 2026-06-17).** T-snap-1 ·
+> T-mode-1 · T-grammar-1 (narrow) · T-cursor-1 · T-search-1 · T-marks-1 ·
+> T-paint-1 · T-rich-1 all landed (`feat(terminal): T-…` commits) — the
+> terminal IS a `Document` buffer: motions, search, marks, text objects,
+> and visual all route through the `SyntheticDoc` rope. **T-clean-1** is
+> done for its DEAD-code scope (the bespoke *motion* grammar —
+> `do_terminal_nav_*` / `TerminalWordDir` / `terminal_word_step` /
+> `TermCharClass` — was retired in Phase B.2). The remaining bespoke
+> pieces (`do_terminal_enter_visual` + `t.visual` grid-coord selection +
+> the published `terminal_nav_cursor`) are **live, not dead** — terminal
+> visual selection still uses its own grid-coord substrate. Removing them
+> = the **deferred "aggressive Visual flip"** (route terminal visual
+> through the `SyntheticDoc` document selection, touching both renderers),
+> tracked as a follow-up — see T-grammar-1 (aggressive, deferred).
+
 Each slice ships green-on-merge with the four artifacts CLAUDE.md
 mandates: design fragment (updated as needed), tests, bench
 (where load-bearing), graceful error handling.

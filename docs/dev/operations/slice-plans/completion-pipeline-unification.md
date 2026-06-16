@@ -6,6 +6,24 @@ The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status
 per slice lives in [`../implementation.md`](../implementation.md).
 
+> **Status: ✅ complete (verified-from-source 2026-06-17).** Slices 1–8
+> landed, plus the full 7a–7d arc and beyond (`feat(slice 3c.unify…)`
+> commits): ranker-stack, MRU promotion, picker-via-pipeline, option-doc
+> annotators, GPUI annotation render; **7a–7b** unified the picker sources
+> onto `lattice_completion::CandidateGenerator` and migrated all 10
+> first-party sources with typed `accept_action` (`7b.0`–`7b.6`); **7c**
+> `CompletionRegistry` stores `SourceRegistration` bundles (`9a3a5f5e`);
+> **7d** picker-registry cutover (`090d4db3` accept-dispatch via
+> `DefaultAcceptHandler`, `839e009b` dual-registry lookup); **7g** typed
+> `AcceptAction` drives picker preview; **slice 8** benchmarks
+> (`b48e7315`); LSP stateful pickers stamped (slices 9–16). One pipeline,
+> one source contract — paramount #2 satisfied.
+>
+> **Deliberately descoped (not pending):** 7e/7f source *relocation* —
+> `a037a337` decided to KEEP `lattice-picker` as the picker-surface crate
+> rather than move sources. **Follow-up arc:** slice 17 (`PickerAction`
+> retirement, `046e2d24`) is queued separately. Neither blocks completion.
+
 | #   | Slice                                       | Effort | Description |
 |-----|---------------------------------------------|--------|-------------|
 | 1   | `3c.unify.ranker-stack`                     | small  | `Pipeline::ranker` → `Pipeline::rankers: Vec<>`. Composable rankers. Builtin `ScoreRanker` unchanged. Tests updated. |

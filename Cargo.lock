@@ -3704,6 +3704,10 @@ dependencies = [
 [[package]]
 name = "lattice-theme"
 version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "tracing",
+]
 
 [[package]]
 name = "lattice-ui-gpui"

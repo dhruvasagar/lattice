@@ -22,6 +22,14 @@ license.workspace = true
 # Design: docs/dev/architecture/theme-system.md.
 
 [dependencies]
+# T.2: lock-free read of the resolved-style table. The registry
+# publishes `ResolvedTheme` via `ArcSwap` so renderers read
+# `resolved.get(id)` without a lock on the hot path.
+arc-swap = { workspace = true }
+# T.2: resolution logs (never swallows) on an unknown palette key /
+# inherit cycle. Rare, theme-build-time only — `warn!` is correct
+# (user-actionable, not per-frame).
+tracing = { workspace = true }
 
 [lints]
 workspace = true

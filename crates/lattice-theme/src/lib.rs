@@ -17,6 +17,18 @@
 //!
 //! Design: `docs/dev/architecture/theme-system.md`.
 
+mod element;
+mod palette;
+mod registry;
+
+pub use element::{
+    ColorRef, ElementId, ElementName, ElementOwner, ModifierSet, StyleSpec, ThemeElement,
+};
+pub use palette::{default_palette, Palette, PaletteKey};
+pub use registry::{
+    register_builtins, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry, ThemeRegistryHandle,
+};
+
 /// A single style: optional foreground + optional background +
 /// modifiers (bold/italic/etc) + the rich-vocabulary attributes
 /// (`scale` / `family` / `weight`). `None` for fg/bg means "do not

@@ -45,7 +45,7 @@ is **fixed-point `FontScale(u16)` not `f32`** — `Style` must stay
 (incl. the `host_theme_default_adapts_to_tui_theme_default` round-trip
 pin); host + TUI + GPUI all build unchanged.
 
-### T.2 — palette + `StyleSpec` + `ColorRef` + resolution 🗒
+### T.2 — palette + `StyleSpec` + `ColorRef` + resolution ✅
 
 Add `Palette`, `PaletteKey`, `StyleSpec`, `ColorRef`, `ModifierSet`,
 `ResolvedTheme`. Implement build-time resolution: inherit-chain walk
@@ -59,18 +59,29 @@ element's resolved `Style` equals the current hardcoded value
 (byte-for-byte the existing `Theme::default()` field / `syntax_style`
 arm). This is the safety net for Thread B.
 
-### T.3 — `ThemeRegistry` service + `ElementId` interning 🗒
+**Landed (all in `lattice-theme`):** `element.rs` (identity +
+`StyleSpec`/`ColorRef`/`ModifierSet`, dotted `ElementName`), `palette.rs`
+(Catppuccin accents + `ansi.*` chrome + tints; a bare `&str` in a spec
+means a palette-key ref, not a literal — reference-not-absolute by
+default), `registry.rs` (resolution + the ~52 builtin elements + the
+parity pin). 24 tests green incl. the parity pin, inherit
+(`syntax.line_comment` inherits `syntax.comment`), dotted fallback,
+unknown-key-logs-not-panics, and palette-swap-rebuilds. **Re-carve:**
+the `ThemeRegistry` trait + `InMemoryThemeRegistry` + `ElementId`
+interning + `ArcSwap<ResolvedTheme>` landed here too (front-loaded from
+T.3), so T.3 narrows to ServiceRegistry wiring + boot.
 
-`ThemeRegistry` trait + `InMemoryThemeRegistry` (`RwLock<…>` for the
-name→id map + element table; `ArcSwap<ResolvedTheme>` for the read
-table). Register at boot as `ThemeRegistryHandle = Arc<dyn
-ThemeRegistry>` ([[feedback_servicesregistry_arc_typeid]]). Builtin
-elements registered at boot via a `register_builtin_elements(&reg)`
-call. `id(name)` interning; startup-time id capture helper for
-consumers.
+### T.3 — wire `ThemeRegistry` as a boot service 🗒
 
-Foundation complete: registry live, resolution correct, **nothing
-reads it yet** (the `Theme` struct still drives rendering).
+The trait + `InMemoryThemeRegistry` + `ElementId` interning +
+`ArcSwap<ResolvedTheme>` already landed in T.2. T.3 narrows to:
+register `InMemoryThemeRegistry::with_defaults()` in the host's
+`ServiceRegistry` at boot as `ThemeRegistryHandle = Arc<dyn
+ThemeRegistry>` ([[feedback_servicesregistry_arc_typeid]] — register
+and look up the SAME `Arc<dyn ThemeRegistry>` type), and expose a
+startup-time id-capture helper so consumers intern their `ElementId`s
+once. No consumer reads it yet (the `Theme` struct still drives
+rendering until T.4).
 
 ---
 

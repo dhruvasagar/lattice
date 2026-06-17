@@ -1082,6 +1082,123 @@ arms.
 - **`Document: Any` + downcast for typed handle access.** Contaminates the universal trait; opens the escape-hatch pattern for every future kind. Typed registry (`MultibufferRegistry`) keeps the downcast confined to multibuffer's own crate.
 - **Provider crates external to `lattice-multibuffer`.** User decision (2026-06-01): providers ship with multibuffer; the convention is one crate, feature-gated provider submodules.
 
+### 3.8 Excerpt-header visual model (MH, 2026-06-17)
+
+Sequencing + slice status:
+[`slice-plans/multibuffer-header-polish.md`](../operations/slice-plans/multibuffer-header-polish.md).
+
+The per-excerpt header (distinct from the §3.7 view-header
+status line) is the row a user reads to know *which file*
+they're looking at. M.2 shipped it as a placeholder:
+`default_header_cells` emits `── <title> ──` in box rules,
+default foreground, tagged `VirtualRowKind::Generic` — which
+in both renderers falls through to the
+`diff_deletion_block_bg` backdrop. That faint-red tint is an
+accident of kind-reuse, not a design: a search header is not
+a deletion block.
+
+The cross-editor convention for a multibuffer / search-result
+header (Zed, VSCode) is a **per-file group header**:
+file-type icon, basename emphasised, directory path dimmed,
+match-count badge, on its own subtle background. We already
+emit one header per consecutive source
+(`compose_header_rows`), so the structure is correct — only
+the cell content, a dedicated row kind, and theme colours are
+missing.
+
+```
+  filename.rs  src/multibuffer/  ·  7 matches
+──────────────────────────────────────────────
+```
+
+#### Data model
+
+The header renderer is **generic substrate** — it stays in
+`MultibufferExcerptHeaderProvider` so every multibuffer kind
+(search, diff, references, diagnostics) inherits
+icon+path+count for free. But the *semantic data* it renders
+is supplied by the **producing mode** on the excerpt:
+
+```rust
+pub struct ExcerptHeader {
+	pub title: String,             // fallback label, kept
+	pub style: ExcerptHeaderStyle,
+	pub path: Option<PathBuf>,     // MH: drives icon + basename/dir split
+	pub match_count: Option<u32>,  // MH: badge; mode-owned datum
+}
+```
+
+`match_count` is **mode-consumed data set at production**
+(the search mode counts hits per source as it builds
+excerpts); the header *render function* is the uniform-host
+consumer, so it stays substrate per the substrate-vs-mode
+distinguishing rule. `path` drives both the icon
+(`entry_visual`) and the basename-bright / dir-dim split.
+
+#### Resolve at `collect()`, never bake
+
+Icon glyph and segment colours are resolved **inside
+`MultibufferExcerptHeaderProvider::collect()`**, reading the
+live `ui.nerd_fonts` option and the header theme colours
+through the `FrameView::for_buffer` seam
+([[project_per_buffer_options_direction]]) — *not* baked into
+the cells at excerpt-creation time. This is load-bearing: the
+icon-palette rule requires a live `ui.nerd_fonts` toggle to
+re-render every glyph surface. Baking the glyph would freeze
+the palette at search time and silently break the toggle.
+Rejected for that reason.
+
+#### Row kind + theme
+
+A new `VirtualRowKind::Header` variant carries the row's
+provenance so renderers pick a header backdrop instead of the
+deletion-block fallback. New `host_theme` fields, propagated
+to **both** renderers in lockstep
+([[feedback_tui_gpui_parity]]):
+
+| Field | Role |
+|---|---|
+| `multibuffer_header_bg` | header row backdrop (subtle, distinct from deletion red) |
+| `multibuffer_header_fg` | basename / primary text |
+| `multibuffer_header_path_fg` | dimmed directory path |
+| `multibuffer_header_count_fg` | match-count badge |
+
+The §3.7 status-row colours (previously hardcoded
+`0x999999` / `0x44cc88` / `0xff4444`) move into theme fields
+in the same pass so the whole multibuffer surface is
+themeable.
+
+Icons follow [[feedback_icon_palette]] — nerd-font glyph when
+`ui.nerd_fonts=on`, BMP-shape fallback otherwise; both occupy
+the same cell width so the header geometry doesn't shift on
+toggle.
+
+#### Incremental-append contract (MH.B)
+
+M.11's `append_excerpts` (§3.3) appends the new excerpts to
+`state.excerpts` but then **recomposes the entire composed
+rope + `RowTranslation` from all sources** — O(total
+excerpts) per batch. Under streaming search (§3.7, ~50-file
+batches) a 10k-hit result drives ~200 full recomposes, the
+later ones each walking the whole accumulated set. That cost
+is what makes a large search's progressive reveal hitch.
+
+Contract: `append_excerpts` extends the composed rope (append
+the new sources' segments) and the `RowTranslation` (push the
+new `RowEntry`s) **incrementally** — O(batch), independent of
+accumulated total. `replace_excerpts` (the `gr` refresh path)
+stays a full rebuild; it is a deliberate reset, not a
+hot-loop append.
+
+The invariant the append must preserve: the composed rope is
+byte-identical to what a full `compose_text_from_sources` over
+the same excerpt list would produce, and `RowTranslation`
+entries stay in composed-row order. Edit-forwarding (§4)
+depends on this — a regression here mistranslates user edits
+to wrong source coordinates. The equivalence is pinned by a
+test (`streamed append == batch build`) before the
+optimisation lands.
+
 ## 4. Edit propagation
 
 The mechanism that turns "edit at multibuffer row M" into

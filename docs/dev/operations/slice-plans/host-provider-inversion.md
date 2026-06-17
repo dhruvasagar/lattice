@@ -5,30 +5,50 @@
 > (the *what + why*: the core/feature boundary + the two enforcement
 > mechanisms). This file owns *when + in what order + status*.
 
-**Scope (locked):** sealed constructors (drift-proof all features) + extract
-**oil** and **file-tree** out of `lattice-host`. **Core stays core** — LSP,
-diff, terminal, snippet, multibuffer-substrate are NOT inverted. No performance
+**Scope (locked, narrowed 2026-06-17):** extract **oil** and **file-tree** out
+of `lattice-host` via dependency inversion. **Core stays core** — LSP, diff,
+terminal, snippet, multibuffer-substrate are NOT inverted. No performance
 compromise. Zero user-visible change.
 
 **Invariant at the end:** `lattice-host/Cargo.toml` depends on neither
-`lattice-oil` nor `lattice-file-tree`; `KeymapLayer::Builtin` is not
-constructible by a mode crate.
+`lattice-oil` nor `lattice-file-tree` — so `Editor::do_oil_*` / `do_file_tree_*`
+stop compiling (the types leave host scope).
+
+> **The "sealed constructors" mechanism was dropped (2026-06-17) — it didn't
+> survive the code.** The original plan paired the extraction with
+> type-sealing the drift classes. On inspection all three sub-ideas
+> collapsed:
+> - **Keymap-at-Builtin is already sealed.** `keymap_entry!` / `KeymapEntry`
+>   carries no layer; `PushLayerKind` has no `Builtin` variant; no mode crate
+>   holds a `KeymapHandle`. A mode literally cannot express "Builtin" through
+>   any API it has. A private field on `KeymapLayer::Builtin` would only close
+>   a theoretical residual (the `pub bind(raw layer)`) nothing can reach,
+>   at a ~54-site churn — not worth it.
+> - **Kind-branching is already disciplined.** The one renderer
+>   `match buffer_kind` (`render.rs:2064`) is the permitted aligned-by-fallback
+>   form (Document → cursor hot-slot; `_` → pane state) with the required
+>   enumeration comment. Compliant, not a violation.
+> - **Sealing `Document` would be *anti-extensibility*.** Providers (and future
+>   plugins) MUST implement `Document` for their buffer kinds — that is
+>   "everything is a buffer." Sealing it blocks the exact extensibility it was
+>   meant to protect. `#[non_exhaustive] Action` likewise breaks internal
+>   dispatch for nil gain (provider Action variants are prevented by the
+>   inversion, not by non_exhaustive).
+>
+> So the one genuine type-enforcement win is the **dependency inversion** —
+> nothing else.
 
 ## Slices
 
 | Slice | Title | Status |
 |-------|-------|--------|
-| **HPI.1** | Seal `KeymapLayer::Builtin` (mode API yields only `MinorMode`) | 🚧 |
-| **HPI.2** | Seal `Document` trait + `#[non_exhaustive] Action` | 🗒 |
-| **HPI.3** | `ActionContext` primitive audit + extension (the WASM-API surface) | 🗒 |
-| **HPI.4** | Extract **oil** → `lattice-oil`; drop the host dep; CI guard | 🗒 |
-| **HPI.5** | Extract **file-tree** → `lattice-file-tree`; drop the host dep; CI guard | 🗒 |
-| **HPI.6** | Rewrite `comparison-zed.md` §5 to the earned end-state; ledger + memory | 🗒 |
+| **HPI.1** | `ActionContext` primitive audit + extension (the WASM-API surface) | 🚧 |
+| **HPI.2** | Extract **oil** → `lattice-oil`; drop the host dep; CI guard | 🗒 |
+| **HPI.3** | Extract **file-tree** → `lattice-file-tree`; drop the host dep; CI guard | 🗒 |
+| **HPI.4** | Rewrite `comparison-zed.md` §5 to the earned end-state; ledger + memory | 🗒 |
 
-Drift-proofing (HPI.1–2) lands first and independently — it protects against
-*new* drift while the extractions are in flight. HPI.3 gates HPI.4/5 (the
-handlers can't move until the primitives they need are on `ActionContext`).
-HPI.4 is the template; HPI.5 mirrors it.
+HPI.1 gates HPI.2/3 (the handlers can't move until the primitives they need are
+on `ActionContext`). HPI.2 is the template; HPI.3 mirrors it.
 
 ---
 

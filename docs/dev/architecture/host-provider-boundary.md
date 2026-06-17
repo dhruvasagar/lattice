@@ -43,25 +43,7 @@ win (heuristic #1's explicit anti-pattern). The plugin *seam* (registries / WIT)
 makes built-ins and plugins **symmetric where it matters** — contribution — not
 by demoting every built-in to a plugin.
 
-## 2. Two enforcement mechanisms
-
-### (a) Sealed constructors — drift-proofing for all features, present and future
-
-Type-enforce the high-frequency drift classes:
-
-- **`KeymapLayer::Builtin` becomes non-constructible by modes** — a private
-  constructor + a `BuiltinToken` only the host's builtin registrar holds. The
-  mode-facing API (`register_mode_keymap(mode_id, …)`) yields **only**
-  `MinorMode(mode_id)`. → "a mode bound at the universal layer" stops compiling.
-- **`Document` is sealed** (sealed-trait pattern) — removes the foothold for
-  renderer/motion kind-branching.
-- **`Action` is `#[non_exhaustive]`** and the canonical extension path is
-  `Effect::Action(AppEffect { ActionId })`. Provider-specific behaviour cannot
-  be a host `Action` variant *once the provider's types are out of host scope*
-  (the dependency inversion does the real prevention; core features keep their
-  variants, which is correct).
-
-### (b) Dependency inversion of the feature-buffers
+## 2. The enforcement mechanism — dependency inversion
 
 `lattice-host` drops its `lattice-oil` and `lattice-file-tree` dependencies. The
 `do_oil_*` / `do_file_tree_*` / `run_*_invocation` bodies move into their crates
@@ -71,6 +53,17 @@ this, `Editor::do_oil_*` is a **compile error** — the types are not in scope.
 
 **Invariant:** `lattice-host/Cargo.toml` lists neither `lattice-oil` nor
 `lattice-file-tree`. Checkable in CI; ultimately a fact of the build graph.
+
+> **A "sealed constructors" mechanism was considered and dropped (2026-06-17)
+> — it did not survive the code.** Type-sealing the drift classes sounded
+> complementary, but each sub-idea collapsed on inspection: keymap-at-Builtin is
+> *already* sealed (`keymap_entry!` carries no layer; `PushLayerKind` has no
+> `Builtin` variant; modes hold no `KeymapHandle`); the one renderer
+> `match buffer_kind` (`render.rs:2064`) is the *permitted* aligned-by-fallback
+> form, not a violation; and **sealing the `Document` trait would be
+> anti-extensibility** — providers and future plugins MUST implement it for
+> their buffer kinds. So dependency inversion is the one genuine
+> type-enforcement win. Full analysis in the slice plan.
 
 ## 3. The `ActionContext` primitive surface — the load-bearing piece
 

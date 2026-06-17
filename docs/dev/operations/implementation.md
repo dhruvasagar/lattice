@@ -5264,6 +5264,49 @@ for the remaining consumer providers (A.1–A.21 catalog, formerly archived in
 
 ---
 
+## host ↔ provider boundary + inversion (analysed, 🗒 DEFERRED to post-Phase-7, 2026-06-17)
+
+Design fragment:
+[`../architecture/host-provider-boundary.md`](../architecture/host-provider-boundary.md).
+Slice plan: [`slice-plans/host-provider-inversion.md`](slice-plans/host-provider-inversion.md).
+Motivation: the recurring-drift cost analysed in
+[`../architecture/comparison-zed.md`](../architecture/comparison-zed.md) §5.
+
+**The boundary decision (lasting).** Drawn on merit — *"can the editor be itself
+without this, and is it meant to be replaceable?"* — not a reflexive "everything
+is a provider":
+
+- **Core** (host owns, holds state directly, no indirection, no perf compromise):
+  text/grammar/rendering substrate + the registries, **LSP**, **diff**,
+  **terminal** (the `SyntheticDoc` seam), **snippet** (the `Editor` holds its
+  registry/policy/completion-meta), multibuffer-substrate, completion/picker,
+  syntax, folds, messages, help. Native-core like the grammar — the plugin
+  *seam* lets others add intelligence; the built-in stays native.
+- **Feature-buffers** (the only genuine extraction candidates): **oil**,
+  **file-tree** (zero `Editor`-struct coupling; pure `run_*_invocation`
+  dispatch). (narrow/search already live in `lattice-multibuffer/providers`.)
+
+**Why DEFERRED, not done.** The full dependency inversion was scoped and the
+extraction's cost surfaced via a primitive audit: relocating ~3 tiny first-party
+handlers requires exposing a **~10-method generic `ActionContext` facade** —
+several primitives substantial (`do_edit`, `do_goto_tab`). **That facade IS the
+plugin API**, which must be designed against real plugins at the WASM-host phase
+(Phase 7), not retrofitted from a file browser. The "host stays thin" drift it
+would remove is cosmetic: the load-bearing classes are already sealed by
+construction (the `keymap_entry!` macro carries no layer; `PushLayerKind` has no
+`Builtin`; kind-branching is aligned-by-fallback; provider behaviour routes via
+`ActionId`). A "sealed constructors" mechanism was also considered and dropped —
+it did not survive the code (sealing `Document` would be *anti-extensibility*,
+since providers/plugins must implement it). The HPI.1 `ActionContext` primitive
+inventory is captured in the slice plan as the Phase-7 starting point.
+
+**Net:** the boundary decision is recorded (the WASM host will need it); the
+execution waits for Phase 7 where the `ActionContext`/plugin API has real
+requirements. The `comparison-zed.md` "fragile drift" claim was corrected to the
+accurate bounded-and-structurally-sealed picture.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

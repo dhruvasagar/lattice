@@ -1,6 +1,20 @@
 # Host ↔ provider inversion — slice plan
 
-> **Status: 🚧 active (started 2026-06-17).** Sequencing companion to
+> **Status: 🗒 DEFERRED to post-Phase-7 (2026-06-17).** Analysed in depth and
+> deliberately deferred — *not* because it's hard, but because the evidence
+> doesn't justify the cost now. The extraction would relocate two tiny,
+> first-party, well-behaved feature-buffers (oil, file-tree) by exposing a
+> ~10-method generic `ActionContext` facade — and **that facade is the plugin
+> API**, which should be designed against real plugins in the WASM-host phase
+> (Phase 7), not retrofitted from a file browser. The "host stays thin" drift it
+> would remove is cosmetic: the load-bearing classes are already sealed (the
+> `keymap_entry!` macro carries no layer; kind-branching is aligned-by-fallback;
+> provider actions go through `ActionId`). The HPI.1 `ActionContext` primitive
+> inventory below is captured for when Phase 7 resumes this. The lasting output
+> is [`../../architecture/host-provider-boundary.md`](../../architecture/host-provider-boundary.md)
+> — the recorded core-vs-feature decision the WASM host will need.
+>
+> Sequencing companion to
 > [`../../architecture/host-provider-boundary.md`](../../architecture/host-provider-boundary.md)
 > (the *what + why*: the core/feature boundary + the two enforcement
 > mechanisms). This file owns *when + in what order + status*.
@@ -49,6 +63,38 @@ stop compiling (the types leave host scope).
 
 HPI.1 gates HPI.2/3 (the handlers can't move until the primitives they need are
 on `ActionContext`). HPI.2 is the template; HPI.3 mirrors it.
+
+## HPI.1 audit result — the `ActionContext` primitive inventory (captured 2026-06-17, for Phase 7)
+
+The oil/file-tree dispatch bodies (`do_oil_follow` / `do_oil_navigate_up` /
+`do_file_tree_follow` / `run_oil_invocation` / `run_file_tree_invocation`) call
+two kinds of primitive:
+
+**Generic editor primitives → the `ActionContext` surface (the embryonic plugin
+API):** `active_pane_buffer_id`, `set_message`, `buffer_store` access,
+`store_yank`, `clamp_cursor_to_buffer`, `do_exit_visual`, `run_read_only_motion`,
+`do_edit` (open file — *substantial*: registry + LSP-attach + pane wiring),
+`do_goto_tab` (*substantial*: pane-tree mutation), `arm_missing_arg_prompt`.
+≈ 10 methods, several of them substantial — this is real plugin-API design.
+
+**Feature-specific → move *with* the handler into the provider crate** (operate
+on buffer-local state via the buffer-store): oil — `do_open_oil`, `set_oil_dir`,
+`oil_dir_for`; file-tree — `file_tree_entries_for`, `set_file_tree_entries`,
+`file_tree_nerd_fonts_for`.
+
+**Why this is the deferral evidence.** Relocating ~3 tiny handlers requires
+exposing ~10 substantial `Editor` operations through a generic facade — premature
+plugin-API design, driven by a file browser's incidental needs rather than real
+plugins. Phase 7 designs this surface against actual plugin requirements; this
+inventory is the starting point.
+
+---
+
+> **NOTE (2026-06-17): the HPI.1/HPI.2 *detail* sections below are superseded.**
+> They describe the dropped "sealed constructors" mechanism (see the boxed
+> analysis above). They are left for history; the authoritative plan is the
+> table + the deferral banner. When Phase 7 resumes this, rewrite the body
+> around the `ActionContext` design (HPI.1) + the oil/file-tree extractions.
 
 ---
 

@@ -114,8 +114,23 @@ a pure consumer.
 
 **Where it is riskier / costlier than Zed.**
 
-- **Ceremony is real and fragile.** "Host stays thin / modes own everything" is
-  enforced by convention + tests, not the type system, and it drifts.
+- **Mode-ownership is mostly enforced *structurally*; a small convention residue
+  remains (and it is bounded, not fragile).** An earlier draft called this
+  "fragile, enforced by convention + tests, and it drifts." Scrutiny corrected
+  that. The load-bearing drift classes are already sealed *by construction*: a
+  mode cannot register at the universal keymap layer (the `keymap_entry!` macro
+  carries no layer; `PushLayerKind` has no `Builtin` variant; modes hold no raw
+  keymap handle), renderer kind-branching is disciplined by an aligned-by-
+  fallback rule, and provider-specific behaviour routes through a generic
+  `ActionId`. What is left is a *bounded, cosmetic* residue — two first-party
+  feature-buffers (oil, file-tree) whose dispatch still lives host-side — plus
+  the fact that *core* features and migration *completeness* are checked by
+  tests, not types (the latter being a limit of any type system). Removing even
+  that residue means inverting those features behind a generic host-API facade —
+  which *is* the plugin API, deliberately deferred to the WASM-host phase so it
+  is designed against real plugins, not retrofitted from a file browser. So the
+  discipline holds largely by construction; the gap is real but small and
+  ratcheted, not a fragile system in danger of silent breakage.
 - **Unproven at ecosystem scale.** The WASM host exists; the plugin *ecosystem*
   is empty. Zed's value compounds from its extensions, LSP/DAP, and AI;
   lattice's compounding hasn't started.

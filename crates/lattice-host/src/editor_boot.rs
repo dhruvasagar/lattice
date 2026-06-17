@@ -1123,6 +1123,20 @@ impl Editor {
                 // reach it from `on_activate`. Same Arc as the
                 // `Editor.snippet_session` field (set below).
                 s.register::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
+                // T.3 (theme-system): the theme-element registry,
+                // seeded with the default palette + all builtin
+                // elements. Consumers (renderers, modes) look it up
+                // via `services().get::<ThemeRegistryHandle>()` and
+                // intern their `ElementId`s once at `on_activate`
+                // (T.4). Register + look up the SAME
+                // `Arc<dyn ThemeRegistry>` type per the
+                // ServiceRegistry Arc/TypeId rule
+                // (`feedback_servicesregistry_arc_typeid`). Nothing
+                // reads it yet — the `Theme` struct still drives
+                // rendering until T.4.
+                let theme_registry: lattice_theme::ThemeRegistryHandle =
+                    Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+                s.register::<lattice_theme::ThemeRegistryHandle>(theme_registry);
                 Arc::new(s)
             },
             // Perf plan B.4: wrap the seeded HashMap so the

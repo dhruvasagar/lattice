@@ -71,17 +71,20 @@ the `ThemeRegistry` trait + `InMemoryThemeRegistry` + `ElementId`
 interning + `ArcSwap<ResolvedTheme>` landed here too (front-loaded from
 T.3), so T.3 narrows to ServiceRegistry wiring + boot.
 
-### T.3 — wire `ThemeRegistry` as a boot service 🗒
+### T.3 — wire `ThemeRegistry` as a boot service ✅
 
 The trait + `InMemoryThemeRegistry` + `ElementId` interning +
-`ArcSwap<ResolvedTheme>` already landed in T.2. T.3 narrows to:
+`ArcSwap<ResolvedTheme>` already landed in T.2. T.3 narrowed to:
 register `InMemoryThemeRegistry::with_defaults()` in the host's
 `ServiceRegistry` at boot as `ThemeRegistryHandle = Arc<dyn
-ThemeRegistry>` ([[feedback_servicesregistry_arc_typeid]] — register
-and look up the SAME `Arc<dyn ThemeRegistry>` type), and expose a
-startup-time id-capture helper so consumers intern their `ElementId`s
-once. No consumer reads it yet (the `Theme` struct still drives
-rendering until T.4).
+ThemeRegistry>` ([[feedback_servicesregistry_arc_typeid]] — registered
+and looked up under the SAME `Arc<dyn ThemeRegistry>` type).
+
+**Landed:** one registration in `editor_boot.rs`'s `ServiceRegistry`
+block; host builds green. No consumer reads it yet (the `Theme`
+struct still drives rendering until T.4). The startup-time
+id-capture helper folds into T.4 where its first consumer lands (no
+speculative API ahead of a reader).
 
 ---
 
@@ -218,24 +221,87 @@ O(viewport-runs).
 
 ---
 
+## Thread E — multi-theme library + picker
+
+Depends on T.9 (the `:colorscheme` swap + named-theme registry).
+Lands last, once every builtin element resolves through the palette
+(T.4–T.6) so a palette swap re-colors the whole surface.
+
+### T.11 — migrate ~5 popular cross-editor themes 🗒
+
+Each theme is a `(Palette, element-overrides)` pair (design §2/§8) —
+mostly a `Palette` that fills the **same key vocabulary** the
+builtins reference (`text`, `overlay0`, `green`, `mauve`, `red`,
+`ansi.*`, the tints …), so swapping it re-colors everything with zero
+per-theme element wiring. Ship the default **Catppuccin Mocha** (T.2)
+plus five well-known cross-editor palettes, chosen for breadth and
+recognizability ([[feedback_editor_design_references]] — weight
+broadly; all are cross-editor staples):
+
+- **Gruvbox Dark** (vim origin) · **Tokyo Night** (neovim/Zed) ·
+  **Dracula** (cross-editor classic) · **Nord** · **Solarized Dark**.
+
+Each lives as a `fn <name>_palette() -> Palette` + registration in the
+named-theme registry. Light variants (Latte / Solarized Light) are a
+follow-on, not in the five.
+
+**Sub-decision deferred to this slice:** the palette-key vocabulary is
+currently Catppuccin-flavored (`mauve`, `peach`, `sapphire`, `maroon`,
+`pink`). Migrating non-Catppuccin themes may want **generic
+role-named keys** (`purple`/`orange`/`cyan` or `accent.*`) so each
+theme maps cleanly to its nearest color. Revisit when T.11 executes —
+rename the vocabulary if the Catppuccin-specific names fight the other
+palettes (this is a vocabulary refactor across the builtins +
+default palette, parity-pinned).
+
+Pin: each theme resolves every builtin element to *some* color (no
+unknown-palette-key warnings); a golden per theme over a
+representative element set.
+
+### T.12 — theme picker 🗒
+
+A buffer-backed picker (the existing `lattice-picker` surface, same
+as `:b` / file picker) listing every registered theme. **Live
+preview on highlight** — the cross-editor convention (VSCode / Zed /
+neovim `telescope` colorschemes all preview the theme as you move the
+selection; [[feedback_convention_first]]): moving the cursor applies
+the palette via the T.9 swap so the user sees the real editor recolor;
+`<Esc>` restores the prior theme, `<CR>` commits + persists to user
+TOML. Triggered by `:colorscheme` with no argument (with-argument
+stays the direct swap from T.9). Owned by a small theme-picker mode in
+the theme/host surface — keymap + on-highlight handler live with the
+mode ([[feedback_mode_owns_its_surface]]), not the host.
+
+Pin: highlight-preview swaps the resolved table (palette version
+bumps, cells rebuild); `<Esc>` restores byte-identically; no flicker
+on unedited content ([[feedback_decorations_update_in_place]]); TUI +
+GPUI in lockstep.
+
+---
+
 ## Sequencing
 
 ```
-A.1 → A.2 → A.3        foundation (crate, resolution, registry)
+A.1 → A.2 → A.3            foundation (crate, resolution, registry)  ✅✅🗒
         ↓
-B.4 → B.5 → B.6        migrate builtin consumers (parity-pinned)
+B.4 → B.5 → B.6 → B.6.t    migrate consumers + dismantle Theme (parity-pinned)
         ↓
-C.7 → C.8             extensibility (mode elements, buffer-local remap)
+C.7 → C.8                 extensibility (mode elements, buffer-local remap)
         ↓
-D.9, D.10            surface + rich vocab (D.10 parallelisable after B)
+D.9, D.10                 surface + rich vocab (D.10 parallelisable after B)
+        ↓
+E.11 → E.12               multi-theme library + live-preview picker (after D.9)
 ```
 
-Thread A is pure addition (no visual change) and lands first. Thread
-B is the risk — each slice parity-pinned against T.2's
+Thread A is pure addition (no visual change) and lands first (T.1/T.2
+✅; T.3 ✅ registers the boot service). Thread B is the risk — each
+slice parity-pinned against T.2's
 `resolved_builtins_match_legacy_literals` net, both renderers in
-lockstep. Thread C delivers the user requirement (mode-registered +
-overridable elements). Thread D is surface polish + the first
-Layer-1 rich-rendering capability.
+lockstep, ending with the Theme teardown (T.6.t). Thread C delivers
+the user requirement (mode-registered + overridable elements). Thread
+D is surface polish + the first Layer-1 rich-rendering capability.
+Thread E (last) ships the migrated theme library + the picker —
+needs T.9's swap mechanism + a fully palette-resolved surface.
 
 **Deferred** (design §11): WIT plugin registration of elements
 (plugin phase); Layer 2 display/layout — variable row height,

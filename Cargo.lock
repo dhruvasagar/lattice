@@ -3489,6 +3489,7 @@ dependencies = [
  "lattice-snippet",
  "lattice-syntax",
  "lattice-terminal",
+ "lattice-theme",
  "memchr",
  "notify",
  "ropey",
@@ -3699,6 +3700,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "lattice-theme"
+version = "0.1.0"
 
 [[package]]
 name = "lattice-ui-gpui"

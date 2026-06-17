@@ -22,19 +22,28 @@ hot path (design §7).
 
 ## Thread A — foundation (`lattice-theme` crate + resolution)
 
-### T.1 — extract `lattice-theme`, grow `Style` vocabulary 🗒
+### T.1 — extract `lattice-theme`, grow `Style` vocabulary ✅
 
 Create `crates/lattice-theme`. Move `Color` / `Style` / `Modifiers`
 / `NamedColor` / `to_rgb_u32` / `parse_color` out of
 `lattice-host/src/ui/theme.rs` into it; `host_theme` re-exports them
 so every existing call site compiles unchanged. Grow `Style` with
-additive `scale: Option<f32>` / `family: Option<FamilyId>` /
+additive `scale: Option<FontScale>` / `family: Option<FamilyId>` /
 `weight: Option<Weight>` (all `None` by default — no behavior
 change; TUI ignores them, GPUI reads them in T.10). Dep edges:
 `lattice-theme → {}` (leaf); `{lattice-host, lattice-mode,
 lattice-cells, lattice-ui-tui, lattice-ui-gpui} → lattice-theme`.
 
 Pure relocation + additive fields. Green with zero visual change.
+
+**Landed:** `lattice-theme` leaf crate created (zero workspace
+deps); primitives moved + re-exported from `lattice_host::ui::theme`;
+`Theme` / `syntax_style` / `Default` stay in host. Rich-vocab scale
+is **fixed-point `FontScale(u16)` not `f32`** — `Style` must stay
+`Eq + Hash` for the `MatrixVersion::theme` content-hash fold (design
+§3.4 corrected). 12 theme-crate tests + host/TUI theme tests green
+(incl. the `host_theme_default_adapts_to_tui_theme_default` round-trip
+pin); host + TUI + GPUI all build unchanged.
 
 ### T.2 — palette + `StyleSpec` + `ColorRef` + resolution 🗒
 

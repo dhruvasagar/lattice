@@ -1,0 +1,27 @@
+[package]
+name = "lattice-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Renderer-neutral theme primitives: the `Color` / `Style` /
+# `Modifiers` / `NamedColor` value types + the rich-vocabulary
+# attribute types (`FontScale` / `Weight` / `FamilyId`) + the
+# `parse_color` helper. A LEAF crate — depends on no other
+# workspace crate — so every layer above (cells, mode, host, both
+# renderers) can share one definition of a style.
+#
+# T.1 (theme-system slice plan): these types moved here out of
+# `lattice-host/src/ui/theme.rs`; host re-exports them from their
+# old path (`lattice_host::ui::theme`) so existing call sites are
+# unchanged. The element registry + palette + resolution (T.2/T.3)
+# land in this crate next; the host's `Theme` struct + `syntax_style`
+# stay in host until the consumer-migration thread (T.4+).
+#
+# Design: docs/dev/architecture/theme-system.md.
+
+[dependencies]
+
+[lints]
+workspace = true

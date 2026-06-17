@@ -166,7 +166,7 @@ build time, not read time.
 		pub bg: Option<ColorRef>,
 		pub modifiers: ModifierSet,   // set / unset / inherit per modifier
 		// ---- rich vocabulary (§5); honored by GPUI, degraded by TUI ----
-		pub scale: Option<f32>,       // relative height multiplier (emacs :height float)
+		pub scale: Option<f32>,       // relative height ratio (emacs :height float); resolves to FontScale (§3.4)
 		pub family: Option<FamilyRef>,// proportional / monospace family ref
 		pub weight: Option<Weight>,   // finer than the bold bool
 		// box / overline / underline-style land here when a renderer reads them
@@ -210,16 +210,25 @@ paramount-goal-aligned).
 	/// The concrete, fully-resolved style the renderers read. This
 	/// is today's `host_theme::Style`, GROWN with the rich-vocab
 	/// fields. Every field concrete; no references, no inherit.
-	#[derive(Copy, Clone, PartialEq)]
+	#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 	pub struct Style {                // re-exported as host_theme::Style
 		pub fg: Option<Color>,
 		pub bg: Option<Color>,
 		pub modifiers: Modifiers,     // existing bools
-		pub scale: Option<f32>,       // None ⇒ 1.0 (no-op on TUI)
+		pub scale: Option<FontScale>, // None ⇒ 1.0 (no-op on TUI)
 		pub family: Option<FamilyId>, // None ⇒ buffer default
 		pub weight: Option<Weight>,
 	}
 ```
+
+**`Style` must stay `Eq + Hash`** (T.1): the host folds a
+content-hash of the `Theme` into `lattice_cells::MatrixVersion::theme`
+so a palette change rebuilds the cell matrix. `f32` is neither `Eq`
+nor `Hash`, so the resolved scale is fixed-point —
+`FontScale(u16)`, hundredths (`100` = 1.0×). The authoring
+`StyleSpec.scale` (§3.2) stays an `f32` ratio; resolution quantizes
+it to `FontScale` here. `Weight` is an enum and `FamilyId` an
+interned `u32`, both `Hash`.
 
 `Style` stays `Copy` and cheap — the renderers keep adapting it to
 ratatui (`From<&Style>`) and to GPUI (`to_rgb_u32` + the new

@@ -59,6 +59,12 @@ arc-swap = { workspace = true }
 # Phase 5.2: folds.rs uses `tree_sitter::QueryCursor` for the
 # syntax-fold provider; modes.rs touches `lattice_syntax::Lang`.
 lattice-syntax = { path = "../lattice-syntax" }
+# T.1 (theme-system slice plan): renderer-neutral theme
+# primitives (`Color` / `Style` / `Modifiers` / `NamedColor` +
+# rich-vocab attrs + `parse_color`) live in this leaf crate;
+# `lattice_host::ui::theme` re-exports them so existing call sites
+# are unchanged. See docs/dev/architecture/theme-system.md.
+lattice-theme = { path = "../lattice-theme" }
 # S2.1 (2026-05-26): cell-grid renderer substrate. `RenderState`
 # carries a `CellsRenderState` whose
 # `matrix: Arc<ArcSwap<CellMatrix>>` is the contract with the

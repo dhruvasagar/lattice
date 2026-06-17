@@ -575,6 +575,37 @@ markdown/org future without shipping attrs no renderer honors yet
 (respecting "don't add beyond what the task requires" while not
 designing a closed struct that forecloses Layer 1).
 
+### 10.1 The `Theme` struct is fully dismantled (decided 2026-06-17)
+
+The migration thread does not leave a `Theme` shim. Decided on
+heuristic #1 (don't keep the inferior dual representation out of
+risk-aversion):
+
+- **Style fields → the resolved table is the sole source.** As each
+  consumer migrates to `resolved.get(id)` (T.4 chrome, T.5 syntax,
+  T.6 hoisted literals), its `Theme` style field is deleted. No
+  getter shim survives.
+- **Non-style fields → `ui.*` options.** `Theme` also carried
+  non-style *config* — the 4 `diagnostic_*_glyph` chars, the
+  `pane_separator_vertical/horizontal` chars, and the
+  `nerd_fonts` / `dim_inactive_panes` flags. These are not theme
+  elements (an element resolves to a `Style`; a glyph/flag does not).
+  They migrate to the typed options system (`design.md` §5.12): the
+  flags + the vertical separator are already `ui.*`-backed and merely
+  stop round-tripping through `Theme`; new `ui.*` options are added
+  for the diagnostic glyphs + the horizontal separator. Their
+  consumers read the resolved option, not `Theme`.
+- **`Theme` is then deleted**, along with the TUI's `From<&Theme>`
+  adapter + the `host_theme_default_adapts_to_tui_theme_default`
+  round-trip pin (superseded by the per-element parity pin). The
+  content-hash currently folded into `MatrixVersion::theme` is
+  replaced by `ResolvedTheme::version()` (§7).
+
+Rejected: keeping `Theme` as a getter shim over the resolved table —
+it would ossify the dual representation heuristic #1 forbids as an
+end-state. Sequencing is in the slice plan (Thread B + the
+`Theme`-teardown slice).
+
 ---
 
 ## 11. Deferred / not in scope

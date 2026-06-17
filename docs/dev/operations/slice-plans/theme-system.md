@@ -93,13 +93,15 @@ lockstep, parity-pinned against the T.2 net.
 
 ### T.4 — renderer reads the resolved table 🗒
 
-Migrate the existing themed reads (pane chrome, file-tree,
-diagnostics, whitespace, cursor-line, messages, diff signs/tints) in
-both renderers from `App.theme.<field>` / `host_theme.<field>` to
-`resolved.get(id)`. The `Theme` struct's fields become a thin
-shim populated from the resolved table (or are deleted where no
-external reader remains). Risk: highest in the plan — touches both
-paint paths. Land behind:
+Snapshot `Arc<ResolvedTheme>` into `RenderState` at publish (parallel
+to `theme` while the migration runs), then migrate the existing
+themed reads (pane chrome, file-tree, diagnostics, whitespace,
+cursor-line, messages, diff signs/tints) in both renderers from
+`App.theme.<field>` / `host_theme.<field>` to `resolved.get(id)`.
+**Per the §10.1 decision, each `Theme` style field is deleted as its
+last reader migrates — no getter shim.** Risk: highest in the plan —
+touches both paint paths; sub-slice by consumer group if needed. Land
+behind:
 
 - Both-renderer parity assertion: resolved-read style output ==
   pre-migration output for the default theme.
@@ -126,6 +128,29 @@ id. Closes the TUI(`Cyan`)/GPUI(`0x6c7086`)-style drift the audit
 found — parity is now structural, not maintained by hand. Pin: a
 test enumerating these elements asserts both renderers resolve the
 same `Style`.
+
+### T.6.t — dismantle `Theme` (non-style → `ui.*` + delete) 🗒
+
+Capstone of Thread B (design §10.1). Runs once T.4–T.6 have removed
+every *style* reader of `Theme`. Migrate the remaining **non-style**
+fields to the typed options system, then delete `Theme`:
+
+- New `ui.*` options for the data with no option today: the 4
+  `diagnostic_*_glyph` chars + `pane_separator_horizontal`
+  (vertical already has `ui.separator`). Dashed-namespaced names
+  ([[feedback_naming_dashed]]).
+- Repoint consumers of `nerd_fonts` / `dim_inactive_panes` /
+  separators / glyphs to read the resolved option (via
+  `FrameView::for_buffer` / config), not `Theme`.
+- Delete `Theme`, the TUI `From<&Theme>` adapter, and the
+  `host_theme_default_adapts_to_tui_theme_default` round-trip pin
+  (superseded by the per-element parity pin).
+- Replace the `Theme` content-hash folded into
+  `MatrixVersion::theme` with `ResolvedTheme::version()` (design §7).
+
+Pin: glyphs/flags/separators render identically pre/post; cells
+rebuild on a palette/option change via the version bump. TUI + GPUI
+in lockstep.
 
 ---
 

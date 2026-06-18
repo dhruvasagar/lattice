@@ -291,7 +291,23 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
     if let Some(bg) = s.bg {
         style = style.bg(host_color_to_ratatui(bg));
     }
-    if s.modifiers.bold {
+    // T.10: degrade the rich-vocabulary `weight` on the fixed grid. A
+    // SemiBold-or-heavier weight maps to ratatui's bold attribute, so an
+    // element that sets `weight` but NOT the bold bool still renders bold
+    // on the TUI. (Builtin headings set both, so this is a no-op for
+    // them; it makes weight degrade correctly in general.) `scale` /
+    // `family` are no-ops on the TUI (single grid font) — correct, not a
+    // defect.
+    let heavy_weight = matches!(
+        s.weight,
+        Some(
+            host_theme::Weight::SemiBold
+                | host_theme::Weight::Bold
+                | host_theme::Weight::ExtraBold
+                | host_theme::Weight::Black
+        )
+    );
+    if s.modifiers.bold || heavy_weight {
         style = style.add_modifier(Modifier::BOLD);
     }
     if s.modifiers.italic {
@@ -467,6 +483,30 @@ mod tests {
         assert_eq!(
             built, tui,
             "default ui.* options + resolved table must build the TUI theme default"
+        );
+    }
+
+    #[test]
+    fn host_weight_degrades_to_bold_without_bold_bool() {
+        // T.10: a host style that sets a heavy `weight` but NOT the bold
+        // bool still renders bold on the fixed-grid TUI (degrade path).
+        let s = host_theme::Style::empty().weight(host_theme::Weight::Bold);
+        assert!(!s.modifiers.bold, "no bold bool on the source style");
+        let r = host_style_to_ratatui(s);
+        assert!(
+            r.add_modifier.contains(Modifier::BOLD),
+            "heavy weight degrades to ratatui bold"
+        );
+    }
+
+    #[test]
+    fn host_light_weight_does_not_force_bold() {
+        // A weight lighter than SemiBold must NOT spuriously bold the TUI.
+        let s = host_theme::Style::empty().weight(host_theme::Weight::Light);
+        let r = host_style_to_ratatui(s);
+        assert!(
+            !r.add_modifier.contains(Modifier::BOLD),
+            "sub-SemiBold weight stays non-bold on the TUI"
         );
     }
 

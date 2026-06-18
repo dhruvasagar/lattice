@@ -25,7 +25,7 @@ use arc_swap::ArcSwap;
 
 use crate::element::{ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeElement};
 use crate::palette::{default_palette, Palette};
-use crate::{Color, FontScale, Style};
+use crate::{Color, FontScale, Style, Weight};
 
 /// Maximum `inherit` chain depth before resolution bails (cycle
 /// guard). Builtins are flat or one-deep; this is a safety net for
@@ -676,19 +676,24 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Punctuation / delimiters.",
     );
     reg_one("syntax.attribute", spec().fg("red"), "Attributes / annotations.");
+    // T.10: heading levels carry a rich-vocabulary `weight` (finer than
+    // the bold modifier). The GPUI peer honors it in per-run font
+    // shaping so headings render heavier than body bold; the TUI degrades
+    // (any SemiBold-or-heavier weight maps to its bold attribute, and
+    // these already set `.bold()`, so the TUI is visually unchanged).
     reg_one(
         "syntax.heading.1",
-        spec().fg("red").bold().underline(),
+        spec().fg("red").bold().underline().weight(Weight::ExtraBold),
         "Markup heading level 1.",
     );
     reg_one(
         "syntax.heading.2",
-        spec().fg("peach").bold(),
+        spec().fg("peach").bold().weight(Weight::Bold),
         "Markup heading level 2.",
     );
     reg_one(
         "syntax.heading.3",
-        spec().fg("yellow").bold(),
+        spec().fg("yellow").bold().weight(Weight::Bold),
         "Markup heading level 3.",
     );
     reg_one(
@@ -1049,12 +1054,14 @@ mod tests {
             resolved_of(&reg, "syntax.comment"),
             Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).italic()
         );
+        // T.10: heading.1 now also carries the rich `ExtraBold` weight.
         assert_eq!(
             resolved_of(&reg, "syntax.heading.1"),
             Style::empty()
                 .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
                 .bold()
                 .underline()
+                .weight(Weight::ExtraBold)
         );
         assert_eq!(
             resolved_of(&reg, "syntax.url"),
@@ -1199,12 +1206,14 @@ mod tests {
             resolved.get(ids.syntax_line_comment),
             resolved.get(ids.syntax_comment)
         );
+        // T.10: heading.1 resolves with the rich `ExtraBold` weight too.
         assert_eq!(
             resolved.get(ids.syntax_heading_1),
             Style::empty()
                 .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
                 .bold()
                 .underline()
+                .weight(Weight::ExtraBold)
         );
         assert_eq!(
             resolved.get(ids.whitespace_trailing),
@@ -1214,6 +1223,29 @@ mod tests {
             resolved.get(ids.whitespace),
             Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
         );
+    }
+
+    #[test]
+    fn heading_builtins_carry_rich_weight() {
+        // T.10: the heading demo consumers set a rich-vocabulary
+        // `weight` on top of their fg + bold. The GPUI peer reads
+        // `Style::weight` per run; the TUI degrades it to bold.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_eq!(
+            resolved.get(ids.syntax_heading_1).weight,
+            Some(Weight::ExtraBold)
+        );
+        assert_eq!(resolved.get(ids.syntax_heading_2).weight, Some(Weight::Bold));
+        assert_eq!(resolved.get(ids.syntax_heading_3).weight, Some(Weight::Bold));
+        // heading.4-6 keep bold-only, no rich weight (unchanged).
+        assert_eq!(resolved.get(ids.syntax_heading_4).weight, None);
+        assert_eq!(resolved.get(ids.syntax_heading_5).weight, None);
+        assert_eq!(resolved.get(ids.syntax_heading_6).weight, None);
+        // The bold bool + fg survive alongside the weight.
+        assert!(resolved.get(ids.syntax_heading_1).modifiers.bold);
+        assert!(resolved.get(ids.syntax_heading_1).modifiers.underline);
     }
 
     #[test]

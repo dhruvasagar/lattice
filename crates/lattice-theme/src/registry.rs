@@ -473,6 +473,82 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Conflict-region background tint.",
     );
 
+    // ---- Search + selection + LSP overlays (T.6) ----
+    // These hoist the scattered/drifted hardcoded overlay literals out
+    // of the renderers so BOTH peers read the same registered styles
+    // (closing the TUI/GPUI parity drift). Search match + current are
+    // BACKGROUND tints in both renderers (the TUI's legacy fg-recolor
+    // is retired); document-highlight keeps its 3 distinct kinds.
+    reg_one(
+        "search.match",
+        spec().bg("overlay0"),
+        "All hlsearch matches (bg tint).",
+    );
+    reg_one(
+        "search.current",
+        spec().bg(Color::Rgb(0x6c, 0x5a, 0x1e)),
+        "Current search match (warm bg tint).",
+    );
+    reg_one(
+        "selection",
+        spec().bg(Color::Rgb(0x45, 0x47, 0x5a)),
+        "Visual-mode selection bg.",
+    );
+    reg_one(
+        "doc_highlight.read",
+        spec().bg(Color::Rgb(20, 50, 25)),
+        "LSP document-highlight: read occurrence.",
+    );
+    reg_one(
+        "doc_highlight.write",
+        spec().bg(Color::Rgb(60, 20, 20)),
+        "LSP document-highlight: write/mutation.",
+    );
+    reg_one(
+        "doc_highlight.text",
+        spec().bg(Color::Rgb(20, 30, 60)),
+        "LSP document-highlight: text occurrence.",
+    );
+    reg_one(
+        "substitute.preview",
+        spec().bg(Color::Rgb(0xf3, 0x8b, 0xa8)),
+        "`:s///` live-preview match (bg; TUI adds strikethrough).",
+    );
+    reg_one(
+        "inlay.hint",
+        spec().fg(Color::Rgb(0x7f, 0x84, 0x9c)),
+        "Inlay hint virtual text (overlay1).",
+    );
+
+    // ---- Completion annotations (T.6) ----
+    // The 5 base (unselected) colours; the selected-row BRIGHTENING
+    // stays renderer logic applied on top of the resolved base color.
+    reg_one(
+        "completion.annotation.kind",
+        spec().fg("overlay2"),
+        "Completion annotation: kind.",
+    );
+    reg_one(
+        "completion.annotation.doc",
+        spec().fg(Color::Rgb(0x89, 0xdc, 0xeb)),
+        "Completion annotation: doc snippet.",
+    );
+    reg_one(
+        "completion.annotation.keybinding",
+        spec().fg("yellow"),
+        "Completion annotation: keybinding.",
+    );
+    reg_one(
+        "completion.annotation.source",
+        spec().fg("mauve"),
+        "Completion annotation: source.",
+    );
+    reg_one(
+        "completion.annotation.custom",
+        spec().fg("blue"),
+        "Completion annotation: custom/plugin.",
+    );
+
     // ---- Syntax (mirrors host `Theme::syntax_style`) ----
     reg_one("syntax.default", spec().fg("text"), "Default foreground text.");
     reg_one(
@@ -623,6 +699,24 @@ pub struct BuiltinElementIds {
     pub syntax_markup: ElementId,
     pub whitespace: ElementId,
     pub whitespace_trailing: ElementId,
+    // T.6 — search + selection + LSP overlays (BOTH renderers read
+    // these; closes the TUI/GPUI parity drift). Search match/current
+    // are bg tints in both peers now.
+    pub search_match: ElementId,
+    pub search_current: ElementId,
+    pub selection: ElementId,
+    pub doc_highlight_read: ElementId,
+    pub doc_highlight_write: ElementId,
+    pub doc_highlight_text: ElementId,
+    pub substitute_preview: ElementId,
+    pub inlay_hint: ElementId,
+    // T.6 — completion-annotation base (unselected) colours; the
+    // selected-row brightening stays renderer logic on top of these.
+    pub completion_annotation_kind: ElementId,
+    pub completion_annotation_doc: ElementId,
+    pub completion_annotation_keybinding: ElementId,
+    pub completion_annotation_source: ElementId,
+    pub completion_annotation_custom: ElementId,
 }
 
 impl Default for BuiltinElementIds {
@@ -681,6 +775,19 @@ impl Default for BuiltinElementIds {
             syntax_markup: ElementId::INVALID,
             whitespace: ElementId::INVALID,
             whitespace_trailing: ElementId::INVALID,
+            search_match: ElementId::INVALID,
+            search_current: ElementId::INVALID,
+            selection: ElementId::INVALID,
+            doc_highlight_read: ElementId::INVALID,
+            doc_highlight_write: ElementId::INVALID,
+            doc_highlight_text: ElementId::INVALID,
+            substitute_preview: ElementId::INVALID,
+            inlay_hint: ElementId::INVALID,
+            completion_annotation_kind: ElementId::INVALID,
+            completion_annotation_doc: ElementId::INVALID,
+            completion_annotation_keybinding: ElementId::INVALID,
+            completion_annotation_source: ElementId::INVALID,
+            completion_annotation_custom: ElementId::INVALID,
         }
     }
 }
@@ -749,6 +856,19 @@ impl BuiltinElementIds {
             syntax_markup: id("syntax.markup"),
             whitespace: id("whitespace"),
             whitespace_trailing: id("whitespace.trailing"),
+            search_match: id("search.match"),
+            search_current: id("search.current"),
+            selection: id("selection"),
+            doc_highlight_read: id("doc_highlight.read"),
+            doc_highlight_write: id("doc_highlight.write"),
+            doc_highlight_text: id("doc_highlight.text"),
+            substitute_preview: id("substitute.preview"),
+            inlay_hint: id("inlay.hint"),
+            completion_annotation_kind: id("completion.annotation.kind"),
+            completion_annotation_doc: id("completion.annotation.doc"),
+            completion_annotation_keybinding: id("completion.annotation.keybinding"),
+            completion_annotation_source: id("completion.annotation.source"),
+            completion_annotation_custom: id("completion.annotation.custom"),
         }
     }
 }
@@ -988,6 +1108,65 @@ mod tests {
         assert_eq!(
             resolved.get(ids.whitespace),
             Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_overlays_to_registered() {
+        // T.6 parity net (shared by BOTH renderers): search / selection
+        // / document-highlight / substitute / inlay / completion-
+        // annotation elements resolve to their registered defaults, so
+        // each peer reads the SAME style (closing the prior drift).
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_ne!(ids.selection, ElementId::INVALID);
+        // Search match = overlay0 bg tint (was a fg recolor in the TUI).
+        assert_eq!(
+            resolved.get(ids.search_match).bg,
+            Some(Color::Rgb(0x6c, 0x70, 0x86))
+        );
+        assert_eq!(
+            resolved.get(ids.search_current).bg,
+            Some(Color::Rgb(0x6c, 0x5a, 0x1e))
+        );
+        assert_eq!(
+            resolved.get(ids.selection).bg,
+            Some(Color::Rgb(0x45, 0x47, 0x5a))
+        );
+        // Document-highlight keeps its 3 distinct kinds (both peers).
+        assert_eq!(
+            resolved.get(ids.doc_highlight_read).bg,
+            Some(Color::Rgb(20, 50, 25))
+        );
+        assert_eq!(
+            resolved.get(ids.doc_highlight_write).bg,
+            Some(Color::Rgb(60, 20, 20))
+        );
+        assert_eq!(
+            resolved.get(ids.doc_highlight_text).bg,
+            Some(Color::Rgb(20, 30, 60))
+        );
+        assert_eq!(
+            resolved.get(ids.substitute_preview).bg,
+            Some(Color::Rgb(0xf3, 0x8b, 0xa8))
+        );
+        assert_eq!(
+            resolved.get(ids.inlay_hint).fg,
+            Some(Color::Rgb(0x7f, 0x84, 0x9c))
+        );
+        // Completion-annotation base (unselected) colours.
+        assert_eq!(
+            resolved.get(ids.completion_annotation_keybinding).fg,
+            Some(Color::Rgb(0xf9, 0xe2, 0xaf)) // yellow
+        );
+        assert_eq!(
+            resolved.get(ids.completion_annotation_source).fg,
+            Some(Color::Rgb(0xcb, 0xa6, 0xf7)) // mauve
+        );
+        assert_eq!(
+            resolved.get(ids.completion_annotation_doc).fg,
+            Some(Color::Rgb(0x89, 0xdc, 0xeb))
         );
     }
 

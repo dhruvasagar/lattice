@@ -723,13 +723,48 @@ impl Element for EditorElement {
             self.worker_static_overlay_quads
                 .as_ref()
                 .map(|q| q.quads.as_ref());
+        // T.6: overlay layer colors resolve from the registered theme
+        // elements (shared with the TUI peer; closes the prior drift).
+        // `DocHighlight` maps to `doc_highlight.read`: the `OverlayLayer`
+        // enum carries no read/write/text distinction, so the worker-
+        // emitted single layer renders as read. TODO(T.6): OverlayLayer
+        // lacks doc-hl kind; renders as read — the worker-side kind
+        // split is out of scope (TUI keeps its 3-way via its own `kind`
+        // param on `document_highlight_style`).
+        let resolved_theme = &self.resolved_theme;
+        let theme_ids = self.theme_ids;
         let color_for_layer = |layer: lattice_host::render_state::OverlayLayer| -> u32 {
-            match layer {
-                lattice_host::render_state::OverlayLayer::DocHighlight => 0x585b70,
-                lattice_host::render_state::OverlayLayer::AllMatches => 0x6c7086,
-                lattice_host::render_state::OverlayLayer::Substitute => 0xf38ba8,
-            }
+            let (id, fallback) = match layer {
+                lattice_host::render_state::OverlayLayer::DocHighlight => {
+                    (theme_ids.doc_highlight_read, 0x585b70)
+                }
+                lattice_host::render_state::OverlayLayer::AllMatches => {
+                    (theme_ids.search_match, 0x6c7086)
+                }
+                lattice_host::render_state::OverlayLayer::Substitute => {
+                    (theme_ids.substitute_preview, 0xf38ba8)
+                }
+            };
+            resolved_theme
+                .get(id)
+                .bg
+                .map(|c| c.to_rgb_u32(fallback))
+                .unwrap_or(fallback)
         };
+        // T.6: cursor-coupled overlay colors resolve from the registered
+        // `search.current` / `selection` elements (shared with the TUI
+        // peer's `match_style` / `visual_style`). Resolved once here, not
+        // per row (paramount #1).
+        let current_match_color: u32 = resolved_theme
+            .get(theme_ids.search_current)
+            .bg
+            .map(|c| c.to_rgb_u32(0xf9e2af))
+            .unwrap_or(0xf9e2af);
+        let selection_color: u32 = resolved_theme
+            .get(theme_ids.selection)
+            .bg
+            .map(|c| c.to_rgb_u32(0x45475a))
+            .unwrap_or(0x45475a);
         let diff_tint_per_row = &self.diff_tint_per_row;
         let overlay_quads_for_row =
             |line_idx: u32,
@@ -822,7 +857,7 @@ impl Element for EditorElement {
                             line_idx,
                             line_text,
                             inlay_offsets,
-                            0xf9e2af,
+                            current_match_color,
                         );
                     }
                     // Blockwise visual: per-line column band
@@ -852,7 +887,7 @@ impl Element for EditorElement {
                                     inlay_offsets,
                                 ) as u32;
                                 if ce > cs {
-                                    quads.push((cs, ce, 0x45475a));
+                                    quads.push((cs, ce, selection_color));
                                 }
                             }
                         }
@@ -863,7 +898,7 @@ impl Element for EditorElement {
                             line_idx,
                             line_text,
                             inlay_offsets,
-                            0x45475a,
+                            selection_color,
                         );
                     }
                     // Push the deferred substitute layer last so it

@@ -1671,15 +1671,24 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
                     if let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                     {
-                        body =
-                            apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                        body = apply_match_overlay(
+                            body,
+                            overlay_start,
+                            overlay_end,
+                            hlsearch_style(&help_resolved, &help_ids),
+                        );
                     }
                 }
                 if let Some(range) = app.ad().current_match
                     && let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                 {
-                    body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        match_style(&help_resolved, &help_ids),
+                    );
                 }
             }
             Line::from(body)
@@ -2210,7 +2219,12 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
                 {
-                    body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        hlsearch_style(&help_resolved, &help_ids),
+                    );
                 }
             }
             // Current-match (the one the cursor is on after `/`
@@ -2219,7 +2233,12 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
                 && let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
             {
-                body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+                body = apply_match_overlay(
+                    body,
+                    overlay_start,
+                    overlay_end,
+                    match_style(&help_resolved, &help_ids),
+                );
             }
             Line::from(body)
         })
@@ -3455,6 +3474,12 @@ pub(crate) fn compose_pane_lines(
     // T.5.b: the body-compose path resolves syntax styles through
     // `cells_rs.resolved_theme` + `cells_rs.theme_ids` (the resolved
     // table) rather than the retired `Theme::syntax_style`.
+    // T.6: the search / selection / doc-highlight / substitute / inlay
+    // overlay stylers read the same resolved table. Bind once here
+    // (`cells_rs` is held for the whole fn) so each call is an O(1)
+    // array index, not a per-overlay name lookup (paramount #1).
+    let overlay_resolved = &cells_rs.resolved_theme;
+    let overlay_ids = &cells_rs.theme_ids;
     // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
     // pane's buffer once per frame; accumulate GutterDecoration
     // contributions into per-line maps. Replaces per-line RenderState
@@ -3792,14 +3817,23 @@ pub(crate) fn compose_pane_lines(
             let start = (b.start_col as usize).min(line_len);
             let end = ((b.end_col as usize) + 1).min(line_len);
             if start < end {
-                body = apply_match_overlay(body, map_ob(start), map_ob(end), visual_style());
+                body = apply_match_overlay(
+                    body,
+                    map_ob(start),
+                    map_ob(end),
+                    visual_style(overlay_resolved, overlay_ids),
+                );
             }
         } else if let Some(range) = visual_range
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
-            body =
-                apply_match_overlay(body, map_ob(overlay_start), map_ob(overlay_end), visual_style());
+            body = apply_match_overlay(
+                body,
+                map_ob(overlay_start),
+                map_ob(overlay_end),
+                visual_style(overlay_resolved, overlay_ids),
+            );
         }
         // Perf plan B.2 slice B.2.b: hlsearch (`all_matches`) overlay
         // now reads from the worker's per-row bucket. The bucket is
@@ -3830,7 +3864,7 @@ pub(crate) fn compose_pane_lines(
                                 body,
                                 map_ob(start),
                                 map_ob(end),
-                                hlsearch_style(),
+                                hlsearch_style(overlay_resolved, overlay_ids),
                             );
                         }
                     }
@@ -3844,7 +3878,7 @@ pub(crate) fn compose_pane_lines(
                             body,
                             map_ob(overlay_start),
                             map_ob(overlay_end),
-                            hlsearch_style(),
+                            hlsearch_style(overlay_resolved, overlay_ids),
                         );
                     }
                 }
@@ -3857,7 +3891,7 @@ pub(crate) fn compose_pane_lines(
                     body,
                     map_ob(overlay_start),
                     map_ob(overlay_end),
-                    match_style(),
+                    match_style(overlay_resolved, overlay_ids),
                 );
             }
         }
@@ -3943,7 +3977,7 @@ pub(crate) fn compose_pane_lines(
                     continue;
                 }
                 body =
-                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind));
+                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind, overlay_resolved, overlay_ids));
             }
         }
         // Perf plan A.2 slice A.2b.2: `inlayHint` virtual-text
@@ -3990,7 +4024,7 @@ pub(crate) fn compose_pane_lines(
                         body,
                         map_ob((h.byte as usize).min(line_len)),
                         h.text.clone(),
-                        inlay_hint_style(),
+                        inlay_hint_style(overlay_resolved, overlay_ids),
                     );
                 }
             }
@@ -4019,7 +4053,7 @@ pub(crate) fn compose_pane_lines(
                     body,
                     map_ob(src_byte.min(line_len)),
                     text,
-                    inlay_hint_style(),
+                    inlay_hint_style(overlay_resolved, overlay_ids),
                 );
             }
         }
@@ -4045,7 +4079,7 @@ pub(crate) fn compose_pane_lines(
                                 body,
                                 map_ob(start),
                                 map_ob(end),
-                                substitute_preview_style(),
+                                substitute_preview_style(overlay_resolved, overlay_ids),
                             );
                             found_any = true;
                         }
@@ -4064,7 +4098,7 @@ pub(crate) fn compose_pane_lines(
                             body,
                             map_ob(overlay_start),
                             map_ob(overlay_end),
-                            substitute_preview_style(),
+                            substitute_preview_style(overlay_resolved, overlay_ids),
                         );
                     }
                 }
@@ -4245,11 +4279,20 @@ pub(crate) fn compose_pane_lines(
     out
 }
 
-fn hlsearch_style() -> TuiStyle {
-    // Softer than the primary match (which is yellow-bg). Cyan-bg reads
-    // as "another instance of what you're searching for" without
-    // stealing attention from the cursor's match.
-    TuiStyle::default().bg(Color::Cyan).fg(Color::Black)
+fn hlsearch_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: hlsearch is now a BACKGROUND tint resolved from
+    // `search.match` (both renderers agree; the legacy cyan-fg recolor
+    // is retired). Softer than the current match so it reads as
+    // "another instance of what you're searching for".
+    let bg = resolved
+        .get(ids.search_match)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Cyan);
+    TuiStyle::default().bg(bg)
 }
 
 /// 4.4.e: `documentHighlight` overlay style. Soft tint that
@@ -4266,13 +4309,23 @@ fn hlsearch_style() -> TuiStyle {
 /// (diagnostics underline, visual selection bg, hlsearch).
 fn document_highlight_style(
     kind: Option<lattice_lsp::lsp_types::DocumentHighlightKind>,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> TuiStyle {
     use lattice_lsp::lsp_types::DocumentHighlightKind;
-    let bg = match kind {
-        Some(DocumentHighlightKind::READ) => Color::Rgb(20, 50, 25),
-        Some(DocumentHighlightKind::WRITE) => Color::Rgb(60, 20, 20),
-        _ => Color::Rgb(20, 30, 60),
+    // T.6: the 3 distinct kinds resolve from the registered
+    // `doc_highlight.{read,write,text}` elements (both renderers honor
+    // all three). Fallbacks mirror the legacy literals.
+    let (id, fallback) = match kind {
+        Some(DocumentHighlightKind::READ) => (ids.doc_highlight_read, Color::Rgb(20, 50, 25)),
+        Some(DocumentHighlightKind::WRITE) => (ids.doc_highlight_write, Color::Rgb(60, 20, 20)),
+        _ => (ids.doc_highlight_text, Color::Rgb(20, 30, 60)),
     };
+    let bg = resolved
+        .get(id)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(fallback);
     TuiStyle::default().bg(bg)
 }
 
@@ -4281,10 +4334,20 @@ fn document_highlight_style(
 /// hit Enter" -- distinct from hlsearch's "this is what your
 /// search is finding" cyan, and distinct from the current-match
 /// yellow.
-fn substitute_preview_style() -> TuiStyle {
+fn substitute_preview_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: bg resolves from `substitute.preview` (shared with GPUI).
+    // The CROSSED_OUT strikethrough stays TUI-only ("this is going to
+    // be replaced if you hit Enter").
+    let bg = resolved
+        .get(ids.substitute_preview)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Magenta);
     TuiStyle::default()
-        .bg(Color::Magenta)
-        .fg(Color::Black)
+        .bg(bg)
         .add_modifier(Modifier::CROSSED_OUT)
 }
 
@@ -4315,13 +4378,18 @@ fn visual_selection_range(app: &App) -> Option<ProtoRange> {
     app.ad().visual_range
 }
 
-fn visual_style() -> TuiStyle {
-    // Distinct from the search-match style. Reverse video reads as
-    // "selected" in vim's terminal default.
-    TuiStyle::default()
-        .bg(Color::Blue)
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD)
+fn visual_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: visual selection bg resolves from `selection` (shared with
+    // GPUI's selection quad). Distinct from the search-match style.
+    let bg = resolved
+        .get(ids.selection)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Blue);
+    TuiStyle::default().bg(bg)
 }
 
 /// If `range` covers any bytes on `line_idx`, return the within-line
@@ -4388,11 +4456,19 @@ pub(crate) fn apply_match_overlay(
     out
 }
 
-fn match_style() -> TuiStyle {
-    TuiStyle::default()
-        .bg(Color::Yellow)
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD)
+fn match_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: the current search match resolves from `search.current` as a
+    // BACKGROUND tint (both renderers agree; the legacy yellow-fg
+    // recolor is retired).
+    let bg = resolved
+        .get(ids.search_current)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Yellow);
+    TuiStyle::default().bg(bg)
 }
 
 /// 4.4.g: splice `virtual_text` into `spans` at `byte_offset`
@@ -4461,9 +4537,20 @@ pub(crate) fn splice_virtual_text_into_spans(
 /// content" -- italic + dim gray on default bg. Kind-specific
 /// hue could differentiate type vs parameter hints in a
 /// follow-up; v1 keeps a single style for simplicity.
-fn inlay_hint_style() -> TuiStyle {
+fn inlay_hint_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: inlay-hint fg resolves from `inlay.hint` (shared with GPUI's
+    // `inlay_color`). The italic modifier reads as "annotation, not
+    // actual buffer content".
+    let fg = resolved
+        .get(ids.inlay_hint)
+        .fg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::DarkGray);
     TuiStyle::default()
-        .fg(Color::DarkGray)
+        .fg(fg)
         .add_modifier(Modifier::ITALIC)
 }
 
@@ -6871,6 +6958,10 @@ mod tests {
         // diagnostics) is provably id-equivalent for the active pane
         // — `ctx.buffer_id == app.ad().document_buffer_id` — so it is
         // not injected here; the existing LSP overlay tests cover it.
+        // T.6: visual selection + current-match are now BACKGROUND
+        // tints resolved from the `selection` / `search.current`
+        // elements (no fg recolor / bold), matching the GPUI peer — the
+        // expected fingerprint reflects that converged styling.
         let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Visual selection on line 1 (cols 4..=6), hlsearch + current
@@ -6889,7 +6980,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/Some(White)/Some(Blue)/BOLD|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/Some(Black)/Some(Yellow)/BOLD|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 
@@ -7176,7 +7267,10 @@ mod tests {
         app.editor
             .set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let visual_bg = visual_style().bg;
+        // T.6: visual_style now resolves through the app's published
+        // resolved table — derive the expected bg from the same source.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let visual_bg = visual_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
         assert!(
@@ -7209,7 +7303,9 @@ mod tests {
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
-        let visual_bg = visual_style().bg;
+        // T.6: derive expected bg from the app's published resolved table.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let visual_bg = visual_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).bg;
         let row1 = &lines[1];
         let has_visual_span = row1.spans.iter().any(|s| s.style.bg == visual_bg);
         assert!(
@@ -7484,11 +7580,16 @@ mod tests {
         }
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        // T.6: inlay-hint fg now resolves from the `inlay.hint` element
+        // (shared with GPUI). Derive the expected fg from the same
+        // resolved table the renderer reads, so this stays a parity pin.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let expected_fg = inlay_hint_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).fg;
         let row0 = &lines[0];
         let mut found = false;
         for span in &row0.spans {
             if span.content.as_ref().contains(": i32") {
-                assert_eq!(span.style.fg, Some(Color::DarkGray));
+                assert_eq!(span.style.fg, expected_fg);
                 found = true;
             }
         }

@@ -448,6 +448,7 @@ fn gpui_source_display_label(id: &str) -> &'static str {
 /// `padded`: when true, applies `px_2()` for the strip variants
 /// that need horizontal padding. The overlay variants paint
 /// inside a bordered container that already has its own padding.
+#[allow(clippy::too_many_arguments)]
 fn paint_candidate_row(
     cand: &lattice_completion::RenderedCandidate,
     selected: bool,
@@ -455,6 +456,10 @@ fn paint_candidate_row(
     padded: bool,
     display_col_chars: usize,
     columns: &lattice_completion::AnnotationColumns,
+    // T.6: the resolved theme table + ids so annotation base colors
+    // read from the registered `completion.annotation.*` elements.
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> gpui::Div {
     // Issue #35 (2026-05-22): match highlight now uses
     // `picker_match_highlight` (Catppuccin peach by default,
@@ -583,7 +588,7 @@ fn paint_candidate_row(
                     let text = ann.display_text().into_owned();
                     let text_chars = text.chars().count();
                     let cell_pad = col_width.saturating_sub(text_chars);
-                    let fg = rgb(annotation_color_rgb(ann, selected));
+                    let fg = rgb(annotation_color_rgb(ann, selected, resolved, ids));
                     row = row.child(
                         div()
                             .text_color(fg)
@@ -633,28 +638,41 @@ fn paint_candidate_row(
 ///   chord highlight)
 /// - source      → mauve (purple/magenta)
 /// - custom      → blue (fallback for plugin annotations)
-fn annotation_color_rgb(ann: &lattice_completion::Annotation, selected: bool) -> u32 {
+/// T.6: resolve a completion-annotation color. The *base*
+/// (unselected) color now reads from the registered
+/// `completion.annotation.{kind,doc,keybinding,source,custom}`
+/// elements (shared with the host's theme registry). The selected-row
+/// BRIGHTENING stays renderer logic: a selected row returns the
+/// pre-existing brightened literal so the contrast against the
+/// status-background stays intact (the brightening is NOT a separate
+/// element). Fallbacks reproduce the legacy base literals.
+fn annotation_color_rgb(
+    ann: &lattice_completion::Annotation,
+    selected: bool,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
     use lattice_completion::Annotation;
-    match ann {
-        Annotation::Kind(_) => {
-            if selected { 0xcdd6f4 } else { 0x9399b2 }
-        }
-        Annotation::DocSnippet(_) => {
-            if selected { 0xbfeaf5 } else { 0x89dceb }
-        }
-        Annotation::Keybinding(_) => {
-            if selected { 0xfff0b8 } else { 0xf9e2af }
-        }
-        Annotation::Source(_) => {
-            if selected { 0xe2cfff } else { 0xcba6f7 }
-        }
+    let (id, base_fallback, brightened) = match ann {
+        Annotation::Kind(_) => (ids.completion_annotation_kind, 0x9399b2, 0xcdd6f4),
+        Annotation::DocSnippet(_) => (ids.completion_annotation_doc, 0x89dceb, 0xbfeaf5),
+        Annotation::Keybinding(_) => (ids.completion_annotation_keybinding, 0xf9e2af, 0xfff0b8),
+        Annotation::Source(_) => (ids.completion_annotation_source, 0xcba6f7, 0xe2cfff),
         // Plugin / extension fallback. Unknown `slot` strings
         // all resolve to this colour pre-Phase-4; the typed
         // theme registry that resolves slot keys to colours
         // lands with the WASM plugin host.
-        Annotation::Custom { .. } => {
-            if selected { 0xb6d3ff } else { 0x89b4fa }
-        }
+        Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+    };
+    if selected {
+        // Brightened form preserved as renderer logic on top of the base.
+        brightened
+    } else {
+        resolved
+            .get(id)
+            .fg
+            .map(|c| c.to_rgb_u32(base_fallback))
+            .unwrap_or(base_fallback)
     }
 }
 
@@ -1681,9 +1699,13 @@ impl EditorView {
             })
             .unwrap_or_default();
 
-        // Inlay color: Catppuccin overlay1; host-theme override
-        // hook lands when `host_theme.inlay_foreground` is added.
-        let inlay_color: u32 = 0x7f849c;
+        // T.6: inlay color resolves from the `inlay.hint` element
+        // (shared with the TUI peer's `inlay_hint_style`).
+        let inlay_color: u32 = resolved_theme
+            .get(theme_ids.inlay_hint)
+            .fg
+            .map(|c| c.to_rgb_u32(0x7f849c))
+            .unwrap_or(0x7f849c);
 
         // Per-pane status line at the pane's bottom. Format
         // matches the TUI's per-pane status: path + cursor coords.
@@ -2794,6 +2816,10 @@ impl Render for EditorView {
         // Slice 3c.final.E.5j: render-state load via App's own Arc
         // (cloned from `editor.render_state` at construction time).
         let render_state = self.app.render_state.load_full();
+        // T.6: the resolved theme table + ids for completion-annotation
+        // base colors (`paint_candidate_row` → `annotation_color_rgb`).
+        let resolved_theme = render_state.resolved_theme.clone();
+        let theme_ids = render_state.theme_ids;
         let active_idx = render_state.panes.tree.active_index();
         let document_area = self
             .paint_pane_tree(
@@ -2854,6 +2880,8 @@ impl Render for EditorView {
                             &theme,
                             false,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();
@@ -2964,6 +2992,8 @@ impl Render for EditorView {
                         &theme,
                         false,
                         display_col_chars, &columns,
+                        &resolved_theme,
+                        &theme_ids,
                     )
                 })
                 .collect();
@@ -3081,6 +3111,8 @@ impl Render for EditorView {
                                 &theme,
                                 true,
                                 display_col_chars, &columns,
+                                &resolved_theme,
+                                &theme_ids,
                             )
                         })
                         .collect()
@@ -3176,6 +3208,8 @@ impl Render for EditorView {
                             &theme,
                             true,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();
@@ -3226,6 +3260,8 @@ impl Render for EditorView {
                             &theme,
                             false,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();

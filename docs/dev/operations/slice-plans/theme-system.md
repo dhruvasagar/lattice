@@ -193,7 +193,24 @@ Land behind:
 - Keystroke→glyph ratchet unmoved (design §7); TUI cache rebuild
   stays at theme-change rate (O(1) version compare per frame).
 
-### T.5 — unify syntax styling into elements 🚧 (T.5.a landed)
+### T.5 — unify syntax styling into elements ✅ (a/b/c landed)
+
+**Done** (`fd551230`, `fa55874f`, `e849fc2a`): syntax + whitespace now
+resolve through the element table in **all** consumers — the cell
+builder (`cells_worker`, T.5.a), both display-line paths (TUI
+`cells_render`, GPUI `cells_paint`) + the host/popup stylers + the diff
+overlay (T.5.b), and the TUI native cache (T.5.c). `Theme::syntax_style`
++ the Catppuccin `match` are **deleted**; the shared host
+`resolve_syntax_style(resolved, ids, s)` + `syntax_element_id` are the
+single mapping. Host `Theme` whitespace fields deleted. Parity pinned
+by the existing per-renderer colour tests. Green across host / TUI /
+GPUI(window).
+
+> **Milestone:** T.4 + T.5 complete the whole builtin-consumer
+> migration — every builtin style both renderers read flows through
+> `ResolvedTheme`. Host `Theme` is now only non-style config (glyphs,
+> separator chars, nerd_fonts/dim flags) + the 3 `:set`-backed chrome
+> style fields (→ T.9 + T.6.t).
 
 **T.5.a ✅** — the per-cell **cell builder** (`cells_worker`) reads
 syntax + whitespace-trailing from the resolved table: `CellTheme {

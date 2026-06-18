@@ -687,33 +687,58 @@ fn annotation_color_rgb(
 /// overrides flow to both renderer peers identically. Falls back
 /// to overlay2 grey on Unknown severities (rare; future LSP versions
 /// could add new variants).
+/// T.6.t: read a single-char `ui.diagnostic-*-glyph` typed option,
+/// falling back to `dflt` (matches the deleted host `Theme::default()`
+/// glyph literals: `■▲●·`). The TUI peer reads the same options via its
+/// native `Theme` cache (`build_tui_theme`).
+fn diagnostic_glyph_option<D>(config: &lattice_config::ConfigRegistry, dflt: char) -> char
+where
+    D: lattice_config::OptionDecl<Value = String>,
+{
+    config
+        .get_typed::<D>()
+        .and_then(|s| s.chars().next())
+        .unwrap_or(dflt)
+}
+
 fn diagnostic_glyph_and_color(
-    host_theme: &lattice_host::ui::theme::Theme,
+    config: &lattice_config::ConfigRegistry,
     resolved: &lattice_host::ui::theme::ResolvedTheme,
     ids: &lattice_host::ui::theme::BuiltinElementIds,
     severity: lattice_lsp::DiagnosticSeverity,
 ) -> (char, u32) {
-    // T.4.a: the glyph stays on the host `Theme` (non-style →
-    // T.6.t); the *style* reads from the resolved table.
+    // T.6.t: the severity glyph reads from the `ui.diagnostic-*-glyph`
+    // typed options (was the deleted host `Theme.*_glyph` char); the
+    // *style* reads from the resolved table.
     let (glyph, style) = match severity {
         lattice_lsp::DiagnosticSeverity::ERROR => (
-            host_theme.diagnostic_error_glyph,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
+            >(config, '■'),
             resolved.get(ids.diagnostic_error),
         ),
         lattice_lsp::DiagnosticSeverity::WARNING => (
-            host_theme.diagnostic_warning_glyph,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
+            >(config, '▲'),
             resolved.get(ids.diagnostic_warning),
         ),
         lattice_lsp::DiagnosticSeverity::INFORMATION => (
-            host_theme.diagnostic_info_glyph,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+            >(config, '●'),
             resolved.get(ids.diagnostic_info),
         ),
         lattice_lsp::DiagnosticSeverity::HINT => (
-            host_theme.diagnostic_hint_glyph,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
+            >(config, '·'),
             resolved.get(ids.diagnostic_hint),
         ),
         _ => (
-            host_theme.diagnostic_info_glyph,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+            >(config, '●'),
             resolved.get(ids.diagnostic_info),
         ),
     };
@@ -1281,13 +1306,12 @@ impl EditorView {
         // Slice 3c.final.E.swap: render_state via App's own Arc.
         let render_state = self.app.render_state.load_full();
 
-        // 5.8.N: severity glyph + colour come from host_theme so
-        // `:set ui.diagnostics.*` overrides flow through identically
-        // for both renderer peers.
-        // Slice 3c.final.B (group 6): host theme via published
-        // top-level field. Theme is `Copy` so this is a plain
-        // struct move.
-        let host_theme = rs_guard.theme;
+        // T.6.t: the severity glyph reads from the published
+        // typed-options registry (`ui.diagnostic-*-glyph`); `:set`
+        // overrides flow through identically for both renderer peers.
+        // The deleted host `Theme` carried the glyph char; the *style*
+        // still resolves through the table below.
+        let config = render_state.options.config.clone();
         // T.4 (theme-system): the resolved read table + builtin ids,
         // snapshotted into `RenderState`. GPUI has no native theme
         // cache — it adapts inline via `to_rgb_u32` per read — so the
@@ -1385,6 +1409,21 @@ impl EditorView {
             }
             (diff_map, sev_map)
         };
+        // T.6.t: hoist the four severity glyphs out of the per-line
+        // closure — one typed-option read each instead of O(viewport)
+        // lookups. The *style* still resolves per-line from the table.
+        let glyph_error = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
+        >(&config, '■');
+        let glyph_warning = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
+        >(&config, '▲');
+        let glyph_info = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+        >(&config, '●');
+        let glyph_hint = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
+        >(&config, '·');
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
@@ -1392,23 +1431,23 @@ impl EditorView {
                 // MO.4.a: read from pre-built mode-walk map.
                 let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
                     use lattice_mode::GutterSeverityLevel;
-                    // T.4.a: glyph from host `Theme`, style from the
-                    // resolved table (`diagnostic.{error,…}`).
+                    // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
+                    // option chars; style from the resolved table.
                     let (glyph, style) = match level {
                         GutterSeverityLevel::Error => (
-                            host_theme.diagnostic_error_glyph,
+                            glyph_error,
                             resolved_theme.get(theme_ids.diagnostic_error),
                         ),
                         GutterSeverityLevel::Warning => (
-                            host_theme.diagnostic_warning_glyph,
+                            glyph_warning,
                             resolved_theme.get(theme_ids.diagnostic_warning),
                         ),
                         GutterSeverityLevel::Info => (
-                            host_theme.diagnostic_info_glyph,
+                            glyph_info,
                             resolved_theme.get(theme_ids.diagnostic_info),
                         ),
                         GutterSeverityLevel::Hint => (
-                            host_theme.diagnostic_hint_glyph,
+                            glyph_hint,
                             resolved_theme.get(theme_ids.diagnostic_hint),
                         ),
                     };
@@ -1671,7 +1710,7 @@ impl EditorView {
                             .severity
                             .map(|s| {
                                 diagnostic_glyph_and_color(
-                                    &host_theme,
+                                    &config,
                                     &resolved_theme,
                                     &theme_ids,
                                     s,
@@ -1977,9 +2016,6 @@ impl EditorView {
                     .map(|cell| cell.load_full())
                     .filter(|m| m.version.text == snapshot.text_version)
             },
-            // B3: host theme (Copy) for resolving DisplayRun style tags →
-            // TextRun colours at shape time (display_line_to_text_runs).
-            host_theme,
             // T.5.b: the resolved table + builtin ids the display-line
             // path resolves syntax styles through (`resolve_syntax_style`),
             // replacing the `host_theme.syntax_style` read. Reuses the

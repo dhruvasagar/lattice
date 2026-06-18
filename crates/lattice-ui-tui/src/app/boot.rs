@@ -168,7 +168,14 @@ impl App {
     /// `rebuild_gpui_theme` on its own `App`.
     pub fn rebuild_tui_theme(&mut self) {
         let rs = self.render_state.load();
-        self.theme = crate::theme::build_tui_theme(&rs.theme, &rs.resolved_theme, &rs.theme_ids);
+        // T.6.t: non-style chrome (glyphs, separator chars, dim/
+        // nerd-fonts flags) sources from the published typed-options
+        // registry; style fields from the resolved table.
+        self.theme = crate::theme::build_tui_theme(
+            &rs.options.config,
+            &rs.resolved_theme,
+            &rs.theme_ids,
+        );
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and

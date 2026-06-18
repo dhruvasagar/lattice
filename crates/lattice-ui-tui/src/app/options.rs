@@ -509,13 +509,13 @@ mod tests {
 
     #[test]
     fn ui_set_cascade_keeps_host_theme_and_tui_theme_in_sync() {
-        // Phase 5.3 contract: `host_theme` is the canonical
-        // renderer-neutral state; `theme` is the cached
-        // ratatui-typed adapter. `sync_theme_from_config` MUST
-        // update both. We exercise a representative subset of
-        // user-tweakable fields (`dim_inactive`, `nerd_fonts`,
-        // separator glyph, separator color) and assert each
-        // mutation lands in BOTH places.
+        // T.6.t: the host `Theme` struct is deleted; the typed-options
+        // registry (`config`) is the canonical renderer-neutral state
+        // for the 8 non-style chrome fields, and `theme` is the cached
+        // ratatui-typed adapter rebuilt from config + the resolved table
+        // on `RendererSignal::ThemeChanged`. We exercise a representative
+        // subset (`dim_inactive`, `nerd_fonts`, separator glyph,
+        // separator color) and assert each mutation lands in the cache.
         let mut a = app_with("xx", 10);
         // Flip dim_inactive false.
         a.editor
@@ -523,10 +523,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
-        assert!(
-            !a.editor.host_theme.dim_inactive_panes,
-            "host: dim_inactive flipped"
-        );
         assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
         // Flip nerd_fonts on.
         a.editor
@@ -534,7 +530,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiNerdFonts>(true)
             .unwrap();
         a.drain_option_changes();
-        assert!(a.editor.host_theme.nerd_fonts);
         assert!(a.theme.nerd_fonts);
         // Change separator glyph.
         a.editor
@@ -542,7 +537,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiSeparator>("┃".to_string())
             .unwrap();
         a.drain_option_changes();
-        assert_eq!(a.editor.host_theme.pane_separator_vertical, '┃');
         assert_eq!(a.theme.pane_separator_vertical, '┃');
         // Change separator color (named).
         a.editor

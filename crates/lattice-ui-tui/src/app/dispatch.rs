@@ -1094,13 +1094,21 @@ impl App {
                 // the runtime loop polls it. Keep the arm for shape
                 // — a future GPUI renderer wires window-close here.
             }
-            // 5.5.E.6: `ui.nerd_fonts` cascade -- the host already
-            // updated `editor.host_theme.nerd_fonts`; the renderer
-            // walks every file-tree buffer and refreshes its rope
-            // so the icon-glyph cells re-render. Oil reads the
-            // toggle each frame and needs no rope work.
+            // 5.5.E.6: `ui.nerd_fonts` cascade -- the renderer walks
+            // every file-tree buffer and refreshes its rope so the
+            // icon-glyph cells re-render. Oil reads the toggle each
+            // frame and needs no rope work. T.6.t: read `nerd_fonts`
+            // from the published typed-options registry (was the
+            // deleted `host_theme.nerd_fonts`).
             RendererSignal::NerdFontsToggled => {
-                let nerd_fonts = self.render_state.load().theme.nerd_fonts;
+                let nerd_fonts = self
+                    .render_state
+                    .load()
+                    .options
+                    .config
+                    .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+                    .map(|v| *v)
+                    .unwrap_or(false);
                 for id in self.buffers().registry.file_tree_ids() {
                     self.set_file_tree_nerd_fonts(id, nerd_fonts);
                 }

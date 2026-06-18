@@ -339,11 +339,6 @@ pub(crate) struct EditorElement {
     /// GPU whole-viewport flicker. `cell_matrix` now feeds only the
     /// experimental per-glyph `paint_cells` path until B4.
     pub(crate) display_matrix: Option<Arc<DisplayMatrix>>,
-    /// B3 (2026-06-04): host theme (a `Copy` struct) for resolving
-    /// `DisplayRun` syntax-style tags → `TextRun` colours at shape time
-    /// (`display_line_to_text_runs`). The cell path baked resolved colours
-    /// into cells; the display path resolves per-run here.
-    pub(crate) host_theme: lattice_host::ui::theme::Theme,
     /// T.5.b (theme-system): the resolved theme table + builtin
     /// element ids the display-line path resolves `DisplayRun`
     /// syntax-style tags through (`display_line_to_text_runs` →

@@ -922,7 +922,6 @@ impl Editor {
                 pending_redraw: self.pending_redraw,
                 terminal_width: self.terminal_width,
             }),
-            theme: self.host_theme,
             // T.4 (theme-system): snapshot the resolved read table +
             // builtin ids so renderers read `resolved.get(ids.x)`.
             // `resolved()` is an `ArcSwap` load (rebuilt only when a
@@ -1128,8 +1127,9 @@ impl Editor {
             // `syntax` version still proxies `text_version` until a
             // dedicated syntax-snapshot counter lands; the worker
             // re-resolves syntax fg on any text bump anyway.
-            // `theme` axis is `hash(self.host_theme) as u64` —
-            // theme changes are rare so an aggressive whole-doc
+            // `theme` axis is the resolved table's `resolved().version()`
+            // (T.6.t) — bumps on any palette / override / colorscheme
+            // change. Theme changes are rare so an aggressive whole-doc
             // rebuild is acceptable per the design doc.
             cells: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(CellsRenderState {
                 // D.4.d.1.b (2026-05-29): top-level `matrix`
@@ -1198,12 +1198,17 @@ impl Editor {
                         let h = crate::folds::compute_fold_hash(&self.folds);
                         if self.foldenable() { h } else { !h }
                     },
-                    theme: {
-                        use std::hash::{Hash, Hasher};
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        self.host_theme.hash(&mut h);
-                        h.finish()
-                    },
+                    // T.6.t: the `theme` axis is the resolved table's
+                    // `version()` — bumped on any palette / override /
+                    // colorscheme change (design §7). An integer load
+                    // (`ArcSwap` version field), cheaper than the old
+                    // `hash(host_theme)`; when it changes the cells
+                    // worker rebuilds with fresh fg/bg.
+                    theme: self
+                        .services
+                        .get::<crate::ui::theme::ThemeRegistryHandle>()
+                        .map(|r| r.resolved().version())
+                        .unwrap_or(0),
                     whitespace: {
                         // Hash the same whitespace fields so any
                         // `:set display.whitespace.*` bumps this
@@ -1246,7 +1251,6 @@ impl Editor {
                 // can attach the same delta to the active pane's
                 // entry without a second `take()`.
                 last_edit: last_edit_active,
-                theme: self.host_theme,
                 // T.5 (theme-system): resolved table + ids the cell
                 // builder reads for per-span syntax + whitespace.
                 resolved_theme: self
@@ -9713,12 +9717,14 @@ impl Editor {
         );
         let active_buffer_id = self.document_buffer_id;
         let active_pane_id = self.pane_tree.active().id;
-        let theme_hash: u64 = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            self.host_theme.hash(&mut h);
-            h.finish()
-        };
+        // T.6.t: the `theme` axis is the resolved table's `version()`
+        // (snapshotted once per build), not a `hash(host_theme)`. Bumps
+        // on any palette / override / colorscheme change (design §7).
+        let theme_hash: u64 = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .map(|r| r.resolved().version())
+            .unwrap_or(0);
         let whitespace_hash: u64 = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -14354,7 +14360,13 @@ impl Editor {
             );
             return Vec::new();
         }
-        let nerd_fonts = self.host_theme.nerd_fonts;
+        // T.6.t: `nerd_fonts` reads from the typed-options registry
+        // (was the deleted host `Theme.nerd_fonts`).
+        let nerd_fonts = self
+            .config
+            .get_typed::<crate::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
         let (tree, entries) = match lattice_file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
             Ok(t) => t,
             Err(e) => {
@@ -22303,28 +22315,18 @@ impl Editor {
     pub fn sync_host_theme_from_config(&mut self) {
         use crate::ui::theme as host_theme;
         use crate::ui::theme_options::{
-            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
-            UiStatuslineInactiveFg,
+            UiSeparatorColor, UiStatuslineActiveFg, UiStatuslineInactiveFg,
         };
-        let dim_inactive = *self
-            .config
-            .get_typed::<UiDimInactive>()
-            .expect("UiDimInactive");
-        let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
-        let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
-        let sep_char = sep.chars().next().unwrap_or('│');
-        self.host_theme.dim_inactive_panes = dim_inactive;
-        self.host_theme.nerd_fonts = nerd_fonts;
-        self.host_theme.pane_separator_vertical = sep_char;
-        // T.9: the three pane-chrome STYLE fields no longer live on the
-        // host `Theme`; their `:set ui.*` fg overrides are applied to the
-        // `pane.separator` / `pane.status.{active,inactive}` elements via
-        // the registry override API. `set_override` marks the registry
-        // dirty; the post-sync `RendererSignal::ThemeChanged` rebuilds the
-        // renderer caches from the freshly-`resolved()` table, so no extra
-        // wiring is needed here. (The non-style writes above —
-        // `dim_inactive_panes` / `nerd_fonts` / `pane_separator_vertical`
-        // — stay on host `Theme` until T.6.t.)
+        // T.6.t: the non-style chrome (`dim_inactive_panes` /
+        // `nerd_fonts` / separator chars + diagnostic glyphs) is read
+        // directly from the typed-options registry at each consumer
+        // (renderers via the published `OptionsRenderState`/native
+        // cache; host helpers via `self.config.get_typed::<…>()`), so
+        // there is nothing to mirror onto a host struct anymore. This
+        // fn now only applies the `:set ui.*_color` chrome overrides to
+        // the theme registry (T.9.a). `set_override` marks the registry
+        // dirty; the post-sync `RendererSignal::ThemeChanged` rebuilds
+        // the renderer caches from the freshly-`resolved()` table.
         let theme_reg = self
             .services
             .get::<crate::ui::theme::ThemeRegistryHandle>();

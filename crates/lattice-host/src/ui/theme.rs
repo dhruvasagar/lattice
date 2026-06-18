@@ -77,107 +77,21 @@ pub fn resolve_syntax_style(
     resolved.get(syntax_element_id(ids, style))
 }
 
-/// One full UI theme. Cheap to clone (every field is `Copy`).
-///
-/// S2.3.a (2026-05-26): `Hash` is part of the derive set so the
-/// cell-grid renderer's [`crate::render_state::CellsRenderState`]
-/// can fold the theme into [`lattice_cells::MatrixVersion::theme`]
-/// — any palette change bumps the version and the cell-builder
-/// rebuilds with fresh fg/bg.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Theme {
-    // ---- Pane chrome ----
-    // T.4.c: `inactive_pane_overlay` moved to the `pane.inactive_overlay`
-    // element. T.9: `pane_status_active` / `pane_status_inactive` /
-    // `pane_separator` STYLE fields are gone — they now resolve through
-    // the `pane.status.active` / `pane.status.inactive` / `pane.separator`
-    // elements, and their `:set ui.*` fg overrides flow via the registry
-    // override API (see `Editor::sync_host_theme_from_config`). The
-    // non-style chrome (`dim_inactive_panes` flag + separator glyphs)
-    // stays here until T.6.t migrates the flags/chars to `ui.*` options.
-    pub dim_inactive_panes: bool,
-    pub pane_separator_vertical: char,
-    pub pane_separator_horizontal: char,
-
-    // ---- File tree ----
-    // T.4.c: `file_tree_{dir,hidden,file}_style` moved to the
-    // `file_tree.{dir,hidden,file}` elements; renderers read via
-    // `ResolvedTheme`. `nerd_fonts` is a flag, not a style → T.6.t.
-    pub nerd_fonts: bool,
-
-    // ---- Diagnostics ----
-    // T.4.a: the `diagnostic_*_style` fields moved to theme elements
-    // (`diagnostic.{error,warning,info,hint}`); both renderers read
-    // them via `ResolvedTheme`. The glyph chars stay here until
-    // T.6.t migrates them to `ui.*` options (a glyph is not a style).
-    pub diagnostic_error_glyph: char,
-    pub diagnostic_warning_glyph: char,
-    pub diagnostic_info_glyph: char,
-    pub diagnostic_hint_glyph: char,
-
-    // ---- Whitespace + current-line ----
-    // T.4.d/T.5: `cursor_line_bg` → `editor.cursor_line`;
-    // `whitespace`/`whitespace.trailing` styles now resolve through
-    // the theme elements (cell builder + display-line paths + native
-    // cache all read the resolved table).
-
-    // ---- *messages* buffer level styling ----
-    // T.4.d: moved to `messages.{timestamp,trace,debug,info,warn,error}`
-    // elements; the TUI reads them via the resolved table.
-
-    // ---- Diff ----
-    // T.4.b: the diff sign styles + line/block tints moved to theme
-    // elements (`diff.{add,change,remove,conflict}.sign`,
-    // `diff.{add,change,conflict}.line`, `diff.deletion_block`); both
-    // renderers read them via `ResolvedTheme`. The `+`/`~`/`-`/`?`
-    // glyphs are still hardcoded at the gutter render sites.
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        // Defaults mirror `lattice-ui-tui::theme::Theme::default()`
-        // exactly; a test in lattice-ui-tui asserts the adapted
-        // form matches the TUI's hand-rolled defaults.
-        Self {
-            // T.9: pane_status_active / pane_status_inactive /
-            // pane_separator styles now live as the `pane.status.*` /
-            // `pane.separator` elements (active = reverse+bold, inactive
-            // = darkgray+dim, separator = darkgray) — see the element
-            // registry defaults.
-            dim_inactive_panes: true,
-            pane_separator_vertical: '│',
-            pane_separator_horizontal: '─',
-
-            // T.4.c: inactive_pane_overlay + file_tree.* resolve
-            // through theme elements now.
-            nerd_fonts: false,
-
-            diagnostic_error_glyph: '■',
-            diagnostic_warning_glyph: '▲',
-            diagnostic_info_glyph: '●',
-            diagnostic_hint_glyph: '·',
-
-            // T.5.c: whitespace styles resolve through theme elements.
-            // T.4.d: cursor_line + messages.* likewise. T.4.b: diff.*.
-        }
-    }
-}
+// T.6.t (2026-06-18): the host `Theme` struct is DELETED. All STYLE
+// fields moved to the element / resolved-table system (T.4/T.5); the
+// final 8 non-style fields (`dim_inactive_panes`,
+// `pane_separator_{vertical,horizontal}`, `nerd_fonts`, the four
+// `diagnostic_*_glyph` chars) migrated to `ui.*` typed options in
+// `crate::ui::theme_options`. Renderers read the style table via
+// `ResolvedTheme` + `BuiltinElementIds`, and the non-style flags/chars
+// via the typed-options registry. The cell-matrix invalidation key
+// (`MatrixVersion::theme`) is now `ResolvedTheme::version()`, not a
+// content-hash of this struct. See `docs/dev/architecture/theme-system.md`.
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-
-    #[test]
-    fn default_theme_dims_inactive_panes() {
-        let t = Theme::default();
-        assert!(t.dim_inactive_panes);
-    }
-
-    #[test]
-    fn default_separator_is_box_drawing_vertical() {
-        assert_eq!(Theme::default().pane_separator_vertical, '│');
-    }
 
     // ---- T.5.b: SyntaxStyle resolution via the resolved table ----
     //

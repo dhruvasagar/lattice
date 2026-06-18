@@ -103,6 +103,40 @@ lattice_config::options! {
     #[validate(validate_separator)]
     pub UiSeparator: String = String::from("│");
 
+    /// Character drawn in the row separating stacked (horizontal-
+    /// split) panes (default `─`, U+2500). Currently used only by
+    /// layouts that disable per-pane status lines; the per-pane
+    /// status line otherwise delimits horizontal splits.
+    #[name("ui.separator-horizontal")]
+    #[validate(validate_separator)]
+    pub UiSeparatorHorizontal: String = String::from("─");
+
+    /// Glyph drawn in the gutter severity column for an
+    /// Error-severity diagnostic (default `■`). One character; the
+    /// *colour* resolves through the `diagnostic.error` theme
+    /// element, not this option.
+    #[name("ui.diagnostic-error-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticErrorGlyph: String = String::from("■");
+
+    /// Glyph drawn in the gutter severity column for a
+    /// Warning-severity diagnostic (default `▲`).
+    #[name("ui.diagnostic-warning-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticWarningGlyph: String = String::from("▲");
+
+    /// Glyph drawn in the gutter severity column for an
+    /// Information-severity diagnostic (default `●`).
+    #[name("ui.diagnostic-info-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticInfoGlyph: String = String::from("●");
+
+    /// Glyph drawn in the gutter severity column for a
+    /// Hint-severity diagnostic (default `·`).
+    #[name("ui.diagnostic-hint-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticHintGlyph: String = String::from("·");
+
     /// Foreground color of the pane separator. Accepts named ANSI
     /// colors (red, blue, darkgray, ...) and `default` for the
     /// terminal default.
@@ -197,6 +231,45 @@ mod tests {
         // BMP fallback is the default so the first frame renders
         // in any terminal font.
         assert!(!*r.get_typed::<UiNerdFonts>().unwrap());
+        // T.6.t: the non-style chrome chars + diagnostic glyphs
+        // migrated off the host `Theme` struct to `ui.*` options.
+        // Defaults must match the deleted struct's literals exactly.
+        assert_eq!(
+            r.get_typed::<UiSeparatorHorizontal>().unwrap().as_str(),
+            "─"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticErrorGlyph>().unwrap().as_str(),
+            "■"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticWarningGlyph>().unwrap().as_str(),
+            "▲"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticInfoGlyph>().unwrap().as_str(),
+            "●"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticHintGlyph>().unwrap().as_str(),
+            "·"
+        );
+    }
+
+    #[test]
+    fn diagnostic_glyph_options_accept_single_char_overrides() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("ui.diagnostic-error-glyph=E").unwrap();
+        assert_eq!(
+            r.get_typed::<UiDiagnosticErrorGlyph>().unwrap().as_str(),
+            "E"
+        );
+        // Multi-char rejected by the shared single-char validator.
+        let err = r
+            .parse_and_set_command("ui.diagnostic-hint-glyph=hi")
+            .unwrap_err();
+        assert!(format!("{err}").contains("must be one character"));
     }
 
     #[test]

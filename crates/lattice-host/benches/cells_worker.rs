@@ -51,7 +51,7 @@ use lattice_host::cells_worker::WhitespaceConfig;
 use lattice_host::cells_worker::{recompute, sync_rebuild_pane_on_edit};
 use lattice_host::display_matrix::DisplayMatrix;
 use lattice_host::render_state::{CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState};
-use lattice_host::ui::theme::Theme;
+use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry};
 use lattice_runtime::DocumentSnapshot;
 
 /// A fresh empty display-matrix cell (boot / cold-start state).
@@ -152,7 +152,16 @@ fn rs_for(
         viewport_height: VIEWPORT_HEIGHT,
         foldenable: false,
         last_edit,
-        theme: Theme::default(),
+        // T.6.t: the host `Theme` struct is gone; the cell builder reads
+        // styles through the resolved table + builtin ids.
+        resolved_theme: {
+            let reg = InMemoryThemeRegistry::with_defaults();
+            reg.resolved()
+        },
+        theme_ids: {
+            let reg = InMemoryThemeRegistry::with_defaults();
+            BuiltinElementIds::capture(&reg)
+        },
         whitespace: WhitespaceConfig::default(),
         panes: Arc::from(vec![pane_entry].into_boxed_slice()),
         pane_matrices,

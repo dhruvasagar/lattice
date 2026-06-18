@@ -309,24 +309,50 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
     style
 }
 
-/// Build the ratatui-typed [`Theme`] cache from the canonical host
-/// [`host_theme::Theme`] **plus** the resolved theme table. The TUI's
+/// Build the ratatui-typed [`Theme`] cache from the resolved theme
+/// table **plus** the non-style `ui.*` typed options. The TUI's
 /// `App.theme` cache is the renderer's hot-path adapted view; it is
 /// rebuilt at theme-change / option-set rate, never per frame.
 ///
-/// T.4 (theme-system): migrated *style* elements now source from the
+/// T.4 (theme-system): the *style* elements source from the
 /// [`host_theme::ResolvedTheme`] table (the single source of truth) via
-/// the captured [`host_theme::BuiltinElementIds`], rather than from the
-/// flat `Theme` struct. The cache itself stays — it is the safeguard
-/// that keeps per-line decoration painting free of per-frame style
-/// adaptation (design §10.1; `feedback_renderer_cache_protects_ux`).
-/// Un-migrated fields still read from `h`; each moves to `resolved` as
-/// its Thread-B slice lands.
+/// the captured [`host_theme::BuiltinElementIds`]. The cache itself
+/// stays — it is the safeguard that keeps per-line decoration painting
+/// free of per-frame style adaptation (design §10.1;
+/// `feedback_renderer_cache_protects_ux`).
+///
+/// T.6.t: the host `Theme` struct is deleted; the 8 non-style fields
+/// (`dim_inactive_panes`, `pane_separator_{vertical,horizontal}`,
+/// `nerd_fonts`, the four `diagnostic_*_glyph` chars) now source from
+/// the typed-options registry via `config` (default-fallback matches
+/// the deleted struct's literals exactly). Style fields keep sourcing
+/// from `resolved` / `ids`.
 pub fn build_tui_theme(
-    h: &host_theme::Theme,
+    config: &lattice_config::ConfigRegistry,
     resolved: &host_theme::ResolvedTheme,
     ids: &host_theme::BuiltinElementIds,
 ) -> Theme {
+    use lattice_host::ui::theme_options::{
+        UiDiagnosticErrorGlyph, UiDiagnosticHintGlyph, UiDiagnosticInfoGlyph,
+        UiDiagnosticWarningGlyph, UiDimInactive, UiNerdFonts, UiSeparator,
+        UiSeparatorHorizontal,
+    };
+    // Read a single-char `ui.*` glyph option, falling back to `dflt`
+    // (matches the deleted host `Theme::default()` literals).
+    let glyph = |opt: Option<std::sync::Arc<String>>, dflt: char| -> char {
+        opt.and_then(|s| s.chars().next()).unwrap_or(dflt)
+    };
+    let dim_inactive_panes = config
+        .get_typed::<UiDimInactive>()
+        .map(|v| *v)
+        .unwrap_or(true);
+    let nerd_fonts = config.get_typed::<UiNerdFonts>().map(|v| *v).unwrap_or(false);
+    let pane_separator_vertical = glyph(config.get_typed::<UiSeparator>(), '│');
+    let pane_separator_horizontal = glyph(config.get_typed::<UiSeparatorHorizontal>(), '─');
+    let diagnostic_error_glyph = glyph(config.get_typed::<UiDiagnosticErrorGlyph>(), '■');
+    let diagnostic_warning_glyph = glyph(config.get_typed::<UiDiagnosticWarningGlyph>(), '▲');
+    let diagnostic_info_glyph = glyph(config.get_typed::<UiDiagnosticInfoGlyph>(), '●');
+    let diagnostic_hint_glyph = glyph(config.get_typed::<UiDiagnosticHintGlyph>(), '·');
     let resolved_style = |id| host_style_to_ratatui(resolved.get(id));
     // Background tint from an element's resolved `bg` channel (the diff
     // tint elements set `bg`); `Reset` = no tint if unresolved.
@@ -347,24 +373,25 @@ pub fn build_tui_theme(
             // from the resolved table. Separator chars + `dim`/
             // `nerd_fonts` flags stay on `h` (non-style → T.6.t).
             inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
-            dim_inactive_panes: h.dim_inactive_panes,
+            // T.6.t: non-style chrome from typed options (see locals above).
+            dim_inactive_panes,
             pane_separator: resolved_style(ids.pane_separator),
-            pane_separator_vertical: h.pane_separator_vertical,
-            pane_separator_horizontal: h.pane_separator_horizontal,
+            pane_separator_vertical,
+            pane_separator_horizontal,
             file_tree_dir_style: resolved_style(ids.file_tree_dir),
             file_tree_hidden_style: resolved_style(ids.file_tree_hidden),
             file_tree_file_style: resolved_style(ids.file_tree_file),
-            nerd_fonts: h.nerd_fonts,
+            nerd_fonts,
             // T.4.a: diagnostic styles source from the resolved table
-            // (`diagnostic.{error,warning,info,hint}`); the glyphs stay
-            // on the host `Theme` until T.6.t.
-            diagnostic_error_glyph: h.diagnostic_error_glyph,
+            // (`diagnostic.{error,warning,info,hint}`); T.6.t: glyphs
+            // from the `ui.diagnostic-*-glyph` typed options.
+            diagnostic_error_glyph,
             diagnostic_error_style: resolved_style(ids.diagnostic_error),
-            diagnostic_warning_glyph: h.diagnostic_warning_glyph,
+            diagnostic_warning_glyph,
             diagnostic_warning_style: resolved_style(ids.diagnostic_warning),
-            diagnostic_info_glyph: h.diagnostic_info_glyph,
+            diagnostic_info_glyph,
             diagnostic_info_style: resolved_style(ids.diagnostic_info),
-            diagnostic_hint_glyph: h.diagnostic_hint_glyph,
+            diagnostic_hint_glyph,
             diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
             // T.4.d: whitespace stays on `h` (cell-path → T.5);
             // current-line tint + *messages* levels source from the
@@ -421,25 +448,25 @@ mod tests {
     }
 
     #[test]
-    fn host_theme_default_adapts_to_tui_theme_default() {
-        // Phase 5.3 contract + T.4: the host default theme, run
-        // through the cache builder (host fields + the resolved
-        // default table for migrated style elements), builds the
-        // same ratatui `Theme::default()` the TUI hand-rolls. This
-        // pins the per-element parity net on the TUI side — the
-        // resolved-sourced diagnostic styles must equal the legacy
-        // ratatui defaults. Superseded by the per-element parity pin
-        // when host `Theme` is dismantled (T.6.t).
+    fn default_options_adapt_to_tui_theme_default() {
+        // T.6.t: the host `Theme` struct is gone. The cache builder now
+        // sources style fields from the resolved default table and the 8
+        // non-style fields from the `ui.*` typed options at their
+        // defaults. The result must equal the ratatui `Theme::default()`
+        // the TUI hand-rolls — proving the migration is byte-identical
+        // (default glyphs `■▲●·`, separators `│`/`─`, dim on, nerd-fonts
+        // off).
         use host_theme::ThemeRegistry as _;
-        let host = host_theme::Theme::default();
         let reg = host_theme::InMemoryThemeRegistry::with_defaults();
         let resolved = reg.resolved();
         let ids = host_theme::BuiltinElementIds::capture(&reg);
-        let built = build_tui_theme(&host, &resolved, &ids);
+        let config = lattice_config::ConfigRegistry::new();
+        config.init_from_linkme();
+        let built = build_tui_theme(&config, &resolved, &ids);
         let tui: Theme = Theme::default();
         assert_eq!(
             built, tui,
-            "host theme default + resolved table must build the TUI theme default"
+            "default ui.* options + resolved table must build the TUI theme default"
         );
     }
 

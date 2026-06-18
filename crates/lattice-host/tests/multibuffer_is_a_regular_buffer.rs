@@ -699,9 +699,20 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         excerpt_syntax: excerpt_syntax_arc,
     };
 
-    let theme = lattice_host::ui::theme::Theme::default();
+    // T.6.t: the host `Theme` struct is gone; `recompute_pane` reads
+    // syntax styles through a `CellTheme { resolved, ids }` (T.5). Build
+    // one from the default theme registry — the same construction the
+    // renderers use at boot.
+    use lattice_host::ui::theme::ThemeRegistry as _;
+    let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+    let resolved = reg.resolved();
+    let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+    let ct = lattice_host::cells_worker::CellTheme {
+        resolved: &resolved,
+        ids: &ids,
+    };
     let ws = lattice_host::cells_worker::WhitespaceConfig::default();
-    recompute_pane(&pane, &theme, &ws);
+    recompute_pane(&pane, ct, &ws);
 
     let matrix = pane.matrix.load();
     let has_spans = matrix.chunks.iter().any(|chunk| {

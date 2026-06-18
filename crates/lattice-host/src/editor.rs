@@ -76,7 +76,6 @@ use crate::state::{
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
-use crate::ui::theme::Theme as HostTheme;
 use crate::versioned::Versioned;
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
@@ -820,11 +819,6 @@ pub struct Editor {
     /// integrations register additional topics through the
     /// same registry.
     pub help_topics: Arc<HelpTopicRegistry>,
-    /// Renderer-neutral canonical theme. `:set ui.*` writes
-    /// this; the renderer's cached adapter (e.g.
-    /// `lattice_ui_tui::App.theme`) is rebuilt from this on
-    /// every successful cascade.
-    pub host_theme: HostTheme,
     /// T.4: builtin element ids interned once at boot from the
     /// `ThemeRegistryHandle` (looked up from [`Self::services`]).
     /// Snapshotted (Copy) into `RenderState` so a renderer read is

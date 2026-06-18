@@ -114,19 +114,16 @@ pub struct RenderState {
     /// notice this" signals that the main loop reads before
     /// composing the next frame.
     pub lifecycle: Arc<LifecycleRenderState>,
-    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 6): resolved
-    /// host theme. `Theme` is `Copy` (every field is `Copy`),
-    /// so the publish is a plain struct move — no `Arc`
-    /// indirection needed.
-    pub theme: crate::ui::theme::Theme,
     /// T.4 (theme-system): the resolved theme read table, snapshotted
     /// from the `ThemeRegistryHandle` at publish. Renderers read
     /// `resolved_theme.get(theme_ids.<elem>)` — an O(1) array index
-    /// (design §7). Parallel to `theme` while Thread B migrates
-    /// consumers; each host `Theme` style field is deleted as its last
-    /// reader moves here. The TUI rebuilds its ratatui cache from this
-    /// only when `ResolvedTheme::version()` changes (no per-frame
-    /// adaptation); GPUI adapts inline.
+    /// (design §7). T.6.t deleted the flat host `Theme` field that
+    /// used to ride alongside this; all style reads now go through the
+    /// resolved table, and non-style chrome (glyphs, separator chars,
+    /// dim/nerd-fonts flags) through the typed-options registry. The
+    /// TUI rebuilds its ratatui cache from this only when
+    /// `ResolvedTheme::version()` changes (no per-frame adaptation);
+    /// GPUI adapts inline.
     pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
     /// T.4: builtin element ids (Copy), interned once at boot. Paired
     /// with [`Self::resolved_theme`] so a read is
@@ -181,7 +178,6 @@ impl Default for RenderState {
             tabs: Arc::new(TabsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
-            theme: crate::ui::theme::Theme::default(),
             resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
             theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             cells: Arc::new(arc_swap::ArcSwap::from_pointee(
@@ -948,19 +944,14 @@ pub struct CellsRenderState {
     /// publishes without further edits see `None`.
     pub last_edit: Option<lattice_cells::EditDelta>,
 
-    /// Renderer-neutral host theme. A content-hash of the theme is
-    /// folded into [`lattice_cells::MatrixVersion::theme`] at publish
-    /// time so any palette change invalidates the matrix and rebuilds
-    /// with the new colours. Per the design doc, theme changes are
-    /// rare — a whole-doc rebuild is an acceptable invalidation cost.
-    /// (T.5 retired the `Theme::syntax_style` read here in favour of
-    /// the resolved table below; the struct still carries `theme` for
-    /// the version-hash + any not-yet-migrated reads.)
-    pub theme: crate::ui::theme::Theme,
     /// T.5 (theme-system): the resolved read table + builtin ids the
     /// cell-builder uses to resolve each span's `lattice_syntax::Style`
     /// → `resolved.get(syntax_element_id(ids, s))` (O(1) array index).
-    /// Snapshotted alongside `theme` at publish.
+    /// Snapshotted at publish. T.6.t deleted the flat host `Theme` field
+    /// that used to ride alongside it; the matrix invalidation key
+    /// (`MatrixVersion::theme`) is now `ResolvedTheme::version()`, set at
+    /// `build_render_state` time, so a palette change still rebuilds the
+    /// matrix with fresh colours.
     pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
     pub theme_ids: crate::ui::theme::BuiltinElementIds,
 
@@ -1207,7 +1198,6 @@ impl Default for CellsRenderState {
             viewport_height: 0,
             foldenable: true,
             last_edit: None,
-            theme: crate::ui::theme::Theme::default(),
             resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
             theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
@@ -2704,10 +2694,13 @@ mod tests {
         );
     }
 
-    /// Slice 3c.final.B (group 6): lifecycle flags + theme
-    /// round-trip through the published snapshot.
+    /// Slice 3c.final.B (group 6): lifecycle flags round-trip
+    /// through the published snapshot. (T.6.t removed the host
+    /// `Theme` field assertion — the resolved table now carries
+    /// all style state and `MatrixVersion::theme` carries its
+    /// version.)
     #[test]
-    fn lifecycle_and_theme_reflect_editor_state() {
+    fn lifecycle_reflects_editor_state() {
         let mut editor = Editor::default();
         editor.should_quit = true;
         editor.pending_redraw = true;
@@ -2717,9 +2710,6 @@ mod tests {
         assert!(rs.lifecycle.should_quit);
         assert!(rs.lifecycle.pending_redraw);
         assert_eq!(rs.lifecycle.terminal_width, Some(120));
-        // Theme is `Copy`; the field is the editor's current
-        // host_theme by value.
-        assert_eq!(rs.theme, editor.host_theme);
     }
 
     #[test]

@@ -550,12 +550,11 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiSeparatorColor>("red".to_string())
             .unwrap();
         a.drain_option_changes();
-        use lattice_host::ui::theme as ht;
-        assert_eq!(
-            a.editor.host_theme.pane_separator.fg,
-            Some(ht::Color::Named(ht::NamedColor::Red)),
-            "host: separator fg=red",
-        );
+        // T.9: the separator STYLE no longer lives on the host `Theme`;
+        // `:set ui.separator_color=red` now applies a registry override on
+        // the `pane.separator` element, and the TUI native cache
+        // (`a.theme.pane_separator`) is rebuilt from the resolved table on
+        // `RendererSignal::ThemeChanged`. Assert the cache reflects it.
         assert_eq!(
             a.theme.pane_separator.fg,
             Some(ratatui::style::Color::Red),

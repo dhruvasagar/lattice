@@ -22265,31 +22265,53 @@ impl Editor {
         self.host_theme.dim_inactive_panes = dim_inactive;
         self.host_theme.nerd_fonts = nerd_fonts;
         self.host_theme.pane_separator_vertical = sep_char;
+        // T.9: the three pane-chrome STYLE fields no longer live on the
+        // host `Theme`; their `:set ui.*` fg overrides are applied to the
+        // `pane.separator` / `pane.status.{active,inactive}` elements via
+        // the registry override API. `set_override` marks the registry
+        // dirty; the post-sync `RendererSignal::ThemeChanged` rebuilds the
+        // renderer caches from the freshly-`resolved()` table, so no extra
+        // wiring is needed here. (The non-style writes above —
+        // `dim_inactive_panes` / `nerd_fonts` / `pane_separator_vertical`
+        // — stay on host `Theme` until T.6.t.)
+        let theme_reg = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>();
         // ui.separator_color -- color name; host parser returned
         // Ok during validate so unwrap-via-fallback is safe.
         let sep_color = self
             .config
             .get_typed::<UiSeparatorColor>()
             .expect("UiSeparatorColor");
-        if let Ok(c) = host_theme::parse_color(&sep_color) {
-            self.host_theme.pane_separator = host_theme::Style::empty().fg(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&sep_color)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.separator"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
-        // ui.statusline_active_fg / _inactive_fg -- foreground
-        // only; preserve modifiers / background by chaining `.fg(c)`
-        // on the current host style.
+        // ui.statusline_active_fg / _inactive_fg -- foreground only;
+        // overlaying a `StyleSpec` with only `fg` set preserves the
+        // element default's modifiers/background (active = reverse+bold,
+        // inactive = dim).
         let active_fg = self
             .config
             .get_typed::<UiStatuslineActiveFg>()
             .expect("UiStatuslineActiveFg");
-        if let Ok(c) = host_theme::parse_color(&active_fg) {
-            self.host_theme.pane_status_active.fg = Some(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&active_fg)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.status.active"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
         let inactive_fg = self
             .config
             .get_typed::<UiStatuslineInactiveFg>()
             .expect("UiStatuslineInactiveFg");
-        if let Ok(c) = host_theme::parse_color(&inactive_fg) {
-            self.host_theme.pane_status_inactive.fg = Some(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&inactive_fg)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.status.inactive"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
     }
 

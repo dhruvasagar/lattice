@@ -338,16 +338,17 @@ pub fn build_tui_theme(
             .unwrap_or(Color::Reset)
     };
     Theme {
-            pane_status_active: host_style_to_ratatui(h.pane_status_active),
-            pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
+            // T.9: pane chrome styles resolve through the elements;
+            // `:set ui.statusline_*_fg`/`separator_color` now write
+            // registry overrides (not host `Theme`).
+            pane_status_active: resolved_style(ids.pane_status_active),
+            pane_status_inactive: resolved_style(ids.pane_status_inactive),
             // T.4.c: inactive-pane overlay + file-tree styles source
-            // from the resolved table. `pane_status_*` / `pane_separator`
-            // still read from `h` (they carry `:set ui.*` overrides →
-            // T.9). Separator chars + `dim`/`nerd_fonts` flags stay on
-            // `h` (non-style → T.6.t).
+            // from the resolved table. Separator chars + `dim`/
+            // `nerd_fonts` flags stay on `h` (non-style → T.6.t).
             inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
             dim_inactive_panes: h.dim_inactive_panes,
-            pane_separator: host_style_to_ratatui(h.pane_separator),
+            pane_separator: resolved_style(ids.pane_separator),
             pane_separator_vertical: h.pane_separator_vertical,
             pane_separator_horizontal: h.pane_separator_horizontal,
             file_tree_dir_style: resolved_style(ids.file_tree_dir),

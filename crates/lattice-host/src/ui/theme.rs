@@ -87,13 +87,14 @@ pub fn resolve_syntax_style(
 pub struct Theme {
     // ---- Pane chrome ----
     // T.4.c: `inactive_pane_overlay` moved to the `pane.inactive_overlay`
-    // element. `pane_status_active` / `pane_status_inactive` /
-    // `pane_separator` stay — they carry live `:set ui.*` fg overrides
-    // and migrate with the registry-override path in T.9.
-    pub pane_status_active: Style,
-    pub pane_status_inactive: Style,
+    // element. T.9: `pane_status_active` / `pane_status_inactive` /
+    // `pane_separator` STYLE fields are gone — they now resolve through
+    // the `pane.status.active` / `pane.status.inactive` / `pane.separator`
+    // elements, and their `:set ui.*` fg overrides flow via the registry
+    // override API (see `Editor::sync_host_theme_from_config`). The
+    // non-style chrome (`dim_inactive_panes` flag + separator glyphs)
+    // stays here until T.6.t migrates the flags/chars to `ui.*` options.
     pub dim_inactive_panes: bool,
-    pub pane_separator: Style,
     pub pane_separator_vertical: char,
     pub pane_separator_horizontal: char,
 
@@ -137,10 +138,12 @@ impl Default for Theme {
         // exactly; a test in lattice-ui-tui asserts the adapted
         // form matches the TUI's hand-rolled defaults.
         Self {
-            pane_status_active: Style::empty().reverse().bold(),
-            pane_status_inactive: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
+            // T.9: pane_status_active / pane_status_inactive /
+            // pane_separator styles now live as the `pane.status.*` /
+            // `pane.separator` elements (active = reverse+bold, inactive
+            // = darkgray+dim, separator = darkgray) — see the element
+            // registry defaults.
             dim_inactive_panes: true,
-            pane_separator: Style::empty().fg(Color::Named(NamedColor::DarkGray)),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
 

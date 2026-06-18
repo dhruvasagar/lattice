@@ -103,6 +103,17 @@ pub trait ThemeRegistry: Send + Sync {
     /// The current resolved read table (rebuilt lazily if a
     /// registration / palette change left it dirty).
     fn resolved(&self) -> Arc<ResolvedTheme>;
+
+    /// T.9: set (or replace) the theme-global override for an element
+    /// (`:set ui.*`, user TOML, a theme's override list). Overlays the
+    /// override's set fields on the element's resolved default. Marks
+    /// the table dirty (re-resolved on next `resolved()`).
+    fn set_override(&self, name: ElementName, spec: StyleSpec);
+
+    /// T.9: swap the active theme — replace the palette AND the full
+    /// override set atomically (`:colorscheme`). Prior overrides are
+    /// cleared. Marks the table dirty.
+    fn set_theme(&self, palette: Palette, overrides: Vec<(ElementName, StyleSpec)>);
 }
 
 /// The canonical handle type. Register and look up under THIS type in
@@ -114,6 +125,12 @@ struct RegistryInner {
     elements: Vec<ThemeElement>,
     by_name: HashMap<ElementName, ElementId>,
     palette: Palette,
+    /// T.9: theme-global element overrides (the active theme's overrides
+    /// + `:set ui.*` + user TOML). Keyed by name so an override may
+    /// target an element registered later (a mode element). Resolution
+    /// overlays the override's set fields on top of the element's
+    /// resolved default (design §5.1, override scope 1).
+    overrides: HashMap<ElementName, StyleSpec>,
     version: u64,
     dirty: bool,
 }
@@ -135,6 +152,7 @@ impl InMemoryThemeRegistry {
                 elements: Vec::new(),
                 by_name: HashMap::new(),
                 palette,
+                overrides: HashMap::new(),
                 version: 0,
                 dirty: true,
             }),
@@ -228,13 +246,35 @@ impl ThemeRegistry for InMemoryThemeRegistry {
         }
         self.resolved.load_full()
     }
+
+    fn set_override(&self, name: ElementName, spec: StyleSpec) {
+        let mut inner = self.inner.write().expect("theme registry lock poisoned");
+        inner.overrides.insert(name, spec);
+        inner.dirty = true;
+    }
+
+    fn set_theme(&self, palette: Palette, overrides: Vec<(ElementName, StyleSpec)>) {
+        let mut inner = self.inner.write().expect("theme registry lock poisoned");
+        inner.palette = palette;
+        inner.overrides = overrides.into_iter().collect();
+        inner.dirty = true;
+    }
 }
 
 // ---- resolution ----
 
 fn resolve_element(inner: &RegistryInner, id: ElementId, depth: u8) -> Style {
     match inner.elements.get(id.0 as usize) {
-        Some(elem) => resolve_spec(inner, &elem.default, depth),
+        Some(elem) => {
+            let mut style = resolve_spec(inner, &elem.default, depth);
+            // T.9: overlay the theme-global override (if any) on top of
+            // the resolved default. The override's set fields win; an
+            // override never re-inherits (it adjusts, not redefines).
+            if let Some(ovr) = inner.overrides.get(&elem.name) {
+                apply_overlay(inner, &mut style, ovr);
+            }
+            style
+        }
         None => Style::empty(),
     }
 }
@@ -263,7 +303,16 @@ fn resolve_spec(inner: &RegistryInner, spec: &StyleSpec, depth: u8) -> Style {
         }
         None => Style::empty(),
     };
+    apply_overlay(inner, &mut style, spec);
+    style
+}
 
+/// Apply a spec's *set* fields (fg / bg / each tri-state modifier /
+/// rich attrs) on top of an existing [`Style`], leaving unset fields
+/// untouched. Used both for the inherit base (in [`resolve_spec`]) and
+/// for theme-global overrides (in [`resolve_element`]). `inherit` is
+/// NOT re-applied here — the caller handles the base.
+fn apply_overlay(inner: &RegistryInner, style: &mut Style, spec: &StyleSpec) {
     if let Some(cref) = &spec.fg {
         if let Some(c) = resolve_color(inner, cref) {
             style.fg = Some(c);
@@ -301,8 +350,6 @@ fn resolve_spec(inner: &RegistryInner, spec: &StyleSpec, depth: u8) -> Style {
     if let Some(weight) = spec.weight {
         style.weight = Some(weight);
     }
-
-    style
 }
 
 fn resolve_color(inner: &RegistryInner, cref: &ColorRef) -> Option<Color> {
@@ -656,6 +703,9 @@ pub struct BuiltinElementIds {
     // T.4.c — pane chrome + file tree (writer-free elements only;
     // `pane.status.*` / `pane.separator` carry live `:set ui.*`
     // overrides and migrate with the registry-override path in T.9).
+    pub pane_status_active: ElementId,
+    pub pane_status_inactive: ElementId,
+    pub pane_separator: ElementId,
     pub pane_inactive_overlay: ElementId,
     pub file_tree_dir: ElementId,
     pub file_tree_hidden: ElementId,
@@ -737,6 +787,9 @@ impl Default for BuiltinElementIds {
             diff_change_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
+            pane_status_active: ElementId::INVALID,
+            pane_status_inactive: ElementId::INVALID,
+            pane_separator: ElementId::INVALID,
             pane_inactive_overlay: ElementId::INVALID,
             file_tree_dir: ElementId::INVALID,
             file_tree_hidden: ElementId::INVALID,
@@ -818,6 +871,9 @@ impl BuiltinElementIds {
             diff_change_line: id("diff.change.line"),
             diff_deletion_block: id("diff.deletion_block"),
             diff_conflict_line: id("diff.conflict.line"),
+            pane_status_active: id("pane.status.active"),
+            pane_status_inactive: id("pane.status.inactive"),
+            pane_separator: id("pane.separator"),
             pane_inactive_overlay: id("pane.inactive_overlay"),
             file_tree_dir: id("file_tree.dir"),
             file_tree_hidden: id("file_tree.hidden"),
@@ -1241,6 +1297,41 @@ mod tests {
         );
         // Missing key logs + leaves fg None (no panic, no garbage).
         assert_eq!(reg.resolved().get(id).fg, None);
+    }
+
+    #[test]
+    fn set_override_overlays_on_resolved_default() {
+        // T.9: a theme-global override overlays its set fields on the
+        // element's resolved default; unset fields keep the default.
+        let reg = reg();
+        let base = resolved_of(&reg, "syntax.keyword"); // mauve + bold
+        assert_eq!(base.fg, Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
+        assert!(base.modifiers.bold);
+        // Override only the fg (literal); bold from the default survives.
+        reg.set_override(
+            ElementName::from_static("syntax.keyword"),
+            StyleSpec::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        let after = resolved_of(&reg, "syntax.keyword");
+        assert_eq!(after.fg, Some(Color::Rgb(1, 2, 3)));
+        assert!(after.modifiers.bold, "default bold survives a fg-only override");
+    }
+
+    #[test]
+    fn set_theme_swaps_palette_and_overrides() {
+        // T.9: `:colorscheme` swap replaces palette + overrides
+        // atomically; prior overrides are cleared.
+        let reg = reg();
+        reg.set_override(
+            ElementName::from_static("syntax.string"),
+            StyleSpec::new().fg(Color::Rgb(9, 9, 9)),
+        );
+        assert_eq!(resolved_of(&reg, "syntax.string").fg, Some(Color::Rgb(9, 9, 9)));
+        // New theme: palette with a different `green`, no overrides.
+        let palette = default_palette().with("green", Color::Rgb(4, 5, 6));
+        reg.set_theme(palette, Vec::new());
+        // string references `green` → now (4,5,6); the prior override is gone.
+        assert_eq!(resolved_of(&reg, "syntax.string").fg, Some(Color::Rgb(4, 5, 6)));
     }
 
     #[test]

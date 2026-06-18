@@ -790,23 +790,27 @@ impl GpuiApp {
         // this method — so adding host fields later flows through
         // automatically.
         // Slice 3c.final.E.5: theme via published top-level field.
-        let host = self.render_state.load().theme;
-        let host = &host;
+        // T.9: the pane-chrome STYLE fields moved off the host `Theme`
+        // onto theme elements; read them from the published resolved
+        // table (`resolved_theme.get(theme_ids.<elem>)`) which already
+        // reflects any `:set ui.*` registry overrides.
+        let rs = self.render_state.load();
+        let resolved: &lattice_host::ui::theme::ResolvedTheme = &rs.resolved_theme;
+        let ids: &lattice_host::ui::theme::BuiltinElementIds = &rs.theme_ids;
         let defaults = GpuiTheme::default();
 
-        // Status line ↔ host's `pane_status_active` (mirrors the
-        // TUI's active-pane status row). Inactive pane status maps
-        // to GpuiTheme's `popup_border` accent for now (visually
-        // distinct from the active row).
-        if let Some(bg) = host.pane_status_active.bg {
+        // Status line ↔ `pane.status.active` element (mirrors the
+        // TUI's active-pane status row).
+        let pane_status_active = resolved.get(ids.pane_status_active);
+        if let Some(bg) = pane_status_active.bg {
             self.theme.status_background = bg.to_rgb_u32(defaults.status_background);
         }
-        if let Some(fg) = host.pane_status_active.fg {
+        if let Some(fg) = pane_status_active.fg {
             self.theme.status_foreground = fg.to_rgb_u32(defaults.status_foreground);
         }
-        // Popup border ↔ host's pane_separator (same conceptual
+        // Popup border ↔ `pane.separator` element (same conceptual
         // role: thin accent line between visual regions).
-        if let Some(fg) = host.pane_separator.fg {
+        if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
         }
         // Font family + size: read live from the published options

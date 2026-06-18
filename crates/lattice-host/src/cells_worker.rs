@@ -3287,7 +3287,6 @@ mod tests {
     /// cells diverge from `build_matrix` and fails here.
     #[test]
     fn projection_parity_ws_on_trailing_tab_inlay() {
-        let theme = crate::ui::theme::Theme::default();
         let (resolved, ids) = test_cell_theme();
         let ct = CellTheme {
             resolved: &resolved,
@@ -3295,9 +3294,12 @@ mod tests {
         };
         // The default theme paints trailing whitespace red — assert that
         // so the parity check below genuinely exercises `WS_TRAILING`.
+        // T.5: the trailing-whitespace style resolves through the
+        // `whitespace.trailing` element (the old `Theme` style field is
+        // gone), mirroring the production read at the `WS_TRAILING` site.
         let (default_fg, _) = resolve_style(ct, lattice_syntax::Style::Default);
-        let trailing_fg = theme
-            .whitespace_trailing_style
+        let trailing_fg = resolved
+            .get(ids.whitespace_trailing)
             .fg
             .map(|c| c.to_rgb_u32(default_fg))
             .unwrap_or(default_fg);

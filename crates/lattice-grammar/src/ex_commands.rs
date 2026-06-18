@@ -45,6 +45,10 @@ pub struct ExBuiltins {
     pub set_option: ExCommandId,
     pub set_local_option: ExCommandId,
     pub set_global_option: ExCommandId,
+    /// T.9.b (2026-06-18): `:colorscheme <name>` — swap the active
+    /// theme by name (`lattice-host` looks the name up in
+    /// `lattice_theme::builtin_themes()` and calls `set_theme`).
+    pub colorscheme: ExCommandId,
     pub edit: ExCommandId,
     pub substitute: ExCommandId,
     pub global: ExCommandId,
@@ -304,6 +308,28 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 prompt: "option:",
                 default: ArgDefault::Required,
                 completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let colorscheme = registry.register_ex_command(
+        "ex:colorscheme",
+        "Swap the active theme by name (`:colorscheme <name>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_colorscheme),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`).",
+                prompt: "colorscheme:",
+                default: ArgDefault::Required,
+                // T.12 wires a `gen:colorschemes` completion generator;
+                // no name completion yet.
+                completion: None,
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1985,6 +2011,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         set_option,
         set_local_option,
         set_global_option,
+        colorscheme,
         edit,
         substitute,
         global,
@@ -2311,6 +2338,19 @@ fn apply_set_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     match &ctx.args {
         Args::String(s) => Ok(Effect::SetGlobalOption { spec: s.clone() }),
         _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_colorscheme(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    // T.9.b: `:colorscheme <name>`. With NO name we error (the no-arg
+    // theme picker is T.12). `parse_required_string` already rejects
+    // empty input on the cmdline path; this guard covers a direct /
+    // scripted invocation and produces the precise message.
+    match &ctx.args {
+        Args::String(s) if !s.trim().is_empty() => {
+            Ok(Effect::SetColorscheme(s.trim().to_string()))
+        }
+        _ => Err(CommandError::BadArgs("colorscheme: theme name required".into())),
     }
 }
 

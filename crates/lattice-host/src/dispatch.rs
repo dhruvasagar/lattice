@@ -2365,6 +2365,40 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.current_match = None;
             editor.all_matches.clear();
         }
+        Effect::SetColorscheme(name) => {
+            // T.9.b: `:colorscheme <name>`. Look the name up in the
+            // builtin theme set; on a hit, swap the registry's palette +
+            // override set atomically and signal `ThemeChanged` so BOTH
+            // renderers rebuild their caches (mirrors how `SetOption`'s
+            // `ui.*` path fans out). An unknown name echoes a host-side
+            // error and leaves the active theme untouched -- never a
+            // panic (graceful degradation, paramount-goal-aligned).
+            match lattice_theme::builtin_themes()
+                .into_iter()
+                .find(|t| t.name == name)
+            {
+                Some(theme) => {
+                    if let Some(reg) = editor
+                        .services
+                        .get::<crate::ui::theme::ThemeRegistryHandle>()
+                    {
+                        reg.set_theme(theme.palette, theme.overrides);
+                        out.renderer_signals.push(RendererSignal::ThemeChanged);
+                    } else {
+                        editor.set_message(
+                            EchoLevel::Error,
+                            "colorscheme: theme registry unavailable".to_string(),
+                        );
+                    }
+                }
+                None => {
+                    editor.set_message(
+                        EchoLevel::Error,
+                        format!("colorscheme: unknown theme `{name}`"),
+                    );
+                }
+            }
+        }
         Effect::Echo { level, text } => {
             // `:echo` and grammar-internal informational messages
             // (e.g. "pattern not found" from `/`). `set_message` also
@@ -25395,6 +25429,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -25494,6 +25529,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -27194,6 +27230,78 @@ mod tests {
         // surface in this module's diff.
         let out = DispatchOutcome::default();
         assert!(out.renderer_signals.is_empty());
+    }
+
+    /// T.9.b: `:colorscheme <name>` swaps the active theme via the
+    /// registry service and emits `RendererSignal::ThemeChanged` so
+    /// both renderer caches rebuild (mirrors `Effect::SetOption`'s
+    /// `ui.*` path). After the swap, `syntax.keyword` resolves to
+    /// Macchiato's mauve.
+    #[test]
+    fn set_colorscheme_swaps_theme_and_signals_theme_changed() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        // Before: mocha mauve.
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            Some(lattice_theme::Color::Rgb(0xcb, 0xa6, 0xf7))
+        );
+        let out =
+            editor.handle_effect(Effect::SetColorscheme("catppuccin-macchiato".to_string()));
+        assert!(
+            out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "swap emits ThemeChanged"
+        );
+        // After: Macchiato mauve.
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+    }
+
+    /// T.9.b: an unknown theme name echoes an error and leaves the
+    /// active theme untouched — no `ThemeChanged`, no panic.
+    #[test]
+    fn set_colorscheme_unknown_name_errors_without_signal() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        let before = reg.resolved().get(kw).fg;
+        let out = editor.handle_effect(Effect::SetColorscheme("no-such-theme".to_string()));
+        assert!(
+            !out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "unknown name emits no ThemeChanged"
+        );
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            before,
+            "active theme is untouched on an unknown name"
+        );
     }
 
     /// Issue #32 (2026-05-22): one-shot guarantee for picker

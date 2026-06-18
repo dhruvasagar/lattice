@@ -20,15 +20,17 @@
 mod element;
 mod palette;
 mod registry;
+mod themes;
 
 pub use element::{
     ColorRef, ElementId, ElementName, ElementOwner, ModifierSet, StyleSpec, ThemeElement,
 };
-pub use palette::{default_palette, Palette, PaletteKey};
+pub use palette::{default_palette, macchiato_palette, Palette, PaletteKey};
 pub use registry::{
     register_builtins, BuiltinElementIds, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry,
     ThemeRegistryHandle,
 };
+pub use themes::{builtin_themes, NamedTheme};
 
 /// A single style: optional foreground + optional background +
 /// modifiers (bold/italic/etc) + the rich-vocabulary attributes
@@ -317,10 +319,13 @@ pub enum NamedColor {
 }
 
 /// Parse a user-typed color name into a [`Color`]. Accepts the 16
-/// ANSI names (lowercase + dark-prefixed variants) plus `default` /
-/// `reset` for terminal-default. Hex colors arrive with T.9 (the
-/// palette becomes the indirection point, unblocking a renderer-side
-/// truecolor check).
+/// ANSI names (lowercase + dark-prefixed variants), `default` /
+/// `reset` for terminal-default, and 6-digit hex (`#cba6f7` or
+/// `cba6f7`, case-insensitive) → [`Color::Rgb`]. T.9.c: hex unblocks
+/// a theme/`:set ui.*` author writing a one-off truecolor without a
+/// palette entry. A `#`-prefixed string that is NOT exactly 6 hex
+/// digits, or any other unknown word, returns the `unknown color`
+/// error rather than guessing.
 pub fn parse_color(s: &str) -> Result<Color, String> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "default" | "reset" => Color::Default,
@@ -339,8 +344,23 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
         "lightblue" => Color::Named(NamedColor::LightBlue),
         "lightmagenta" => Color::Named(NamedColor::LightMagenta),
         "lightcyan" => Color::Named(NamedColor::LightCyan),
-        other => return Err(format!("unknown color `{other}`")),
+        other => return parse_hex_color(other).ok_or_else(|| format!("unknown color `{other}`")),
     })
+}
+
+/// Parse a 6-digit hex color (`#cba6f7` or `cba6f7`). The leading `#`
+/// is optional; the remaining text must be exactly 6 ASCII hex digits.
+/// `None` for any other shape — the caller maps that to the
+/// `unknown color` error so a malformed hex never silently degrades.
+fn parse_hex_color(s: &str) -> Option<Color> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
 }
 
 #[cfg(test)]
@@ -425,6 +445,32 @@ mod tests {
     #[test]
     fn parse_color_unknown_errors() {
         assert!(parse_color("rainbow").is_err());
+    }
+
+    #[test]
+    fn parse_color_hex_with_and_without_hash() {
+        // T.9.c: `#cba6f7` and `cba6f7` both parse to the same RGB.
+        assert_eq!(
+            parse_color("#cba6f7").unwrap(),
+            Color::Rgb(0xcb, 0xa6, 0xf7)
+        );
+        assert_eq!(parse_color("cba6f7").unwrap(), Color::Rgb(0xcb, 0xa6, 0xf7));
+        // Case-insensitive (parse lowercases first).
+        assert_eq!(
+            parse_color("#CBA6F7").unwrap(),
+            Color::Rgb(0xcb, 0xa6, 0xf7)
+        );
+    }
+
+    #[test]
+    fn parse_color_invalid_hex_errors() {
+        // Non-hex digits, wrong length, and a bare `#` all error
+        // rather than silently degrading.
+        assert!(parse_color("#xyz").is_err());
+        assert!(parse_color("#cba6f").is_err()); // 5 digits
+        assert!(parse_color("#cba6f7a").is_err()); // 7 digits
+        assert!(parse_color("#").is_err());
+        assert!(parse_color("zzzzzz").is_err()); // 6 non-hex chars
     }
 
     // ---- T.1: rich-vocabulary attribute types ----

@@ -1335,6 +1335,41 @@ mod tests {
     }
 
     #[test]
+    fn set_theme_to_macchiato_recolors_keyword_to_macchiato_mauve() {
+        // T.9.b: swapping to the Macchiato palette re-resolves
+        // `syntax.keyword` (which references `mauve`) to Macchiato's
+        // mauve. This is the registry half of the `:colorscheme` swap.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        // Before: mocha mauve.
+        assert_eq!(
+            reg.resolved().get(ids.syntax_keyword).fg,
+            Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+        );
+        reg.set_theme(crate::macchiato_palette(), Vec::new());
+        assert_eq!(
+            reg.resolved().get(ids.syntax_keyword).fg,
+            Some(Color::Rgb(0xc6, 0xa0, 0xf6)),
+            "keyword resolves to Macchiato mauve after the swap"
+        );
+    }
+
+    #[test]
+    fn builtin_themes_lookup_by_name_returns_macchiato_palette() {
+        // T.9.b: the named-theme lookup `:colorscheme` performs resolves
+        // `catppuccin-macchiato` to the Macchiato palette.
+        let theme = crate::builtin_themes()
+            .into_iter()
+            .find(|t| t.name == "catppuccin-macchiato")
+            .expect("macchiato registered");
+        assert_eq!(
+            theme.palette.get(&crate::PaletteKey::from_static("mauve")),
+            Some(Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+        assert!(theme.overrides.is_empty());
+    }
+
+    #[test]
     fn palette_swap_rebuilds_resolved_table() {
         let reg = reg();
         let before = resolved_of(&reg, "syntax.keyword");

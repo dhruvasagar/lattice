@@ -893,6 +893,11 @@ impl App {
             | Effect::SetOption { .. }
             | Effect::SetLocalOption { .. }
             | Effect::SetGlobalOption { .. }
+            // T.9.b: `:colorscheme` swaps the registry host-side in
+            // `Editor::handle_effect` + emits `ThemeChanged`; the TUI
+            // rebuilds off that signal, so nothing to apply here
+            // (parity with `SetOption`'s `ui.*` path).
+            | Effect::SetColorscheme(_)
             | Effect::ListBuffers
             | Effect::DescribeBuffer
             | Effect::DescribeCommand { .. }
@@ -1170,6 +1175,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -1268,6 +1274,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters

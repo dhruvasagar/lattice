@@ -989,6 +989,11 @@ impl GpuiApp {
             | Effect::SetOption { .. }
             | Effect::SetLocalOption { .. }
             | Effect::SetGlobalOption { .. }
+            // T.9.b: `:colorscheme` swaps the registry palette/overrides
+            // host-side in `editor.handle_effect`; the renderer rebuilds
+            // off the emitted `RendererSignal::ThemeChanged`, so there's
+            // nothing to apply here (parity with `SetOption`'s `ui.*`).
+            | Effect::SetColorscheme(_)
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
             | Effect::EchoRegisters

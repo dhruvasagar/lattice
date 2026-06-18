@@ -377,6 +377,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("d", "ex:delete"),
     ("delete", "ex:delete"),
     ("set", "ex:set"),
+    // T.9.b (2026-06-18): `:colorscheme` + the vim short `:colo`.
+    ("colorscheme", "ex:colorscheme"),
+    ("colo", "ex:colorscheme"),
     ("setlocal", "ex:setlocal"),
     ("sl", "ex:setlocal"),
     ("setglobal", "ex:setglobal"),
@@ -902,6 +905,27 @@ mod tests {
         assert_eq!(invocation_name(&inv, &r), "ex:write");
         assert!(!inv.bang);
         assert_eq!(inv.args, Args::None);
+    }
+
+    #[test]
+    fn colorscheme_full_and_short_alias_route_to_registry() {
+        // T.9.b: both `:colorscheme <name>` and the vim short `:colo`
+        // resolve to `ex:colorscheme` carrying the name as a String arg.
+        let r = fixture();
+        let inv = parse("colorscheme catppuccin-macchiato", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:colorscheme");
+        assert_eq!(inv.args, Args::String("catppuccin-macchiato".to_string()));
+        let inv_short = parse("colo catppuccin-mocha", &r).unwrap();
+        assert_eq!(invocation_name(&inv_short, &r), "ex:colorscheme");
+        assert_eq!(inv_short.args, Args::String("catppuccin-mocha".to_string()));
+    }
+
+    #[test]
+    fn colorscheme_without_name_errors() {
+        // T.9.b: the no-arg form errors (the picker is T.12).
+        let r = fixture();
+        assert!(parse("colorscheme", &r).is_err());
+        assert!(parse("colo", &r).is_err());
     }
 
     #[test]

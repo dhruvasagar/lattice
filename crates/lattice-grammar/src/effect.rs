@@ -166,6 +166,13 @@ pub enum Effect {
     },
     /// `:noh[lsearch]` -- clear the hlsearch overlay.
     ClearSearchHighlight,
+    /// `:colorscheme <name>` (T.9.b) -- swap the active theme by name.
+    /// The host looks `name` up in `lattice_theme::builtin_themes()`
+    /// and calls `ThemeRegistry::set_theme` (palette + override swap),
+    /// then emits `RendererSignal::ThemeChanged` so both renderers
+    /// rebuild their caches. An unknown name echoes a host-side error.
+    /// The closure only packages the name (it has no registry access).
+    SetColorscheme(String),
     /// Display a one-line message in the echo area.
     Echo {
         level: EchoLevel,

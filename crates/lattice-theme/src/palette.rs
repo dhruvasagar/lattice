@@ -129,6 +129,48 @@ pub fn default_palette() -> Palette {
         .with("cursor_line.bg", Color::Indexed(236))
 }
 
+/// The Catppuccin **Macchiato** palette (T.9.b). Same key SET as
+/// [`default_palette`] — every element references the same keys — but
+/// the accent RGB values are Macchiato's. The `ansi.*` named entries
+/// stay IDENTICAL to mocha's: the chrome's degradation-on-16-color
+/// intent is theme-independent, so a colorscheme swap must not flip a
+/// named ANSI entry to a truecolor. The one-off tints also stay
+/// identical EXCEPT `cursor_line.bg`, which Macchiato carries as a
+/// distinct RGB tint matching its lighter surface.
+pub fn macchiato_palette() -> Palette {
+    use NamedColor as N;
+    let rgb = Color::Rgb;
+    Palette::new()
+        // ---- Catppuccin Macchiato accents (syntax) ----
+        .with("text", rgb(0xca, 0xd3, 0xf5))
+        .with("overlay0", rgb(0x6e, 0x73, 0x8d))
+        .with("overlay2", rgb(0x93, 0x9a, 0xb7))
+        .with("green", rgb(0xa6, 0xda, 0x95))
+        .with("mauve", rgb(0xc6, 0xa0, 0xf6))
+        .with("yellow", rgb(0xee, 0xd4, 0x9f))
+        .with("peach", rgb(0xf5, 0xa9, 0x7f))
+        .with("blue", rgb(0x8a, 0xad, 0xf4))
+        .with("teal", rgb(0x8b, 0xd5, 0xca))
+        .with("red", rgb(0xed, 0x87, 0x96))
+        .with("maroon", rgb(0xee, 0x99, 0xa0))
+        .with("pink", rgb(0xf5, 0xbd, 0xe6))
+        .with("sapphire", rgb(0x7d, 0xc4, 0xe4))
+        // ---- ANSI-named chrome (IDENTICAL to mocha; theme-independent) ----
+        .with("ansi.red", Color::Named(N::Red))
+        .with("ansi.green", Color::Named(N::Green))
+        .with("ansi.yellow", Color::Named(N::Yellow))
+        .with("ansi.blue", Color::Named(N::Blue))
+        .with("ansi.magenta", Color::Named(N::Magenta))
+        .with("ansi.cyan", Color::Named(N::Cyan))
+        .with("ansi.darkgray", Color::Named(N::DarkGray))
+        // ---- Specific tints (diff bgs identical to mocha; cursor line distinct) ----
+        .with("diff.add.bg", rgb(0, 50, 0))
+        .with("diff.change.bg", rgb(50, 50, 0))
+        .with("diff.deletion.bg", rgb(60, 0, 0))
+        .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("cursor_line.bg", rgb(0x36, 0x3a, 0x4f))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +190,39 @@ mod tests {
     fn missing_key_is_none_not_panic() {
         let p = default_palette();
         assert_eq!(p.get(&"no.such.key".into()), None);
+    }
+
+    #[test]
+    fn macchiato_palette_differs_in_accents_shares_ansi() {
+        // T.9.b: Macchiato's accents differ from mocha's, but the
+        // `ansi.*` chrome entries stay identical (degradation intent),
+        // and `cursor_line.bg` is a distinct Macchiato tint.
+        let mocha = default_palette();
+        let mac = macchiato_palette();
+        assert_eq!(mac.get(&"mauve".into()), Some(Color::Rgb(0xc6, 0xa0, 0xf6)));
+        assert_ne!(mac.get(&"mauve".into()), mocha.get(&"mauve".into()));
+        assert_eq!(mac.get(&"text".into()), Some(Color::Rgb(0xca, 0xd3, 0xf5)));
+        // ANSI chrome identical to mocha.
+        assert_eq!(mac.get(&"ansi.red".into()), mocha.get(&"ansi.red".into()));
+        assert_eq!(
+            mac.get(&"ansi.darkgray".into()),
+            mocha.get(&"ansi.darkgray".into())
+        );
+        // cursor_line.bg is a distinct Macchiato RGB tint.
+        assert_eq!(
+            mac.get(&"cursor_line.bg".into()),
+            Some(Color::Rgb(0x36, 0x3a, 0x4f))
+        );
+        assert_ne!(
+            mac.get(&"cursor_line.bg".into()),
+            mocha.get(&"cursor_line.bg".into())
+        );
+        // diff bgs identical to mocha.
+        assert_eq!(
+            mac.get(&"diff.add.bg".into()),
+            mocha.get(&"diff.add.bg".into())
+        );
+        // Same key set (same count).
+        assert_eq!(mac.len(), mocha.len());
     }
 }

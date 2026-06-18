@@ -193,7 +193,33 @@ Land behind:
 - Keystroke→glyph ratchet unmoved (design §7); TUI cache rebuild
   stays at theme-change rate (O(1) version compare per frame).
 
-### T.5 — unify syntax styling into elements 🗒
+### T.5 — unify syntax styling into elements 🚧 (T.5.a landed)
+
+**T.5.a ✅** — the per-cell **cell builder** (`cells_worker`) reads
+syntax + whitespace-trailing from the resolved table: `CellTheme {
+resolved, ids }` bundle replaces the threaded `theme: &Theme`;
+`resolve_style` → `resolved.get(syntax_element_id(ids, s))` (O(1));
+`CellsRenderState` carries `resolved_theme`+`theme_ids`.
+`BuiltinElementIds` grew the 25 `syntax.*` + 2 whitespace ids. Commit
+`fd551230`; green (theme 30, host lib 730, GPUI lockstep). Parity
+pinned by the existing cells_worker colour tests.
+
+**T.5.b 🗒 (remaining)** — migrate the other **6** `syntax_style`
+consumers to the resolved table, then **delete `Theme::syntax_style`**
++ retarget its `theme.rs` tests:
+- TUI `cells_render::display_line_to_source_spans` (+ `render.rs:5703`
+  styler).
+- GPUI `cells_paint::display_line_to_text_runs` (+ `editor_element:88`,
+  `window:100` stylers).
+- host `diff/overlay.rs` `SyntaxContext` (315/428).
+- Add a shared host `pub fn resolve_syntax_style(resolved, ids, s) ->
+  Style` (+ pub `syntax_element_id`) so all consumers + `cells_worker`
+  call one mapping; thread `resolved`+`ids` from the display-line
+  callers (`render.rs:3634`, `editor_element:609`) + `SyntaxContext`.
+
+**T.5.c 🗒** — whitespace finish (the re-slice from T.4.d): migrate the
+display-line trailing-ws reads + `build_tui_theme` (native cache) to
+resolved; delete the 2 host `Theme` whitespace fields.
 
 Map `lattice_cells::Style` (semantic category) → builtin `syntax.*`
 elements (`syntax.keyword`, `syntax.string`, `syntax.heading.1`, …).

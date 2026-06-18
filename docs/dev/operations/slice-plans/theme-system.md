@@ -315,17 +315,27 @@ renderer adds **zero** match arms.
 > elements rather than MH.A1's bespoke fields. If MH.A1 lands first,
 > T.7 migrates it; preferred is MH.A1 waits for T.7's API.
 
-### T.8 — buffer-local element remap 🗒
+### T.8 — buffer-local element remap ⏸ DEFERRED (no consumer yet)
 
-Wire theme resolution into the `FrameView::for_buffer` per-buffer
-resolution stack ([[project_per_buffer_options_direction]],
-`buffer-local-options.md` §3) as the highest-priority layer (design
-§5). A mode declares element remaps for its own buffers; resolution
-produces a **per-buffer resolved table** (overlay over the global
-table) so the read stays O(1). This is the emacs `face-remap`
-analogue — the seam that lets markdown/org restyle *their* buffers
-without touching global state. Pin: a remap in buffer A does not
-change buffer B's resolved table; read stays index-based.
+**Deferred 2026-06-18 — lands with its first consuming mode, not
+speculatively.** This is the third override scope (§5, the emacs
+`face-remap` analogue) and traces to the original "modes/plugins
+override builtins wherever applicable" requirement. But **nothing
+consumes it today**: no mode performs a per-buffer remap, and the
+canonical consumer — markdown/org scaling/​restyling *its own* buffer's
+headings — needs **T.10** (rich vocab) to be visible plus a markdown
+major mode that opts in. Building the remap mechanism now is
+abstraction-ahead-of-a-reader (CLAUDE.md standing rule). When a mode
+needs per-buffer styling, T.8 lands **with** it so the mechanism is
+validated by a real use.
+
+Plan when it lands: a mode declares element remaps for its own
+buffers; resolution overlays the remap on the global resolved table
+**at content-build time** (the established bake-color path — consistent
+with T.5/T.7, keeps the read index-based + off the paint path), keyed
+through the existing per-buffer resolution machinery (`BufferLocals` /
+`recompute_options_for_buffer`). Pin: a remap in buffer A does not
+change buffer B's baked colors.
 
 ---
 

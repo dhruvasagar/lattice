@@ -94,7 +94,17 @@ Depends on Thread A. Each slice flips one consumer set from
 `theme.<field>` to `resolved.get(<element_id>)`, both renderers in
 lockstep, parity-pinned against the T.2 net.
 
-### T.4 — renderer reads the resolved table 🚧
+### T.4 — renderer reads the resolved table ✅ (a–d landed; 2 groups re-sliced)
+
+**Landed:** T.4.a–d migrated diagnostics, diff signs+tints,
+inactive-pane overlay, file-tree, cursor-line, and *messages* to the
+resolved table across both renderers (TUI cache preserved + repointed;
+GPUI inline). Two groups re-sliced out (clean sequencing, no
+architectural change): `pane.status.*` / `pane.separator` → **T.9**
+(carry live `:set ui.*` overrides needing the registry-override path);
+whitespace → **T.5** (read in the cell builder, which gets the resolved
+table there). Host `Theme` now holds only those deferred groups + the
+non-style glyphs/chars/flags (T.6.t).
 
 Snapshot `Arc<ResolvedTheme>` + a `Copy` `BuiltinElementIds` (interned
 once at boot from the registry handle) into `RenderState` at publish
@@ -370,9 +380,10 @@ GPUI in lockstep.
 ## Sequencing
 
 ```
-A.1 → A.2 → A.3            foundation (crate, resolution, registry)  ✅✅🗒
+A.1 → A.2 → A.3            foundation (crate, resolution, registry)  ✅✅✅
         ↓
 B.4 → B.5 → B.6 → B.6.t    migrate consumers + dismantle Theme (parity-pinned)
+  B.4 ✅ (a–d; pane.status/separator → D.9, whitespace → B.5)
         ↓
 C.7 → C.8                 extensibility (mode elements, buffer-local remap)
         ↓

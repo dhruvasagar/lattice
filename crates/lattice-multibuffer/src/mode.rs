@@ -27,6 +27,7 @@ use lattice_mode::{
 };
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
+use lattice_theme::{ElementOwner, ThemeRegistryHandle};
 
 use crate::registry::MultibufferRegistryHandle;
 
@@ -153,6 +154,24 @@ impl Mode for MultibufferMode {
             // lattice-host converts lattice_core::BufferId → lattice_protocol::ids::BufferId
             // via `new(id.0 as u64)`; invert here so we can key into MultibufferRegistry.
             let core_buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+
+            // T.7 (2026-06-18): the mode OWNS its excerpt-header theme
+            // elements + their defaults — register them here so the
+            // mode is the single source of the element vocabulary
+            // ([[feedback_mode_owns_its_surface]]). Idempotent by name,
+            // so re-activation is safe; `create_multibuffer_view` also
+            // registers (before building the provider) to capture the
+            // ids — both paths hit the same interned ids. Missing
+            // service (test harness) just skips: the provider then
+            // renders with no baked bg/fg.
+            if let Some(theme) = ctx
+                .service::<ThemeRegistryHandle>()
+                .map(|outer| (*outer).clone())
+            {
+                let owner =
+                    ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
+                let _ = crate::register_multibuffer_theme_elements(theme.as_ref(), owner);
+            }
 
             // Both handle types are `Arc<dyn Trait>` aliases.
             // `ctx.service::<T>()` returns `Option<Arc<T>>` which is

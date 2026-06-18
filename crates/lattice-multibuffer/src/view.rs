@@ -152,8 +152,34 @@ pub fn create_multibuffer_view(
     // K.4.6 (2026-06-02): excerpt-header provider — one VirtualRow per
     // excerpt (anchored Above the excerpt's first composed row).
     // M.6.5 (2026-06-08): renamed to MultibufferExcerptHeaderProvider.
-    let excerpt_header_provider =
-        Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone()));
+    //
+    // T.7 (2026-06-18): register the mode-owned excerpt-header theme
+    // elements + capture their ids, then wire the resolved theme
+    // handle into the provider so `collect()` bakes the registered
+    // backdrop / path colors into the header rows. Registration is
+    // idempotent by name; `MultibufferMode::on_activate` registers
+    // the same elements (mode-ownership contract) — both hit the same
+    // interned ids. Build the provider with theme only when the
+    // service is wired (production); test activators that don't
+    // register the service fall back to the no-theme provider.
+    let excerpt_header_provider: Arc<MultibufferExcerptHeaderProvider> = match services
+        .get::<lattice_theme::ThemeRegistryHandle>()
+        .map(|outer| (*outer).clone())
+    {
+        Some(theme) => {
+            let owner = lattice_theme::ElementOwner::Mode(
+                crate::MultibufferMode::mode_id().as_str().to_string().into(),
+            );
+            let elements =
+                crate::register_multibuffer_theme_elements(theme.as_ref(), owner);
+            Arc::new(MultibufferExcerptHeaderProvider::with_theme(
+                (*typed_handle).clone(),
+                theme,
+                elements,
+            ))
+        }
+        None => Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone())),
+    };
     let registered = activator.register_virtual_row_provider(buffer_id, excerpt_header_provider);
     if !registered {
         tracing::debug!(

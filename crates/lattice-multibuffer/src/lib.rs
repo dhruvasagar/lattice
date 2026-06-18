@@ -81,6 +81,10 @@ use lattice_runtime::{
 };
 // K.4.7 (2026-06-07): per-excerpt syntax highlighting.
 use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle, SyntaxSnapshot};
+// T.7 (2026-06-18): mode-owned theme elements for the excerpt header.
+use lattice_theme::{
+    Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle,
+};
 
 // ─────────────────────────────────────────────────────────────────
 // Excerpt + identity + header
@@ -1882,17 +1886,150 @@ pub fn multibuffer_excerpt_header_provider_id(buffer_id: BufferId) -> ProviderId
     MULTIBUFFER_EXCERPT_HEADER_NAMESPACE | u64::from(buffer_id.0)
 }
 
+// ─────────────────────────────────────────────────────────────────
+// T.7 (2026-06-18): mode-owned theme elements for the excerpt header.
+//
+// The multibuffer MODE owns these elements + their defaults — they
+// are NOT core builtins ([[feedback_mode_owns_its_surface]]). The
+// mode registers them (idempotent by name) so the excerpt-header
+// provider can resolve them into BAKED `u32` colors at row-build
+// time (off the UI thread, the established cell/virtual-row pattern).
+//
+// This is the extensibility acid test: a provider crate adds ZERO
+// host `Theme`/style fields and ZERO renderer match arms — it
+// registers elements + references them, and the renderer paints
+// `VirtualRow.bg` / `Cell.fg` generically.
+// ─────────────────────────────────────────────────────────────────
+
+/// Element name: the excerpt-header row's backdrop (a neutral
+/// surface tint, distinct from the diff-deletion-block red the
+/// renderer would otherwise fall a `bg: None` Generic row through to).
+pub const ELEM_EXCERPT_HEADER: &str = "multibuffer.excerpt_header";
+/// Element name: the excerpt-header file-path / title foreground.
+pub const ELEM_EXCERPT_HEADER_PATH: &str = "multibuffer.excerpt_header.path";
+/// Element name: the excerpt-header match-count foreground.
+pub const ELEM_EXCERPT_HEADER_COUNT: &str = "multibuffer.excerpt_header.count";
+
+/// Register the multibuffer mode's theme elements against `reg`.
+/// Idempotent by name (safe to call on every mode activation /
+/// every view creation). Returns the interned [`ElementId`]s the
+/// excerpt-header provider bakes from.
+///
+/// `owner` is the mode's id string ([`MultibufferMode::mode_id`] →
+/// `as_str`), so `:describe-element` attributes these to the mode
+/// rather than core. `lattice-theme` is a leaf crate that can't
+/// depend on `lattice-mode`, hence the string owner.
+pub fn register_multibuffer_theme_elements(
+    reg: &dyn lattice_theme::ThemeRegistry,
+    owner: ElementOwner,
+) -> MultibufferHeaderElementIds {
+    let backdrop = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER.to_string()),
+        owner.clone(),
+        // Neutral surface backdrop (Catppuccin "surface0"-ish), NOT
+        // the diff-deletion red — that was the smell this slice fixes.
+        StyleSpec::new().bg(Color::Rgb(0x31, 0x32, 0x44)),
+        "Multibuffer excerpt header backdrop.",
+    );
+    let path = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_PATH.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("blue".into())),
+        "Excerpt header file path.",
+    );
+    let count = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_COUNT.to_string()),
+        owner,
+        StyleSpec::new().fg(ColorRef::Palette("overlay2".into())),
+        "Excerpt header match count.",
+    );
+    MultibufferHeaderElementIds {
+        backdrop,
+        path,
+        count,
+    }
+}
+
+/// The interned [`ElementId`]s for the excerpt-header elements,
+/// captured once at view-creation and held by the provider so each
+/// `collect()` is an array-index resolve (`resolved.get(id)`), never
+/// a per-row name lookup. `Copy`; cheap to thread through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultibufferHeaderElementIds {
+    pub backdrop: ElementId,
+    pub path: ElementId,
+    pub count: ElementId,
+}
+
+impl Default for MultibufferHeaderElementIds {
+    /// All-INVALID placeholder for test paths that build the provider
+    /// without a theme registry. Reads against an empty/default table
+    /// return `Style::empty()` (no bg/fg baked) — never a panic.
+    fn default() -> Self {
+        Self {
+            backdrop: ElementId::INVALID,
+            path: ElementId::INVALID,
+            count: ElementId::INVALID,
+        }
+    }
+}
+
 /// Emits one virtual row per excerpt header, anchored above the
 /// excerpt's first composed row. Cheap-clone reference to the
 /// multibuffer handle; re-reads excerpts on each `collect()`.
-#[derive(Debug)]
+///
+/// T.7: when a [`ThemeRegistryHandle`] + the header element ids are
+/// supplied, `collect()` resolves the backdrop + path elements and
+/// bakes them into the row's `bg` / cells' `fg` — resolution happens
+/// off-thread at row-build time, never on a paint path. Without a
+/// handle (test paths) the rows fall back to `bg: None` (the renderer
+/// then picks its kind default).
+///
+/// `Debug` is hand-rolled because `ThemeRegistryHandle` (a
+/// `dyn ThemeRegistry` trait object) is not `Debug`; the
+/// `VirtualRowProvider` trait requires `Debug`.
 pub struct MultibufferExcerptHeaderProvider {
     multibuffer: MultibufferDocumentHandle,
+    /// T.7: `None` for test paths that don't wire a theme registry.
+    theme: Option<ThemeRegistryHandle>,
+    elements: MultibufferHeaderElementIds,
+}
+
+impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultibufferExcerptHeaderProvider")
+            .field("buffer_id", &self.multibuffer.buffer_id())
+            .field("has_theme", &self.theme.is_some())
+            .field("elements", &self.elements)
+            .finish()
+    }
 }
 
 impl MultibufferExcerptHeaderProvider {
+    /// Construct without theme wiring — headers render with no baked
+    /// bg/fg (the renderer's kind default applies). Test convenience;
+    /// production uses [`Self::with_theme`].
     pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
-        Self { multibuffer }
+        Self {
+            multibuffer,
+            theme: None,
+            elements: MultibufferHeaderElementIds::default(),
+        }
+    }
+
+    /// T.7: construct with the resolved theme handle + the header
+    /// element ids so `collect()` bakes the registered backdrop / path
+    /// colors into the header rows.
+    pub fn with_theme(
+        multibuffer: MultibufferDocumentHandle,
+        theme: ThemeRegistryHandle,
+        elements: MultibufferHeaderElementIds,
+    ) -> Self {
+        Self {
+            multibuffer,
+            theme: Some(theme),
+            elements,
+        }
     }
 }
 
@@ -1902,12 +2039,62 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
     }
 
     fn version(&self) -> u64 {
-        self.multibuffer.snapshot().version
+        // T.7: fold the resolved theme version into the provider
+        // version so a `:colorscheme` / `:set ui.*` change re-runs
+        // `collect()` and re-bakes the header colors. Mirrors how the
+        // cell matrix invalidates via `MatrixVersion::theme =
+        // resolved().version()` (dispatch.rs). The worker's
+        // fingerprint is `hash[(id, version)]`, so a version bump on
+        // any axis (excerpt content OR theme) triggers a rebuild.
+        let content = self.multibuffer.snapshot().version;
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
+        content.wrapping_add(theme)
     }
 
     fn collect(&self) -> Vec<VirtualRow> {
-        compose_header_rows(&self.multibuffer.excerpts(), default_header_cells)
+        // Resolve the backdrop + path elements ONCE per collect (off
+        // the UI thread), then bake into each header row. `0` (the
+        // Cell "transparent / use default" sentinel) is the fg
+        // fallback when the element is unresolved.
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        let header_bg: Option<u32> = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.backdrop).bg)
+            .map(|c| c.to_rgb_u32(0));
+        let path_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.path).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        compose_header_rows(&self.multibuffer.excerpts(), |excerpt| {
+            themed_header_cells(excerpt, path_fg)
+        })
+        .into_iter()
+        .map(|mut row| {
+            row.bg = header_bg;
+            row
+        })
+        .collect()
     }
+}
+
+/// Build the header cells with the resolved path/title foreground
+/// baked into each glyph (T.7). `path_fg == 0` means "no baked fg"
+/// (the renderer leaves it at the terminal/window default), matching
+/// [`default_header_cells`]'s behaviour.
+fn themed_header_cells(excerpt: &Excerpt, path_fg: u32) -> Arc<[Cell]> {
+    if path_fg == 0 {
+        return default_header_cells(excerpt);
+    }
+    default_header_cells(excerpt)
+        .iter()
+        .map(|c| Cell::new(c.codepoint, path_fg, c.bg, c.flags))
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// Pure function from excerpt list → header virtual rows.
@@ -3611,6 +3798,105 @@ mod tests {
         assert!(
             v_after > v_before,
             "version must bump after recompose; before={v_before} after={v_after}"
+        );
+    }
+
+    // ── T.7: mode-owned theme-element acid test ─────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn excerpt_header_elements_register_and_bake_into_virtual_row() {
+        // T.7 acid test: the multibuffer mode registers its OWN theme
+        // elements (`multibuffer.excerpt_header[.path|.count]`) and the
+        // header provider resolves+bakes them into the header
+        // VirtualRow's `bg`. No host `Theme` field, no renderer match
+        // arm — the renderer paints `VirtualRow.bg` generically.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+
+        // A registry with the default palette (so `blue` / `overlay2`
+        // palette keys resolve) but NO core builtins — proving the mode
+        // is the sole registrant of these elements.
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+
+        // The mode registers its elements (idempotent by name).
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+
+        // 1) The element is registered + resolves to the neutral backdrop.
+        let backdrop_name = ElementName::from(ELEM_EXCERPT_HEADER.to_string());
+        let id = registry
+            .id(&backdrop_name)
+            .expect("multibuffer.excerpt_header registered after activation");
+        assert_eq!(id, ids.backdrop);
+        let resolved = registry.resolved();
+        assert_eq!(
+            resolved.get(id).bg,
+            Some(Color::Rgb(0x31, 0x32, 0x44)),
+            "excerpt_header backdrop resolves to the neutral surface tint, \
+             NOT the diff-deletion red"
+        );
+
+        // 2) The built header VirtualRow carries the BAKED bg —
+        //    `Some(0x313244)`, not `None` (which would fall through to
+        //    the renderer's diff-deletion-block tint).
+        let theme: ThemeRegistryHandle = registry.clone();
+        let (sources, src_ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let excerpts =
+            vec![Excerpt::new(src_ids[0], 0, 1).with_header(ExcerptHeader::new("file.rs"))];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let provider =
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids);
+        let rows = provider.collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].bg,
+            Some(0x0031_3244),
+            "header VirtualRow.bg is the baked backdrop, not None"
+        );
+        assert_eq!(rows[0].kind, VirtualRowKind::Generic);
+        // The path/title cells carry the baked `blue` fg (0x89b4fa).
+        assert!(
+            rows[0].cells.iter().any(|c| c.fg == 0x0089_b4fa),
+            "title cells carry the resolved path fg (blue)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn excerpt_header_provider_version_folds_theme_version() {
+        // T.7 invalidation: a theme change bumps the provider version
+        // (the worker's fingerprint axis), so `collect()` re-runs and
+        // re-bakes — mirrors `MatrixVersion::theme = resolved().version()`.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+        let theme: ThemeRegistryHandle = registry.clone();
+        let (sources, src_ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(src_ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let provider =
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids);
+
+        // Force the table to resolve so the version is established.
+        let _ = registry.resolved();
+        let v_before = provider.version();
+        // A `:set ui.*`-style override dirties the table → next
+        // `resolved()` bumps the version.
+        registry.set_override(
+            ElementName::from(ELEM_EXCERPT_HEADER.to_string()),
+            StyleSpec::new().bg(Color::Rgb(1, 2, 3)),
+        );
+        let v_after = provider.version();
+        assert!(
+            v_after > v_before,
+            "theme change must bump provider version; before={v_before} after={v_after}"
         );
     }
 

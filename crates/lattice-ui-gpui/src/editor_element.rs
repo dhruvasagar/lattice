@@ -2173,7 +2173,14 @@ fn push_virtual_row(
         lattice_cells::VirtualRowKind::DeletionBlock
         | lattice_cells::VirtualRowKind::Generic => {
             let backdrop_width = content_cols.max(1);
-            vec![(0u32, backdrop_width, backdrop_color)]
+            // T.7 (2026-06-18): honor `vrow.bg` first, matching the TUI
+            // peer (render.rs `vrow.bg.map(...).or_else(kind default)`).
+            // A multibuffer excerpt header is a Generic row carrying a
+            // baked `bg`; without this it would paint the deletion-block
+            // red. `bg: None` Generic rows still fall back to the
+            // deletion-block backdrop (D.6.i back-compat).
+            let quad_color = vrow.bg.unwrap_or(backdrop_color);
+            vec![(0u32, backdrop_width, quad_color)]
         }
         lattice_cells::VirtualRowKind::Sticky => {
             // backdrop_color is set to vrow.bg by the sticky pre-pass caller.

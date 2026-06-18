@@ -18,6 +18,13 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-cells = { path = "../lattice-cells" }
+# T.7 (2026-06-18): the mode registers its own theme elements
+# (`multibuffer.excerpt_header[.path|.count]`) and the excerpt-
+# header provider resolves+bakes them into the header VirtualRow
+# bg/fg. `lattice-theme` is a leaf crate (arc-swap + tracing only),
+# so this adds no transitive weight. Proves the mode-owned
+# element-registration path end-to-end (extensibility acid test).
+lattice-theme = { path = "../lattice-theme" }
 # K.4.7 (2026-06-07): per-excerpt syntax highlighting.
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-config = { path = "../lattice-config" }

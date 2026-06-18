@@ -94,22 +94,62 @@ Depends on Thread A. Each slice flips one consumer set from
 `theme.<field>` to `resolved.get(<element_id>)`, both renderers in
 lockstep, parity-pinned against the T.2 net.
 
-### T.4 — renderer reads the resolved table 🗒
+### T.4 — renderer reads the resolved table 🚧
 
-Snapshot `Arc<ResolvedTheme>` into `RenderState` at publish (parallel
-to `theme` while the migration runs), then migrate the existing
-themed reads (pane chrome, file-tree, diagnostics, whitespace,
-cursor-line, messages, diff signs/tints) in both renderers from
-`App.theme.<field>` / `host_theme.<field>` to `resolved.get(id)`.
-**Per the §10.1 decision, each `Theme` style field is deleted as its
-last reader migrates — no getter shim.** Risk: highest in the plan —
-touches both paint paths; sub-slice by consumer group if needed. Land
-behind:
+Snapshot `Arc<ResolvedTheme>` + a `Copy` `BuiltinElementIds` (interned
+once at boot from the registry handle) into `RenderState` at publish
+(parallel to `theme` while the migration runs), then migrate the
+existing themed reads (pane chrome, file-tree, diagnostics,
+whitespace, cursor-line, messages, diff signs/tints) in both
+renderers to the resolved table. **Per the §10.1 decision, each host
+`Theme` style field is deleted as its last reader migrates — no
+getter shim.**
 
-- Both-renderer parity assertion: resolved-read style output ==
-  pre-migration output for the default theme.
+**Read shape (design §10.1, decided 2026-06-18 — keep the cache).**
+The TUI keeps its native ratatui `Theme` cache (`App.theme`); the
+migration **repoints its builder** from `From<&host Theme>` to
+`from(resolved, ids)` and rebuilds it only when
+`ResolvedTheme::version()` changes — the per-frame hot path keeps
+reading pre-adapted ratatui styles (no per-read
+`host_style_to_ratatui`). The GPUI peer has no such cache and reads
+the same `resolved`/`ids`, adapting inline via `to_rgb_u32` as it does
+today. Host `Theme` still dies; the resolved table is the single
+source of truth.
+
+Risk: highest in the plan — touches both paint paths. Sub-sliced by
+consumer group, each green + parity-pinned, both renderers in
+lockstep:
+
+- **T.4.a** ✅ — plumbing + diagnostics (first consumer): added
+  `BuiltinElementIds` + `capture` at boot + snapshot
+  `Arc<ResolvedTheme>`/`theme_ids` into `RenderState` (the handle is
+  looked up from `services` in `build_render_state` — `Arc<dyn
+  ThemeRegistry>` has no `Default`, so it can't be an `Editor` field).
+  TUI's `From<&Theme>` cache builder became `build_tui_theme(host,
+  resolved, ids)` sourcing `diagnostic.{error,warning,info,hint}` from
+  the resolved table; GPUI reads them inline. Deleted the 4 host
+  `diagnostic_*_style` fields (TUI native cache keeps its fields,
+  sourced from resolved). Glyphs stay (non-style → T.6.t). Parity:
+  `builtin_ids_capture_resolves_diagnostics_to_legacy` (lattice-theme)
+  + the retargeted `host_theme_default_adapts_to_tui_theme_default`.
+  Green: theme 26, TUI theme 9 / lib 1475, host lib 730,
+  multibuffer-is-a-regular-buffer 14; GPUI `--features window` builds.
+- **T.4.b** — diff signs + tints (`diff.*.sign` ×4, `diff.*.line` /
+  `diff.deletion_block` ×4); GPUI-heavy (window.rs gutter +
+  editor_element tints).
+- **T.4.c** — pane chrome (`pane.status.*`, `pane.inactive_overlay`,
+  `pane.separator`) + file-tree (`file_tree.*`).
+- **T.4.d** — whitespace (`whitespace`, `whitespace.trailing`) +
+  cursor-line (`editor.cursor_line`) + messages (`messages.*` ×6).
+
+Land behind:
+
+- Both-renderer parity assertion: resolved-sourced style output ==
+  pre-migration output for the default theme (rides the T.2
+  `resolved_builtins_match_legacy_literals` net).
 - `multibuffer_is_a_regular_buffer.rs` stays green.
-- Keystroke→glyph ratchet unmoved (design §7).
+- Keystroke→glyph ratchet unmoved (design §7); TUI cache rebuild
+  stays at theme-change rate (O(1) version compare per frame).
 
 ### T.5 — unify syntax styling into elements 🗒
 

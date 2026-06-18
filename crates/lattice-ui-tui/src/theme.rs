@@ -309,15 +309,26 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
     style
 }
 
-/// Adapter: build the ratatui-typed [`Theme`] from the canonical
-/// host [`host_theme::Theme`]. The TUI's `App.theme` cache is
-/// rebuilt via this conversion every time the option cascade
-/// writes `App.editor.host_theme`. Cheap (every field is `Copy`); the
-/// rebuild fires at mode-transition / option-set rate, not per
-/// frame.
-impl From<&host_theme::Theme> for Theme {
-    fn from(h: &host_theme::Theme) -> Self {
-        Self {
+/// Build the ratatui-typed [`Theme`] cache from the canonical host
+/// [`host_theme::Theme`] **plus** the resolved theme table. The TUI's
+/// `App.theme` cache is the renderer's hot-path adapted view; it is
+/// rebuilt at theme-change / option-set rate, never per frame.
+///
+/// T.4 (theme-system): migrated *style* elements now source from the
+/// [`host_theme::ResolvedTheme`] table (the single source of truth) via
+/// the captured [`host_theme::BuiltinElementIds`], rather than from the
+/// flat `Theme` struct. The cache itself stays — it is the safeguard
+/// that keeps per-line decoration painting free of per-frame style
+/// adaptation (design §10.1; `feedback_renderer_cache_protects_ux`).
+/// Un-migrated fields still read from `h`; each moves to `resolved` as
+/// its Thread-B slice lands.
+pub fn build_tui_theme(
+    h: &host_theme::Theme,
+    resolved: &host_theme::ResolvedTheme,
+    ids: &host_theme::BuiltinElementIds,
+) -> Theme {
+    let resolved_style = |id| host_style_to_ratatui(resolved.get(id));
+    Theme {
             pane_status_active: host_style_to_ratatui(h.pane_status_active),
             pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
             inactive_pane_overlay: host_style_to_ratatui(h.inactive_pane_overlay),
@@ -329,14 +340,17 @@ impl From<&host_theme::Theme> for Theme {
             file_tree_hidden_style: host_style_to_ratatui(h.file_tree_hidden_style),
             file_tree_file_style: host_style_to_ratatui(h.file_tree_file_style),
             nerd_fonts: h.nerd_fonts,
+            // T.4.a: diagnostic styles source from the resolved table
+            // (`diagnostic.{error,warning,info,hint}`); the glyphs stay
+            // on the host `Theme` until T.6.t.
             diagnostic_error_glyph: h.diagnostic_error_glyph,
-            diagnostic_error_style: host_style_to_ratatui(h.diagnostic_error_style),
+            diagnostic_error_style: resolved_style(ids.diagnostic_error),
             diagnostic_warning_glyph: h.diagnostic_warning_glyph,
-            diagnostic_warning_style: host_style_to_ratatui(h.diagnostic_warning_style),
+            diagnostic_warning_style: resolved_style(ids.diagnostic_warning),
             diagnostic_info_glyph: h.diagnostic_info_glyph,
-            diagnostic_info_style: host_style_to_ratatui(h.diagnostic_info_style),
+            diagnostic_info_style: resolved_style(ids.diagnostic_info),
             diagnostic_hint_glyph: h.diagnostic_hint_glyph,
-            diagnostic_hint_style: host_style_to_ratatui(h.diagnostic_hint_style),
+            diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
             whitespace_style: host_style_to_ratatui(h.whitespace_style),
             whitespace_trailing_style: host_style_to_ratatui(h.whitespace_trailing_style),
             cursor_line_bg: host_color_to_ratatui(h.cursor_line_bg),
@@ -356,7 +370,6 @@ impl From<&host_theme::Theme> for Theme {
             diff_change_line_bg: host_color_to_ratatui(h.diff_change_line_bg),
             diff_deletion_block_bg: host_color_to_ratatui(h.diff_deletion_block_bg),
             diff_conflict_line_bg: host_color_to_ratatui(h.diff_conflict_line_bg),
-        }
     }
 }
 
@@ -390,18 +403,24 @@ mod tests {
 
     #[test]
     fn host_theme_default_adapts_to_tui_theme_default() {
-        // Phase 5.3 contract: the host-side `Theme::default()`
-        // adapts (via `From<&host::Theme>`) to the same ratatui
-        // `Theme::default()` the TUI hand-rolls. If either default
-        // impl drifts, this test fails immediately -- we want a
-        // single source of truth for the default theme; the
-        // duplication is transitional, not load-bearing.
-        let host: super::host_theme::Theme = super::host_theme::Theme::default();
-        let adapted: Theme = (&host).into();
+        // Phase 5.3 contract + T.4: the host default theme, run
+        // through the cache builder (host fields + the resolved
+        // default table for migrated style elements), builds the
+        // same ratatui `Theme::default()` the TUI hand-rolls. This
+        // pins the per-element parity net on the TUI side — the
+        // resolved-sourced diagnostic styles must equal the legacy
+        // ratatui defaults. Superseded by the per-element parity pin
+        // when host `Theme` is dismantled (T.6.t).
+        use host_theme::ThemeRegistry as _;
+        let host = host_theme::Theme::default();
+        let reg = host_theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = host_theme::BuiltinElementIds::capture(&reg);
+        let built = build_tui_theme(&host, &resolved, &ids);
         let tui: Theme = Theme::default();
         assert_eq!(
-            adapted, tui,
-            "host theme default must adapt to TUI theme default"
+            built, tui,
+            "host theme default + resolved table must build the TUI theme default"
         );
     }
 

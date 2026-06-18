@@ -667,28 +667,32 @@ fn annotation_color_rgb(ann: &lattice_completion::Annotation, selected: bool) ->
 /// could add new variants).
 fn diagnostic_glyph_and_color(
     host_theme: &lattice_host::ui::theme::Theme,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     severity: lattice_lsp::DiagnosticSeverity,
 ) -> (char, u32) {
+    // T.4.a: the glyph stays on the host `Theme` (non-style →
+    // T.6.t); the *style* reads from the resolved table.
     let (glyph, style) = match severity {
         lattice_lsp::DiagnosticSeverity::ERROR => (
             host_theme.diagnostic_error_glyph,
-            host_theme.diagnostic_error_style,
+            resolved.get(ids.diagnostic_error),
         ),
         lattice_lsp::DiagnosticSeverity::WARNING => (
             host_theme.diagnostic_warning_glyph,
-            host_theme.diagnostic_warning_style,
+            resolved.get(ids.diagnostic_warning),
         ),
         lattice_lsp::DiagnosticSeverity::INFORMATION => (
             host_theme.diagnostic_info_glyph,
-            host_theme.diagnostic_info_style,
+            resolved.get(ids.diagnostic_info),
         ),
         lattice_lsp::DiagnosticSeverity::HINT => (
             host_theme.diagnostic_hint_glyph,
-            host_theme.diagnostic_hint_style,
+            resolved.get(ids.diagnostic_hint),
         ),
         _ => (
             host_theme.diagnostic_info_glyph,
-            host_theme.diagnostic_info_style,
+            resolved.get(ids.diagnostic_info),
         ),
     };
     // 0x9399b2 is Catppuccin overlay2 — the v1 muted fallback if
@@ -1262,6 +1266,12 @@ impl EditorView {
         // top-level field. Theme is `Copy` so this is a plain
         // struct move.
         let host_theme = rs_guard.theme;
+        // T.4 (theme-system): the resolved read table + builtin ids,
+        // snapshotted into `RenderState`. GPUI has no native theme
+        // cache — it adapts inline via `to_rgb_u32` per read — so the
+        // migrated diagnostic styles read `resolved.get(ids.x)` here.
+        let resolved_theme = rs_guard.resolved_theme.clone();
+        let theme_ids = rs_guard.theme_ids;
 
         // Phase 5.8.AF.5 / Slice X3.full.2 + 3c.final.B (group 2):
         // gather per-row gutter metadata for the visible window.
@@ -1360,22 +1370,24 @@ impl EditorView {
                 // MO.4.a: read from pre-built mode-walk map.
                 let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
                     use lattice_mode::GutterSeverityLevel;
+                    // T.4.a: glyph from host `Theme`, style from the
+                    // resolved table (`diagnostic.{error,…}`).
                     let (glyph, style) = match level {
                         GutterSeverityLevel::Error => (
                             host_theme.diagnostic_error_glyph,
-                            host_theme.diagnostic_error_style,
+                            resolved_theme.get(theme_ids.diagnostic_error),
                         ),
                         GutterSeverityLevel::Warning => (
                             host_theme.diagnostic_warning_glyph,
-                            host_theme.diagnostic_warning_style,
+                            resolved_theme.get(theme_ids.diagnostic_warning),
                         ),
                         GutterSeverityLevel::Info => (
                             host_theme.diagnostic_info_glyph,
-                            host_theme.diagnostic_info_style,
+                            resolved_theme.get(theme_ids.diagnostic_info),
                         ),
                         GutterSeverityLevel::Hint => (
                             host_theme.diagnostic_hint_glyph,
-                            host_theme.diagnostic_hint_style,
+                            resolved_theme.get(theme_ids.diagnostic_hint),
                         ),
                     };
                     let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
@@ -1621,7 +1633,15 @@ impl EditorView {
                         );
                         let color = d
                             .severity
-                            .map(|s| diagnostic_glyph_and_color(&host_theme, s).1)
+                            .map(|s| {
+                                diagnostic_glyph_and_color(
+                                    &host_theme,
+                                    &resolved_theme,
+                                    &theme_ids,
+                                    s,
+                                )
+                                .1
+                            })
                             // Unknown severity: fall back to overlay2
                             // (matches `diagnostic_glyph_and_color`).
                             .unwrap_or(0x9399b2);

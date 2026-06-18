@@ -923,6 +923,17 @@ impl Editor {
                 terminal_width: self.terminal_width,
             }),
             theme: self.host_theme,
+            // T.4 (theme-system): snapshot the resolved read table +
+            // builtin ids so renderers read `resolved.get(ids.x)`.
+            // `resolved()` is an `ArcSwap` load (rebuilt only when a
+            // theme/palette change marked it dirty — never the hot
+            // path; design §7).
+            resolved_theme: self
+                .services
+                .get::<crate::ui::theme::ThemeRegistryHandle>()
+                .map(|r| r.resolved())
+                .unwrap_or_default(),
+            theme_ids: self.builtin_element_ids,
             // Slice 3c.final.B.7: messages + modeline reads lifted
             // off `read_editor` round-trips. `Arc::new` per publish
             // keeps each sub-state's clone cheap (Arc bump only);

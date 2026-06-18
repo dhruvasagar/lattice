@@ -18,7 +18,8 @@
 //! resolved table. See `docs/dev/architecture/theme-system.md`.
 
 pub use lattice_theme::{
-    parse_color, Color, FamilyId, FontScale, Modifiers, NamedColor, Style, Weight,
+    parse_color, BuiltinElementIds, Color, FamilyId, FontScale, InMemoryThemeRegistry, Modifiers,
+    NamedColor, ResolvedTheme, Style, ThemeRegistry, ThemeRegistryHandle, Weight,
 };
 
 /// One full UI theme. Cheap to clone (every field is `Copy`).
@@ -46,14 +47,14 @@ pub struct Theme {
     pub nerd_fonts: bool,
 
     // ---- Diagnostics ----
+    // T.4.a: the `diagnostic_*_style` fields moved to theme elements
+    // (`diagnostic.{error,warning,info,hint}`); both renderers read
+    // them via `ResolvedTheme`. The glyph chars stay here until
+    // T.6.t migrates them to `ui.*` options (a glyph is not a style).
     pub diagnostic_error_glyph: char,
-    pub diagnostic_error_style: Style,
     pub diagnostic_warning_glyph: char,
-    pub diagnostic_warning_style: Style,
     pub diagnostic_info_glyph: char,
-    pub diagnostic_info_style: Style,
     pub diagnostic_hint_glyph: char,
-    pub diagnostic_hint_style: Style,
 
     // ---- Whitespace + current-line ----
     pub whitespace_style: Style,
@@ -192,13 +193,9 @@ impl Default for Theme {
             nerd_fonts: false,
 
             diagnostic_error_glyph: '■',
-            diagnostic_error_style: Style::empty().fg(Color::Named(NamedColor::Red)).bold(),
             diagnostic_warning_glyph: '▲',
-            diagnostic_warning_style: Style::empty().fg(Color::Named(NamedColor::Yellow)).bold(),
             diagnostic_info_glyph: '●',
-            diagnostic_info_style: Style::empty().fg(Color::Named(NamedColor::Blue)),
             diagnostic_hint_glyph: '·',
-            diagnostic_hint_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
 
             whitespace_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
             whitespace_trailing_style: Style::empty().fg(Color::Named(NamedColor::Red)),

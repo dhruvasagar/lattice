@@ -595,16 +595,39 @@ risk-aversion):
   stop round-tripping through `Theme`; new `ui.*` options are added
   for the diagnostic glyphs + the horizontal separator. Their
   consumers read the resolved option, not `Theme`.
-- **`Theme` is then deleted**, along with the TUI's `From<&Theme>`
-  adapter + the `host_theme_default_adapts_to_tui_theme_default`
-  round-trip pin (superseded by the per-element parity pin). The
-  content-hash currently folded into `MatrixVersion::theme` is
-  replaced by `ResolvedTheme::version()` (§7).
+- **`Theme` is then deleted**, along with the
+  `host_theme_default_adapts_to_tui_theme_default` round-trip pin
+  (superseded by the per-element parity pin). The content-hash
+  currently folded into `MatrixVersion::theme` is replaced by
+  `ResolvedTheme::version()` (§7).
 
 Rejected: keeping `Theme` as a getter shim over the resolved table —
 it would ossify the dual representation heuristic #1 forbids as an
 end-state. Sequencing is in the slice plan (Thread B + the
 `Theme`-teardown slice).
+
+**The TUI's native ratatui `Theme` cache survives — only its source
+changes (decided 2026-06-18).** The TUI does not read host styles on
+the hot path; it reads a *cached adapted view* (`App.theme`, ratatui
+`Style`/`Color`), rebuilt at theme-change rate from the host `Theme`
+via `From<&Theme>`. That cache is the safeguard that keeps per-line
+decoration painting (diagnostics, diff signs/tints, chrome,
+whitespace, messages) free of per-frame `host_style_to_ratatui` work
+— a paramount-#1 + UX (higher-court) guarantee against any per-read
+adaptation creeping onto the hot path. The migration therefore keeps
+the cache and **repoints its builder** from `From<&host Theme>` to
+`from(resolved, ids)`: the renderer reads pre-adapted ratatui styles
+exactly as today, the cache rebuilds only when
+`ResolvedTheme::version()` changes (O(1) version compare per frame,
+O(elements) rebuild at theme-change rate). Host `Theme` still dies and
+the resolved table is the single source of truth; the "dual
+representation" that remains is the renderer's necessary
+host-neutral→ratatui projection, cached — not an inferior duplicate,
+so heuristic #1 does not condemn it. The GPUI peer has **no** such
+cache (it adapts inline via `to_rgb_u32` per read, including the
+per-cell `TextRun` path) and simply reads the same `resolved`/`ids`
+— the TUI-caches / GPUI-adapts-inline split is the renderer-peer
+asymmetry §6 establishes.
 
 ---
 

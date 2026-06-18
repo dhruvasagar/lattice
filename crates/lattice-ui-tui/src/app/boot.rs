@@ -157,14 +157,18 @@ impl App {
     }
 
     /// Rebuild the cached TUI-typed [`crate::theme::Theme`] from
-    /// the renderer-neutral [`lattice_host::ui::theme::Theme`].
-    /// Cheap (every field is `Copy`); the rebuild fires only on
-    /// option cascade or on a host-emitted
+    /// the renderer-neutral [`lattice_host::ui::theme::Theme`] **plus**
+    /// the resolved theme table (T.4). Cheap (every field is `Copy`);
+    /// the rebuild fires only on option cascade or on a host-emitted
     /// [`lattice_host::dispatch::RendererSignal::ThemeChanged`],
-    /// never per frame. A future GPUI renderer implements an
-    /// equivalent `rebuild_gpui_theme` on its own `App`.
+    /// never per frame — so a `:colorscheme` / palette swap (which
+    /// bumps `ResolvedTheme::version()` and emits `ThemeChanged`)
+    /// recolors the cache without any per-frame style adaptation. A
+    /// future GPUI renderer implements an equivalent
+    /// `rebuild_gpui_theme` on its own `App`.
     pub fn rebuild_tui_theme(&mut self) {
-        self.theme = crate::theme::Theme::from(&self.render_state.load().theme);
+        let rs = self.render_state.load();
+        self.theme = crate::theme::build_tui_theme(&rs.theme, &rs.resolved_theme, &rs.theme_ids);
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and

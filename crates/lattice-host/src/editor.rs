@@ -825,6 +825,15 @@ pub struct Editor {
     /// `lattice_ui_tui::App.theme`) is rebuilt from this on
     /// every successful cascade.
     pub host_theme: HostTheme,
+    /// T.4: builtin element ids interned once at boot from the
+    /// `ThemeRegistryHandle` (looked up from [`Self::services`]).
+    /// Snapshotted (Copy) into `RenderState` so a renderer read is
+    /// `resolved.get(ids.<elem>)`. The registry handle itself lives
+    /// only in `services` (it is `Arc<dyn ThemeRegistry>`, which has no
+    /// `Default`, so it cannot be a field on this `derive(Default)`
+    /// struct); `build_render_state` looks it up to snapshot
+    /// `resolved()`.
+    pub builtin_element_ids: crate::ui::theme::BuiltinElementIds,
     /// Buffer-level modal state machine (DESIGN.md §5.2).
     /// One of Normal / Insert / Visual / Op-pending /
     /// Command / Search / Replace.

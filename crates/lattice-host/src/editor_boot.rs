@@ -1032,6 +1032,17 @@ impl Editor {
                 &registry,
             );
 
+        // T.3/T.4 (theme-system): the theme-element registry, seeded
+        // with the default palette + all builtin elements (resolved +
+        // ready). Created before the struct literal so the `services:`
+        // block (modes look it up), the `builtin_element_ids` capture,
+        // and the `theme_registry` field all share the one Arc. See
+        // theme-system.md §3.5 / §7.
+        let theme_registry: lattice_theme::ThemeRegistryHandle =
+            Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+        let builtin_element_ids =
+            lattice_theme::BuiltinElementIds::capture(theme_registry.as_ref());
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1123,22 +1134,23 @@ impl Editor {
                 // reach it from `on_activate`. Same Arc as the
                 // `Editor.snippet_session` field (set below).
                 s.register::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
-                // T.3 (theme-system): the theme-element registry,
-                // seeded with the default palette + all builtin
-                // elements. Consumers (renderers, modes) look it up
-                // via `services().get::<ThemeRegistryHandle>()` and
-                // intern their `ElementId`s once at `on_activate`
-                // (T.4). Register + look up the SAME
-                // `Arc<dyn ThemeRegistry>` type per the
-                // ServiceRegistry Arc/TypeId rule
-                // (`feedback_servicesregistry_arc_typeid`). Nothing
-                // reads it yet — the `Theme` struct still drives
-                // rendering until T.4.
-                let theme_registry: lattice_theme::ThemeRegistryHandle =
-                    Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+                // T.3/T.4 (theme-system): register the theme-element
+                // registry (created above the struct literal) so modes
+                // + renderers look it up via
+                // `services().get::<ThemeRegistryHandle>()`. Register +
+                // look up the SAME `Arc<dyn ThemeRegistry>` type per
+                // the ServiceRegistry Arc/TypeId rule
+                // (`feedback_servicesregistry_arc_typeid`). The
+                // renderers read the resolved table via the
+                // `RenderState` snapshot (T.4); modes intern their
+                // own `ElementId`s from `on_activate` (T.7).
                 s.register::<lattice_theme::ThemeRegistryHandle>(theme_registry);
                 Arc::new(s)
             },
+            // T.4 (theme-system): builtin ids captured (above) from the
+            // theme registry, which is registered into `services` for
+            // the renderer snapshot + mode lookups.
+            builtin_element_ids,
             // Perf plan B.4: wrap the seeded HashMap so the
             // buffer_locals sub-state cache can detect when no
             // mutation has fired between publishes.

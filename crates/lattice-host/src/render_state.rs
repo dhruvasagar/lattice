@@ -119,6 +119,19 @@ pub struct RenderState {
     /// so the publish is a plain struct move — no `Arc`
     /// indirection needed.
     pub theme: crate::ui::theme::Theme,
+    /// T.4 (theme-system): the resolved theme read table, snapshotted
+    /// from the `ThemeRegistryHandle` at publish. Renderers read
+    /// `resolved_theme.get(theme_ids.<elem>)` — an O(1) array index
+    /// (design §7). Parallel to `theme` while Thread B migrates
+    /// consumers; each host `Theme` style field is deleted as its last
+    /// reader moves here. The TUI rebuilds its ratatui cache from this
+    /// only when `ResolvedTheme::version()` changes (no per-frame
+    /// adaptation); GPUI adapts inline.
+    pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    /// T.4: builtin element ids (Copy), interned once at boot. Paired
+    /// with [`Self::resolved_theme`] so a read is
+    /// `resolved_theme.get(theme_ids.x)`.
+    pub theme_ids: crate::ui::theme::BuiltinElementIds,
     /// S2.1 (2026-05-26): cell-grid renderer substrate state.
     /// Carries the published `CellMatrix` cell + the inputs the
     /// cell-builder worker (S2.2+) reads to rebuild. See
@@ -169,6 +182,8 @@ impl Default for RenderState {
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
             theme: crate::ui::theme::Theme::default(),
+            resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
+            theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             cells: Arc::new(arc_swap::ArcSwap::from_pointee(
                 CellsRenderState::default(),
             )),

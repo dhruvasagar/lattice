@@ -26,7 +26,8 @@ pub use element::{
 };
 pub use palette::{default_palette, Palette, PaletteKey};
 pub use registry::{
-    register_builtins, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry, ThemeRegistryHandle,
+    register_builtins, BuiltinElementIds, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry,
+    ThemeRegistryHandle,
 };
 
 /// A single style: optional foreground + optional background +

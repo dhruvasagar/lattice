@@ -24,6 +24,14 @@ use crate::{Color, FamilyId, Weight};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ElementId(pub u32);
 
+impl ElementId {
+    /// Out-of-range sentinel. `ResolvedTheme::get(INVALID)` returns
+    /// `Style::empty()` (out-of-range ids are styleless, never a
+    /// panic), so it is the safe default + not-found fallback for the
+    /// id-capture helpers ([`crate::BuiltinElementIds`]).
+    pub const INVALID: ElementId = ElementId(u32::MAX);
+}
+
 /// A theme element's dotted, hierarchical name (`markdown.heading.1`).
 /// Fallback walks the dotted parents (`markdown.heading.1` →
 /// `markdown.heading` → `markdown`) when the more-specific element is

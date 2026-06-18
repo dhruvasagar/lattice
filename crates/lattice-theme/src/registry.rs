@@ -69,6 +69,19 @@ impl ResolvedTheme {
     }
 }
 
+impl Default for ResolvedTheme {
+    /// An empty table (version 0) — every `get` returns
+    /// `Style::empty()`. The placeholder a default `RenderState`
+    /// carries before the first real publish snapshots the live
+    /// table; never the live render target.
+    fn default() -> Self {
+        ResolvedTheme {
+            styles: Box::new([]),
+            version: 0,
+        }
+    }
+}
+
 /// Registration + resolution surface. Lives as a ServiceRegistry
 /// service (T.3); modes reach it through the handle, never through
 /// `&mut Editor`.
@@ -537,6 +550,62 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
 }
 
+// ---- builtin element id capture (T.4) ----
+
+/// The interned [`ElementId`]s for the builtin elements the renderers
+/// read, captured **once at boot** from the [`ThemeRegistry`] and held
+/// for the process lifetime. `Copy` + small, so it snapshots into
+/// `RenderState` per publish for free; a read is then
+/// `resolved.get(ids.<elem>)` — an array index, no per-frame name
+/// lookup (design §7).
+///
+/// Grown one consumer-group at a time as Thread B migrates renderers
+/// off the flat `Theme` struct (T.4.a diagnostics → T.4.b diff → …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinElementIds {
+    // T.4.a — diagnostics.
+    pub diagnostic_error: ElementId,
+    pub diagnostic_warning: ElementId,
+    pub diagnostic_info: ElementId,
+    pub diagnostic_hint: ElementId,
+}
+
+impl Default for BuiltinElementIds {
+    /// All [`ElementId::INVALID`] — the placeholder a default
+    /// `RenderState` carries before the boot capture. Reads against an
+    /// empty/default resolved table return `Style::empty()`.
+    fn default() -> Self {
+        BuiltinElementIds {
+            diagnostic_error: ElementId::INVALID,
+            diagnostic_warning: ElementId::INVALID,
+            diagnostic_info: ElementId::INVALID,
+            diagnostic_hint: ElementId::INVALID,
+        }
+    }
+}
+
+impl BuiltinElementIds {
+    /// Intern the builtin ids from the registry once at boot. A
+    /// missing builtin (a registration bug, never expected) logs once
+    /// and falls back to [`ElementId::INVALID`] — a styleless read,
+    /// never a panic (graceful degradation, paramount-goal-aligned).
+    pub fn capture(reg: &dyn ThemeRegistry) -> Self {
+        let id = |name: &'static str| match reg.id(&ElementName::from_static(name)) {
+            Some(id) => id,
+            None => {
+                tracing::warn!("theme: builtin element `{name}` not registered at id-capture");
+                ElementId::INVALID
+            }
+        };
+        BuiltinElementIds {
+            diagnostic_error: id("diagnostic.error"),
+            diagnostic_warning: id("diagnostic.warning"),
+            diagnostic_info: id("diagnostic.info"),
+            diagnostic_hint: id("diagnostic.hint"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,6 +688,47 @@ mod tests {
             resolved_of(&reg, "syntax.url"),
             Style::empty().fg(Color::Rgb(0x74, 0xc7, 0xec)).underline()
         );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_diagnostics_to_legacy() {
+        // T.4.a parity net (shared by BOTH renderers — each reads
+        // `resolved.get(ids.diagnostic_*)`): capture finds the ids and
+        // the resolved styles equal the legacy `Theme::default()`
+        // diagnostic literals byte-for-byte.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_ne!(ids.diagnostic_error, ElementId::INVALID);
+        assert_ne!(ids.diagnostic_warning, ElementId::INVALID);
+        assert_ne!(ids.diagnostic_info, ElementId::INVALID);
+        assert_ne!(ids.diagnostic_hint, ElementId::INVALID);
+        assert_eq!(
+            resolved.get(ids.diagnostic_error),
+            Style::empty().fg(Color::Named(NamedColor::Red)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.diagnostic_warning),
+            Style::empty().fg(Color::Named(NamedColor::Yellow)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.diagnostic_info),
+            Style::empty().fg(Color::Named(NamedColor::Blue))
+        );
+        assert_eq!(
+            resolved.get(ids.diagnostic_hint),
+            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
+    }
+
+    #[test]
+    fn builtin_ids_default_is_invalid_and_styleless() {
+        // The placeholder a default `RenderState` carries: all ids
+        // INVALID, every read styleless (never a panic).
+        let ids = BuiltinElementIds::default();
+        assert_eq!(ids.diagnostic_error, ElementId::INVALID);
+        let resolved = ResolvedTheme::default();
+        assert_eq!(resolved.get(ids.diagnostic_error), Style::empty());
     }
 
     #[test]

@@ -331,7 +331,27 @@ change buffer B's resolved table; read stays index-based.
 
 ## Thread D — surface + rich vocabulary
 
-### T.9 — config + introspection 🗒
+### T.9 — config + introspection 🚧 (T.9.a landed)
+
+**T.9.a ✅** (`2ba3ba2b`) — per-element **override API** (design §5.1):
+`ThemeRegistry::set_override(name, spec)` overlays a spec's set fields
+on an element's resolved default (`apply_overlay`); `set_theme(palette,
+overrides)` for the `:colorscheme` swap (T.9.b). The 3 `:set`-backed
+chrome fields migrated off host `Theme` onto overrides
+(`sync_host_theme_from_config` writes `pane.separator` /
+`pane.status.{active,inactive}` overrides); host `Theme` is now
+**non-style config only**. Tests: set_override / set_theme.
+
+**Remaining:**
+- **T.9.b** — `:colorscheme <name>` ex-command + a named-theme registry
+  (`builtin_themes()` in lattice-theme; ≥2 themes, e.g. Catppuccin
+  Mocha default + Latte) calling `registry.set_theme(...)` + emitting
+  `RendererSignal::ThemeChanged`. (Ex-command wiring lives in
+  `lattice-grammar::ex_commands::populate` + dispatch.)
+- **T.9.c** — grow `parse_color` (lattice-theme/src/lib.rs:324) to
+  accept `#rrggbb` hex (now unblocked — palette is the indirection).
+- **T.9.d** — `:describe-element` / `:customize` buffer-backed views
+  (owner + resolved style + inherit chain). Larger help-view feature.
 
 - `:colorscheme <name>` swaps active `(Palette, overrides)`; a
   named-theme registry (≥2 builtin themes to exercise the swap).

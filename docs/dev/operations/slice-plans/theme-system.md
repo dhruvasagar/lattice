@@ -143,8 +143,22 @@ lockstep:
   block) inline from `resolved.get(ids.diff_*)`. Parity:
   `builtin_ids_capture_resolves_diff_to_legacy`. Green: theme 27, TUI
   lib 1475, host lib 730, multibuffer 14; GPUI `--features window`.
-- **T.4.c** — pane chrome (`pane.status.*`, `pane.inactive_overlay`,
-  `pane.separator`) + file-tree (`file_tree.*`).
+- **T.4.c** ✅ (partial — see re-slice) — `pane.inactive_overlay` +
+  file-tree (`file_tree.{dir,hidden,file}`). Grew `BuiltinElementIds` +
+  `capture` (4 ids); deleted the 4 writer-free host fields; TUI
+  `build_tui_theme` sources them from resolved; GPUI unaffected (it
+  reads no host chrome). Parity:
+  `builtin_ids_capture_resolves_chrome_to_legacy`. Green: theme 28,
+  TUI lib 1475, host lib 730.
+  **Re-slice:** `pane.status.active` / `pane.status.inactive` /
+  `pane.separator` carry live `:set ui.*` fg overrides
+  (`sync_host_theme_from_config` writes them from
+  `ui.statusline_active_fg` / `_inactive_fg` / `separator_color`).
+  Migrating them needs the registry per-element override path, which
+  is **T.9**'s designated work (§8) — so they stay on host `Theme` +
+  their `:set` writers until T.9 wires the overrides to the registry
+  and moves the reads. Avoids pulling T.9 substrate into T.4 (heuristic
+  #1: no premature override API); each element stays wholly on one path.
 - **T.4.d** — whitespace (`whitespace`, `whitespace.trailing`) +
   cursor-line (`editor.cursor_line`) + messages (`messages.*` ×6).
 
@@ -254,6 +268,13 @@ change buffer B's resolved table; read stays index-based.
   resolved style + inherit chain); `:customize` over palette +
   overrides (design.md §5.11/§5.12). Falls out of the registry —
   elements are introspectable data.
+- **Carries the T.4.c re-slice:** wire the existing `:set
+  ui.statusline_active_fg` / `ui.statusline_inactive_fg` /
+  `ui.separator_color` options to per-element overrides of
+  `pane.status.active` / `pane.status.inactive` / `pane.separator`,
+  then migrate those reads off host `Theme` (the last 3 host style
+  fields besides syntax). `sync_host_theme_from_config` stops writing
+  them to `Theme` and writes registry overrides instead.
 
 ### T.10 — GPUI honors rich vocabulary 🗒
 

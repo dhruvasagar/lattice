@@ -577,6 +577,13 @@ pub struct BuiltinElementIds {
     pub diff_change_line: ElementId,
     pub diff_deletion_block: ElementId,
     pub diff_conflict_line: ElementId,
+    // T.4.c — pane chrome + file tree (writer-free elements only;
+    // `pane.status.*` / `pane.separator` carry live `:set ui.*`
+    // overrides and migrate with the registry-override path in T.9).
+    pub pane_inactive_overlay: ElementId,
+    pub file_tree_dir: ElementId,
+    pub file_tree_hidden: ElementId,
+    pub file_tree_file: ElementId,
 }
 
 impl Default for BuiltinElementIds {
@@ -597,6 +604,10 @@ impl Default for BuiltinElementIds {
             diff_change_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
+            pane_inactive_overlay: ElementId::INVALID,
+            file_tree_dir: ElementId::INVALID,
+            file_tree_hidden: ElementId::INVALID,
+            file_tree_file: ElementId::INVALID,
         }
     }
 }
@@ -627,6 +638,10 @@ impl BuiltinElementIds {
             diff_change_line: id("diff.change.line"),
             diff_deletion_block: id("diff.deletion_block"),
             diff_conflict_line: id("diff.conflict.line"),
+            pane_inactive_overlay: id("pane.inactive_overlay"),
+            file_tree_dir: id("file_tree.dir"),
+            file_tree_hidden: id("file_tree.hidden"),
+            file_tree_file: id("file_tree.file"),
         }
     }
 }
@@ -778,6 +793,26 @@ mod tests {
             resolved.get(ids.diff_conflict_line).bg,
             Some(Color::Rgb(60, 0, 60))
         );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_chrome_to_legacy() {
+        // T.4.c parity net: the writer-free pane/file-tree elements
+        // resolve to the legacy literals. (`pane.status.*` /
+        // `pane.separator` migrate in T.9 with their `:set` overrides.)
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_eq!(resolved.get(ids.pane_inactive_overlay), Style::empty().dim());
+        assert_eq!(
+            resolved.get(ids.file_tree_dir),
+            Style::empty().fg(Color::Named(NamedColor::Blue)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.file_tree_hidden),
+            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
+        assert_eq!(resolved.get(ids.file_tree_file), Style::empty());
     }
 
     #[test]

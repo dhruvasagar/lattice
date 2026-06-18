@@ -340,14 +340,19 @@ pub fn build_tui_theme(
     Theme {
             pane_status_active: host_style_to_ratatui(h.pane_status_active),
             pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
-            inactive_pane_overlay: host_style_to_ratatui(h.inactive_pane_overlay),
+            // T.4.c: inactive-pane overlay + file-tree styles source
+            // from the resolved table. `pane_status_*` / `pane_separator`
+            // still read from `h` (they carry `:set ui.*` overrides →
+            // T.9). Separator chars + `dim`/`nerd_fonts` flags stay on
+            // `h` (non-style → T.6.t).
+            inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
             dim_inactive_panes: h.dim_inactive_panes,
             pane_separator: host_style_to_ratatui(h.pane_separator),
             pane_separator_vertical: h.pane_separator_vertical,
             pane_separator_horizontal: h.pane_separator_horizontal,
-            file_tree_dir_style: host_style_to_ratatui(h.file_tree_dir_style),
-            file_tree_hidden_style: host_style_to_ratatui(h.file_tree_hidden_style),
-            file_tree_file_style: host_style_to_ratatui(h.file_tree_file_style),
+            file_tree_dir_style: resolved_style(ids.file_tree_dir),
+            file_tree_hidden_style: resolved_style(ids.file_tree_hidden),
+            file_tree_file_style: resolved_style(ids.file_tree_file),
             nerd_fonts: h.nerd_fonts,
             // T.4.a: diagnostic styles source from the resolved table
             // (`diagnostic.{error,warning,info,hint}`); the glyphs stay

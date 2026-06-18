@@ -32,18 +32,21 @@ pub use lattice_theme::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Theme {
     // ---- Pane chrome ----
+    // T.4.c: `inactive_pane_overlay` moved to the `pane.inactive_overlay`
+    // element. `pane_status_active` / `pane_status_inactive` /
+    // `pane_separator` stay — they carry live `:set ui.*` fg overrides
+    // and migrate with the registry-override path in T.9.
     pub pane_status_active: Style,
     pub pane_status_inactive: Style,
-    pub inactive_pane_overlay: Style,
     pub dim_inactive_panes: bool,
     pub pane_separator: Style,
     pub pane_separator_vertical: char,
     pub pane_separator_horizontal: char,
 
     // ---- File tree ----
-    pub file_tree_dir_style: Style,
-    pub file_tree_hidden_style: Style,
-    pub file_tree_file_style: Style,
+    // T.4.c: `file_tree_{dir,hidden,file}_style` moved to the
+    // `file_tree.{dir,hidden,file}` elements; renderers read via
+    // `ResolvedTheme`. `nerd_fonts` is a flag, not a style → T.6.t.
     pub nerd_fonts: bool,
 
     // ---- Diagnostics ----
@@ -150,15 +153,13 @@ impl Default for Theme {
         Self {
             pane_status_active: Style::empty().reverse().bold(),
             pane_status_inactive: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
-            inactive_pane_overlay: Style::empty().dim(),
             dim_inactive_panes: true,
             pane_separator: Style::empty().fg(Color::Named(NamedColor::DarkGray)),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
 
-            file_tree_dir_style: Style::empty().fg(Color::Named(NamedColor::Blue)).bold(),
-            file_tree_hidden_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
-            file_tree_file_style: Style::empty(),
+            // T.4.c: inactive_pane_overlay + file_tree.* resolve
+            // through theme elements now.
             nerd_fonts: false,
 
             diagnostic_error_glyph: '■',

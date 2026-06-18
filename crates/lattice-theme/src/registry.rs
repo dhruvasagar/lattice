@@ -594,6 +594,35 @@ pub struct BuiltinElementIds {
     pub messages_info: ElementId,
     pub messages_warn: ElementId,
     pub messages_error: ElementId,
+    // T.5 — syntax categories (the cell builder + both display-line
+    // paths map `lattice_syntax::Style` → these) + whitespace markers.
+    pub syntax_default: ElementId,
+    pub syntax_comment: ElementId,
+    pub syntax_line_comment: ElementId,
+    pub syntax_string: ElementId,
+    pub syntax_keyword: ElementId,
+    pub syntax_type: ElementId,
+    pub syntax_number: ElementId,
+    pub syntax_function: ElementId,
+    pub syntax_constant: ElementId,
+    pub syntax_variable: ElementId,
+    pub syntax_operator: ElementId,
+    pub syntax_punctuation: ElementId,
+    pub syntax_attribute: ElementId,
+    pub syntax_heading_1: ElementId,
+    pub syntax_heading_2: ElementId,
+    pub syntax_heading_3: ElementId,
+    pub syntax_heading_4: ElementId,
+    pub syntax_heading_5: ElementId,
+    pub syntax_heading_6: ElementId,
+    pub syntax_bold: ElementId,
+    pub syntax_italic: ElementId,
+    pub syntax_link: ElementId,
+    pub syntax_url: ElementId,
+    pub syntax_markup_raw: ElementId,
+    pub syntax_markup: ElementId,
+    pub whitespace: ElementId,
+    pub whitespace_trailing: ElementId,
 }
 
 impl Default for BuiltinElementIds {
@@ -625,6 +654,33 @@ impl Default for BuiltinElementIds {
             messages_info: ElementId::INVALID,
             messages_warn: ElementId::INVALID,
             messages_error: ElementId::INVALID,
+            syntax_default: ElementId::INVALID,
+            syntax_comment: ElementId::INVALID,
+            syntax_line_comment: ElementId::INVALID,
+            syntax_string: ElementId::INVALID,
+            syntax_keyword: ElementId::INVALID,
+            syntax_type: ElementId::INVALID,
+            syntax_number: ElementId::INVALID,
+            syntax_function: ElementId::INVALID,
+            syntax_constant: ElementId::INVALID,
+            syntax_variable: ElementId::INVALID,
+            syntax_operator: ElementId::INVALID,
+            syntax_punctuation: ElementId::INVALID,
+            syntax_attribute: ElementId::INVALID,
+            syntax_heading_1: ElementId::INVALID,
+            syntax_heading_2: ElementId::INVALID,
+            syntax_heading_3: ElementId::INVALID,
+            syntax_heading_4: ElementId::INVALID,
+            syntax_heading_5: ElementId::INVALID,
+            syntax_heading_6: ElementId::INVALID,
+            syntax_bold: ElementId::INVALID,
+            syntax_italic: ElementId::INVALID,
+            syntax_link: ElementId::INVALID,
+            syntax_url: ElementId::INVALID,
+            syntax_markup_raw: ElementId::INVALID,
+            syntax_markup: ElementId::INVALID,
+            whitespace: ElementId::INVALID,
+            whitespace_trailing: ElementId::INVALID,
         }
     }
 }
@@ -666,6 +722,33 @@ impl BuiltinElementIds {
             messages_info: id("messages.info"),
             messages_warn: id("messages.warn"),
             messages_error: id("messages.error"),
+            syntax_default: id("syntax.default"),
+            syntax_comment: id("syntax.comment"),
+            syntax_line_comment: id("syntax.line_comment"),
+            syntax_string: id("syntax.string"),
+            syntax_keyword: id("syntax.keyword"),
+            syntax_type: id("syntax.type"),
+            syntax_number: id("syntax.number"),
+            syntax_function: id("syntax.function"),
+            syntax_constant: id("syntax.constant"),
+            syntax_variable: id("syntax.variable"),
+            syntax_operator: id("syntax.operator"),
+            syntax_punctuation: id("syntax.punctuation"),
+            syntax_attribute: id("syntax.attribute"),
+            syntax_heading_1: id("syntax.heading.1"),
+            syntax_heading_2: id("syntax.heading.2"),
+            syntax_heading_3: id("syntax.heading.3"),
+            syntax_heading_4: id("syntax.heading.4"),
+            syntax_heading_5: id("syntax.heading.5"),
+            syntax_heading_6: id("syntax.heading.6"),
+            syntax_bold: id("syntax.bold"),
+            syntax_italic: id("syntax.italic"),
+            syntax_link: id("syntax.link"),
+            syntax_url: id("syntax.url"),
+            syntax_markup_raw: id("syntax.markup_raw"),
+            syntax_markup: id("syntax.markup"),
+            whitespace: id("whitespace"),
+            whitespace_trailing: id("whitespace.trailing"),
         }
     }
 }
@@ -866,6 +949,44 @@ mod tests {
         );
         assert_eq!(
             resolved.get(ids.messages_timestamp),
+            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_syntax_and_whitespace_to_legacy() {
+        // T.5 parity net (shared by the cell builder + both
+        // display-line paths): syntax categories + whitespace markers
+        // resolve to the legacy `Theme::syntax_style` literals.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_eq!(
+            resolved.get(ids.syntax_keyword),
+            Style::empty().fg(Color::Rgb(0xcb, 0xa6, 0xf7)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.syntax_string),
+            Style::empty().fg(Color::Rgb(0xa6, 0xe3, 0xa1))
+        );
+        // LineComment inherits Comment → identical resolved style.
+        assert_eq!(
+            resolved.get(ids.syntax_line_comment),
+            resolved.get(ids.syntax_comment)
+        );
+        assert_eq!(
+            resolved.get(ids.syntax_heading_1),
+            Style::empty()
+                .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
+                .bold()
+                .underline()
+        );
+        assert_eq!(
+            resolved.get(ids.whitespace_trailing),
+            Style::empty().fg(Color::Named(NamedColor::Red))
+        );
+        assert_eq!(
+            resolved.get(ids.whitespace),
             Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
         );
     }

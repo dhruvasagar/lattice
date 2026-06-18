@@ -1247,6 +1247,14 @@ impl Editor {
                 // entry without a second `take()`.
                 last_edit: last_edit_active,
                 theme: self.host_theme,
+                // T.5 (theme-system): resolved table + ids the cell
+                // builder reads for per-span syntax + whitespace.
+                resolved_theme: self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                    .map(|r| r.resolved())
+                    .unwrap_or_default(),
+                theme_ids: self.builtin_element_ids,
                 // D.4.d.1.a (2026-05-29): per-visible-Document-pane
                 // build inputs. Worker iteration consumes this in
                 // D.4.d.1.b. Renderers wanting per-pane reads use
@@ -1412,10 +1420,14 @@ impl Editor {
         // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once
         // for the B2.3 sync edit-path rebuild.
         let next_cells = next.cells.load();
+        let next_ct = crate::cells_worker::CellTheme {
+            resolved: &next_cells.resolved_theme,
+            ids: &next_cells.theme_ids,
+        };
         for pane in next_cells.panes.iter() {
             crate::cells_worker::sync_rebuild_pane_on_edit(
                 pane,
-                &next_cells.theme,
+                next_ct,
                 &next_cells.whitespace,
             );
         }
@@ -28700,7 +28712,16 @@ mod tests {
             "precondition: vertical split produced two Document panes"
         );
 
-        let theme = crate::ui::theme::Theme::default();
+        let theme_reg = crate::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved_theme = {
+            use crate::ui::theme::ThemeRegistry as _;
+            theme_reg.resolved()
+        };
+        let theme_ids = crate::ui::theme::BuiltinElementIds::capture(&theme_reg);
+        let ct = crate::cells_worker::CellTheme {
+            resolved: &resolved_theme,
+            ids: &theme_ids,
+        };
         let ws = WhitespaceConfig::default();
 
         // Prime the panes' matrices. Matrices are keyed by `buffer_id`
@@ -28712,7 +28733,7 @@ mod tests {
         let primed: Vec<WorkerDecision> = editor
             .build_cells_panes(None)
             .iter()
-            .map(|pane| recompute_pane(pane, &theme, &ws))
+            .map(|pane| recompute_pane(pane, ct, &ws))
             .collect();
         assert!(
             primed.iter().any(|d| matches!(
@@ -28737,7 +28758,7 @@ mod tests {
         // decoration recompute on focus.
         for pane in editor.build_cells_panes(None).iter() {
             assert_eq!(
-                recompute_pane(pane, &theme, &ws),
+                recompute_pane(pane, ct, &ws),
                 WorkerDecision::CacheHit,
                 "focus toggle recomputed pane {:?} — DR invariant violated \
                  (a cells version axis is keyed on focus / active state)",

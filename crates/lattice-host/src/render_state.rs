@@ -948,15 +948,21 @@ pub struct CellsRenderState {
     /// publishes without further edits see `None`.
     pub last_edit: Option<lattice_cells::EditDelta>,
 
-    /// Renderer-neutral host theme. The cell-builder resolves each
-    /// styled span's `lattice_syntax::Style` to an `0xRRGGBB`
-    /// `cell.fg` via [`crate::ui::theme::Theme::syntax_style`]. A
-    /// content-hash of the theme is folded into
-    /// [`lattice_cells::MatrixVersion::theme`] at publish time so
-    /// any palette change invalidates the matrix and rebuilds with
-    /// the new colours. Per the design doc, theme changes are rare
-    /// — a whole-doc rebuild is an acceptable invalidation cost.
+    /// Renderer-neutral host theme. A content-hash of the theme is
+    /// folded into [`lattice_cells::MatrixVersion::theme`] at publish
+    /// time so any palette change invalidates the matrix and rebuilds
+    /// with the new colours. Per the design doc, theme changes are
+    /// rare — a whole-doc rebuild is an acceptable invalidation cost.
+    /// (T.5 retired the `Theme::syntax_style` read here in favour of
+    /// the resolved table below; the struct still carries `theme` for
+    /// the version-hash + any not-yet-migrated reads.)
     pub theme: crate::ui::theme::Theme,
+    /// T.5 (theme-system): the resolved read table + builtin ids the
+    /// cell-builder uses to resolve each span's `lattice_syntax::Style`
+    /// → `resolved.get(syntax_element_id(ids, s))` (O(1) array index).
+    /// Snapshotted alongside `theme` at publish.
+    pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    pub theme_ids: crate::ui::theme::BuiltinElementIds,
 
     /// 2026-05-27: `display.whitespace.*` snapshot. Worker
     /// substitutes whitespace bytes with marker glyphs +
@@ -1202,6 +1208,8 @@ impl Default for CellsRenderState {
             foldenable: true,
             last_edit: None,
             theme: crate::ui::theme::Theme::default(),
+            resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
+            theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
             panes: Arc::from(Vec::<PaneCellsInputs>::new().into_boxed_slice()),
             pane_matrices: Arc::new(std::collections::HashMap::new()),

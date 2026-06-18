@@ -60,17 +60,16 @@ pub struct Theme {
     pub diagnostic_hint_glyph: char,
 
     // ---- Whitespace + current-line ----
+    // T.4.d: `cursor_line_bg` moved to the `editor.cursor_line`
+    // element. `whitespace_style` / `whitespace_trailing_style` stay —
+    // the cell builder reads trailing-ws host-side, so whitespace
+    // migrates with the cell-path resolved wiring in T.5.
     pub whitespace_style: Style,
     pub whitespace_trailing_style: Style,
-    pub cursor_line_bg: Color,
 
     // ---- *messages* buffer level styling ----
-    pub messages_timestamp_style: Style,
-    pub messages_trace_style: Style,
-    pub messages_debug_style: Style,
-    pub messages_info_style: Style,
-    pub messages_warn_style: Style,
-    pub messages_error_style: Style,
+    // T.4.d: moved to `messages.{timestamp,trace,debug,info,warn,error}`
+    // elements; the TUI reads them via the resolved table.
 
     // ---- Diff ----
     // T.4.b: the diff sign styles + line/block tints moved to theme
@@ -169,16 +168,8 @@ impl Default for Theme {
 
             whitespace_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
             whitespace_trailing_style: Style::empty().fg(Color::Named(NamedColor::Red)),
-            cursor_line_bg: Color::Indexed(236),
-
-            messages_timestamp_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
-            messages_trace_style: Style::empty().dim(),
-            messages_debug_style: Style::empty().fg(Color::Named(NamedColor::Cyan)),
-            messages_info_style: Style::empty(),
-            messages_warn_style: Style::empty().fg(Color::Named(NamedColor::Yellow)).bold(),
-            messages_error_style: Style::empty().fg(Color::Named(NamedColor::Red)).bold(),
-            // T.4.b: diff sign styles + line/block tints now resolve
-            // through the theme elements (`diff.*`), not this struct.
+            // T.4.d: cursor_line + messages.* resolve through theme
+            // elements now. T.4.b: diff.* likewise.
         }
     }
 }

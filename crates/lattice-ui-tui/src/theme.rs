@@ -365,15 +365,18 @@ pub fn build_tui_theme(
             diagnostic_info_style: resolved_style(ids.diagnostic_info),
             diagnostic_hint_glyph: h.diagnostic_hint_glyph,
             diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
+            // T.4.d: whitespace stays on `h` (cell-path → T.5);
+            // current-line tint + *messages* levels source from the
+            // resolved table.
             whitespace_style: host_style_to_ratatui(h.whitespace_style),
             whitespace_trailing_style: host_style_to_ratatui(h.whitespace_trailing_style),
-            cursor_line_bg: host_color_to_ratatui(h.cursor_line_bg),
-            messages_timestamp_style: host_style_to_ratatui(h.messages_timestamp_style),
-            messages_trace_style: host_style_to_ratatui(h.messages_trace_style),
-            messages_debug_style: host_style_to_ratatui(h.messages_debug_style),
-            messages_info_style: host_style_to_ratatui(h.messages_info_style),
-            messages_warn_style: host_style_to_ratatui(h.messages_warn_style),
-            messages_error_style: host_style_to_ratatui(h.messages_error_style),
+            cursor_line_bg: resolved_bg(ids.editor_cursor_line),
+            messages_timestamp_style: resolved_style(ids.messages_timestamp),
+            messages_trace_style: resolved_style(ids.messages_trace),
+            messages_debug_style: resolved_style(ids.messages_debug),
+            messages_info_style: resolved_style(ids.messages_info),
+            messages_warn_style: resolved_style(ids.messages_warn),
+            messages_error_style: resolved_style(ids.messages_error),
             // T.4.b: diff signs (fg) + line/block tints (bg) source
             // from the resolved table (`diff.*`).
             diff_add_sign_style: resolved_style(ids.diff_add_sign),

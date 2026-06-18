@@ -1575,7 +1575,14 @@ impl EditorView {
         // overrides. Fallback Catppuccin surface0.
         // Slice 3c.final.B (group 6): reuse `host_theme` bound
         // above from `rs_guard.theme`.
-        let cursorline_bg = host_theme.cursor_line_bg.to_rgb_u32(0x313244);
+        // T.4.d: current-line tint from the resolved table's `bg`
+        // channel (legacy `Color::Indexed(236)` → the 0x313244
+        // fallback, matching prior behaviour since Indexed has no Rgb).
+        let cursorline_bg = resolved_theme
+            .get(theme_ids.editor_cursor_line)
+            .bg
+            .map(|c| c.to_rgb_u32(0x313244))
+            .unwrap_or(0x313244);
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive

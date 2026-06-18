@@ -584,6 +584,16 @@ pub struct BuiltinElementIds {
     pub file_tree_dir: ElementId,
     pub file_tree_hidden: ElementId,
     pub file_tree_file: ElementId,
+    // T.4.d — current-line tint + *messages* level styling. (Whitespace
+    // is read in the cell builder, so it migrates with the cell-path
+    // resolved wiring in T.5.)
+    pub editor_cursor_line: ElementId,
+    pub messages_timestamp: ElementId,
+    pub messages_trace: ElementId,
+    pub messages_debug: ElementId,
+    pub messages_info: ElementId,
+    pub messages_warn: ElementId,
+    pub messages_error: ElementId,
 }
 
 impl Default for BuiltinElementIds {
@@ -608,6 +618,13 @@ impl Default for BuiltinElementIds {
             file_tree_dir: ElementId::INVALID,
             file_tree_hidden: ElementId::INVALID,
             file_tree_file: ElementId::INVALID,
+            editor_cursor_line: ElementId::INVALID,
+            messages_timestamp: ElementId::INVALID,
+            messages_trace: ElementId::INVALID,
+            messages_debug: ElementId::INVALID,
+            messages_info: ElementId::INVALID,
+            messages_warn: ElementId::INVALID,
+            messages_error: ElementId::INVALID,
         }
     }
 }
@@ -642,6 +659,13 @@ impl BuiltinElementIds {
             file_tree_dir: id("file_tree.dir"),
             file_tree_hidden: id("file_tree.hidden"),
             file_tree_file: id("file_tree.file"),
+            editor_cursor_line: id("editor.cursor_line"),
+            messages_timestamp: id("messages.timestamp"),
+            messages_trace: id("messages.trace"),
+            messages_debug: id("messages.debug"),
+            messages_info: id("messages.info"),
+            messages_warn: id("messages.warn"),
+            messages_error: id("messages.error"),
         }
     }
 }
@@ -813,6 +837,37 @@ mod tests {
             Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
         );
         assert_eq!(resolved.get(ids.file_tree_file), Style::empty());
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_cursorline_and_messages_to_legacy() {
+        // T.4.d parity net: current-line tint (bg) + *messages* level
+        // styles resolve to the legacy literals.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_eq!(
+            resolved.get(ids.editor_cursor_line).bg,
+            Some(Color::Indexed(236))
+        );
+        assert_eq!(resolved.get(ids.messages_trace), Style::empty().dim());
+        assert_eq!(
+            resolved.get(ids.messages_debug),
+            Style::empty().fg(Color::Named(NamedColor::Cyan))
+        );
+        assert_eq!(resolved.get(ids.messages_info), Style::empty());
+        assert_eq!(
+            resolved.get(ids.messages_warn),
+            Style::empty().fg(Color::Named(NamedColor::Yellow)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.messages_error),
+            Style::empty().fg(Color::Named(NamedColor::Red)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.messages_timestamp),
+            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
     }
 
     #[test]

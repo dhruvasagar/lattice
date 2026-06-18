@@ -159,8 +159,20 @@ lockstep:
   their `:set` writers until T.9 wires the overrides to the registry
   and moves the reads. Avoids pulling T.9 substrate into T.4 (heuristic
   #1: no premature override API); each element stays wholly on one path.
-- **T.4.d** — whitespace (`whitespace`, `whitespace.trailing`) +
-  cursor-line (`editor.cursor_line`) + messages (`messages.*` ×6).
+- **T.4.d** ✅ (partial — see re-slice) — cursor-line
+  (`editor.cursor_line`) + messages (`messages.*` ×6). Grew
+  `BuiltinElementIds` + `capture` (7 ids); deleted the 7 host fields
+  (`cursor_line_bg` + 6 `messages_*_style`); TUI `build_tui_theme`
+  sources them from resolved (cursor via `resolved_bg`, messages via
+  `resolved_style`); GPUI window.rs migrates the one cursorline read
+  inline. Parity:
+  `builtin_ids_capture_resolves_cursorline_and_messages_to_legacy`.
+  **Re-slice:** whitespace (`whitespace`, `whitespace.trailing`)
+  moves to **T.5** — `whitespace_trailing_style` is read host-side in
+  the **cell builder** (`cells_worker.rs`), which gets the resolved
+  table only when T.5 wires the cell-grid path; migrating it now would
+  pull that plumbing onto the per-cell hot path early. Whitespace
+  stays a unit with the cell-path slice.
 
 Land behind:
 
@@ -180,6 +192,15 @@ hardcoded Catppuccin `match`**. Syntax highlighting now themeable
 like any other element (the emacs font-lock-faces / helix-scopes
 unification). Pin: highlighted output unchanged for the default
 theme; the `syntax_style_*` tests retarget to the resolved read.
+
+**Also carries the T.4.d whitespace re-slice:** this slice wires the
+resolved table + ids into the cell-grid path (`CellsRenderState` →
+`cells_worker`), so it additionally migrates `whitespace` +
+`whitespace.trailing` (the cell builder reads
+`whitespace_trailing_style` host-side) and deletes the last 2 host
+`Theme` whitespace fields. The host `Theme` struct is then down to the
+3 `:set`-backed chrome fields (T.9) + the non-style glyphs/chars/flags
+(T.6.t).
 
 ### T.6 — hoist scattered literals → parity by construction 🗒
 

@@ -1400,12 +1400,14 @@ impl EditorView {
                 // MO.4.a: read from pre-built mode-walk map.
                 let diff_sign = diff_gutter.get(&(line_idx as u32)).copied().map(|kind| {
                     use lattice_mode::GutterDiffKind;
-                    // D.3.b.3: read sign colours from the host theme.
+                    // T.4.b: read sign styles from the resolved table.
                     let style = match kind {
-                        GutterDiffKind::Add => host_theme.diff_add_sign_style,
-                        GutterDiffKind::Change => host_theme.diff_change_sign_style,
-                        GutterDiffKind::Remove => host_theme.diff_remove_sign_style,
-                        GutterDiffKind::Conflict => host_theme.diff_conflict_sign_style,
+                        GutterDiffKind::Add => resolved_theme.get(theme_ids.diff_add_sign),
+                        GutterDiffKind::Change => resolved_theme.get(theme_ids.diff_change_sign),
+                        GutterDiffKind::Remove => resolved_theme.get(theme_ids.diff_remove_sign),
+                        GutterDiffKind::Conflict => {
+                            resolved_theme.get(theme_ids.diff_conflict_sign)
+                        }
                     };
                     let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
                     let glyph = match kind {
@@ -1438,18 +1440,23 @@ impl EditorView {
             .map(|line_idx| {
                 rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
                     use lattice_host::diff::overlay::DiffSignKind;
-                    // D.3.b.3 (2026-05-29): read line tint
-                    // colours from the host theme.
+                    // T.4.b: read line tint colours from the resolved
+                    // table's `bg` channel (`None` ⇒ no tint).
                     match kind {
-                        DiffSignKind::Add => Some(host_theme.diff_add_line_bg.to_rgb_u32(0)),
-                        DiffSignKind::Change => {
-                            Some(host_theme.diff_change_line_bg.to_rgb_u32(0))
-                        }
+                        DiffSignKind::Add => resolved_theme
+                            .get(theme_ids.diff_add_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
+                        DiffSignKind::Change => resolved_theme
+                            .get(theme_ids.diff_change_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
                         DiffSignKind::Remove => None,
                         // D.6.f (2026-05-31): three-way Conflict tint.
-                        DiffSignKind::Conflict => {
-                            Some(host_theme.diff_conflict_line_bg.to_rgb_u32(0))
-                        }
+                        DiffSignKind::Conflict => resolved_theme
+                            .get(theme_ids.diff_conflict_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
                     }
                 })
             })
@@ -1869,10 +1876,14 @@ impl EditorView {
             substitute_matches,
             doc_highlights,
             cursorline_bg,
-            // D.3.b.3 (2026-05-29): resolve deletion-block
-            // backdrop colour from the host theme so the paint
-            // pass doesn't need to hold a Theme reference.
-            diff_deletion_block_bg: host_theme.diff_deletion_block_bg.to_rgb_u32(0),
+            // T.4.b: resolve deletion-block backdrop colour from the
+            // resolved table's `bg` channel so the paint pass doesn't
+            // need to hold a Theme reference.
+            diff_deletion_block_bg: resolved_theme
+                .get(theme_ids.diff_deletion_block)
+                .bg
+                .map(|c| c.to_rgb_u32(0))
+                .unwrap_or(0),
             inlay_hints,
             diagnostic_underlines,
             inlay_color,

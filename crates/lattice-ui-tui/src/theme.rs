@@ -328,6 +328,15 @@ pub fn build_tui_theme(
     ids: &host_theme::BuiltinElementIds,
 ) -> Theme {
     let resolved_style = |id| host_style_to_ratatui(resolved.get(id));
+    // Background tint from an element's resolved `bg` channel (the diff
+    // tint elements set `bg`); `Reset` = no tint if unresolved.
+    let resolved_bg = |id| {
+        resolved
+            .get(id)
+            .bg
+            .map(host_color_to_ratatui)
+            .unwrap_or(Color::Reset)
+    };
     Theme {
             pane_status_active: host_style_to_ratatui(h.pane_status_active),
             pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
@@ -360,16 +369,16 @@ pub fn build_tui_theme(
             messages_info_style: host_style_to_ratatui(h.messages_info_style),
             messages_warn_style: host_style_to_ratatui(h.messages_warn_style),
             messages_error_style: host_style_to_ratatui(h.messages_error_style),
-            // D.3.b.3 (2026-05-29): diff entries adapt through
-            // the standard host→tui converters.
-            diff_add_sign_style: host_style_to_ratatui(h.diff_add_sign_style),
-            diff_change_sign_style: host_style_to_ratatui(h.diff_change_sign_style),
-            diff_remove_sign_style: host_style_to_ratatui(h.diff_remove_sign_style),
-            diff_conflict_sign_style: host_style_to_ratatui(h.diff_conflict_sign_style),
-            diff_add_line_bg: host_color_to_ratatui(h.diff_add_line_bg),
-            diff_change_line_bg: host_color_to_ratatui(h.diff_change_line_bg),
-            diff_deletion_block_bg: host_color_to_ratatui(h.diff_deletion_block_bg),
-            diff_conflict_line_bg: host_color_to_ratatui(h.diff_conflict_line_bg),
+            // T.4.b: diff signs (fg) + line/block tints (bg) source
+            // from the resolved table (`diff.*`).
+            diff_add_sign_style: resolved_style(ids.diff_add_sign),
+            diff_change_sign_style: resolved_style(ids.diff_change_sign),
+            diff_remove_sign_style: resolved_style(ids.diff_remove_sign),
+            diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
+            diff_add_line_bg: resolved_bg(ids.diff_add_line),
+            diff_change_line_bg: resolved_bg(ids.diff_change_line),
+            diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
+            diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
     }
 }
 

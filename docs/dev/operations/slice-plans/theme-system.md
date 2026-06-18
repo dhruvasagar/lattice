@@ -134,9 +134,15 @@ lockstep:
   + the retargeted `host_theme_default_adapts_to_tui_theme_default`.
   Green: theme 26, TUI theme 9 / lib 1475, host lib 730,
   multibuffer-is-a-regular-buffer 14; GPUI `--features window` builds.
-- **T.4.b** — diff signs + tints (`diff.*.sign` ×4, `diff.*.line` /
-  `diff.deletion_block` ×4); GPUI-heavy (window.rs gutter +
-  editor_element tints).
+- **T.4.b** ✅ — diff signs + tints (`diff.*.sign` ×4, `diff.*.line` /
+  `diff.deletion_block` ×4). Grew `BuiltinElementIds` + `capture` with
+  the 8 diff ids; deleted the 8 host `Theme` diff fields. TUI
+  `build_tui_theme` sources signs (fg) via `resolved_style` + tints
+  (bg) via a new `resolved_bg` closure (`Reset` if unresolved); GPUI
+  window.rs reads the 3 sites (gutter signs, line tints, deletion
+  block) inline from `resolved.get(ids.diff_*)`. Parity:
+  `builtin_ids_capture_resolves_diff_to_legacy`. Green: theme 27, TUI
+  lib 1475, host lib 730, multibuffer 14; GPUI `--features window`.
 - **T.4.c** — pane chrome (`pane.status.*`, `pane.inactive_overlay`,
   `pane.separator`) + file-tree (`file_tree.*`).
 - **T.4.d** — whitespace (`whitespace`, `whitespace.trailing`) +

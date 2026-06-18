@@ -568,6 +568,15 @@ pub struct BuiltinElementIds {
     pub diagnostic_warning: ElementId,
     pub diagnostic_info: ElementId,
     pub diagnostic_hint: ElementId,
+    // T.4.b — diff gutter signs (fg styles) + line/block tints (bg).
+    pub diff_add_sign: ElementId,
+    pub diff_change_sign: ElementId,
+    pub diff_remove_sign: ElementId,
+    pub diff_conflict_sign: ElementId,
+    pub diff_add_line: ElementId,
+    pub diff_change_line: ElementId,
+    pub diff_deletion_block: ElementId,
+    pub diff_conflict_line: ElementId,
 }
 
 impl Default for BuiltinElementIds {
@@ -580,6 +589,14 @@ impl Default for BuiltinElementIds {
             diagnostic_warning: ElementId::INVALID,
             diagnostic_info: ElementId::INVALID,
             diagnostic_hint: ElementId::INVALID,
+            diff_add_sign: ElementId::INVALID,
+            diff_change_sign: ElementId::INVALID,
+            diff_remove_sign: ElementId::INVALID,
+            diff_conflict_sign: ElementId::INVALID,
+            diff_add_line: ElementId::INVALID,
+            diff_change_line: ElementId::INVALID,
+            diff_deletion_block: ElementId::INVALID,
+            diff_conflict_line: ElementId::INVALID,
         }
     }
 }
@@ -602,6 +619,14 @@ impl BuiltinElementIds {
             diagnostic_warning: id("diagnostic.warning"),
             diagnostic_info: id("diagnostic.info"),
             diagnostic_hint: id("diagnostic.hint"),
+            diff_add_sign: id("diff.add.sign"),
+            diff_change_sign: id("diff.change.sign"),
+            diff_remove_sign: id("diff.remove.sign"),
+            diff_conflict_sign: id("diff.conflict.sign"),
+            diff_add_line: id("diff.add.line"),
+            diff_change_line: id("diff.change.line"),
+            diff_deletion_block: id("diff.deletion_block"),
+            diff_conflict_line: id("diff.conflict.line"),
         }
     }
 }
@@ -718,6 +743,40 @@ mod tests {
         assert_eq!(
             resolved.get(ids.diagnostic_hint),
             Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+        );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_diff_to_legacy() {
+        // T.4.b parity net (shared by both renderers): diff sign
+        // styles + line/block tints resolve to the legacy literals.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        assert_eq!(
+            resolved.get(ids.diff_add_sign),
+            Style::empty().fg(Color::Named(NamedColor::Green)).bold()
+        );
+        assert_eq!(
+            resolved.get(ids.diff_conflict_sign),
+            Style::empty().fg(Color::Named(NamedColor::Magenta)).bold()
+        );
+        // Tints carry the legacy Rgb on the `bg` channel.
+        assert_eq!(
+            resolved.get(ids.diff_add_line).bg,
+            Some(Color::Rgb(0, 50, 0))
+        );
+        assert_eq!(
+            resolved.get(ids.diff_change_line).bg,
+            Some(Color::Rgb(50, 50, 0))
+        );
+        assert_eq!(
+            resolved.get(ids.diff_deletion_block).bg,
+            Some(Color::Rgb(60, 0, 0))
+        );
+        assert_eq!(
+            resolved.get(ids.diff_conflict_line).bg,
+            Some(Color::Rgb(60, 0, 60))
         );
     }
 

@@ -69,43 +69,12 @@ pub struct Theme {
     pub messages_warn_style: Style,
     pub messages_error_style: Style,
 
-    // ---- Diff (D.3.b.3 2026-05-29) ----
-    /// `+` sign in the diff gutter column. Reads as "added in
-    /// current side." Default is bold green.
-    pub diff_add_sign_style: Style,
-    /// `~` sign in the diff gutter column. Reads as "this line
-    /// replaces baseline content." Default is bold yellow.
-    pub diff_change_sign_style: Style,
-    /// `-` sign in the diff gutter column. Reserved — D.3.d.0
-    /// doesn't currently emit Remove on the current side
-    /// (deletion blocks surface removes), but future renderers
-    /// may want to mark the deletion anchor. Default is bold
-    /// red.
-    pub diff_remove_sign_style: Style,
-    /// D.6.f (2026-05-31): `?` sign in the diff gutter for
-    /// three-way Conflict hunks. The user reads this as
-    /// "both sides modified this region differently — pick
-    /// a winner via `:diffput <bufnr>` / `:diffget
-    /// <bufnr>`". Default is bold magenta to distinguish
-    /// from the Add/Change/Remove triad.
-    pub diff_conflict_sign_style: Style,
-    /// Background tint applied to lines added in the current
-    /// side (D.3.e). Default is a faint dark green that sits
-    /// behind syntax-coloured text without crushing legibility.
-    pub diff_add_line_bg: Color,
-    /// Background tint applied to lines changed in the current
-    /// side (D.3.e). Default is a faint dark yellow.
-    pub diff_change_line_bg: Color,
-    /// Background tint applied to deletion-block virtual rows
-    /// (D.3.b.1 / D.3.b.2). Sits behind the baseline-text
-    /// cells in the deletion block. Default is a faint dark
-    /// red.
-    pub diff_deletion_block_bg: Color,
-    /// Background tint reserved for three-way conflict regions
-    /// (D.6). Unused in v1; ships in the theme so the type
-    /// surface is stable when D.6 lands. Default is a faint
-    /// magenta.
-    pub diff_conflict_line_bg: Color,
+    // ---- Diff ----
+    // T.4.b: the diff sign styles + line/block tints moved to theme
+    // elements (`diff.{add,change,remove,conflict}.sign`,
+    // `diff.{add,change,conflict}.line`, `diff.deletion_block`); both
+    // renderers read them via `ResolvedTheme`. The `+`/`~`/`-`/`?`
+    // glyphs are still hardcoded at the gutter render sites.
 }
 
 impl Theme {
@@ -207,26 +176,8 @@ impl Default for Theme {
             messages_info_style: Style::empty(),
             messages_warn_style: Style::empty().fg(Color::Named(NamedColor::Yellow)).bold(),
             messages_error_style: Style::empty().fg(Color::Named(NamedColor::Red)).bold(),
-
-            // ---- Diff defaults (D.3.b.3) ----
-            // Sign glyphs reuse the saturated named colours so
-            // they read as "this kind" even on terminals that
-            // don't render Rgb. Background tints use direct
-            // Rgb so they stay faint behind syntax-coloured
-            // text without being remapped by the terminal's
-            // 16-colour palette.
-            diff_add_sign_style: Style::empty().fg(Color::Named(NamedColor::Green)).bold(),
-            diff_change_sign_style: Style::empty().fg(Color::Named(NamedColor::Yellow)).bold(),
-            diff_remove_sign_style: Style::empty().fg(Color::Named(NamedColor::Red)).bold(),
-            // D.6.f (2026-05-31): bold magenta sign for
-            // three-way Conflict hunks. Distinct from the
-            // Add/Change/Remove triad so users instantly
-            // spot conflicts in the gutter.
-            diff_conflict_sign_style: Style::empty().fg(Color::Named(NamedColor::Magenta)).bold(),
-            diff_add_line_bg: Color::Rgb(0, 50, 0),
-            diff_change_line_bg: Color::Rgb(50, 50, 0),
-            diff_deletion_block_bg: Color::Rgb(60, 0, 0),
-            diff_conflict_line_bg: Color::Rgb(60, 0, 60),
+            // T.4.b: diff sign styles + line/block tints now resolve
+            // through the theme elements (`diff.*`), not this struct.
         }
     }
 }

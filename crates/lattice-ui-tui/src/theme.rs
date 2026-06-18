@@ -368,8 +368,9 @@ pub fn build_tui_theme(
             // T.4.d: whitespace stays on `h` (cell-path → T.5);
             // current-line tint + *messages* levels source from the
             // resolved table.
-            whitespace_style: host_style_to_ratatui(h.whitespace_style),
-            whitespace_trailing_style: host_style_to_ratatui(h.whitespace_trailing_style),
+            // T.5.c: whitespace markers source from the resolved table.
+            whitespace_style: resolved_style(ids.whitespace),
+            whitespace_trailing_style: resolved_style(ids.whitespace_trailing),
             cursor_line_bg: resolved_bg(ids.editor_cursor_line),
             messages_timestamp_style: resolved_style(ids.messages_timestamp),
             messages_trace_style: resolved_style(ids.messages_trace),

@@ -114,12 +114,10 @@ pub struct Theme {
     pub diagnostic_hint_glyph: char,
 
     // ---- Whitespace + current-line ----
-    // T.4.d: `cursor_line_bg` moved to the `editor.cursor_line`
-    // element. `whitespace_style` / `whitespace_trailing_style` stay —
-    // the cell builder reads trailing-ws host-side, so whitespace
-    // migrates with the cell-path resolved wiring in T.5.
-    pub whitespace_style: Style,
-    pub whitespace_trailing_style: Style,
+    // T.4.d/T.5: `cursor_line_bg` → `editor.cursor_line`;
+    // `whitespace`/`whitespace.trailing` styles now resolve through
+    // the theme elements (cell builder + display-line paths + native
+    // cache all read the resolved table).
 
     // ---- *messages* buffer level styling ----
     // T.4.d: moved to `messages.{timestamp,trace,debug,info,warn,error}`
@@ -155,10 +153,8 @@ impl Default for Theme {
             diagnostic_info_glyph: '●',
             diagnostic_hint_glyph: '·',
 
-            whitespace_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
-            whitespace_trailing_style: Style::empty().fg(Color::Named(NamedColor::Red)),
-            // T.4.d: cursor_line + messages.* resolve through theme
-            // elements now. T.4.b: diff.* likewise.
+            // T.5.c: whitespace styles resolve through theme elements.
+            // T.4.d: cursor_line + messages.* likewise. T.4.b: diff.*.
         }
     }
 }

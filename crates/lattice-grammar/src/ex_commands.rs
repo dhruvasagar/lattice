@@ -65,6 +65,9 @@ pub struct ExBuiltins {
     pub file_tree_close: ExCommandId,
     pub oil: ExCommandId,
     pub describe_option: ExCommandId,
+    /// T.9.d: `:describe-element` / `:describe-face` — theme-element
+    /// introspection (host `build_describe_element_content`).
+    pub describe_element: ExCommandId,
     pub list_options: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
@@ -923,6 +926,40 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 prompt: "option:",
                 default: ArgDefault::Required,
                 completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let describe_element = registry.register_ex_command(
+        "ex:describe-element",
+        "Open the help view for a theme element / face \
+         (`:describe-element NAME`, alias `:describe-face NAME`). \
+         Shows owner, doc, the authoring (reference-form) style spec \
+         (palette keys + inherit parent), and the concrete resolved \
+         style under the active theme.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeElement {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected element name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                // Completion: the theme registry is a host-side service
+                // the grammar crate's completion generators can't reach,
+                // so no `gen:elements` source here (T.9.d scope: the
+                // ex-command + handler; a completion generator is a
+                // follow-up).
+                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).",
+                prompt: "element:",
+                default: ArgDefault::Required,
+                completion: None,
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2028,6 +2065,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         file_tree_close,
         oil,
         describe_option,
+        describe_element,
         list_options,
         describe_events,
         describe_event,

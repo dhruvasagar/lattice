@@ -27,8 +27,8 @@ pub use element::{
 };
 pub use palette::{default_palette, macchiato_palette, Palette, PaletteKey};
 pub use registry::{
-    register_builtins, BuiltinElementIds, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry,
-    ThemeRegistryHandle,
+    register_builtins, BuiltinElementIds, ElementInfo, InMemoryThemeRegistry, ResolvedTheme,
+    ThemeRegistry, ThemeRegistryHandle,
 };
 pub use themes::{builtin_themes, NamedTheme};
 

@@ -440,6 +440,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("FiletreeClose", "ex:filetree-close"),
     ("filetree-close", "ex:filetree-close"),
     ("describe-option", "ex:describe-option"),
+    // T.9.d (2026-06-18): theme-element / face introspection. Both the
+    // element-name and the emacs `face` framing route to the one
+    // command.
+    ("describe-element", "ex:describe-element"),
+    ("describe-face", "ex:describe-element"),
     ("options", "ex:options"),
     ("describe-events", "ex:describe-events"),
     ("describe-event", "ex:describe-event"),

@@ -905,6 +905,7 @@ impl App {
             | Effect::DescribeKey { .. }
             | Effect::ListKeymap
             | Effect::DescribeOption { .. }
+            | Effect::DescribeElement { .. }
             | Effect::ListOptions
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
@@ -1195,6 +1196,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -1294,6 +1296,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover

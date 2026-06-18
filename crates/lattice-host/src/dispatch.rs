@@ -2591,6 +2591,23 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     )));
             }
         }
+        Effect::DescribeElement { name } => {
+            // T.9.d: `:describe-element <name>` / `:describe-face` --
+            // reads the `ThemeRegistry::describe` snapshot + formats
+            // owner / doc / authoring spec / resolved style. Unknown
+            // name routes E to the echo ring; dispatcher skips the
+            // signal.
+            if let Some(content) = editor.build_describe_element_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
+            }
+        }
         Effect::ListOptions => {
             // 5.5.F.3: `:options` -- walks `OPTION_DECLS` /
             // `GROUP_DECLS` linkme slices + per-option
@@ -23672,6 +23689,61 @@ impl Editor {
         )
     }
 
+    /// T.9.d: build the `:describe-element <name>` / `:describe-face`
+    /// content. Reads the [`ThemeRegistry::describe`] snapshot and
+    /// formats the element's owner, doc, authoring (reference-form)
+    /// style spec (palette keys + inherit parent), and the concrete
+    /// resolved style under the active theme. The introspection
+    /// counterpart of `:describe-option` for theme elements (design
+    /// §8). An unknown element name echoes an error and returns `None`
+    /// (the dispatcher then skips the display signal) — never a panic.
+    pub fn build_describe_element_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(registry) = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "theme registry unavailable".to_string(),
+            );
+            return None;
+        };
+        let element_name = crate::ui::theme::ElementName::from(name.to_string());
+        let Some(info) = registry.describe(&element_name) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E518: Unknown theme element: {name}"),
+            );
+            return None;
+        };
+
+        let owner = match &info.owner {
+            crate::ui::theme::ElementOwner::Core => "Core".to_string(),
+            crate::ui::theme::ElementOwner::Mode(id) => format!("Mode ({id})"),
+            crate::ui::theme::ElementOwner::Plugin(id) => format!("Plugin ({id})"),
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# {}", info.name));
+        lines.push(format!("owner:    {owner}"));
+        lines.push(format!("resolved: {}", format_resolved_style(&info.resolved)));
+        lines.push(format!("spec:     {}", format_style_spec(&info.default)));
+        lines.push(String::new());
+        lines.push(if info.doc.is_empty() {
+            "(no documentation)".to_string()
+        } else {
+            info.doc.to_string()
+        });
+
+        Some(
+            lattice_help::HelpContent::from_lines(format!("describe-element {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
     /// 5.5.F.3: build the `:options` content. Live reference of
     /// every registered customizable option, grouped by
     /// [`lattice_config::OptionGroup`]. Self-updating: walks the
@@ -25449,6 +25521,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -25549,6 +25622,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -25624,6 +25698,137 @@ pub(crate) fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     } else {
         last_idx
     }
+}
+
+/// T.9.d: render a resolved [`crate::ui::theme::Style`] as a single
+/// human-readable line for `:describe-element`. fg/bg show as
+/// `#rrggbb` for `Rgb`, the ANSI name for `Named`, `idxNNN` for
+/// `Indexed`, `default` for `Default`, `-` when the channel is unset;
+/// every set modifier is listed.
+fn format_resolved_style(style: &crate::ui::theme::Style) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("fg {}", format_color_opt(&style.fg)));
+    parts.push(format!("bg {}", format_color_opt(&style.bg)));
+    parts.extend(format_modifiers(&style.modifiers));
+    if let Some(scale) = style.scale {
+        parts.push(format!("scale {:.2}x", scale.as_ratio()));
+    }
+    if let Some(family) = style.family {
+        parts.push(format!("family #{}", family.0));
+    }
+    if let Some(weight) = style.weight {
+        parts.push(format!("weight {weight:?}"));
+    }
+    parts.join("  ")
+}
+
+/// T.9.d: render the authoring (reference-form) [`StyleSpec`] for
+/// `:describe-element`. Colors show what they *reference* — a palette
+/// key (`palette "mauve"`), a literal (`#rrggbb` / name), or `default`
+/// — not the baked color, so the user sees the element's definition.
+/// The inherit parent (if any) leads the list.
+fn format_style_spec(spec: &crate::ui::theme::StyleSpec) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(parent) = &spec.inherit {
+        parts.push(format!("inherit {parent}"));
+    }
+    if let Some(fg) = &spec.fg {
+        parts.push(format!("fg = {}", format_color_ref(fg)));
+    }
+    if let Some(bg) = &spec.bg {
+        parts.push(format!("bg = {}", format_color_ref(bg)));
+    }
+    parts.extend(format_spec_modifiers(&spec.modifiers));
+    if let Some(scale) = spec.scale {
+        parts.push(format!("scale {scale:.2}x"));
+    }
+    if let Some(family) = spec.family {
+        parts.push(format!("family #{}", family.0));
+    }
+    if let Some(weight) = spec.weight {
+        parts.push(format!("weight {weight:?}"));
+    }
+    if parts.is_empty() {
+        "(empty)".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Format an optional resolved [`crate::ui::theme::Color`] channel:
+/// the color form, or `-` when unset.
+fn format_color_opt(color: &Option<crate::ui::theme::Color>) -> String {
+    match color {
+        Some(c) => format_color(c),
+        None => "-".to_string(),
+    }
+}
+
+/// Format a resolved [`crate::ui::theme::Color`]: `#rrggbb` for `Rgb`,
+/// the ANSI name for `Named`, `idxNNN` for `Indexed`, `default` for
+/// the terminal/window default channel.
+fn format_color(color: &crate::ui::theme::Color) -> String {
+    use crate::ui::theme::Color;
+    match color {
+        Color::Default => "default".to_string(),
+        Color::Named(n) => format!("{n:?}").to_lowercase(),
+        Color::Indexed(i) => format!("idx{i}"),
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}
+
+/// Format an authoring [`crate::ui::theme::ColorRef`]: a palette-key
+/// reference shows as `palette "key"`, a literal as its color form, a
+/// default as `default`.
+fn format_color_ref(cref: &crate::ui::theme::ColorRef) -> String {
+    use crate::ui::theme::ColorRef;
+    match cref {
+        ColorRef::Palette(key) => format!("palette \"{}\"", key.as_str()),
+        ColorRef::Literal(c) => format_color(c),
+        ColorRef::Default => "default".to_string(),
+    }
+}
+
+/// The set modifiers of a resolved [`crate::ui::theme::Modifiers`],
+/// as a list of names (`bold`, `italic`, ...). Empty when none set.
+fn format_modifiers(m: &crate::ui::theme::Modifiers) -> Vec<String> {
+    let mut out = Vec::new();
+    if m.bold {
+        out.push("bold".to_string());
+    }
+    if m.italic {
+        out.push("italic".to_string());
+    }
+    if m.underline {
+        out.push("underline".to_string());
+    }
+    if m.dim {
+        out.push("dim".to_string());
+    }
+    if m.reverse {
+        out.push("reverse".to_string());
+    }
+    out
+}
+
+/// The tri-state modifiers of an authoring [`ModifierSet`], rendered
+/// for the spec line: a set-true modifier shows as its name, a
+/// set-false (explicit clear) as `no-<name>`, an unset (inherit) is
+/// omitted. Distinguishing the three is the point — emacs faces treat
+/// "unspecified" and "off" differently.
+fn format_spec_modifiers(m: &lattice_theme::ModifierSet) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |name: &str, v: Option<bool>| match v {
+        Some(true) => out.push(name.to_string()),
+        Some(false) => out.push(format!("no-{name}")),
+        None => {}
+    };
+    push("bold", m.bold);
+    push("italic", m.italic);
+    push("underline", m.underline);
+    push("dim", m.dim);
+    push("reverse", m.reverse);
+    out
 }
 
 /// 5.5.G.23.cmdline: `:`-history capacity. Submit pushes the line
@@ -27301,6 +27506,70 @@ mod tests {
             reg.resolved().get(kw).fg,
             before,
             "active theme is untouched on an unknown name"
+        );
+    }
+
+    /// T.9.d: `:describe-element <name>` builds a help view from the
+    /// `ThemeRegistry::describe` snapshot. The title carries the
+    /// element name and the body surfaces owner / resolved / spec /
+    /// doc lines.
+    #[test]
+    fn describe_element_builds_help_content_for_known_element() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let content = editor
+            .build_describe_element_content("syntax.keyword")
+            .expect("syntax.keyword is a registered core element");
+        let body = content.lines().join("\n");
+        assert!(content.title.contains("syntax.keyword"));
+        assert!(body.contains("owner:    Core"), "owner line: {body}");
+        // Resolved mocha mauve + bold (the concrete style).
+        assert!(body.contains("#cba6f7"), "resolved fg hex: {body}");
+        assert!(body.contains("bold"), "bold modifier: {body}");
+        // Authoring spec shows the palette-key reference, not the hex.
+        assert!(body.contains("palette \"mauve\""), "spec palette ref: {body}");
+        assert!(body.contains("Language keywords."), "doc: {body}");
+    }
+
+    /// T.9.d: an unknown element name echoes an error and returns
+    /// `None` (the dispatcher then skips the display signal) — never a
+    /// panic.
+    #[test]
+    fn describe_element_unknown_name_errors_and_returns_none() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        assert!(
+            editor
+                .build_describe_element_content("no.such.element")
+                .is_none()
+        );
+    }
+
+    /// T.9.d: `Effect::DescribeElement` for a known element emits a
+    /// `DisplayBuffer(HelpDescribe)` signal; an unknown one emits no
+    /// display signal.
+    #[test]
+    fn describe_element_effect_emits_display_buffer_signal() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let out = editor.handle_effect(Effect::DescribeElement {
+            name: "diff.add.sign".to_string(),
+        });
+        assert!(
+            out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::DisplayBuffer(_))),
+            "known element emits a DisplayBuffer signal"
+        );
+        let out_unknown = editor.handle_effect(Effect::DescribeElement {
+            name: "nope.nope".to_string(),
+        });
+        assert!(
+            !out_unknown
+                .renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::DisplayBuffer(_))),
+            "unknown element emits no DisplayBuffer signal"
         );
     }
 

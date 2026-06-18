@@ -82,6 +82,27 @@ impl Default for ResolvedTheme {
     }
 }
 
+/// Introspection snapshot for a single registered element, returned
+/// by [`ThemeRegistry::describe`] and rendered by `:describe-element`
+/// (T.9.d). Bundles the element's identity + owner + authoring
+/// (reference-form) [`StyleSpec`] default + doc string + its concrete
+/// resolved [`Style`] under the active theme — everything the help
+/// view needs in one read, no second registry round-trip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementInfo {
+    pub name: ElementName,
+    pub owner: ElementOwner,
+    /// The owner-supplied authoring spec (palette-key references +
+    /// inherit parent), pre-resolution. `:describe-element` renders
+    /// this as the `Spec:` line so the user sees what the element
+    /// *references*, not only the baked color.
+    pub default: StyleSpec,
+    pub doc: &'static str,
+    /// The concrete style the element resolves to under the active
+    /// palette + override set — what the renderer actually paints.
+    pub resolved: Style,
+}
+
 /// Registration + resolution surface. Lives as a ServiceRegistry
 /// service (T.3); modes reach it through the handle, never through
 /// `&mut Editor`.
@@ -114,6 +135,15 @@ pub trait ThemeRegistry: Send + Sync {
     /// override set atomically (`:colorscheme`). Prior overrides are
     /// cleared. Marks the table dirty.
     fn set_theme(&self, palette: Palette, overrides: Vec<(ElementName, StyleSpec)>);
+
+    /// T.9.d: element metadata for introspection (`:describe-element`
+    /// / `:describe-face`). Returns the element's identity + owner +
+    /// authoring default + doc + concrete resolved style, or `None` if
+    /// `name` is not a registered element. Reads the resolved table
+    /// (rebuilding it lazily if dirty) so the `resolved` field reflects
+    /// the active theme — a theme-build-time read, never on the hot
+    /// path.
+    fn describe(&self, name: &ElementName) -> Option<ElementInfo>;
 }
 
 /// The canonical handle type. Register and look up under THIS type in
@@ -258,6 +288,25 @@ impl ThemeRegistry for InMemoryThemeRegistry {
         inner.palette = palette;
         inner.overrides = overrides.into_iter().collect();
         inner.dirty = true;
+    }
+
+    fn describe(&self, name: &ElementName) -> Option<ElementInfo> {
+        // The resolved style must reflect the active theme, so resolve
+        // the table first (rebuilds lazily if dirty), THEN read the
+        // element metadata + id under the lock. Order matters: a
+        // pre-`resolved()` read could miss an override that just
+        // dirtied the table.
+        let resolved = self.resolved();
+        let inner = self.inner.read().expect("theme registry lock poisoned");
+        let id = *inner.by_name.get(name)?;
+        let elem = inner.elements.get(id.0 as usize)?;
+        Some(ElementInfo {
+            name: elem.name.clone(),
+            owner: elem.owner.clone(),
+            default: elem.default.clone(),
+            doc: elem.doc,
+            resolved: resolved.get(id),
+        })
     }
 }
 
@@ -1367,6 +1416,72 @@ mod tests {
             Some(Color::Rgb(0xc6, 0xa0, 0xf6))
         );
         assert!(theme.overrides.is_empty());
+    }
+
+    #[test]
+    fn describe_returns_metadata_and_resolved_style() {
+        // T.9.d: `describe` bundles owner + doc + authoring default +
+        // concrete resolved style for a registered element.
+        let reg = reg();
+        let info = reg
+            .describe(&ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        assert_eq!(info.name.as_str(), "syntax.keyword");
+        assert_eq!(info.owner, ElementOwner::Core);
+        assert_eq!(info.doc, "Language keywords.");
+        // Authoring default references the `mauve` palette key + bold.
+        assert_eq!(
+            info.default.fg,
+            Some(ColorRef::Palette(crate::PaletteKey::from_static("mauve")))
+        );
+        assert_eq!(info.default.modifiers.bold, Some(true));
+        // Resolved style is the concrete mocha mauve + bold.
+        assert_eq!(info.resolved.fg, Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
+        assert!(info.resolved.modifiers.bold);
+    }
+
+    #[test]
+    fn describe_unknown_element_is_none() {
+        let reg = reg();
+        assert!(reg.describe(&ElementName::from_static("no.such.element")).is_none());
+    }
+
+    #[test]
+    fn describe_reflects_active_override() {
+        // T.9.d: the `resolved` field tracks the active override set —
+        // after `set_override` the described resolved style updates,
+        // while the authoring `default` (the reference form) is
+        // unchanged.
+        let reg = reg();
+        reg.set_override(
+            ElementName::from_static("syntax.keyword"),
+            StyleSpec::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        let info = reg
+            .describe(&ElementName::from_static("syntax.keyword"))
+            .expect("registered");
+        assert_eq!(info.resolved.fg, Some(Color::Rgb(1, 2, 3)));
+        // The override only set fg; the default's bold still resolves.
+        assert!(info.resolved.modifiers.bold);
+        // The authoring default still references the palette key.
+        assert_eq!(
+            info.default.fg,
+            Some(ColorRef::Palette(crate::PaletteKey::from_static("mauve")))
+        );
+    }
+
+    #[test]
+    fn describe_reports_inherit_parent() {
+        // T.9.d: an element whose default inherits another surfaces the
+        // parent in `default.inherit` so the help view can show it.
+        let reg = reg();
+        let info = reg
+            .describe(&ElementName::from_static("syntax.line_comment"))
+            .expect("registered");
+        assert_eq!(
+            info.default.inherit.as_ref().map(|n| n.as_str().to_string()),
+            Some("syntax.comment".to_string())
+        );
     }
 
     #[test]

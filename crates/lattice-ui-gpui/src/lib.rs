@@ -1002,6 +1002,7 @@ impl GpuiApp {
             | Effect::DescribeBuffer
             | Effect::ListKeymap
             | Effect::DescribeOption { .. }
+            | Effect::DescribeElement { .. }
             | Effect::ListOptions
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents

@@ -18,9 +18,9 @@
 //! resolved table. See `docs/dev/architecture/theme-system.md`.
 
 pub use lattice_theme::{
-    builtin_themes, parse_color, BuiltinElementIds, Color, FamilyId, FontScale,
-    InMemoryThemeRegistry, Modifiers, NamedColor, NamedTheme, ResolvedTheme, Style, ThemeRegistry,
-    ThemeRegistryHandle, Weight,
+    builtin_themes, parse_color, BuiltinElementIds, Color, ColorRef, ElementInfo, ElementName,
+    ElementOwner, FamilyId, FontScale, InMemoryThemeRegistry, Modifiers, NamedColor, NamedTheme,
+    ResolvedTheme, Style, StyleSpec, ThemeRegistry, ThemeRegistryHandle, Weight,
 };
 
 /// T.5: map a `lattice_syntax::Style` category to its builtin

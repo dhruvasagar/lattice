@@ -285,6 +285,17 @@ pub enum Effect {
     DescribeOption {
         name: String,
     },
+    /// `:describe-element NAME` / `:describe-face NAME` (T.9.d) --
+    /// render a registered theme element's metadata in a help view:
+    /// owner, doc, the authoring (reference-form) `StyleSpec` default
+    /// (palette keys + inherit parent), and the concrete resolved
+    /// `Style`. The introspection counterpart of `:describe-option` /
+    /// `:describe-mode` for theme elements. The host reads the
+    /// `ThemeRegistry::describe` snapshot; an unknown name echoes an
+    /// error.
+    DescribeElement {
+        name: String,
+    },
     /// `:options` -- list every registered option.
     ListOptions,
     /// `:hover [text]` -- open a hover popup at the cursor with

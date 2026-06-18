@@ -160,16 +160,17 @@ pub fn cell_row_to_text_runs(
 /// drops them); `inlay_offsets` is `line.col_map` verbatim.
 pub fn display_line_to_text_runs(
     line: &DisplayLine,
-    theme: &lattice_host::ui::theme::Theme,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     font: &Font,
 ) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
-    let default_fg = theme
-        .syntax_style(lattice_syntax::Style::Default)
+    use lattice_host::ui::theme::resolve_syntax_style;
+    let default_fg = resolve_syntax_style(resolved, ids, lattice_syntax::Style::Default)
         .fg
         .map(|c| c.to_rgb_u32(0))
         .unwrap_or(0);
-    let trailing_fg = theme
-        .whitespace_trailing_style
+    let trailing_fg = resolved
+        .get(ids.whitespace_trailing)
         .fg
         .map(|c| c.to_rgb_u32(default_fg))
         .unwrap_or(default_fg);
@@ -186,7 +187,7 @@ pub fn display_line_to_text_runs(
     let mut current: Option<(Cell, usize)> = None;
     for run in line.runs.iter() {
         let run_len = run.len as usize;
-        let cell = display_run_to_synthetic_cell(run, theme, trailing_fg, inlay_fg);
+        let cell = display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, inlay_fg);
         match &mut current {
             Some((sample, len)) if style_key(sample) == style_key(&cell) => {
                 *len += run_len;
@@ -213,11 +214,12 @@ pub fn display_line_to_text_runs(
 /// codepoint is irrelevant (`cell_to_text_run` reads only fg/bg/flags).
 fn display_run_to_synthetic_cell(
     run: &DisplayRun,
-    theme: &lattice_host::ui::theme::Theme,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     trailing_fg: u32,
     inlay_fg: u32,
 ) -> Cell {
-    let host = theme.syntax_style(run.style);
+    let host = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style);
     let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
     let mut mods: u16 = 0;
     let m = &host.modifiers;
@@ -364,10 +366,15 @@ mod tests {
     #[test]
     fn display_line_resolves_keyword_and_inlay_runs() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
-        use lattice_host::ui::theme::{Color, NamedColor, Theme};
-        let theme = Theme::default();
-        let kw_fg = theme
-            .syntax_style(lattice_syntax::Style::Keyword)
+        use lattice_host::ui::theme::{
+            resolve_syntax_style, BuiltinElementIds, Color, InMemoryThemeRegistry, NamedColor,
+            ThemeRegistry as _,
+        };
+        // T.5.b: resolve through the default registry's resolved table.
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let kw_fg = resolve_syntax_style(&resolved, &ids, lattice_syntax::Style::Keyword)
             .fg
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
@@ -397,7 +404,7 @@ mod tests {
             fold: None,
         };
         let (combined, runs, offsets) =
-            display_line_to_text_runs(&line, &theme, &font("monospace"));
+            display_line_to_text_runs(&line, &resolved, &ids, &font("monospace"));
         assert_eq!(combined, "fn: i32");
         assert_eq!(runs.len(), 2, "keyword + inlay → two runs");
         assert_eq!(runs[0].len, 2);

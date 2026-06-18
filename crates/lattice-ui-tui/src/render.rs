@@ -1645,6 +1645,11 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // pane to the registered help buffer, where pane.buffer_id is
     // the right key.)
     let (highlights, _links) = help_render_data(app, popup_id, &help);
+    // T.5.b: resolve syntax styles through the active theme's
+    // resolved table (loaded once for the whole list).
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1654,7 +1659,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans);
+            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
             // Hlsearch / current_match overlays -- same painter
             // the document path and the in-pane help variant use,
             // so `/foo` in a focused popup shows highlights too.
@@ -2183,6 +2188,10 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Slice 3c.final.B (group 1): pane via `app.panes()`.
     let render_id = app.panes().tree.active().buffer_id;
     let (highlights, _links) = help_render_data(app, render_id, &help);
+    // T.5.b: resolve syntax styles through the resolved table.
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -2192,7 +2201,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans);
+            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
             let line_len = l.len();
             // Hlsearch overlay: every `app.editor.all_matches` range that
             // touches this line. Same painter the document path
@@ -2252,6 +2261,10 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     // M.3.2.b.2: read help highlights via buffer-locals.
     // `pane.buffer_id` is the registered id (the locals key).
     let (highlights, _links) = help_render_data(app, pane.buffer_id, &help);
+    // T.5.b: resolve syntax styles through the resolved table.
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -2261,7 +2274,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            Line::from(render_help_line(l, &spans))
+            Line::from(render_help_line(l, &spans, &help_resolved, &help_ids))
         })
         .collect();
     frame.render_widget(Paragraph::new(visible), area);
@@ -3439,7 +3452,9 @@ pub(crate) fn compose_pane_lines(
         .unwrap_or_else(|| {
             std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
         });
-    let display_theme = &cells_rs.theme;
+    // T.5.b: the body-compose path resolves syntax styles through
+    // `cells_rs.resolved_theme` + `cells_rs.theme_ids` (the resolved
+    // table) rather than the retired `Theme::syntax_style`.
     // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
     // pane's buffer once per frame; accumulate GutterDecoration
     // contributions into per-line maps. Replaces per-line RenderState
@@ -3630,9 +3645,11 @@ pub(crate) fn compose_pane_lines(
                 Vec::new()
             } else {
                 match display_matrix.row_at_source_line(line_idx) {
-                    Some(line) => {
-                        crate::cells_render::display_line_to_source_spans(line, display_theme)
-                    }
+                    Some(line) => crate::cells_render::display_line_to_source_spans(
+                        line,
+                        &cells_rs.resolved_theme,
+                        &cells_rs.theme_ids,
+                    ),
                     None => Vec::new(),
                 }
             };
@@ -5652,7 +5669,12 @@ fn display_col_for_byte(
 /// row the link still renders as plain text -- the underlying
 /// `[label]` and `(url)` characters stay visible, the navigation
 /// extracted by `parse_help_links` works regardless.)
-fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Span<'static>> {
+fn render_help_line(
+    line: &str,
+    spans: &[lattice_syntax::StyledSpan],
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> Vec<Span<'static>> {
     if spans.is_empty() {
         return vec![Span::raw(line.to_string())];
     }
@@ -5676,7 +5698,7 @@ fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Spa
         }
         out.push(Span::styled(
             line[span.start..end].to_string(),
-            style_to_tui(span.style),
+            style_to_tui(span.style, resolved, ids),
         ));
         cursor = end;
     }
@@ -5693,14 +5715,17 @@ fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Spa
 /// host's canonical mapping so a single edit to the palette
 /// reflects in every renderer.
 ///
-/// `Theme::default()` is used today because per-instance theme
-/// customization for syntax styles isn't wired through the cmdline
-/// yet (`:set ui.syntax.*` lands in a follow-up). When that lands
-/// the call site already in scope of `&App` can pass
-/// `&app.editor.host_theme` instead.
-fn style_to_tui(s: Style) -> TuiStyle {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    crate::theme::host_style_to_ratatui(host_default.syntax_style(s))
+/// T.5.b: resolves `s` through the active theme's resolved table
+/// (`resolved` + `ids`, loaded by the caller from the render
+/// state) — the replacement for the retired `Theme::syntax_style`.
+fn style_to_tui(
+    s: Style,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    crate::theme::host_style_to_ratatui(lattice_host::ui::theme::resolve_syntax_style(
+        resolved, ids, s,
+    ))
 }
 
 #[cfg(test)]
@@ -6436,7 +6461,12 @@ mod tests {
         )
         .with_markdown_syntax(registry);
         let lines = h.lines();
-        let spans = render_help_line(&lines[0], &h.metadata.highlights[0]);
+        // T.5.b: resolve through the default registry's resolved table.
+        use lattice_host::ui::theme::ThemeRegistry as _;
+        let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+        let spans = render_help_line(&lines[0], &h.metadata.highlights[0], &resolved, &ids);
         let any_styled = spans
             .iter()
             .any(|sp| sp.style != ratatui::style::Style::default());

@@ -2115,53 +2115,14 @@ pub struct CellTheme<'a> {
     pub ids: &'a crate::ui::theme::BuiltinElementIds,
 }
 
-/// T.5: map a `lattice_syntax::Style` category to its builtin
-/// `syntax.*` [`lattice_theme::ElementId`]. Lives host-side because
-/// `lattice-theme` is a leaf crate and cannot depend on
-/// `lattice-syntax`. Replaces the hardcoded color `match` that was
-/// `Theme::syntax_style` — the colors now come from the resolved table.
-fn syntax_element_id(
-    ids: &crate::ui::theme::BuiltinElementIds,
-    style: lattice_syntax::Style,
-) -> lattice_theme::ElementId {
-    use lattice_syntax::Style as S;
-    match style {
-        S::Default => ids.syntax_default,
-        S::Comment => ids.syntax_comment,
-        S::LineComment => ids.syntax_line_comment,
-        S::String => ids.syntax_string,
-        S::Keyword => ids.syntax_keyword,
-        S::Type => ids.syntax_type,
-        S::Number => ids.syntax_number,
-        S::Function => ids.syntax_function,
-        S::Constant => ids.syntax_constant,
-        S::Variable => ids.syntax_variable,
-        S::Operator => ids.syntax_operator,
-        S::Punctuation => ids.syntax_punctuation,
-        S::Attribute => ids.syntax_attribute,
-        S::Heading1 => ids.syntax_heading_1,
-        S::Heading2 => ids.syntax_heading_2,
-        S::Heading3 => ids.syntax_heading_3,
-        S::Heading4 => ids.syntax_heading_4,
-        S::Heading5 => ids.syntax_heading_5,
-        S::Heading6 => ids.syntax_heading_6,
-        S::Bold => ids.syntax_bold,
-        S::Italic => ids.syntax_italic,
-        S::Link => ids.syntax_link,
-        S::Url => ids.syntax_url,
-        S::MarkupRaw => ids.syntax_markup_raw,
-        S::Markup => ids.syntax_markup,
-    }
-}
-
-/// S3.a / T.5: resolve a syntax style to `(fg, flags)` via the
-/// resolved theme table. The returned `flags` is the OR of
-/// `Cell::flags` modifier bits ([`flags::BOLD`] etc.) matching the
-/// resolved style's [`crate::ui::theme::Modifiers`]. Splice-flags
-/// like `INLAY` / `WS_MARKER` are NOT set here — callers OR those
-/// in separately when emitting an inlay or whitespace cell.
+/// S3.a / T.5: resolve a syntax style to `(fg, flags)` via the shared
+/// host `resolve_syntax_style` (resolved table). The returned `flags`
+/// is the OR of `Cell::flags` modifier bits ([`flags::BOLD`] etc.)
+/// matching the resolved style's [`crate::ui::theme::Modifiers`].
+/// Splice-flags like `INLAY` / `WS_MARKER` are NOT set here — callers
+/// OR those in separately when emitting an inlay or whitespace cell.
 fn resolve_style(ct: CellTheme<'_>, style: lattice_syntax::Style) -> (u32, u16) {
-    let s = ct.resolved.get(syntax_element_id(ct.ids, style));
+    let s = crate::ui::theme::resolve_syntax_style(ct.resolved, ct.ids, style);
     let fg = s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
     let flags = modifiers_to_flags(&s.modifiers);
     (fg, flags)

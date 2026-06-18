@@ -90,14 +90,18 @@ use crate::{GpuiApp, GpuiTheme};
 /// through `lattice_host::ui::theme::Theme::syntax_style`, so a
 /// single edit reflects everywhere.
 ///
-/// `Theme::default()` is used today because per-instance theme
-/// customization for syntax styles isn't wired through the cmdline
-/// yet. The fallback when `fg` is unset is the Catppuccin Text
-/// (`0xcdd6f4`) — matches what `SyntaxStyle::Default` resolves to
-/// and what `EditorElement` paints on un-spanned bytes.
-fn syntax_color(style: SyntaxStyle) -> u32 {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    let host_style = host_default.syntax_style(style);
+/// T.5.b: resolves `style` through the active theme's resolved table
+/// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
+/// for the retired `Theme::syntax_style`. The fallback when `fg` is
+/// unset is the Catppuccin Text (`0xcdd6f4`) — matches what
+/// `SyntaxStyle::Default` resolves to and what `EditorElement` paints
+/// on un-spanned bytes.
+fn syntax_color(
+    style: SyntaxStyle,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
+    let host_style = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
     host_style
         .fg
         .map(|c| c.to_rgb_u32(0xcdd6f4))
@@ -1954,6 +1958,12 @@ impl EditorView {
             // B3: host theme (Copy) for resolving DisplayRun style tags →
             // TextRun colours at shape time (display_line_to_text_runs).
             host_theme,
+            // T.5.b: the resolved table + builtin ids the display-line
+            // path resolves syntax styles through (`resolve_syntax_style`),
+            // replacing the `host_theme.syntax_style` read. Reuses the
+            // T.4 locals bound from `rs_guard` above.
+            resolved_theme: resolved_theme.clone(),
+            theme_ids,
             // S4.final.b (2026-05-27): per-window glyph-id
             // cache. Always carries the shared resolver from
             // `EditorView`; consumption is gated on
@@ -3238,6 +3248,11 @@ impl Render for EditorView {
         // `render_state.popup.X`; bind locally so the borrows live
         // for the closure.
         let popup_substate = self.app.render_state.load().popup.clone();
+        // T.5.b: the popup-overlay cell renderer resolves syntax
+        // styles through the active theme's resolved table (loaded
+        // once; captured by the popup closure below).
+        let popup_resolved = self.app.render_state.load().resolved_theme.clone();
+        let popup_ids = self.app.render_state.load().theme_ids;
         let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
             let title = buf.title.clone();
             let body_text = buf.content.as_string();
@@ -3406,7 +3421,7 @@ impl Render for EditorView {
                                     .text_color(rgb(theme.cursor_foreground))
                                     .child(c.to_string())
                             } else {
-                                base.text_color(rgb(syntax_color(style)))
+                                base.text_color(rgb(syntax_color(style, &popup_resolved, &popup_ids)))
                                     .child(c.to_string())
                             }
                         })

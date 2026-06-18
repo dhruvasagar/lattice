@@ -78,14 +78,18 @@ use crate::GpuiTheme;
 use crate::cells_paint::display_line_to_text_runs;
 use crate::glyph_resolver::GlyphResolver;
 
-/// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
-/// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: identical body to
-/// `window::syntax_color` because both renderer paths must read the
-/// same canonical mapping; once `EditorElement` absorbs the popup
-/// overlay too, the helpers merge.
-fn syntax_color(style: SyntaxStyle) -> u32 {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    let host_style = host_default.syntax_style(style);
+/// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
+/// T.5.b: resolves `style` through the active theme's resolved table
+/// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
+/// for the retired `Theme::syntax_style`. Threaded from the caller's
+/// render-state-derived theme handles so the legacy `build_line_with_inlays`
+/// fallback path renders identical colours to the display-line path.
+fn syntax_color(
+    style: SyntaxStyle,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
+    let host_style = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
     host_style
         .fg
         .map(|c| c.to_rgb_u32(0xcdd6f4))
@@ -340,6 +344,15 @@ pub(crate) struct EditorElement {
     /// (`display_line_to_text_runs`). The cell path baked resolved colours
     /// into cells; the display path resolves per-run here.
     pub(crate) host_theme: lattice_host::ui::theme::Theme,
+    /// T.5.b (theme-system): the resolved theme table + builtin
+    /// element ids the display-line path resolves `DisplayRun`
+    /// syntax-style tags through (`display_line_to_text_runs` →
+    /// `resolve_syntax_style`). Replaces the `host_theme.syntax_style`
+    /// read; populated in `window.rs` from the render-state's
+    /// `resolved_theme` / `theme_ids` (T.4) — the same locals the
+    /// editor element already binds.
+    pub(crate) resolved_theme: std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+    pub(crate) theme_ids: lattice_host::ui::theme::BuiltinElementIds,
     /// S4.final.b (2026-05-27): per-window glyph-id cache. When
     /// the runtime toggle `LATTICE_PAINT_CELLS=1` is set,
     /// `EditorElement::paint`'s body loop uses
@@ -606,7 +619,7 @@ impl Element for EditorElement {
                     .and_then(|m| m.row_at_source_line(line_idx))
                     .filter(|dl| !dl.text.is_empty() || line.is_empty());
                 if let Some(dl) = display_row {
-                    display_line_to_text_runs(dl, &self.host_theme, &font)
+                    display_line_to_text_runs(dl, &self.resolved_theme, &self.theme_ids, &font)
                 } else {
                     let line_spans: &[StyledSpan] = self
                         .visible_spans
@@ -625,6 +638,8 @@ impl Element for EditorElement {
                         &inlays_on_line,
                         &font,
                         self.inlay_color,
+                        &self.resolved_theme,
+                        &self.theme_ids,
                     )
                 }
             };
@@ -1660,6 +1675,8 @@ pub fn build_line_with_inlays(
     inlays: &[(usize, &str)],
     font: &gpui::Font,
     inlay_color: u32,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
     let inlay_byte_total: usize = inlays.iter().map(|(_, t)| t.len()).sum();
     let mut b = LineRunBuilder::new(font, line.len() + inlay_byte_total);
@@ -1673,7 +1690,7 @@ pub fn build_line_with_inlays(
             b.emit(text, inlay_color);
             inlay_idx += 1;
         }
-        let color = syntax_color(style_at(spans, orig_byte));
+        let color = syntax_color(style_at(spans, orig_byte), resolved, ids);
         let mut buf = [0u8; 4];
         b.emit(ch.encode_utf8(&mut buf), color);
     }
@@ -2254,6 +2271,21 @@ fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec
 mod tests {
     use super::*;
 
+    /// T.5.b: the resolved table + builtin ids the
+    /// `build_line_with_inlays` / `syntax_color` tests resolve syntax
+    /// colours through — the default registry, same construction the
+    /// renderer uses at boot.
+    fn theme_defaults() -> (
+        std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+        lattice_host::ui::theme::BuiltinElementIds,
+    ) {
+        use lattice_host::ui::theme::ThemeRegistry as _;
+        let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+        (resolved, ids)
+    }
+
     // ----- W.5 soft-wrap segment helpers -----
 
     #[test]
@@ -2328,14 +2360,23 @@ mod tests {
 
     #[test]
     fn text_runs_no_spans_one_default_run() {
+        let (resolved, ids) = theme_defaults();
         let line = "let x = 1;";
-        let (combined, runs, offsets) =
-            build_line_with_inlays(line, &[], &[], &gpui::font("monospace"), 0x7f849c);
+        let (combined, runs, offsets) = build_line_with_inlays(
+            line,
+            &[],
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert!(offsets.is_empty());
         assert_eq!(combined, line);
         assert_eq!(runs.len(), 1, "no-span line collapses to a single run");
         assert_eq!(runs[0].len, line.len());
-        let expected: gpui::Hsla = rgb(syntax_color(SyntaxStyle::Default)).into();
+        let expected: gpui::Hsla =
+            rgb(syntax_color(SyntaxStyle::Default, &resolved, &ids)).into();
         assert_eq!(runs[0].color, expected);
     }
 
@@ -2359,8 +2400,16 @@ mod tests {
                 style: SyntaxStyle::Keyword,
             },
         ];
-        let (_, runs, _) =
-            build_line_with_inlays(line, &spans, &[], &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (_, runs, _) = build_line_with_inlays(
+            line,
+            &spans,
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert_eq!(runs.len(), 3);
         assert_eq!(runs[0].len, 2);
         assert_eq!(runs[1].len, 1);
@@ -2371,8 +2420,16 @@ mod tests {
 
     #[test]
     fn text_runs_empty_line_no_runs() {
-        let (combined, runs, offsets) =
-            build_line_with_inlays("", &[], &[], &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (combined, runs, offsets) = build_line_with_inlays(
+            "",
+            &[],
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert!(combined.is_empty());
         assert!(runs.is_empty());
         assert!(offsets.is_empty());
@@ -2468,8 +2525,9 @@ mod tests {
             style: SyntaxStyle::Keyword,
         }];
         let font = gpui::font("monospace");
+        let (resolved, ids) = theme_defaults();
         let (combined, runs, offsets) =
-            build_line_with_inlays(line, &spans, &[], &font, 0x7f849c);
+            build_line_with_inlays(line, &spans, &[], &font, 0x7f849c, &resolved, &ids);
         assert_eq!(combined, line, "no inlays => combined == line");
         assert!(offsets.is_empty(), "no inlays => no offsets");
         let total_len: usize = runs.iter().map(|r| r.len).sum();
@@ -2482,8 +2540,9 @@ mod tests {
         let spans: Vec<StyledSpan> = Vec::new();
         let inlays: Vec<(usize, &str)> = vec![(5, ": i32")];
         let font = gpui::font("monospace");
+        let (resolved, ids) = theme_defaults();
         let (combined, runs, offsets) =
-            build_line_with_inlays(line, &spans, &inlays, &font, 0x7f849c);
+            build_line_with_inlays(line, &spans, &inlays, &font, 0x7f849c, &resolved, &ids);
         assert_eq!(
             combined, "let x: i32 = 1;",
             "inlay text spliced before byte 5 of orig line"
@@ -2502,8 +2561,16 @@ mod tests {
     fn build_line_with_inlays_trailing_inlay_appended_at_eol() {
         let line = "fn foo()";
         let inlays: Vec<(usize, &str)> = vec![(line.len(), " -> i32")];
-        let (combined, _, offsets) =
-            build_line_with_inlays(line, &[], &inlays, &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (combined, _, offsets) = build_line_with_inlays(
+            line,
+            &[],
+            &inlays,
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert_eq!(combined, "fn foo() -> i32");
         assert_eq!(offsets, vec![(line.len() as u32, 7)]);
     }

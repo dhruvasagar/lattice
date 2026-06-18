@@ -2965,10 +2965,16 @@ impl Editor {
             if matches!(lang, lattice_syntax::Lang::Plain) {
                 None
             } else {
+                let resolved = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                    .map(|r| r.resolved())
+                    .unwrap_or_default();
                 Some(crate::diff::overlay::SyntaxContext {
                     lang,
                     registry: self.lang_registry.clone(),
-                    theme: self.host_theme,
+                    resolved,
+                    ids: self.builtin_element_ids,
                 })
             }
         };

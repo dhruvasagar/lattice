@@ -29,6 +29,21 @@ use lattice_ui_gpui::editor_element::{
     build_line_with_inlays, byte_to_combined_col, push_range_quads,
 };
 
+/// T.5.b: the resolved table + builtin ids the bench resolves syntax
+/// colours through — the default registry, matching the renderer's
+/// boot construction. `build_line_with_inlays` now takes these as the
+/// replacement for the retired `Theme::syntax_style`.
+fn theme_defaults() -> (
+    std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+    lattice_host::ui::theme::BuiltinElementIds,
+) {
+    use lattice_host::ui::theme::ThemeRegistry as _;
+    let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+    let resolved = reg.resolved();
+    let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+    (resolved, ids)
+}
+
 /// Synthetic Rust-like line ~80 chars long with two styled
 /// regions (a keyword and a type) so the per-character `style_at`
 /// walk has to advance through realistic span data.
@@ -84,6 +99,7 @@ fn frame_budget(c: &mut Criterion) {
                 let lines: Vec<String> = (0..n_rows).map(rust_line).collect();
                 let all_spans: Vec<Vec<lattice_syntax::StyledSpan>> =
                     lines.iter().map(|l| styled_spans(l)).collect();
+                let (resolved, ids) = theme_defaults();
                 bencher.iter(|| {
                     for (i, line) in lines.iter().enumerate() {
                         let spans = &all_spans[i];
@@ -91,8 +107,15 @@ fn frame_budget(c: &mut Criterion) {
                         // a Rust file with rust-analyzer off): no
                         // inlay splicing, but exercises the per-
                         // char `style_at` walk + run collapse.
-                        let (text, runs, offsets) =
-                            build_line_with_inlays(line, spans, &[], &font, inlay_color);
+                        let (text, runs, offsets) = build_line_with_inlays(
+                            line,
+                            spans,
+                            &[],
+                            &font,
+                            inlay_color,
+                            &resolved,
+                            &ids,
+                        );
                         black_box(&text);
                         black_box(&runs);
                         // Cursor + 6 decoration column lookups.
@@ -139,6 +162,7 @@ fn frame_budget_with_inlays(c: &mut Criterion) {
                 let inlay_text_1 = ": &str".to_string();
                 let inlay_text_2 = ": Output".to_string();
                 let inlay_text_3 = " /* hint */".to_string();
+                let (resolved, ids) = theme_defaults();
                 bencher.iter(|| {
                     for (i, line) in lines.iter().enumerate() {
                         let spans = &all_spans[i];
@@ -148,8 +172,15 @@ fn frame_budget_with_inlays(c: &mut Criterion) {
                             (n.min(40), inlay_text_2.as_str()),
                             (n.min(55), inlay_text_3.as_str()),
                         ];
-                        let (text, runs, offsets) =
-                            build_line_with_inlays(line, spans, &inlays, &font, inlay_color);
+                        let (text, runs, offsets) = build_line_with_inlays(
+                            line,
+                            spans,
+                            &inlays,
+                            &font,
+                            inlay_color,
+                            &resolved,
+                            &ids,
+                        );
                         black_box(&text);
                         black_box(&runs);
                         for byte in [0, n / 4, n / 2, n.saturating_sub(1)] {
@@ -218,14 +249,22 @@ fn frame_budget_with_overlays(c: &mut Criterion) {
                     Position::new((n_rows / 3) as u32, 12),
                 )];
                 let mut quads: Vec<(u32, u32, u32)> = Vec::with_capacity(16);
+                let (resolved, ids) = theme_defaults();
                 bencher.iter(|| {
                     for (i, line) in lines.iter().enumerate() {
                         let line_idx = i as u32;
                         let spans = &all_spans[i];
                         // Run the post-E.1 prepaint path: shape +
                         // collapse + per-row overlay pre-bucket.
-                        let (text, runs, offsets) =
-                            build_line_with_inlays(line, spans, &[], &font, inlay_color);
+                        let (text, runs, offsets) = build_line_with_inlays(
+                            line,
+                            spans,
+                            &[],
+                            &font,
+                            inlay_color,
+                            &resolved,
+                            &ids,
+                        );
                         black_box(&text);
                         black_box(&runs);
                         quads.clear();

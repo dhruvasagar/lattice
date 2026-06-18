@@ -312,7 +312,11 @@ impl DiffOverlayVirtualRowProvider {
         });
         let default_fg: u32 = syntax
             .map(|ctx| {
-                let s = ctx.theme.syntax_style(lattice_syntax::Style::Default);
+                let s = crate::ui::theme::resolve_syntax_style(
+                    &ctx.resolved,
+                    &ctx.ids,
+                    lattice_syntax::Style::Default,
+                );
                 s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0)
             })
             .unwrap_or(0);
@@ -372,7 +376,13 @@ impl DiffOverlayVirtualRowProvider {
 pub struct SyntaxContext {
     pub lang: lattice_syntax::Lang,
     pub registry: Arc<lattice_syntax::LangRegistry>,
-    pub theme: crate::ui::theme::Theme,
+    /// T.5.b: the resolved theme table + builtin element ids the
+    /// deletion-block highlighter resolves syntax colours through
+    /// (replaces the old `theme: Theme` field — the only thing it
+    /// was used for was `Theme::syntax_style`, now
+    /// `crate::ui::theme::resolve_syntax_style`).
+    pub resolved: Arc<crate::ui::theme::ResolvedTheme>,
+    pub ids: crate::ui::theme::BuiltinElementIds,
 }
 
 /// D.3.b: render one source line of `rope` as a sequence of
@@ -405,7 +415,6 @@ fn render_baseline_line(
         .and_then(|p| p.get(idx))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let theme = syntax.map(|s| &s.theme);
     let mut out: Vec<Cell> = Vec::with_capacity(line.len_chars());
     let mut byte_idx: usize = 0;
     for ch in line.chars() {
@@ -415,7 +424,7 @@ fn render_baseline_line(
         // Resolve fg from the styled span covering byte_idx,
         // or fall back to default_fg / 0 per the contract
         // above.
-        let fg: u32 = if let Some(theme) = theme {
+        let fg: u32 = if let Some(ctx) = syntax {
             let style = spans
                 .iter()
                 .find(|s| {
@@ -425,7 +434,7 @@ fn render_baseline_line(
                 })
                 .map(|s| s.style)
                 .unwrap_or(lattice_syntax::Style::Default);
-            let s = theme.syntax_style(style);
+            let s = crate::ui::theme::resolve_syntax_style(&ctx.resolved, &ctx.ids, style);
             s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(default_fg)
         } else {
             0
@@ -624,10 +633,15 @@ mod tests {
     fn render_with_syntax(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
         let base = StaticSource::new(Rope::from(baseline_text));
         let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
+        let reg = crate::ui::theme::InMemoryThemeRegistry::with_defaults();
+        use crate::ui::theme::ThemeRegistry as _;
+        let resolved = reg.resolved();
+        let ids = crate::ui::theme::BuiltinElementIds::capture(&reg);
         let ctx = SyntaxContext {
             lang: lattice_syntax::Lang::Rust,
             registry,
-            theme: crate::ui::theme::Theme::default(),
+            resolved,
+            ids,
         };
         DiffOverlayVirtualRowProvider::render_rows(session, &base, Some(&ctx)).1
     }

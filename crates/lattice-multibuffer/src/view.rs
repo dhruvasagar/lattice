@@ -172,10 +172,26 @@ pub fn create_multibuffer_view(
             );
             let elements =
                 crate::register_multibuffer_theme_elements(theme.as_ref(), owner);
+            // MH.A3 (2026-06-19): read the GLOBAL `ui.nerd_fonts`
+            // default via the ConfigRegistry service (registered at
+            // boot; read by name so we needn't import host's
+            // `UiNerdFonts` decl) to pick the icon palette. Defaults
+            // to `false` (BMP fallback) when the service or option is
+            // absent — matching the icon-palette rule's safe default.
+            //
+            // MH.A3 follow-on: live per-buffer `ui.nerd_fonts` toggle
+            // — captured once here, so a runtime toggle does not yet
+            // re-render the header. Needs the `FrameView::for_buffer`
+            // seam threaded into the provider.
+            let nerd_fonts = services
+                .get::<Arc<lattice_config::ConfigRegistry>>()
+                .and_then(|cfg| cfg.get_bool_by_name("ui.nerd_fonts"))
+                .unwrap_or(false);
             Arc::new(MultibufferExcerptHeaderProvider::with_theme(
                 (*typed_handle).clone(),
                 theme,
                 elements,
+                nerd_fonts,
             ))
         }
         None => Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone())),

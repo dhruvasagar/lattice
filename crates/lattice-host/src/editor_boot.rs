@@ -1067,7 +1067,13 @@ impl Editor {
             picker_registry: picker_registry.clone(),
             picker_mru,
             picker_mru_path,
-            config,
+            // MH.A3 (2026-06-19): clone so the `services:` block below
+            // can register the same `Arc<ConfigRegistry>` (read by
+            // multibuffer's `create_multibuffer_view` for the
+            // `ui.nerd_fonts` icon-palette default). Field initializers
+            // run top-down; `config,` would otherwise move the binding
+            // before `services:` evaluates.
+            config: config.clone(),
             // K.2.4 (2026-06-01): clone the Arc so the
             // `keymap: { ... }` block below can still borrow
             // `mode_registry` to run the mode-keymap
@@ -1159,6 +1165,16 @@ impl Editor {
                 // `RenderState` snapshot (T.4); modes intern their
                 // own `ElementId`s from `on_activate` (T.7).
                 s.register::<lattice_theme::ThemeRegistryHandle>(theme_registry);
+                // MH.A3 (2026-06-19): expose the ConfigRegistry so
+                // extension-crate code (`create_multibuffer_view`) can
+                // read global option defaults — e.g. `ui.nerd_fonts`
+                // for the rich excerpt-header icon palette — without
+                // depending on `lattice-host`'s typed option decls.
+                // Same `Arc<X>` register/lookup pair per the
+                // ServiceRegistry Arc/TypeId rule. Read by name
+                // (`get_bool_by_name`) so multibuffer needn't import
+                // the `UiNerdFonts` decl (which lives in host).
+                s.register::<Arc<ConfigRegistry>>(config.clone());
                 Arc::new(s)
             },
             // T.4 (theme-system): builtin ids captured (above) from the

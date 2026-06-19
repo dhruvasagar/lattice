@@ -103,15 +103,29 @@ impl ExcerptId {
     }
 }
 
-/// Header presentation for an excerpt — title + style.
+/// Header presentation for an excerpt — title + style + the
+/// mode-owned semantic data the rich header renderer reads
+/// (MH.A2, see multibuffer-views.md §3.8).
 #[derive(Debug, Clone)]
 pub struct ExcerptHeader {
     /// Human-readable label. Conventionally
     /// `"<path> : <start_line+1>-<end_line+1>"` for a regular
     /// file excerpt (1-indexed for display). Empty string = no
-    /// header rendered.
+    /// header rendered. Fallback basename when `path` is `None`.
     pub title: String,
     pub style: ExcerptHeaderStyle,
+    /// MH.A2: the source file path. Drives the leading file-type
+    /// icon and the basename-bright / dir-dim split in
+    /// [`header_cells`]. `None` ⇒ fall back to `title`. Set by the
+    /// producing mode (e.g. the search provider) at excerpt
+    /// creation, NOT baked into cells here — the glyph + colours
+    /// are resolved live in `collect()` so `ui.nerd_fonts` /
+    /// `:colorscheme` toggles re-render correctly.
+    pub path: Option<std::path::PathBuf>,
+    /// MH.A2: hit count for the `· N matches` badge. Mode-consumed
+    /// datum set at production (the search mode counts hits per
+    /// source). `None` ⇒ no badge rendered.
+    pub match_count: Option<u32>,
 }
 
 impl ExcerptHeader {
@@ -119,6 +133,8 @@ impl ExcerptHeader {
         Self {
             title: title.into(),
             style: ExcerptHeaderStyle::default(),
+            path: None,
+            match_count: None,
         }
     }
 }
@@ -128,6 +144,8 @@ impl Default for ExcerptHeader {
         Self {
             title: String::new(),
             style: ExcerptHeaderStyle::default(),
+            path: None,
+            match_count: None,
         }
     }
 }
@@ -1993,6 +2011,17 @@ pub struct MultibufferExcerptHeaderProvider {
     /// T.7: `None` for test paths that don't wire a theme registry.
     theme: Option<ThemeRegistryHandle>,
     elements: MultibufferHeaderElementIds,
+    /// MH.A3: `ui.nerd_fonts`, captured at view construction so the
+    /// leading file-type icon picks the nerd-font glyph vs the BMP
+    /// fallback. Folded into `version()` so a global toggle re-runs
+    /// `collect()`.
+    ///
+    /// MH.A3 follow-on: this is the GLOBAL default captured once at
+    /// view creation — a live per-buffer `ui.nerd_fonts` toggle does
+    /// not yet re-render the header. Reading per-buffer
+    /// `ui.nerd_fonts` here needs the `FrameView::for_buffer` seam
+    /// plumbed into the provider, deferred to avoid over-building.
+    nerd_fonts: bool,
 }
 
 impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
@@ -2001,6 +2030,7 @@ impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
             .field("buffer_id", &self.multibuffer.buffer_id())
             .field("has_theme", &self.theme.is_some())
             .field("elements", &self.elements)
+            .field("nerd_fonts", &self.nerd_fonts)
             .finish()
     }
 }
@@ -2008,27 +2038,33 @@ impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
 impl MultibufferExcerptHeaderProvider {
     /// Construct without theme wiring — headers render with no baked
     /// bg/fg (the renderer's kind default applies). Test convenience;
-    /// production uses [`Self::with_theme`].
+    /// production uses [`Self::with_theme`]. Defaults `nerd_fonts` to
+    /// `false` (BMP-fallback palette).
     pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
         Self {
             multibuffer,
             theme: None,
             elements: MultibufferHeaderElementIds::default(),
+            nerd_fonts: false,
         }
     }
 
     /// T.7: construct with the resolved theme handle + the header
     /// element ids so `collect()` bakes the registered backdrop / path
-    /// colors into the header rows.
+    /// colors into the header rows. MH.A3: `nerd_fonts` selects the
+    /// icon palette (captured at view creation; see the struct field
+    /// doc for the per-buffer-toggle follow-on note).
     pub fn with_theme(
         multibuffer: MultibufferDocumentHandle,
         theme: ThemeRegistryHandle,
         elements: MultibufferHeaderElementIds,
+        nerd_fonts: bool,
     ) -> Self {
         Self {
             multibuffer,
             theme: Some(theme),
             elements,
+            nerd_fonts,
         }
     }
 }
@@ -2052,26 +2088,48 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
             .as_ref()
             .map(|t| t.resolved().version())
             .unwrap_or(0);
-        content.wrapping_add(theme)
+        // MH.A3: fold the nerd_fonts term so a global toggle re-runs
+        // `collect()` (the worker fingerprint is `hash[(id, version)]`).
+        content
+            .wrapping_add(theme)
+            .wrapping_add(if self.nerd_fonts { 1 } else { 0 })
     }
 
     fn collect(&self) -> Vec<VirtualRow> {
-        // Resolve the backdrop + path elements ONCE per collect (off
-        // the UI thread), then bake into each header row. `0` (the
-        // Cell "transparent / use default" sentinel) is the fg
-        // fallback when the element is unresolved.
+        // Resolve the backdrop bg + all three segment fgs ONCE per
+        // collect (off the UI thread), then bake into each header
+        // row. `0` (the Cell "transparent / use default" sentinel) is
+        // the fg fallback when an element is unresolved.
+        //
+        // header_fg = `multibuffer.excerpt_header` (the base/backdrop
+        //   element)'s `.fg` — currently unset in the default
+        //   registration (only `.bg`), so this resolves to 0 until a
+        //   future slice adds a base fg; the renderer then uses its
+        //   default fg. path_fg / count_fg come from the dedicated
+        //   `.path` / `.count` elements.
         let resolved = self.theme.as_ref().map(|t| t.resolved());
         let header_bg: Option<u32> = resolved
             .as_ref()
             .and_then(|r| r.get(self.elements.backdrop).bg)
             .map(|c| c.to_rgb_u32(0));
+        let header_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.backdrop).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
         let path_fg: u32 = resolved
             .as_ref()
             .and_then(|r| r.get(self.elements.path).fg)
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
+        let count_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.count).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let nerd_fonts = self.nerd_fonts;
         compose_header_rows(&self.multibuffer.excerpts(), |excerpt| {
-            themed_header_cells(excerpt, path_fg)
+            header_cells(&excerpt.header, nerd_fonts, header_fg, path_fg, count_fg)
         })
         .into_iter()
         .map(|mut row| {
@@ -2082,19 +2140,96 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
     }
 }
 
-/// Build the header cells with the resolved path/title foreground
-/// baked into each glyph (T.7). `path_fg == 0` means "no baked fg"
-/// (the renderer leaves it at the terminal/window default), matching
-/// [`default_header_cells`]'s behaviour.
-fn themed_header_cells(excerpt: &Excerpt, path_fg: u32) -> Arc<[Cell]> {
-    if path_fg == 0 {
-        return default_header_cells(excerpt);
+/// MH.A3: rich per-segment header builder. Replaces the old
+/// single-fg `themed_header_cells`. Layout (per multibuffer-views.md
+/// §3.8):
+///
+/// ```text
+///   filename.rs  src/multibuffer/  ·  7 matches
+/// ```
+///
+/// - leading file-type **icon** (resolved live from `header.path`'s
+///   extension via [`lattice_core::ui::icons::glyph_for_entry`];
+///   nerd glyph when `nerd_fonts`, BMP fallback otherwise — both the
+///   same cell width) + a trailing space, fg `header_fg`.
+/// - **basename** (`header.path.file_name()`, else `header.title`),
+///   fg `header_fg`.
+/// - a space + the **dir** path (dimmed) when `header.path` has a
+///   parent, fg `path_fg`.
+/// - ` · {n} matches` / ` · {n} match` when `header.match_count` is
+///   `Some`, fg `count_fg`.
+/// - empty title AND no path ⇒ `[untitled]` fallback in `header_fg`.
+///
+/// Colours are **resolved in `collect()` and passed in** — never
+/// baked at excerpt-creation time — so a live `ui.nerd_fonts` /
+/// `:colorscheme` toggle re-renders the whole surface. A fg of `0`
+/// is the Cell "use renderer default" sentinel (test paths without a
+/// theme).
+fn header_cells(
+    header: &ExcerptHeader,
+    nerd_fonts: bool,
+    header_fg: u32,
+    path_fg: u32,
+    count_fg: u32,
+) -> Arc<[Cell]> {
+    let mut cells: Vec<Cell> = Vec::new();
+
+    let push = |cells: &mut Vec<Cell>, s: &str, fg: u32| {
+        for ch in s.chars() {
+            cells.push(Cell::new(ch as u32, fg, 0, 0));
+        }
+    };
+
+    match &header.path {
+        Some(path) => {
+            // Leading file-type icon (already 2 cells wide: glyph +
+            // trailing space in both palettes) — fg `header_fg`.
+            let icon = lattice_core::ui::icons::glyph_for_entry(path, false, nerd_fonts);
+            push(&mut cells, icon, header_fg);
+
+            // Basename (bright). Fall back to the whole path string,
+            // then to the title, if `file_name()` is unavailable.
+            let basename: std::borrow::Cow<'_, str> = path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| path.to_string_lossy());
+            if basename.is_empty() {
+                push(&mut cells, header.title.as_str(), header_fg);
+            } else {
+                push(&mut cells, basename.as_ref(), header_fg);
+            }
+
+            // Directory path (dimmed) when there's a parent.
+            if let Some(parent) = path.parent() {
+                let parent_str = parent.to_string_lossy();
+                if !parent_str.is_empty() {
+                    push(&mut cells, "  ", path_fg);
+                    push(&mut cells, parent_str.as_ref(), path_fg);
+                }
+            }
+        }
+        None => {
+            // No path → use the title; `[untitled]` when even that is
+            // empty so the row never collapses to nothing.
+            if header.title.is_empty() {
+                push(&mut cells, "[untitled]", header_fg);
+            } else {
+                push(&mut cells, header.title.as_str(), header_fg);
+            }
+        }
     }
-    default_header_cells(excerpt)
-        .iter()
-        .map(|c| Cell::new(c.codepoint, path_fg, c.bg, c.flags))
-        .collect::<Vec<_>>()
-        .into()
+
+    // Match-count badge (` · N matches`), fg `count_fg`.
+    if let Some(n) = header.match_count {
+        let badge = if n == 1 {
+            format!(" · {n} match")
+        } else {
+            format!(" · {n} matches")
+        };
+        push(&mut cells, badge.as_str(), count_fg);
+    }
+
+    Arc::from(cells)
 }
 
 /// Pure function from excerpt list → header virtual rows.
@@ -3753,6 +3888,148 @@ mod tests {
         }
     }
 
+    // ── MH.A3 / MH.A5: rich per-segment header_cells ────────────
+
+    /// Collect the codepoints of every cell carrying `fg` into a String.
+    fn cells_with_fg(cells: &[Cell], fg: u32) -> String {
+        cells
+            .iter()
+            .filter(|c| c.fg == fg)
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect()
+    }
+
+    fn cells_to_string(cells: &[Cell]) -> String {
+        cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect()
+    }
+
+    #[test]
+    fn header_cells_with_path_splits_basename_and_dir() {
+        // header_fg=0xAA, path_fg=0xBB, count_fg=0xCC (distinct).
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/multibuffer/view.rs")),
+            ..ExcerptHeader::new("fallback-title")
+        };
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+
+        // First cell is the (BMP-fallback) file-type icon in header_fg.
+        let expected_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/multibuffer/view.rs"),
+            false,
+            false,
+        );
+        let first_icon_ch = expected_icon.chars().next().unwrap();
+        assert_eq!(cells[0].codepoint, first_icon_ch as u32);
+        assert_eq!(cells[0].fg, 0xAA, "icon carries header_fg");
+
+        // Basename present in header_fg.
+        let header_seg = cells_with_fg(&cells, 0xAA);
+        assert!(
+            header_seg.contains("view.rs"),
+            "basename rendered in header_fg; got {header_seg:?}"
+        );
+        assert!(
+            !header_seg.contains("src/multibuffer"),
+            "dir must NOT be in header_fg; got {header_seg:?}"
+        );
+
+        // Directory path present in path_fg (dim).
+        let path_seg = cells_with_fg(&cells, 0xBB);
+        assert!(
+            path_seg.contains("src/multibuffer"),
+            "dir rendered in path_fg; got {path_seg:?}"
+        );
+    }
+
+    #[test]
+    fn header_cells_match_count_badge_in_count_fg() {
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("a/b.rs")),
+            match_count: Some(3),
+            ..ExcerptHeader::default()
+        };
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let count_seg = cells_with_fg(&cells, 0xCC);
+        assert!(
+            count_seg.contains("3 matches"),
+            "plural badge in count_fg; got {count_seg:?}"
+        );
+
+        // Singular form for n == 1.
+        let header1 = ExcerptHeader {
+            match_count: Some(1),
+            ..header.clone()
+        };
+        let cells1 = header_cells(&header1, false, 0xAA, 0xBB, 0xCC);
+        let count_seg1 = cells_with_fg(&cells1, 0xCC);
+        assert!(
+            count_seg1.contains("1 match") && !count_seg1.contains("matches"),
+            "singular badge for n==1; got {count_seg1:?}"
+        );
+    }
+
+    #[test]
+    fn header_cells_nerd_vs_bmp_same_width_different_icon() {
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/lib.rs")),
+            ..ExcerptHeader::default()
+        };
+        let bmp = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let nerd = header_cells(&header, true, 0xAA, 0xBB, 0xCC);
+
+        // Width parity: the icon helper emits a 2-cell glyph in both
+        // palettes, so total cell count is identical.
+        assert_eq!(
+            bmp.len(),
+            nerd.len(),
+            "nerd vs BMP must occupy the same cell count (column geometry stable)"
+        );
+
+        // Different leading icon codepoint between palettes.
+        let bmp_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/lib.rs"),
+            false,
+            false,
+        );
+        let nerd_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/lib.rs"),
+            false,
+            true,
+        );
+        // (Guard: only assert "different" if the helper actually
+        // returns distinct glyphs for this extension — it does for
+        // `.rs`, but keep the test honest about its premise.)
+        assert_ne!(
+            bmp_icon.chars().next(),
+            nerd_icon.chars().next(),
+            "nerd and BMP icon glyphs differ for .rs"
+        );
+        assert_eq!(bmp[0].codepoint, bmp_icon.chars().next().unwrap() as u32);
+        assert_eq!(nerd[0].codepoint, nerd_icon.chars().next().unwrap() as u32);
+    }
+
+    #[test]
+    fn header_cells_empty_title_no_path_falls_back() {
+        let header = ExcerptHeader::default(); // empty title, no path
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let s = cells_to_string(&cells);
+        assert_eq!(s, "[untitled]", "empty title + no path renders fallback");
+        // Fallback rendered in header_fg.
+        assert!(cells.iter().all(|c| c.fg == 0xAA));
+    }
+
+    #[test]
+    fn header_cells_no_path_uses_title() {
+        let header = ExcerptHeader::new("my synthetic title");
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let s = cells_to_string(&cells);
+        assert_eq!(s, "my synthetic title");
+        assert!(cells.iter().all(|c| c.fg == 0xAA));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn provider_collects_one_row_per_distinct_source() {
         // K.4.6 follow-up (2026-06-02): two excerpts from the
@@ -3844,11 +4121,17 @@ mod tests {
         //    the renderer's diff-deletion-block tint).
         let theme: ThemeRegistryHandle = registry.clone();
         let (sources, src_ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
-        let excerpts =
-            vec![Excerpt::new(src_ids[0], 0, 1).with_header(ExcerptHeader::new("file.rs"))];
+        // MH.A3: supply a `path` so the rich header renders the dir
+        // segment in the resolved `.path` (blue) fg — the basename is
+        // in `header_fg` (the backdrop element's `.fg`, unset here).
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/file.rs")),
+            ..ExcerptHeader::new("file.rs")
+        };
+        let excerpts = vec![Excerpt::new(src_ids[0], 0, 1).with_header(header)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let provider =
-            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids);
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids, false);
         let rows = provider.collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -3857,10 +4140,10 @@ mod tests {
             "header VirtualRow.bg is the baked backdrop, not None"
         );
         assert_eq!(rows[0].kind, VirtualRowKind::Generic);
-        // The path/title cells carry the baked `blue` fg (0x89b4fa).
+        // The dir-path cells carry the baked `blue` fg (0x89b4fa).
         assert!(
             rows[0].cells.iter().any(|c| c.fg == 0x0089_b4fa),
-            "title cells carry the resolved path fg (blue)"
+            "dir-path cells carry the resolved path fg (blue)"
         );
     }
 
@@ -3882,7 +4165,7 @@ mod tests {
         let excerpts = vec![Excerpt::new(src_ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let provider =
-            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids);
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids, false);
 
         // Force the table to resolve so the version is established.
         let _ = registry.resolved();

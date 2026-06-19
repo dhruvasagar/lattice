@@ -11,82 +11,115 @@ Status icons: 🗒 planned · 🚧 in progress · ✅ landed.
 
 ---
 
+## Status — COMPLETE (2026-06-20)
+
+All MH slices landed. Headers render rich (file-type icon + basename +
+dim dir + `· N matches` badge, per-segment themed colours); the
+project-search provider supplies path + match count; headerline status
+colours are themed; and `append_excerpts` is incremental (O(batch)) with
+an equivalence gate. Both renderers green; the
+`multibuffer_is_a_regular_buffer` edit-forwarding invariant held across
+every slice.
+
+| Slice | Status | Commit |
+|---|---|---|
+| MH.A1 — header kind + theme fields | ✅ **subsumed by T.7** | `5c69ab21` (theme-system) |
+| MH.A2 — enrich `ExcerptHeader` | ✅ | `4795dd71` |
+| MH.A3 — rich `header_cells` renderer | ✅ | `4795dd71` |
+| MH.A4 — search data + themed status | ✅ | `986c8ac6` |
+| MH.A5 — tests + bench | ✅ | `4795dd71` / `986c8ac6` |
+| MH.B1 — incremental `append_excerpts` | ✅ | `ac69dd5b` |
+| MH.B2 — equivalence test + bench | ✅ | `ac69dd5b` |
+
+---
+
 ## Thread A — rich excerpt headers
 
-### MH.A1 — `VirtualRowKind::Header` + theme fields 🗒
+### MH.A1 — header kind + theme fields ✅ (subsumed by theme-system T.7)
 
-Add `VirtualRowKind::Header` to `lattice-cells`. Add header
-theme fields to `host_theme`
-(`multibuffer_header_bg/_fg/_path_fg/_count_fg`). Wire the
-backdrop arm for the new kind in **both** renderers in the
-same patch:
+**Done differently — superseded.** The original plan added
+`VirtualRowKind::Header` + bespoke `multibuffer_header_*` `host_theme`
+fields. The theme-system redesign (T.7) instead **registered theme
+elements** `multibuffer.excerpt_header[.path|.count]` (the mode owns
+them) and headers stay `VirtualRowKind::Generic` rows carrying a baked
+`bg` from the backdrop element — no new kind, no `host_theme` fields
+(`host_theme` was deleted entirely in T.6.t). The diff-deletion-red
+reuse the plan worried about is gone: the header has its own element.
+See `theme-system.md` §4 + slice plan T.7.
 
-- TUI `render.rs` (`render_virtual_row` backdrop match).
-- GPUI `editor_element.rs` (`push_virtual_row` backdrop quads).
+### MH.A2 — enrich `ExcerptHeader` ✅
 
-Stops the diff-deletion-red reuse for headers. End-of-slice
-grep audit: `grep -rn "VirtualRowKind::Header" crates/lattice-ui-gpui/`
-must be non-empty.
+`ExcerptHeader` gained `path: Option<PathBuf>` + `match_count:
+Option<u32>` (back-compat `None`; all callers use `::new`/`::default`/
+`with_header`, so no struct-literal churn).
 
-### MH.A2 — enrich `ExcerptHeader` 🗒
+### MH.A3 — rich `header_cells` renderer ✅
 
-Add `path: Option<PathBuf>` + `match_count: Option<u32>` to
-`ExcerptHeader`. `compose_header_rows` tags emitted rows
-`VirtualRowKind::Header` (was `Generic`). Existing constructors
-default the new fields to `None` (back-compat for diff /
-diagnostics providers until they opt in).
+`header_cells(header, nerd_fonts, header_fg, path_fg, count_fg)` replaced
+the single-colour `themed_header_cells`: leading file-type icon
+(`lattice_core::ui::icons::glyph_for_entry`, Nerd v3 on / BMP fallback
+off, same 2-cell width — [[feedback_icon_palette]]) + basename
+(`header_fg`) + dim parent dir (`path_fg`) + ` · N matches` badge
+(`count_fg`), `[untitled]` fallback; per-segment fg baked into each
+`Cell`. The provider's `collect()` resolves all three element fgs;
+`nerd_fonts` is captured at construction (global `ui.nerd_fonts` via a
+newly-registered `ConfigRegistry` service) and folded into `version()`.
+**Follow-on:** live per-buffer `ui.nerd_fonts` toggle for an *open*
+multibuffer (needs the `FrameView::for_buffer` seam).
 
-### MH.A3 — rich `header_cells` renderer 🗒
+### MH.A4 — search data + themed status colours ✅
 
-Replace `default_header_cells(excerpt)` with
-`header_cells(header, nerd_fonts, colors)`: file-type icon
-(`entry_visual`, nerd-font + BMP fallback) + basename
-(`_fg`) + dir path (`_path_fg`) + ` · N matches` badge
-(`_count_fg`). `MultibufferExcerptHeaderProvider::collect()`
-reads `ui.nerd_fonts` + header colours via
-`FrameView::for_buffer`. Per-segment fg via `Cell` fg field.
+The project-search provider sets `path` + `match_count` on each file's
+header via a shared `search_excerpt_header` helper (count =
+`fh.rows.len()`; `scan_file` emits one `FileHits` per file per scan, so
+no cross-batch split). The §3.7 headerline status colours moved off
+hardcoded hex into theme elements `multibuffer.status.{in_progress,
+complete,failed}` (→ `subtext`/`green`/`red` role-keys); the status
+provider gained theme access (mirrors T.7) + folds theme version, with
+hex fallback when theme is `None`.
 
-### MH.A4 — search mode supplies data + theme status colours 🗒
+### MH.A5 — tests + bench ✅
 
-Search mode (`providers/search.rs`) sets `path` +
-`match_count` on the excerpts it builds (count = hits per
-source). Move the §3.7 status-row colours
-(`0x999999`/`0x44cc88`/`0xff4444` in `render_multibuffer_status`)
-into the new theme fields.
-
-### MH.A5 — tests + bench 🗒
-
-- Header-cells golden: nerd on/off (BMP fallback), count
-  present/absent, path dim segment, empty-title fallback.
-- `multibuffer_is_a_regular_buffer.rs` stays green.
-- Both-renderer header backdrop parity assertion.
-- Bench: header build stays O(viewport), not O(excerpts).
+Header-cell goldens landed with A3 (basename/dir split, count
+plural/singular, Nerd-vs-BMP same-width, `[untitled]` fallback) + A4
+(search header path/count + badge; status resolves from elements).
+Both-renderer parity is **structural** — headers are pure substrate
+`Generic` rows; neither renderer has header-specific code, and
+`multibuffer_is_a_regular_buffer.rs` (14 tests) covers the
+render-like-any-buffer invariant. Header-build perf: production is
+off-thread O(sources) (the per-source dedup in `compose_header_rows`);
+the per-frame renderer read is viewport-windowed (virtual-row
+machinery) — no UI-thread O(excerpts) term.
 
 ---
 
 ## Thread B — streaming incremental append
 
-### MH.B1 — incremental `append_excerpts` 🗒
+### MH.B1 — incremental `append_excerpts` ✅
 
-`append_excerpts` extends `composed_doc` (append new sources'
-rope segments) + `RowTranslation` (push new `RowEntry`s)
-incrementally — O(batch). `replace_excerpts` stays
-full-rebuild for `gr` refresh. Higher-risk: touches the
-composed-rope / row-translation invariant edit-forwarding (§4)
-depends on; lands behind the equivalence test below.
+`append_excerpts` extends rather than rebuilds: composes ONLY the added
+batch (`compose_text_from_sources` has no cross-excerpt state), appends
+it at the end of `composed_doc` via `Document::apply_edit(Edit::insert(
+end_pos, batch))` (byte-identical to `from_text(old + batch)`), and
+extends `row_translation` via the new `RowTranslation::append` — all
+O(batch). `replace_excerpts` stays full-rebuild (the `gr`/refresh path).
+Bonus: appending preserves local edits (the old rebuild clobbered them).
 
-### MH.B2 — equivalence test + bench 🗒
+### MH.B2 — equivalence test + bench ✅
 
-- Equivalence: streamed N-batch append produces a composed
-  rope + `RowTranslation` byte-identical to a single
-  full-build over the same excerpt list.
-- Bench: per-batch append cost is flat as accumulated total
-  grows (vs today's linear-in-total recompose).
+`incremental_append_matches_full_build`: streaming N batches yields a
+composed rope byte-identical to a single full build + an identical
+row-translation (count + `source_row` order). Plus
+`incremental_append_skips_unknown_source_like_full_build` (dropped
+excerpt) + `append_excerpts_grows_by_exactly_the_batch` (structural
+O(batch) pin). Bench `bench_append_excerpts` baseline widened to
+`[50, 500, 5000]` to surface flat-vs-linear.
 
 ---
 
 ## Sequencing
 
-Thread A first (cosmetic, low-risk, lands incrementally),
-then Thread B behind its equivalence test. TUI/GPUI lockstep
-within every slice that touches a renderer.
+Thread A first (cosmetic, low-risk, lands incrementally), then Thread B
+behind its equivalence test. TUI/GPUI lockstep within every renderer-
+touching slice — here, none needed: every change is substrate (cells +
+bg baked off-thread; both peers consume `VirtualRow` generically).

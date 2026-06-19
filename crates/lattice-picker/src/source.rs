@@ -347,6 +347,18 @@ pub trait PickerSourceGenerator: Send + Sync {
     ) -> Option<SourceResult<PickerInitResult>> {
         None
     }
+
+    /// T.12: live-preview hook — invoked as the picker SELECTION moves to
+    /// a candidate (before accept). Default None = no preview. A source
+    /// returns an outcome the host applies immediately for a live preview;
+    /// the host restores prior state on <Esc>.
+    fn preview(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _routing: &RoutingPayload,
+    ) -> Option<crate::outcome::PickerAcceptOutcome> {
+        None
+    }
 }
 
 #[cfg(test)]

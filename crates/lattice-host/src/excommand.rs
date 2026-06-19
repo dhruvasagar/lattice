@@ -926,11 +926,18 @@ mod tests {
     }
 
     #[test]
-    fn colorscheme_without_name_errors() {
-        // T.9.b: the no-arg form errors (the picker is T.12).
+    fn colorscheme_without_name_opens_picker() {
+        // T.12a: the no-arg form no longer errors — it parses to
+        // `ex:colorscheme` with `Args::None`. The host's
+        // `Effect::SetColorscheme("")` arm opens the live-preview
+        // theme picker (see dispatch.rs + the `theme_picker_*` tests).
         let r = fixture();
-        assert!(parse("colorscheme", &r).is_err());
-        assert!(parse("colo", &r).is_err());
+        let inv = parse("colorscheme", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:colorscheme");
+        assert_eq!(inv.args, Args::None);
+        let inv_short = parse("colo", &r).unwrap();
+        assert_eq!(invocation_name(&inv_short, &r), "ex:colorscheme");
+        assert_eq!(inv_short.args, Args::None);
     }
 
     #[test]

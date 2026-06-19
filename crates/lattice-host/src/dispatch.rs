@@ -2370,37 +2370,46 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.all_matches.clear();
         }
         Effect::SetColorscheme(name) => {
-            // T.9.b: `:colorscheme <name>`. Look the name up in the
-            // builtin theme set; on a hit, swap the registry's palette +
-            // override set atomically and signal `ThemeChanged` so BOTH
-            // renderers rebuild their caches (mirrors how `SetOption`'s
-            // `ui.*` path fans out). An unknown name echoes a host-side
-            // error and leaves the active theme untouched -- never a
-            // panic (graceful degradation, paramount-goal-aligned).
-            // T.11.1: resolve against the registry's named-theme CATALOG
-            // (seeded with builtins at boot; `init.rs` / plugins append
-            // via `register_theme`) rather than the static
-            // `builtin_themes()` list — so user/plugin themes are
-            // swappable too. `apply_theme` swaps the palette + overrides
-            // atomically and returns `false` for an unknown name (active
-            // theme untouched — graceful, never a panic).
-            if let Some(reg) = editor
-                .services
-                .get::<crate::ui::theme::ThemeRegistryHandle>()
-            {
-                if reg.apply_theme(&name) {
-                    out.renderer_signals.push(RendererSignal::ThemeChanged);
+            // T.12a: NO-arg (`:colorscheme` / empty name) opens the
+            // live-preview theme picker via the trait-driven source
+            // path. The grammar encodes the no-arg case as an empty
+            // `SetColorscheme("")` (`apply_colorscheme`).
+            if name.trim().is_empty() {
+                out.renderer_signals
+                    .extend(editor.open_picker("colorscheme".to_string(), Vec::new()));
+            } else {
+                // T.9.b: `:colorscheme <name>`. Look the name up in the
+                // builtin theme set; on a hit, swap the registry's palette +
+                // override set atomically and signal `ThemeChanged` so BOTH
+                // renderers rebuild their caches (mirrors how `SetOption`'s
+                // `ui.*` path fans out). An unknown name echoes a host-side
+                // error and leaves the active theme untouched -- never a
+                // panic (graceful degradation, paramount-goal-aligned).
+                // T.11.1: resolve against the registry's named-theme CATALOG
+                // (seeded with builtins at boot; `init.rs` / plugins append
+                // via `register_theme`) rather than the static
+                // `builtin_themes()` list — so user/plugin themes are
+                // swappable too. `apply_theme` swaps the palette + overrides
+                // atomically and returns `false` for an unknown name (active
+                // theme untouched — graceful, never a panic).
+                if let Some(reg) = editor
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                {
+                    if reg.apply_theme(&name) {
+                        out.renderer_signals.push(RendererSignal::ThemeChanged);
+                    } else {
+                        editor.set_message(
+                            EchoLevel::Error,
+                            format!("colorscheme: unknown theme `{name}`"),
+                        );
+                    }
                 } else {
                     editor.set_message(
                         EchoLevel::Error,
-                        format!("colorscheme: unknown theme `{name}`"),
+                        "colorscheme: theme registry unavailable".to_string(),
                     );
                 }
-            } else {
-                editor.set_message(
-                    EchoLevel::Error,
-                    "colorscheme: theme registry unavailable".to_string(),
-                );
             }
         }
         Effect::Echo { level, text } => {
@@ -14762,6 +14771,34 @@ impl Editor {
         let Some(c) = picker.selected_candidate() else {
             return Vec::new();
         };
+        // T.12a: live-preview hook. Trait-driven sources may return an
+        // outcome the host applies immediately as the selection moves
+        // (the colorscheme picker recolors the editor per candidate).
+        // Resolve the seated source's generator + the candidate's
+        // routing, ask `generator.preview(...)`; on `Some(outcome)`
+        // apply it (restoring on `<Esc>` is wired in `do_picker_dismiss`).
+        if let Some(source_id) = picker.source_id.clone()
+            && let Some(routing) = picker.routing_for(c).cloned()
+            && let Some(generator) = self.picker_registry.generator(&source_id).cloned()
+        {
+            let snap = self.document.snapshot();
+            let ctx = self.build_picker_context(&snap);
+            let preview = generator.preview(&ctx, &routing);
+            drop(ctx);
+            drop(snap);
+            if let Some(outcome) = preview {
+                return self.apply_picker_preview_outcome(outcome);
+            }
+        }
+        // Re-borrow after the (possibly side-effecting) preview hook
+        // above released the immutable borrow. The picker is still
+        // seated; only its preview side effects (theme swap) ran.
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        let Some(c) = picker.selected_candidate() else {
+            return Vec::new();
+        };
         // Prefer the typed accept_action (set by all 10 first-
         // party picker sources via 7b.1-7b.6, and any plugin
         // source via SourceRegistration).
@@ -14792,6 +14829,45 @@ impl Editor {
             self.activate_buffer_state()
         } else {
             Vec::new()
+        }
+    }
+
+    /// T.12a helper: apply a `PickerAcceptOutcome` returned by a
+    /// source's live-preview hook (`PickerSourceGenerator::preview`).
+    /// Today only `ApplyColorscheme` is previewable; other outcomes
+    /// are inert in preview context (buffer / jump previews go through
+    /// the `accept_action` path in `preview_picker_selection`).
+    ///
+    /// On the FIRST `ApplyColorscheme` preview it snapshots the active
+    /// theme into `pending_theme_preview_restore` so `<Esc>` (in
+    /// `do_picker_dismiss`) can revert to the theme active when the
+    /// picker opened; subsequent previews reuse that snapshot. Then it
+    /// applies the previewed theme + signals `ThemeChanged`.
+    fn apply_picker_preview_outcome(
+        &mut self,
+        outcome: lattice_picker::PickerAcceptOutcome,
+    ) -> Vec<RendererSignal> {
+        use lattice_picker::PickerAcceptOutcome;
+        match outcome {
+            PickerAcceptOutcome::ApplyColorscheme { name } => {
+                let Some(reg) = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                else {
+                    return Vec::new();
+                };
+                // Capture the pre-open theme on the first preview so
+                // Esc can restore it (mirrors `preview_origin`).
+                if self.pending_theme_preview_restore.is_none() {
+                    self.pending_theme_preview_restore = Some(reg.active_theme());
+                }
+                if reg.apply_theme(&name) {
+                    vec![RendererSignal::ThemeChanged]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -18508,6 +18584,32 @@ impl Editor {
             }
             OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
             OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
+            ApplyColorscheme { name } => {
+                // T.12a: accept (`<CR>`) keeps the chosen theme. Clear
+                // the restore snapshot so dismiss/Esc no longer reverts;
+                // then apply + signal ThemeChanged so BOTH renderers
+                // rebuild their caches (same fan-out as the direct
+                // `:colorscheme <name>` swap).
+                self.pending_theme_preview_restore = None;
+                if let Some(reg) = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                {
+                    if reg.apply_theme(&name) {
+                        out.renderer_signals.push(RendererSignal::ThemeChanged);
+                    } else {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!("colorscheme: unknown theme `{name}`"),
+                        );
+                    }
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "colorscheme: theme registry unavailable".to_string(),
+                    );
+                }
+            }
             NoOp => {}
             JumpToMark { name } => {
                 self.do_jump_mark(name, true);
@@ -21430,15 +21532,29 @@ impl Editor {
             inflight.cancel.cancel();
         }
         self.pending_tag_origin = None;
+        // T.12a: if the colorscheme picker live-previewed a theme,
+        // restore the theme active when the picker opened (`<Esc>`
+        // reverts the preview). Always clear the snapshot so it can't
+        // leak into a later picker. `set_theme` marks the table dirty;
+        // `ThemeChanged` makes BOTH renderers rebuild their caches.
+        let mut theme_restore_signals = Vec::new();
+        if let Some((palette, overrides)) = self.pending_theme_preview_restore.take()
+            && let Some(reg) = self
+                .services
+                .get::<crate::ui::theme::ThemeRegistryHandle>()
+        {
+            reg.set_theme(palette, overrides);
+            theme_restore_signals.push(RendererSignal::ThemeChanged);
+        }
         let Some(picker) = self.picker.take() else {
-            return Vec::new();
+            return theme_restore_signals;
         };
         if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
             picker.source
         {
             self.finalize_show_message_request(request_id, None);
             self.open_next_queued_show_message_request();
-            return Vec::new();
+            return theme_restore_signals;
         }
         if let Some(source_id) = picker.source_id.as_deref() {
             self.event_bus
@@ -21454,11 +21570,13 @@ impl Editor {
                 let needs_state = self.activate_buffer(origin);
                 self.previewing = false;
                 if needs_state {
-                    return self.activate_buffer_state();
+                    let mut signals = theme_restore_signals;
+                    signals.extend(self.activate_buffer_state());
+                    return signals;
                 }
             }
         }
-        Vec::new()
+        theme_restore_signals
     }
 
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body
@@ -21755,6 +21873,15 @@ impl Editor {
             }
             lattice_picker::RoutingPayload::ColorPresentation { index } => {
                 self.accept_lsp_color_presentation(index);
+            }
+            lattice_picker::RoutingPayload::Colorscheme { name } => {
+                // T.12: defensive arm — the colorscheme picker is
+                // trait-driven (source_id = "colorscheme") so accept
+                // normally routes through the generator path above.
+                // This keeps the legacy match exhaustive.
+                out.merge(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::ApplyColorscheme { name },
+                ));
             }
         }
         out
@@ -27511,6 +27638,156 @@ mod tests {
         );
     }
 
+    /// T.12a test helper: move the seated picker's selection to the
+    /// candidate whose display text equals `name`. Candidate order is
+    /// MRU-tilted, so positional `select_next()` is unreliable across
+    /// runs; selecting by name keeps the tests order-independent.
+    fn select_picker_candidate_by_name(editor: &mut crate::editor::Editor, name: &str) {
+        let picker = editor.picker.as_mut().expect("picker seated");
+        let idx = picker
+            .candidates
+            .iter()
+            .position(|c| c.raw.display == name)
+            .unwrap_or_else(|| panic!("candidate `{name}` not in picker"));
+        picker.selected = idx;
+    }
+
+    /// T.12a: `:colorscheme` with NO arg opens the live-preview theme
+    /// picker, seated with one candidate per registered theme name.
+    #[test]
+    fn theme_picker_opens_on_no_arg_colorscheme() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let want_names = reg.theme_names();
+        assert!(
+            want_names.len() >= 2,
+            "boot seeds the builtin theme catalog"
+        );
+        // No-arg colorscheme (encoded as an empty SetColorscheme).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        let picker = editor.picker.as_ref().expect("picker is seated");
+        assert_eq!(picker.source_id.as_deref(), Some("colorscheme"));
+        assert_eq!(
+            picker.candidates.len(),
+            want_names.len(),
+            "one candidate per registered theme"
+        );
+        // Each candidate carries a Colorscheme routing payload.
+        for c in &picker.candidates {
+            assert!(matches!(
+                picker.routing_for(c),
+                Some(lattice_picker::RoutingPayload::Colorscheme { .. })
+            ));
+        }
+    }
+
+    /// T.12a: arrowing the selection LIVE-PREVIEWS the candidate theme
+    /// (the editor really recolors), and DISMISS (`<Esc>`) restores the
+    /// theme active when the picker opened.
+    #[test]
+    fn theme_picker_preview_recolors_and_dismiss_restores() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        // Before open: Mocha mauve (the default active theme).
+        let mocha_kw = Some(lattice_theme::Color::Rgb(0xcb, 0xa6, 0xf7));
+        assert_eq!(reg.resolved().get(kw).fg, mocha_kw);
+        // Open the picker (no-arg).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        // Select the macchiato candidate BY NAME (candidate order can be
+        // tilted by MRU recency, so don't rely on a positional index).
+        // The candidate display text is the theme name.
+        select_picker_candidate_by_name(&mut editor, "catppuccin-macchiato");
+        // Firing the live-preview hook via preview_picker_selection.
+        let sigs = editor.preview_picker_selection();
+        assert!(
+            sigs.iter().any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "preview emits ThemeChanged"
+        );
+        // The editor really recolored: syntax.keyword now Macchiato mauve.
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        let macchiato_kw = Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6));
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            macchiato_kw,
+            "preview applied the macchiato theme"
+        );
+        assert!(
+            editor.pending_theme_preview_restore.is_some(),
+            "first preview captured the restore snapshot"
+        );
+        // Dismiss (Esc) restores the pre-open theme.
+        let dismiss_sigs = editor.do_picker_dismiss();
+        assert!(
+            dismiss_sigs
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "dismiss emits ThemeChanged for the restore"
+        );
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            mocha_kw,
+            "dismiss restored the original (mocha) theme"
+        );
+        assert!(
+            editor.pending_theme_preview_restore.is_none(),
+            "restore snapshot cleared after dismiss"
+        );
+    }
+
+    /// T.12a: ACCEPT (`<CR>`) keeps the previewed theme — no restore.
+    #[test]
+    fn theme_picker_accept_keeps_previewed_theme() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        let macchiato_kw = Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6));
+        // Open + preview macchiato (by name — MRU may reorder rows).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        select_picker_candidate_by_name(&mut editor, "catppuccin-macchiato");
+        let _ = editor.preview_picker_selection();
+        assert!(editor.pending_theme_preview_restore.is_some());
+        // Accept (`<CR>`) keeps the previewed theme.
+        let _ = editor.do_picker_accept();
+        assert!(
+            editor.pending_theme_preview_restore.is_none(),
+            "accept clears the restore snapshot (keeps the chosen theme)"
+        );
+        assert!(editor.picker.is_none(), "picker closes on accept");
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            macchiato_kw,
+            "accept kept the macchiato theme"
+        );
+    }
+
     /// T.9.d: `:describe-element <name>` builds a help view from the
     /// `ThemeRegistry::describe` snapshot. The title carries the
     /// element name and the body surfaces owner / resolved / spec /
@@ -27529,7 +27806,9 @@ mod tests {
         assert!(body.contains("#cba6f7"), "resolved fg hex: {body}");
         assert!(body.contains("bold"), "bold modifier: {body}");
         // Authoring spec shows the palette-key reference, not the hex.
-        assert!(body.contains("palette \"mauve\""), "spec palette ref: {body}");
+        // T.11.0a renamed the Catppuccin-specific key `mauve` → the
+        // generic role-key `purple` (resolved value #cba6f7 unchanged).
+        assert!(body.contains("palette \"purple\""), "spec palette ref: {body}");
         assert!(body.contains("Language keywords."), "doc: {body}");
     }
 

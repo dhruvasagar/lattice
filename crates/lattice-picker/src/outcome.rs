@@ -92,6 +92,10 @@ pub enum PickerAcceptOutcome {
     /// Apply an LSP completion item by index into the
     /// host's `pending_completion_items` snapshot.
     ApplyLspCompletion { index: u32 },
+    /// T.12: apply the named theme via the ThemeRegistry catalog;
+    /// host calls apply_theme + signals ThemeChanged. Emitted by the
+    /// colorscheme picker on both accept and live preview.
+    ApplyColorscheme { name: String },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

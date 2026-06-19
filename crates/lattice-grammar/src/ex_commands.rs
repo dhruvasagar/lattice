@@ -322,14 +322,18 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
+            // T.12a: no-arg is now legal — it opens the live-preview
+            // theme picker host-side. `parse_optional_path` returns
+            // `Args::None` on empty input, `Args::String` otherwise.
+            parse_args: Box::new(parse_optional_path),
             apply: Box::new(apply_colorscheme),
             args_schema: vec![ArgSpec {
                 name: "name",
                 kind: ArgKind::String,
-                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`).",
+                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`). Omit to open the live-preview picker.",
                 prompt: "colorscheme:",
-                default: ArgDefault::Required,
+                // T.12a: optional — no-arg opens the picker.
+                default: ArgDefault::None,
                 // T.12 wires a `gen:colorschemes` completion generator;
                 // no name completion yet.
                 completion: None,
@@ -2380,15 +2384,17 @@ fn apply_set_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
 }
 
 fn apply_colorscheme(ctx: &ExCommandContext) -> GrammarResult<Effect> {
-    // T.9.b: `:colorscheme <name>`. With NO name we error (the no-arg
-    // theme picker is T.12). `parse_required_string` already rejects
-    // empty input on the cmdline path; this guard covers a direct /
-    // scripted invocation and produces the precise message.
+    // T.9.b: `:colorscheme <name>` swaps the active theme directly.
+    // T.12a: `:colorscheme` with NO name opens the live-preview theme
+    // picker host-side. We encode the no-arg case as an EMPTY
+    // `SetColorscheme("")` — the host's `Effect::SetColorscheme` arm
+    // branches on the empty string and calls `open_picker("colorscheme")`.
     match &ctx.args {
         Args::String(s) if !s.trim().is_empty() => {
             Ok(Effect::SetColorscheme(s.trim().to_string()))
         }
-        _ => Err(CommandError::BadArgs("colorscheme: theme name required".into())),
+        // Args::None (no-arg) or empty/whitespace string → picker.
+        _ => Ok(Effect::SetColorscheme(String::new())),
     }
 }
 

@@ -640,6 +640,16 @@ pub struct Editor {
     /// shows the original buffer afterwards.
     pub pending_picker_preview_origin: Option<lattice_core::BufferId>,
 
+    /// T.12a: the theme to restore if the colorscheme picker is
+    /// dismissed (`<Esc>`). Captured on the FIRST live preview as a
+    /// `(palette, overrides)` snapshot of the theme active when the
+    /// picker opened. `<Esc>` calls `ThemeRegistry::set_theme` with
+    /// these to undo the preview; `<CR>` clears it (keeps the
+    /// previewed theme). Mirrors `pending_picker_preview_origin` —
+    /// `None` when no colorscheme preview is in flight.
+    pub pending_theme_preview_restore:
+        Option<(lattice_theme::Palette, Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>)>,
+
     /// Handle to the per-document actor (or, in M.1+, a
     /// composing multibuffer handle) and its snapshot cache.
     /// M.0: typed as the [`ActiveDocument`] newtype around

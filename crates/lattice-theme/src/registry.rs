@@ -165,6 +165,14 @@ pub trait ThemeRegistry: Send + Sync {
     /// panic. On a hit, equivalent to `set_theme` with the registered
     /// theme's palette + overrides (marks the table dirty).
     fn apply_theme(&self, name: &str) -> bool;
+
+    /// T.12a: snapshot the active palette + the active theme-global
+    /// override set as a `(Palette, Vec<(ElementName, StyleSpec)>)`
+    /// pair. The colorscheme picker captures this on the first live
+    /// preview so `<Esc>` can restore the theme active when the picker
+    /// opened via [`Self::set_theme`]. Cheap clone of the inner state
+    /// under a read lock; no resolution.
+    fn active_theme(&self) -> (Palette, Vec<(ElementName, StyleSpec)>);
 }
 
 /// The canonical handle type. Register and look up under THIS type in
@@ -359,6 +367,17 @@ impl ThemeRegistry for InMemoryThemeRegistry {
             }
             None => false,
         }
+    }
+
+    fn active_theme(&self) -> (Palette, Vec<(ElementName, StyleSpec)>) {
+        let inner = self.inner.read().expect("theme registry lock poisoned");
+        let palette = inner.palette.clone();
+        let overrides = inner
+            .overrides
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        (palette, overrides)
     }
 
     fn describe(&self, name: &ElementName) -> Option<ElementInfo> {

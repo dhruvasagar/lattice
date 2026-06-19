@@ -112,6 +112,7 @@ fn built_in_picker_registry(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
     snippet_registry: Arc<ArcSwap<SnippetRegistry>>,
+    theme_registry: lattice_theme::ThemeRegistryHandle,
 ) -> PickerRegistry {
     let mut reg = PickerRegistry::new();
     for generator in
@@ -120,6 +121,12 @@ fn built_in_picker_registry(
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
+    // T.12a: the live-preview theme picker (`:colorscheme` no-arg).
+    // Holds a clone of the host's `ThemeRegistryHandle` so it can
+    // enumerate registered theme names + drive live preview.
+    reg.register_generator(Arc::new(crate::host_generators::ThemePickerSource::new(
+        theme_registry,
+    )));
     reg
 }
 
@@ -579,10 +586,20 @@ impl Editor {
         // sources that capture it (CommandsSource) can clone
         // here.
         let registry = Arc::new(registry);
+        // T.3/T.4 (theme-system): the theme-element registry, seeded
+        // with the default palette + all builtin elements (resolved +
+        // ready). Created here (ahead of the struct literal) so the
+        // T.12a colorscheme picker source can capture a clone, AND the
+        // `services:` block / `builtin_element_ids` capture / the
+        // `theme_registry` field all share the one Arc. See
+        // theme-system.md §3.5 / §7.
+        let theme_registry: lattice_theme::ThemeRegistryHandle =
+            Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
         let picker_registry: Arc<PickerRegistry> = Arc::new(built_in_picker_registry(
             registry.clone(),
             config.clone(),
             snippet_registry_handle.clone(),
+            theme_registry.clone(),
         ));
 
         // MRU cache load. Honor `picker.mru.persist` at boot;
@@ -1032,14 +1049,11 @@ impl Editor {
                 &registry,
             );
 
-        // T.3/T.4 (theme-system): the theme-element registry, seeded
-        // with the default palette + all builtin elements (resolved +
-        // ready). Created before the struct literal so the `services:`
-        // block (modes look it up), the `builtin_element_ids` capture,
-        // and the `theme_registry` field all share the one Arc. See
-        // theme-system.md §3.5 / §7.
-        let theme_registry: lattice_theme::ThemeRegistryHandle =
-            Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+        // T.3/T.4 (theme-system): the builtin element ids, captured from
+        // the theme-element registry created earlier (above the picker
+        // registry so the T.12a colorscheme picker could capture a
+        // clone). The registry is registered into `services` below + held
+        // in the `theme_registry` field. See theme-system.md §3.5 / §7.
         let builtin_element_ids =
             lattice_theme::BuiltinElementIds::capture(theme_registry.as_ref());
 

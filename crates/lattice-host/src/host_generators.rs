@@ -20,6 +20,11 @@ use std::sync::Weak;
 
 use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
 use lattice_completion::traits::{CandidateGenerator, GenerateContext};
+use lattice_picker::{
+    PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
+    RoutingPayload, SourceResult,
+};
+use lattice_theme::ThemeRegistryHandle;
 
 /// `gen:modes` -- one candidate per registered mode. Walks
 /// `ModeRegistry::iter_meta` so the candidate set follows the
@@ -212,5 +217,76 @@ impl CandidateGenerator for CustomizeNamesGenerator {
         out.sort_by(|a, b| a.text.cmp(&b.text));
         out.dedup_by(|a, b| a.text == b.text);
         out
+    }
+}
+
+/// T.12a: `:colorscheme` (no arg) — the live-preview theme picker.
+/// A trait-driven [`PickerSourceGenerator`] holding a clone of the
+/// [`ThemeRegistryHandle`] so it can enumerate registered theme names
+/// at `init` time. Arrowing through candidates LIVE-PREVIEWS each
+/// theme (the host applies the [`PickerAcceptOutcome::ApplyColorscheme`]
+/// the [`Self::preview`] hook returns); `<Esc>` restores the theme
+/// active when the picker opened; `<CR>` keeps the highlighted theme.
+///
+/// Mode-owned-surface note: the host owns the theme subsystem (the
+/// `ThemeRegistry` is a host ServiceRegistry service the renderers
+/// read), so this source + its handler body both live host-side — no
+/// half-migration.
+pub struct ThemePickerSource {
+    spec: PickerSourceSpec,
+    registry: ThemeRegistryHandle,
+}
+
+impl ThemePickerSource {
+    pub fn new(registry: ThemeRegistryHandle) -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args("colorscheme", "Pick a colour theme (live preview)."),
+            registry,
+        }
+    }
+}
+
+impl PickerSourceGenerator for ThemePickerSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        let pairs = self
+            .registry
+            .theme_names()
+            .into_iter()
+            .map(|name| {
+                let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                (cand, RoutingPayload::Colorscheme { name })
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::Colorscheme { name } => {
+                Ok(PickerAcceptOutcome::ApplyColorscheme { name: name.clone() })
+            }
+            other => Err(format!("colorscheme: unexpected routing payload {other:?}")),
+        }
+    }
+
+    fn preview(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> Option<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::Colorscheme { name } => {
+                Some(PickerAcceptOutcome::ApplyColorscheme { name: name.clone() })
+            }
+            _ => None,
+        }
     }
 }

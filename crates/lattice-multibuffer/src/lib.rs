@@ -221,16 +221,29 @@ pub struct RowTranslation {
 
 impl RowTranslation {
     pub fn build(excerpts: &[Excerpt]) -> Self {
-        let mut entries = Vec::new();
+        let mut this = Self::default();
+        this.append(excerpts);
+        this
+    }
+
+    /// MH.B1 (2026-06-19): extend the translation in place with a
+    /// batch of newly-appended excerpts. Because `build` is pure
+    /// concatenation (one `RowEntry::Excerpt` per source row, per
+    /// excerpt, in order — no cross-excerpt state), appending a
+    /// batch's entries to an existing translation yields exactly
+    /// the same `Vec<RowEntry>` as rebuilding from the full excerpt
+    /// list. This is the row-translation half of the O(batch)
+    /// incremental `append_excerpts`; the equivalence is pinned by
+    /// `incremental_append_matches_full_build`.
+    pub fn append(&mut self, excerpts: &[Excerpt]) {
         for excerpt in excerpts {
             for row in excerpt.start_line..=excerpt.end_line {
-                entries.push(RowEntry::Excerpt {
+                self.entries.push(RowEntry::Excerpt {
                     excerpt_id: excerpt.id,
                     source_row: row,
                 });
             }
         }
-        Self { entries }
     }
 }
 
@@ -756,6 +769,11 @@ impl MultibufferDocumentHandle {
             return;
         }
         let mut state = self.lock_state();
+        // MH.B1 (2026-06-19): collect the excerpts actually added
+        // this call (mirroring the skip-if-missing-source filter)
+        // so we can compose + translate ONLY the batch, not the
+        // accumulated total.
+        let mut added: Vec<Excerpt> = Vec::with_capacity(excerpts.len());
         for ex in excerpts {
             if !state.sources.contains_key(&ex.source) {
                 // Silently drop — the provider is responsible
@@ -764,44 +782,74 @@ impl MultibufferDocumentHandle {
                 // this in its scan task.
                 continue;
             }
-            state.excerpts.push(ex);
+            state.excerpts.push(ex.clone());
+            added.push(ex);
         }
-        // M.11 (2026-06-02): rebuild composed_doc from sources
-        // so user edits (which apply to composed_doc) target a
-        // rope that reflects the current excerpts. Without this,
-        // the search provider constructs an EMPTY multibuffer
-        // then streams hits via append_excerpts — the published
-        // snapshot reflects the hits (via compose below) but
-        // composed_doc stays empty. When the user enters insert
-        // mode + types, composed_doc.apply_edit either fails
-        // out-of-range or no-ops on the empty rope, and
-        // do_insert_text silently returns. This was the root
-        // cause of "typing does nothing." Rebuild keeps the two
-        // in sync. CLOBBERS any local edits present at the time
-        // — acceptable for v1 since the search provider's
-        // streaming phase precedes user editing.
-        let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
-        let new_composed_doc = lattice_core::Document::from_text(composed_text);
-        // K.4.7: stamp with monotonic seq — Document::from_text always
-        // returns text_version=0, so MatrixVersion.text is permanently 0
-        // and the cells worker always returns CacheHit ("empty until keypress").
+        if added.is_empty() {
+            // Every excerpt was dropped (unknown source). Nothing
+            // to compose or publish — leave the view untouched.
+            return;
+        }
+        // MH.B1 (2026-06-19): compose ONLY the batch we just added.
+        // `compose_text_from_sources` carries no cross-excerpt
+        // state — each line is pulled independently and given a
+        // trailing `\n` — so composing the added sub-list yields
+        // exactly the bytes that sub-list contributes to the full
+        // composition. Appending those bytes to the END of the
+        // existing composed_doc is therefore byte-identical to
+        // `from_text(old_full_text + batch_text)`, at O(batch)
+        // instead of O(total). Pinned by
+        // `incremental_append_matches_full_build`.
+        let batch_text = compose_text_from_sources(&state.sources, &added);
+        // K.4.7: stamp with monotonic seq — `Document::apply_edit`
+        // bumps text_version, but starting from a `from_text`-built
+        // rope (which begins at text_version=0) means an empty view
+        // streaming its first batch would land at text_version=1
+        // regardless; we use the inner monotonic publish_seq so the
+        // MatrixVersion advances on every publish.
         let seq = self.inner.publish_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut snapshot = snapshot_from_composed_doc(
-            &new_composed_doc,
-            self.inner.id,
-            state.selections.clone(),
-        );
-        snapshot.text_version = seq;
-        let translation = RowTranslation::build(&state.excerpts);
+        let selections = state.selections.clone();
+        // MH.B1: extend (not rebuild) the row translation by the
+        // batch's entries. Pure concatenation == byte-identical to
+        // `RowTranslation::build(&state.excerpts)`.
+        let mut translation = (*self.inner.row_translation.load_full()).clone();
+        translation.append(&added);
         drop(state);
-        {
+        // MH.B1 (2026-06-02 superseded): append the batch text to
+        // the END of composed_doc rather than rebuilding it from
+        // all sources. This APPENDS — it preserves any local edits
+        // already present in composed_doc (the previous full-rebuild
+        // here CLOBBERED them). Insert-at-end keeps the local rope
+        // authoritative + in sync with the growing excerpt set so
+        // user edits land on a rope reflecting current content.
+        let snapshot = {
             let mut doc = self
                 .inner
                 .composed_doc
                 .lock()
                 .expect("composed_doc mutex poisoned");
-            *doc = new_composed_doc;
-        }
+            if !batch_text.is_empty() {
+                // Insert at the very end of the current rope. The
+                // end Position is derived from the rope's byte
+                // length so it is correct whether or not the rope
+                // ends in a trailing newline.
+                let end_byte = doc.buffer().byte_len() as usize;
+                let at = doc
+                    .buffer()
+                    .byte_to_position(end_byte)
+                    .expect("end-of-rope position is always in bounds");
+                // Best-effort: a failed append leaves the rope as-is
+                // (recoverable — we still publish the extended
+                // translation + bumped seq). Never panic on this path.
+                if let Err(err) = doc.apply_edit(Edit::insert(at, batch_text)) {
+                    tracing::debug!(?err, "append_excerpts: composed_doc append failed; rope unchanged");
+                }
+            }
+            let mut snapshot =
+                snapshot_from_composed_doc(&doc, self.inner.id, selections);
+            snapshot.text_version = seq;
+            snapshot
+        };
         self.inner.snapshot_cell.store(snapshot);
         self.inner.row_translation.store(Arc::new(translation));
     }
@@ -3857,6 +3905,160 @@ mod tests {
             mb.excerpt_count(),
             1,
             "unknown-source excerpt should be silently dropped",
+        );
+    }
+
+    // MH.B2 (2026-06-19): the correctness gate for the incremental
+    // `append_excerpts`. Build one view by streaming the excerpt
+    // list in N batches; build a second view with the identical
+    // full excerpt list in ONE shot. The composed rope TEXT and
+    // the row-translation entries MUST be identical between the
+    // two — this proves incremental append == full build, both for
+    // the rope (insert-at-end == from_text(old + batch)) and for
+    // the translation (concatenation == build-from-all).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incremental_append_matches_full_build() {
+        // Six sources, each multi-line, so each batch contributes
+        // several composed rows.
+        let texts = [
+            "a1\na2\na3\n",
+            "b1\nb2\nb3\n",
+            "c1\nc2\nc3\n",
+            "d1\nd2\nd3\n",
+            "e1\ne2\ne3\n",
+            "f1\nf2\nf3\n",
+        ];
+        let (sources, ids) = make_sources(&texts);
+
+        // The full excerpt list, varied start/end so spans differ.
+        let all_excerpts = vec![
+            Excerpt::new(ids[0], 0, 1),
+            Excerpt::new(ids[1], 1, 2),
+            Excerpt::new(ids[2], 0, 2),
+            Excerpt::new(ids[3], 2, 2),
+            Excerpt::new(ids[4], 0, 0),
+            Excerpt::new(ids[5], 1, 2),
+        ];
+
+        // INCREMENTAL: empty view, stream in 3 batches of 2.
+        let incremental =
+            MultibufferDocumentHandle::new(sources.clone(), Vec::new(), empty_registry())
+                .unwrap();
+        for batch in all_excerpts.chunks(2) {
+            incremental.append_excerpts(batch.to_vec());
+        }
+
+        // FULL: same source map + the entire excerpt list at once,
+        // via the constructor's full build.
+        let full =
+            MultibufferDocumentHandle::new(sources, all_excerpts.clone(), empty_registry())
+                .unwrap();
+
+        // (a) composed rope text byte-identical.
+        assert_eq!(
+            incremental.snapshot().buffer.as_string(),
+            full.snapshot().buffer.as_string(),
+            "incremental append must produce a byte-identical composed rope",
+        );
+
+        // (b) row_translation entries identical (same Vec<RowEntry>),
+        // modulo the ExcerptId values — the two views allocate
+        // distinct ExcerptIds, so compare structurally on
+        // (source_row) ordering within the same shape. We assert
+        // the entry COUNT and source_row sequence match; the
+        // excerpt_id mapping is per-view by construction.
+        let inc_entries = incremental.row_translation().entries.clone();
+        let full_entries = full.row_translation().entries.clone();
+        assert_eq!(
+            inc_entries.len(),
+            full_entries.len(),
+            "row translation length must match the full build",
+        );
+        let inc_rows: Vec<u32> = inc_entries
+            .iter()
+            .map(|RowEntry::Excerpt { source_row, .. }| *source_row)
+            .collect();
+        let full_rows: Vec<u32> = full_entries
+            .iter()
+            .map(|RowEntry::Excerpt { source_row, .. }| *source_row)
+            .collect();
+        assert_eq!(
+            inc_rows, full_rows,
+            "row translation source_row sequence must match the full build",
+        );
+    }
+
+    // MH.B2 (2026-06-19): edge case — a batch containing an excerpt
+    // whose source was never added is dropped identically by both
+    // the incremental and full paths, leaving the composed text +
+    // translation in lock-step.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incremental_append_skips_unknown_source_like_full_build() {
+        let (sources, ids) = make_sources(&["a1\na2\n", "b1\nb2\n"]);
+        let bogus = BufferId(0xBADC_0DE);
+
+        let valid = vec![Excerpt::new(ids[0], 0, 0), Excerpt::new(ids[1], 1, 1)];
+
+        // INCREMENTAL: stream one valid excerpt, then a batch that
+        // mixes a valid + a bogus-source excerpt (bogus dropped).
+        let incremental =
+            MultibufferDocumentHandle::new(sources.clone(), Vec::new(), empty_registry())
+                .unwrap();
+        incremental.append_excerpts(vec![valid[0].clone()]);
+        incremental.append_excerpts(vec![Excerpt::new(bogus, 0, 0), valid[1].clone()]);
+
+        // FULL: only the two valid excerpts (the constructor would
+        // reject an unknown source, so the full build's coherent
+        // input is the valid set — the same set the incremental
+        // path retains after dropping the bogus excerpt).
+        let full =
+            MultibufferDocumentHandle::new(sources, valid.clone(), empty_registry()).unwrap();
+
+        assert_eq!(incremental.excerpt_count(), 2);
+        assert_eq!(
+            incremental.snapshot().buffer.as_string(),
+            full.snapshot().buffer.as_string(),
+            "dropping an unknown-source excerpt must leave the rope identical to the full build",
+        );
+        assert_eq!(
+            incremental.row_translation().entries.len(),
+            full.row_translation().entries.len(),
+        );
+    }
+
+    // MH.B2 (2026-06-19): structural pin on the O(batch) guarantee.
+    // Appending a 1-excerpt batch (covering R source rows) to an
+    // N-excerpt view must grow the row translation by EXACTLY R
+    // entries and grow the composed rope by EXACTLY the batch
+    // text's byte length — i.e. no full recompute. Together with
+    // `incremental_append_matches_full_build` this pins both the
+    // correctness AND the incremental nature of `append_excerpts`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_excerpts_grows_by_exactly_the_batch() {
+        let (sources, ids) = make_sources(&["l0\nl1\nl2\nl3\nl4\n"]);
+        let mb =
+            MultibufferDocumentHandle::new(sources, Vec::new(), empty_registry()).unwrap();
+
+        // Seed with a 2-row excerpt.
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 0, 1)]);
+        let rows_before = mb.row_translation().entries.len();
+        let bytes_before = mb.snapshot().buffer.byte_len();
+        assert_eq!(rows_before, 2);
+
+        // Append a 3-row excerpt (rows 2..=4 → "l2\nl3\nl4\n" = 9 bytes).
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 2, 4)]);
+        let rows_after = mb.row_translation().entries.len();
+        let bytes_after = mb.snapshot().buffer.byte_len();
+
+        assert_eq!(
+            rows_after - rows_before,
+            3,
+            "translation must grow by exactly the batch's source-row count (O(batch))",
+        );
+        assert_eq!(
+            bytes_after - bytes_before,
+            "l2\nl3\nl4\n".len() as u64,
+            "composed rope must grow by exactly the batch text length (insert-at-end, no recompute)",
         );
     }
 

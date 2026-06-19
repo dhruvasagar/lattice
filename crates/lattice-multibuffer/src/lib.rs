@@ -1928,6 +1928,18 @@ pub const ELEM_EXCERPT_HEADER_PATH: &str = "multibuffer.excerpt_header.path";
 /// Element name: the excerpt-header match-count foreground.
 pub const ELEM_EXCERPT_HEADER_COUNT: &str = "multibuffer.excerpt_header.count";
 
+// MH.A4 (2026-06-20): view-status headerline foreground elements.
+// The status row (` ⟳ Searching … ` / ` ◆ N hits ` / ` ■ reason `)
+// previously hardcoded its fg as ad-hoc hex (0x999999 / 0x44cc88 /
+// 0xff4444); these map the three states onto palette role-keys so a
+// `:colorscheme` swap recolors the status line.
+/// Element name: the in-progress status row foreground (neutral grey).
+pub const ELEM_STATUS_IN_PROGRESS: &str = "multibuffer.status.in_progress";
+/// Element name: the completed status row foreground (green).
+pub const ELEM_STATUS_COMPLETE: &str = "multibuffer.status.complete";
+/// Element name: the failed status row foreground (red).
+pub const ELEM_STATUS_FAILED: &str = "multibuffer.status.failed";
+
 /// Register the multibuffer mode's theme elements against `reg`.
 /// Idempotent by name (safe to call on every mode activation /
 /// every view creation). Returns the interned [`ElementId`]s the
@@ -1957,14 +1969,39 @@ pub fn register_multibuffer_theme_elements(
     );
     let count = reg.register(
         ElementName::from(ELEM_EXCERPT_HEADER_COUNT.to_string()),
-        owner,
+        owner.clone(),
         StyleSpec::new().fg(ColorRef::Palette("overlay2".into())),
         "Excerpt header match count.",
+    );
+    // MH.A4: status-row state colors. `in_progress` maps to the
+    // muted `subtext` grey (the old 0x999999), `complete` to `green`
+    // (old 0x44cc88), `failed` to `red` (old 0xff4444) — the nearest
+    // semantic role-keys in the registered palette.
+    let status_in_progress = reg.register(
+        ElementName::from(ELEM_STATUS_IN_PROGRESS.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("subtext".into())),
+        "Multibuffer in-progress status foreground.",
+    );
+    let status_complete = reg.register(
+        ElementName::from(ELEM_STATUS_COMPLETE.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("green".into())),
+        "Multibuffer completed status foreground.",
+    );
+    let status_failed = reg.register(
+        ElementName::from(ELEM_STATUS_FAILED.to_string()),
+        owner,
+        StyleSpec::new().fg(ColorRef::Palette("red".into())),
+        "Multibuffer failed status foreground.",
     );
     MultibufferHeaderElementIds {
         backdrop,
         path,
         count,
+        status_in_progress,
+        status_complete,
+        status_failed,
     }
 }
 
@@ -1977,6 +2014,12 @@ pub struct MultibufferHeaderElementIds {
     pub backdrop: ElementId,
     pub path: ElementId,
     pub count: ElementId,
+    /// MH.A4: view-status row foregrounds, interned alongside the
+    /// header elements so the status provider's `collect()` resolves
+    /// by array index (never a per-row name lookup).
+    pub status_in_progress: ElementId,
+    pub status_complete: ElementId,
+    pub status_failed: ElementId,
 }
 
 impl Default for MultibufferHeaderElementIds {
@@ -1988,6 +2031,9 @@ impl Default for MultibufferHeaderElementIds {
             backdrop: ElementId::INVALID,
             path: ElementId::INVALID,
             count: ElementId::INVALID,
+            status_in_progress: ElementId::INVALID,
+            status_complete: ElementId::INVALID,
+            status_failed: ElementId::INVALID,
         }
     }
 }
@@ -2165,7 +2211,7 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
 /// `:colorscheme` toggle re-renders the whole surface. A fg of `0`
 /// is the Cell "use renderer default" sentinel (test paths without a
 /// theme).
-fn header_cells(
+pub(crate) fn header_cells(
     header: &ExcerptHeader,
     nerd_fonts: bool,
     header_fg: u32,
@@ -2284,13 +2330,28 @@ pub fn multibuffer_status_provider_id(buffer_id: BufferId) -> ProviderId {
     MULTIBUFFER_STATUS_NAMESPACE | u64::from(buffer_id.0)
 }
 
+/// MH.A4: fallback hex used when no theme is wired (test paths). These
+/// are the pre-MH.A4 hardcoded colors; production resolves the
+/// `multibuffer.status.*` theme elements instead.
+const STATUS_IN_PROGRESS_FALLBACK_FG: u32 = 0x999999;
+const STATUS_COMPLETE_FALLBACK_FG: u32 = 0x44cc88;
+const STATUS_FAILED_FALLBACK_FG: u32 = 0xff4444;
+
 /// Pure function: `HeaderlineStatus` → display row (or `None` when idle).
 ///
-/// Color legend (0xRRGGBB):
-///   InProgress — neutral gray text, theme bg
-///   Complete   — green `◆` prefix, theme bg
-///   Failed     — red `■` prefix, theme bg
-fn render_multibuffer_status(status: &HeaderlineStatus) -> Option<HeaderlineRow> {
+/// MH.A4: the per-state foregrounds are **resolved in `collect()` and
+/// passed in** (from the `multibuffer.status.*` theme elements) — never
+/// hardcoded here — so a `:colorscheme` swap recolors the status line.
+/// Color legend:
+///   InProgress — `in_progress_fg` (neutral grey), theme bg
+///   Complete   — `complete_fg` (green), green `◆` prefix, theme bg
+///   Failed     — `failed_fg` (red), red `■` prefix, theme bg
+fn render_multibuffer_status(
+    status: &HeaderlineStatus,
+    in_progress_fg: u32,
+    complete_fg: u32,
+    failed_fg: u32,
+) -> Option<HeaderlineRow> {
     let text: String = match status {
         HeaderlineStatus::Idle => return None,
         HeaderlineStatus::InProgress { label, count: None } => {
@@ -2307,9 +2368,9 @@ fn render_multibuffer_status(status: &HeaderlineStatus) -> Option<HeaderlineRow>
         }
     };
     let fg: u32 = match status {
-        HeaderlineStatus::InProgress { .. } => 0x999999,
-        HeaderlineStatus::Complete { .. }   => 0x44cc88,
-        HeaderlineStatus::Failed { .. }     => 0xff4444,
+        HeaderlineStatus::InProgress { .. } => in_progress_fg,
+        HeaderlineStatus::Complete { .. }   => complete_fg,
+        HeaderlineStatus::Failed { .. }     => failed_fg,
         HeaderlineStatus::Idle              => unreachable!(),
     };
     let cells: Arc<[Cell]> = text
@@ -2328,11 +2389,51 @@ fn render_multibuffer_status(status: &HeaderlineStatus) -> Option<HeaderlineRow>
 /// state allocation is needed.
 pub struct MultibufferStatusProvider {
     multibuffer: MultibufferDocumentHandle,
+    /// MH.A4: `None` for test paths that don't wire a theme registry —
+    /// `render()` then falls back to the pre-MH.A4 hardcoded hex.
+    theme: Option<ThemeRegistryHandle>,
+    /// MH.A4: the interned status element ids (mirrors the
+    /// excerpt-header provider's `elements`), captured once at
+    /// view-creation so `render()` resolves by array index.
+    elements: MultibufferHeaderElementIds,
+}
+
+impl std::fmt::Debug for MultibufferStatusProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultibufferStatusProvider")
+            .field("buffer_id", &self.multibuffer.buffer_id())
+            .field("has_theme", &self.theme.is_some())
+            .field("elements", &self.elements)
+            .finish()
+    }
 }
 
 impl MultibufferStatusProvider {
+    /// Construct without theme wiring — the status row renders with the
+    /// pre-MH.A4 fallback hex. Test convenience; production uses
+    /// [`Self::with_theme`].
     pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
-        Self { multibuffer }
+        Self {
+            multibuffer,
+            theme: None,
+            elements: MultibufferHeaderElementIds::default(),
+        }
+    }
+
+    /// MH.A4: construct with the resolved theme handle + the interned
+    /// status element ids so `render()` resolves the
+    /// `multibuffer.status.*` foregrounds (mirrors the excerpt-header
+    /// provider's `with_theme`).
+    pub fn with_theme(
+        multibuffer: MultibufferDocumentHandle,
+        theme: ThemeRegistryHandle,
+        elements: MultibufferHeaderElementIds,
+    ) -> Self {
+        Self {
+            multibuffer,
+            theme: Some(theme),
+            elements,
+        }
     }
 
     pub fn into_provider(self, buffer_id: BufferId) -> HeaderlineProvider {
@@ -2341,15 +2442,50 @@ impl MultibufferStatusProvider {
             Arc::new(self),
         )
     }
+
+    /// Resolve the three status foregrounds from the wired theme,
+    /// falling back to the pre-MH.A4 hex per-state when the theme or an
+    /// element is unresolved (test paths).
+    fn status_fgs(&self) -> (u32, u32, u32) {
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        let resolve = |id: ElementId, fallback: u32| -> u32 {
+            resolved
+                .as_ref()
+                .and_then(|r| r.get(id).fg)
+                .map(|c| c.to_rgb_u32(fallback))
+                .unwrap_or(fallback)
+        };
+        (
+            resolve(self.elements.status_in_progress, STATUS_IN_PROGRESS_FALLBACK_FG),
+            resolve(self.elements.status_complete, STATUS_COMPLETE_FALLBACK_FG),
+            resolve(self.elements.status_failed, STATUS_FAILED_FALLBACK_FG),
+        )
+    }
 }
 
 impl Headerline for MultibufferStatusProvider {
     fn version(&self) -> u64 {
-        self.multibuffer.inner.headerline_version.load(Ordering::Acquire)
+        // MH.A4: fold the resolved theme version into the status
+        // version so a `:colorscheme` / `:set ui.*` change re-runs
+        // `render()` and re-resolves the status foregrounds. Mirrors
+        // the excerpt-header provider's version composition.
+        let content = self.multibuffer.inner.headerline_version.load(Ordering::Acquire);
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
+        content.wrapping_add(theme)
     }
 
     fn render(&self) -> Option<HeaderlineRow> {
-        render_multibuffer_status(&self.multibuffer.inner.headerline.load())
+        let (in_progress_fg, complete_fg, failed_fg) = self.status_fgs();
+        render_multibuffer_status(
+            &self.multibuffer.inner.headerline.load(),
+            in_progress_fg,
+            complete_fg,
+            failed_fg,
+        )
     }
 }
 
@@ -4228,6 +4364,135 @@ mod tests {
         let status_id  = multibuffer_status_provider_id(buf);
         assert_ne!(excerpt_id, status_id);
         assert_eq!(status_id & 0xFFFF_FFFF, 7);
+    }
+
+    // ── MH.A4: status colors resolve from theme elements ────────
+
+    #[test]
+    fn status_provider_no_theme_uses_fallback_hex() {
+        // Test path (no theme service): the three states render with
+        // the pre-MH.A4 fallback hex so nothing regresses where the
+        // theme isn't wired.
+        let cases = [
+            (
+                HeaderlineStatus::InProgress { label: "x".into(), count: None },
+                STATUS_IN_PROGRESS_FALLBACK_FG,
+            ),
+            (
+                HeaderlineStatus::Complete { summary: "done".into() },
+                STATUS_COMPLETE_FALLBACK_FG,
+            ),
+            (
+                HeaderlineStatus::Failed { reason: "boom".into() },
+                STATUS_FAILED_FALLBACK_FG,
+            ),
+        ];
+        for (status, expected_fg) in cases {
+            let mb = MultibufferDocumentHandle::empty(empty_registry());
+            mb.set_headerline(status);
+            let provider = MultibufferStatusProvider::new(mb);
+            let row = provider.render().expect("non-idle status renders a row");
+            assert!(
+                row.cells.iter().all(|c| c.fg == expected_fg),
+                "no-theme status uses fallback fg {expected_fg:#08x}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_elements_register_and_bake_resolved_fg() {
+        // MH.A4 acid test: the mode registers `multibuffer.status.*`
+        // elements; the status provider resolves them and bakes the
+        // per-state fg into the rendered row. Assert against the
+        // RESOLVED palette role-key (green / red / subtext), NOT the old
+        // ad-hoc hex.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+
+        // 1) The three elements are registered + resolve to the mapped
+        //    palette role-keys.
+        let resolved = registry.resolved();
+        let palette = default_palette();
+        let role = |key: &str| palette.get(&key.to_string().into()).unwrap();
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_IN_PROGRESS.to_string())).unwrap())
+                .fg,
+            Some(role("subtext")),
+            "in_progress maps to the grey `subtext` role-key"
+        );
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_COMPLETE.to_string())).unwrap())
+                .fg,
+            Some(role("green")),
+            "complete maps to the `green` role-key"
+        );
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_FAILED.to_string())).unwrap())
+                .fg,
+            Some(role("red")),
+            "failed maps to the `red` role-key"
+        );
+
+        // 2) The rendered status row bakes the resolved fg per state.
+        let theme: ThemeRegistryHandle = registry.clone();
+        let expect_fg = |status: HeaderlineStatus, key: &str| {
+            let mb = MultibufferDocumentHandle::empty(empty_registry());
+            mb.set_headerline(status);
+            let provider = MultibufferStatusProvider::with_theme(mb, theme.clone(), ids);
+            let row = provider.render().expect("non-idle status renders a row");
+            let want = role(key).to_rgb_u32(0);
+            assert!(
+                row.cells.iter().all(|c| c.fg == want),
+                "status row baked fg = resolved {key} ({want:#08x})"
+            );
+        };
+        expect_fg(
+            HeaderlineStatus::InProgress { label: "s".into(), count: Some(2) },
+            "subtext",
+        );
+        expect_fg(HeaderlineStatus::Complete { summary: "done".into() }, "green");
+        expect_fg(HeaderlineStatus::Failed { reason: "err".into() }, "red");
+    }
+
+    #[test]
+    fn status_provider_version_folds_theme_version() {
+        // MH.A4: a colorscheme swap (theme override) bumps the status
+        // provider version so the headerline re-renders the recolored
+        // status row.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+        let theme: ThemeRegistryHandle = registry.clone();
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        mb.set_headerline(HeaderlineStatus::Complete { summary: "done".into() });
+        let provider = MultibufferStatusProvider::with_theme(mb, theme, ids);
+
+        let _ = registry.resolved();
+        let v_before = provider.version();
+        registry.set_override(
+            ElementName::from(ELEM_STATUS_COMPLETE.to_string()),
+            StyleSpec::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        let v_after = provider.version();
+        assert!(
+            v_after > v_before,
+            "theme change must bump status provider version; before={v_before} after={v_after}"
+        );
     }
 }
 

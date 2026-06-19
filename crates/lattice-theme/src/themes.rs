@@ -17,7 +17,14 @@
 //! Design: `docs/dev/architecture/theme-system.md` §3.3, §5.1.
 
 use crate::element::{ElementName, StyleSpec};
-use crate::palette::{catppuccin_latte_palette, default_palette, macchiato_palette, Palette};
+use crate::palette::{
+    catppuccin_latte_palette, default_palette, dracula_dark_palette, dracula_light_palette,
+    everforest_dark_palette, everforest_light_palette, gruvbox_dark_palette, gruvbox_light_palette,
+    macchiato_palette, monokai_dark_palette, monokai_light_palette, nord_dark_palette,
+    nord_light_palette, one_dark_palette, one_light_palette, rosepine_dark_palette,
+    rosepine_light_palette, solarized_dark_palette, solarized_light_palette, tokyonight_dark_palette,
+    tokyonight_light_palette, Palette,
+};
 
 /// A named theme: a palette + a (possibly empty) element-override set.
 /// The unit a `:colorscheme <name>` swap resolves to.
@@ -49,6 +56,99 @@ pub fn builtin_themes() -> Vec<NamedTheme> {
         NamedTheme {
             name: "catppuccin-latte",
             palette: catppuccin_latte_palette(),
+            overrides: Vec::new(),
+        },
+        // T.11.1: the multi-theme library — 9 cross-editor families ×
+        // {dark, light}. Each palette fills the full role-key set, so an
+        // empty override list still recolours the whole surface.
+        NamedTheme {
+            name: "gruvbox-dark",
+            palette: gruvbox_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "gruvbox-light",
+            palette: gruvbox_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "tokyonight-dark",
+            palette: tokyonight_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "tokyonight-light",
+            palette: tokyonight_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "dracula-dark",
+            palette: dracula_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "dracula-light",
+            palette: dracula_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "nord-dark",
+            palette: nord_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "nord-light",
+            palette: nord_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "solarized-dark",
+            palette: solarized_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "solarized-light",
+            palette: solarized_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "one-dark",
+            palette: one_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "one-light",
+            palette: one_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "everforest-dark",
+            palette: everforest_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "everforest-light",
+            palette: everforest_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "rosepine-dark",
+            palette: rosepine_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "rosepine-light",
+            palette: rosepine_light_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "monokai-dark",
+            palette: monokai_dark_palette(),
+            overrides: Vec::new(),
+        },
+        NamedTheme {
+            name: "monokai-light",
+            palette: monokai_light_palette(),
             overrides: Vec::new(),
         },
     ]
@@ -110,5 +210,65 @@ mod tests {
             panic!("both bases are rgb");
         };
         assert!(lr > mr && lg > mg && lb > mb, "Latte base must be lighter than Mocha");
+    }
+
+    #[test]
+    fn every_builtin_theme_covers_the_full_role_key_set() {
+        // T.11.1: each builtin palette MUST define every key that
+        // `default_palette` defines, or element resolution falls back to
+        // the inherit chain / hard default — a silent mis-theme. This pin
+        // guarantees no fallback for any registered theme.
+        let reference = default_palette();
+        for theme in builtin_themes() {
+            for key in reference.keys() {
+                assert!(
+                    theme.palette.get(key).is_some(),
+                    "theme `{}` is missing role key `{}`",
+                    theme.name,
+                    key.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn light_themes_are_light_and_dark_themes_are_dark() {
+        // T.11.1: a `*-light` theme's `base` (canvas background) must be
+        // brighter (sum of channels) than its `text` (foreground); a
+        // `*-dark` theme's `base` must be darker than its `text`. Catches a
+        // copy-paste that left a light palette with a dark base or vice
+        // versa.
+        fn channel_sum(c: Color) -> u32 {
+            match c {
+                Color::Rgb(r, g, b) => r as u32 + g as u32 + b as u32,
+                other => {
+                    let rgb = other.to_rgb_u32(0);
+                    ((rgb >> 16) & 0xff) + ((rgb >> 8) & 0xff) + (rgb & 0xff)
+                }
+            }
+        }
+        let base = crate::PaletteKey::from_static("base");
+        let text = crate::PaletteKey::from_static("text");
+        for theme in builtin_themes() {
+            let b = channel_sum(theme.palette.get(&base).expect("base defined"));
+            let t = channel_sum(theme.palette.get(&text).expect("text defined"));
+            if theme.name.ends_with("-light") || theme.name.ends_with("-latte") {
+                assert!(
+                    b > t,
+                    "light theme `{}`: base ({}) must be brighter than text ({})",
+                    theme.name,
+                    b,
+                    t
+                );
+            } else {
+                assert!(
+                    b < t,
+                    "dark theme `{}`: base ({}) must be darker than text ({})",
+                    theme.name,
+                    b,
+                    t
+                );
+            }
+        }
     }
 }

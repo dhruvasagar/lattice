@@ -25,6 +25,7 @@ use arc_swap::ArcSwap;
 
 use crate::element::{ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeElement};
 use crate::palette::{default_palette, Palette};
+use crate::themes::{builtin_themes, NamedTheme};
 use crate::{Color, FontScale, Style, Weight};
 
 /// Maximum `inherit` chain depth before resolution bails (cycle
@@ -144,6 +145,26 @@ pub trait ThemeRegistry: Send + Sync {
     /// the active theme — a theme-build-time read, never on the hot
     /// path.
     fn describe(&self, name: &ElementName) -> Option<ElementInfo>;
+
+    /// T.11.1: register (or replace, by name) a named theme in the
+    /// catalog. Idempotent by name — re-registering a name replaces its
+    /// palette + overrides. This is the seam `init.rs` (and, later, a
+    /// WASM plugin via WIT) uses to contribute a palette; the builtin
+    /// themes are seeded here at boot. Does NOT change the active theme —
+    /// only `apply_theme` does that.
+    fn register_theme(&self, theme: NamedTheme);
+
+    /// T.11.1: the names of every registered theme, in registration
+    /// order (builtins first, then user/plugin additions). Drives
+    /// `:colorscheme` completion + the T.12 picker.
+    fn theme_names(&self) -> Vec<String>;
+
+    /// T.11.1: swap the active theme to the registered theme `name`
+    /// (`:colorscheme <name>`). Returns `false` (active theme untouched)
+    /// if `name` is not registered — the caller echoes an error, never a
+    /// panic. On a hit, equivalent to `set_theme` with the registered
+    /// theme's palette + overrides (marks the table dirty).
+    fn apply_theme(&self, name: &str) -> bool;
 }
 
 /// The canonical handle type. Register and look up under THIS type in
@@ -161,6 +182,12 @@ struct RegistryInner {
     /// overlays the override's set fields on top of the element's
     /// resolved default (design §5.1, override scope 1).
     overrides: HashMap<ElementName, StyleSpec>,
+    /// T.11.1: the named-theme catalog — `(Palette, overrides)` pairs by
+    /// name, in registration order. `:colorscheme` / the picker resolve
+    /// against this; `apply_theme` swaps the active palette+overrides to
+    /// a catalog entry. Seeded with `builtin_themes()` at boot;
+    /// `init.rs` / plugins append via `register_theme`.
+    themes: Vec<NamedTheme>,
     version: u64,
     dirty: bool,
 }
@@ -183,6 +210,7 @@ impl InMemoryThemeRegistry {
                 by_name: HashMap::new(),
                 palette,
                 overrides: HashMap::new(),
+                themes: Vec::new(),
                 version: 0,
                 dirty: true,
             }),
@@ -199,6 +227,12 @@ impl InMemoryThemeRegistry {
     pub fn with_defaults() -> Self {
         let reg = Self::new(default_palette());
         register_builtins(&reg);
+        // T.11.1: seed the named-theme catalog with the builtins so
+        // `:colorscheme` / the picker can resolve them; `init.rs` /
+        // plugins append more via `register_theme`.
+        for theme in builtin_themes() {
+            reg.register_theme(theme);
+        }
         reg.rebuild();
         reg
     }
@@ -288,6 +322,43 @@ impl ThemeRegistry for InMemoryThemeRegistry {
         inner.palette = palette;
         inner.overrides = overrides.into_iter().collect();
         inner.dirty = true;
+    }
+
+    fn register_theme(&self, theme: NamedTheme) {
+        let mut inner = self.inner.write().expect("theme registry lock poisoned");
+        // Idempotent by name: replace an existing entry in place (keeps
+        // registration order stable), else append.
+        if let Some(slot) = inner.themes.iter_mut().find(|t| t.name == theme.name) {
+            *slot = theme;
+        } else {
+            inner.themes.push(theme);
+        }
+    }
+
+    fn theme_names(&self) -> Vec<String> {
+        let inner = self.inner.read().expect("theme registry lock poisoned");
+        inner.themes.iter().map(|t| t.name.to_string()).collect()
+    }
+
+    fn apply_theme(&self, name: &str) -> bool {
+        // Clone the catalog entry's palette + overrides under a READ
+        // lock, release it, THEN swap via `set_theme` (which takes a
+        // write lock) — never hold both, so no re-entrant deadlock.
+        let found = {
+            let inner = self.inner.read().expect("theme registry lock poisoned");
+            inner
+                .themes
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| (t.palette.clone(), t.overrides.clone()))
+        };
+        match found {
+            Some((palette, overrides)) => {
+                self.set_theme(palette, overrides);
+                true
+            }
+            None => false,
+        }
     }
 
     fn describe(&self, name: &ElementName) -> Option<ElementInfo> {
@@ -1558,6 +1629,44 @@ mod tests {
             Some(Color::Rgb(0xc6, 0xa0, 0xf6))
         );
         assert!(theme.overrides.is_empty());
+    }
+
+    #[test]
+    fn theme_catalog_register_enumerate_and_apply() {
+        // T.11.1: the named-theme catalog — builtins seeded at boot,
+        // listed by `theme_names`, swapped by `apply_theme`;
+        // `register_theme` adds a custom theme (the init.rs / plugin
+        // seam). `apply_theme` recolours the canvas elements (T.11.0b).
+        let reg = reg();
+        let names = reg.theme_names();
+        assert!(names.iter().any(|n| n == "catppuccin-mocha"));
+        assert!(names.iter().any(|n| n == "catppuccin-latte"));
+
+        // Swap to the registered LIGHT theme → canvas resolves light.
+        assert!(reg.apply_theme("catppuccin-latte"));
+        assert_eq!(
+            resolved_of(&reg, "editor.background").bg,
+            Some(Color::Rgb(0xef, 0xf1, 0xf5))
+        );
+        // Unknown name → false, active theme untouched (still Latte).
+        assert!(!reg.apply_theme("no-such-theme"));
+        assert_eq!(
+            resolved_of(&reg, "editor.background").bg,
+            Some(Color::Rgb(0xef, 0xf1, 0xf5))
+        );
+
+        // register_theme adds a theme that apply_theme can then swap to.
+        reg.register_theme(NamedTheme {
+            name: "test-custom",
+            palette: crate::palette::default_palette(),
+            overrides: Vec::new(),
+        });
+        assert!(reg.theme_names().iter().any(|n| n == "test-custom"));
+        assert!(reg.apply_theme("test-custom"));
+        assert_eq!(
+            resolved_of(&reg, "editor.background").bg,
+            Some(Color::Rgb(0x1e, 0x1e, 0x2e))
+        );
     }
 
     #[test]

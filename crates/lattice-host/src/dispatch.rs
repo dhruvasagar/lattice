@@ -2377,30 +2377,30 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // `ui.*` path fans out). An unknown name echoes a host-side
             // error and leaves the active theme untouched -- never a
             // panic (graceful degradation, paramount-goal-aligned).
-            match lattice_theme::builtin_themes()
-                .into_iter()
-                .find(|t| t.name == name)
+            // T.11.1: resolve against the registry's named-theme CATALOG
+            // (seeded with builtins at boot; `init.rs` / plugins append
+            // via `register_theme`) rather than the static
+            // `builtin_themes()` list — so user/plugin themes are
+            // swappable too. `apply_theme` swaps the palette + overrides
+            // atomically and returns `false` for an unknown name (active
+            // theme untouched — graceful, never a panic).
+            if let Some(reg) = editor
+                .services
+                .get::<crate::ui::theme::ThemeRegistryHandle>()
             {
-                Some(theme) => {
-                    if let Some(reg) = editor
-                        .services
-                        .get::<crate::ui::theme::ThemeRegistryHandle>()
-                    {
-                        reg.set_theme(theme.palette, theme.overrides);
-                        out.renderer_signals.push(RendererSignal::ThemeChanged);
-                    } else {
-                        editor.set_message(
-                            EchoLevel::Error,
-                            "colorscheme: theme registry unavailable".to_string(),
-                        );
-                    }
-                }
-                None => {
+                if reg.apply_theme(&name) {
+                    out.renderer_signals.push(RendererSignal::ThemeChanged);
+                } else {
                     editor.set_message(
                         EchoLevel::Error,
                         format!("colorscheme: unknown theme `{name}`"),
                     );
                 }
+            } else {
+                editor.set_message(
+                    EchoLevel::Error,
+                    "colorscheme: theme registry unavailable".to_string(),
+                );
             }
         }
         Effect::Echo { level, text } => {

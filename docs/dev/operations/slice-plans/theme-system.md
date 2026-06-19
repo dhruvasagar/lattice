@@ -510,7 +510,34 @@ Depends on T.9 (the `:colorscheme` swap + named-theme registry).
 Lands last, once every builtin element resolves through the palette
 (T.4–T.6) so a palette swap re-colors the whole surface.
 
-### T.11 — migrate ~5 popular cross-editor themes 🗒
+### T.11 — multi-theme library ✅ (21 themes; scope grew 5 → 18)
+
+**Landed.** Shipped **21 named themes**: Catppuccin (mocha/macchiato/
+latte) + **9 cross-editor families × {dark, light}** (gruvbox,
+tokyonight, dracula, nord, solarized, one, everforest, rosepine,
+monokai). Decisions made during execution:
+- **T.11.0a — generic role-key vocabulary** (`mauve→purple`,
+  `peach→orange`, `sapphire→cyan`, `overlay0→overlay`,
+  `overlay2→subtext`): the deferred sub-decision below, resolved YES —
+  with 18 diverse palettes the Catppuccin-specific keys fought; the
+  rename is parity-pinned (resolved colours byte-identical).
+- **T.11.0b — canvas palette-driven**: added a `base`/`mantle`/`crust`/
+  `surface0..2` background family + `editor.background`/`.foreground`/
+  `.cursor` + `ui.popup.background` core elements, wired into
+  `rebuild_gpui_theme`. REQUIRED for light themes (the canvas was
+  hardcoded dark; a swap never recoloured it). TUI canvas stays the
+  terminal's (renderer-peer asymmetry).
+- **catalog** (`register_theme`/`theme_names`/`apply_theme` on the
+  registry, seeded at boot) — the seam `:colorscheme`, the T.12 picker,
+  and `init.rs`/plugins all use.
+- Pins: `every_builtin_theme_covers_the_full_role_key_set` (no
+  fallback) + `light_themes_are_light_and_dark_themes_are_dark`.
+  Verified visually (pixel-sampled) on Latte + gruvbox-light.
+- Tuning welcome (completeness guaranteed, hue approximate):
+  nord-light / monokai-light (synthesized — no official light),
+  dracula-light (Alucard direction), rosepine green/teal/cyan→foam.
+
+Original plan (for reference):
 
 Each theme is a `(Palette, element-overrides)` pair (design §2/§8) —
 mostly a `Palette` that fills the **same key vocabulary** the
@@ -541,7 +568,30 @@ Pin: each theme resolves every builtin element to *some* color (no
 unknown-palette-key warnings); a golden per theme over a
 representative element set.
 
-### T.12 — theme picker 🗒
+### T.12 — theme picker ✅ T.12a (live preview) · ⏸ T.12b (persist)
+
+**T.12a landed.** `:colorscheme` with no arg opens a buffer-backed
+picker over `theme_names()`; arrowing live-previews each (real recolor
+via `apply_theme` + `ThemeChanged`); `<Esc>` restores the theme active
+at open (`set_theme` of the `active_theme()` snapshot captured on first
+preview, stored in `Editor::pending_theme_preview_restore`); `<CR>`
+keeps it. Built via approach (A) — the trait-driven
+`PickerSourceGenerator` path: a new default-no-op `preview()` hook on
+the trait, `PickerAcceptOutcome::ApplyColorscheme` + `RoutingPayload::
+Colorscheme`, and a host `ThemePickerSource` (holds `ThemeRegistryHandle`)
+registered into the boot `PickerRegistry`. Theme logic lives in the
+source, not the host (the mode-ownership analog for pickers, which are
+typed-source host overlays — there is no separate picker "mode"). 3 new
+tests (opens on no-arg; preview recolors + dismiss restores; accept
+keeps). Both renderers untouched (host-internal outcome; only the
+existing `ThemeChanged` signal crosses).
+
+**T.12b — persist the chosen theme across restarts ⏸ DEFERRED.** No
+general user-TOML write-back exists (only small dedicated state files:
+picker-MRU, tutor scores). Persistence needs a new small state-file
+path (precedent exists); follow-on.
+
+Original plan (for reference):
 
 A buffer-backed picker (the existing `lattice-picker` surface, same
 as `:b` / file picker) listing every registered theme. **Live

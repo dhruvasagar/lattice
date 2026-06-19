@@ -70,7 +70,7 @@ mod tests {
             .iter()
             .find(|t| t.name == "catppuccin-macchiato")
             .expect("macchiato registered");
-        let mauve = crate::PaletteKey::from_static("mauve");
+        let mauve = crate::PaletteKey::from_static("purple");
         assert_ne!(mocha.palette.get(&mauve), mac.palette.get(&mauve));
         assert_eq!(
             mac.palette.get(&mauve),

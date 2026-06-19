@@ -107,7 +107,7 @@ impl From<crate::PaletteKey> for ColorRef {
 }
 
 /// A bare string is the common case: a palette-key reference. So
-/// `spec.fg("mauve")` means "the palette's `mauve`", not a literal —
+/// `spec.fg("purple")` means "the palette's `mauve`", not a literal —
 /// reference-not-absolute by default (design §2). Use
 /// `ColorRef::Literal(..)` explicitly for a one-off color.
 impl From<&'static str> for ColorRef {

@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use crate::{Color, NamedColor};
 
-/// A palette entry's name (`"mauve"`, `"ansi.red"`, `"diff.add.bg"`).
+/// A palette entry's name (`"purple"`, `"ansi.red"`, `"diff.add.bg"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PaletteKey(Cow<'static, str>);
 
@@ -101,18 +101,18 @@ pub fn default_palette() -> Palette {
     Palette::new()
         // ---- Catppuccin Mocha accents (syntax) ----
         .with("text", rgb(0xcd, 0xd6, 0xf4))
-        .with("overlay0", rgb(0x6c, 0x70, 0x86))
-        .with("overlay2", rgb(0x93, 0x99, 0xb2))
+        .with("overlay", rgb(0x6c, 0x70, 0x86))
+        .with("subtext", rgb(0x93, 0x99, 0xb2))
         .with("green", rgb(0xa6, 0xe3, 0xa1))
-        .with("mauve", rgb(0xcb, 0xa6, 0xf7))
+        .with("purple", rgb(0xcb, 0xa6, 0xf7))
         .with("yellow", rgb(0xf9, 0xe2, 0xaf))
-        .with("peach", rgb(0xfa, 0xb3, 0x87))
+        .with("orange", rgb(0xfa, 0xb3, 0x87))
         .with("blue", rgb(0x89, 0xb4, 0xfa))
         .with("teal", rgb(0x94, 0xe2, 0xd5))
         .with("red", rgb(0xf3, 0x8b, 0xa8))
         .with("maroon", rgb(0xeb, 0xa0, 0xac))
         .with("pink", rgb(0xf5, 0xc2, 0xe7))
-        .with("sapphire", rgb(0x74, 0xc7, 0xec))
+        .with("cyan", rgb(0x74, 0xc7, 0xec))
         // ---- ANSI-named chrome (degrades on 16-color terminals) ----
         .with("ansi.red", Color::Named(N::Red))
         .with("ansi.green", Color::Named(N::Green))
@@ -121,6 +121,13 @@ pub fn default_palette() -> Palette {
         .with("ansi.magenta", Color::Named(N::Magenta))
         .with("ansi.cyan", Color::Named(N::Cyan))
         .with("ansi.darkgray", Color::Named(N::DarkGray))
+        // ---- Background family (canvas surfaces, T.11.0b) ----
+        .with("base", rgb(0x1e, 0x1e, 0x2e))
+        .with("mantle", rgb(0x18, 0x18, 0x25))
+        .with("crust", rgb(0x11, 0x11, 0x1b))
+        .with("surface0", rgb(0x31, 0x32, 0x44))
+        .with("surface1", rgb(0x45, 0x47, 0x5a))
+        .with("surface2", rgb(0x58, 0x5b, 0x70))
         // ---- Specific tints (one-off backgrounds) ----
         .with("diff.add.bg", rgb(0, 50, 0))
         .with("diff.change.bg", rgb(50, 50, 0))
@@ -143,18 +150,18 @@ pub fn macchiato_palette() -> Palette {
     Palette::new()
         // ---- Catppuccin Macchiato accents (syntax) ----
         .with("text", rgb(0xca, 0xd3, 0xf5))
-        .with("overlay0", rgb(0x6e, 0x73, 0x8d))
-        .with("overlay2", rgb(0x93, 0x9a, 0xb7))
+        .with("overlay", rgb(0x6e, 0x73, 0x8d))
+        .with("subtext", rgb(0x93, 0x9a, 0xb7))
         .with("green", rgb(0xa6, 0xda, 0x95))
-        .with("mauve", rgb(0xc6, 0xa0, 0xf6))
+        .with("purple", rgb(0xc6, 0xa0, 0xf6))
         .with("yellow", rgb(0xee, 0xd4, 0x9f))
-        .with("peach", rgb(0xf5, 0xa9, 0x7f))
+        .with("orange", rgb(0xf5, 0xa9, 0x7f))
         .with("blue", rgb(0x8a, 0xad, 0xf4))
         .with("teal", rgb(0x8b, 0xd5, 0xca))
         .with("red", rgb(0xed, 0x87, 0x96))
         .with("maroon", rgb(0xee, 0x99, 0xa0))
         .with("pink", rgb(0xf5, 0xbd, 0xe6))
-        .with("sapphire", rgb(0x7d, 0xc4, 0xe4))
+        .with("cyan", rgb(0x7d, 0xc4, 0xe4))
         // ---- ANSI-named chrome (IDENTICAL to mocha; theme-independent) ----
         .with("ansi.red", Color::Named(N::Red))
         .with("ansi.green", Color::Named(N::Green))
@@ -163,6 +170,13 @@ pub fn macchiato_palette() -> Palette {
         .with("ansi.magenta", Color::Named(N::Magenta))
         .with("ansi.cyan", Color::Named(N::Cyan))
         .with("ansi.darkgray", Color::Named(N::DarkGray))
+        // ---- Background family (canvas surfaces, T.11.0b) ----
+        .with("base", rgb(0x24, 0x27, 0x3a))
+        .with("mantle", rgb(0x1e, 0x20, 0x30))
+        .with("crust", rgb(0x18, 0x19, 0x26))
+        .with("surface0", rgb(0x36, 0x3a, 0x4f))
+        .with("surface1", rgb(0x49, 0x4d, 0x64))
+        .with("surface2", rgb(0x5b, 0x60, 0x78))
         // ---- Specific tints (diff bgs identical to mocha; cursor line distinct) ----
         .with("diff.add.bg", rgb(0, 50, 0))
         .with("diff.change.bg", rgb(50, 50, 0))
@@ -178,7 +192,7 @@ mod tests {
     #[test]
     fn default_palette_resolves_catppuccin_and_ansi() {
         let p = default_palette();
-        assert_eq!(p.get(&"mauve".into()), Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
+        assert_eq!(p.get(&"purple".into()), Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
         assert_eq!(
             p.get(&"ansi.red".into()),
             Some(Color::Named(NamedColor::Red))
@@ -199,8 +213,8 @@ mod tests {
         // and `cursor_line.bg` is a distinct Macchiato tint.
         let mocha = default_palette();
         let mac = macchiato_palette();
-        assert_eq!(mac.get(&"mauve".into()), Some(Color::Rgb(0xc6, 0xa0, 0xf6)));
-        assert_ne!(mac.get(&"mauve".into()), mocha.get(&"mauve".into()));
+        assert_eq!(mac.get(&"purple".into()), Some(Color::Rgb(0xc6, 0xa0, 0xf6)));
+        assert_ne!(mac.get(&"purple".into()), mocha.get(&"purple".into()));
         assert_eq!(mac.get(&"text".into()), Some(Color::Rgb(0xca, 0xd3, 0xf5)));
         // ANSI chrome identical to mocha.
         assert_eq!(mac.get(&"ansi.red".into()), mocha.get(&"ansi.red".into()));

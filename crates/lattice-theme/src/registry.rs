@@ -451,6 +451,29 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Split separator between panes.",
     );
 
+    // ---- Editor canvas (T.11.0b: palette-driven so a colorscheme /
+    // palette swap recolors the whole canvas — the light-theme seam) ----
+    reg_one(
+        "editor.background",
+        spec().bg("base"),
+        "Editor canvas background.",
+    );
+    reg_one(
+        "editor.foreground",
+        spec().fg("text"),
+        "Editor default foreground text.",
+    );
+    reg_one(
+        "editor.cursor",
+        spec().bg("text").fg("base"),
+        "Block-cursor cell (inverted: bg=text fg=base).",
+    );
+    reg_one(
+        "ui.popup.background",
+        spec().bg("mantle"),
+        "Popup / overlay surface background.",
+    );
+
     // ---- File tree ----
     reg_one(
         "file_tree.dir",
@@ -577,7 +600,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // is retired); document-highlight keeps its 3 distinct kinds.
     reg_one(
         "search.match",
-        spec().bg("overlay0"),
+        spec().bg("overlay"),
         "All hlsearch matches (bg tint).",
     );
     reg_one(
@@ -621,7 +644,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // stays renderer logic applied on top of the resolved base color.
     reg_one(
         "completion.annotation.kind",
-        spec().fg("overlay2"),
+        spec().fg("subtext"),
         "Completion annotation: kind.",
     );
     reg_one(
@@ -636,7 +659,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one(
         "completion.annotation.source",
-        spec().fg("mauve"),
+        spec().fg("purple"),
         "Completion annotation: source.",
     );
     reg_one(
@@ -649,7 +672,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     reg_one("syntax.default", spec().fg("text"), "Default foreground text.");
     reg_one(
         "syntax.comment",
-        spec().fg("overlay0").italic(),
+        spec().fg("overlay").italic(),
         "Block / doc comments.",
     );
     // LineComment is byte-identical to Comment — demonstrates inherit.
@@ -661,18 +684,18 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     reg_one("syntax.string", spec().fg("green"), "String literals.");
     reg_one(
         "syntax.keyword",
-        spec().fg("mauve").bold(),
+        spec().fg("purple").bold(),
         "Language keywords.",
     );
     reg_one("syntax.type", spec().fg("yellow"), "Type names.");
-    reg_one("syntax.number", spec().fg("peach"), "Numeric literals.");
+    reg_one("syntax.number", spec().fg("orange"), "Numeric literals.");
     reg_one("syntax.function", spec().fg("blue"), "Function names.");
-    reg_one("syntax.constant", spec().fg("peach"), "Constants.");
+    reg_one("syntax.constant", spec().fg("orange"), "Constants.");
     reg_one("syntax.variable", spec().fg("text"), "Variables.");
     reg_one("syntax.operator", spec().fg("teal"), "Operators.");
     reg_one(
         "syntax.punctuation",
-        spec().fg("overlay2"),
+        spec().fg("subtext"),
         "Punctuation / delimiters.",
     );
     reg_one("syntax.attribute", spec().fg("red"), "Attributes / annotations.");
@@ -699,7 +722,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one(
         "syntax.heading.2",
-        spec().fg("peach").bold().weight(Weight::Bold).scale(1.4),
+        spec().fg("orange").bold().weight(Weight::Bold).scale(1.4),
         "Markup heading level 2.",
     );
     reg_one(
@@ -719,21 +742,21 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one(
         "syntax.heading.6",
-        spec().fg("mauve").bold().scale(1.05),
+        spec().fg("purple").bold().scale(1.05),
         "Markup heading level 6.",
     );
     reg_one("syntax.bold", spec().fg("maroon").bold(), "Strong / bold markup.");
     reg_one("syntax.italic", spec().fg("pink").italic(), "Emphasis / italic markup.");
     reg_one("syntax.link", spec().fg("blue").underline(), "Markup links.");
-    reg_one("syntax.url", spec().fg("sapphire").underline(), "Bare URLs.");
+    reg_one("syntax.url", spec().fg("cyan").underline(), "Bare URLs.");
     reg_one(
         "syntax.markup_raw",
-        spec().fg("overlay0").dim(),
+        spec().fg("overlay").dim(),
         "Inline code / raw markup.",
     );
     reg_one(
         "syntax.markup",
-        spec().fg("overlay2").bold(),
+        spec().fg("subtext").bold(),
         "Generic markup punctuation.",
     );
 }
@@ -772,6 +795,13 @@ pub struct BuiltinElementIds {
     pub pane_status_inactive: ElementId,
     pub pane_separator: ElementId,
     pub pane_inactive_overlay: ElementId,
+    // T.11.0b — editor canvas (bg / fg / block cursor / popup surface).
+    // Palette-driven so a `:colorscheme` / palette swap recolors the
+    // whole canvas; the readiness for light themes.
+    pub editor_background: ElementId,
+    pub editor_foreground: ElementId,
+    pub editor_cursor: ElementId,
+    pub ui_popup_background: ElementId,
     pub file_tree_dir: ElementId,
     pub file_tree_hidden: ElementId,
     pub file_tree_file: ElementId,
@@ -856,6 +886,10 @@ impl Default for BuiltinElementIds {
             pane_status_inactive: ElementId::INVALID,
             pane_separator: ElementId::INVALID,
             pane_inactive_overlay: ElementId::INVALID,
+            editor_background: ElementId::INVALID,
+            editor_foreground: ElementId::INVALID,
+            editor_cursor: ElementId::INVALID,
+            ui_popup_background: ElementId::INVALID,
             file_tree_dir: ElementId::INVALID,
             file_tree_hidden: ElementId::INVALID,
             file_tree_file: ElementId::INVALID,
@@ -940,6 +974,10 @@ impl BuiltinElementIds {
             pane_status_inactive: id("pane.status.inactive"),
             pane_separator: id("pane.separator"),
             pane_inactive_overlay: id("pane.inactive_overlay"),
+            editor_background: id("editor.background"),
+            editor_foreground: id("editor.foreground"),
+            editor_cursor: id("editor.cursor"),
+            ui_popup_background: id("ui.popup.background"),
             file_tree_dir: id("file_tree.dir"),
             file_tree_hidden: id("file_tree.hidden"),
             file_tree_file: id("file_tree.file"),
@@ -1168,6 +1206,32 @@ mod tests {
     }
 
     #[test]
+    fn editor_canvas_resolves_to_catppuccin_mocha() {
+        // T.11.0b parity net: the canvas elements (bg / fg / block
+        // cursor / popup surface) resolve to the exact legacy
+        // Catppuccin-Mocha literals `GpuiTheme::default()` carried, now
+        // sourced from the palette's background family. A `:colorscheme`
+        // / palette swap recolors them; the default stays byte-identical.
+        let reg = reg();
+        assert_eq!(
+            resolved_of(&reg, "editor.background").bg,
+            Some(Color::Rgb(0x1e, 0x1e, 0x2e))
+        );
+        assert_eq!(
+            resolved_of(&reg, "editor.foreground").fg,
+            Some(Color::Rgb(0xcd, 0xd6, 0xf4))
+        );
+        // Block cursor is inverted: bg = text, fg = base.
+        let cursor = resolved_of(&reg, "editor.cursor");
+        assert_eq!(cursor.bg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+        assert_eq!(cursor.fg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
+        assert_eq!(
+            resolved_of(&reg, "ui.popup.background").bg,
+            Some(Color::Rgb(0x18, 0x18, 0x25))
+        );
+    }
+
+    #[test]
     fn builtin_ids_capture_resolves_cursorline_and_messages_to_legacy() {
         // T.4.d parity net: current-line tint (bg) + *messages* level
         // styles resolve to the legacy literals.
@@ -1379,7 +1443,7 @@ mod tests {
         let a = reg.register(
             ElementName::from_static("x.y"),
             ElementOwner::Core,
-            StyleSpec::new().fg("mauve"),
+            StyleSpec::new().fg("purple"),
             "",
         );
         let b = reg.register(
@@ -1397,7 +1461,7 @@ mod tests {
         reg.register(
             ElementName::from_static("markdown.heading"),
             ElementOwner::Core,
-            StyleSpec::new().fg("mauve").bold(),
+            StyleSpec::new().fg("purple").bold(),
             "",
         );
         // An element whose default inherits an UNREGISTERED specific
@@ -1490,7 +1554,7 @@ mod tests {
             .find(|t| t.name == "catppuccin-macchiato")
             .expect("macchiato registered");
         assert_eq!(
-            theme.palette.get(&crate::PaletteKey::from_static("mauve")),
+            theme.palette.get(&crate::PaletteKey::from_static("purple")),
             Some(Color::Rgb(0xc6, 0xa0, 0xf6))
         );
         assert!(theme.overrides.is_empty());
@@ -1510,7 +1574,7 @@ mod tests {
         // Authoring default references the `mauve` palette key + bold.
         assert_eq!(
             info.default.fg,
-            Some(ColorRef::Palette(crate::PaletteKey::from_static("mauve")))
+            Some(ColorRef::Palette(crate::PaletteKey::from_static("purple")))
         );
         assert_eq!(info.default.modifiers.bold, Some(true));
         // Resolved style is the concrete mocha mauve + bold.
@@ -1544,7 +1608,7 @@ mod tests {
         // The authoring default still references the palette key.
         assert_eq!(
             info.default.fg,
-            Some(ColorRef::Palette(crate::PaletteKey::from_static("mauve")))
+            Some(ColorRef::Palette(crate::PaletteKey::from_static("purple")))
         );
     }
 
@@ -1567,8 +1631,8 @@ mod tests {
         let reg = reg();
         let before = resolved_of(&reg, "syntax.keyword");
         assert_eq!(before.fg, Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
-        // Swap "mauve" to a different color; keyword re-colors.
-        let new_palette = default_palette().with("mauve", Color::Rgb(1, 2, 3));
+        // Swap "purple" to a different color; keyword re-colors.
+        let new_palette = default_palette().with("purple", Color::Rgb(1, 2, 3));
         reg.set_palette(new_palette);
         let after = resolved_of(&reg, "syntax.keyword");
         assert_eq!(after.fg, Some(Color::Rgb(1, 2, 3)));

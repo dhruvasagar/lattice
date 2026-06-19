@@ -781,14 +781,13 @@ impl GpuiApp {
     /// slice unblocks.
     pub fn rebuild_gpui_theme(&mut self) {
         // Phase 5.8.K: live-cascade host_theme → GpuiTheme for the
-        // fields where the host's `Theme` carries a matching colour
-        // today. Fields without a host source (the bulk of the
-        // window-only palette: editor bg/fg, cursor inversion,
-        // popup chrome) keep their Catppuccin defaults until the
-        // host's `Theme` grows window-color fields. The wiring is
-        // already in place — `RendererSignal::ThemeChanged` fires
-        // this method — so adding host fields later flows through
-        // automatically.
+        // fields the resolved element table sources today. T.11.0b
+        // closed the last canvas gap: editor bg/fg, the block-cursor
+        // inversion, and the popup surface now read from the palette-
+        // driven `editor.*` / `ui.popup.background` elements (below), so
+        // a `:colorscheme` / palette swap recolors the whole canvas. The
+        // wiring is driven by `RendererSignal::ThemeChanged` firing this
+        // method, so a palette/theme swap flows through automatically.
         // Slice 3c.final.E.5: theme via published top-level field.
         // T.9: the pane-chrome STYLE fields moved off the host `Theme`
         // onto theme elements; read them from the published resolved
@@ -813,6 +812,36 @@ impl GpuiApp {
         if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
         }
+        // T.11.0b: source the canvas (window bg/fg, block-cursor
+        // inversion, popup surface) from the resolved table so a
+        // `:colorscheme` / palette swap recolors the whole canvas — the
+        // light-theme seam. Each falls back to the GpuiTheme default
+        // (Catppuccin Mocha) when the element leaves the channel unset,
+        // keeping the default render byte-identical.
+        self.theme.background = resolved
+            .get(ids.editor_background)
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.background))
+            .unwrap_or(defaults.background);
+        self.theme.foreground = resolved
+            .get(ids.editor_foreground)
+            .fg
+            .map(|c| c.to_rgb_u32(defaults.foreground))
+            .unwrap_or(defaults.foreground);
+        let editor_cursor = resolved.get(ids.editor_cursor);
+        self.theme.cursor_background = editor_cursor
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.cursor_background))
+            .unwrap_or(defaults.cursor_background);
+        self.theme.cursor_foreground = editor_cursor
+            .fg
+            .map(|c| c.to_rgb_u32(defaults.cursor_foreground))
+            .unwrap_or(defaults.cursor_foreground);
+        self.theme.popup_background = resolved
+            .get(ids.ui_popup_background)
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.popup_background))
+            .unwrap_or(defaults.popup_background);
         // Font family + size: read live from the published options
         // config so `:set ui.font_family=...` takes effect on the
         // next frame without restarting.

@@ -185,6 +185,58 @@ pub fn macchiato_palette() -> Palette {
         .with("cursor_line.bg", rgb(0x36, 0x3a, 0x4f))
 }
 
+/// The Catppuccin **Latte** palette (T.11.1) — the project's first
+/// LIGHT theme. Same key SET as [`default_palette`] (every element
+/// references the same keys; the palette indirection re-colours the
+/// whole surface), but with Latte's light `base` + dark `text` + Latte
+/// accent RGBs. This is the proof that T.11.0b made the canvas
+/// palette-driven: `editor.background` resolves to the light `base` and
+/// `editor.foreground` to the dark `text`, so swapping to Latte
+/// recolours the GPUI canvas light. `ansi.*` stay terminal-named
+/// (theme-independent). The diff tints + cursor-line are LIGHT variants
+/// (the Mocha dark tints would read as near-black blocks on a light
+/// canvas).
+pub fn catppuccin_latte_palette() -> Palette {
+    use NamedColor as N;
+    let rgb = Color::Rgb;
+    Palette::new()
+        // ---- Catppuccin Latte accents (syntax) ----
+        .with("text", rgb(0x4c, 0x4f, 0x69))
+        .with("overlay", rgb(0x9c, 0xa0, 0xb0))
+        .with("subtext", rgb(0x7c, 0x7f, 0x93))
+        .with("green", rgb(0x40, 0xa0, 0x2b))
+        .with("purple", rgb(0x88, 0x39, 0xef))
+        .with("yellow", rgb(0xdf, 0x8e, 0x1d))
+        .with("orange", rgb(0xfe, 0x64, 0x0b))
+        .with("blue", rgb(0x1e, 0x66, 0xf5))
+        .with("teal", rgb(0x17, 0x92, 0x99))
+        .with("red", rgb(0xd2, 0x0f, 0x39))
+        .with("maroon", rgb(0xe6, 0x45, 0x53))
+        .with("pink", rgb(0xea, 0x76, 0xcb))
+        .with("cyan", rgb(0x20, 0x9f, 0xb5))
+        // ---- ANSI-named chrome (theme-independent; same as the others) ----
+        .with("ansi.red", Color::Named(N::Red))
+        .with("ansi.green", Color::Named(N::Green))
+        .with("ansi.yellow", Color::Named(N::Yellow))
+        .with("ansi.blue", Color::Named(N::Blue))
+        .with("ansi.magenta", Color::Named(N::Magenta))
+        .with("ansi.cyan", Color::Named(N::Cyan))
+        .with("ansi.darkgray", Color::Named(N::DarkGray))
+        // ---- Background family (LIGHT canvas surfaces) ----
+        .with("base", rgb(0xef, 0xf1, 0xf5))
+        .with("mantle", rgb(0xe6, 0xe9, 0xef))
+        .with("crust", rgb(0xdc, 0xe0, 0xe8))
+        .with("surface0", rgb(0xcc, 0xd0, 0xda))
+        .with("surface1", rgb(0xbc, 0xc0, 0xcc))
+        .with("surface2", rgb(0xac, 0xb0, 0xbe))
+        // ---- Specific tints (LIGHT variants for a light canvas) ----
+        .with("diff.add.bg", rgb(0xd8, 0xee, 0xd2))
+        .with("diff.change.bg", rgb(0xf0, 0xe8, 0xc8))
+        .with("diff.deletion.bg", rgb(0xf5, 0xd5, 0xd5))
+        .with("diff.conflict.bg", rgb(0xee, 0xd8, 0xee))
+        .with("cursor_line.bg", rgb(0xcc, 0xd0, 0xda))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

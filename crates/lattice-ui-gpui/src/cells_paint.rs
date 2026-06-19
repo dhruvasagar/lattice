@@ -220,6 +220,54 @@ pub fn display_line_to_text_runs(
     (line.text.to_string(), runs, inlay_offsets)
 }
 
+/// F.2 (Thread F): split a display line into a base-size leading prefix
+/// and a scaled remainder, for the emacs heading model — only the
+/// heading *title* scales, the leading `#`/`##` markers stay base size
+/// (`markdown-header-delimiter-face`). Returns `Some((prefix_cols,
+/// title_scale))` where `prefix_cols` is the number of leading display
+/// columns (chars) before the first run carrying a rich `scale > 1.0`
+/// (the `# ` markers, resolved to `1.0`), and `title_scale` is that
+/// run's scale; returns `None` for ordinary lines (no scaled run).
+///
+/// The GPUI peer renders a scaled row in two pieces sharing one baseline
+/// — the prefix at base size, the title at `font_size * title_scale` —
+/// and grows the row height by `title_scale` (variable row height). The
+/// TUI peer has no analogue (a cell grid cannot vary font size); it
+/// degrades to the resolved bold/weight/underline.
+///
+/// O(runs). Inlay / whitespace-marker runs carry no syntax scale and are
+/// treated as base (mirrors [`display_run_to_synthetic_cell`]). Multi-
+/// scale titles (e.g. inline code inside a heading) collapse to the
+/// first scaled run's scale from `prefix_cols` onward — a deliberate
+/// simplification (the common case is `[markers][title]`).
+pub fn heading_scale_split(
+    line: &DisplayLine,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> Option<(u32, f32)> {
+    let text = line.text.as_ref();
+    let mut byte = 0usize;
+    let mut col = 0u32;
+    for run in line.runs.iter() {
+        let run_bytes = run.len as usize;
+        let scale = if run.flags & (cell_flags::INLAY | cell_flags::WS_MARKER) != 0 {
+            1.0
+        } else {
+            lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style)
+                .scale
+                .map(|s| s.as_ratio())
+                .unwrap_or(1.0)
+        };
+        if scale > 1.0 {
+            return Some((col, scale));
+        }
+        let end = (byte + run_bytes).min(text.len());
+        col += text.get(byte..end).map(|s| s.chars().count() as u32).unwrap_or(0);
+        byte = end;
+    }
+    None
+}
+
 /// T.10: the rich-vocabulary attributes a [`DisplayRun`]'s resolved
 /// host [`Style`] carries that the fg+flags [`Cell`] cannot. `weight`
 /// is the visible deliverable (GPUI honors it via `TextRun.font.weight`);
@@ -397,12 +445,16 @@ fn rich_cell_to_text_run(
     if let Some(weight) = rich.weight {
         run.font.weight = weight_to_font_weight(weight);
     }
-    // T.10: scale wired; builtins don't set it pending Layer-2 variable
-    // row height. `TextRun` carries no per-run size (the line's
-    // `font_size` is passed to `shape_line`), so honoring a per-run
-    // scale needs the Layer-2 variable-row-height work — out of T.10's
-    // decided scope. The read stays so the seam is visible; the runtime
-    // multiply (`px(base * scale.as_ratio())`) lands with Layer 2.
+    // F.2 (Thread F): scale is honored at the row level, not per-run.
+    // This gpui's `TextRun` has no per-run font size (the whole shaped
+    // line takes one `font_size`), so `editor_element` reads
+    // [`heading_scale_split`] and renders a scaled row in two pieces
+    // sharing a baseline — the base-size marker prefix + the scaled
+    // title — each shaped at its own `font_size`, with a matching row
+    // height (variable row height). The per-run `scale` read here stays
+    // inert by design — it only feeds [`rich_key`] so a scale change
+    // still flushes the in-progress run group. `family` is still
+    // deferred (no renderer font table).
     let _scale_ratio = rich.scale.map(|s| s.as_ratio()).unwrap_or(1.0);
     run
 }
@@ -548,6 +600,91 @@ mod tests {
             FontWeight::EXTRA_BOLD,
             "syntax.heading.1 resolves to ExtraBold and the run takes it"
         );
+    }
+
+    /// F.2 (Thread F): `heading_scale_split` returns the leading base-
+    /// size marker width + the title scale. For `## Title` the markers
+    /// run (`## `, 3 cols, base) precedes the scaled title run, so the
+    /// split is `(3, 1.4)`. Plain body text returns `None`.
+    #[test]
+    fn heading_scale_split_reports_prefix_and_title_scale() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        // "## " markers (Default, base) + "Title" (Heading2, 1.4x).
+        let text = "## Title";
+        let heading = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun { len: 3, style: lattice_syntax::Style::Default, flags: 0 },
+                    DisplayRun { len: 5, style: lattice_syntax::Style::Heading2, flags: 0 },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (prefix_cols, title_scale) =
+            heading_scale_split(&heading, &resolved, &ids).expect("heading splits");
+        assert_eq!(prefix_cols, 3, "the '## ' markers are the base-size prefix");
+        assert!((title_scale - 1.4).abs() < 1e-3, "title scales at heading.2's 1.4x");
+
+        let body = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from("plain"),
+            runs: std::sync::Arc::from(
+                vec![DisplayRun { len: 5, style: lattice_syntax::Style::Default, flags: 0 }]
+                    .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: 5,
+            fold: None,
+        };
+        assert_eq!(
+            heading_scale_split(&body, &resolved, &ids),
+            None,
+            "plain body text has no scaled run"
+        );
+    }
+
+    /// F.2: a leading inlay/whitespace run carries no syntax scale, so it
+    /// counts toward the base-size prefix; the first genuinely-scaled run
+    /// (the heading title) sets `title_scale`.
+    #[test]
+    fn heading_scale_split_counts_inlay_prefix_as_base() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let text = "# H1";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun { len: 2, style: lattice_syntax::Style::Default, flags: 0 },
+                    DisplayRun { len: 2, style: lattice_syntax::Style::Heading1, flags: 0 },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (prefix_cols, title_scale) =
+            heading_scale_split(&line, &resolved, &ids).expect("splits");
+        assert_eq!(prefix_cols, 2, "'# ' is the 2-col base prefix");
+        assert!((title_scale - 1.6).abs() < 1e-3, "heading.1 title at 1.6x");
     }
 
     /// T.10: two runs that share fg/flags but differ in resolved weight

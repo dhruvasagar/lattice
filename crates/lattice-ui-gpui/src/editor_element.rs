@@ -364,6 +364,25 @@ pub(crate) struct EditorElement {
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
 pub(crate) struct EditorElementLayoutState;
 
+/// F.2 (Thread F): a heading row split into a base-size leading marker
+/// prefix (`# `/`## `) + a scaled title, so only the title scales
+/// (emacs `markdown-header-delimiter-face` keeps the markers base-size).
+/// Both paint paths read this for a scaled row: the active cell path
+/// paints the two column ranges at base / scaled advance sharing one
+/// baseline; the fallback (inactive / folded) path paints
+/// `prefix_shaped` + `title_shaped` side by side. `None` for ordinary
+/// rows (the untouched fast path).
+struct HeadingSplit {
+    /// Leading display columns rendered at base size (the markers).
+    prefix_cols: u32,
+    /// The title's scale (`> 1.0`).
+    title_scale: f32,
+    /// Prefix shaped at base size — fallback path.
+    prefix_shaped: ShapedLine,
+    /// Title shaped at `font_size * title_scale` — fallback path.
+    title_shaped: ShapedLine,
+}
+
 /// State produced in `prepaint`, consumed by `paint`.
 pub(crate) struct EditorElementPrepaintState {
     /// One `ShapedLine` per visible doc row (top-of-viewport
@@ -463,6 +482,19 @@ pub(crate) struct EditorElementPrepaintState {
     /// `cell_matrix` so the renderer and the host scroll model
     /// (which counts `segment_count`) agree on segment geometry.
     wrap_width: u32,
+    /// F.2 (Thread F): per-display-row font-size / row-height multiplier
+    /// (`syntax.heading.N` → `scale`; `1.0` for body + virtual rows).
+    /// Length matches `shaped_text`. `paint` cumulative-sums it into
+    /// per-row tops (variable row height) and scales the per-row glyph
+    /// advance + font metrics, so a heading renders bigger AND wider on
+    /// GPUI. The TUI peer has no analogue (a cell grid cannot vary font
+    /// size); it degrades to the resolved bold/weight/underline.
+    row_scale: Vec<f32>,
+    /// F.2 (Thread F): per-row heading split (base marker prefix + scaled
+    /// title). `Some` only for scaled heading rows; `None` for ordinary
+    /// rows (1:1 with `shaped_text`). Drives the title-only scaling in
+    /// both paint paths so the leading `#` markers stay base-size.
+    row_split: Vec<Option<HeadingSplit>>,
 }
 
 impl IntoElement for EditorElement {
@@ -566,6 +598,14 @@ impl Element for EditorElement {
         // `shaped_text`. `paint` reads it with `wrap_width` to paint
         // the right cell sub-slice for each display row.
         let mut row_segment: Vec<u32> = Vec::with_capacity(row_capacity);
+        // F.2 (Thread F): per-display-row font-size / row-height
+        // multiplier, 1:1 with `shaped_text`. `1.0` for body + virtual
+        // rows; `> 1.0` for scaled heading rows. `paint` cumulative-sums
+        // it into per-row tops (variable row height) + scales the per-row
+        // glyph advance / font metrics. The TUI peer has no analogue.
+        let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
+        // F.2: per-row heading split (None for ordinary rows).
+        let mut row_split: Vec<Option<HeadingSplit>> = Vec::with_capacity(row_capacity);
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
@@ -1002,6 +1042,19 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
+                // F.2: the heading split for this line (base marker
+                // prefix cols + title scale), or `None` for ordinary text.
+                let heading_scale = self
+                    .display_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(line_idx as u32))
+                    .and_then(|dl| {
+                        crate::cells_paint::heading_scale_split(
+                            dl,
+                            &self.resolved_theme,
+                            &self.theme_ids,
+                        )
+                    });
                 push_wrapped_doc_row(
                     line_idx as u32,
                     line,
@@ -1016,12 +1069,15 @@ impl Element for EditorElement {
                     self.gutter_width,
                     &font,
                     font_size,
+                    heading_scale,
                     self.viewport_height,
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,
                     &mut row_meta,
                     &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
@@ -1068,6 +1124,8 @@ impl Element for EditorElement {
                     &mut shaped_gutter,
                     &mut row_meta,
                     &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
@@ -1104,6 +1162,8 @@ impl Element for EditorElement {
                         &mut shaped_gutter,
                         &mut row_meta,
                         &mut row_segment,
+                        &mut row_scale,
+                        &mut row_split,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1154,6 +1214,19 @@ impl Element for EditorElement {
                     &gutter_runs,
                     None,
                 );
+                // F.2: the heading split for this line (base marker
+                // prefix cols + title scale), or `None` for ordinary text.
+                let heading_scale = self
+                    .display_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(meta.line_idx))
+                    .and_then(|dl| {
+                        crate::cells_paint::heading_scale_split(
+                            dl,
+                            &self.resolved_theme,
+                            &self.theme_ids,
+                        )
+                    });
                 let capped = push_wrapped_doc_row(
                     meta.line_idx,
                     line,
@@ -1168,12 +1241,15 @@ impl Element for EditorElement {
                     self.gutter_width,
                     &font,
                     font_size,
+                    heading_scale,
                     self.viewport_height,
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,
                     &mut row_meta,
                     &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
@@ -1204,6 +1280,8 @@ impl Element for EditorElement {
                         &mut shaped_gutter,
                         &mut row_meta,
                         &mut row_segment,
+                        &mut row_scale,
+                        &mut row_split,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1307,9 +1385,20 @@ impl Element for EditorElement {
                                     underline: None,
                                     strikethrough: None,
                                 }];
+                                // F.2: a block cursor on a heading row
+                                // shapes its covered char at that column's
+                                // scale — base over the markers, scaled
+                                // over the title — so the re-stamped glyph
+                                // matches the underlying text.
+                                let cur_scale = match row_split.get(cursor_row as usize) {
+                                    Some(Some(split)) if body_col >= split.prefix_cols => {
+                                        split.title_scale
+                                    }
+                                    _ => 1.0,
+                                };
                                 Some(window.text_system().shape_line(
                                     SharedString::from(ch.to_string()),
-                                    font_size,
+                                    font_size * cur_scale,
                                     &runs,
                                     None,
                                 ))
@@ -1340,6 +1429,8 @@ impl Element for EditorElement {
             font_size,
             text_ascent,
             wrap_width,
+            row_scale,
+            row_split,
         }
     }
 
@@ -1359,6 +1450,66 @@ impl Element for EditorElement {
         let advance = prepaint.glyph_advance;
         let text_origin_x = bounds.origin.x + prepaint.gutter_width_px;
 
+        // F.2 (Thread F): per-display-row vertical metrics for variable
+        // row height. A row's height is `line_height * row_scale[i]`
+        // (1.0 for body + virtual rows; > 1.0 for scaled headings) and
+        // `row_top(i)` is its cumulative top y. Built once here, O(rows);
+        // every paint site below reads by index instead of the old
+        // uniform `bounds.origin.y + line_height * i`. With all-1.0
+        // scales this reduces to the prior arithmetic exactly.
+        let row_count = prepaint.shaped_text.len();
+        let mut row_tops: Vec<Pixels> = Vec::with_capacity(row_count);
+        let mut row_heights: Vec<Pixels> = Vec::with_capacity(row_count);
+        {
+            let mut y = bounds.origin.y;
+            for i in 0..row_count {
+                let s = prepaint.row_scale.get(i).copied().unwrap_or(1.0);
+                row_tops.push(y);
+                let h = line_height * s;
+                row_heights.push(h);
+                y += h;
+            }
+        }
+        // Index helpers with a uniform-height fallback for any row index
+        // beyond the built vecs (defensive; the loops below stay in range).
+        let row_top = |i: usize| -> Pixels {
+            row_tops
+                .get(i)
+                .copied()
+                .unwrap_or(bounds.origin.y + line_height * (i as f32))
+        };
+        let row_h = |i: usize| -> Pixels { row_heights.get(i).copied().unwrap_or(line_height) };
+        // F.2: title-only scaling makes the glyph advance NON-uniform
+        // within a heading row — base over the leading markers, scaled
+        // over the title. `col_x` maps a display column to its x pixel;
+        // `col_scale` gives that column's font scale. Ordinary rows (no
+        // split) reduce to the uniform `text_origin_x + advance * col`.
+        let row_split = &prepaint.row_split;
+        let col_scale = |i: usize, col: u32| -> f32 {
+            match row_split.get(i) {
+                Some(Some(split)) if col >= split.prefix_cols => split.title_scale,
+                _ => 1.0,
+            }
+        };
+        let col_x = |i: usize, col: u32| -> Pixels {
+            match row_split.get(i) {
+                Some(Some(split)) if col > split.prefix_cols => {
+                    text_origin_x
+                        + advance * (split.prefix_cols as f32)
+                        + advance * split.title_scale * ((col - split.prefix_cols) as f32)
+                }
+                _ => text_origin_x + advance * (col as f32),
+            }
+        };
+        // F.2: with variable row height the cumulative stack of
+        // `viewport_height` rows can exceed the pane (the host still
+        // estimates capacity at the uniform row height — see the deferred
+        // F.1 follow-on). Clip rows whose top is at/below the pane bottom
+        // so a tall heading never bleeds over the modeline below. With
+        // all-1.0 scales no row is ever clipped (exactly `viewport_height`
+        // uniform rows fit), so this is a no-op for ordinary buffers.
+        let pane_bottom = bounds.origin.y + bounds.size.height;
+
         // Slice X3.full.3: per-row decoration backgrounds. Layered
         // bottom -> top so the strongest signal wins visually:
         //   cursorline (full row) -> doc_highlight -> hlsearch ->
@@ -1373,11 +1524,11 @@ impl Element for EditorElement {
             // Cursorline: paint a full-row quad on whichever
             // visible row hosts the cursor.
             if let Some((_, cur_row)) = prepaint.cursor_layout {
-                let row_y = bounds.origin.y + line_height * (cur_row as f32);
+                let row_y = row_top(cur_row as usize);
                 let pane_width = bounds.size.width;
                 let row_bounds = Bounds::new(
                     point(bounds.origin.x, row_y),
-                    gpui::size(pane_width, line_height),
+                    gpui::size(pane_width, row_h(cur_row as usize)),
                 );
                 window.paint_quad(fill(row_bounds, rgb(self.cursorline_bg)));
             }
@@ -1393,21 +1544,30 @@ impl Element for EditorElement {
             if quads.is_empty() {
                 continue;
             }
-            let row_y = bounds.origin.y + line_height * (row_idx as f32);
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
             for (col_start, col_end, color) in quads {
-                let quad_x = text_origin_x + advance * (*col_start as f32);
-                let quad_w = advance * ((*col_end - *col_start) as f32);
+                let quad_x = col_x(row_idx, *col_start);
+                let quad_w = col_x(row_idx, *col_end) - quad_x;
                 let quad_bounds =
-                    Bounds::new(point(quad_x, row_y), size(quad_w, line_height));
+                    Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
         }
 
         // Gutter.
         for (i, shaped_g) in prepaint.shaped_gutter.iter().enumerate() {
-            let line_y = bounds.origin.y + line_height * (i as f32);
+            // F.2: the gutter (line number) stays at the base font size,
+            // vertically centered within the (possibly taller) row by
+            // passing the row's height as the line box.
+            let line_y = row_top(i);
+            if line_y >= pane_bottom {
+                break;
+            }
             let origin = point(bounds.origin.x, line_y);
-            if let Err(err) = shaped_g.paint(origin, line_height, window, cx) {
+            if let Err(err) = shaped_g.paint(origin, row_h(i), window, cx) {
                 tracing::warn!(
                     target: "lattice_gpui::editor_element",
                     row = i,
@@ -1431,7 +1591,10 @@ impl Element for EditorElement {
         let ligatures = self.theme.ligatures;
         let use_paint_cells = self.cell_matrix.is_some();
         for (i, shaped_line) in prepaint.shaped_text.iter().enumerate() {
-            let line_y = bounds.origin.y + line_height * (i as f32);
+            let line_y = row_top(i);
+            if line_y >= pane_bottom {
+                break;
+            }
             let origin = point(text_origin_x, line_y);
             let painted_via_cells = if use_paint_cells {
                 let row_meta_entry = prepaint.row_meta.get(i);
@@ -1480,33 +1643,98 @@ impl Element for EditorElement {
                                     && !line_text.is_empty()
                                 {
                                     false
-                                } else if ligatures {
-                                    // LG.1: ligatures on — bg quads from cell
-                                    // matrix, glyphs from ShapedLine::paint so
-                                    // multi-char runs are shaped together and
-                                    // OpenType ligature sequences form.
-                                    crate::paint_cells::paint_cells_row_bg_only(
-                                        seg_cells,
-                                        origin,
-                                        prepaint.glyph_advance,
-                                        line_height,
-                                        window,
-                                    );
-                                    false
                                 } else {
-                                    crate::paint_cells::paint_cells_row(
-                                        seg_cells,
-                                        origin,
-                                        prepaint.glyph_advance,
-                                        line_height,
-                                        prepaint.text_ascent,
-                                        &prepaint.font,
-                                        prepaint.font_size,
-                                        self.theme.foreground,
-                                        &self.glyph_resolver,
-                                        window,
-                                    );
-                                    true
+                                    // F.2 (Thread F): a heading row paints
+                                    // in two pieces sharing ONE baseline —
+                                    // the markers at base size, the title at
+                                    // `title_scale` — so only the title
+                                    // scales (emacs markdown convention).
+                                    // Ordinary rows paint once at base
+                                    // (byte-identical to pre-F.2). LG.1
+                                    // ligatures-on emits bg-only here +
+                                    // glyphs via the ShapedLine fallback.
+                                    match row_split.get(i) {
+                                        Some(Some(sp)) => {
+                                            // Shared baseline = the title's
+                                            // (taller) ascent, so the base
+                                            // markers sit on the title's
+                                            // baseline.
+                                            let shared_ascent =
+                                                prepaint.text_ascent * sp.title_scale;
+                                            let pn = (sp.prefix_cols as usize)
+                                                .min(seg_cells.len());
+                                            let (pre, title) = seg_cells.split_at(pn);
+                                            let title_origin = point(
+                                                origin.x + advance * (pn as f32),
+                                                line_y,
+                                            );
+                                            if ligatures {
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    pre, origin, advance, row_h(i), window,
+                                                );
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    title,
+                                                    title_origin,
+                                                    advance * sp.title_scale,
+                                                    row_h(i),
+                                                    window,
+                                                );
+                                                false
+                                            } else {
+                                                crate::paint_cells::paint_cells_row(
+                                                    pre,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    shared_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                crate::paint_cells::paint_cells_row(
+                                                    title,
+                                                    title_origin,
+                                                    advance * sp.title_scale,
+                                                    row_h(i),
+                                                    shared_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size * sp.title_scale,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                true
+                                            }
+                                        }
+                                        _ => {
+                                            if ligatures {
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    seg_cells,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    window,
+                                                );
+                                                false
+                                            } else {
+                                                crate::paint_cells::paint_cells_row(
+                                                    seg_cells,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    prepaint.text_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                true
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => false,
@@ -1518,14 +1746,44 @@ impl Element for EditorElement {
                 false
             };
             if !painted_via_cells {
-                if let Err(err) = shaped_line.paint(origin, line_height, window, cx) {
-                    tracing::warn!(
-                        target: "lattice_gpui::editor_element",
-                        line_index = self.scroll as usize + i,
-                        pane = self.pane_idx,
-                        error = ?err,
-                        "text ShapedLine::paint failed"
-                    );
+                // F.2: fallback (inactive / folded / ligatures-glyph) path.
+                // A heading row paints its pre-shaped marker prefix (base)
+                // + title (scaled) side by side, sharing one baseline so
+                // the markers stay base-size — kept consistent with the
+                // active cell path above so a focus change never resizes
+                // anything ([[feedback_decorations_update_in_place]]).
+                match row_split.get(i) {
+                    Some(Some(sp)) => {
+                        // Align baselines: gpui paints a line's baseline at
+                        // `origin.y + (line_height + ascent - descent)/2`
+                        // (text_system/line.rs). Shift the base prefix down
+                        // so its baseline matches the taller title's.
+                        let h = row_h(i);
+                        let prefix_y = line_y
+                            + ((sp.title_shaped.ascent - sp.title_shaped.descent)
+                                - (sp.prefix_shaped.ascent - sp.prefix_shaped.descent))
+                                * 0.5;
+                        let title_x =
+                            text_origin_x + advance * (sp.prefix_cols as f32);
+                        let _ = sp.prefix_shaped.paint(
+                            point(text_origin_x, prefix_y),
+                            h,
+                            window,
+                            cx,
+                        );
+                        let _ = sp.title_shaped.paint(point(title_x, line_y), h, window, cx);
+                    }
+                    _ => {
+                        if let Err(err) = shaped_line.paint(origin, row_h(i), window, cx) {
+                            tracing::warn!(
+                                target: "lattice_gpui::editor_element",
+                                line_index = self.scroll as usize + i,
+                                pane = self.pane_idx,
+                                error = ?err,
+                                "text ShapedLine::paint failed"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1539,14 +1797,17 @@ impl Element for EditorElement {
             if segs.is_empty() {
                 continue;
             }
-            let row_y = bounds.origin.y + line_height * (row_idx as f32);
-            let underline_y = row_y + line_height - px(2.0);
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
+            let underline_y = row_y + row_h(row_idx) - px(2.0);
             for (col_start, col_end, color) in segs {
                 if col_end <= col_start {
                     continue;
                 }
-                let quad_x = text_origin_x + advance * (*col_start as f32);
-                let quad_w = advance * ((*col_end - *col_start) as f32);
+                let quad_x = col_x(row_idx, *col_start);
+                let quad_w = col_x(row_idx, *col_end) - quad_x;
                 let quad_bounds =
                     Bounds::new(point(quad_x, underline_y), size(quad_w, px(2.0)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
@@ -1556,16 +1817,25 @@ impl Element for EditorElement {
         // Cursor (painted on top for bar/underline; block re-stamps
         // the covered char in cursor_foreground via shaped_cursor_char).
         if let (Some(cursor), Some((char_col, row))) = (&self.cursor, prepaint.cursor_layout) {
-            let cursor_x = text_origin_x + prepaint.glyph_advance * (char_col as f32);
-            let cursor_y = bounds.origin.y + line_height * (row as f32);
+            // F.2: a cursor on a heading row uses that column's scale +
+            // the row height so the block/bar/underline matches the glyph
+            // it covers — base over the markers, scaled over the title.
+            let advance = prepaint.glyph_advance * col_scale(row as usize, char_col);
+            let row_height = row_h(row as usize);
+            let cursor_x = col_x(row as usize, char_col);
+            let cursor_y = row_top(row as usize);
+            // F.2: cursor clipped past the pane bottom (variable-height
+            // overflow) — nothing more to paint (this is the last block).
+            if cursor_y >= pane_bottom {
+                return;
+            }
             let origin = point(cursor_x, cursor_y);
-            let advance = prepaint.glyph_advance;
             match cursor.shape {
                 CursorShape::Block => {
-                    let cell = Bounds::new(origin, size(advance, line_height));
+                    let cell = Bounds::new(origin, size(advance, row_height));
                     window.paint_quad(fill(cell, rgb(self.theme.cursor_background)));
                     if let Some(shaped) = &prepaint.shaped_cursor_char {
-                        if let Err(err) = shaped.paint(origin, line_height, window, cx) {
+                        if let Err(err) = shaped.paint(origin, row_height, window, cx) {
                             tracing::warn!(
                                 target: "lattice_gpui::editor_element",
                                 pane = self.pane_idx,
@@ -1576,11 +1846,11 @@ impl Element for EditorElement {
                     }
                 }
                 CursorShape::Bar => {
-                    let bar = Bounds::new(origin, size(px(2.0), line_height));
+                    let bar = Bounds::new(origin, size(px(2.0), row_height));
                     window.paint_quad(fill(bar, rgb(self.theme.cursor_background)));
                 }
                 CursorShape::Underline => {
-                    let underline_origin = point(origin.x, origin.y + line_height - px(2.0));
+                    let underline_origin = point(origin.x, origin.y + row_height - px(2.0));
                     let underline = Bounds::new(underline_origin, size(advance, px(2.0)));
                     window.paint_quad(fill(underline, rgb(self.theme.cursor_background)));
                 }
@@ -1957,18 +2227,29 @@ fn push_wrapped_doc_row(
     gutter_width: usize,
     font: &gpui::Font,
     font_size: Pixels,
+    heading_scale: Option<(u32, f32)>,
     viewport_height: u32,
     window: &mut Window,
     shaped_text: &mut Vec<ShapedLine>,
     shaped_gutter: &mut Vec<ShapedLine>,
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
+    row_scale: &mut Vec<f32>,
+    row_split: &mut Vec<Option<HeadingSplit>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
 ) -> bool {
     let total_chars = combined.chars().count();
     let single = seg_count <= 1 || wrap_width == 0;
+    // F.2 (Thread F): only a SINGLE-segment row is eligible for the
+    // heading split (markers base-size + title scaled). A wrapped heading
+    // (rare — wrapping is usually off) renders at base size; the split is
+    // skipped. `shaped_text` is ALWAYS shaped at BASE size — the scaled
+    // rendering for a heading row comes from the `HeadingSplit` built
+    // below, read by both paint paths. Ordinary rows: byte-identical to
+    // pre-F.2.
+    let heading = if single { heading_scale } else { None };
     let has_gutter = gutter_seg0.is_some();
     let mut gutter_seg0 = gutter_seg0;
     for seg in 0..seg_count.max(1) {
@@ -2009,6 +2290,42 @@ fn push_wrapped_doc_row(
         }
         row_meta.push((line_idx, line_text.to_string()));
         row_segment.push(seg);
+        // F.2: build the heading split for an eligible (single-segment)
+        // scaled row — the markers shaped at base, the title at
+        // `font_size * title_scale`, both for the fallback paint path. The
+        // row's height multiplier (`row_scale`) is `title_scale`. Ordinary
+        // rows push `None` + `1.0` (fast path).
+        match heading {
+            Some((prefix_cols, title_scale)) => {
+                let (pre_text, pre_runs) =
+                    slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                let (title_text, title_runs) =
+                    slice_runs_to_char_range(combined, runs, prefix_cols as usize, total_chars);
+                let prefix_shaped = window.text_system().shape_line(
+                    SharedString::from(pre_text),
+                    font_size,
+                    &pre_runs,
+                    None,
+                );
+                let title_shaped = window.text_system().shape_line(
+                    SharedString::from(title_text),
+                    font_size * title_scale,
+                    &title_runs,
+                    None,
+                );
+                row_scale.push(title_scale);
+                row_split.push(Some(HeadingSplit {
+                    prefix_cols,
+                    title_scale,
+                    prefix_shaped,
+                    title_shaped,
+                }));
+            }
+            None => {
+                row_scale.push(1.0);
+                row_split.push(None);
+            }
+        }
         // The full inlay offsets live on segment 0 (the cursor
         // base-row lookup reads them there); continuations don't need
         // them (their overlay/diag quads are already pre-bucketed).
@@ -2072,6 +2389,8 @@ fn push_virtual_row(
     shaped_gutter: &mut Vec<ShapedLine>,
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
+    row_scale: &mut Vec<f32>,
+    row_split: &mut Vec<Option<HeadingSplit>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -2198,6 +2517,9 @@ fn push_virtual_row(
     row_meta.push((u32::MAX, String::new()));
     // W.5: virtual rows are a single display row each (segment 0).
     row_segment.push(0);
+    // F.2: virtual rows render at the base font size (no scaling / split).
+    row_scale.push(1.0);
+    row_split.push(None);
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);

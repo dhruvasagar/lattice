@@ -255,7 +255,7 @@ resolved table + ids into the cell-grid path (`CellsRenderState` →
 3 `:set`-backed chrome fields (T.9) + the non-style glyphs/chars/flags
 (T.6.t).
 
-### T.6 — hoist scattered literals → parity by construction 🗒
+### T.6 — hoist scattered literals → parity by construction ✅
 
 Register builtin elements for the styling currently hardcoded +
 **divergent** between renderers: `search.match` / `search.current`,
@@ -266,7 +266,7 @@ found — parity is now structural, not maintained by hand. Pin: a
 test enumerating these elements asserts both renderers resolve the
 same `Style`.
 
-### T.6.t — dismantle `Theme` (non-style → `ui.*` + delete) 🗒
+### T.6.t — dismantle `Theme` (non-style → `ui.*` + delete) ✅
 
 Capstone of Thread B (design §10.1). Runs once T.4–T.6 have removed
 every *style* reader of `Theme`. Migrate the remaining **non-style**
@@ -295,7 +295,7 @@ in lockstep.
 
 Depends on Thread B (registry live + builtin reads migrated).
 
-### T.7 — mode-registered elements + multibuffer header 🗒
+### T.7 — mode-registered elements + multibuffer header ✅
 
 Expose `register` to modes via `ThemeRegistryHandle`. First real
 consumer: `MultibufferMode` registers
@@ -341,7 +341,7 @@ change buffer B's baked colors.
 
 ## Thread D — surface + rich vocabulary
 
-### T.9 — config + introspection 🚧 (T.9.a landed)
+### T.9 — config + introspection ✅ (T.9.a–d landed)
 
 **T.9.a ✅** (`2ba3ba2b`) — per-element **override API** (design §5.1):
 `ThemeRegistry::set_override(name, spec)` overlays a spec's set fields
@@ -380,15 +380,127 @@ chrome fields migrated off host `Theme` onto overrides
   fields besides syntax). `sync_host_theme_from_config` stops writing
   them to `Theme` and writes registry overrides instead.
 
-### T.10 — GPUI honors rich vocabulary 🗒
+### T.10 — GPUI honors rich vocabulary ✅ (weight; scale → Thread F)
 
-GPUI peer reads `Style.scale` / `.family` / `.weight` into
-`TextRun` font shaping (variable per-run size/family — the Layer-1
-capability, design §6.1). TUI degrade verified (attrs are no-ops;
-bold/colour/underline still applied). First concrete demonstration:
-a markdown heading element with `scale > 1.0` renders larger on
-GPUI, bold on TUI. Bench: per-run font resolution stays
-O(viewport-runs).
+**Landed (`1eba928e`):** GPUI peer reads `Style.weight` into per-run
+`TextRun.font.weight` (finer than the bold bool); demo = heading
+weights (h1 ExtraBold, h2/h3 Bold) render heavier on GPUI, degrade to
+bold on TUI. **Constraint found:** this gpui's `TextRun` has NO
+per-run font size (`shape_line` takes one per-LINE size), so per-run
+`scale` is impossible and was left wired-but-inert. Per-LINE heading
+sizing = variable row height = **Layer 2**, carried to **Thread F**
+(the scale half of T.10's original "renders larger on GPUI" goal lands
+there). `family` deferred (no renderer font table).
+
+---
+
+## Thread F — Layer-2 rich display (scaled text rows)
+
+Amends design §6.2 (2026-06-19): the smallest, most tractable front of
+Layer 2 — **variable row height for scaled text** — is pulled into
+scope; the rest of Layer 2 (inline media, reflow, replaced/hidden
+markup, real-component blocks) stays deferred behind `design.md`
+§5.6.7 Path 4. GPUI-only by physics; the TUI degrades (a fixed cell
+grid cannot vary font size — headings stay bold+colored+underlined).
+First consumer: markdown headings — per-level **size** (`scale`) +
+per-level **colour** (`fg`), titles scaled but the leading `#` markers
+left base-size (the emacs `markdown-header-delimiter-face` convention).
+
+**Ownership (decided 2026-06-19 — Reading A, "headings are core syntax
+substrate"):** `Style::Heading1..6` is part of the universal syntax
+vocabulary (like `Keyword`/`Comment`), so `syntax.heading.1..6` are
+**core** theme elements (`ElementOwner::Core`) carrying the per-level
+scale+colour defaults; the markdown-specific bit (distinguishing heading
+LEVELS) lives in the **markdown grammar query**, where every language's
+queries live. `MarkdownMode` (the major-mode object) registers nothing
+here — correct, because headings aren't markdown-private. **This is
+reused verbatim by future org/AsciiDoc**: same core `syntax.heading.*`
+elements + `Style::HeadingN`, each grammar contributing only its own
+`text.title.N` query mapping. (Reading B — `MarkdownMode` registering
+`markdown.heading.*` — was rejected: it needs a per-language
+`syntax_element_id` indirection for zero visible gain until a second
+mode wants *different* heading styling. See design §4 + the
+substrate-vs-mode rule.)
+
+### F.3 — heading `scale` defaults ✅
+
+Per-level `scale` on `syntax.heading.1..6` (h1 1.6 → h6 1.05, emacs
+`:height`), mirroring how T.10 added `weight`. **Option A** (core
+syntax-element default, NOT T.8 buffer-local remap, confirmed
+2026-06-19): Heading tokens are markdown-exclusive, so a core default
+is effectively buffer-local already; T.8 stays deferred for true
+per-buffer divergence (variable-pitch prose, org with other scales).
+Tests: `heading_builtins_carry_descending_scale` + the resolved-parity
+pins grow the scale. (lattice-theme)
+
+### F.2 — GPUI variable row height, title-only ✅
+
+GPUI peer renders a heading row at variable height with **only the
+title scaled** — the leading `#`/`##` markers stay base-size (emacs
+convention; gpui's `shape_line` is one-size-per-line, so a scaled
+line is split into base-prefix + scaled-title pieces sharing one
+baseline). `cells_paint::heading_scale_split(line)` → `(prefix_cols,
+title_scale)` (O(runs)). Prepaint carries `row_scale` (row height
+multiplier = title scale) + a per-row `HeadingSplit` (the pre-shaped
+prefix/title for the fallback path), both 1:1 with `shaped_text`
+(`shaped_text` itself stays base-size). Paint builds cumulative per-row
+tops + a per-column `col_x`/`col_scale` (advance is non-uniform within
+a heading row), replacing uniform `line_height * i` / `advance * col`
+at every site (cursorline, overlays, gutter, text body, diagnostics,
+cursor):
+- **active cell path**: `paint_cells_row` called twice per heading row
+  (prefix at base advance/font, title at `× title_scale`) with a shared
+  `ascent` so baselines align;
+- **fallback path** (inactive/folded/ligatures-glyph): the pre-shaped
+  prefix + title painted side-by-side, prefix `origin.y` shifted by the
+  gpui baseline formula so both paths look identical → focus-stable
+  ([[feedback_decorations_update_in_place]]).
+
+The gutter stays base-size, centered in the taller row. With no split
+(ordinary rows) the arithmetic is **byte-identical** to pre-F.2. Rows
+past the pane bottom are clipped (no modeline bleed). The **host scroll
+model is unchanged** — a heading is one logical display row, painted
+taller. Tests: `heading_scale_split_reports_prefix_and_title_scale` +
+`_counts_inlay_prefix_as_base`; 108 GPUI lib tests green. **Bench:** no
+dedicated harness — zero per-glyph work added (one O(rows) prepaint
+pass); the keystroke→glyph ratchet guards paint cost. (lattice-ui-gpui)
+
+### F.5 — distinguish heading LEVELS in the markdown grammar ✅
+
+The blocker behind both per-level size AND per-level colour: the
+bundled `tree_sitter_md` block query captures headings level-less
+(`(atx_heading (inline) @text.title)` → all map to `Heading1`), so
+every heading rendered uniform 1.6×/red regardless of `#` count. Fixed
+with a **custom markdown block highlights query**
+(`crates/lattice-syntax/queries/markdown/highlights.scm`, wired in
+`registry.rs` as `MARKDOWN_HIGHLIGHTS_QUERY`) that captures
+`(atx_heading (atx_hN_marker) (inline) @text.title.N)` per level — the
+atx marker nodes are distinct, so each title resolves to its
+`Heading1..6` element and picks up that level's scale (F.3) + colour
+(T.2 defaults: h1 red · h2 peach · h3 yellow · h4 green · h5 blue · h6
+mauve). The level-less `text.title` stays (→ Heading1) for setext
+headings. Verified by GPUI screenshot + pixel-sampling (distinct hue +
+descending height per level). Test:
+`native_markdown_headings_emit_heading_styles` now asserts
+Heading1/2/3 distinct. **Org/AsciiDoc reuse this directly** — same core
+elements, each grammar maps its headings to `text.title.N`.
+(lattice-syntax)
+
+### F.1 — host-side viewport-height accuracy ⏸ DEFERRED
+
+First cut keeps host `viewport_height` a uniform-height estimate, so
+tall on-screen headings let GPUI fit slightly fewer rows than the host
+assumes (last row clipped, not bled). Lands if the clip is visibly
+annoying: make the host height-aware, or have GPUI feed back true
+capacity. Per-line scale is computed renderer-side (the `DisplayMatrix`
+carries semantic `Style` enums; resolution to a concrete `scale`
+happens at the renderer boundary), so no host `DisplayLine` field is
+needed for the first cut.
+
+**Deferred beyond Thread F** (design §6.2 "rest of Layer 2"): inline
+media, proportional reflow, replaced/hidden markup, real-component
+blocks — gated behind `design.md` §5.6.7 Path 4. Proportional
+`family` for prose body needs a renderer font table (T.10 flagged it).
 
 ---
 

@@ -381,7 +381,7 @@ weight: bold, fg: Palette("red")}`). This is squarely in scope.
   defect ([[feedback_icon_palette]] degradation principle generalizes:
   vocabulary the substrate can't honor degrades, it never breaks).
 
-### 6.2 Layer 2 — display/layout transformation (NOT this design)
+### 6.2 Layer 2 — display/layout transformation
 
 The truly rich org/markdown experience — variable **row height**,
 proportional reflow, inline images, folded/replaced markup,
@@ -393,14 +393,44 @@ math). On GPUI this is where "real UI components" live — genuine
 element trees for a rendered block, an image element, a flex table —
 and it is *more* than a font-size attribute.
 
-This is a **separate, larger renderer initiative**, gated behind the
-soft-wrap display-row model and `design.md` §5.6.7 "Path 4 — full
-inline media blocks" (already post-1.0). This design **enables and
-does not foreclose it**: open vocabulary now, renderer reads a
-resolved per-element `Style`, so when the GPUI display pipeline
-learns variable row height + components, a markdown mode's registered
-elements + buffer-local remap (§5) light up richly on GPUI and
-degrade on TUI with **no theme-layer change**.
+> **Amendment (2026-06-19, Thread F).** Layer 2 is no longer one
+> indivisible deferral. Its **smallest, most tractable front —
+> variable row height for *scaled text* (a heading line shaped at
+> `font_size * scale` with a matching taller row)** — is now **in
+> scope and landed on the GPUI peer** (Thread F; first consumer =
+> the builtin `syntax.heading.1..6` `scale` defaults, the emacs
+> `:height` analogue). The gate it was waiting behind (the soft-wrap
+> display-row model) has since landed (W-series), and the host scroll
+> model already counts logical display rows — a heading stays **one**
+> logical row, painted taller, so the host scroll math is unchanged;
+> only the GPUI pixel-mapping (cumulative per-row tops + per-row
+> glyph advance/metrics, O(viewport)) varies. This is a *rejected-
+> alternative-becomes-chosen-path* per CLAUDE.md heuristic #1: the
+> original framing assumed the whole Layer-2 bundle was inseparable;
+> on inspection, scaled-text rows separate cleanly and are
+> independently valuable.
+>
+> **First-cut limitation (tracked, deferred F.1):** the host still
+> estimates viewport row capacity at the *uniform* row height, so
+> when tall headings are on-screen GPUI fits slightly fewer rows than
+> the host assumes; the renderer clips rows past the pane bottom (no
+> bleed over the modeline). Making the host height-aware (or having
+> GPUI feed back true capacity) is the follow-on.
+
+Still deferred (the **rest** of Layer 2 — a separate, larger renderer
+initiative, gated behind `design.md` §5.6.7 "Path 4 — full inline
+media blocks", post-1.0): proportional **reflow**, **inline images**,
+folded/**replaced markup** (hiding the `##` markers), prettified
+entities, and genuine **real-component blocks** (element trees /
+flex tables for a rendered block). The TUI peer honors none of Layer 2
+(a cell grid cannot vary row height or run components); it degrades —
+headings stay bold+colored+underlined via the resolved
+modifiers/weight. This design **enables and does not foreclose** the
+remaining work: open vocabulary now, renderer reads a resolved
+per-element `Style`, so when the GPUI display pipeline learns
+components, a markdown mode's registered elements + buffer-local remap
+(§5) light up richly on GPUI and degrade on TUI with **no theme-layer
+change**.
 
 ### 6.3 The guardrail (paramount #1, non-negotiable)
 

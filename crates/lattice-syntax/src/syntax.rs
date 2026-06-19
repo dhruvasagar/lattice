@@ -1821,11 +1821,14 @@ const MAX: i32 = 10;\n\
 
     #[test]
     fn native_markdown_headings_emit_heading_styles() {
-        assert_has_style(
-            Lang::Markdown,
-            "# H1\n\n## H2\n\n### H3\n\nbody paragraph\n",
-            Style::Heading1,
-        );
+        let src = "# H1\n\n## H2\n\n### H3\n\nbody paragraph\n";
+        assert_has_style(Lang::Markdown, src, Style::Heading1);
+        // Lattice's custom markdown highlights query distinguishes heading
+        // LEVELS (the bundled tree-sitter-md query is level-less). `##` →
+        // Heading2, `###` → Heading3, so the theme can size + colour each
+        // level differently (Thread F + per-level heading colours).
+        assert_has_style(Lang::Markdown, src, Style::Heading2);
+        assert_has_style(Lang::Markdown, src, Style::Heading3);
     }
 
     /// Reproduction (2026-06-03): markdown highlighting must survive

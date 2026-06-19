@@ -34,6 +34,12 @@ const RUST_FOLDS_QUERY: &str = include_str!("../queries/rust/folds.scm");
 const PYTHON_FOLDS_QUERY: &str = include_str!("../queries/python/folds.scm");
 const JAVASCRIPT_FOLDS_QUERY: &str = include_str!("../queries/javascript/folds.scm");
 const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm");
+// Custom markdown (block) highlights — the bundled tree-sitter-md query
+// captures headings level-less (`@text.title`); this one distinguishes
+// `@text.title.1` … `.6` by atx marker so headings get per-level size +
+// colour (see the query file's header + style.rs `text.title.N`).
+const MARKDOWN_HIGHLIGHTS_QUERY: &str =
+    include_str!("../queries/markdown/highlights.scm");
 
 // Symbol queries -- one per language that supports the
 // `gen:tree-sitter-symbol` insert-completion source (Phase
@@ -188,7 +194,7 @@ impl LangRegistry {
             build_config(
                 tree_sitter_md::LANGUAGE.into(),
                 "markdown",
-                tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+                MARKDOWN_HIGHLIGHTS_QUERY,
                 tree_sitter_md::INJECTION_QUERY_BLOCK,
                 "",
                 Some(MARKDOWN_FOLDS_QUERY),

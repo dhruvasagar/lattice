@@ -681,34 +681,45 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // shaping so headings render heavier than body bold; the TUI degrades
     // (any SemiBold-or-heavier weight maps to its bold attribute, and
     // these already set `.bold()`, so the TUI is visually unchanged).
+    //
+    // F.3 (Thread F): heading levels also carry a rich-vocabulary `scale`
+    // (emacs `:height`) descending by level — h1 largest, h6 barely above
+    // body. The GPUI peer honors it via variable row height (F.2): the
+    // whole heading display line is shaped at `font_size * scale`. The TUI
+    // degrades (a fixed cell grid cannot vary font size; headings stay
+    // bold+colored+underlined). Because Heading tokens are markdown-
+    // exclusive, this core syntax-element default IS effectively buffer-
+    // local — only markdown buffers carry these tokens (Option A, design
+    // §6.1; T.8 buffer-local remap stays deferred for true per-buffer
+    // divergence like variable-pitch prose).
     reg_one(
         "syntax.heading.1",
-        spec().fg("red").bold().underline().weight(Weight::ExtraBold),
+        spec().fg("red").bold().underline().weight(Weight::ExtraBold).scale(1.6),
         "Markup heading level 1.",
     );
     reg_one(
         "syntax.heading.2",
-        spec().fg("peach").bold().weight(Weight::Bold),
+        spec().fg("peach").bold().weight(Weight::Bold).scale(1.4),
         "Markup heading level 2.",
     );
     reg_one(
         "syntax.heading.3",
-        spec().fg("yellow").bold().weight(Weight::Bold),
+        spec().fg("yellow").bold().weight(Weight::Bold).scale(1.25),
         "Markup heading level 3.",
     );
     reg_one(
         "syntax.heading.4",
-        spec().fg("green").bold(),
+        spec().fg("green").bold().scale(1.15),
         "Markup heading level 4.",
     );
     reg_one(
         "syntax.heading.5",
-        spec().fg("blue").bold(),
+        spec().fg("blue").bold().scale(1.1),
         "Markup heading level 5.",
     );
     reg_one(
         "syntax.heading.6",
-        spec().fg("mauve").bold(),
+        spec().fg("mauve").bold().scale(1.05),
         "Markup heading level 6.",
     );
     reg_one("syntax.bold", spec().fg("maroon").bold(), "Strong / bold markup.");
@@ -1054,7 +1065,8 @@ mod tests {
             resolved_of(&reg, "syntax.comment"),
             Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).italic()
         );
-        // T.10: heading.1 now also carries the rich `ExtraBold` weight.
+        // T.10: heading.1 carries the rich `ExtraBold` weight; F.3 adds
+        // the rich `scale` (1.6× = FontScale(160)).
         assert_eq!(
             resolved_of(&reg, "syntax.heading.1"),
             Style::empty()
@@ -1062,6 +1074,7 @@ mod tests {
                 .bold()
                 .underline()
                 .weight(Weight::ExtraBold)
+                .scale(FontScale::from_ratio(1.6))
         );
         assert_eq!(
             resolved_of(&reg, "syntax.url"),
@@ -1206,7 +1219,8 @@ mod tests {
             resolved.get(ids.syntax_line_comment),
             resolved.get(ids.syntax_comment)
         );
-        // T.10: heading.1 resolves with the rich `ExtraBold` weight too.
+        // T.10: heading.1 resolves with the rich `ExtraBold` weight too;
+        // F.3 adds the rich `scale` (1.6×).
         assert_eq!(
             resolved.get(ids.syntax_heading_1),
             Style::empty()
@@ -1214,6 +1228,7 @@ mod tests {
                 .bold()
                 .underline()
                 .weight(Weight::ExtraBold)
+                .scale(FontScale::from_ratio(1.6))
         );
         assert_eq!(
             resolved.get(ids.whitespace_trailing),
@@ -1246,6 +1261,37 @@ mod tests {
         // The bold bool + fg survive alongside the weight.
         assert!(resolved.get(ids.syntax_heading_1).modifiers.bold);
         assert!(resolved.get(ids.syntax_heading_1).modifiers.underline);
+    }
+
+    #[test]
+    fn heading_builtins_carry_descending_scale() {
+        // F.3 (Thread F): heading levels carry a rich-vocabulary `scale`
+        // descending by level (emacs `:height`). The GPUI peer honors it
+        // via variable row height (F.2); the TUI degrades (no per-line
+        // font size on a cell grid). Every level sets a scale > 1.0 and
+        // h(n) is strictly larger than h(n+1).
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        let scales = [
+            resolved.get(ids.syntax_heading_1).scale,
+            resolved.get(ids.syntax_heading_2).scale,
+            resolved.get(ids.syntax_heading_3).scale,
+            resolved.get(ids.syntax_heading_4).scale,
+            resolved.get(ids.syntax_heading_5).scale,
+            resolved.get(ids.syntax_heading_6).scale,
+        ];
+        assert_eq!(scales[0], Some(FontScale::from_ratio(1.6)));
+        assert_eq!(scales[1], Some(FontScale::from_ratio(1.4)));
+        assert_eq!(scales[2], Some(FontScale::from_ratio(1.25)));
+        assert_eq!(scales[3], Some(FontScale::from_ratio(1.15)));
+        assert_eq!(scales[4], Some(FontScale::from_ratio(1.1)));
+        assert_eq!(scales[5], Some(FontScale::from_ratio(1.05)));
+        // Strictly descending and all above body (1.0×).
+        for w in scales.windows(2) {
+            assert!(w[0].unwrap().0 > w[1].unwrap().0);
+        }
+        assert!(scales[5].unwrap().0 > FontScale::ONE.0);
     }
 
     #[test]

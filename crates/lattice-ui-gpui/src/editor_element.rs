@@ -202,13 +202,14 @@ pub(crate) struct EditorElement {
     /// `shape_line` panics on embedded newlines so the element
     /// splits on `\n` inside `prepaint`.
     pub(crate) text: Arc<String>,
-    /// Worker-published spans. `spans[i]` covers absolute buffer
-    /// line `scroll + i`. Fallback path — used when the cell
-    /// matrix doesn't have a row for the visible line (boot
-    /// frame before the cell-builder's first publish, folded
-    /// lines, or out-of-coverage / buffer-switch gaps) and for
-    /// inactive panes (which carry `cell_matrix == None` because
-    /// the cells worker publishes only for the active document).
+    /// Worker-published spans — **B4.1 (2026-06-20): no longer read.**
+    /// The fallback that consumed this (`build_runs`' else-branch) now
+    /// renders default-styled (empty spans), so this field is dead
+    /// plumbing: still constructed in `window.rs` but never read. It is
+    /// deleted together with its `window.rs` construction + the host-side
+    /// legacy highlight cache (`highlights_worker` / `VisibleSpans`) in
+    /// B4.2. `#[allow(dead_code)]` keeps the slice green in the interim.
+    #[allow(dead_code)]
     pub(crate) visible_spans: Arc<VisibleSpans>,
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
@@ -648,7 +649,7 @@ impl Element for EditorElement {
         // feeds TUI markdown / help / messages bodies elsewhere.)
         let build_runs =
             |line: &str,
-             rel: usize,
+             _rel: usize,
              line_idx: u32|
              -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
                 // 2026-06-02: parity with TUI cells-empty fallback. A
@@ -663,12 +664,16 @@ impl Element for EditorElement {
                 if let Some(dl) = display_row {
                     display_line_to_text_runs(dl, &self.resolved_theme, &self.theme_ids, &font)
                 } else {
-                    let line_spans: &[StyledSpan] = self
-                        .visible_spans
-                        .spans
-                        .get(rel)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
+                    // B4.1 (2026-06-20): rows the canonical `DisplayMatrix`
+                    // doesn't cover (boot / stale / out-of-window /
+                    // transient post-split) render DEFAULT-styled — empty
+                    // spans, mirroring the TUI's plain-text fallback (DR.3).
+                    // This severs the GPU peer's last `visible_spans` read;
+                    // covered rows (the steady state) get full syntax colour
+                    // from `display_matrix` above. (`build_line_with_inlays`
+                    // still splices LSP inlays; with empty spans the line
+                    // text is default-fg.)
+                    let line_spans: &[StyledSpan] = &[];
                     let inlays_on_line: Vec<(usize, &str)> = sorted_inlays
                         .iter()
                         .filter(|h| h.line == line_idx)

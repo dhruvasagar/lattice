@@ -280,20 +280,28 @@ multibuffer headers, file-tree, diff overlay, headerline) — KEPT.
 (`display_matrix_to_cell_matrix`/`display_line_to_cell_row`) are **KEPT** as
 GPUI's glyph projection. `shape_row_from_cells` was already deleted (B3).
 
-### B4.1 — migrate the last legacy consumers → `DisplayMatrix`  🗒
+### B4.1 — sever the last `visible_spans` consumer (GPUI fallback)  🗒
 
-Both renderers' remaining `visible_spans`/`pane_highlights` consumers move onto
-the canonical `DisplayMatrix` (TUI + GPUI in lockstep):
-- TUI `draw_inactive_document`: render inactive panes from the pane's
-  `DisplayMatrix` (resolve `DisplayLine` runs → ratatui via the host theme — the
-  same `display_line_to_source_spans` the active body uses). Closes the interim
-  "inactive panes have no syntax colour" caveat.
-- GPUI fallback: source folded/boot/inactive rows from `DisplayMatrix`; the
-  `EditorElement.visible_spans` field + `build_line_with_inlays` retire.
-- After this, NO production path reads `visible_spans`/`pane_highlights`/
-  `visible_rows`/`highlights_worker` output.
-- Tests: inactive-pane syntax-colour parity (both renderers);
-  `multibuffer_is_a_regular_buffer` + active-body tests stay green.
+**Re-audit correction (2026-06-20).** The inactive-pane migration this slice
+originally targeted is **already done**: TUI `compose_pane_lines` reads the
+per-pane `DisplayMatrix` (`display_matrix_for_pane(ctx.pane_id)`, **DR.3**) with
+a plain-text fallback — `view.visible_rows` is now **vestigial** (only mentioned
+in comments + the producing load; no render path consumes it). GPUI inactive
+panes likewise render from their per-pane `DisplayMatrix` (**DR.2**); their
+`visible_spans` is set EMPTY. So the *only* remaining live `visible_spans`
+consumer is the **GPUI active-pane fallback**: `build_runs`' else-branch
+(editor_element.rs:666) for rows `DisplayMatrix` doesn't cover (boot / stale /
+out-of-window / transient post-split) feeds `self.visible_spans.spans[rel]` to
+`build_line_with_inlays`.
+
+B4.1 = make that fallback render DEFAULT-styled (pass empty spans), mirroring
+the TUI's plain-text fallback — the covered rows (steady state) already get full
+colour from `display_matrix`; the uncovered transient rows render plain for a
+frame (within the keystroke UX contract). After this, the GPUI
+`EditorElement.visible_spans` field + its `window.rs` construction are unread →
+removed in the same slice (GPUI-contained, green). NO host change here.
+- Tests: GPUI active-body + fallback still green; `multibuffer_is_a_regular_buffer`
+  green. (Inactive-pane colour parity already covered by DR.2/DR.3.)
 
 ### B4.2 — delete the dead legacy highlight cache  🗒
 

@@ -117,7 +117,7 @@ pub use crate::services::ServiceRegistry;
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineRegistry,
-    ModelineRole, Scope, Span, Zone,
+    ModelineRole, ModelineService, ModelineServiceHandle, ModelineSnapshot, Scope, Span, Zone,
 };
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that

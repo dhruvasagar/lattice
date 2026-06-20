@@ -33,17 +33,33 @@ and `ModelineRegistry` (register last-write-wins, remove idempotent,
 `zone_ordered` — Left/Center asc, Right desc, ties by id). 7 unit tests;
 `cargo test -p lattice-mode` green. Zero host/render changes.
 
-### ML.0b — host content store + render snapshot + ModelineService  🗒
-**Design:** modeline.md §4, §5 (content half).
-**Change:** content store (`HashMap<ElementId, ElementContent>`) on
-`Editor` + a `RenderState.modeline` element-snapshot field (mirrors
-`lsp_progress`); a host `ModelineRegistry` instance + `ModelineService`
-(register/update/remove) exposed to modes via the service surface;
-built-in content written by `build_render_state`. No renderer change yet.
-**Artefacts:** *test* — content-store update + snapshot publish round-
-trip; service register/remove through the host. *doc* — §4/§5. *error
-handling* — update/remove for an unknown id is a no-op. **Deps:** ML.0a.
-**Unblocks:** ML.1.
+ML.0b is carved into **ML.0b-1** (the shared service, self-contained in
+`lattice-mode`) and **ML.0b-2** (host wiring — Editor field + render
+snapshot + `ModeContext` accessor).
+
+### ML.0b-1 — ModelineService + snapshot  ✅
+**Design:** modeline.md §4, §5 (service half).
+**Landed:** `lattice-mode::modeline::{ModelineService,
+ModelineServiceHandle, ModelineSnapshot}` — registry + content each
+behind `ArcSwap` (wait-free reads, lock-free updates, `Sync` so a mode's
+spawned task can update from another thread); `register`/`remove`
+(descriptors), `update`/`clear` (content), `snapshot()` →
+`ModelineSnapshot` whose `zone()` resolves zone-ordered
+`(descriptor, content)` pairs and skips empty/absent content (hidden
+this frame). 3 new unit tests (10 total in the module);
+`cargo test -p lattice-mode` green. Zero host changes.
+
+### ML.0b-2 — host content store + render snapshot + ModeContext accessor  🗒
+**Design:** modeline.md §4, §5.
+**Change:** `Editor.modeline: ModelineServiceHandle` (created at boot); a
+`RenderState` modeline element-snapshot field populated each
+`build_render_state` via `modeline.snapshot()`; expose the handle to
+modes through `ModeContext` (the register/update surface modes use in
+ML.3). No renderer change yet.
+**Artefacts:** *test* — `Editor.modeline` → `build_render_state` →
+`RenderState` round-trip; `ModeContext` hands back the same handle.
+*doc* — §4/§5. *error handling* — covered by ML.0b-1 (unknown-id no-op).
+**Deps:** ML.0b-1. **Unblocks:** ML.1.
 
 ### ML.1 — TUI render: zones + built-ins as elements  🗒
 **Design:** §7, §8.
@@ -113,8 +129,8 @@ Plugin Architecture phase (mirrors LSP M.10). **Deps:** ML.4 + plugin host.
 ## Sequence
 
 ```
-ML.0a ─► ML.0b ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
-                                    └► ML.4 (deferred) ─► ML.6 (deferred)
+ML.0a ─► ML.0b-1 ─► ML.0b-2 ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
+                                                 └► ML.4 (deferred) ─► ML.6 (deferred)
 ```
 
 Land ML.0–ML.3 + ML.5 for the configurable, themed, event-driven,

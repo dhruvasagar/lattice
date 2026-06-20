@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use lattice_protocol::ids::CommandId;
 
 /// Stable, namespaced element identifier — `"core.mode"`, `"lsp"`,
@@ -177,7 +178,7 @@ impl ModelineElement {
 /// `on_activate` and remove in `on_deactivate` (plugins via WIT, ML.6).
 /// Holds only descriptors — the churning content lives in the host
 /// content store, not here, so registration is rare and cheap.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ModelineRegistry {
     elements: HashMap<ElementId, ModelineElement>,
 }
@@ -224,6 +225,106 @@ impl ModelineRegistry {
             ord.then_with(|| a.id.0.cmp(&b.id.0))
         });
         v
+    }
+}
+
+/// A published, wait-free snapshot of the modeline state the renderer
+/// reads: descriptors + content, each an `Arc` (cheap clone). The host
+/// takes one per `build_render_state` and stores it in `RenderState`
+/// (ML.0b-2).
+#[derive(Debug, Clone, Default)]
+pub struct ModelineSnapshot {
+    pub registry: Arc<ModelineRegistry>,
+    pub content: Arc<HashMap<ElementId, ElementContent>>,
+}
+
+impl ModelineSnapshot {
+    /// Content for `id`, if any.
+    pub fn content_for(&self, id: &ElementId) -> Option<&ElementContent> {
+        self.content.get(id)
+    }
+
+    /// Zone-ordered `(descriptor, content)` pairs, skipping elements
+    /// with absent or empty content (hidden this frame). This is the
+    /// renderer's per-zone input (ML.1 / ML.2).
+    pub fn zone(&self, zone: Zone) -> Vec<(&ModelineElement, &ElementContent)> {
+        self.registry
+            .zone_ordered(zone)
+            .into_iter()
+            .filter_map(|el| {
+                let c = self.content.get(&el.id)?;
+                (!c.is_empty()).then_some((el, c))
+            })
+            .collect()
+    }
+}
+
+/// Shared modeline service: descriptor registry + content store, each
+/// behind an [`ArcSwap`] for wait-free reads and lock-free updates. The
+/// host holds an `Arc` and reads [`Self::snapshot`] each
+/// `build_render_state`; modes/plugins hold the same `Arc` (via
+/// `ModeContext`, ML.0b-2 / ML.3) and call register/update/remove.
+/// Mirrors `ActionHandlerRegistry`'s `ArcSwap` shape — content updates
+/// may arrive from a mode's spawned task on another thread, so the
+/// store must be `Sync`.
+#[derive(Debug, Default)]
+pub struct ModelineService {
+    registry: ArcSwap<ModelineRegistry>,
+    content: ArcSwap<HashMap<ElementId, ElementContent>>,
+}
+
+/// Shared handle to the [`ModelineService`].
+pub type ModelineServiceHandle = Arc<ModelineService>;
+
+impl ModelineService {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register (or replace) a descriptor. Owner-scoped by the `id`
+    /// namespace (§6); last-write-wins.
+    pub fn register(&self, element: ModelineElement) {
+        self.registry.rcu(|cur| {
+            let mut next = (**cur).clone();
+            next.register(element.clone());
+            next
+        });
+    }
+
+    /// Remove a descriptor (idempotent).
+    pub fn remove(&self, id: &ElementId) {
+        self.registry.rcu(|cur| {
+            let mut next = (**cur).clone();
+            next.remove(id);
+            next
+        });
+    }
+
+    /// Set an element's content. An update for an id with no descriptor
+    /// is harmless — it simply won't render until one is registered.
+    pub fn update(&self, id: ElementId, content: ElementContent) {
+        self.content.rcu(|cur| {
+            let mut next = (**cur).clone();
+            next.insert(id.clone(), content.clone());
+            next
+        });
+    }
+
+    /// Clear an element's content (hides it). Idempotent.
+    pub fn clear(&self, id: &ElementId) {
+        self.content.rcu(|cur| {
+            let mut next = (**cur).clone();
+            next.remove(id);
+            next
+        });
+    }
+
+    /// Wait-free snapshot for the renderer (two `Arc` clones).
+    pub fn snapshot(&self) -> ModelineSnapshot {
+        ModelineSnapshot {
+            registry: self.registry.load_full(),
+            content: self.content.load_full(),
+        }
     }
 }
 
@@ -329,5 +430,47 @@ mod tests {
         assert_eq!(e.scope, Scope::Global);
         assert!(e.interaction.is_some());
         assert_eq!(e.zone, Zone::Center);
+    }
+
+    #[test]
+    fn service_register_update_snapshot() {
+        let svc = ModelineService::new();
+        svc.register(el("lsp", Zone::Right, 0));
+        let role = ModelineRole::new("modeline.normal");
+        svc.update(ElementId::new("lsp"), ElementContent::text("lsp ✓", role));
+        let snap = svc.snapshot();
+        let right = snap.zone(Zone::Right);
+        assert_eq!(right.len(), 1);
+        assert_eq!(right[0].0.id.as_str(), "lsp");
+        assert_eq!(right[0].1.plain(), "lsp ✓");
+        assert_eq!(snap.content_for(&ElementId::new("lsp")).unwrap().plain(), "lsp ✓");
+    }
+
+    #[test]
+    fn service_empty_or_absent_content_is_hidden() {
+        let svc = ModelineService::new();
+        svc.register(el("lsp", Zone::Right, 0));
+        // descriptor exists but no content yet → hidden
+        assert!(svc.snapshot().zone(Zone::Right).is_empty());
+        // explicit empty content → still hidden
+        svc.update(ElementId::new("lsp"), ElementContent::default());
+        assert!(svc.snapshot().zone(Zone::Right).is_empty());
+    }
+
+    #[test]
+    fn service_clear_then_remove() {
+        let svc = ModelineService::new();
+        let role = ModelineRole::new("r");
+        svc.register(el("x", Zone::Left, 0));
+        svc.update(ElementId::new("x"), ElementContent::text("hi", role));
+        assert_eq!(svc.snapshot().zone(Zone::Left).len(), 1);
+        // clear content → hidden, but descriptor remains
+        svc.clear(&ElementId::new("x"));
+        let snap = svc.snapshot();
+        assert!(snap.zone(Zone::Left).is_empty());
+        assert!(snap.registry.get(&ElementId::new("x")).is_some());
+        // remove descriptor
+        svc.remove(&ElementId::new("x"));
+        assert!(svc.snapshot().registry.get(&ElementId::new("x")).is_none());
     }
 }

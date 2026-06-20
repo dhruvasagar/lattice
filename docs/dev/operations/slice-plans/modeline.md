@@ -122,10 +122,38 @@ position, inactive omits the modal label). *bench* —
 N∈{0,8,32,128}). *error handling* — overflow truncates, never panics.
 **Deps:** ML.1a-foundation.
 
-#### ML.1b — theme roles + truncation polish  🗒
-Register `modeline.*` theme roles (active/inactive variants); per-`Span`
-resolution through `ResolvedTheme`; truncation edge-cases. **Deps:**
-ML.1a-render.
+#### ML.1b — theme roles + truncation polish  ✅
+**Landed:** registered 7 `modeline.*` elements in `lattice-theme`
+(`register_builtins` + `BuiltinElementIds`): `modeline.active` (bar bg
+`surface1`), `modeline.inactive` (`surface0` bar + `overlay` fg, the
+uniform muted inactive style), and per-role `modeline.{mode,path,
+position,lang,mode_item}` (blue-bold / text / subtext / teal / subtext).
+**Look (locked w/ Dhruva 2026-06-20):** colored bar + segments
+(lualine/helix), active pane = raised bar with per-role fg, inactive =
+receded uniform-muted bar — chosen over monochrome reverse-video.
+
+**Palette-driven ⇒ all 20 themes covered automatically.** Elements
+reference palette role-keys every builtin palette fills (pinned), so no
+per-theme edits — proven by `every_builtin_theme_themes_the_modeline`
+(applies each theme, asserts modeline elements resolve to themed fg/bg).
+
+**TUI:** `Theme` cache gains the 7 pre-adapted modeline styles (built in
+`build_tui_theme`, version-keyed — never per-frame, per
+`feedback_renderer_cache_protects_ux`) + `Theme::modeline_style(role,
+is_active)` (active = per-role fg patched over the bar bg; inactive =
+uniform muted; unknown/padding = bar base). Renderer rewritten to
+per-`Span`: zone resolution → role-tagged runs (`ModelineSeg`),
+`compose_modeline_segments` lays them out (same Center→Right→Left
+truncation on the styled path), `draw_pane_status_line` paints a ratatui
+`Line` of per-role styled spans.
+
+**Artefacts:** *tests* — `lattice-theme`
+(`resolved_modeline_elements_are_palette_driven`,
+`every_builtin_theme_themes_the_modeline`); `lattice-ui-tui`
+(`default_options_adapt_to_tui_theme_default` extended; per-Span styling
+active vs uniform-muted inactive; compose/truncate on runs;
+width-0/narrow no-panic; TestBackend render parity unchanged). *error
+handling* — truncation saturates, never panics. **Deps:** ML.1a-render.
 
 ### ML.2 — GPUI render parity  🗒
 **Design:** §7, §8, §10.

@@ -2854,66 +2854,102 @@ fn draw_pane_status_line(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let style = if is_active {
-        app.theme.pane_status_active
-    } else {
-        app.theme.pane_status_inactive
-    };
     let width = area.width as usize;
     if width == 0 {
         return;
     }
+    let spans = modeline_spans(app, pane, is_active, width);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
 
+/// One styled run within the modeline: text + its theme role (`None` =
+/// neutral padding / separator, painted as the bar base only).
+type ModelineSeg = (String, Option<lattice_mode::ModelineRole>);
+
+/// Flatten an element's content into role-tagged runs, dropping empty
+/// spans.
+fn content_to_runs(content: lattice_mode::ElementContent) -> Vec<ModelineSeg> {
+    content
+        .spans
+        .into_iter()
+        .filter(|s| !s.text.is_empty())
+        .map(|s| (s.text, Some(s.role)))
+        .collect()
+}
+
+/// Build the per-Span modeline line for `pane` (ML.1b). Resolves each
+/// zone's content into role-tagged runs via the shared host resolver,
+/// lays them out into `width` columns, then maps each role → a ratatui
+/// style through the theme cache ([`crate::theme::Theme::modeline_style`]).
+/// Extracted from [`draw_pane_status_line`] so tests can assert span text
+/// + style without a frame. The whole row sits on the active/inactive
+/// bar; per-role foregrounds compose over it.
+fn modeline_spans(
+    app: &App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    width: usize,
+) -> Vec<Span<'static>> {
     let rs = app.render_state.load();
     let snap = &rs.modeline_elements;
-    // The file-tree / oil / help custom label (M.4 provider mechanism)
-    // is the one renderer-resolved content input; it overrides
-    // `core.path`. Resolved once and threaded into the shared host
-    // resolver so the assembly stays common across peers.
+    // The file-tree / oil / help custom label (M.4 provider mechanism) is
+    // the one renderer-resolved content input; it overrides `core.path`.
+    // Resolved once and threaded into the shared host resolver so the
+    // assembly stays common across peers.
     let provider_label = app
         .pane_render_provider(pane.buffer_id)
         .map(|p| (p.status)(app, pane));
     let provider_ref = provider_label.as_deref();
 
-    let resolve_zone = |zone: lattice_mode::Zone| -> String {
-        snap.registry
-            .zone_ordered(zone)
-            .into_iter()
-            .filter_map(|el| {
-                let id = el.id.as_str();
-                let content = if id.starts_with("core.") {
-                    lattice_host::modeline::resolve_builtin_content(
-                        id,
-                        pane,
-                        is_active,
-                        &rs,
-                        provider_ref,
-                    )
-                } else {
-                    // Pushed elements (modes / plugins, ML.3): content
-                    // comes from the published store, keyed by id.
-                    snap.content_for(&el.id).cloned().unwrap_or_default()
-                };
-                let plain = content.plain();
-                (!plain.is_empty()).then_some(plain)
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+    let resolve_zone = |zone: lattice_mode::Zone| -> Vec<ModelineSeg> {
+        let mut runs: Vec<ModelineSeg> = Vec::new();
+        for el in snap.registry.zone_ordered(zone) {
+            let id = el.id.as_str();
+            let content = if id.starts_with("core.") {
+                lattice_host::modeline::resolve_builtin_content(
+                    id,
+                    pane,
+                    is_active,
+                    &rs,
+                    provider_ref,
+                )
+            } else {
+                // Pushed elements (modes / plugins, ML.3): content from
+                // the published store, keyed by id.
+                snap.content_for(&el.id).cloned().unwrap_or_default()
+            };
+            if content.is_empty() {
+                continue;
+            }
+            // A single-space separator between elements within a zone.
+            if !runs.is_empty() {
+                runs.push((" ".to_string(), None));
+            }
+            runs.extend(content_to_runs(content));
+        }
+        runs
     };
 
     let left = resolve_zone(lattice_mode::Zone::Left);
     let right = resolve_zone(lattice_mode::Zone::Right);
-    // Center: the temporary legacy mode-items pull (retired ML.3).
-    // Empty for provider panes — they own their full label.
+    // Center: the temporary legacy mode-items pull (retired ML.3). Empty
+    // for provider panes — they own their full label.
     let center = if provider_ref.is_some() {
-        String::new()
+        Vec::new()
     } else {
-        lattice_host::modeline::resolve_mode_items_content(pane, &rs).plain()
+        content_to_runs(lattice_host::modeline::resolve_mode_items_content(pane, &rs))
     };
 
-    let row = compose_modeline_row(width, &left, &center, &right);
-    let para = Paragraph::new(Line::from(Span::styled(row, style)));
-    frame.render_widget(para, area);
+    let segments = compose_modeline_segments(width, left, center, right);
+    segments
+        .into_iter()
+        .map(|(text, role)| {
+            let style = app
+                .theme
+                .modeline_style(role.as_ref().map(|r| r.as_str()), is_active);
+            Span::styled(text, style)
+        })
+        .collect()
 }
 
 /// Truncate `s` to at most `max` display columns (char count), adding a
@@ -2934,59 +2970,83 @@ fn truncate_to(s: &str, max: usize) -> String {
     }
 }
 
-/// Lay three zone strings into a `width`-wide row: Left flush-left,
-/// Right flush-right, Center centered in the gap between them. When the
-/// content overflows `width`, sacrifice **Center first, then Right, then
-/// Left** (design §7) — implemented as greedy keep-priority Left > Right
-/// > Center, each block truncated with an ellipsis to its remaining
-/// budget. Saturating arithmetic throughout: never panics, and the
-/// blocks never overlap (≥1 column of separation between any two
-/// non-empty blocks). `width == 0` ⇒ empty.
-fn compose_modeline_row(width: usize, left: &str, center: &str, right: &str) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let cw = |s: &str| s.chars().count();
+/// Total display width (char count) of a run list.
+fn runs_width(runs: &[ModelineSeg]) -> usize {
+    runs.iter().map(|(t, _)| t.chars().count()).sum()
+}
 
+/// Truncate a run list to at most `max` columns, ellipsising the run that
+/// straddles the boundary (preserving its role). Never panics.
+fn truncate_runs(runs: Vec<ModelineSeg>, max: usize) -> Vec<ModelineSeg> {
+    let mut out: Vec<ModelineSeg> = Vec::new();
+    let mut used = 0usize;
+    for (text, role) in runs {
+        let w = text.chars().count();
+        if used + w <= max {
+            used += w;
+            out.push((text, role));
+        } else {
+            let remaining = max - used;
+            if remaining > 0 {
+                out.push((truncate_to(&text, remaining), role));
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// Lay three role-tagged run lists into a `width`-wide row of styled
+/// segments: Left flush-left, Right flush-right (block right-aligned),
+/// Center centered in the gap. On overflow, sacrifice **Center first,
+/// then Right, then Left** (design §7) via greedy keep-priority
+/// Left > Right > Center, each block ellipsised to its remaining budget.
+/// Padding / separator segments carry no role (`None`) → the bar base.
+/// The returned segments sum to exactly `width` columns (empty when
+/// `width == 0`). Saturating throughout: never panics, blocks never
+/// overlap (≥1 column between any two non-empty blocks).
+fn compose_modeline_segments(
+    width: usize,
+    left: Vec<ModelineSeg>,
+    center: Vec<ModelineSeg>,
+    right: Vec<ModelineSeg>,
+) -> Vec<ModelineSeg> {
+    if width == 0 {
+        return Vec::new();
+    }
     // Left is highest-priority: keep as much as fits.
-    let left = truncate_to(left, width);
-    let used_l = cw(&left);
+    let left = truncate_runs(left, width);
+    let used_l = runs_width(&left);
     // Right gets the remainder after Left + a 1-col separator.
     let sep_lr = if used_l > 0 { 1 } else { 0 };
-    let right = truncate_to(right, width.saturating_sub(used_l + sep_lr));
-    let used_r = cw(&right);
+    let right = truncate_runs(right, width.saturating_sub(used_l + sep_lr));
+    let used_r = runs_width(&right);
     // Center gets the gap minus a 1-col pad on each abutting side.
     let pad_l = if used_l > 0 { 1 } else { 0 };
     let pad_r = if used_r > 0 { 1 } else { 0 };
     let center_budget = width.saturating_sub(used_l + used_r + pad_l + pad_r);
-    let center = truncate_to(center, center_budget);
-    let used_c = cw(&center);
+    let center = truncate_runs(center, center_budget);
+    let used_c = runs_width(&center);
 
-    let mut buf: Vec<char> = vec![' '; width];
-    // Left at col 0.
-    for (i, ch) in left.chars().enumerate() {
-        buf[i] = ch;
-    }
-    // Right flush against the far edge.
-    let r_start = width - used_r;
-    for (i, ch) in right.chars().enumerate() {
-        buf[r_start + i] = ch;
-    }
-    // Center within the [used_l, r_start) region.
+    let mut out: Vec<ModelineSeg> = Vec::new();
+    out.extend(left);
+    // Region between the left block and the right block (≥ 0 by budget).
+    let region_w = width - used_l - used_r;
     if used_c > 0 {
-        let region_start = used_l;
-        let region_end = r_start; // exclusive
-        let region_w = region_end.saturating_sub(region_start);
-        let offset = region_w.saturating_sub(used_c) / 2;
-        let c_start = region_start + offset;
-        for (i, ch) in center.chars().enumerate() {
-            let idx = c_start + i;
-            if idx < region_end {
-                buf[idx] = ch;
-            }
+        let offset = (region_w - used_c) / 2;
+        if offset > 0 {
+            out.push((" ".repeat(offset), None));
         }
+        out.extend(center);
+        let after = region_w - used_c - offset;
+        if after > 0 {
+            out.push((" ".repeat(after), None));
+        }
+    } else if region_w > 0 {
+        out.push((" ".repeat(region_w), None));
     }
-    buf.into_iter().collect()
+    out.extend(right);
+    out
 }
 
 /// DR.3 (decoration-retention): render a Document pane that isn't
@@ -8178,9 +8238,23 @@ mod tests {
         assert_eq!(truncate_to("hello", 0), "");
     }
 
+    /// A role-less run, for layout tests where the role is irrelevant.
+    fn run(text: &str) -> ModelineSeg {
+        (text.to_string(), None)
+    }
+    /// Concatenated text of a composed segment list.
+    fn seg_text(segs: &[ModelineSeg]) -> String {
+        segs.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
     #[test]
     fn compose_row_places_left_and_right_at_edges() {
-        let row = compose_modeline_row(20, "L", "", "R");
+        let row = seg_text(&compose_modeline_segments(
+            20,
+            vec![run("L")],
+            vec![],
+            vec![run("R")],
+        ));
         assert_eq!(row.chars().count(), 20, "row fills width");
         assert!(row.starts_with('L'), "left flush-left: {row:?}");
         assert!(row.ends_with('R'), "right flush-right: {row:?}");
@@ -8189,26 +8263,86 @@ mod tests {
     #[test]
     fn compose_row_centers_center_block() {
         // width 11, "mid" (3) ⇒ offset (11-3)/2 = 4.
-        assert_eq!(compose_modeline_row(11, "", "mid", ""), "    mid    ");
+        let row = seg_text(&compose_modeline_segments(
+            11,
+            vec![],
+            vec![run("mid")],
+            vec![],
+        ));
+        assert_eq!(row, "    mid    ");
     }
 
     #[test]
     fn compose_row_width_zero_is_empty() {
-        assert_eq!(compose_modeline_row(0, "L", "C", "R"), "");
+        assert!(
+            compose_modeline_segments(0, vec![run("L")], vec![run("C")], vec![run("R")]).is_empty()
+        );
     }
 
     #[test]
     fn compose_row_overflow_sacrifices_center_then_right_then_left() {
-        let (left, center, right) = ("LEFTLEFT", "CENTER", "RIGHTRIGHT");
         // width 12: left(8) kept; sep(1); right budget 3 ⇒ "RI…";
         // center budget saturates to 0 ⇒ dropped first.
-        let row = compose_modeline_row(12, left, center, right);
+        let row = seg_text(&compose_modeline_segments(
+            12,
+            vec![run("LEFTLEFT")],
+            vec![run("CENTER")],
+            vec![run("RIGHTRIGHT")],
+        ));
         assert_eq!(row.chars().count(), 12, "row fills width");
         assert!(row.starts_with("LEFTLEFT"), "left preserved last: {row:?}");
         assert!(!row.contains("CENTER"), "center sacrificed first: {row:?}");
         assert!(row.contains('…'), "right truncated with ellipsis: {row:?}");
         // Extreme narrow width must not panic.
-        let _ = compose_modeline_row(1, left, center, right);
+        let _ = compose_modeline_segments(
+            1,
+            vec![run("LEFTLEFT")],
+            vec![run("CENTER")],
+            vec![run("RIGHTRIGHT")],
+        );
+    }
+
+    /// ML.1b: active-pane spans carry per-role foregrounds composed over
+    /// the active bar background (the `[NORMAL]` mode span is blue + bold
+    /// on the surface1 bar in the default theme).
+    #[test]
+    fn modeline_active_spans_carry_per_role_styles() {
+        use ratatui::style::{Color, Modifier};
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let spans = modeline_spans(&app, &pane, true, 60);
+
+        let mode = spans
+            .iter()
+            .find(|s| s.content.contains("[NORMAL]"))
+            .expect("mode span present");
+        assert_eq!(mode.style.fg, Some(Color::Rgb(0x89, 0xb4, 0xfa)), "mode fg = blue");
+        assert!(
+            mode.style.add_modifier.contains(Modifier::BOLD),
+            "mode is bold"
+        );
+        // Every span (segments + padding) sits on the active bar bg.
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.style.bg == Some(Color::Rgb(0x45, 0x47, 0x5a))),
+            "whole active row sits on the surface1 bar"
+        );
+    }
+
+    /// ML.1b: inactive-pane spans are uniformly muted (the single
+    /// `modeline.inactive` bar style — no per-role colour).
+    #[test]
+    fn modeline_inactive_spans_are_uniformly_muted() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let spans = modeline_spans(&app, &pane, false, 60);
+        let muted = app.theme.modeline_inactive;
+        assert!(!spans.is_empty());
+        assert!(
+            spans.iter().all(|s| s.style == muted),
+            "inactive row is uniformly muted (no per-role fg)"
+        );
     }
 
     /// Render `draw_pane_status_line` to a `TestBackend` and read the

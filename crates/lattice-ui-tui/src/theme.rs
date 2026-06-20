@@ -49,6 +49,26 @@ pub struct Theme {
     /// that disable per-pane status lines.
     pub pane_separator_horizontal: char,
 
+    // ---- Modeline (ML.1b): per-role segments + active/inactive bar ----
+    // Pre-adapted from the resolved table (rebuilt at theme-change rate,
+    // never per frame). [`Theme::modeline_style`] composes a per-role fg
+    // over the active bar bg, or returns the muted inactive bar.
+    /// Active pane's modeline bar base (background only).
+    pub modeline_active: Style,
+    /// Inactive pane's modeline bar (uniform muted; applied to every
+    /// span on an inactive pane, no per-role colour).
+    pub modeline_inactive: Style,
+    /// Active-pane foreground for the modal-state label (`[NORMAL]`).
+    pub modeline_mode: Style,
+    /// Active-pane foreground for the buffer-path segment.
+    pub modeline_path: Style,
+    /// Active-pane foreground for the cursor line:column segment.
+    pub modeline_position: Style,
+    /// Active-pane foreground for the language-label segment.
+    pub modeline_lang: Style,
+    /// Active-pane foreground for mode-contributed items (LSP / diff).
+    pub modeline_mode_item: Style,
+
     /// Style for directory entries in file-tree and oil buffers.
     pub file_tree_dir_style: Style,
     /// Style for hidden files (names starting with `.`).
@@ -166,6 +186,20 @@ impl Default for Theme {
             pane_separator: Style::new().fg(Color::DarkGray),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
+            // ML.1b: defaults mirror the resolved `modeline.*` elements
+            // under the default (Catppuccin Mocha) palette — surface1 bar,
+            // blue/text/subtext/teal per-role fg, surface0+overlay muted.
+            modeline_active: Style::new().bg(Color::Rgb(0x45, 0x47, 0x5a)),
+            modeline_inactive: Style::new()
+                .bg(Color::Rgb(0x31, 0x32, 0x44))
+                .fg(Color::Rgb(0x6c, 0x70, 0x86)),
+            modeline_mode: Style::new()
+                .fg(Color::Rgb(0x89, 0xb4, 0xfa))
+                .add_modifier(Modifier::BOLD),
+            modeline_path: Style::new().fg(Color::Rgb(0xcd, 0xd6, 0xf4)),
+            modeline_position: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
+            modeline_lang: Style::new().fg(Color::Rgb(0x94, 0xe2, 0xd5)),
+            modeline_mode_item: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
             // Severity glyphs: solid square / triangle / circle /
             // dot. Same shapes vim's nvim-lsp / VS Code use --
             // immediately readable, terminal-safe.
@@ -210,6 +244,30 @@ impl Default for Theme {
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
             diff_conflict_line_bg: Color::Rgb(60, 0, 60),
         }
+    }
+}
+
+impl Theme {
+    /// Resolve a modeline span's style from its `ModelineRole` and the
+    /// pane's active state (ML.1b). Inactive panes render uniformly muted
+    /// (the `modeline.inactive` bar); active panes compose the per-role
+    /// foreground over the `modeline.active` bar background. Unknown roles
+    /// and padding (`None`) get the bar base only — so a plugin's
+    /// not-yet-themed role still sits on the bar rather than vanishing.
+    pub fn modeline_style(&self, role: Option<&str>, is_active: bool) -> Style {
+        use lattice_host::modeline as ml;
+        if !is_active {
+            return self.modeline_inactive;
+        }
+        let fg = match role {
+            Some(ml::ROLE_MODE) => self.modeline_mode,
+            Some(ml::ROLE_PATH) => self.modeline_path,
+            Some(ml::ROLE_POSITION) => self.modeline_position,
+            Some(ml::ROLE_LANG) => self.modeline_lang,
+            Some(ml::ROLE_MODE_ITEM) => self.modeline_mode_item,
+            _ => Style::default(),
+        };
+        self.modeline_active.patch(fg)
     }
 }
 
@@ -385,6 +443,15 @@ pub fn build_tui_theme(
             // registry overrides (not host `Theme`).
             pane_status_active: resolved_style(ids.pane_status_active),
             pane_status_inactive: resolved_style(ids.pane_status_inactive),
+            // ML.1b: modeline per-role + bar styles from the resolved
+            // `modeline.*` elements (palette-driven across all themes).
+            modeline_active: resolved_style(ids.modeline_active),
+            modeline_inactive: resolved_style(ids.modeline_inactive),
+            modeline_mode: resolved_style(ids.modeline_mode),
+            modeline_path: resolved_style(ids.modeline_path),
+            modeline_position: resolved_style(ids.modeline_position),
+            modeline_lang: resolved_style(ids.modeline_lang),
+            modeline_mode_item: resolved_style(ids.modeline_mode_item),
             // T.4.c: inactive-pane overlay + file-tree styles source
             // from the resolved table. Separator chars + `dim`/
             // `nerd_fonts` flags stay on `h` (non-style → T.6.t).

@@ -541,6 +541,48 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Split separator between panes.",
     );
 
+    // ---- Modeline (ML.1b): per-role segments on a palette-driven bar.
+    // Active pane = a raised `surface1` bar with per-role foregrounds
+    // (lualine/helix convention); inactive = a receded `surface0` bar,
+    // uniformly muted (`overlay`). Palette-keyed so all builtin themes
+    // resolve appropriately without per-theme edits. The `modeline.*`
+    // role keys mirror `lattice_host::modeline::ROLE_*`.
+    reg_one(
+        "modeline.active",
+        spec().bg("surface1"),
+        "Active pane's modeline bar (base background; per-role fg overlays it).",
+    );
+    reg_one(
+        "modeline.inactive",
+        spec().bg("surface0").fg("overlay"),
+        "Inactive pane's modeline bar (uniform muted; no per-role colour).",
+    );
+    reg_one(
+        "modeline.mode",
+        spec().fg("blue").bold(),
+        "Modal-state label (`[NORMAL]`) in the active modeline.",
+    );
+    reg_one(
+        "modeline.path",
+        spec().fg("text"),
+        "Buffer path segment in the active modeline.",
+    );
+    reg_one(
+        "modeline.position",
+        spec().fg("subtext"),
+        "Cursor line:column segment in the active modeline.",
+    );
+    reg_one(
+        "modeline.lang",
+        spec().fg("teal"),
+        "Language label segment in the active modeline.",
+    );
+    reg_one(
+        "modeline.mode_item",
+        spec().fg("subtext"),
+        "Mode-contributed items (LSP / diff) in the active modeline.",
+    );
+
     // ---- Editor canvas (T.11.0b: palette-driven so a colorscheme /
     // palette swap recolors the whole canvas — the light-theme seam) ----
     reg_one(
@@ -885,6 +927,14 @@ pub struct BuiltinElementIds {
     pub pane_status_inactive: ElementId,
     pub pane_separator: ElementId,
     pub pane_inactive_overlay: ElementId,
+    // ML.1b — modeline per-role segments + active/inactive bar base.
+    pub modeline_active: ElementId,
+    pub modeline_inactive: ElementId,
+    pub modeline_mode: ElementId,
+    pub modeline_path: ElementId,
+    pub modeline_position: ElementId,
+    pub modeline_lang: ElementId,
+    pub modeline_mode_item: ElementId,
     // T.11.0b — editor canvas (bg / fg / block cursor / popup surface).
     // Palette-driven so a `:colorscheme` / palette swap recolors the
     // whole canvas; the readiness for light themes.
@@ -976,6 +1026,13 @@ impl Default for BuiltinElementIds {
             pane_status_inactive: ElementId::INVALID,
             pane_separator: ElementId::INVALID,
             pane_inactive_overlay: ElementId::INVALID,
+            modeline_active: ElementId::INVALID,
+            modeline_inactive: ElementId::INVALID,
+            modeline_mode: ElementId::INVALID,
+            modeline_path: ElementId::INVALID,
+            modeline_position: ElementId::INVALID,
+            modeline_lang: ElementId::INVALID,
+            modeline_mode_item: ElementId::INVALID,
             editor_background: ElementId::INVALID,
             editor_foreground: ElementId::INVALID,
             editor_cursor: ElementId::INVALID,
@@ -1064,6 +1121,13 @@ impl BuiltinElementIds {
             pane_status_inactive: id("pane.status.inactive"),
             pane_separator: id("pane.separator"),
             pane_inactive_overlay: id("pane.inactive_overlay"),
+            modeline_active: id("modeline.active"),
+            modeline_inactive: id("modeline.inactive"),
+            modeline_mode: id("modeline.mode"),
+            modeline_path: id("modeline.path"),
+            modeline_position: id("modeline.position"),
+            modeline_lang: id("modeline.lang"),
+            modeline_mode_item: id("modeline.mode_item"),
             editor_background: id("editor.background"),
             editor_foreground: id("editor.foreground"),
             editor_cursor: id("editor.cursor"),
@@ -1208,6 +1272,83 @@ mod tests {
             resolved_of(&reg, "syntax.url"),
             Style::empty().fg(Color::Rgb(0x74, 0xc7, 0xec)).underline()
         );
+    }
+
+    /// ML.1b: the default theme resolves the modeline elements to their
+    /// palette-driven colours (Catppuccin Mocha: blue/text/subtext/teal
+    /// + surface1/surface0/overlay).
+    #[test]
+    fn resolved_modeline_elements_are_palette_driven() {
+        let reg = reg();
+        assert_eq!(
+            resolved_of(&reg, "modeline.active"),
+            Style::empty().bg(Color::Rgb(0x45, 0x47, 0x5a)) // surface1
+        );
+        assert_eq!(
+            resolved_of(&reg, "modeline.inactive"),
+            Style::empty()
+                .bg(Color::Rgb(0x31, 0x32, 0x44)) // surface0
+                .fg(Color::Rgb(0x6c, 0x70, 0x86)) // overlay
+        );
+        assert_eq!(
+            resolved_of(&reg, "modeline.mode"),
+            Style::empty().fg(Color::Rgb(0x89, 0xb4, 0xfa)).bold() // blue
+        );
+        assert_eq!(
+            resolved_of(&reg, "modeline.path"),
+            Style::empty().fg(Color::Rgb(0xcd, 0xd6, 0xf4)) // text
+        );
+        assert_eq!(
+            resolved_of(&reg, "modeline.lang"),
+            Style::empty().fg(Color::Rgb(0x94, 0xe2, 0xd5)) // teal
+        );
+    }
+
+    /// ML.1b: EVERY builtin theme must resolve the modeline elements to a
+    /// themed style (fg/bg set, no INVALID fallback). This is the
+    /// "20 themes appropriately" guarantee — the elements are
+    /// palette-keyed, so each theme's palette supplies its own colours.
+    #[test]
+    fn every_builtin_theme_themes_the_modeline() {
+        for theme in crate::themes::builtin_themes() {
+            let reg = reg();
+            assert!(
+                reg.apply_theme(theme.name),
+                "theme `{}` should be registered",
+                theme.name
+            );
+            let resolved = reg.resolved();
+            let style = |name: &'static str| {
+                let id = reg
+                    .id(&ElementName::from_static(name))
+                    .expect("modeline element registered");
+                resolved.get(id)
+            };
+            // Bars carry a background; per-role segments carry a foreground.
+            assert!(
+                style("modeline.active").bg.is_some(),
+                "theme `{}`: modeline.active needs a bar bg",
+                theme.name
+            );
+            assert!(
+                style("modeline.inactive").bg.is_some() && style("modeline.inactive").fg.is_some(),
+                "theme `{}`: modeline.inactive needs a muted bar",
+                theme.name
+            );
+            for role in [
+                "modeline.mode",
+                "modeline.path",
+                "modeline.position",
+                "modeline.lang",
+                "modeline.mode_item",
+            ] {
+                assert!(
+                    style(role).fg.is_some(),
+                    "theme `{}`: {role} needs a themed fg",
+                    theme.name
+                );
+            }
+        }
     }
 
     #[test]

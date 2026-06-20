@@ -325,41 +325,19 @@ pub struct App {
     /// the actor thread and read here -- identical contract,
     /// different writer.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::RenderState>>,
-    /// Phase 5.8.AF.5 / Slice 3c.final.E.1: renderer-owned clone
-    /// of the editor's `syntax_visible_spans_cell`. The cell is
-    /// the worker's output channel — written by
-    /// `lattice_host::highlights_worker::recompute`, read by
-    /// `FrameView::from_app`. Caching the `Arc` on App matches
-    /// the `render_state` pattern (slice 3c.atomic.A): pre-swap
-    /// this is a direct clone of `editor.syntax_visible_spans_cell`
-    /// at construction; post-swap the same Arc comes from the
-    /// actor handle. Reader code reads through this field instead
-    /// of `self.editor.syntax_visible_spans_cell` so the swap is
-    /// a one-line change to App's constructor.
-    pub syntax_visible_spans_cell: std::sync::Arc<
-        arc_swap::ArcSwap<lattice_host::render_state::VisibleSpans>,
-    >,
-    /// Perf plan A.2 slice A.2a: renderer-owned clone of the
-    /// editor's parallel `syntax_visible_rows_cell`. Same role +
-    /// stability rationale as `syntax_visible_spans_cell` (see
-    /// docs above) — the TUI App keeps a clone so the actor swap
-    /// can re-point this without touching every reader.
-    ///
-    /// The TUI compose loop does not yet consume `VisibleRows`
-    /// (its existing `StyledSpan` grid path stays via
-    /// `syntax_visible_spans_cell`); this cell is plumbed so the
-    /// host worker can write through it on every recompute and so
-    /// `refresh_highlights` can pass the 3rd `recompute` argument
-    /// without an actor round-trip. TUI migration to read
-    /// `visible_rows` directly is a follow-up slice.
-    pub syntax_visible_rows_cell: std::sync::Arc<
-        arc_swap::ArcSwap<lattice_host::render_state::VisibleRows>,
-    >,
     /// Perf plan B.2 slice B.2.a: renderer-owned clone of the
-    /// editor's `syntax_static_overlay_quads_cell`. Same role +
-    /// stability rationale as `syntax_visible_rows_cell` — the
-    /// TUI App keeps a clone so `refresh_highlights` can pass
-    /// the 4th `recompute` argument without an actor round-trip.
+    /// editor's `syntax_static_overlay_quads_cell`. The cell is the
+    /// overlay worker's output channel — written by
+    /// `lattice_host::overlay_worker::recompute`, read by the
+    /// per-frame overlay paint path. Caching the `Arc` on App
+    /// matches the `render_state` pattern (slice 3c.atomic.A):
+    /// pre-swap this is a direct clone at construction; post-swap
+    /// the same Arc comes from the actor handle.
+    ///
+    /// display-line B4.2: the dead `syntax_visible_spans_cell` /
+    /// `syntax_visible_rows_cell` clones were deleted with the
+    /// overlay worker's span/row cache; this is the only worker
+    /// output cell the App keeps a clone of now.
     pub syntax_static_overlay_quads_cell: std::sync::Arc<
         arc_swap::ArcSwap<lattice_host::render_state::StaticOverlayQuads>,
     >,

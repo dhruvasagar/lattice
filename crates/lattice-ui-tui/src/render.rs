@@ -54,14 +54,6 @@ use crate::app::{App, EchoLevel, Fold};
 ///   directly through this borrowed reference.
 /// - `folds: Arc<[Fold]>` -- frozen snapshot. Replaces direct
 ///   `app.editor.folds.iter()` reads.
-/// - `visible_rows: Arc<VisibleRows>` -- frozen viewport pre-paint
-///   snapshot from the worker. Source spans for each visible row
-///   live inside `rows[i].runs` as `RowRun::Source` variants;
-///   inlay text is woven into `rows[i].combined` with `Inlay`
-///   runs marking each splice. Replaces the legacy
-///   `visible_highlights: Arc<[Vec<StyledSpan>]>` reader
-///   (perf-plan A.2b.2b: TUI peer drops the `visible_spans`
-///   reader for the active pane).
 /// - `show_line_numbers: bool` -- cached typed-options value.
 ///   The typed-options ArcSwap read is wait-free per call, but
 ///   caching once per chain keeps gutter computation
@@ -76,15 +68,11 @@ use crate::app::{App, EchoLevel, Fold};
 pub struct FrameView<'a> {
     pub app: &'a App,
     pub folds: Arc<[Fold]>,
-    /// Perf plan A.2 slice A.2b.2b: worker-published pre-paint
-    /// rows for the active document's viewport. `rows[i].runs`
-    /// carries source-text style runs (and inlay runs woven in
-    /// by the worker); the compose loop derives per-row
-    /// `StyledSpan`s from this via [`source_spans_from_runs`].
-    /// One Arc bump per `from_app` / `for_buffer` call; the
-    /// underlying `VisibleRows` is owned by the worker's
-    /// `ArcSwap` cell, so the snapshot read is wait-free.
-    pub visible_rows: Arc<lattice_host::render_state::VisibleRows>,
+    // display-line B4.2: the `visible_rows` field (worker-published
+    // pre-paint rows) was deleted. The TUI document body migrated to
+    // the canonical `DisplayMatrix` (B2.4); markdown / help / messages
+    // bodies read their own sources. Nothing in the compose chain read
+    // this field any more — it was constructed but never consumed.
     pub show_line_numbers: bool,
     /// M.4: resolved per-pane in `for_buffer`; tracks the active
     /// buffer's setting in `from_app`. Reading this through the
@@ -145,16 +133,12 @@ impl<'a> FrameView<'a> {
     /// lock; the App's main loop owns the underlying vecs and
     /// the snapshot is consistent at the moment `from_app` runs.
     pub fn from_app(app: &'a App) -> Self {
-        // Perf plan A.2 slice A.2b.2b: read the worker-published
-        // pre-paint rows instead of the legacy `visible_spans`
-        // cell. `RowPrepaint.runs` carries source-style runs
-        // (with inlay runs woven in at the same byte offsets the
-        // overlay code used to splice from `rs.syntax.inlay_hints`),
-        // so the compose loop derives per-row `StyledSpan`s from
-        // this single source of truth — the visible_spans reader
-        // is gone from the active-pane path.
+        // display-line B4.2: the worker-published pre-paint rows the
+        // `FrameView` used to snapshot here were deleted with the
+        // overlay worker's span/row cache. The TUI document body reads
+        // the canonical `DisplayMatrix` (B2.4) directly in the compose
+        // loop; nothing on `FrameView` consumed the prepaint rows.
         let rs = app.render_state.load_full();
-        let rows = rs.syntax.visible_rows.load_full();
         // Slice 3c.extension.fold-rs: pre-cache per-frame option +
         // mode-gate reads. One `read_editor` each at frame entry
         // (~7 RPCs total per frame) replaces N actor RPCs in the
@@ -175,9 +159,6 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.load().folds.clone(),
-            // A.2b.2b: one Arc bump; the worker owns the underlying
-            // `VisibleRows` (writes via `ArcSwap::store`).
-            visible_rows: rows,
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
             foldenable,
@@ -199,10 +180,9 @@ impl<'a> FrameView<'a> {
     /// DR.2: inactive panes now source decorations from their own
     /// per-pane `DisplayMatrix`; `pane_highlights` is retired.
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
-        // A.2b.2b: same migration as `from_app` — read pre-paint
-        // rows through the worker-published cell.
+        // display-line B4.2: same as `from_app` — the deleted
+        // prepaint-rows cell is no longer snapshotted here.
         let rs = app.render_state.load_full();
-        let rows = rs.syntax.visible_rows.load_full();
         let foldenable = app.foldenable();
         // Perf plan C: same one-per-frame index as `from_app`. The
         // fold snapshot is doc-scoped (`active_document.folds`); the
@@ -218,8 +198,6 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.load().folds.clone(),
-            // A.2b.2b: one Arc bump (worker owns the cell).
-            visible_rows: rows,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -3224,8 +3202,9 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Produce the visible buffer lines as `ratatui::text::Line`s, including
 /// gutter (line numbers), tab expansion, and styled spans pulled from
-/// `app.editor.visible_highlights` (populated by the runtime via
-/// `App::refresh_highlights`).
+/// the canonical `DisplayMatrix` (rebuilt off the UI thread by the
+/// cells worker). display-line B4.2: the old `app.editor.visible_highlights`
+/// span cache + `App::refresh_highlights` prime were deleted.
 ///
 /// Spans are owned (`Cow::Owned`) so the returned `Line`s outlive the
 /// document text we slice out of for this frame. One alloc per visible line
@@ -3627,17 +3606,17 @@ pub(crate) fn compose_pane_lines(
             // (boot frames before the first cell-builder publish,
             // or the brief gap during a buffer switch) emit
             // plain-text `Span::raw(line_text)` instead — exactly
-            // what the legacy fallback degraded to once
-            // `visible_rows` ran out of rows. Semantically
-            // equivalent for the user; one source-of-truth from
-            // the code's perspective.
+            // what the legacy fallback degraded to once the prepaint
+            // rows ran out. Semantically equivalent for the user; one
+            // source-of-truth from the code's perspective.
             //
-            // The highlights worker still runs and populates
-            // `view.visible_rows`; markdown / help / messages
-            // bodies (in other render functions) still read from
-            // it. Only the document-body branch in
-            // `compose_visible_lines_inner` is cut over to the
-            // cell-grid.
+            // display-line B4.2: the worker-published prepaint-rows
+            // cell (`view.visible_rows`) was deleted — it had no live
+            // readers left (the document body, markdown, help, and
+            // messages bodies all read their own sources). Only the
+            // overlay worker's `static_overlay_quads` survives as a
+            // worker output. The document-body branch reads the
+            // canonical `DisplayMatrix` below.
             // B2.4 (2026-06-04): consume the canonical `DisplayMatrix`
             // directly — its style-tagged runs resolve to ratatui via the
             // host theme at paint (`display_line_to_source_spans`). Pre-B2.4
@@ -3991,12 +3970,12 @@ pub(crate) fn compose_pane_lines(
         // splices in reverse byte order so earlier splices don't
         // shift later ones.
         //
-        // Full migration of the active-pane compose loop onto
-        // `rs.syntax.visible_rows` (which would also drop this
-        // post-hoc splice — the worker would already have woven
-        // it) is deferred to slice A.2b.2b. This slice keeps the
-        // existing Span-mutation chain intact and just collapses
-        // the inlay source-of-truth to the canonical one.
+        // display-line B-series: the active-pane document body reads
+        // the canonical `DisplayMatrix` (which already weaves inlay
+        // text into its runs); this post-hoc inlay splice covers the
+        // markdown / help / messages bodies that still build spans
+        // from raw line text. (The old prepaint-rows cell that would
+        // have woven it was deleted in B4.2.)
         //
         // DR.3: inlay hints are a buffer-intrinsic decoration shown on
         // BOTH panes. The active pane reads the publish-time-baked
@@ -5825,7 +5804,10 @@ mod tests {
     fn app_with(text: &str, viewport: u32) -> App {
         let mut a = App::new(Document::from_text(text));
         a.set_viewport_height(viewport);
-        a.refresh_highlights();
+        // display-line B4.2: `App::refresh_highlights` was deleted with
+        // the overlay worker's dead span/row cache. Syntax now flows
+        // through the cells / `DisplayMatrix` substrate (rebuilt on
+        // publish); no explicit prime is needed for these render tests.
         a
     }
 

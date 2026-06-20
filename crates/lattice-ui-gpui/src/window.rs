@@ -758,8 +758,8 @@ fn diagnostic_glyph_and_color(
 /// `EditorView::render` used to fire `ensure_cursor_in_viewport()`
 /// and `dispatch_action(RefreshPaneHighlights)` unconditionally every
 /// frame. Both dispatches walk the full `publish_render_state` tail
-/// (rebuilding every sub-state `Arc`, notifying the highlights worker,
-/// nudging `paint_request`) regardless of whether the underlying
+/// (rebuilding every sub-state `Arc`, notifying the background
+/// workers, nudging `paint_request`) regardless of whether the underlying
 /// inputs changed — the dominant slice of `ensure_us` in the trace
 /// data the perf plan opens with.
 ///
@@ -811,16 +811,16 @@ struct EditorView {
 impl EditorView {
     fn new(document: Document, cx: &mut Context<Self>) -> Self {
         let app = GpuiApp::new(document);
-        // X1b: spawn the worker-paint-request bridge. The
-        // highlights worker fires `editor.paint_request.notify_one()`
-        // after every `WorkerDecision::Recomputed`; this future
-        // awaits each wake and calls `cx.notify()` so GPUI
-        // schedules a paint even when no user input is in flight.
-        // Without this bridge, an async worker recompute that
-        // finishes while the user is idle (e.g. final reparse
-        // after a held-key burst settles) would publish fresh
-        // spans into `syntax_visible_spans_cell` that nothing
-        // reads until the next keystroke -- breaking goal-#4
+        // X1b: spawn the worker-paint-request bridge. The background
+        // workers (cells / display-matrix, overlay) fire
+        // `editor.paint_request.notify_one()` after every
+        // content-changing `WorkerDecision::Recomputed`; this future
+        // awaits each wake and calls `cx.notify()` so GPUI schedules
+        // a paint even when no user input is in flight. Without this
+        // bridge, an async worker recompute that finishes while the
+        // user is idle (e.g. final reparse after a held-key burst
+        // settles) would publish fresh matrix / overlay output that
+        // nothing reads until the next keystroke -- breaking goal-#4
         // asynchronicity (the renderer would effectively poll on
         // keystrokes for worker output).
         //
@@ -1124,15 +1124,11 @@ impl EditorView {
         // borrow held across the function body.
         let ad = self.app.ad();
         let rs_guard = self.app.render_state.load();
-        let active_spans_guard = rs_guard.syntax.visible_spans.load();
-        // S4.3 (2026-05-27): the prepaint `visible_rows` load
-        // retired here — `EditorElement`'s active-pane shaping
-        // now reads from `rs_guard.cells.matrix` (S4.1 wiring),
-        // falling back to `active_spans_guard` / pane-cached
-        // spans for boot frames / folded rows / inactive panes.
-        // The highlights worker still publishes `visible_rows`
-        // for TUI markdown / help / messages bodies in other
-        // render functions.
+        // display-line B4.2: the `visible_spans` / `visible_rows`
+        // prepaint loads retired here. `EditorElement`'s active-pane
+        // shaping reads from `rs_guard.cells.matrix` /
+        // `rs_guard.cells.display_matrix`, falling back to
+        // default-styled text for boot frames / folded rows.
         // Perf plan B.2 slice B.2.a: worker's per-row pre-bucketed
         // static-overlay quads (doc_highlight / all_matches /
         // substitute). Active pane consumes this directly; inactive
@@ -1882,27 +1878,12 @@ impl EditorView {
             // The element subtracts `scroll` from line_idx to
             // index this visible-window subset.
             text: std::sync::Arc::new(raw_lines.join("\n")),
-            // DR.2 (decoration-retention): inactive panes render from
-            // their per-pane `DisplayMatrix` (same producer as active —
-            // see `cell_matrix` / `display_matrix` below), so they no
-            // longer consult the legacy `pane_highlights` span map.
-            // `visible_spans` is only the shape_row fallback for when the
-            // matrix is absent/stale: for the active pane it's the live
-            // worker spans; for an inactive pane the matrix is already
-            // built (the cells worker covers every visible pane), so the
-            // empty fallback matters only for the one transient frame
-            // right after a split — identical to the active pane's
-            // first-frame behaviour. This retires the `pane_highlights`
-            // producer (host-side teardown removed in the same slice).
-            visible_spans: if render_active {
-                (*active_spans_guard).clone()
-            } else {
-                lattice_host::render_state::VisibleSpans {
-                    spans: Vec::<Vec<lattice_syntax::StyledSpan>>::new().into(),
-                    computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
-                }
-                .into()
-            },
+            // display-line B4.2: the `visible_spans` field was deleted
+            // from `EditorElement`. Both active and inactive panes
+            // render syntax colour from their per-pane `DisplayMatrix`
+            // (`cell_matrix` / `display_matrix` below, built by the
+            // cells worker for every visible pane); rows the matrix
+            // doesn't yet cover render default-styled.
             // Perf plan B.2 slice B.2.a: active pane consumes the
             // worker's static-overlay bucket; inactive panes keep
             // the per-frame `push_range_quads` path (only
@@ -2772,15 +2753,15 @@ impl Render for EditorView {
         let after_ensure = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X2.5: the per-frame
         // `self.app.refresh_highlights()` call has been removed.
-        // Active-pane highlights are now produced by the
-        // background highlights worker
-        // (`lattice_host::highlights_worker`) which subscribes to
-        // `Editor::highlight_wake` and publishes results into
-        // `render_state.syntax.visible_spans`. `paint_pane` reads
-        // those spans through `rs_guard.syntax.visible_spans.load()`.
-        // Pre-X2 cost: ~178µs at 80 lines per frame; post-X2: zero
-        // UI-thread parse cost. Goal #1 violation B1 closed for the
-        // GPUI peer.
+        // display-line B-series: active-pane syntax colour is now
+        // produced by the cells worker into the `DisplayMatrix`
+        // substrate; overlay backgrounds by the
+        // `lattice_host::overlay_worker` (woken via
+        // `Editor::overlay_wake`). `paint_pane` reads the matrix via
+        // `rs_guard.cells.display_matrix`; B4.2 deleted the old
+        // worker span cell (`visible_spans`). Pre-X2 cost: ~178µs at
+        // 80 lines per frame; now zero UI-thread parse cost. Goal #1
+        // violation B1 closed for the GPUI peer.
         // DR.2 (decoration-retention): the per-frame
         // `RefreshPaneHighlights` dispatch is gone. Inactive panes now
         // read their own retained per-pane `DisplayMatrix` (built by the

@@ -73,10 +73,14 @@ pub mod diff;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;
-pub mod highlights_worker;
+// display-line B4.2 (gut + rename): formerly `highlights_worker`.
+// The dead span/row prepaint cache was deleted; only the live
+// static-overlay bucketing remains, so the module was renamed to
+// reflect that it no longer produces highlights.
+pub mod overlay_worker;
 pub mod pane_group;
 // S2.2 (2026-05-26): cell-grid renderer's cell-builder worker.
-// Sibling of `highlights_worker`; consumes `RenderState.cells`
+// Sibling of `overlay_worker`; consumes `RenderState.cells`
 // inputs, builds a whole-doc `CellMatrix`, publishes via
 // `Editor::cells_matrix_cell`. See
 // `docs/dev/architecture/cell-grid-renderer.md`.

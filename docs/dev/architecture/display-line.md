@@ -27,6 +27,19 @@ and the legacy scroll-windowed highlight cache (`highlights_worker` /
 > (virtual rows, multibuffer headers, file-tree) and were never in scope to
 > delete.
 
+> **Amendment (2026-06-20) — `highlights_worker` survives as `overlay_worker`
+> (B4.2, approach B).** The worker had two jobs: the dead span/row highlight
+> cache (`VisibleSpans`/`VisibleRows`/`RowPrepaint`) AND the **live**
+> `static_overlay_quads` producer (`bucket_static_overlays` — search-match /
+> substitute / doc-highlight backgrounds, consumed every frame by both
+> renderers). B4.2 deleted only the dead cache and **kept** the overlay
+> producer, renaming the worker → `overlay_worker` (`HighlightWake` →
+> `OverlayWake`) to match its remaining job. Deleting the module wholesale would
+> have silently dropped those highlight backgrounds — a UX regression caught
+> before execution. So the legacy *highlight* cache is gone; the live *overlay*
+> decoration path stays. Consolidating overlay bucketing into `cells_worker`
+> (one worker) is a possible future slice, not pursued now. **B0–B4 COMPLETE.**
+
 ## Why this exists
 
 The editor flickers on every keystroke: editing one line restyles the whole

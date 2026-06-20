@@ -744,35 +744,25 @@ impl Editor {
         // also hold one (BufferRegistry is `Clone` via Arc).
         let buffers_for_services = buffers.clone();
 
-        // Phase 5.8.AF.5 / Slice X2.4: instantiate the highlights
-        // worker's shared cells BEFORE the Editor literal so we
-        // can hand the worker its own clones at spawn time. The
-        // Editor literal below assigns these into the struct
-        // fields explicitly (overriding the `..Editor::default()`
-        // tail) so all three holders (Editor, RenderState, worker)
-        // share the SAME Arc identities — the worker's writes
-        // into `spans_cell` are observable through every
-        // `render_state.load_full().syntax.visible_spans.load()`.
-        let highlight_wake = crate::editor::HighlightWake::default();
-        let syntax_visible_spans_cell: std::sync::Arc<
-            arc_swap::ArcSwap<crate::render_state::VisibleSpans>,
-        > = std::sync::Arc::default();
-        // Perf plan A.2 slice A.2a: parallel pre-paint cell created
-        // here so the worker (spawned below), the Editor field, and
-        // the `SyntaxRenderState.visible_rows` clone on every
+        // Phase 5.8.AF.5 / Slice X2.4 (gut + rename B4.2):
+        // instantiate the overlay worker's shared cell BEFORE the
+        // Editor literal so we can hand the worker its own clone at
+        // spawn time. The Editor literal below assigns these into the
+        // struct fields explicitly (overriding the
+        // `..Editor::default()` tail) so all three holders (Editor,
+        // RenderState, worker) share the SAME Arc identity — the
+        // worker's writes into the quads cell are observable through
+        // every
+        // `render_state.load_full().syntax.static_overlay_quads.load()`.
+        let overlay_wake = crate::editor::OverlayWake::default();
+        // Perf plan B.2 slice B.2.a: cell carrying the worker's
+        // per-row pre-bucketed static-overlay quads (doc_highlight /
+        // all_matches / substitute). Created here so the worker
+        // (spawned below), the Editor field, and the
+        // `SyntaxRenderState.static_overlay_quads` clone on every
         // `publish_render_state` all share the SAME `Arc` identity.
-        // Without this shared identity the worker's `.store()`
-        // would not be observable through `RenderState.load_full()`
-        // after later publishes.
-        let syntax_visible_rows_cell: std::sync::Arc<
-            arc_swap::ArcSwap<crate::render_state::VisibleRows>,
-        > = std::sync::Arc::default();
-        // Perf plan B.2 slice B.2.a: parallel cell carrying the
-        // worker's per-row pre-bucketed static-overlay quads
-        // (doc_highlight / all_matches / substitute). Same
-        // same-Arc-identity construction as
-        // `syntax_visible_rows_cell` so the worker's `.store()`
-        // is observable through `RenderState.load_full()` across
+        // Without this shared identity the worker's `.store()` would
+        // not be observable through `RenderState.load_full()` after
         // later publishes.
         let syntax_static_overlay_quads_cell: std::sync::Arc<
             arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>,
@@ -790,17 +780,15 @@ impl Editor {
         // loop blocks on; GPUI: foreground-executor future that calls
         // `cx.notify()`).
         let paint_request: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
-        runtime_handle.spawn(crate::highlights_worker::run(
+        runtime_handle.spawn(crate::overlay_worker::run(
             render_state_arc.clone(),
-            highlight_wake.clone(),
-            syntax_visible_spans_cell.clone(),
-            syntax_visible_rows_cell.clone(),
+            overlay_wake.clone(),
             syntax_static_overlay_quads_cell.clone(),
             paint_request.clone(),
         ));
 
         // S2.2 (2026-05-26): cell-builder worker. Same same-Arc-
-        // identity pattern as the highlights worker — `cells_wake`
+        // identity pattern as the overlay worker — `cells_wake`
         // and `cells_matrix_cell` are constructed here, cloned into
         // the worker, then assigned into the Editor literal below
         // (overriding `..Editor::default()` so all three holders
@@ -1383,13 +1371,11 @@ impl Editor {
             // reads of `syntax` inputs see the SAME atomic snapshots
             // the renderer reads.
             render_state: render_state_arc,
-            // X2.4: same-Arc-identity values constructed above and
-            // shared with the highlights worker. Overrides the
-            // `..Editor::default()` tail (which would otherwise
-            // construct fresh, unshared cells).
-            highlight_wake,
-            syntax_visible_spans_cell,
-            syntax_visible_rows_cell,
+            // X2.4 (gut + rename B4.2): same-Arc-identity values
+            // constructed above and shared with the overlay worker.
+            // Overrides the `..Editor::default()` tail (which would
+            // otherwise construct fresh, unshared cells).
+            overlay_wake,
             syntax_static_overlay_quads_cell,
             paint_request,
             // Slice B.1: same Notify the initial document's reparse

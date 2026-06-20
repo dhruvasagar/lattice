@@ -1057,18 +1057,18 @@ impl Editor {
                 anchor: self.popup_anchor,
                 doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,
             }),
-            // Phase 5.8.AF.5 / Slice X2: syntax inputs the
-            // highlights worker reads. The `visible_spans` cell is
-            // cloned from `self.syntax_visible_spans_cell` so the
-            // Arc identity stays stable across publishes — the
-            // worker holds its own clone of the same Arc, so its
-            // writes survive subsequent publishes.
+            // Phase 5.8.AF.5 / Slice X2: syntax inputs the overlay
+            // worker reads. display-line B4.2 (gut + rename) deleted
+            // the dead `visible_spans` / `visible_rows` prepaint cells
+            // — only the `static_overlay_quads` output cell (cloned
+            // below) survives, and its Arc identity stays stable
+            // across publishes so the worker's writes are observable.
             syntax: std::sync::Arc::new(SyntaxRenderState {
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
                 scroll: self.scroll,
                 viewport_height: self.viewport_height,
-                // Slice X2.9: stretch the worker's parse window
-                // past closed folds so syntax styling reaches
+                // Slice X2.9: stretch the worker's overlay window
+                // past closed folds so overlay backgrounds reach
                 // lines that appear after a collapsed fold within
                 // the visible viewport. Falls back to None
                 // (worker uses `scroll + viewport_height`) when
@@ -1076,14 +1076,6 @@ impl Editor {
                 end_line_override: self.fold_aware_highlight_end_line(),
                 fold_hash: crate::folds::compute_fold_hash(&self.folds),
                 text_version: self.document.text_version(),
-                visible_spans: self.syntax_visible_spans_cell.clone(),
-                // Perf plan A.2 slice A.2a: parallel pre-paint cell
-                // for the GPUI peer. Cloned from
-                // `self.syntax_visible_rows_cell` so its Arc identity
-                // matches the handle the worker writes to — every
-                // publish surfaces the worker's latest write without
-                // a republish round-trip.
-                visible_rows: self.syntax_visible_rows_cell.clone(),
                 // Perf plan A.2 slice A.2b.1: pre-gate + flatten
                 // the active document's LSP inlay hints into the
                 // syntax-input contract. Empty when the
@@ -1436,7 +1428,7 @@ impl Editor {
             );
         }
         self.render_state.store(std::sync::Arc::new(next));
-        // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
+        // Phase 5.8.AF.5 / Slice X2: wake the overlay worker.
         // `Notify::notify_one` is "permit-style" — if no one is
         // waiting, it stores a permit so the next `notified().await`
         // resolves immediately. A burst of publishes therefore wakes
@@ -1445,11 +1437,17 @@ impl Editor {
         // `render_state.load_full()` regardless of how many publishes
         // it missed during the burst. Cheap (~10ns) on the
         // dispatch tail; doesn't block.
-        // B4: disabled. The legacy highlights worker now only feeds
-        // inactive-pane `visible_rows`/`pane_highlights`; the active body
-        // reads the canonical `DisplayMatrix`. B4 migrates the inactive-pane
-        // consumer onto DisplayMatrix, then deletes the worker + this wake.
-        // self.highlight_wake.0.notify_one();
+        //
+        // B4 disabled the per-publish wake (the overlay worker's
+        // static-overlay bucket is a per-frame optimisation, and both
+        // renderers carry a per-frame `push_range_quads` fallback that
+        // paints search / substitute / doc-highlight backgrounds
+        // correctly without it). display-line B4.2 (gut + rename)
+        // deleted the dead span/row prepaint cache the worker also fed
+        // but left this disabled wake unchanged — re-enabling the
+        // worker-driven bucket is a separate perf slice, not part of
+        // the gut+rename. Renamed `highlight_wake` → `overlay_wake`.
+        // self.overlay_wake.0.notify_one();
         // S2.1 (2026-05-26): wake the cell-builder worker (S2.2+).
         // Same permit-style coalescing as the highlights wake.
         // Currently no consumer (worker lands in S2.2), so this is
@@ -12135,8 +12133,9 @@ impl Editor {
         // DR.2 (decoration-retention): no per-pane span cache to drop
         // on buffer switch — inactive panes render from their retained
         // per-pane `DisplayMatrix`, and the cells worker rebuilds those
-        // on its own wake. Active-pane spans flow through the
-        // worker-published `syntax_visible_spans_cell`.
+        // on its own wake. (display-line B4.2: the active-pane span
+        // cache the comment used to cite was deleted; only the overlay
+        // worker's `static_overlay_quads_cell` remains.)
         signals
     }
 
@@ -12816,10 +12815,10 @@ impl Editor {
         // deltas for the next syntax reparse request.
         // `maybe_reparse_syntax` drains this and ships them to the
         // worker. Slice X2.6 retirement: the synchronous shift
-        // of `visible_highlights` was deleted along with the field;
-        // the worker-published `syntax_visible_spans_cell` is the
-        // single source of truth and the worker wakes on every
-        // publish, so any flicker window is brief and self-healing.
+        // of `visible_highlights` was deleted along with the field.
+        // display-line B4.2: the worker-published span cache it cited
+        // is also gone now; syntax colours flow through the cells /
+        // `DisplayMatrix` substrate, self-healing within a frame or two.
         if self.syntax.is_some() {
             self.pending_syntax_edits
                 .extend(applied.iter().map(|a| a.delta));

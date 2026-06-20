@@ -131,16 +131,16 @@ globset = { workspace = true }
 # patterns host-side via the same fancy-regex engine that backs
 # `/` and `?` in `lattice-core::search`.
 fancy-regex = { workspace = true }
-# Perf plan A.2: `highlights_worker::build_rows` SIMD-scans the
-# SyntaxSnapshot source bytes for newline offsets to extract
-# per-line text without copying. `memchr` is already a transitive
-# dep via tree-sitter; promoting it to a direct dep gives us
-# `memchr::memchr` without going through that re-export.
+# Perf plan A.2 / display-line B4.2: `overlay_worker` SIMD-scans the
+# SyntaxSnapshot source bytes for newline offsets to seek per-row
+# source-line extents without copying. `memchr` is already a
+# transitive dep via tree-sitter; promoting it to a direct dep gives
+# us `memchr::memchr` without going through that re-export.
 memchr = { workspace = true }
 
 [dev-dependencies]
-# Phase 5.8.AF.6 / Slice X2.9: highlights worker bench
-# (`benches/highlights_worker.rs`) needs criterion + a real
+# Phase 5.8.AF.6 / Slice X2.9 (gut + rename B4.2): overlay worker
+# bench (`benches/overlay_worker.rs`) needs criterion + a real
 # `Syntax` instance to feed the worker recompute path.
 criterion = { workspace = true }
 # D.2.c (2026-05-29): diff-subsystem debouncer tests use
@@ -156,7 +156,7 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
 smallvec = { workspace = true }
 
 [[bench]]
-name = "highlights_worker"
+name = "overlay_worker"
 harness = false
 
 # Perf plan B.4: measures the dispatch publish path. Captures the
@@ -165,6 +165,7 @@ harness = false
 # rebuilds them. See `benches/dispatch_publish.rs`.
 [[bench]]
 name = "dispatch_publish"
+harness = false
 
 # S5 (2026-05-27): cells_worker hot-path bench. Times
 # `recompute` across three workloads — full rebuild (cache miss),

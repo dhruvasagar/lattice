@@ -524,11 +524,14 @@ fn bench_display_edit_path(c: &mut Criterion) {
                     let loaded = rs.load_full();
                     let cells_snap = loaded.cells.load();
                     let pane = &cells_snap.panes[0];
-                    let did = sync_rebuild_pane_on_edit(
-                        pane,
-                        &cells_snap.theme,
-                        &cells_snap.whitespace,
-                    );
+                    // T.6.t: the host `Theme` field is gone; build a
+                    // `CellTheme` from the resolved table + builtin ids
+                    // (mirrors `dispatch.rs`'s production `next_ct`).
+                    let ct = lattice_host::cells_worker::CellTheme {
+                        resolved: &cells_snap.resolved_theme,
+                        ids: &cells_snap.theme_ids,
+                    };
+                    let did = sync_rebuild_pane_on_edit(pane, ct, &cells_snap.whitespace);
                     black_box(did);
                 });
             },

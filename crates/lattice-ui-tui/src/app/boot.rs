@@ -33,13 +33,9 @@ impl App {
         // RenderState cell, captured before Editor moves to the
         // actor thread.
         let render_state = editor.render_state.clone();
-        // Slice 3c.final.E.1: clone the worker's output cell.
-        let syntax_visible_spans_cell = editor.syntax_visible_spans_cell.clone();
-        // Perf plan A.2 slice A.2a: parallel pre-paint cell clone
-        // so `refresh_highlights` can pass the 3rd `recompute`
-        // argument without an actor round-trip.
-        let syntax_visible_rows_cell = editor.syntax_visible_rows_cell.clone();
-        // Perf plan B.2 slice B.2.a: static-overlay-quads cell clone.
+        // Perf plan B.2 slice B.2.a: clone the overlay worker's
+        // output cell. display-line B4.2: the dead span/row prepaint
+        // cell clones were deleted with the worker's span/row cache.
         let syntax_static_overlay_quads_cell =
             editor.syntax_static_overlay_quads_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
@@ -80,8 +76,6 @@ impl App {
             #[cfg(test)]
             editor: editor_field,
             render_state,
-            syntax_visible_spans_cell,
-            syntax_visible_rows_cell,
             syntax_static_overlay_quads_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),

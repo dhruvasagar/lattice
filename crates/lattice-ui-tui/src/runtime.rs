@@ -503,20 +503,19 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         }
         // Phase 5.8.AF.5 / Slice X2.5: removed
         // `app.refresh_highlights()` from the per-frame body.
-        // Active-pane highlights now come from the background
-        // highlights worker (`lattice_host::highlights_worker`),
-        // which subscribes to `Editor::highlight_wake` and
-        // publishes results into
-        // `render_state.syntax.visible_spans`. `FrameView::from_app`
-        // reads through that cell. Pre-X2 cost: 200–600µs per
-        // frame on scroll cache miss (tree-sitter walk on UI
-        // thread); post-X2: zero UI-thread parse cost. Goal #1
-        // violation B1 closed for the TUI peer.
-        // B4: disabled. This per-frame UI-thread `highlight_lines` recompute
-        // (itself a goal-#1 violation) only fed inactive-pane `pane_highlights`;
-        // the active body now reads the canonical `DisplayMatrix`. B4 migrates
-        // the inactive-pane consumer onto DisplayMatrix, then deletes this.
-        // app.refresh_pane_highlights();
+        // display-line B4.2: active-pane syntax colour now flows
+        // through the cells / `DisplayMatrix` substrate (rebuilt off
+        // the UI thread by the cells worker), and overlay backgrounds
+        // through the `lattice_host::overlay_worker` (woken via
+        // `Editor::overlay_wake`). Both keep the per-frame body free
+        // of any tree-sitter walk. Pre-X2 cost: 200–600µs per frame
+        // on scroll cache miss (tree-sitter walk on UI thread);
+        // now zero UI-thread parse cost. Goal #1 violation B1 closed
+        // for the TUI peer.
+        // B4: the per-frame UI-thread `refresh_pane_highlights`
+        // recompute was disabled then deleted (it only fed the dead
+        // inactive-pane `pane_highlights` cache; inactive panes read
+        // their retained per-pane `DisplayMatrix`).
 
         // Push the cursor shape only when the inputs change --
         // terminals accept these every frame, but emitting on every

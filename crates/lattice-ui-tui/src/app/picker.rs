@@ -718,6 +718,7 @@ mod tests {
             ids,
             vec![
                 "buffers",
+                "colorscheme",
                 "commands",
                 "files",
                 "grep",

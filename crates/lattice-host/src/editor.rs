@@ -216,7 +216,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `App` are the renderer-specific caches (`theme`,
 ///   `pane_render_registry`) plus the `LspFileWatcher`
 ///   wrapper -- `App` becomes a thin renderer wrapper.
-/// Cross-thread wake signal for the highlights worker.
+/// Cross-thread wake signal for the overlay worker.
 ///
 /// Wraps `Arc<tokio::sync::Notify>` so `Editor` can keep its
 /// `#[derive(Default)]` (Notify itself doesn't impl Default).
@@ -225,9 +225,10 @@ use lattice_protocol::position::Position as ProtoPosition;
 /// `publish_render_state` so the worker re-evaluates inputs after
 /// every state change without polling.
 ///
-/// Phase 5.8.AF.5 / Slice X2.
+/// Phase 5.8.AF.5 / Slice X2; renamed from `HighlightWake` in
+/// display-line B4.2 (the worker no longer makes highlights).
 #[derive(Clone)]
-pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
+pub struct OverlayWake(pub Arc<tokio::sync::Notify>);
 
 /// 2026-05-26: invocation-runner function pointer. The host
 /// registers one per [`lattice_mode::Mode`] whose
@@ -238,20 +239,20 @@ pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
 /// central dispatch.
 pub type InvocationRunnerFn = fn(&mut Editor, lattice_grammar::CommandInvocation) -> bool;
 
-impl Default for HighlightWake {
+impl Default for OverlayWake {
     fn default() -> Self {
         Self(Arc::new(tokio::sync::Notify::new()))
     }
 }
 
-impl std::fmt::Debug for HighlightWake {
+impl std::fmt::Debug for OverlayWake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HighlightWake").finish_non_exhaustive()
+        f.debug_struct("OverlayWake").finish_non_exhaustive()
     }
 }
 
 /// S2.1 (2026-05-26): wake signal for the cell-builder worker
-/// (S2.2+). Same shape as [`HighlightWake`]: a `Notify` cloned
+/// (S2.2+). Same shape as [`OverlayWake`]: a `Notify` cloned
 /// into [`Editor::cells_wake`] and a sibling clone held by the
 /// worker task. `publish_render_state` fires `notify_one()`
 /// after every dispatch tick so the worker re-evaluates inputs
@@ -1133,52 +1134,30 @@ pub struct Editor {
     /// `editor.render_state.load_full()` once per frame and read
     /// every per-frame field through the returned snapshot.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>>,
-    /// Phase 5.8.AF.5 / Slice X2: wake signal for the
-    /// highlights worker. `publish_render_state` fires
-    /// `highlight_wake.0.notify_one()` at its tail so the worker
+    /// Phase 5.8.AF.5 / Slice X2: wake signal for the overlay
+    /// worker. `publish_render_state` fires
+    /// `overlay_wake.0.notify_one()` at its tail so the worker
     /// re-evaluates the syntax inputs published into
-    /// `RenderState.syntax` and recomputes spans on a cache miss.
-    /// `Notify` coalesces — a burst of publishes wakes the worker
-    /// once, which is what we want (it always reads the latest
-    /// published inputs anyway).
-    pub highlight_wake: HighlightWake,
-    /// Phase 5.8.AF.5 / Slice X2: durable spans cell shared with
-    /// the highlights worker. The worker stores fresh
-    /// `VisibleSpans` into this cell whenever the cache key
-    /// changes; renderers read it via
-    /// `render_state.syntax.visible_spans.load()`.
+    /// `RenderState.syntax` and re-buckets overlay quads on a cache
+    /// miss. `Notify` coalesces — a burst of publishes wakes the
+    /// worker once, which is what we want (it always reads the
+    /// latest published inputs anyway).
     ///
-    /// Lives on `Editor` (not just inside `SyntaxRenderState`) so
-    /// the `Arc` identity stays stable across every
-    /// `publish_render_state` call — `build_render_state` clones
-    /// this Arc into the new snapshot. The worker holds its own
-    /// clone of the same Arc, so its writes survive subsequent
-    /// publishes.
-    pub syntax_visible_spans_cell:
-        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleSpans>>,
-    /// Perf plan A.2 slice A.2a: parallel cell carrying the worker's
-    /// pre-painted [`crate::render_state::VisibleRows`] output for
-    /// the GPUI peer's per-frame consumption. Same stability
-    /// rationale as `syntax_visible_spans_cell`: the Arc identity
-    /// lives on `Editor` so `build_render_state` clones it into
-    /// every snapshot; the worker holds a sibling clone and writes
-    /// directly. TUI keeps reading `visible_spans`; migration of
-    /// the TUI compose loop to `visible_rows` is a follow-up.
-    pub syntax_visible_rows_cell:
-        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleRows>>,
+    /// display-line B4.2: renamed from `highlight_wake`; the dead
+    /// span/row prepaint cache the worker also fed was deleted.
+    pub overlay_wake: OverlayWake,
     /// Perf plan B.2 slice B.2.a: parallel cell carrying the
     /// worker's per-row pre-bucketed static-overlay quads
     /// (doc_highlight / all_matches / substitute) for the active
-    /// pane's visible window. Same stability rationale as
-    /// `syntax_visible_rows_cell`: the Arc identity lives on
-    /// `Editor` so `build_render_state` clones it into every
-    /// snapshot; the worker writes directly and renderer peers
-    /// read the latest write via the published Arc without a
-    /// republish round-trip.
+    /// pane's visible window. The Arc identity lives on `Editor` so
+    /// `build_render_state` clones it into every snapshot; the
+    /// overlay worker writes directly and renderer peers read the
+    /// latest write via the published Arc without a republish
+    /// round-trip.
     pub syntax_static_overlay_quads_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>>,
     /// S2.1 (2026-05-26): cell-grid renderer output cell. Same
-    /// stability pattern as `syntax_visible_spans_cell`: the Arc
+    /// stability pattern as `syntax_static_overlay_quads_cell`: the Arc
     /// identity lives on `Editor` so `build_render_state` clones
     /// it into every snapshot; the cell-builder worker (S2.2+)
     /// holds a sibling clone and writes directly via

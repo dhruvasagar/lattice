@@ -692,25 +692,32 @@ pub struct LspRenderState {
     pub supervisor: lattice_lsp::LspSupervisorHandle,
 }
 
-/// Tree-sitter highlights + visible-range cache.
+/// Tree-sitter syntax inputs + static-overlay bucket cache.
 ///
 /// Phase 5.8.AF.5 / Slice X2: split into two halves.
 ///
 /// **Inputs** (`syntax_handle`, `scroll`, `viewport_height`,
-/// `fold_hash`, `text_version`) are written by dispatch's
+/// `fold_hash`, `text_version`, `doc_highlights`,
+/// `static_overlay_version`) are written by dispatch's
 /// `publish_render_state` from current `Editor` state. The
-/// background highlights worker reads them via the published
-/// `RenderState` snapshot to decide whether to recompute.
+/// background overlay worker reads them via the published
+/// `RenderState` snapshot to decide whether to re-bucket.
 ///
-/// **Output** (`visible_spans`) is a nested `Arc<ArcSwap<...>>`
-/// so the worker can publish a fresh `VisibleSpans` *without*
-/// going through `publish_render_state`. The outer `RenderState`
-/// `Arc` stays stable across a frame; the inner spans cell can
-/// be swapped at any time. Renderers read with
-/// `render_state.syntax.visible_spans.load()` — wait-free.
+/// **Output** (`static_overlay_quads`) is a nested
+/// `Arc<ArcSwap<...>>` so the worker can publish a fresh
+/// `StaticOverlayQuads` *without* going through
+/// `publish_render_state`. The outer `RenderState` `Arc` stays
+/// stable across a frame; the inner cell can be swapped at any
+/// time. Renderers read with
+/// `render_state.syntax.static_overlay_quads.load()` — wait-free.
+///
+/// display-line B4.2 (gut + rename): the dead `visible_spans` /
+/// `visible_rows` prepaint output cells were deleted; syntax colour
+/// now flows through the cells / `DisplayMatrix` substrate, and only
+/// the static-overlay bucket remains as a worker output here.
 ///
 /// Goal #1 ("no parsing on the UI thread") is enforced by this
-/// split: the tree-sitter walk runs on the worker, not in any
+/// split: the overlay bucketing runs on the worker, not in any
 /// renderer's per-frame body.
 #[derive(Debug, Clone)]
 pub struct SyntaxRenderState {
@@ -749,26 +756,12 @@ pub struct SyntaxRenderState {
     /// against the snapshot's `text_version()` to decide whether
     /// the snapshot is still current or has fallen behind.
     pub text_version: u64,
-    /// Worker-published output cell. Nested `Arc<ArcSwap<...>>`
-    /// so the worker can store a fresh result without rebuilding
-    /// the outer `RenderState`. The same `Arc` identity is
-    /// carried across every `publish_render_state` call (cloned
-    /// from `Editor::syntax_visible_spans_cell`), so the worker's
-    /// writes survive subsequent publishes.
-    pub visible_spans: Arc<arc_swap::ArcSwap<VisibleSpans>>,
-    /// Perf plan A.2 slice A.2a: parallel cell publishing pre-painted
-    /// rows for the active pane. Same nested `Arc<ArcSwap<...>>`
-    /// shape as `visible_spans` so the worker can swap a fresh
-    /// `VisibleRows` without rebuilding the outer `RenderState`.
-    /// Inner `Arc` identity is the same per-cell handle cloned from
-    /// `Editor::syntax_visible_rows_cell` at every publish.
-    ///
-    /// GPUI's `editor_element` consumes this via
-    /// `rs.syntax.visible_rows.load()` — the prepainted rows save
-    /// per-frame composition on the UI thread (paramount goal #1).
-    /// The TUI peer still reads `visible_spans` until its compose
-    /// loop migrates; both cells are populated on every recompute.
-    pub visible_rows: Arc<arc_swap::ArcSwap<VisibleRows>>,
+    // display-line B4.2 (gut + rename): the worker-published
+    // `visible_spans` + `visible_rows` prepaint output cells were
+    // deleted. Their consumers (TUI compose loop, GPUI active-pane
+    // shaping) migrated to the cells / `DisplayMatrix` substrate in
+    // the B-series, leaving these cells with zero readers. The
+    // surviving worker output is `static_overlay_quads` below.
     /// Perf plan A.2 slice A.2b.1: active document's flattened
     /// inlay-hint list, pre-gated by the buffer's
     /// `lsp-inlay-hint-mode` enable-flag. Populated once per
@@ -777,12 +770,14 @@ pub struct SyntaxRenderState {
     /// have arrived yet.
     ///
     /// Why on `SyntaxRenderState` and not `LspRenderState`:
-    /// inlays are an INPUT to the syntax worker's row composition
-    /// (A.2b.2). The worker walks this list to splice inlay text
-    /// into `RowPrepaint.combined`; downstream readers (GPUI's
-    /// active-pane prepaint) consume the woven rows. The raw
+    /// inlays are an INPUT to the cells / `DisplayMatrix` worker's
+    /// row composition (A.2b.2). The cells worker walks this list to
+    /// splice inlay text into each composed row; downstream readers
+    /// (GPUI's active-pane prepaint) consume the woven rows. The raw
     /// per-buffer LSP cache stays on `lsp.inlay_hints` for the
     /// inactive-pane fallback path that flattens its own list.
+    /// (display-line B4.2: the dead `RowPrepaint` cell that
+    /// previously consumed this is gone.)
     ///
     /// Coordinates: `byte` is a utf-8 offset against the active
     /// document's line text; `text` already has `padding_left`
@@ -851,8 +846,6 @@ impl Default for SyntaxRenderState {
             end_line_override: None,
             fold_hash: 0,
             text_version: 0,
-            visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
-            visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             inlay_version: 0,
             static_overlay_quads: Arc::new(arc_swap::ArcSwap::from_pointee(
@@ -1212,13 +1205,14 @@ impl Default for CellsRenderState {
 }
 
 /// Cache key identifying the inputs that produced a particular
-/// `VisibleSpans`. Worker compares the *current* inputs against
-/// `VisibleSpans::computed_for_key` to short-circuit recompute on
-/// a no-op tick (cursor blink, unchanged scroll/viewport/folds).
+/// [`StaticOverlayQuads`]. The overlay worker compares the *current*
+/// inputs against `StaticOverlayQuads::computed_for_key` to
+/// short-circuit re-bucketing on a no-op tick (cursor blink,
+/// unchanged scroll/viewport/folds).
 ///
-/// `snapshot_ptr` is the `Arc::as_ptr` of the snapshot the spans
-/// were computed against — distinct snapshots produce distinct
-/// keys even if `text_version` happens to match.
+/// `snapshot_ptr` is the `Arc::as_ptr` of the snapshot the bucket
+/// was computed against — distinct snapshots produce distinct keys
+/// even if `text_version` happens to match.
 ///
 /// Migrated from `crates/lattice-host/src/highlights.rs` in X2;
 /// the renderer's read contract is now the canonical owner.
@@ -1248,73 +1242,47 @@ pub struct VisibleHighlightsKey {
     pub static_overlay_version: u64,
 }
 
-/// Worker-published syntax highlight spans for the active
-/// document's visible window.
-///
-/// `spans[i]` covers visible line `i` (i.e. document line
-/// `scroll + i`). Empty `spans` (the `Default`) means no
-/// highlights yet — renderer paints plain text until the first
-/// worker tick lands.
-///
-/// `computed_for_key` carries the inputs that produced these
-/// spans so the worker can skip recompute on identical keys.
-#[derive(Debug, Clone)]
-pub struct VisibleSpans {
-    /// Perf plan D.1: `Arc<[T]>` instead of `Vec<T>` so the HOLD
-    /// path's clone collapses to a single Arc bump instead of
-    /// allocating a fresh `Vec<Vec<StyledSpan>>` per stale-snapshot
-    /// wake. Held-key bursts can hit HOLD on every wake while the
-    /// parser catches up; the previous `Vec` clone was measured at
-    /// +32-75% on `worker_stale_snapshot_hold` after A.2a/B.1
-    /// landed (rows + spans both cloned per HOLD).
-    pub spans: Arc<[Vec<lattice_syntax::StyledSpan>]>,
-    pub computed_for_key: VisibleHighlightsKey,
-}
+// display-line B4.2 (gut + rename): `VisibleSpans` (the worker's
+// per-line styled-span output) was deleted with its overlay worker.
+// Syntax colour now flows through the cells / `DisplayMatrix`
+// substrate; nothing reads a span-grid cell off `RenderState` any
+// more. `RowRun` (below) survives — it is the `DisplayLine` run
+// type, a separate live consumer.
 
-impl Default for VisibleSpans {
-    fn default() -> Self {
-        Self {
-            spans: Arc::from(Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice()),
-            computed_for_key: VisibleHighlightsKey::default(),
-        }
-    }
-}
-
-/// One coloured run within a [`RowPrepaint`]'s `combined` text.
+/// One coloured run within a display row's combined text.
 ///
 /// Perf plan A.2. Carries either a [`lattice_syntax::Style`] tag
 /// for source bytes or an `Inlay` discriminant for inlay-spliced
-/// bytes. Runs are NOT baked to RGB — the resolved palette lives
-/// on [`crate::ui::theme::Theme`] (published per-frame in
-/// [`RenderState::theme`]) and renderers map `style → Rgba` at
-/// paint time. Reasons for the tag, not the colour:
+/// bytes. Runs are NOT baked to RGB — renderers map `style → Rgba`
+/// at paint time against the resolved theme table. Reasons for the
+/// tag, not the colour:
 ///
-/// - A theme switch doesn't invalidate the worker's cache (only
+/// - A theme switch doesn't invalidate the producer's cache (only
 ///   the colour resolution at paint changes; the run topology
 ///   doesn't).
-/// - The worker stays theme-independent — no `Theme` reads, no
-///   `Theme::default()` fallback that silently breaks user themes.
-/// - The cache key on [`VisibleHighlightsKey`] doesn't need a
-///   theme hash; runs are stable across theme changes.
+/// - The producer stays theme-independent — no theme reads.
 ///
 /// Slice A.2b.2 promoted this from a struct to an enum so the
-/// worker can mark inlay-text bytes distinctly. Consumers map
-/// `Inlay` to their inlay-virtual-text colour (resolved from
-/// `RenderState.theme` on the GPUI side; a TuiStyle modifier on
-/// the TUI side) without having to track byte ranges separately.
+/// producer can mark inlay-text bytes distinctly. Consumers map
+/// `Inlay` to their inlay-virtual-text colour without having to
+/// track byte ranges separately.
+///
+/// display-line B-series: this is the `DisplayLine` run type, owned
+/// by the cells / `DisplayMatrix` substrate. (The deleted
+/// `RowPrepaint` was the original consumer; B4.2 removed it but
+/// `display_matrix.rs` keeps `RowRun` as its style-run type.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowRun {
     /// Source-text run carrying a tree-sitter style tag.
     Source {
-        /// Number of utf-8 bytes in this run inside `combined`.
+        /// Number of utf-8 bytes in this run inside the combined text.
         len: u32,
         /// Style tag from the highlight grammar. `Style::Default`
         /// for runs that fall outside any tree-sitter capture.
         style: lattice_syntax::Style,
     },
-    /// Inlay-virtual-text run inserted by the worker from
-    /// [`SyntaxRenderState::inlay_hints`]. Carries only the byte
-    /// length; the colour is consumer-resolved.
+    /// Inlay-virtual-text run. Carries only the byte length; the
+    /// colour is consumer-resolved.
     Inlay {
         /// Number of utf-8 bytes of inlay text in this run.
         len: u32,
@@ -1322,11 +1290,11 @@ pub enum RowRun {
 }
 
 impl RowRun {
-    /// Byte length of this run inside the row's `combined` text.
+    /// Byte length of this run inside the row's combined text.
     /// Convenience accessor so consumers don't need to match every
     /// time the partition is walked. (Clippy: paired enums often
     /// also expose `is_empty`, but `RowRun::Inlay { len: 0 }`
-    /// would be a worker bug — the partition is built with the
+    /// would be a producer bug — the partition is built with the
     /// invariant that every run is non-empty, so an `is_empty`
     /// would be misleading.)
     #[allow(clippy::len_without_is_empty)]
@@ -1337,77 +1305,12 @@ impl RowRun {
     }
 }
 
-/// One visible row pre-painted by the highlights worker for the
-/// active pane.
-///
-/// Perf plan A.2 slice A.2a. Carries the combined text the renderer
-/// shapes/paints plus the colour-run partition over it.
-///
-/// Slice A.2b.2: `combined` now includes inlay text spliced in at
-/// the byte boundaries published on
-/// [`SyntaxRenderState::inlay_hints`]. The partition `runs`
-/// distinguishes source bytes ([`RowRun::Source`]) from inlay
-/// bytes ([`RowRun::Inlay`]) so consumers can colour them
-/// independently. `inlay_offsets` records where the splices
-/// happened so cursor / decoration code can remap utf-8 byte
-/// offsets in the original line onto column positions in
-/// `combined` (the analogue of GPUI's `byte_to_combined_col`).
-///
-/// Storage choices:
-/// - `combined: Box<str>` — one heap allocation per row, sized to
-///   the line + inlays. `Box<str>` over `String` shaves the unused
-///   capacity word and signals immutability. Bounded by
-///   `viewport_height` (typically <200 rows × <200 chars = <40 kB
-///   per recompute).
-/// - `runs: Vec<RowRun>` — adjacent-equal Source runs merged at
-///   build time; Inlay runs always break the merge so the consumer
-///   can colour them distinctly.
-/// - `inlay_offsets: Arc<[(u32, u32)]>` — one entry per spliced
-///   inlay: `(orig_byte, char_width)`. `orig_byte` is the utf-8
-///   offset into the SOURCE line where the inlay was inserted
-///   (NOT into `combined`); `char_width` is the inlay text's
-///   character count. `Arc<[T]>` so the HOLD reuse path on the
-///   worker bumps an Arc instead of cloning the inner Vec.
-#[derive(Debug, Default, Clone)]
-pub struct RowPrepaint {
-    pub combined: Box<str>,
-    pub runs: Vec<RowRun>,
-    pub inlay_offsets: Arc<[(u32, u32)]>,
-}
-
-/// Worker-published pre-painted rows for the active pane's visible
-/// window.
-///
-/// Perf plan A.2 slice A.2a. `rows[i]` corresponds to buffer line
-/// `start + i` where `start` is the worker's recompute scroll input.
-/// Empty `rows` (the `Default`) means no rows yet — the renderer
-/// paints from its rope fallback path until the first worker tick
-/// lands.
-///
-/// Published in a second `ArcSwap` cell alongside [`VisibleSpans`]
-/// — the legacy cell stays so the TUI peer's existing `StyledSpan`
-/// grid path keeps working without an adapter slice. GPUI consumes
-/// `rows`; TUI keeps reading `spans` (migration deferred).
-#[derive(Debug, Clone)]
-pub struct VisibleRows {
-    /// Perf plan D.1: `Arc<[T]>` for the same reason as
-    /// [`VisibleSpans::spans`]. HOLD reuses the prior rows via one
-    /// Arc bump instead of cloning every `RowPrepaint` (each carries
-    /// a `Box<str>` + `Vec<RowRun>` — non-trivial allocs at 120
-    /// rows). The bench `worker_stale_snapshot_hold/120` measured
-    /// +75% with the per-element `Vec` clone; this collapses it.
-    pub rows: Arc<[RowPrepaint]>,
-    pub computed_for_key: VisibleHighlightsKey,
-}
-
-impl Default for VisibleRows {
-    fn default() -> Self {
-        Self {
-            rows: Arc::from(Vec::<RowPrepaint>::new().into_boxed_slice()),
-            computed_for_key: VisibleHighlightsKey::default(),
-        }
-    }
-}
+// display-line B4.2 (gut + rename): `RowPrepaint` (one pre-painted
+// visible row) and `VisibleRows` (the per-pane prepaint output cell)
+// were deleted with the overlay worker's dead span/row cache. Their
+// consumers migrated to the cells / `DisplayMatrix` substrate in the
+// B-series; nothing reads a prepaint-rows cell off `RenderState` any
+// more. `RowRun` (above) survives as the `DisplayLine` run type.
 
 /// Perf plan B.2: overlay layer tag carried on each per-row
 /// pre-bucketed quad in [`StaticOverlayQuads`]. The renderer uses
@@ -1438,7 +1341,7 @@ pub enum OverlayLayer {
 /// Perf plan B.2: one pre-bucketed static-overlay quad inside a
 /// row of [`StaticOverlayQuads`]. Coordinates are in
 /// **source utf-8 byte space** — the byte offsets into the SOURCE
-/// line text (NOT into `RowPrepaint.combined`).
+/// line text (not into any combined / inlay-spliced row text).
 ///
 /// Why source-byte and not combined-column: both renderer peers
 /// already do their own coordinate transforms (GPUI runs
@@ -1465,11 +1368,10 @@ pub struct RowOverlayQuad {
 /// the right precedence order at prepaint time.
 ///
 /// Active-pane only — inactive panes keep the legacy per-frame
-/// bucket path. The cell is published on every `recompute`
-/// alongside [`VisibleRows`] but invalidates on its own axis
+/// bucket path. The cell is published on every overlay-worker
+/// `recompute` and invalidates on its own axis
 /// ([`VisibleHighlightsKey::static_overlay_version`]) so a
-/// search-query bump doesn't force a row recompose, and vice
-/// versa.
+/// search-query bump re-buckets without touching unrelated state.
 #[derive(Debug, Clone)]
 pub struct StaticOverlayQuads {
     /// `Arc<[T]>` per the D.1 pattern — HOLD / partial-reuse

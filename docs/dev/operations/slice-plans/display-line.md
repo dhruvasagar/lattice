@@ -6,6 +6,17 @@ of `DisplayLine`), consumed identically by both renderers, replacing the
 per-character `CellMatrix` AND the legacy `highlights_worker` /
 `VisibleSpans` / `VisibleRows`. Kills the per-keystroke whole-viewport flicker.
 
+**Status: ✅ COMPLETE (2026-06-20).** B0–B4 all landed; `DisplayMatrix` is the
+canonical always-current cache and the per-keystroke flicker is gone. Two final
+scope deviations, both decided on merit (see B4): the per-character cell grid is
+**retained** as GPUI's per-glyph projection of `DisplayMatrix` (approach A —
+`paint_cells_row` depends on it + Thread-F heading scale is built on it), and
+`highlights_worker` was **gutted + renamed `overlay_worker`** (approach B — it
+still produces the live `static_overlay_quads` decoration), deleting only its
+dead span/row cache (`VisibleSpans`/`VisibleRows`/`RowPrepaint`). No UX or perf
+regression — verified (publish path ~11.6 µs flat O(window); render-output tests
+green; search-highlight + headings intact).
+
 **Acceptance bar (every slice respects it):** only the edited line may visibly
 change per keystroke; all other visible lines stay pixel-identical; the typed
 char appears immediately; syntax recolour may lag a frame (eventual). See
@@ -280,7 +291,7 @@ multibuffer headers, file-tree, diff overlay, headerline) — KEPT.
 (`display_matrix_to_cell_matrix`/`display_line_to_cell_row`) are **KEPT** as
 GPUI's glyph projection. `shape_row_from_cells` was already deleted (B3).
 
-### B4.1 — sever the last `visible_spans` consumer (GPUI fallback)  🗒
+### B4.1 — sever the last `visible_spans` consumer (GPUI fallback)  ✅ (2026-06-20)
 
 **Re-audit correction (2026-06-20).** The inactive-pane migration this slice
 originally targeted is **already done**: TUI `compose_pane_lines` reads the
@@ -303,18 +314,44 @@ removed in the same slice (GPUI-contained, green). NO host change here.
 - Tests: GPUI active-body + fallback still green; `multibuffer_is_a_regular_buffer`
   green. (Inactive-pane colour parity already covered by DR.2/DR.3.)
 
-### B4.2 — delete the dead legacy highlight cache  🗒
+### B4.2 — gut + rename (approach B): delete the dead cache, KEEP the live overlay producer  ✅ (2026-06-20)
 
-Once B4.1 lands (re-run the audit grep to confirm zero production refs), delete:
-- `highlights_worker` (module + spawn) + the `highlight_wake` plumbing.
-- `VisibleSpans` / `VisibleRows` / `RowPrepaint`.
-- `pane_highlights` (Editor field/registry) + `refresh_pane_highlights`
-  (+ `runtime.rs` caller) + `Action::RefreshPaneHighlights`.
-- the GPUI `EditorElement.visible_spans` field + `build_line_with_inlays`.
-Each deletion gated on a green build + a fresh grep proving no remaining
-non-test reference. The two pre-disabled triggers (`refresh_pane_highlights`,
-`highlight_wake`) go with their machinery. **Do NOT** touch
-`CellMatrix`/`CellChunk`/`CellRow`/the projection/`Cell`/`cell_flags`.
+**A pre-execution trace caught a UX-veto blocker the audit missed:**
+`highlights_worker` had TWO jobs — the dead span/row cache AND the **live**
+`static_overlay_quads` producer (`bucket_static_overlays`), which feeds
+search-match / substitute / doc-highlight backgrounds consumed **every frame by
+both renderers** (TUI `render.rs`, GPUI `editor_element.rs`). Deleting the module
+wholesale would have silently killed those highlights — a per-keystroke-visible
+decoration regression (UX higher-court veto, `feedback_decorations_update_in_place`).
+So B4.2 **gutted, not deleted** (approach B):
+
+- **Renamed** `highlights_worker` → `overlay_worker` (module, `run`/`recompute`,
+  boot spawn, `HighlightWake` → `OverlayWake`, the bench, all comment refs) — its
+  sole remaining job is the live overlay bucket.
+- **Refactored** `bucket_static_overlays` off `RowPrepaint`: it only needed the
+  visible-row count (it already seeks per-row source extents via `memchr` on the
+  snapshot), now takes `row_count: usize`. Guard test
+  (`recompute_buckets_search_match_quads_after_refactor`) protects the live path.
+- **Deleted (dead cache, zero consumers):** `VisibleSpans`/`VisibleRows`/`RowPrepaint`
+  + builders (`build_rows`/`build_rows_with_cache`/`weave_row`/`style_at_byte`/…);
+  `SyntaxRenderState.visible_spans`/`.visible_rows` (+ dispatch population) —
+  `static_overlay_quads` KEPT; `Editor`/`App` `syntax_visible_*_cell`;
+  `FrameView.visible_rows`; GPUI `EditorElement.visible_spans` + window.rs
+  construction; TUI `App::refresh_highlights`/`highlights_for_buffer_line` + dead
+  tests/benches; residual `pane_highlights`/`refresh_pane_highlights`/`RefreshPaneHighlights`.
+- **KEPT:** `static_overlay_quads` + producer, `RowRun`, the cell grid
+  (`CellMatrix`/projection — approach A), all `DisplayMatrix`/`cells_worker`.
+
+**Verify (all green):** lattice-host lib 720, `multibuffer_is_a_regular_buffer`
+14, GPUI lib 108, TUI lib 1476 (one pre-existing parallel-order flake in
+`whitespace_show_mode…` passes 3/3 in isolation; the pre-existing picker test
+updated for the T.12 `:colorscheme` source); benches compile + run (also fixed a
+pre-existing missing `harness = false` on the `dispatch_publish` bench).
+
+**No UX or perf regression** (the slice's acceptance bar): both renderers read
+the unchanged `DisplayMatrix` + the kept `static_overlay_quads`; B4.2 only removed
+dead-cache production + per-frame `Arc` loads → strictly subtractive (the publish
+no longer populates the dead cache). Search-highlight + heading rendering intact.
 
 ### Out of scope (was the original B4) — full cell-grid retirement
 

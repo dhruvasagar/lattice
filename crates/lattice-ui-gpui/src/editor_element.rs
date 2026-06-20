@@ -25,7 +25,9 @@
 //! ## Slice scope
 //!
 //! - **X3.full.1 ✅**: pane background quad, per-line shaped text,
-//!   syntax colouring from worker-published `VisibleSpans`.
+//!   syntax colouring. (display-line B-series: the colour source
+//!   migrated from the worker's `VisibleSpans` to the cells /
+//!   `DisplayMatrix` substrate; B4.2 deleted the dead span cache.)
 //! - **X3.full.2 (this slice)**: cursor (block / bar / underline
 //!   shapes painted via `paint_quad`); gutter (fold marker + severity
 //!   sign + line number, one ShapedLine per visible row); legacy
@@ -48,16 +50,15 @@
 //!
 //! ## Indexing contract
 //!
-//! `VisibleSpans.spans[i]` covers absolute buffer line
-//! `scroll_at_compute_time + i`, per
-//! `lattice-syntax::Syntax::highlight_lines`. The element reads
-//! with `spans.get(line_idx - scroll)`. If the worker hasn't
-//! caught up to the current `scroll` (X1b idle-wake gap), `get`
-//! returns `None` and the line paints in `SyntaxStyle::Default` —
-//! better visual fail-mode than a panic.
+//! display-line B4.2: the active-pane span-grid indexing contract
+//! (`VisibleSpans.spans[i]` ↔ absolute buffer line) was retired with
+//! the dead span cache. The element now sources per-row style runs
+//! from the `DisplayMatrix` (`display_matrix.row_at_source_line`),
+//! falling back to default-styled text for rows the cells worker
+//! hasn't built yet — a better visual fail-mode than a panic.
 //!
 //! See `docs/dev/operations/render-thread-discipline-remediation.md`
-//! §X3.full.
+//! §X3.full and `docs/dev/architecture/display-line.md`.
 
 #![cfg(feature = "window")]
 
@@ -71,7 +72,6 @@ use gpui::{
 use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
 use lattice_host::display_matrix::DisplayMatrix;
-use lattice_host::render_state::VisibleSpans;
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
@@ -202,15 +202,13 @@ pub(crate) struct EditorElement {
     /// `shape_line` panics on embedded newlines so the element
     /// splits on `\n` inside `prepaint`.
     pub(crate) text: Arc<String>,
-    /// Worker-published spans — **B4.1 (2026-06-20): no longer read.**
-    /// The fallback that consumed this (`build_runs`' else-branch) now
-    /// renders default-styled (empty spans), so this field is dead
-    /// plumbing: still constructed in `window.rs` but never read. It is
-    /// deleted together with its `window.rs` construction + the host-side
-    /// legacy highlight cache (`highlights_worker` / `VisibleSpans`) in
-    /// B4.2. `#[allow(dead_code)]` keeps the slice green in the interim.
-    #[allow(dead_code)]
-    pub(crate) visible_spans: Arc<VisibleSpans>,
+    // display-line B4.2: the dead `visible_spans` field was deleted.
+    // It carried the overlay worker's per-line styled-span output,
+    // which B4.1 already severed every read of (the `build_runs`
+    // else-branch renders default-styled now). The host-side
+    // `VisibleSpans` cache it cloned from was deleted in the same
+    // slice. Syntax colour flows through the cells / `DisplayMatrix`
+    // substrate (`cell_matrix` / `display_matrix` below).
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
     /// Visible viewport height in lines.
@@ -313,8 +311,7 @@ pub(crate) struct EditorElement {
     pub(crate) inlay_color: u32,
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
-    /// pane; `None` for inactive panes (mirrors the
-    /// `visible_spans` split, since the cells worker publishes
+    /// pane; `None` for inactive panes (the cells worker publishes
     /// only for the active document).
     ///
     /// When `Some` and the row's source line is covered by the
@@ -323,10 +320,9 @@ pub(crate) struct EditorElement {
     /// `build_line_with_inlays` walk. When `None` or the row is
     /// folded / out-of-matrix (boot frame, buffer-switch gap),
     /// dispatch falls through to `shape_row`. The intermediate
-    /// `shape_row_from_prepaint` branch (highlights worker's
-    /// `RowPrepaint`) retired in S4.3 — the worker still
-    /// publishes `visible_rows` for TUI markdown / help /
-    /// messages bodies in other render functions.
+    /// `shape_row_from_prepaint` branch (the overlay worker's old
+    /// `RowPrepaint`) retired in S4.3; display-line B4.2 then deleted
+    /// the `RowPrepaint` / `visible_rows` prepaint cache entirely.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
     /// B3 (2026-06-04): canonical `DisplayMatrix` snapshot — the GPU's
     /// primary shaping source. Populated from
@@ -641,12 +637,13 @@ impl Element for EditorElement {
         // `DisplayMatrix` row (style-tagged runs resolved → `TextRun`s
         // via the host theme, replacing the retired
         // `shape_row_from_cells`); folded / out-of-window / stale rows
-        // fall through to the legacy `build_line_with_inlays` walk
-        // over `visible_spans` + LSP inlay hints. (For the active pane
+        // fall through to the `build_line_with_inlays` walk over
+        // default-styled spans + LSP inlay hints. (For the active pane
         // the body glyphs come from `paint_cells_row`; this shape is
         // the fallback for inactive panes / boot frames / folded
-        // rows. The `visible_rows` highlight publishing stays — it
-        // feeds TUI markdown / help / messages bodies elsewhere.)
+        // rows. display-line B4.2: the worker's `visible_spans` /
+        // `visible_rows` prepaint cache the fallback used to read was
+        // deleted — the fallback now renders default-styled text.)
         let build_runs =
             |line: &str,
              _rel: usize,
@@ -668,11 +665,11 @@ impl Element for EditorElement {
                     // doesn't cover (boot / stale / out-of-window /
                     // transient post-split) render DEFAULT-styled — empty
                     // spans, mirroring the TUI's plain-text fallback (DR.3).
-                    // This severs the GPU peer's last `visible_spans` read;
-                    // covered rows (the steady state) get full syntax colour
-                    // from `display_matrix` above. (`build_line_with_inlays`
-                    // still splices LSP inlays; with empty spans the line
-                    // text is default-fg.)
+                    // B4.1 severed the GPU peer's last `visible_spans` read;
+                    // B4.2 deleted the cache. Covered rows (the steady
+                    // state) get full syntax colour from `display_matrix`
+                    // above. (`build_line_with_inlays` still splices LSP
+                    // inlays; with empty spans the line text is default-fg.)
                     let line_spans: &[StyledSpan] = &[];
                     let inlays_on_line: Vec<(usize, &str)> = sorted_inlays
                         .iter()

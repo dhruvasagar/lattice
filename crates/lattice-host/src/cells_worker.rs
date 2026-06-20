@@ -30,7 +30,7 @@
 //! switch to chunked mode once the input is above `4 × viewport_height`
 //! lines.
 //!
-//! ## Design (mirrors `highlights_worker`)
+//! ## Design (mirrors `overlay_worker`)
 //!
 //! - Dispatch's `publish_render_state` populates
 //!   [`crate::render_state::CellsRenderState`] inputs (`snapshot`,
@@ -173,7 +173,7 @@ pub enum WorkerDecision {
 /// ## `paint_request` semantics
 ///
 /// `paint_request` is a shared `Notify` consumed by the renderer
-/// peer. Both this worker and `highlights_worker` fire
+/// peer. Both this worker and `overlay_worker` fire
 /// `notify_one()` on content-changing decisions. The renderer
 /// observes one wake per coalesced burst across both workers and
 /// schedules a single paint — matrix + spans are read together
@@ -1168,8 +1168,9 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
 /// Splice points are inclusive at byte position (inlays whose
 /// `orig_byte <= char_byte_start` splice in *before* that char).
 /// Trailing inlays at or past EOL splice at end-of-line — matches
-/// the existing `highlights_worker::weave_row` contract so S3
-/// renderers can switch substrates without semantic drift.
+/// the historical inlay-weave contract (originally in the deleted
+/// `highlights_worker::weave_row`) so S3 renderers can switch
+/// substrates without semantic drift.
 // B2.2: cell-path per-row builder; superseded by `build_display_row`
 // (+ `display_line_to_cell_row`). Kept as the parity oracle the
 // `display_build_parity_*` tests compare against; deleted in B4.
@@ -2157,8 +2158,9 @@ fn modifiers_to_flags(m: &crate::ui::theme::Modifiers) -> u16 {
 }
 
 /// Resolve the highlight style at a given utf-8 byte offset inside
-/// `line_spans`. Mirrors `highlights_worker::style_at_byte` —
-/// bytes outside every span fall through to `Style::Default`.
+/// `line_spans`. Mirrors the historical `style_at_byte` contract
+/// (originally in the deleted `highlights_worker`) — bytes outside
+/// every span fall through to `Style::Default`.
 fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> lattice_syntax::Style {
     for s in line_spans {
         if byte >= s.start && byte < s.end {
@@ -2624,7 +2626,7 @@ mod tests {
     /// A syntax snapshot whose `text_version` lags the document's
     /// `text_version` is treated as stale: the worker falls back
     /// to default fg rather than painting against mismatched byte
-    /// offsets. Mirrors `highlights_worker`'s stale-hold contract.
+    /// offsets. Mirrors `overlay_worker`'s stale-hold contract.
     #[test]
     fn stale_syntax_falls_back_to_default_fg() {
         // Snapshot parsed against version 1; document advanced
@@ -2755,9 +2757,9 @@ mod tests {
     }
 
     /// A trailing inlay (orig_byte == line_len) splices at EOL.
-    /// Matches the highlights_worker contract so future renderer
-    /// cutovers don't surprise the user with disappearing
-    /// end-of-line hints.
+    /// Matches the historical inlay-weave contract (from the deleted
+    /// `highlights_worker`) so future renderer cutovers don't
+    /// surprise the user with disappearing end-of-line hints.
     #[test]
     fn trailing_inlay_splices_at_end_of_line() {
         let snap = snap_of_versioned("ab", 1);
@@ -4670,34 +4672,35 @@ mod tests {
         assert_eq!(recompute(&rs3), WorkerDecision::Recomputed);
     }
 
-    /// Cells worker and highlights worker write to independent
+    /// Cells worker and overlay worker write to independent
     /// `ArcSwap` cells. Driving cells `recompute` does NOT touch
-    /// the spans cell, and (vice versa) driving the highlights
-    /// worker does not corrupt the matrix cell. The shared
-    /// `RenderState` substrate stays consistent across both.
+    /// the overlay quads cell (the overlay worker's output). The
+    /// shared `RenderState` substrate stays consistent across both.
+    ///
+    /// display-line B4.2: the dead `VisibleSpans` / `VisibleRows`
+    /// sentinel cells this test used were deleted; the surviving
+    /// sibling cell is `static_overlay_quads`, so the independence
+    /// invariant is now asserted against it.
     #[test]
-    fn cells_worker_does_not_corrupt_spans_cell() {
+    fn cells_worker_does_not_corrupt_overlay_cell() {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let spans_cell: Arc<ArcSwap<crate::render_state::VisibleSpans>> = Arc::default();
-        let rows_cell: Arc<ArcSwap<crate::render_state::VisibleRows>> = Arc::default();
         let overlay_cell: Arc<ArcSwap<crate::render_state::StaticOverlayQuads>> = Arc::default();
 
-        // Seed a sentinel value into the spans cell so we can
+        // Seed a sentinel value into the overlay cell so we can
         // detect any unintended mutation.
         let sentinel_key = crate::render_state::VisibleHighlightsKey {
             snapshot_ptr: 0xdead_beef,
             ..Default::default()
         };
-        spans_cell.store(Arc::new(crate::render_state::VisibleSpans {
-            spans: Arc::from(Vec::new().into_boxed_slice()),
+        overlay_cell.store(Arc::new(crate::render_state::StaticOverlayQuads {
+            quads: Arc::from(Vec::new().into_boxed_slice()),
             computed_for_key: sentinel_key,
         }));
-        let pre_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+        let pre_overlay_ptr = Arc::as_ptr(&overlay_cell.load_full());
 
         // Run a cells recompute against a RenderState that
         // happens to share the same `render_state` Arc shape. The
-        // cells path must not touch spans_cell / rows_cell /
-        // overlay_cell.
+        // cells path must not touch overlay_cell.
         let snap = snap_of_versioned("aa\nbb", 1);
         let v1 = MatrixVersion {
             text: 1,
@@ -4717,19 +4720,16 @@ mod tests {
         );
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
-        // Spans cell remains at the sentinel — Arc identity
+        // Overlay cell remains at the sentinel — Arc identity
         // unchanged.
-        let post_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+        let post_overlay_ptr = Arc::as_ptr(&overlay_cell.load_full());
         assert_eq!(
-            pre_spans_ptr, post_spans_ptr,
-            "cells recompute must not touch the spans cell"
+            pre_overlay_ptr, post_overlay_ptr,
+            "cells recompute must not touch the overlay quads cell"
         );
 
         // Matrix cell has been updated.
         assert!(!matrix_cell.load().is_empty());
-
-        // Hold the cells unused so they're not optimised away.
-        let _ = (rows_cell, overlay_cell);
     }
 
     /// End-to-end smoke test through the actual `run` loop in a

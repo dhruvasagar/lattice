@@ -538,16 +538,11 @@ impl GpuiApp {
         self.dispatch_action(lattice_host::action::Action::DismissPopup);
     }
 
-    /// X2.6 compatibility shim: the background `highlights_worker`
-    /// now keeps the active-pane span cell up to date; the GPUI
-    /// peer no longer needs to drive a synchronous recompute. Kept
-    /// as a no-op so any external caller (smoke tests, demo code)
-    /// continues to compile. Production paint reads through
-    /// `render_state.syntax.visible_spans.load()`.
-    pub fn refresh_highlights(&mut self) {
-        // No-op; the worker subscribes to `Editor::highlight_wake`
-        // and republishes on every `publish_render_state`.
-    }
+    // display-line B4.2: the `refresh_highlights` no-op compatibility
+    // shim was deleted. It carried no behaviour (the worker drove the
+    // span cell that was itself deleted) and had no callers. Syntax
+    // colour flows through the cells / `DisplayMatrix` substrate;
+    // overlay backgrounds through `lattice_host::overlay_worker`.
 
     /// Auto-scroll the active pane so the cursor stays in the
     /// visible viewport (`[scroll, scroll + viewport_height)`).

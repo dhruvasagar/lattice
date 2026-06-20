@@ -4,7 +4,7 @@
 
 > **Forward-looking content extracted 2026-06-10:**
 > - N.1 (Narrow Mode) design → [`docs/dev/architecture/narrow-mode.md`](../../architecture/narrow-mode.md)
->   and [`../operations/slice-plans/narrow-mode.md`](../operations/slice-plans/narrow-mode.md)
+>   and [`../operations/slice-plans/archive/narrow-mode.md`](../operations/slice-plans/archive/narrow-mode.md)
 > - Consumer Providers Catalog (A.1–A.21) → [`../operations/slice-plans/multibuffer-providers.md`](../operations/slice-plans/multibuffer-providers.md)
 
 Sequencing companion to

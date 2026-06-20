@@ -3,7 +3,7 @@
 Sequencing + status for the excerpt-header visual rework and
 the streaming incremental-append fix.
 
-- **Design:** [`multibuffer-views.md`](../../architecture/multibuffer-views.md)
+- **Design:** [`multibuffer-views.md`](../../../architecture/multibuffer-views.md)
   §3.8 (excerpt-header visual model + incremental-append contract).
 - **Authoritative status:** `implementation.md` `## multibuffer-views`.
 

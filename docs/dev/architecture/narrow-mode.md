@@ -3,7 +3,7 @@
 Design fragment for Lattice's narrow mode: a focused, editable multibuffer
 view of a single source-buffer excerpt. Edits propagate to the underlying
 file through the standard M.3 edit path. Slice sequencing lives in
-[`../operations/slice-plans/narrow-mode.md`](../operations/slice-plans/narrow-mode.md).
+[`../operations/slice-plans/archive/narrow-mode.md`](../operations/slice-plans/archive/narrow-mode.md).
 
 ---
 

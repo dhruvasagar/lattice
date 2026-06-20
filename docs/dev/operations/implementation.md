@@ -4428,7 +4428,7 @@ architecture §10 for the rationale.
   `MultibufferDocumentHandle`, kind-branch in host
   deleted (`d05348d`, `f598a72`). Design at
   [`../architecture/multibuffer-is-a-regular-buffer.md`](../architecture/multibuffer-is-a-regular-buffer.md);
-  sequencing at [`slice-plans/multibuffer-is-a-regular-buffer.md`](slice-plans/multibuffer-is-a-regular-buffer.md).
+  sequencing at [`slice-plans/archive/multibuffer-is-a-regular-buffer.md`](slice-plans/archive/multibuffer-is-a-regular-buffer.md).
   Convention codified in
   `feedback_buffers_no_special_case` memory.
 - ✅ **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
@@ -5205,7 +5205,7 @@ Design fragments:
 operator + the one-excerpt view) and
 [`../architecture/tree-sitter-text-objects.md`](../architecture/tree-sitter-text-objects.md)
 (the `af`/`ac`/`aC`/… objects). Slice plan:
-[`slice-plans/narrow-mode.md`](slice-plans/narrow-mode.md).
+[`slice-plans/archive/narrow-mode.md`](slice-plans/archive/narrow-mode.md).
 
 Narrow mode renders a one-excerpt `MultibufferDocumentHandle` over an
 arbitrary line range. No new `BufferKind` — the narrow view IS a multibuffer

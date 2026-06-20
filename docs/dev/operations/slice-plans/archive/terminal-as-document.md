@@ -1,10 +1,10 @@
 # Terminal-as-Document — slice plan
 
 Sequencing companion to
-[`docs/dev/architecture/terminal-as-document.md`](../../architecture/terminal-as-document.md).
+[`docs/dev/architecture/terminal-as-document.md`](../../../architecture/terminal-as-document.md).
 The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status
-per slice lives in [`../implementation.md`](../implementation.md).
+per slice lives in [`../implementation.md`](../../implementation.md).
 
 > **Status: ✅ feature-complete (verified 2026-06-17).** T-snap-1 ·
 > T-mode-1 · T-grammar-1 (narrow) · T-cursor-1 · T-search-1 · T-marks-1 ·

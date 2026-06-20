@@ -386,7 +386,7 @@ Once the SyntheticDoc is in place:
 ## 8. Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/terminal-as-document.md`](../operations/slice-plans/terminal-as-document.md);
+[`docs/dev/operations/slice-plans/archive/terminal-as-document.md`](../operations/slice-plans/archive/terminal-as-document.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

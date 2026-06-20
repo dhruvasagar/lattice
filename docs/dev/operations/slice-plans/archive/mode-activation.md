@@ -1,7 +1,7 @@
 # Slice plan — event-driven mode activation
 
 Sequencing for the activation-trigger mechanism. Design contract:
-[`../../architecture/mode-architecture.md`](../../architecture/mode-architecture.md)
+[`../../architecture/mode-architecture.md`](../../../architecture/mode-architecture.md)
 **§7.4** (activation triggers) — read it first; this file is *when* and *in
 what order*, not *what* or *why*.
 
@@ -488,7 +488,7 @@ of the expand/leave migration and carries its own risk surface.
   entirely. Snippets become one *consumer*: a non-empty placeholder emits
   `Effect::Many([SelectionChange(span), EnterMode(Select(Charwise))])`; empty
   placeholders (`$1`) keep the bare Insert cursor. Design fragment:
-  [`../../architecture/select-mode.md`](../../architecture/select-mode.md)
+  [`../../architecture/select-mode.md`](../../../architecture/select-mode.md)
   (contract, state machine, keymap/dispatch, render, rejected alternatives,
   paramount-goal alignment). **Doc debt fixed by this slice:**
   `docs/user/completion.md` + the `active-snippet-mode` doc-comment already
@@ -706,7 +706,7 @@ primitive + snippet `<Esc>` + `:describe-key`, `3df8521b`; e2e test `b89f53c5`;
 design fragment keymap-architecture §14 `7283502e`). SN.3f ✅ (`4b49b810`),
 SN.3g ✅ (`687ed1c3`). SN.3e ✅ (buffer-keyed snippet session, 2026-06-14).
 SN.3d ✅ **complete** (vim Select mode — see
-[select-mode.md](../../architecture/select-mode.md), `b14b2fc7` + review-tightening
+[select-mode.md](../../../architecture/select-mode.md), `b14b2fc7` + review-tightening
 `db10ba4b`). **d.0 ✅** (`cd5f9cb9`: `ModalState::Select` + `BindingMode::Select`
 + exhaustive-match audit + cursor-shape parity test). **d.1 ✅** (`translate_select`
 dispatch + printable-overtype single replace-edit + `<Esc>`/`<C-g>`/`<C-o>`
@@ -734,7 +734,7 @@ The snippet mode registers the same three bindings for `BindingMode::Select`
 through the shared `input::translate`. Closes the `snippet_esc` regression; +2
 end-to-end tests (`<Esc>`-leaves + `<Tab>`-navigates in Select), keymap-entry
 test updated. Visual's minor-mode layer push remains outstanding (separate).
-See [select-mode.md](../../architecture/select-mode.md) §4 + §6.
+See [select-mode.md](../../../architecture/select-mode.md) §4 + §6.
 
 **Snippet activation relocation ✅ (2026-06-13, generic reconciler).**
 `Editor::sync_keymap_overlays` previously *polled* `snippet_session.is_active()`

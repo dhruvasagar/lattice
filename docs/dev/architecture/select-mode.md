@@ -1,7 +1,7 @@
 # Select mode (vim Select) — design fragment
 
 **Status:** designed (SN.3d), not yet implemented. Slice sequencing lives in
-the [mode-activation slice plan](../operations/slice-plans/mode-activation.md)
+the [mode-activation slice plan](../operations/slice-plans/archive/mode-activation.md)
 (SN.3d). This file is the stable *what* + *why*.
 
 ## 1. What it is
@@ -307,5 +307,5 @@ session, then `ExitSelect` → Normal.
 - [keymap-architecture.md](keymap-architecture.md) — layer model + dispatch
   the Select `BindingMode` plugs into.
 - [design.md §5.2](design.md) — modal-state catalog (Select added there).
-- [mode-activation slice plan](../operations/slice-plans/mode-activation.md)
+- [mode-activation slice plan](../operations/slice-plans/archive/mode-activation.md)
   — SN.3d sequencing; SN.3e (buffer-keyed snippet session) lands first.

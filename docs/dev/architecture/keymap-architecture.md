@@ -1948,7 +1948,7 @@ layer by layer.
   branch on the already-resolved `BoundCommand`.
 
 See the slice plan
-([mode-activation](../operations/slice-plans/mode-activation.md), SN.3c.2b)
+([mode-activation](../operations/slice-plans/archive/mode-activation.md), SN.3c.2b)
 for sequencing and the landed commit.
 
 ## See also

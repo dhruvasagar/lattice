@@ -2,7 +2,7 @@
 
 **Status:** landed 2026-06-15 (the consolidation). Slice sequencing +
 remaining items live in
-[the slice plan](../operations/slice-plans/typed-motion-dispatch.md).
+[the slice plan](../operations/slice-plans/archive/typed-motion-dispatch.md).
 
 > **Correction (2026-06-15).** An earlier revision of this doc claimed
 > "`:motion:*` does not execute the motion." That was **wrong** — verified
@@ -122,5 +122,5 @@ pins the boundary (motions in, operators out of completion).
 
 ## See also
 
-- [slice plan](../operations/slice-plans/typed-motion-dispatch.md)
+- [slice plan](../operations/slice-plans/archive/typed-motion-dispatch.md)
 - design.md §5.2.1 (unified command / grammar dispatch)

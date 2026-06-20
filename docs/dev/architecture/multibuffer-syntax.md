@@ -1,7 +1,7 @@
 # Multibuffer Per-Excerpt Syntax Highlighting (K.4.7)
 
 **Status:** implemented (2026-06-08)  
-**Slice plan:** `docs/dev/operations/slice-plans/multibuffer-is-a-regular-buffer.md`, slice K.4.7
+**Slice plan:** `docs/dev/operations/slice-plans/archive/multibuffer-is-a-regular-buffer.md`, slice K.4.7
 
 ## Problem
 

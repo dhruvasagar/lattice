@@ -1085,7 +1085,7 @@ arms.
 ### 3.8 Excerpt-header visual model (MH, 2026-06-17)
 
 Sequencing + slice status:
-[`slice-plans/multibuffer-header-polish.md`](../operations/slice-plans/multibuffer-header-polish.md).
+[`slice-plans/archive/multibuffer-header-polish.md`](../operations/slice-plans/archive/multibuffer-header-polish.md).
 
 The per-excerpt header (distinct from the §3.7 view-header
 status line) is the row a user reads to know *which file*

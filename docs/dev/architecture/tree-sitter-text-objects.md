@@ -6,7 +6,7 @@ tree. They are first-class citizens of the vim grammar: registered through the
 same `register_text_object` API as the classic objects (`iw`, `ap`, `i"`), and
 composable with **every** operator — `daf`, `vic`, `yaa`, and the `zn` narrow
 operator (`znaf`). Slice sequencing lives in
-[`../operations/slice-plans/narrow-mode.md`](../operations/slice-plans/narrow-mode.md)
+[`../operations/slice-plans/archive/narrow-mode.md`](../operations/slice-plans/archive/narrow-mode.md)
 (N.1.4); narrow-mode is the first consumer but not the owner.
 
 ---

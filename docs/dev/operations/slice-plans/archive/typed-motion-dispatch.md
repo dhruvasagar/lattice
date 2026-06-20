@@ -1,6 +1,6 @@
 # Unified command dispatch — slice plan
 
-Sequencing for [typed-motion-dispatch.md](../../architecture/typed-motion-dispatch.md)
+Sequencing for [typed-motion-dispatch.md](../../../architecture/typed-motion-dispatch.md)
 (design: the *what* and *why*). This file is the *when* and *in what order*.
 
 Goal: ONE host-side command-dispatch entry (`Editor::dispatch_invocation`)

@@ -1649,7 +1649,7 @@ Numbers captured: 2026-05-27, S5 first run.
 ### H.3 — viewport-scoped (windowed) chunked matrix (2026-06-04)
 
 Anchor: `../architecture/incremental-highlight.md` + slice plan
-`slice-plans/incremental-highlight.md`. Goal: highlight +
+`slice-plans/archive/incremental-highlight.md`. Goal: highlight +
 cell-matrix build O(viewport), never O(file), so large files stay
 within the keystroke/paint budget.
 

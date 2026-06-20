@@ -8,7 +8,7 @@
 > `zn` operator + the 8 tree-sitter text objects are the shipped surface.
 
 Sequencing companion to
-[`docs/dev/architecture/narrow-mode.md`](../../architecture/narrow-mode.md).
+[`docs/dev/architecture/narrow-mode.md`](../../../architecture/narrow-mode.md).
 The design fragment is the source of truth for *what* and *why*; this file
 owns *when* and *in what order*.
 
@@ -276,7 +276,7 @@ the classic vim objects/motions. `znaf` waits on N.1.4.
 
 **Depends on: N.1.0** (`scope_at_cursor`). Independent of N.1.3 — `daf` / `vac`
 work before the operator exists. Design:
-[`tree-sitter-text-objects.md`](../../architecture/tree-sitter-text-objects.md).
+[`tree-sitter-text-objects.md`](../../../architecture/tree-sitter-text-objects.md).
 
 Owned by `lattice-syntax`; registered through the existing `register_text_object`
 API; first-class (composes with every operator, visible to `:describe-key`).

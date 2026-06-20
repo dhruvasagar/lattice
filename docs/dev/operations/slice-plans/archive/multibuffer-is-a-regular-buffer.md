@@ -1,6 +1,6 @@
 # Slice plan: K.4 — Multibuffer is a regular buffer
 
-**Design:** [multibuffer-is-a-regular-buffer.md](../../architecture/multibuffer-is-a-regular-buffer.md).
+**Design:** [multibuffer-is-a-regular-buffer.md](../../../architecture/multibuffer-is-a-regular-buffer.md).
 
 **Status:** ✅ complete. K.4.0–K.4.11 all landed (K.4.7
 closed 2026-06-08 — per-excerpt syntax highlighting).
@@ -19,7 +19,7 @@ LSPReferences, AIProposedEdits providers per
 ### K.4.0 — Audit doc ✅ (commit `8bc77e4`)
 
 Landed. See
-[multibuffer-is-a-regular-buffer.md](../../architecture/multibuffer-is-a-regular-buffer.md).
+[multibuffer-is-a-regular-buffer.md](../../../architecture/multibuffer-is-a-regular-buffer.md).
 35 seam sites classified Aligned / ❌ Bug / ⚠ Unclear.
 Renderer `lattice-ui-tui` has zero `BufferKind::Multibuffer`
 mentions → silent integration failures (the design
@@ -544,7 +544,7 @@ workspace `cargo test --workspace` clean.
 
 ## Cross-references
 
-- Design: [multibuffer-is-a-regular-buffer.md](../../architecture/multibuffer-is-a-regular-buffer.md).
+- Design: [multibuffer-is-a-regular-buffer.md](../../../architecture/multibuffer-is-a-regular-buffer.md).
 - Triggered by: M.6.X retro
   ([multibuffer-views.md M.6.X row](./multibuffer-views.md)) +
   user reports during M.6 testing

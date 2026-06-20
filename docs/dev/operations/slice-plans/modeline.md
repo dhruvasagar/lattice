@@ -155,19 +155,39 @@ active vs uniform-muted inactive; compose/truncate on runs;
 width-0/narrow no-panic; TestBackend render parity unchanged). *error
 handling* — truncation saturates, never panics. **Deps:** ML.1a-render.
 
-### ML.2 — GPUI render parity  🗒
+### ML.2 — GPUI render parity  ✅
 **Design:** §7, §8, §10.
-**Change:** replace the single-string `pane_chrome` status with a `div`
-flex row of Left/Center/Right zones, per-`Span` theme, matching ML.1
-exactly (lockstep, `feedback_tui_gpui_parity`). Still no interaction.
-**Reuses the shared content layer (ML.1a-render):** GPUI calls the same
-`lattice_host::modeline::{resolve_builtin_content, resolve_mode_items_content}`
-the TUI does — it only adds its own div-zone layout + paint (and its own
-provider-label lookup). No content logic is re-implemented; the strategy
-is already common (the whole point of landing the resolver host-side).
-**Artefacts:** *test* — element/zone snapshot parity with TUI; *doc* —
-§10; *parity grep* — `Zone`/element sites present in `lattice-ui-gpui`.
-*error handling* — empty content hidden. **Deps:** ML.1.
+**Landed:** `window.rs::pane_chrome` no longer takes a `status_text:
+String`; it takes a pre-built `status_row` element. New `modeline_row(pane,
+is_active, &RenderState)` builds the per-`Span` zone row — a flex row of
+three zone children (`justify_between` → Left flush-left, Right
+flush-right, Center between), each a row of styled text spans. Content
+comes from the **same** `lattice_host::modeline::{resolve_builtin_content,
+resolve_mode_items_content}` the TUI uses; only the paint differs. Per-role
+colours adapt inline from the resolved theme (`resolved.get(ids.modeline_*)`
+→ `to_rgb_u32` + bold), active = per-role fg over the `modeline.active`
+bar bg, inactive = uniform muted `modeline.inactive` (GPUI keeps no style
+cache; `feedback_renderer_cache_protects_ux`).
+
+Both call sites (document + terminal) now build the row via `modeline_row`
+— deleting GPUI's duplicated modal-label + mode-items assembly (which had
+**drifted**: `PENDING`/`COMMAND` vs the host `O-PEND`/`CMD` — now unified)
+and `build_terminal_inner`'s bespoke `R:row C:col` status (a GPUI-only
+divergence the TUI never had; terminal panes now show the same `core.*`
+content as every kind, `feedback_buffers_no_special_case`). A
+terminal-cell-coords element, if wanted, is a terminal-mode contribution
+for both peers later (ML.3+).
+
+`provider_label: None` — GPUI has no M.4 pane-render provider registry yet
+(Document → path, Terminal → registry name slot, both via the resolver);
+a GPUI provider registry mirrors the TUI's M.4 later.
+
+**Artefacts:** *test* — `modeline_elements_resolve_to_gpui_colours` (the
+resolved→u32 colour path the row paints through; content parity is
+by-construction via the shared resolver). *parity grep* —
+`modeline_row` / `resolve_builtin_content` / `ids.modeline_*` / `Zone::`
+all present in `lattice-ui-gpui/src/window.rs`. *error handling* — empty
+content hidden (`content.is_empty()` skip). **Deps:** ML.1.
 
 ### ML.3 — event-bus update path + migrate modes + retire trait  🗒
 **Design:** §5, §6.

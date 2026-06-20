@@ -1052,33 +1052,138 @@ impl EditorView {
     /// file-tree, ...) so no kind can render past its allocated
     /// vertical space and bleed into the modeline / cmdline
     /// [[feedback_buffers_no_special_case]].
+    /// ML.2: build the per-pane modeline as a zone / per-`Span` flex row,
+    /// reusing the SAME host resolver the TUI uses
+    /// (`lattice_host::modeline`) so the *content* is identical across
+    /// peers — only this paint differs. Three zones via `justify_between`
+    /// (Left flush-left, Right flush-right, Center between); flexbox gives
+    /// the zone layout natively. Per-role colours are adapted inline from
+    /// the resolved theme (GPUI keeps no style cache;
+    /// `feedback_renderer_cache_protects_ux`). Active panes compose the
+    /// per-role fg over the `modeline.active` bar bg; inactive panes use
+    /// the uniform muted `modeline.inactive` bar.
+    ///
+    /// `provider_label` is `None`: the GPUI peer has no M.4 pane-render
+    /// provider registry yet (Document → path, Terminal → registry name
+    /// slot, both via the resolver). A GPUI provider registry mirrors the
+    /// TUI's M.4 later; until then file-tree/oil aren't GPUI pane-rendered.
+    fn modeline_row(
+        pane: &PaneState,
+        is_active: bool,
+        rs: &lattice_host::render_state::RenderState,
+    ) -> gpui::Div {
+        use lattice_mode::Zone;
+        const FALLBACK_FG: u32 = 0x00cd_d6f4; // palette `text`
+        const FALLBACK_BAR: u32 = 0x001e_1e2e; // palette `base`
+        let snap = &rs.modeline_elements;
+        let resolved = &rs.resolved_theme;
+        let ids = &rs.theme_ids;
+
+        // Bar background — active (`surface1`) vs inactive (`surface0`).
+        let bar = if is_active {
+            resolved.get(ids.modeline_active)
+        } else {
+            resolved.get(ids.modeline_inactive)
+        };
+        let bar_bg = bar.bg.map(|c| c.to_rgb_u32(FALLBACK_BAR)).unwrap_or(FALLBACK_BAR);
+
+        // Resolve one zone's elements into role-tagged runs (same shape as
+        // the TUI's `resolve_zone`).
+        let zone_runs = |zone: Zone| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
+            let mut runs: Vec<(String, Option<lattice_mode::ModelineRole>)> = Vec::new();
+            for el in snap.registry.zone_ordered(zone) {
+                let id = el.id.as_str();
+                let content = if id.starts_with("core.") {
+                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs, None)
+                } else {
+                    snap.content_for(&el.id).cloned().unwrap_or_default()
+                };
+                if content.is_empty() {
+                    continue;
+                }
+                if !runs.is_empty() {
+                    runs.push((" ".to_string(), None));
+                }
+                for span in content.spans {
+                    if !span.text.is_empty() {
+                        runs.push((span.text, Some(span.role)));
+                    }
+                }
+            }
+            runs
+        };
+
+        let left = zone_runs(Zone::Left);
+        let right = zone_runs(Zone::Right);
+        // Center: the temporary legacy mode-items pull (retired ML.3).
+        let center: Vec<(String, Option<lattice_mode::ModelineRole>)> =
+            lattice_host::modeline::resolve_mode_items_content(pane, rs)
+                .spans
+                .into_iter()
+                .filter(|s| !s.text.is_empty())
+                .map(|s| (s.text, Some(s.role)))
+                .collect();
+
+        // Style one run: inactive → uniform muted; active → per-role fg.
+        let styled_run =
+            move |text: String, role: Option<lattice_mode::ModelineRole>| -> gpui::Div {
+                use lattice_host::modeline as ml;
+                let style = if is_active {
+                    // Per-role element id (inferred type; inline to avoid
+                    // naming `lattice_theme::ElementId` here).
+                    let id = match role.as_ref().map(|r| r.as_str()) {
+                        Some(ml::ROLE_MODE) => ids.modeline_mode,
+                        Some(ml::ROLE_PATH) => ids.modeline_path,
+                        Some(ml::ROLE_POSITION) => ids.modeline_position,
+                        Some(ml::ROLE_LANG) => ids.modeline_lang,
+                        Some(ml::ROLE_MODE_ITEM) => ids.modeline_mode_item,
+                        // Padding / unknown: text-ish on the bar.
+                        _ => ids.modeline_path,
+                    };
+                    resolved.get(id)
+                } else {
+                    resolved.get(ids.modeline_inactive)
+                };
+                let fg = style.fg.map(|c| c.to_rgb_u32(FALLBACK_FG)).unwrap_or(FALLBACK_FG);
+                let mut span = div().text_color(rgb(fg)).child(text);
+                if style.modifiers.bold {
+                    span = span.font_weight(gpui::FontWeight::BOLD);
+                }
+                span
+            };
+        let zone_div = |runs: Vec<(String, Option<lattice_mode::ModelineRole>)>| -> gpui::Div {
+            let mut z = div().flex().flex_row();
+            for (text, role) in runs {
+                z = z.child(styled_run(text, role));
+            }
+            z
+        };
+
+        div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .justify_between()
+            .bg(rgb(bar_bg))
+            .child(zone_div(left))
+            .child(zone_div(center))
+            .child(zone_div(right))
+    }
+
+    /// Wrap a pane's `inner` content with the per-pane modeline row
+    /// beneath it. The row is the styled flex element built by
+    /// [`Self::modeline_row`] (it already carries the bar bg + per-role
+    /// spans); this just stacks content + row and dims inactive content.
     fn pane_chrome(
         inner: AnyElement,
-        status_text: String,
+        status_row: gpui::Div,
         render_active: bool,
-        theme: &GpuiTheme,
         inactive_opacity: f32,
     ) -> gpui::Div {
-        let (status_bg, status_fg) = if render_active {
-            (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
-        } else {
-            (rgb(theme.status_background), rgb(theme.status_foreground))
-        };
-        // 2026-05-27: dim the buffer content (NOT the status row)
-        // when this pane is inactive. The TUI peer composes
-        // `inactive_pane_overlay = Style::empty().dim()` over every
-        // inactive pane's painted text — visible separation between
-        // "where input goes" and "everywhere else". The GPUI peer
-        // had no equivalent; only the status row colour changed,
-        // which the user reported as "too subtle".
-        //
-        // Applied as `.opacity()` on the content wrapper. Status row
-        // stays at full opacity so the pane identity / cursor coords
-        // are still legible on inactive panes.
-        //
-        // `inactive_opacity` is user-configurable via
-        // `:set ui.inactive_pane_opacity=N` (percent 0-100). Default
-        // 50 (= 0.5 alpha).
+        // 2026-05-27: dim the buffer content (NOT the status row) when
+        // this pane is inactive. `inactive_opacity` is user-configurable
+        // via `:set ui.inactive_pane_opacity=N`. The status row stays at
+        // full opacity (its own muted styling marks it inactive).
         let content_opacity: f32 = if render_active { 1.0 } else { inactive_opacity };
         div()
             .flex()
@@ -1095,16 +1200,7 @@ impl EditorView {
                     .opacity(content_opacity)
                     .child(inner),
             )
-            .child(
-                div()
-                    .bg(status_bg)
-                    .text_color(status_fg)
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .flex_row()
-                    .child(div().child(status_text)),
-            )
+            .child(status_row.px_2().py_1())
     }
 
     /// render); inactive panes use the stashed `PaneState::cursor`
@@ -1162,19 +1258,15 @@ impl EditorView {
             // always paint the block so the user can still see
             // where each shell's cursor sits.
             let insert_active = is_active && ad.terminal_insert_active;
-            let (inner, status_text) = self.build_terminal_inner(
-                pane,
-                &rs_guard,
-                theme,
-                insert_active,
-                is_active,
-                row_px,
-            );
+            let inner =
+                self.build_terminal_inner(pane, &rs_guard, theme, insert_active, is_active, row_px);
+            // ML.2: terminal panes get the same zone/per-Span modeline as
+            // every other kind (shared resolver) — no kind-specific status.
+            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
             return Self::pane_chrome(
                 inner,
-                status_text,
+                status_row,
                 is_active,
-                theme,
                 inactive_pane_opacity(&self.app),
             );
         }
@@ -1742,117 +1834,13 @@ impl EditorView {
             .map(|c| c.to_rgb_u32(0x7f849c))
             .unwrap_or(0x7f849c);
 
-        // Per-pane status line at the pane's bottom. Format
-        // matches the TUI's per-pane status: path + cursor coords.
-        // Active pane uses the cursor color for the bar so the
-        // user can tell which pane has focus at a glance.
-        let path_label = snapshot
-            .path()
-            .map(|p| {
-                let display = match std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| p.strip_prefix(&cwd).ok().map(|s| s.to_path_buf()))
-                {
-                    Some(rel) => rel.display().to_string(),
-                    None => p.display().to_string(),
-                };
-                if snapshot.dirty {
-                    format!("{display} [+]")
-                } else {
-                    display
-                }
-            })
-            .unwrap_or_else(|| {
-                if snapshot.dirty {
-                    "[scratch][+]".to_string()
-                } else {
-                    "[scratch]".to_string()
-                }
-            });
-        // MO.4.b / Option-A modeline overhaul: active pane footer shows
-        // [MODAL]  path  mode-items    line:col  lang; inactive shows
-        // path    line:col (styling difference handled by pane_chrome).
-        let status_line = {
-            let (modal_prefix, mode_suffix, lang_str) = if render_active {
-                let modal_label: &str =
-                    if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
-                        if ad.terminal_insert_active {
-                            "TERMINAL-INSERT"
-                        } else if ad.terminal_visual_active {
-                            "TERMINAL-VISUAL"
-                        } else {
-                            "TERMINAL"
-                        }
-                    } else {
-                        match ad.modal {
-                            ModalState::Normal => "NORMAL",
-                            ModalState::Insert => "INSERT",
-                            ModalState::Visual(_) => "VISUAL",
-                            // SN.3d: kind-agnostic, mirroring Visual (TUI peer
-                            // `app/mode.rs::modal_label` does the same).
-                            ModalState::Select(_) => "SELECT",
-                            ModalState::OperatorPending => "PENDING",
-                            ModalState::Command => "COMMAND",
-                            ModalState::Search(_) => "SEARCH",
-                            ModalState::Replace => "REPLACE",
-                        }
-                    };
-                // Mode-contributed items (MO.4.b) — wait-free Arc reads.
-                let mut services = lattice_mode::ServiceRegistry::new();
-                services.register(lattice_lsp::modes::LspProgressStatusData {
-                    progress: rs_guard.lsp.progress.clone(),
-                    server_status: rs_guard.lsp.server_status.clone(),
-                });
-                if pane.buffer_id == ad.document_buffer_id {
-                    services.register(lattice_host::diff::mode::DiffStatusData {
-                        sign_map: rs_guard.diff.sign_map.clone(),
-                    });
-                }
-                let ctx = lattice_mode::StatusLineCtx::new(pane.buffer_id, &services);
-                let mode_suffix = if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
-                    let registry = &rs_guard.modes.mode_registry;
-                    let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
-                    if let Some(major) = active.major() {
-                        all_ids.push(major);
-                    }
-                    all_ids.extend_from_slice(active.minors());
-                    let mut items: Vec<lattice_mode::StatusLineItem> = all_ids
-                        .into_iter()
-                        .filter_map(|id| registry.get(id))
-                        .flat_map(|m| m.status_line_items(&ctx))
-                        .collect();
-                    items.sort_by_key(|i| i.priority);
-                    if items.is_empty() {
-                        String::new()
-                    } else {
-                        let parts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
-                        format!("  {}", parts.join("  "))
-                    }
-                } else {
-                    String::new()
-                };
-                let lang = Some(lattice_syntax::Lang::detect_from_path(snapshot.path()));
-                let lang_str = match lang {
-                    Some(l) if l != lattice_syntax::Lang::Plain => {
-                        format!("  {}", l.name())
-                    }
-                    _ => String::new(),
-                };
-                (format!("[{modal_label}]  "), mode_suffix, lang_str)
-            } else {
-                (String::new(), String::new(), String::new())
-            };
-            format!(
-                "  {modal_prefix}{path_label}{mode_suffix}   L:{}  C:{}{}",
-                cursor.line + 1,
-                cursor.byte,
-                lang_str
-            )
-        };
-        // Status-bar fg/bg colours are picked inside `pane_chrome`
-        // off `render_active` so every kind goes through one
-        // styling path; the document arm no longer derives them
-        // locally.
+        // ML.2: the per-pane modeline is built by `Self::modeline_row`
+        // (zone / per-Span flex row) from the SHARED host resolver
+        // (`lattice_host::modeline`) at the `pane_chrome` call below —
+        // identical content to the TUI peer, only the paint differs. The
+        // old inline modal-label + path + mode-items + lang assembly (and
+        // its `PENDING`/`COMMAND` drift from the host `O-PEND`/`CMD`) is
+        // gone; the host resolver is the single source.
 
         // Phase 5.8.AF.5 / Slice X3.full.2: pane body is one
         // `EditorElement` that shapes + paints visible lines
@@ -2013,11 +2001,11 @@ impl EditorView {
             glyph_resolver: self.glyph_resolver.clone(),
         };
 
+        let status_row = Self::modeline_row(pane, render_active, &rs_guard);
         Self::pane_chrome(
             editor_element.into_any_element(),
-            status_line,
+            status_row,
             render_active,
-            theme,
             inactive_pane_opacity(&self.app),
         )
     }
@@ -2046,7 +2034,10 @@ impl EditorView {
         insert_active: bool,
         is_active: bool,
         row_px: f32,
-    ) -> (AnyElement, String) {
+    ) -> AnyElement {
+        // ML.2: returns the inner content only; the per-pane modeline row
+        // is built uniformly by `Self::modeline_row` at the call site (no
+        // kind-specific status, `feedback_buffers_no_special_case`).
         let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
             (
                 t.snapshot.load_full(),
@@ -2057,15 +2048,11 @@ impl EditorView {
             )
         });
         let Some((snap, current_match, mut visual, all_matches, mut nav_cursor)) = snap_opt else {
-            let placeholder = div()
+            return div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
                 .child(format!("(terminal #{} unavailable)", pane.buffer_id.0))
                 .into_any_element();
-            return (
-                placeholder,
-                format!("  [terminal #{} unavailable]", pane.buffer_id.0),
-            );
         };
         // T-clean-1 Phase A.2 (2026-05-28): active pane reads
         // cursor + visual from the publisher's derived render-
@@ -2097,16 +2084,14 @@ impl EditorView {
         // prefer the registry `name` slot ("[zsh]", "[bash]", …)
         // populated at spawn time, falling back to the legacy
         // `terminal #N` form when the buffer hasn't been named.
+        // Used only by the seq==0 placeholder below; the per-pane status
+        // bar (terminal name + position) is built by `Self::modeline_row`
+        // via the shared resolver (`core.path` reads this same name slot).
         let name_label = rs_guard
             .buffers
             .registry
             .name_of(pane.buffer_id)
             .unwrap_or_else(|| format!("[terminal #{}]", pane.buffer_id.0));
-        let status_text = format!(
-            "  {name_label}   R:{}  C:{}",
-            snap.cursor_row + 1,
-            snap.cursor_col,
-        );
         // Diagnostic placeholder while the reader hasn't
         // published its first frame: a string of spaces renders
         // as nothing visible, so the user perceives a fully
@@ -2125,7 +2110,7 @@ impl EditorView {
                     snap.rows, snap.cols,
                 ))
                 .into_any_element();
-            return (placeholder, status_text);
+            return placeholder;
         }
         // T2 substrate swap (2026-05-25): per-cell SGR colors
         // from alacritty's grid. The xterm-default 16-colour
@@ -2411,7 +2396,7 @@ impl EditorView {
         for row in rows {
             col = col.child(row);
         }
-        (col.into_any_element(), status_text)
+        col.into_any_element()
     }
 }
 
@@ -3883,3 +3868,33 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 // `lattice_host::cursor_shape::tests`; the GPUI peer's local
 // duplicates were removed. Window-side tests (popup focus, dispatch
 // integration) still live in `crate::tests` at the lib's root.
+
+#[cfg(test)]
+mod modeline_tests {
+    use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+
+    /// ML.2: the `modeline.*` elements GPUI's `modeline_row` paints through
+    /// resolve to the expected u32 colours under the default palette —
+    /// pinning the exact `resolved.get(id).fg.to_rgb_u32` adaptation the
+    /// row uses. CONTENT parity with the TUI is guaranteed by construction
+    /// (both peers call the same `lattice_host::modeline` resolver), so
+    /// this covers the GPUI-specific colour path.
+    #[test]
+    fn modeline_elements_resolve_to_gpui_colours() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+
+        let mode = resolved.get(ids.modeline_mode);
+        assert_eq!(mode.fg.unwrap().to_rgb_u32(0), 0x0089_b4fa, "mode fg = blue");
+        assert!(mode.modifiers.bold, "mode is bold");
+        assert_eq!(
+            resolved.get(ids.modeline_active).bg.unwrap().to_rgb_u32(0),
+            0x0045_475a,
+            "active bar bg = surface1"
+        );
+        let inactive = resolved.get(ids.modeline_inactive);
+        assert_eq!(inactive.bg.unwrap().to_rgb_u32(0), 0x0031_3244, "inactive bar = surface0");
+        assert_eq!(inactive.fg.unwrap().to_rgb_u32(0), 0x006c_7086, "inactive fg = overlay");
+    }
+}

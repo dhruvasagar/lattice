@@ -336,8 +336,13 @@ pub(crate) struct EditorElement {
     /// `TextRun`s); folded / out-of-window / stale rows fall through to the
     /// legacy `shape_row`. B2.3 makes this text-current synchronously, so
     /// the stale guard no longer fires per keystroke — that retires the
-    /// GPU whole-viewport flicker. `cell_matrix` now feeds only the
-    /// experimental per-glyph `paint_cells` path until B4.
+    /// GPU whole-viewport flicker. `cell_matrix` is a DERIVED PROJECTION
+    /// of `display_matrix` (`display_matrix_to_cell_matrix`) and is the
+    /// PRODUCTION per-glyph source: `paint_cells_row` (the default
+    /// active-pane glyph path, S4.final.f) reads it. Per the display-line
+    /// B4 re-slice (approach A, 2026-06-20) it is RETAINED as that
+    /// projection — not deleted; B4 deletes only the legacy highlight
+    /// cache (`visible_spans` etc.). See architecture/display-line.md.
     pub(crate) display_matrix: Option<Arc<DisplayMatrix>>,
     /// T.5.b (theme-system): the resolved theme table + builtin
     /// element ids the display-line path resolves `DisplayRun`
@@ -348,12 +353,14 @@ pub(crate) struct EditorElement {
     /// editor element already binds.
     pub(crate) resolved_theme: std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
     pub(crate) theme_ids: lattice_host::ui::theme::BuiltinElementIds,
-    /// S4.final.b (2026-05-27): per-window glyph-id cache. When
-    /// the runtime toggle `LATTICE_PAINT_CELLS=1` is set,
+    /// S4.final.b (2026-05-27): per-window glyph-id cache.
     /// `EditorElement::paint`'s body loop uses
     /// `crate::paint_cells::paint_cells_row` (which consumes
-    /// this resolver) to emit per-cell `paint_glyph` calls
-    /// instead of `ShapedLine::paint`. Always populated from
+    /// this resolver) to emit per-cell `paint_glyph` calls — the
+    /// DEFAULT active-pane glyph path (S4.final.f; the old
+    /// `LATTICE_PAINT_CELLS` env-gate is now a no-op,
+    /// `paint_cells.rs`). The `ShapedLine::paint` path is the
+    /// fallback (inactive / folded / ligatures-on). Always populated from
     /// `EditorView.glyph_resolver` so the cache survives across
     /// paints + across panes within the same window. Mutex
     /// because the resolve path mutates the cache on miss and

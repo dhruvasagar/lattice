@@ -252,26 +252,71 @@ asserts unchanged lines (prefix, and a line after the edit in the same chunk) re
 their prior `text` AND `runs` Arcs (the colour-carrying payload), while only the
 edited line is rebuilt. 57 cells_worker + 691 host + 1467 TUI tests green.
 
-## B4 — delete legacy  🗒
+## B4 — retire the legacy HIGHLIGHT CACHE (cell grid kept as GPUI projection)  🗒
 
-**Pre-disabled ahead of B4 (2026-06-04):** the two legacy highlight triggers are
-already off — `runtime.rs::refresh_pane_highlights()` (a per-frame UI-thread
-`highlight_lines` recompute — itself a goal-#1 violation) and
-`dispatch.rs::highlight_wake` (the async `highlights_worker`). The active document
-body sources colour from the canonical `DisplayMatrix`, so both were pure
-redundancy for it. **Interim caveat:** their only remaining consumer is
-`draw_inactive_document` (`pane_highlights` + `visible_rows`), so until B4 migrates
-it, **inactive panes render without syntax colour**. Single-pane editing is
-unaffected. B4 is the immediate follow-up so this interim never ships standalone.
+**Re-sliced 2026-06-20 after a pre-deletion audit — approach (A).** The original
+B4 ("delete the cell grid + projection + `paint_cells` + `shape_row`") is
+**superseded**. The audit found the cell-grid projection is now GPUI's
+**production** per-glyph source — `paint_cells_row` is the default active-pane
+glyph path (`editor_element.rs` `use_paint_cells = cell_matrix.is_some()`,
+S4.final.f; the `LATTICE_PAINT_CELLS` env-gate is dead, `paint_cells.rs:310`),
+and the Thread-F heading scale / variable-row-height work is built on it. So the
+cell grid is **retained** as an always-current *projection* of the canonical
+`DisplayMatrix` (single source of truth — B2.3's flicker fix stands; a derived
+projection reintroduces no two-cache skew). B4 now deletes only the redundant
+legacy *highlight cache* and migrates the last two legacy consumers.
 
-- Consumer audit first (`*messages*`/help bodies, inactive panes, virtual rows,
-  wrap, cursor, hit-test). **Known:** `draw_inactive_document` is the last
-  legacy-highlight consumer — migrate it onto `DisplayMatrix` first.
-- Delete: `highlights_worker`, `VisibleSpans`/`VisibleRows`/`RowPrepaint`
-  (legacy cells), `pane_highlights`, `refresh_pane_highlights` + its
-  `Action::RefreshPaneHighlights`, the `highlight_wake` plumbing,
-  `CellMatrix`/`Cell`/`CellRow`/`CellChunk`, `shape_row`. Fold
-  `MatrixVersion`/`EditDelta` into their final home.
+**Audit findings (2026-06-20).** The legacy symbols are NOT dead —
+`pane_highlights` 33, `VisibleSpans` 38, `VisibleRows` 37, `highlights_worker`
+22, `RowPrepaint` 28 refs across both renderers + host. Live consumers:
+- **TUI** `draw_inactive_document` (render.rs:2929) — inactive panes via
+  `pane_highlights`/`visible_rows`/`visible_spans`.
+- **GPUI** the fallback shaping path (`build_line_with_inlays` + `visible_spans`,
+  editor_element.rs:660) for folded/boot/inactive rows.
+
+`lattice_cells::Cell` + `cell_flags` are **shared payload** (virtual rows,
+multibuffer headers, file-tree, diff overlay, headerline) — KEPT.
+`CellMatrix`/`CellChunk`/`CellRow` + the projection
+(`display_matrix_to_cell_matrix`/`display_line_to_cell_row`) are **KEPT** as
+GPUI's glyph projection. `shape_row_from_cells` was already deleted (B3).
+
+### B4.1 — migrate the last legacy consumers → `DisplayMatrix`  🗒
+
+Both renderers' remaining `visible_spans`/`pane_highlights` consumers move onto
+the canonical `DisplayMatrix` (TUI + GPUI in lockstep):
+- TUI `draw_inactive_document`: render inactive panes from the pane's
+  `DisplayMatrix` (resolve `DisplayLine` runs → ratatui via the host theme — the
+  same `display_line_to_source_spans` the active body uses). Closes the interim
+  "inactive panes have no syntax colour" caveat.
+- GPUI fallback: source folded/boot/inactive rows from `DisplayMatrix`; the
+  `EditorElement.visible_spans` field + `build_line_with_inlays` retire.
+- After this, NO production path reads `visible_spans`/`pane_highlights`/
+  `visible_rows`/`highlights_worker` output.
+- Tests: inactive-pane syntax-colour parity (both renderers);
+  `multibuffer_is_a_regular_buffer` + active-body tests stay green.
+
+### B4.2 — delete the dead legacy highlight cache  🗒
+
+Once B4.1 lands (re-run the audit grep to confirm zero production refs), delete:
+- `highlights_worker` (module + spawn) + the `highlight_wake` plumbing.
+- `VisibleSpans` / `VisibleRows` / `RowPrepaint`.
+- `pane_highlights` (Editor field/registry) + `refresh_pane_highlights`
+  (+ `runtime.rs` caller) + `Action::RefreshPaneHighlights`.
+- the GPUI `EditorElement.visible_spans` field + `build_line_with_inlays`.
+Each deletion gated on a green build + a fresh grep proving no remaining
+non-test reference. The two pre-disabled triggers (`refresh_pane_highlights`,
+`highlight_wake`) go with their machinery. **Do NOT** touch
+`CellMatrix`/`CellChunk`/`CellRow`/the projection/`Cell`/`cell_flags`.
+
+### Out of scope (was the original B4) — full cell-grid retirement
+
+Deleting `CellMatrix`/`CellChunk`/`CellRow` + the projection + `paint_cells`
+would require re-homing GPUI's per-glyph painting (incl. the Thread-F heading
+scale + bg quads) onto a `DisplayLine` painter. A separate future initiative
+if/when the `ShapedLine` path can subsume per-glyph control — not pursued now
+(heuristic #1: no concrete merit win over the always-current projection, and a
+real regression risk on the paint hot path). The design fragment records the
+cell grid's retained role as GPUI's per-glyph projection.
 
 ## Sequencing
 

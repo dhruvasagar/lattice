@@ -5,6 +5,28 @@ Supersedes the per-character `CellMatrix` substrate (`cell-grid-renderer.md`)
 and the legacy scroll-windowed highlight cache (`highlights_worker` /
 `VisibleSpans` / `VisibleRows`).
 
+> **Amendment (2026-06-20) — the cell grid is RETAINED as GPUI's per-glyph
+> projection (approach A).** B0–B3 + B2.5 landed: `DisplayMatrix` is the
+> canonical, always-current cache and the flicker is gone. A pre-B4 deletion
+> audit then found the GPU peer re-adopted the cell grid as its **production**
+> per-glyph painter: `paint_cells_row` is the default active-pane glyph path
+> (`editor_element.rs` `use_paint_cells = cell_matrix.is_some()`, S4.final.f;
+> the `LATTICE_PAINT_CELLS` env-gate is now a no-op), and the Thread-F heading
+> scale / variable-row-height work is built on it. So the original goal of
+> *deleting* the cell grid is **descoped**: the `CellMatrix` lives on, but only
+> as a **derived projection** of the canonical `DisplayMatrix`
+> (`display_matrix_to_cell_matrix`) — not a second source of truth, so the
+> two-cache fragmentation this design fixed does **not** return. What B4 still
+> deletes is the redundant legacy *highlight cache* (`highlights_worker` /
+> `VisibleSpans` / `VisibleRows` / `RowPrepaint` / `pane_highlights`), after
+> migrating the last two consumers (TUI `draw_inactive_document`, GPUI
+> `build_line_with_inlays` fallback) onto `DisplayMatrix`. Full cell-grid
+> retirement (re-homing GPUI per-glyph painting onto a `DisplayLine` painter)
+> is a separate future initiative, deferred on merit. See the slice plan's B4
+> re-slice. `lattice_cells::Cell` + `cell_flags` are shared payload
+> (virtual rows, multibuffer headers, file-tree) and were never in scope to
+> delete.
+
 ## Why this exists
 
 The editor flickers on every keystroke: editing one line restyles the whole

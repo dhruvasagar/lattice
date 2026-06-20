@@ -587,9 +587,26 @@ impl Mode for LspMode {
     /// fails the epoch match, the Guard drops on the spawn
     /// side (publishing `LspBufferDetached`), and the App stays
     /// consistent.
-    /// MO.4.b: "lsp" badge shown while lsp-mode is active on the buffer.
-    fn status_line_items(&self, _ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
-        vec![StatusLineItem { text: "lsp".to_string(), priority: 60 }]
+    /// MO.4.b + L3-lite: "lsp" badge with a readiness glyph. The mode
+    /// only activates once the server's `initialize` completed (see
+    /// `on_activate`), so a visible badge already means "attached"; the
+    /// absence of any badge is itself the "not ready yet" cue. We only
+    /// distinguish *indexing* (a non-`End` `$/progress` token in flight)
+    /// from *ready*. The detailed `<title> NN%` is added by
+    /// `LspProgressMode` (priority 70, so it sorts after this). Glyphs
+    /// follow lsp-architecture.md §14 (`⟳` indexing, `✓` ready) as
+    /// BMP-safe defaults; the nerd-font + palette switch is the full L3.
+    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
+        let indexing = ctx
+            .service::<LspProgressStatusData>()
+            .map(|d| {
+                d.progress
+                    .values()
+                    .any(|u| !matches!(u.kind, crate::events::LspProgressKind::End))
+            })
+            .unwrap_or(false);
+        let text = if indexing { "lsp ⟳" } else { "lsp ✓" };
+        vec![StatusLineItem { text: text.to_string(), priority: 60 }]
     }
 
     /// MO.4.a: gutter severity column. Reads `LspDiagnosticsData`

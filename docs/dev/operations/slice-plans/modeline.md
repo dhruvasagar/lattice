@@ -17,20 +17,33 @@ the design doc for the model, ownership rule, and rejected alternatives.
 
 ## Slices
 
-### ML.0 — element model + registry + service  🗒
-**Design:** modeline.md §3–§6, §9.
-**Change:** introduce `ModelineElement` (descriptor: id/zone/priority/
-scope/interaction), `ElementContent`/`Span`, `ModelineRegistry`
-(register/remove), the content store (`HashMap<ElementId, ElementContent>`)
-+ its `RenderState.modeline` snapshot field, and a host `ModelineService`
-(register/update/remove). **Includes the `Interaction` struct (on_click /
-hover) even though it isn't wired until ML.4** — so the model never churns
-later. No renderer change yet (no element is rendered).
-**Artefacts:** *test* — register/remove descriptors; content store
-drain + snapshot publish; zone ordering (Left asc / Right desc / Center).
-*doc* — §3–§6 (done). *bench* — n/a (registry ops O(1)). *error handling*
-— duplicate id replaces + logs `debug!`; unknown id on update is a no-op.
-**Deps:** none. **Unblocks:** all.
+ML.0 is carved into **ML.0a** (mode-facing data model + descriptor
+registry — self-contained in `lattice-mode`, zero host changes) and
+**ML.0b** (host content store + render snapshot + service wiring).
+
+### ML.0a — element model + descriptor registry  ✅
+**Design:** modeline.md §3, §6 (descriptor half), §9 (Interaction API).
+**Landed:** `lattice-mode::modeline` — `ElementId` (namespaced = owner
+key), `Zone` (Left/Center/Right), `Scope` (PaneLocal/Global),
+`ModelineRole` (string theme-role key, no theme dep), `Span`,
+`ElementContent` (empty ⇒ hidden; `plain()` for width/tests),
+`HoverSpec`, `Interaction { on_click: Option<CommandId>, hover }`
+(designed now, wired in ML.4), `ModelineElement` descriptor + builders,
+and `ModelineRegistry` (register last-write-wins, remove idempotent,
+`zone_ordered` — Left/Center asc, Right desc, ties by id). 7 unit tests;
+`cargo test -p lattice-mode` green. Zero host/render changes.
+
+### ML.0b — host content store + render snapshot + ModelineService  🗒
+**Design:** modeline.md §4, §5 (content half).
+**Change:** content store (`HashMap<ElementId, ElementContent>`) on
+`Editor` + a `RenderState.modeline` element-snapshot field (mirrors
+`lsp_progress`); a host `ModelineRegistry` instance + `ModelineService`
+(register/update/remove) exposed to modes via the service surface;
+built-in content written by `build_render_state`. No renderer change yet.
+**Artefacts:** *test* — content-store update + snapshot publish round-
+trip; service register/remove through the host. *doc* — §4/§5. *error
+handling* — update/remove for an unknown id is a no-op. **Deps:** ML.0a.
+**Unblocks:** ML.1.
 
 ### ML.1 — TUI render: zones + built-ins as elements  🗒
 **Design:** §7, §8.
@@ -100,8 +113,8 @@ Plugin Architecture phase (mirrors LSP M.10). **Deps:** ML.4 + plugin host.
 ## Sequence
 
 ```
-ML.0 ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
-                          └► ML.4 (deferred) ─► ML.6 (deferred)
+ML.0a ─► ML.0b ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
+                                    └► ML.4 (deferred) ─► ML.6 (deferred)
 ```
 
 Land ML.0–ML.3 + ML.5 for the configurable, themed, event-driven,

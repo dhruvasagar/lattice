@@ -83,6 +83,7 @@ pub mod guards;
 pub use lattice_keymap::keymap_entry;
 pub mod locals;
 pub mod mode;
+pub mod modeline;
 pub mod modes;
 pub mod registry;
 pub mod services;
@@ -113,6 +114,11 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::services::ServiceRegistry;
+// ML.0a: configurable-modeline element model + descriptor registry.
+pub use crate::modeline::{
+    ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineRegistry,
+    ModelineRole, Scope, Span, Zone,
+};
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.

@@ -10080,6 +10080,11 @@ impl Editor {
         // When the LSP response lands, write directly via
         // `insert_for` -- no channel.
         let cache_slot = self.lsp_inlay_hints_cache.clone();
+        // L1b: wake the render pipeline when hints land off-keystroke
+        // (same contract as semantic tokens, L1a). Only on actual
+        // writes; the `Err` (superseded/cancelled) arm keeps prior
+        // hints and must not publish. See lsp-architecture.md §12.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -10113,6 +10118,7 @@ impl Editor {
                             requested_last_line: requested_last,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Ok(_) => {
                     // Authoritative empty (`Ok(None)` / `Ok(Some([]))`):
@@ -10127,6 +10133,7 @@ impl Editor {
                             requested_last_line: requested_last,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Err(_) => {
                     // 2026-06-03: a cancelled request (superseded by a
@@ -32064,3 +32071,4 @@ mod tests {
         );
     }
 }
+

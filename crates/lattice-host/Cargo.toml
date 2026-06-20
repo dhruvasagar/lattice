@@ -209,6 +209,12 @@ harness = false
 name = "pane_group"
 harness = false
 
+# ML.1a-render: modeline build cost stays O(elements). See
+# `benches/modeline.rs`.
+[[bench]]
+name = "modeline"
+harness = false
+
 [features]
 # M.6 (2026-06-01): toggle the project-search provider on /
 # off. Forwards to `lattice-multibuffer`'s `search` feature so

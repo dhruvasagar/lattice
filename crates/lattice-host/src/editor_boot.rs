@@ -1104,6 +1104,12 @@ impl Editor {
         // `Editor.modeline` (host built-ins write content + the publish
         // path snapshots it), and thus read wait-free by the renderers.
         let modeline_service: lattice_mode::ModelineServiceHandle = std::sync::Arc::default();
+        // ML.1a-render: register the host's built-in descriptors
+        // (`core.mode` / `core.path` / `core.position` / `core.lang`).
+        // Content is resolved per-pane host-side at render time
+        // (`crate::modeline::resolve_builtin_content`) so both renderers
+        // paint identical content.
+        crate::modeline::register_builtin_elements(&modeline_service);
 
         let mut editor = Editor {
             messages: messages_ring.clone(),

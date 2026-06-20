@@ -26,7 +26,7 @@ use lattice_protocol::position::Range as ProtoRange;
 // `Editor::visual_selection_range`; this peer no longer references
 // the variants directly.
 use lattice_runtime::DocumentSnapshot;
-use lattice_syntax::{Lang, Style};
+use lattice_syntax::Style;
 
 use crate::app::{App, EchoLevel, Fold};
 
@@ -2835,17 +2835,18 @@ fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRec
 }
 
 /// One-row status line at the bottom of a pane (vim's "statusline"
-/// per-window). Active pane is reverse-videoed; inactive panes are
-/// dim. Format: `path  line:col  [+]` (path, position, dirty
-/// marker). Help and file-tree get their own labels.
-/// Option A: per-pane status row replaces the removed global modeline.
+/// per-window). ML.1a-render: the row is laid out from the registered
+/// modeline elements (`RenderState.modeline_elements`) in three zones —
+/// Left (flush-left), Right (flush-right, the block right-aligned),
+/// Center (centered in the gap). Built-in (`core.*`) content is resolved
+/// per pane *host-side* (`lattice_host::modeline`), so the TUI and GPUI
+/// peers paint identical content; only this layout/paint is
+/// renderer-specific. The Center zone is fed by the temporary mode-items
+/// pull until ML.3 migrates LSP/diff to registered elements.
 ///
-/// Active pane: `[MODE] label  <mode-items>    line:col  lang`
-/// Inactive pane: `label    line:col` (dimmed)
-///
-/// `label` comes from `pane_status_label` which already incorporates
-/// path/dirty and the MO.4.b mode-contributed items (LSP progress,
-/// diff counts, etc.) sorted by priority.
+/// Active pane is reverse-videoed; inactive panes are dim — one
+/// `pane_status_*` style for the whole row until ML.1b's per-role
+/// theming resolves each span's `ModelineRole` through `ResolvedTheme`.
 fn draw_pane_status_line(
     frame: &mut Frame,
     area: Rect,
@@ -2859,36 +2860,133 @@ fn draw_pane_status_line(
         app.theme.pane_status_inactive
     };
     let width = area.width as usize;
+    if width == 0 {
+        return;
+    }
 
-    let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
-    let label = app.pane_status_label(pane);
+    let rs = app.render_state.load();
+    let snap = &rs.modeline_elements;
+    // The file-tree / oil / help custom label (M.4 provider mechanism)
+    // is the one renderer-resolved content input; it overrides
+    // `core.path`. Resolved once and threaded into the shared host
+    // resolver so the assembly stays common across peers.
+    let provider_label = app
+        .pane_render_provider(pane.buffer_id)
+        .map(|p| (p.status)(app, pane));
+    let provider_ref = provider_label.as_deref();
 
-    let left = if is_active {
-        let modal = app.modal_label();
-        let lang = app
-            .buffers()
-            .registry
-            .document_path(pane.buffer_id)
-            .map(|p| Lang::detect_from_path(Some(p.as_path())).label())
-            .unwrap_or("");
-        let right = if lang.is_empty() {
-            pos.clone()
-        } else {
-            format!("{pos}  {lang}")
-        };
-        let content = format!("[{modal}] {label}");
-        let total = content.chars().count() + right.chars().count() + 2;
-        let pad = if width > total { width - total } else { 1 };
-        format!("{content}{}{right} ", " ".repeat(pad))
-    } else {
-        let total = label.chars().count() + pos.chars().count() + 3;
-        let pad = if width > total { width - total } else { 1 };
-        format!(" {label}{}{pos} ", " ".repeat(pad))
+    let resolve_zone = |zone: lattice_mode::Zone| -> String {
+        snap.registry
+            .zone_ordered(zone)
+            .into_iter()
+            .filter_map(|el| {
+                let id = el.id.as_str();
+                let content = if id.starts_with("core.") {
+                    lattice_host::modeline::resolve_builtin_content(
+                        id,
+                        pane,
+                        is_active,
+                        &rs,
+                        provider_ref,
+                    )
+                } else {
+                    // Pushed elements (modes / plugins, ML.3): content
+                    // comes from the published store, keyed by id.
+                    snap.content_for(&el.id).cloned().unwrap_or_default()
+                };
+                let plain = content.plain();
+                (!plain.is_empty()).then_some(plain)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     };
 
-    let truncated: String = left.chars().take(width).collect();
-    let para = Paragraph::new(Line::from(Span::styled(truncated, style)));
+    let left = resolve_zone(lattice_mode::Zone::Left);
+    let right = resolve_zone(lattice_mode::Zone::Right);
+    // Center: the temporary legacy mode-items pull (retired ML.3).
+    // Empty for provider panes — they own their full label.
+    let center = if provider_ref.is_some() {
+        String::new()
+    } else {
+        lattice_host::modeline::resolve_mode_items_content(pane, &rs).plain()
+    };
+
+    let row = compose_modeline_row(width, &left, &center, &right);
+    let para = Paragraph::new(Line::from(Span::styled(row, style)));
     frame.render_widget(para, area);
+}
+
+/// Truncate `s` to at most `max` display columns (char count), adding a
+/// `…` ellipsis when it overflows. `max == 0` ⇒ empty; `max == 1` ⇒ just
+/// the ellipsis. Never panics.
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    match max {
+        0 => String::new(),
+        1 => "…".to_string(),
+        _ => {
+            let mut out: String = s.chars().take(max - 1).collect();
+            out.push('…');
+            out
+        }
+    }
+}
+
+/// Lay three zone strings into a `width`-wide row: Left flush-left,
+/// Right flush-right, Center centered in the gap between them. When the
+/// content overflows `width`, sacrifice **Center first, then Right, then
+/// Left** (design §7) — implemented as greedy keep-priority Left > Right
+/// > Center, each block truncated with an ellipsis to its remaining
+/// budget. Saturating arithmetic throughout: never panics, and the
+/// blocks never overlap (≥1 column of separation between any two
+/// non-empty blocks). `width == 0` ⇒ empty.
+fn compose_modeline_row(width: usize, left: &str, center: &str, right: &str) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let cw = |s: &str| s.chars().count();
+
+    // Left is highest-priority: keep as much as fits.
+    let left = truncate_to(left, width);
+    let used_l = cw(&left);
+    // Right gets the remainder after Left + a 1-col separator.
+    let sep_lr = if used_l > 0 { 1 } else { 0 };
+    let right = truncate_to(right, width.saturating_sub(used_l + sep_lr));
+    let used_r = cw(&right);
+    // Center gets the gap minus a 1-col pad on each abutting side.
+    let pad_l = if used_l > 0 { 1 } else { 0 };
+    let pad_r = if used_r > 0 { 1 } else { 0 };
+    let center_budget = width.saturating_sub(used_l + used_r + pad_l + pad_r);
+    let center = truncate_to(center, center_budget);
+    let used_c = cw(&center);
+
+    let mut buf: Vec<char> = vec![' '; width];
+    // Left at col 0.
+    for (i, ch) in left.chars().enumerate() {
+        buf[i] = ch;
+    }
+    // Right flush against the far edge.
+    let r_start = width - used_r;
+    for (i, ch) in right.chars().enumerate() {
+        buf[r_start + i] = ch;
+    }
+    // Center within the [used_l, r_start) region.
+    if used_c > 0 {
+        let region_start = used_l;
+        let region_end = r_start; // exclusive
+        let region_w = region_end.saturating_sub(region_start);
+        let offset = region_w.saturating_sub(used_c) / 2;
+        let c_start = region_start + offset;
+        for (i, ch) in center.chars().enumerate() {
+            let idx = c_start + i;
+            if idx < region_end {
+                buf[idx] = ch;
+            }
+        }
+    }
+    buf.into_iter().collect()
 }
 
 /// DR.3 (decoration-retention): render a Document pane that isn't
@@ -8067,5 +8165,121 @@ mod tests {
              Editor::dispatch_fused's in-actor tail. See slice I.7 \
              (docs/dev/operations/slice-plans/input-latency.md).",
         );
+    }
+
+    // --- ML.1a-render: zone layout + truncation + built-in parity -----
+
+    #[test]
+    fn truncate_to_adds_ellipsis_on_overflow() {
+        assert_eq!(truncate_to("hello", 10), "hello");
+        assert_eq!(truncate_to("hello", 5), "hello");
+        assert_eq!(truncate_to("hello", 4), "hel…");
+        assert_eq!(truncate_to("hello", 1), "…");
+        assert_eq!(truncate_to("hello", 0), "");
+    }
+
+    #[test]
+    fn compose_row_places_left_and_right_at_edges() {
+        let row = compose_modeline_row(20, "L", "", "R");
+        assert_eq!(row.chars().count(), 20, "row fills width");
+        assert!(row.starts_with('L'), "left flush-left: {row:?}");
+        assert!(row.ends_with('R'), "right flush-right: {row:?}");
+    }
+
+    #[test]
+    fn compose_row_centers_center_block() {
+        // width 11, "mid" (3) ⇒ offset (11-3)/2 = 4.
+        assert_eq!(compose_modeline_row(11, "", "mid", ""), "    mid    ");
+    }
+
+    #[test]
+    fn compose_row_width_zero_is_empty() {
+        assert_eq!(compose_modeline_row(0, "L", "C", "R"), "");
+    }
+
+    #[test]
+    fn compose_row_overflow_sacrifices_center_then_right_then_left() {
+        let (left, center, right) = ("LEFTLEFT", "CENTER", "RIGHTRIGHT");
+        // width 12: left(8) kept; sep(1); right budget 3 ⇒ "RI…";
+        // center budget saturates to 0 ⇒ dropped first.
+        let row = compose_modeline_row(12, left, center, right);
+        assert_eq!(row.chars().count(), 12, "row fills width");
+        assert!(row.starts_with("LEFTLEFT"), "left preserved last: {row:?}");
+        assert!(!row.contains("CENTER"), "center sacrificed first: {row:?}");
+        assert!(row.contains('…'), "right truncated with ellipsis: {row:?}");
+        // Extreme narrow width must not panic.
+        let _ = compose_modeline_row(1, left, center, right);
+    }
+
+    /// Render `draw_pane_status_line` to a `TestBackend` and read the
+    /// one-row footer as a string.
+    fn render_status_row(
+        app: &App,
+        pane: &crate::pane::PaneState,
+        is_active: bool,
+        width: u16,
+    ) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height: 1,
+                };
+                draw_pane_status_line(f, area, app, pane, is_active);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+
+    /// Active pane: `core.mode` (`[NORMAL]`) + `core.path` in the Left
+    /// zone, `core.position` right-aligned in the Right zone — the same
+    /// content the legacy single-string footer showed.
+    #[test]
+    fn modeline_active_pane_lays_out_mode_path_position() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let row = render_status_row(&app, &pane, true, 40);
+        assert_eq!(row.chars().count(), 40, "row fills pane width: {row:?}");
+        assert!(
+            row.trim_start().starts_with("[NORMAL]"),
+            "Left zone leads with the modal label: {row:?}"
+        );
+        assert!(row.contains("[no name]"), "core.path present: {row:?}");
+        assert!(
+            row.trim_end().ends_with("1:0"),
+            "core.position right-aligned: {row:?}"
+        );
+    }
+
+    /// Inactive pane: the modal label is omitted (it is a single
+    /// active-document read), but the path + position still render.
+    #[test]
+    fn modeline_inactive_pane_omits_modal_label() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let row = render_status_row(&app, &pane, false, 40);
+        assert!(!row.contains("[NORMAL]"), "no modal on inactive: {row:?}");
+        assert!(row.contains("[no name]"), "path still shows: {row:?}");
+        assert!(
+            row.trim_end().ends_with("1:0"),
+            "position still shows: {row:?}"
+        );
+    }
+
+    /// The footer never panics at a tiny pane width (overflow path).
+    #[test]
+    fn modeline_narrow_pane_does_not_panic() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        for w in [1u16, 2, 3, 8] {
+            let row = render_status_row(&app, &pane, true, w);
+            assert_eq!(row.chars().count(), w as usize, "row fills width {w}");
+        }
     }
 }

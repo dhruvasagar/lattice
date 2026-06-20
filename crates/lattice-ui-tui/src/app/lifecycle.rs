@@ -353,107 +353,32 @@ impl App {
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
 
-    /// MO.4.b: status-line label for a pane. Builds the path/dirty
-    /// prefix, then collects `StatusLineItem`s from every active
-    /// mode (major + minors) via the mode registry, sorts by
-    /// priority ascending, and appends them after the path.
+    /// MO.4.b: status-line label for a pane — the legacy combined
+    /// string (`path[+]  <mode-items>`, or a pane provider's custom
+    /// label). Kept for its existing callers/tests; the modeline
+    /// renderer (`draw_pane_status_line`) no longer routes through it,
+    /// laying out zones from the registered elements instead.
     ///
-    /// Render-time data each mode may need (LSP progress, diff
-    /// sign counts) is injected into a `StatusLineCtx`
-    /// `ServiceRegistry` built here from the published render
-    /// state — modes read it type-safely without `lattice-mode`
-    /// depending on feature crates.
+    /// ML.1a-render: the path/dirty segment and the mode-items pull are
+    /// now resolved host-side (`lattice_host::modeline`) so the TUI and
+    /// GPUI peers share one content strategy; this method just stitches
+    /// the two parts into the old one-string shape.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
-        if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
-            return (provider.status)(self, pane);
-        }
-        // Non-Document panes (Terminal, etc.) without a registered
-        // PaneRenderProvider: honour the registry name slot.
-        if !self.buffers().registry.contains_document(pane.buffer_id) {
-            return self
-                .buffers()
-                .registry
-                .name_of(pane.buffer_id)
-                .unwrap_or_else(|| "[no buffer]".to_string());
-        }
-        let label = self
-            .buffers()
-            .registry
-            .document_path(pane.buffer_id)
-            .map(|p| p.display().to_string())
-            .or_else(|| self.buffers().registry.name_of(pane.buffer_id))
-            .unwrap_or_else(|| "[no name]".to_string());
-        // Suppress dirty marker for synthetics (streamed buffers
-        // the user can never save).
-        let synthetic = self.buffers().registry.name_of(pane.buffer_id).is_some();
-        let dirty = if !synthetic && self.buffers().registry.document_dirty(pane.buffer_id) {
-            " [+]"
-        } else {
-            ""
-        };
-        let base = format!("{label}{dirty}");
-
-        // MO.4.b: collect mode-contributed status items.
-        let mode_items = self.collect_status_line_items(pane);
-        if mode_items.is_empty() {
+        let provider = self
+            .pane_render_provider(pane.buffer_id)
+            .map(|p| (p.status)(self, pane));
+        let rs = self.render_state.load();
+        let base = lattice_host::modeline::pane_path_segment(pane, &rs, provider.as_deref());
+        // Provider panes own their whole label (the M.4 status closure);
+        // no mode-items appended — matching the legacy early return.
+        if provider.is_some() {
             return base;
         }
-        let suffix: String = mode_items
-            .iter()
-            .map(|item| item.text.as_str())
-            .collect::<Vec<_>>()
-            .join("  ");
-        format!("{base}  {suffix}")
-    }
-
-    /// Build the sorted `Vec<StatusLineItem>` for `pane` by
-    /// walking `ActiveModes` through the mode registry and calling
-    /// each mode's `status_line_items`.
-    fn collect_status_line_items(
-        &self,
-        pane: &crate::pane::PaneState,
-    ) -> Vec<lattice_mode::StatusLineItem> {
-        use lattice_mode::{ServiceRegistry, StatusLineCtx};
-
-        let mut services = ServiceRegistry::new();
-        let rs = self.render_state.load();
-
-        // LSP progress: process-wide; LspProgressMode picks what to show.
-        services.register(lattice_lsp::modes::LspProgressStatusData {
-            progress: rs.lsp.progress.clone(),
-            server_status: rs.lsp.server_status.clone(),
-        });
-
-        // Diff signs: active-buffer only (DiffRenderState is per active pane).
-        let ad = self.ad();
-        if pane.buffer_id == ad.document_buffer_id {
-            services.register(lattice_host::diff::mode::DiffStatusData {
-                sign_map: rs.diff.sign_map.clone(),
-            });
+        let items = lattice_host::modeline::resolve_mode_items_content(pane, &rs);
+        if items.is_empty() {
+            return base;
         }
-
-        let ctx = StatusLineCtx::new(pane.buffer_id, &services);
-
-        let modes_rs = rs.modes.clone();
-        let Some(active) = modes_rs.map.get(&pane.buffer_id) else {
-            return Vec::new();
-        };
-
-        let registry = &modes_rs.mode_registry;
-        let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
-        if let Some(major) = active.major() {
-            all_ids.push(major);
-        }
-        all_ids.extend_from_slice(active.minors());
-
-        let mut items: Vec<lattice_mode::StatusLineItem> = Vec::new();
-        for id in all_ids {
-            if let Some(mode) = registry.get(id) {
-                items.extend(mode.status_line_items(&ctx));
-            }
-        }
-        items.sort_by_key(|i| i.priority);
-        items
+        format!("{base}  {}", items.plain())
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte

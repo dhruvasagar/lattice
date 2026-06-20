@@ -86,20 +86,41 @@ Per-pane content model confirmed + recorded (design §4); `zone_ordered`
 ascending-for-all fix + test (`zone_ordered_ascending_in_every_zone`);
 modeline tests green. No renderer change.
 
-#### ML.1a-render — built-in descriptors + TUI zone layout  🗒
-**Change:** register built-in descriptors at boot (`core.mode` Left 0,
+#### ML.1a-render — built-in descriptors + TUI zone layout  ✅
+**Landed:** built-in descriptors registered at boot via
+`lattice_host::modeline::register_builtin_elements` (`core.mode` Left 0,
 `core.path` Left 10, `core.position` Right 10, `core.lang` Right 20);
-rewrite `draw_pane_status_line` to lay out Left/Center/Right from
-`rs.modeline_elements.registry`, resolving built-in content per pane and
-right-aligning the Right block, width-aware truncation (Center→Right→
-Left). `collect_status_line_items` (the legacy pull) feeds Center
-temporarily (retired in ML.3). Theme: map spans to the existing
-`pane_status_*` style for now; per-role theming is ML.1b.
-**Artefacts:** *test* — zone layout + truncation + built-in content
-parity with the old string. *bench* — modeline build stays O(elements).
-*error handling* — overflow truncates, never panics. **Deps:**
-ML.1a-foundation. **Note:** highest-visual-risk slice (keystroke /
-no-flicker UX contract) — do with fresh context.
+`draw_pane_status_line` rewritten to lay out Left/Center/Right from
+`rs.modeline_elements.registry`, right-aligning the Right block, with
+width-aware truncation (Center→Right→Left, ellipsis, saturating — never
+panics; width 0 → empty). The legacy mode-items pull feeds Center
+temporarily (retired ML.3). One `pane_status_*` style for the whole row;
+per-role theming is ML.1b.
+
+**Shared-content-strategy decision (load-bearing, per Dhruva 2026-06-20):**
+the modeline's **content** is computed once, *host-side*, in the new
+`lattice-host::modeline` module — `resolve_builtin_content(id, pane,
+is_active, &RenderState, provider_label)` returns `ElementContent` (text
++ `ModelineRole`) for the `core.*` set, and `resolve_mode_items_content`
+(migrated from the TUI `collect_status_line_items`) feeds Center. Both
+renderers consume these; **only layout/paint differ** (TUI now; GPUI ML.2
+reusing the same resolver), plus GPUI-only richness (tooltips/click,
+ML.4). The single renderer-local input is the file-tree/oil/help custom
+label (the M.4 provider mechanism), threaded into the resolver as a
+string so the assembly stays common. `App::pane_status_label` /
+`App::modal_label` now delegate to the host module (no duplicated
+vocabulary). This realizes design §4 ("computed host-side") + §8/§10
+(common content + roles, per-renderer paint).
+
+**Artefacts:** *tests* — `lattice-host::modeline` (boot registers 4
+descriptors; `core.mode` active-only vs `core.position` always; provider
+label overrides `core.path`); `lattice-ui-tui` (`compose_modeline_row` /
+`truncate_to` layout + truncation-priority + width-0/narrow no-panic;
+TestBackend render asserting active = `[NORMAL]` + path + right-aligned
+position, inactive omits the modal label). *bench* —
+`lattice-host/benches/modeline.rs` (`modeline_build`, O(elements) across
+N∈{0,8,32,128}). *error handling* — overflow truncates, never panics.
+**Deps:** ML.1a-foundation.
 
 #### ML.1b — theme roles + truncation polish  🗒
 Register `modeline.*` theme roles (active/inactive variants); per-`Span`
@@ -111,6 +132,11 @@ ML.1a-render.
 **Change:** replace the single-string `pane_chrome` status with a `div`
 flex row of Left/Center/Right zones, per-`Span` theme, matching ML.1
 exactly (lockstep, `feedback_tui_gpui_parity`). Still no interaction.
+**Reuses the shared content layer (ML.1a-render):** GPUI calls the same
+`lattice_host::modeline::{resolve_builtin_content, resolve_mode_items_content}`
+the TUI does — it only adds its own div-zone layout + paint (and its own
+provider-label lookup). No content logic is re-implemented; the strategy
+is already common (the whole point of landing the resolver host-side).
 **Artefacts:** *test* — element/zone snapshot parity with TUI; *doc* —
 §10; *parity grep* — `Zone`/element sites present in `lattice-ui-gpui`.
 *error handling* — empty content hidden. **Deps:** ML.1.

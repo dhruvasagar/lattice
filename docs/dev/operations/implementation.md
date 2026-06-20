@@ -185,6 +185,13 @@ async-wake / lifecycle / status / diagnostics-presentation polish), and
 a manual verification checklist ([`verify.md`](verify.md) §17–18
 covering all 15 sub-modes + 4.4/4.5 features).
 
+The modeline redesign (configurable element system — Left/Center/Right
+zones, per-span theme roles, event-bus content updates, mode/plugin-
+registered + interactive elements) is specified in
+[`../architecture/modeline.md`](../architecture/modeline.md), with
+sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
+(ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
+
 Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
 4.2 navigation + completion → 4.3 edits (rename / format / code
 action / will-save) → 4.4 polish (semantic tokens delta, inlay

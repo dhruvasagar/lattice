@@ -179,9 +179,11 @@ LSP docs are comprehensive across audiences: design-doc readers
 users ([`../../user/lsp.md`](../../user/lsp.md) +
 [`../../user/lsp-mode.md`](../../user/lsp-mode.md)), per-feature
 trackers ([`../notes/lsp-features.md`](../notes/lsp-features.md) --
-every LSP 3.17 capability with status), and a manual verification
-checklist ([`verify.md`](verify.md) §17–18 covering all 15
-sub-modes + 4.4/4.5 features).
+every LSP 3.17 capability with status), slice plans
+([`slice-plans/lsp.md`](slice-plans/lsp.md) -- L1–L5 sequencing for the
+async-wake / lifecycle / status / diagnostics-presentation polish), and
+a manual verification checklist ([`verify.md`](verify.md) §17–18
+covering all 15 sub-modes + 4.4/4.5 features).
 
 Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
 4.2 navigation + completion → 4.3 edits (rename / format / code

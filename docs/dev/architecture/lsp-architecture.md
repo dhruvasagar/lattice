@@ -858,10 +858,202 @@ under the `lsp_edit_publish_*` rows.
 
 ---
 
+## 12. Async-result render-wake
+
+§11 covers the *edit* path (UI → server). This section covers the
+*result* path: how an async LSP arrival that changes render-relevant
+state gets a frame on screen **without a keystroke in flight**.
+
+### The contract
+
+> Every async LSP arrival that changes render-relevant state MUST fire
+> `Editor::async_landed`. Nothing else is required of the arriving
+> task -- the actor turns one `notify_one()` into a full
+> `run_tick_pending` + `publish_render_state` + cells/overlay wake.
+
+`async_landed` is an `Arc<tokio::sync::Notify>` seated on `Editor`
+(`editor_boot.rs`). The editor actor's `run_actor` loop
+(`editor_actor.rs`) selects over `cmd_rx` (keystrokes / effects) and
+`async_landed.notified()`:
+
+```rust
+_ = async_landed.notified() => {
+    let signals = editor.run_tick_pending();  // drain caches + event-bus channels
+    editor.publish_render_state();            // rebuild snapshot + fire cells_wake
+    editor.event_bus.publish_typed(AsyncRenderStatePublished);
+    for sig in signals { let _ = signal_tx.send(sig); }
+    continue;
+}
+```
+
+`run_tick_pending` drains the per-feature caches and the event-bus
+channels; `publish_render_state` rebuilds the snapshot and wakes the
+cells/overlay worker, which fires `paint_request` only on a
+content-changing `WorkerDecision`. The `AsyncRenderStatePublished`
+event re-wakes cells *after* the `ArcSwap` store, so there is no
+read-before-write race. All of this runs on the single-writer actor
+thread, never the UI thread (paramount #1).
+
+This is the SAME mechanism a tree-sitter reparse uses: the
+`SyntaxHandle` is seeded with a closure that fires
+`async_landed.notify_one()` on reparse (`dispatch.rs`). That is why
+tree-sitter recolour appears on idle but LSP semantic-token recolour
+historically did not (see "the historical gap" below).
+
+### The three arrival shapes
+
+| Shape | Examples | Wake wiring |
+|---|---|---|
+| **Direct-write request task** | `semanticTokens`, `inlayHint`, `foldingRange`, `codeLens`, `documentColor`, `documentLink`, `documentHighlight`, `textDocument/diagnostic` (pull) | The task is spawned on the LSP runtime, writes its result into a `PerBufferCache` via `insert_for`, then **must** `async_landed.notify_one()`. |
+| **Event-bus arrival** | `$/progress`, `publishDiagnostics`, `*/refresh`, log records | A forwarder task subscribes the typed event and fires `async_landed.notify_one()` on each delivery so `run_tick_pending`'s drain runs off-keystroke. Template: the `MultibufferExcerptsReady` forwarder in `editor_boot.rs`. |
+| **Popup overlay arrival** | `hover`, `signatureHelp` | Owns a dedicated `paint_request` clone and notifies it directly -- the result is a separate overlay, not part of the cells/overlay grid, so no cells rebuild is needed. (Already wired under "X1b".) |
+
+### The historical gap (the bug L1 closes)
+
+Before L1, only the popup-overlay shape fired any wake. The
+direct-write request tasks wrote their caches silently, and the
+event-bus arrivals sat in their channels undrained. Consequence:
+semantic-token colour, inlay hints, and `$/progress` were all
+invisible until the next keystroke happened to run `run_tick_pending`
++ publish. The `render-thread-discipline-remediation.md` doc that once
+tracked this (the deferred "X1b") now lives in `docs/dev/archive/`
+(a stale comment in `lattice-ui-tui/src/runtime.rs` still points at its
+old path); this section is its permanent home. The fix is uniform -- fire `async_landed` from the
+two off-keystroke arrival shapes -- and is sequenced in
+[`../operations/slice-plans/lsp.md`](../operations/slice-plans/lsp.md)
+(slice L1).
+
+---
+
+## 13. Server lifecycle state
+
+Readiness today is implicit: a `ServerHandle` existing means
+`initialize` succeeded. There is no first-class "starting / indexing /
+ready / failed" signal, so nothing downstream can name *when* a server
+became usable, and the user has no visible readiness cue.
+
+### The state machine
+
+```
+Spawning ─▶ Initializing ─▶ Ready ──▶ Indexing(%) ──▶ Ready
+   │             │            │
+   └─────────────┴────────────┴──▶ Failed { reason } ──▶ (restart) Spawning
+```
+
+| State | Meaning | Source signal |
+|---|---|---|
+| `Spawning` | child process spawned, handshake not begun | actor spawn |
+| `Initializing` | `initialize` request in flight | handshake start |
+| `Ready` | `initialized` sent; capabilities negotiated | handshake complete |
+| `Indexing { title, pct }` | a work-done progress token is active | `$/progress` begin/report |
+| `Failed { reason }` | handshake or pipe failed | `HandshakeFailed` / `ActorGone` |
+
+`Indexing` is a *projection* of the existing `$/progress` accumulator,
+not a separate signal -- when the highest-priority active token ends,
+the server falls back to `Ready`. The state lives on the supervisor
+(per `(workspace, server_id)`, which already owns actor lifecycle),
+published wait-free via an `ArcSwap` snapshot; a typed
+`LspServerStateChanged` event fires on each transition (and thus
+repaints via the §12 wake).
+
+Why a real state machine, not status-line inference: the readiness
+edge ("server just became Ready / finished indexing") is the trigger
+for re-requesting semantic tokens / inlay hints / diagnostics on a
+freshly-indexed server. Inferring it from token disappearance is lossy
+and racy (heuristic #1 -- the genuinely-better primitive).
+
+---
+
+## 14. Status surfaces
+
+Two consumers of §13's state.
+
+### Status line
+
+`LspMode::status_line_items` emits the per-server state as one compact
+segment: a state glyph + server id + (when indexing) percentage --
+e.g. `rust ⟳ 45%`, `rust ✓`, `rust ✗`. The glyph palette degrades per
+the icon-palette rule (Nerd Fonts when `ui.nerd_fonts=on`, BMP
+fallback `⟳ ✓ ✗` otherwise; equal cell width). The two LSP segments
+that exist today (`LspMode`'s `[lsp]` badge + `LspProgressMode`'s
+percentage) collapse into this single state-driven segment: progress
+becomes the `Indexing` projection, so there is ONE LSP segment.
+
+Convention: the status line is where Vim (lualine `lsp_status`), Helix
+(`◍`), and Zed (bottom-right) all surface LSP readiness. This is the
+muscle-memory home; it is NOT the headerline -- that rule
+(`async_buffer_status_in_headerline`) governs async-*buffer*
+providers (§5.9), not global subsystem readiness.
+
+### `:lsp-status` buffer
+
+`help_views::lsp_status_help` already renders one block per running
+actor (id, workspace root, encoding, capability bools, subscriber
+count). It gains the lifecycle-state line and, when present, the
+active progress title + percentage. It stays a read-only registry
+buffer; live-refresh reuses the log-buffer live-tail wiring
+(drain-on-event) so an open `:lsp-status` repaints as servers
+transition -- no reopen.
+
+---
+
+## 15. Diagnostics presentation
+
+Diagnostics have four surfaces; the first two ship, the last two are
+L4.
+
+| Surface | Status | Shape |
+|---|---|---|
+| Gutter severity column | ✅ | most-severe glyph per line, themed |
+| Inline underline | ✅ | per-range coloured underline |
+| **Inline end-of-line summary** | L4 | cursor-line only, idle-gated trailing virtual text |
+| **Cursor popup (full detail)** | L4 | `gl` opens a `CursorAnchored` float |
+
+### Inline end-of-line summary
+
+A one-line summary of the cursor line's diagnostics, rendered as
+trailing virtual text at end-of-line, reusing the inlay-hint
+virtual-text span substrate (`splice_virtual_text_into_spans`, §4.4.g
+in the feature matrix). Default scope is the **cursor line only**
+(Helix's `cursor-line` model), painted ~300 ms after the cursor lands
+on a new line, suppressed in Insert mode. Summary text = the
+most-severe diagnostic's message (truncated) + `+N` when the line
+carries more. Option-gated:
+
+```toml
+ui.diagnostics.inline              = "cursor-line"   # off | cursor-line | all
+ui.diagnostics.inline-min-severity = "hint"          # error | warning | info | hint
+```
+
+`all`-line mode is a follow-on slice (L5); cursor-line is the
+low-noise default that respects the keystroke UX contract -- only the
+cursor line's eol changes, and only on idle. Cursor movement (not an
+edit) repainting its own line's annotation is the intended,
+convention-matching behaviour.
+
+### Cursor popup (full detail)
+
+`gl` (Normal mode) opens a `CursorAnchored` popup
+(`PopupPlacement::CursorAnchored`, already defined in
+`lattice-core::ui::popup`) listing **every** diagnostic on the cursor
+line -- severity glyph, full message, `source`, `code`,
+related-information count. Reuses the hover popup's render + placement +
+dismiss-on-Esc pipeline. `]d` / `[d` additionally echo the landed
+diagnostic's message to the minibuffer.
+
+Ownership: the binding AND the handler body live in
+`lsp-diagnostics-mode` (`feedback_mode_owns_its_surface`) -- keymap at
+`KeymapLayer::MinorMode(lsp-diagnostics)`, handler registered as a
+closure bound to the mode's `ActionId`. No host `Action` variant, no
+`Editor::do_*` in the dispatcher.
+
+---
+
 ## See also
 
 - [design.md §5.4](design.md) -- canonical design.
-- [`../notes/lsp-features.md`](../notes/lsp-features.md) -- feature matrix.
+- [`../operations/slice-plans/lsp.md`](../operations/slice-plans/lsp.md) -- slice plan (sequencing + status for §12-§15 work).
+- [`../notes/lsp-features.md`](../notes/lsp-features.md) -- per-method feature matrix.
 - [`../../user/lsp.md`](../../user/lsp.md) -- user help.
 - [`../operations/benchmarks.md`](../operations/benchmarks.md) -- bench numbers (LSP rows
   added when feature benches land).

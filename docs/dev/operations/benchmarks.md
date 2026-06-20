@@ -75,7 +75,7 @@ target rather than just a slower number.
 
 Display-line migration, slice B2.3 (design:
 `../architecture/display-line.md`; slice plan:
-`slice-plans/display-line.md`). The actor now rebuilds the edited region's
+`slice-plans/archive/display-line.md`). The actor now rebuilds the edited region's
 canonical `DisplayMatrix` **synchronously in the publish tail**
 (`sync_rebuild_pane_on_edit`) BEFORE replying to the UI thread, so
 `version.text` never lags the snapshot — that lag was the per-keystroke

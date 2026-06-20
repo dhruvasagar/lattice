@@ -1,6 +1,6 @@
 # Display-line model (retiring the per-character cell grid)
 
-Status: design fragment (2026-06-04). Slice plan: `../operations/slice-plans/display-line.md`.
+Status: design fragment (2026-06-04). Slice plan: `../operations/slice-plans/archive/display-line.md`.
 Supersedes the per-character `CellMatrix` substrate (`cell-grid-renderer.md`)
 and the legacy scroll-windowed highlight cache (`highlights_worker` /
 `VisibleSpans` / `VisibleRows`).
@@ -170,5 +170,5 @@ once in the substrate.
 
 ## Slice plan
 
-See `../operations/slice-plans/display-line.md` (B0 design → B1 type + machinery
+See `../operations/slice-plans/archive/display-line.md` (B0 design → B1 type + machinery
 → B2 always-current + TUI cutover → B3 GPU cutover → B4 delete legacy).

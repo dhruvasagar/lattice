@@ -1028,6 +1028,15 @@ pub struct Editor {
     /// HashMap clone in `build_render_state` can be elided via
     /// the lsp.progress sub-state cache.
     pub lsp_progress: Versioned<HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>>,
+    /// ML.0b-2: shared modeline element service (descriptor registry +
+    /// content store, ArcSwap-backed). The SAME `Arc` is registered into
+    /// `services` at boot so modes reach it via
+    /// `ctx.service::<ModelineServiceHandle>()`; the host reads
+    /// `modeline.snapshot()` each `build_render_state` into
+    /// `RenderState.modeline_elements`. `Arc<ModelineService>` is
+    /// `Default`, so `#[derive(Default)]` on `Editor` still holds (the
+    /// boot literal overrides it with the registered instance).
+    pub modeline: lattice_mode::ModelineServiceHandle,
     /// L2: latest `experimental/serverStatus` per server (readiness).
     /// serverStatus fires only a handful of times per session, so a
     /// plain map (cloned per publish) is cheaper than the Versioned

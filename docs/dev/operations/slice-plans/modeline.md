@@ -49,16 +49,24 @@ spawned task can update from another thread); `register`/`remove`
 this frame). 3 new unit tests (10 total in the module);
 `cargo test -p lattice-mode` green. Zero host changes.
 
-### ML.0b-2 — host content store + render snapshot + ModeContext accessor  🗒
+### ML.0b-2 — host content store + render snapshot  ✅
 **Design:** modeline.md §4, §5.
-**Change:** `Editor.modeline: ModelineServiceHandle` (created at boot); a
-`RenderState` modeline element-snapshot field populated each
-`build_render_state` via `modeline.snapshot()`; expose the handle to
-modes through `ModeContext` (the register/update surface modes use in
-ML.3). No renderer change yet.
-**Artefacts:** *test* — `Editor.modeline` → `build_render_state` →
-`RenderState` round-trip; `ModeContext` hands back the same handle.
-*doc* — §4/§5. *error handling* — covered by ML.0b-1 (unknown-id no-op).
+**Landed:** one `ModelineService` instance shared three ways — created
+at boot, registered into the existing `services` block, and stashed on
+`Editor.modeline: ModelineServiceHandle`. `build_render_state` snapshots
+it into the new `RenderState.modeline_elements: ModelineSnapshot` field
+(two Arc clones; distinct from the legacy `modeline` cmdline/search
+sub-state). Round-trip test (`modeline_element_surfaces_through_render_state`)
+proves register+update via `editor.modeline` surfaces in
+`RenderState.modeline_elements` AND that the service-registry instance is
+the same Arc. lattice-host (lib+tests), lattice-ui-tui, lattice-ui-gpui
+all green.
+**Refinement vs. original plan:** no `ModeContext` signature change. Modes
+reach the handle via the existing generic `ctx.service::<ModelineServiceHandle>()`
+(the handle is in the boot `services` registry) — the same pattern as
+`LspSupervisorHandle` / `ThemeRegistryHandle`. Avoids threading a new
+param through all 5 `ModeContext::new` callers; no Arc/TypeId footgun
+(register the `…Handle` alias, look it up, deref one layer).
 **Deps:** ML.0b-1. **Unblocks:** ML.1.
 
 ### ML.1 — TUI render: zones + built-ins as elements  🗒

@@ -84,6 +84,12 @@ pub struct RenderState {
     pub popup: Arc<PopupRenderState>,
     pub messages: Arc<MessagesRenderState>,
     pub modeline: Arc<ModelineRenderState>,
+    /// ML.0b-2: published snapshot of the configurable-modeline element
+    /// system (descriptors + content, both `Arc`-backed so this clone is
+    /// cheap). The renderers lay out Left/Center/Right zones from this
+    /// (ML.1/ML.2). Distinct from `modeline` above, which is the legacy
+    /// cmdline/search sub-state — different surface, kept separate.
+    pub modeline_elements: lattice_mode::ModelineSnapshot,
     /// Slice 3c.final.B.10: typed-options registry published as a
     /// wait-free Arc clone so the renderer's
     /// `picker_display_is_minibuffer` (and any future per-frame
@@ -171,6 +177,7 @@ impl Default for RenderState {
             popup: Arc::new(PopupRenderState::default()),
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
+            modeline_elements: lattice_mode::ModelineSnapshot::default(),
             options: Arc::new(OptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),
             buffer_locals: Arc::new(BufferLocalsRenderState::default()),

@@ -950,6 +950,11 @@ impl Editor {
                     .map(|s| std::sync::Arc::from(s.pattern.as_str())),
                 search_direction: self.search_line.as_ref().map(|s| s.direction),
             }),
+            // ML.0b-2: wait-free snapshot of the configurable-modeline
+            // element system (two Arc clones). Built-in element content
+            // is written through `self.modeline` (ML.1); mode/plugin
+            // content arrives via ModelineElementUpdate (ML.3).
+            modeline_elements: self.modeline.snapshot(),
             // Slice 3c.final.B.10: typed-options registry handle.
             // The inner `ConfigRegistry` is already Arc-shared on
             // the editor side, so the publish is one Arc clone.
@@ -27644,6 +27649,47 @@ mod tests {
         assert_eq!(
             reg.resolved().get(kw).fg,
             Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+    }
+
+    /// ML.0b-2: a descriptor + content registered through
+    /// `editor.modeline` surfaces through `build_render_state` into
+    /// `RenderState.modeline_elements` (the renderer's wait-free input),
+    /// and the `ServiceRegistry` exposes the SAME instance modes reach
+    /// via `ctx.service::<ModelineServiceHandle>()`.
+    #[test]
+    fn modeline_element_surfaces_through_render_state() {
+        use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineRole, Zone};
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+
+        editor
+            .modeline
+            .register(ModelineElement::new(ElementId::new("test.badge"), Zone::Right, 0));
+        editor.modeline.update(
+            ElementId::new("test.badge"),
+            ElementContent::text("hi", ModelineRole::new("modeline.normal")),
+        );
+
+        // Publish path snapshots the live service.
+        let rs = editor.build_render_state();
+        let right = rs.modeline_elements.zone(Zone::Right);
+        assert_eq!(right.len(), 1);
+        assert_eq!(right[0].0.id.as_str(), "test.badge");
+        assert_eq!(right[0].1.plain(), "hi");
+
+        // Same instance is reachable through the service registry (the
+        // path modes use). Deref walks the double-Arc.
+        let via_services = editor
+            .services
+            .get::<lattice_mode::ModelineServiceHandle>()
+            .expect("modeline service registered at boot");
+        assert!(
+            via_services
+                .snapshot()
+                .content_for(&ElementId::new("test.badge"))
+                .is_some(),
+            "service-registry instance sees host-registered content (shared Arc)"
         );
     }
 

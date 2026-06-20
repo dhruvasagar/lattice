@@ -1098,6 +1098,13 @@ impl Editor {
         let builtin_element_ids =
             lattice_theme::BuiltinElementIds::capture(theme_registry.as_ref());
 
+        // ML.0b-2: one ModelineService instance, shared three ways —
+        // registered into `services` (modes reach it via
+        // `ctx.service::<ModelineServiceHandle>()`), stashed on
+        // `Editor.modeline` (host built-ins write content + the publish
+        // path snapshots it), and thus read wait-free by the renderers.
+        let modeline_service: lattice_mode::ModelineServiceHandle = std::sync::Arc::default();
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1123,9 +1130,15 @@ impl Editor {
             // otherwise be moved into the struct before
             // `keymap:` evaluates.
             mode_registry: mode_registry.clone(),
+            // ML.0b-2: the shared modeline service (same Arc registered
+            // into `services` below).
+            modeline: modeline_service.clone(),
             services: {
                 let mut s = ServiceRegistry::new();
                 s.register(lsp.clone());
+                // ML.0b-2: same Arc as `Editor.modeline` below, so modes
+                // register/update the instance the renderer snapshots.
+                s.register(modeline_service.clone());
                 // T-mode-1 (2026-05-27): TerminalStoreHandle so
                 // `TerminalNormalMode` can install / clear the
                 // SyntheticDoc on a TerminalBuffer from its

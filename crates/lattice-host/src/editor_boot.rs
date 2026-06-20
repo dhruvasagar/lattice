@@ -945,6 +945,49 @@ impl Editor {
             });
         }
 
+        // L1c: wake the render pipeline when render-relevant LSP
+        // events arrive off-keystroke. Without this, `$/progress` and
+        // the `*/refresh` notifications only reach the screen on the
+        // next keypress (their drains run inside `run_tick_pending`), so
+        // indexing progress accumulates then batch-drains to empty and
+        // is never seen, and a refresh that lands while idle doesn't
+        // repaint. Mirrors the SyntaxReparsed / MultibufferExcerptsReady
+        // forwarders: dedicated subscriptions whose only job is to fire
+        // `async_landed`; the existing per-type drain channels still do
+        // the accumulation. See lsp-architecture.md §12,
+        // slice-plans/lsp.md L1c.
+        {
+            use tokio::sync::mpsc;
+            async fn wake_on<T: Send + 'static>(
+                mut rx: mpsc::UnboundedReceiver<T>,
+                al: std::sync::Arc<tokio::sync::Notify>,
+            ) {
+                while rx.recv().await.is_some() {
+                    al.notify_one();
+                }
+            }
+            let (prog_tx, prog_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
+            event_bus.subscribe_typed(prog_tx);
+            runtime_handle.spawn(wake_on(prog_rx, async_landed.clone()));
+            let (inlay_tx, inlay_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
+            event_bus.subscribe_typed(inlay_tx);
+            runtime_handle.spawn(wake_on(inlay_rx, async_landed.clone()));
+            let (sem_tx, sem_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspSemanticTokensRefresh>();
+            event_bus.subscribe_typed(sem_tx);
+            runtime_handle.spawn(wake_on(sem_rx, async_landed.clone()));
+            let (diag_tx, diag_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
+            event_bus.subscribe_typed(diag_tx);
+            runtime_handle.spawn(wake_on(diag_rx, async_landed.clone()));
+            let (lens_tx, lens_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
+            event_bus.subscribe_typed(lens_tx);
+            runtime_handle.spawn(wake_on(lens_rx, async_landed.clone()));
+        }
+
         // AsyncRenderStatePublished: fired by the actor after every
         // publish_render_state triggered by the async_landed arm.
         // Wakes cells_wake so the cells worker reads the freshly-

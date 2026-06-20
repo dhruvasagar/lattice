@@ -417,6 +417,12 @@ impl Editor {
         let (lsp_progress_tx, lsp_progress_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
         event_bus.subscribe_typed(lsp_progress_tx);
+        // L2: serverStatus readiness drain channel (accumulated in
+        // `drain_lsp_server_status`; woken via the L1c forwarder which
+        // fires `async_landed`).
+        let (lsp_server_status_tx, lsp_server_status_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspServerStatusChanged>();
+        event_bus.subscribe_typed(lsp_server_status_tx);
         // `LspBufferDetached`: `LspMode::on_deactivate` publishes
         // this; the per-tick drain calls `lsp_close_buffer` for
         // each so the wire-level `didClose` + `buffer_uris`
@@ -986,6 +992,10 @@ impl Editor {
                 mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
             event_bus.subscribe_typed(lens_tx);
             runtime_handle.spawn(wake_on(lens_rx, async_landed.clone()));
+            let (status_tx, status_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspServerStatusChanged>();
+            event_bus.subscribe_typed(status_tx);
+            runtime_handle.spawn(wake_on(status_rx, async_landed.clone()));
         }
 
         // AsyncRenderStatePublished: fired by the actor after every
@@ -1457,6 +1467,7 @@ impl Editor {
             diff_forwarders,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
+            lsp_server_status_event_rx: Some(lsp_server_status_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
             pending_configuration_rx: Some(lsp_configuration_rx),
             pending_show_document_rx: Some(lsp_show_document_rx),

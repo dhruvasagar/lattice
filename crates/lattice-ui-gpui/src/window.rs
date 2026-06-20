@@ -1801,6 +1801,7 @@ impl EditorView {
                 let mut services = lattice_mode::ServiceRegistry::new();
                 services.register(lattice_lsp::modes::LspProgressStatusData {
                     progress: rs_guard.lsp.progress.clone(),
+                    server_status: rs_guard.lsp.server_status.clone(),
                 });
                 if pane.buffer_id == ad.document_buffer_id {
                     services.register(lattice_host::diff::mode::DiffStatusData {

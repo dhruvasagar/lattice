@@ -1028,6 +1028,15 @@ pub struct Editor {
     /// HashMap clone in `build_render_state` can be elided via
     /// the lsp.progress sub-state cache.
     pub lsp_progress: Versioned<HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>>,
+    /// L2: latest `experimental/serverStatus` per server (readiness).
+    /// serverStatus fires only a handful of times per session, so a
+    /// plain map (cloned per publish) is cheaper than the Versioned
+    /// cache `lsp_progress` uses. `HashMap` / `Option` are `Default`,
+    /// so `#[derive(Default)]` on `Editor` still holds.
+    pub lsp_server_status:
+        std::collections::HashMap<std::sync::Arc<str>, lattice_lsp::LspServerStatusChanged>,
+    pub lsp_server_status_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspServerStatusChanged>>,
     /// Cached `textDocument/selectionRange` chain for the
     /// smart-expansion operator.
     pub lsp_selection_chain: Option<LspSelectionChain>,

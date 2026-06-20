@@ -421,6 +421,7 @@ impl App {
         // LSP progress: process-wide; LspProgressMode picks what to show.
         services.register(lattice_lsp::modes::LspProgressStatusData {
             progress: rs.lsp.progress.clone(),
+            server_status: rs.lsp.server_status.clone(),
         });
 
         // Diff signs: active-buffer only (DiffRenderState is per active pane).

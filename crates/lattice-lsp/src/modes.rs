@@ -587,29 +587,47 @@ impl Mode for LspMode {
     /// fails the epoch match, the Guard drops on the spawn
     /// side (publishing `LspBufferDetached`), and the App stays
     /// consistent.
-    /// MO.4.b + L3-lite: "lsp" badge plus a *busy* spinner while the
-    /// server reports work-done progress. The badge appears once
-    /// `initialize` completed (`on_activate`), but that is NOT the same
-    /// as "ready": rust-analyzer returns `initialize` fast and then
-    /// scans/indexes the workspace for seconds-to-minutes, streaming
-    /// `$/progress` throughout. So we show `lsp ⟳` while any non-`End`
-    /// progress token is in flight and plain `lsp` otherwise — the
-    /// spinner vanishing is the readiness cue (the lualine convention).
-    /// We deliberately do NOT claim `✓ ready`: a bare empty progress map
-    /// is ambiguous (indexing-finished vs indexing-not-started-yet), so
-    /// an honest persistent ready glyph needs the L2 lifecycle state
-    /// machine. The detailed `<title> NN%` is added by `LspProgressMode`
-    /// (priority 70, so it sorts after this). `⟳` per §14 (BMP-safe).
+    /// MO.4.b + L2/L3: "lsp" badge with a readiness glyph driven by
+    /// rust-analyzer's `experimental/serverStatus` (its exact readiness
+    /// signal): `lsp ✗` when a server reports health Error; `lsp ⟳`
+    /// while any server is non-quiescent OR a `$/progress` token is in
+    /// flight (scanning / indexing); `lsp ✓` once quiescent — or for
+    /// servers that send no serverStatus and aren't indexing. The mode
+    /// only activates after `initialize`, so a visible badge already
+    /// means attached. The maps are process-wide today (MVP, matching
+    /// the progress strip); per-buffer server scoping is a refinement.
+    /// `LspProgressMode` (priority 70) appends the `<title> NN%` detail.
+    /// Glyphs per §14 (BMP-safe ⟳ / ✓ / ✗).
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
-        let indexing = ctx
-            .service::<LspProgressStatusData>()
-            .map(|d| {
-                d.progress
+        // Single bind: `ctx.service()` is not `Copy`, so fold both the
+        // progress + serverStatus reads in one match arm.
+        let (indexing, any_error, any_busy) = match ctx.service::<LspProgressStatusData>() {
+            Some(d) => {
+                let indexing = d
+                    .progress
                     .values()
-                    .any(|u| !matches!(u.kind, crate::events::LspProgressKind::End))
-            })
-            .unwrap_or(false);
-        let text = if indexing { "lsp ⟳" } else { "lsp" };
+                    .any(|u| !matches!(u.kind, crate::events::LspProgressKind::End));
+                let mut any_error = false;
+                let mut any_busy = false;
+                for s in d.server_status.values() {
+                    if matches!(s.health, crate::events::LspServerHealth::Error) {
+                        any_error = true;
+                    }
+                    if !s.quiescent {
+                        any_busy = true;
+                    }
+                }
+                (indexing, any_error, any_busy)
+            }
+            None => (false, false, false),
+        };
+        let text = if any_error {
+            "lsp ✗"
+        } else if indexing || any_busy {
+            "lsp ⟳"
+        } else {
+            "lsp ✓"
+        };
         vec![StatusLineItem { text: text.to_string(), priority: 60 }]
     }
 
@@ -764,6 +782,11 @@ pub struct LspProgressStatusData {
             (std::sync::Arc<str>, String),
             crate::events::LspProgressUpdate,
         >,
+    >,
+    /// L2: per-server `experimental/serverStatus` for the readiness
+    /// glyph (✓ quiescent / ⟳ indexing / ✗ health error).
+    pub server_status: std::sync::Arc<
+        std::collections::HashMap<std::sync::Arc<str>, crate::events::LspServerStatusChanged>,
     >,
 }
 

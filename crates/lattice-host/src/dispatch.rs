@@ -1006,6 +1006,11 @@ impl Editor {
                 // Arc fields are independent) but the HashMap clone
                 // is elided when no $/progress event fired.
                 progress: lsp_progress_map_arc,
+                // L2: serverStatus map — plain per-publish clone (tiny
+                // map, changes only a handful of times per session).
+                // Inlined here (not a pre-bound local) so it shares the
+                // construct's `self` capture, exactly like `supervisor`.
+                server_status: std::sync::Arc::new(self.lsp_server_status.clone()),
                 supervisor: self.lsp.clone(),
             }),
             // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): panes
@@ -10651,6 +10656,21 @@ impl Editor {
         self.lsp_progress_event_rx = Some(rx);
     }
 
+    /// L2: drain `experimental/serverStatus` events into the per-server
+    /// `lsp_server_status` map (latest wins). Drained each
+    /// `run_tick_pending`; the boot-side forwarder fires `async_landed`
+    /// on arrival so the readiness glyph repaints off-keystroke (§12).
+    pub fn drain_lsp_server_status(&mut self) {
+        let Some(mut rx) = self.lsp_server_status_event_rx.take() else {
+            return;
+        };
+        while let Ok(event) = rx.try_recv() {
+            self.lsp_server_status
+                .insert(event.server_id.clone(), event);
+        }
+        self.lsp_server_status_event_rx = Some(rx);
+    }
+
     /// Drain `LspBufferDetached` events; fire didClose + clear
     /// per-buffer URI mapping via `lsp_close_buffer` (already
     /// host). Phase 5.8.AA.d: hoisted from TUI App.
@@ -10984,6 +11004,7 @@ impl Editor {
         self.drain_pending_completion_resolve();
         self.drain_lsp_log_events();
         self.drain_lsp_progress_events();
+        self.drain_lsp_server_status();
         self.drain_lsp_detach_events();
         self.drain_inbound_configuration_requests();
         self.drain_inbound_show_message_requests();

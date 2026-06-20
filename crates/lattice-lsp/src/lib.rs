@@ -97,7 +97,7 @@ pub use error::{LspError, LspResult};
 pub use events::{
     LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspCodeLensRefresh,
     LspDiagnosticRefresh, LspDocumentChanged, LspInlayHintRefresh, LspLogPushed, LspProgressKind,
-    LspProgressUpdate, LspSemanticTokensRefresh,
+    LspProgressUpdate, LspSemanticTokensRefresh, LspServerHealth, LspServerStatusChanged,
 };
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use framing::{FrameError, FrameHeader};

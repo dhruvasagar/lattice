@@ -683,6 +683,12 @@ pub struct LspRenderState {
     pub progress: std::sync::Arc<
         std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
     >,
+    /// L2: latest `experimental/serverStatus` per server. Renderers
+    /// register it into `LspProgressStatusData` so the modeline shows
+    /// ✓ (quiescent) / ⟳ (indexing) / ✗ (health error).
+    pub server_status: std::sync::Arc<
+        std::collections::HashMap<std::sync::Arc<str>, lattice_lsp::LspServerStatusChanged>,
+    >,
     /// Slice 3c.final.B (group 4): LSP supervisor handle clone.
     /// The handle is internally `Arc<ArcSwap<SupervisorSnapshot>>`-
     /// backed so `Clone` is one Arc bump and `servers_for(uri)`

@@ -67,8 +67,27 @@ pub fn client_capabilities() -> ClientCapabilities {
         general: Some(general_capabilities()),
         workspace: Some(workspace_capabilities()),
         text_document: Some(text_document_capabilities()),
-        // window, notebook_document, experimental: not used in
-        // 4.1; added per phase as features land.
+        // L1c/L3: advertise window.workDoneProgress so servers
+        // (rust-analyzer et al.) are allowed to create server-initiated
+        // work-done progress (`window/workDoneProgress/create` +
+        // `$/progress`). Without it rust-analyzer never reports indexing
+        // progress, so the modeline can't show the scan or readiness.
+        // notebook_document / experimental: not used yet; added per
+        // phase as features land.
+        window: Some(window_capabilities()),
+        ..Default::default()
+    }
+}
+
+/// Advertise `window.workDoneProgress = true`. rust-analyzer (and most
+/// servers) gate their indexing / cache-priming progress on this; with
+/// it they stream the `$/progress` the modeline surfaces
+/// (lsp-architecture.md §12/§14). showMessage / showDocument request
+/// sub-caps are left default — we handle those requests regardless of
+/// advertisement.
+fn window_capabilities() -> lsp_types::WindowClientCapabilities {
+    lsp_types::WindowClientCapabilities {
+        work_done_progress: Some(true),
         ..Default::default()
     }
 }

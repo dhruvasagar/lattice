@@ -587,15 +587,19 @@ impl Mode for LspMode {
     /// fails the epoch match, the Guard drops on the spawn
     /// side (publishing `LspBufferDetached`), and the App stays
     /// consistent.
-    /// MO.4.b + L3-lite: "lsp" badge with a readiness glyph. The mode
-    /// only activates once the server's `initialize` completed (see
-    /// `on_activate`), so a visible badge already means "attached"; the
-    /// absence of any badge is itself the "not ready yet" cue. We only
-    /// distinguish *indexing* (a non-`End` `$/progress` token in flight)
-    /// from *ready*. The detailed `<title> NN%` is added by
-    /// `LspProgressMode` (priority 70, so it sorts after this). Glyphs
-    /// follow lsp-architecture.md §14 (`⟳` indexing, `✓` ready) as
-    /// BMP-safe defaults; the nerd-font + palette switch is the full L3.
+    /// MO.4.b + L3-lite: "lsp" badge plus a *busy* spinner while the
+    /// server reports work-done progress. The badge appears once
+    /// `initialize` completed (`on_activate`), but that is NOT the same
+    /// as "ready": rust-analyzer returns `initialize` fast and then
+    /// scans/indexes the workspace for seconds-to-minutes, streaming
+    /// `$/progress` throughout. So we show `lsp ⟳` while any non-`End`
+    /// progress token is in flight and plain `lsp` otherwise — the
+    /// spinner vanishing is the readiness cue (the lualine convention).
+    /// We deliberately do NOT claim `✓ ready`: a bare empty progress map
+    /// is ambiguous (indexing-finished vs indexing-not-started-yet), so
+    /// an honest persistent ready glyph needs the L2 lifecycle state
+    /// machine. The detailed `<title> NN%` is added by `LspProgressMode`
+    /// (priority 70, so it sorts after this). `⟳` per §14 (BMP-safe).
     fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
         let indexing = ctx
             .service::<LspProgressStatusData>()
@@ -605,7 +609,7 @@ impl Mode for LspMode {
                     .any(|u| !matches!(u.kind, crate::events::LspProgressKind::End))
             })
             .unwrap_or(false);
-        let text = if indexing { "lsp ⟳" } else { "lsp ✓" };
+        let text = if indexing { "lsp ⟳" } else { "lsp" };
         vec![StatusLineItem { text: text.to_string(), priority: 60 }]
     }
 

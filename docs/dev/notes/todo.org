@@ -149,9 +149,10 @@
 - [ ] Typing in rust buffer, the syntax highlighting lags behind by
   one character. The character just before the cursor doesn't get
   highlighted until one more key press.
+- [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
 
 * Documentation
-- [ ] lattice-tutor
+- [X] lattice-tutor
 
 * Pending Slices
 - [X] D.3–D.5/D.8 — diff system (inline overlay, side-by-side, hunk transfer, diffthis grouping)

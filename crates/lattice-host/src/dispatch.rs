@@ -9510,6 +9510,15 @@ impl Editor {
         // task has the same Arc identity as the editor, so the
         // read sees any concurrent writes consistently.
         let cache_slot = self.lsp_semantic_tokens_cache.clone();
+        // L1a: wake the render pipeline when tokens land off-keystroke.
+        // Firing `async_landed` makes the actor run `run_tick_pending`
+        // + `publish_render_state` (which wakes the cells/overlay
+        // worker), so freshly-indexed semantic colour appears without
+        // waiting for the next keypress. Only on actual writes -- the
+        // `Err` (superseded/cancelled) arms keep the prior overlay and
+        // must NOT publish, else every keystroke's stale request would
+        // double the publish rate. See lsp-architecture.md §12.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9559,6 +9568,7 @@ impl Editor {
                                 tokens: decoded,
                             },
                         );
+                        async_landed.notify_one();
                     }
                     Ok(Some(
                         lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
@@ -9577,6 +9587,7 @@ impl Editor {
                             &token_types,
                             &token_modifiers,
                         );
+                        async_landed.notify_one();
                     }
                     Ok(_) => {
                         // Authoritative empty (`Ok(None)`): clear.
@@ -9589,6 +9600,7 @@ impl Editor {
                                 tokens: Vec::new(),
                             },
                         );
+                        async_landed.notify_one();
                     }
                     Err(_) => {
                         // 2026-06-03: cancelled (superseded by a newer
@@ -9620,6 +9632,7 @@ impl Editor {
                             tokens: decoded,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Ok(_) => {
                     // Authoritative empty (`Ok(None)` / partial result):
@@ -9633,6 +9646,7 @@ impl Editor {
                             tokens: Vec::new(),
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Err(_) => {
                     // 2026-06-03: cancelled (superseded by a newer

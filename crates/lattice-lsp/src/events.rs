@@ -148,6 +148,36 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// L2: fired when a server sends `experimental/serverStatus`
+/// (rust-analyzer's readiness extension). `quiescent` is the
+/// gold-standard "ready" signal -- `false` while the server is
+/// scanning / indexing, `true` once it has finished and features
+/// (hover, diagnostics, completion) are reliable. `health` is the
+/// server's self-assessed condition. The host turns this into the
+/// modeline's ✓/⟳/✗ readiness glyph.
+#[derive(Debug, Clone)]
+pub struct LspServerStatusChanged {
+    pub server_id: Arc<str>,
+    pub quiescent: bool,
+    pub health: LspServerHealth,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspServerHealth {
+    Ok,
+    Warning,
+    Error,
+}
+
+lattice_protocol::register_event!(
+    LspServerStatusChanged,
+    "lsp.server-status-changed",
+    "Fired when a server sends experimental/serverStatus (quiescent / \
+     health). Host surfaces readiness in the modeline.",
+    "lattice-lsp",
+);
+
 /// Fired when an actor task exits (4.4.d). The supervisor
 /// subscribes to this event to drive crash-detection
 /// auto-restart: `Clean` exits (after a `Shutdown` command)

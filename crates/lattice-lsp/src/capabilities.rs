@@ -75,6 +75,10 @@ pub fn client_capabilities() -> ClientCapabilities {
         // notebook_document / experimental: not used yet; added per
         // phase as features land.
         window: Some(window_capabilities()),
+        // L2: advertise rust-analyzer's serverStatus extension so it
+        // sends `experimental/serverStatus { quiescent, health }` -- the
+        // exact readiness signal the modeline turns into ✓/⟳/✗.
+        experimental: Some(serde_json::json!({ "serverStatusNotification": true })),
         ..Default::default()
     }
 }

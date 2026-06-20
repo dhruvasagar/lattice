@@ -1461,6 +1461,27 @@ fn handle_server_notification(
                 bus.publish_typed(update);
             }
         }
+        "experimental/serverStatus" => {
+            // L2: rust-analyzer readiness notification. `quiescent:
+            // true` means the server finished indexing and features
+            // (hover/diagnostics/completion) are reliable; `health`
+            // reports ok/warning/error. Publish a typed event the
+            // modeline turns into the ✓/⟳/✗ readiness glyph.
+            logger.log(
+                Some(instance),
+                LogLevel::Debug,
+                LogSource::Client,
+                format!(
+                    "experimental/serverStatus: {}",
+                    compact_params(&n.params)
+                ),
+            );
+            if let (Some(bus), Some(update)) =
+                (event_bus, parse_server_status(server_id, n.params.as_ref()))
+            {
+                bus.publish_typed(update);
+            }
+        }
         "telemetry/event" => {
             // 4.4.a: distinct LogSource so plugin subscribers
             // on the typed event bus can filter
@@ -1593,6 +1614,39 @@ fn parse_progress(
         message,
         percentage,
         cancellable,
+    })
+}
+
+/// L2: parse an `experimental/serverStatus` params object
+/// (rust-analyzer). Shape: `{ health: "ok"|"warning"|"error",
+/// quiescent: bool, message?: string }`. Unknown / missing health
+/// maps to `Ok` (treat as healthy); missing quiescent defaults to
+/// `true` (assume ready rather than spin forever on a malformed
+/// payload). Returns `None` only when params are absent.
+fn parse_server_status(
+    server_id: &Arc<str>,
+    params: Option<&Value>,
+) -> Option<crate::events::LspServerStatusChanged> {
+    use crate::events::{LspServerHealth, LspServerStatusChanged};
+    let p = params?;
+    let health = match p.get("health").and_then(Value::as_str) {
+        Some("error") => LspServerHealth::Error,
+        Some("warning") => LspServerHealth::Warning,
+        _ => LspServerHealth::Ok,
+    };
+    let quiescent = p
+        .get("quiescent")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let message = p
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Some(LspServerStatusChanged {
+        server_id: Arc::clone(server_id),
+        quiescent,
+        health,
+        message,
     })
 }
 

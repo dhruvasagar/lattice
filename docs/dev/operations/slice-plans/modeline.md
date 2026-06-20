@@ -69,18 +69,42 @@ param through all 5 `ModeContext::new` callers; no Arc/TypeId footgun
 (register the `…Handle` alias, look it up, deref one layer).
 **Deps:** ML.0b-1. **Unblocks:** ML.1.
 
-### ML.1 — TUI render: zones + built-ins as elements  🗒
-**Design:** §7, §8.
-**Change:** rewrite `draw_pane_status_line` to lay out Left/Center/Right
-from the registry + snapshot, with per-`Span` theme roles + width-aware
-truncation (Center→Right→Left). Convert host built-ins (`core.mode`,
-`core.path`, `core.position`, `core.lang`) to registered elements whose
-content `build_render_state` writes. `Mode::status_line_items` stays as a
-temporary adapter feeding Center (retired in ML.3).
-**Artefacts:** *test* — zone layout + truncation + active/inactive theme;
-built-in content matches the old string. *doc* — §7/§8. *bench* —
-modeline build stays O(elements) (ratchet against the old cost).
-*error handling* — overflow truncates, never panics. **Deps:** ML.0.
+### ML.1 — TUI render: zones + built-ins as elements
+**Design:** §3 (ordering), §4 (per-pane resolution), §7, §8.
+**Locked decision (per-pane content model = option A):** descriptors are
+global/uniform; content is resolved per pane — built-ins computed
+host-side from `(pane, render_state)`, pushed content keyed
+`(BufferId, ElementId)` for PaneLocal (lands ML.3). Amended design §4.
+Also corrected `zone_ordered` to ascending in **every** zone (the Right
+zone block is right-aligned by the renderer; `priority` is uniform
+leftward→rightward) — design §3 + the ML.0a test updated.
+
+Carved into **ML.1a-foundation** (✅) and **ML.1a-render** (🗒).
+
+#### ML.1a-foundation  ✅
+Per-pane content model confirmed + recorded (design §4); `zone_ordered`
+ascending-for-all fix + test (`zone_ordered_ascending_in_every_zone`);
+modeline tests green. No renderer change.
+
+#### ML.1a-render — built-in descriptors + TUI zone layout  🗒
+**Change:** register built-in descriptors at boot (`core.mode` Left 0,
+`core.path` Left 10, `core.position` Right 10, `core.lang` Right 20);
+rewrite `draw_pane_status_line` to lay out Left/Center/Right from
+`rs.modeline_elements.registry`, resolving built-in content per pane and
+right-aligning the Right block, width-aware truncation (Center→Right→
+Left). `collect_status_line_items` (the legacy pull) feeds Center
+temporarily (retired in ML.3). Theme: map spans to the existing
+`pane_status_*` style for now; per-role theming is ML.1b.
+**Artefacts:** *test* — zone layout + truncation + built-in content
+parity with the old string. *bench* — modeline build stays O(elements).
+*error handling* — overflow truncates, never panics. **Deps:**
+ML.1a-foundation. **Note:** highest-visual-risk slice (keystroke /
+no-flicker UX contract) — do with fresh context.
+
+#### ML.1b — theme roles + truncation polish  🗒
+Register `modeline.*` theme roles (active/inactive variants); per-`Span`
+resolution through `ResolvedTheme`; truncation edge-cases. **Deps:**
+ML.1a-render.
 
 ### ML.2 — GPUI render parity  🗒
 **Design:** §7, §8, §10.

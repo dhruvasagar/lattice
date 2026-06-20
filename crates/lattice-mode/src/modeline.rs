@@ -212,18 +212,17 @@ impl ModelineRegistry {
         self.elements.is_empty()
     }
 
-    /// Descriptors in `zone`, ordered for rendering: `Left` / `Center`
-    /// ascending by `priority` (left→right); `Right` descending (so the
-    /// highest-priority element sits at the far right). Ties break by
-    /// `ElementId` for deterministic layout.
+    /// Descriptors in `zone`, in left-to-right visual order: ascending
+    /// by `priority` for **every** zone (ties broken by `ElementId` for
+    /// determinism). The renderer right-aligns the whole `Right` zone
+    /// block (lualine/helix model), so the highest-priority `Right`
+    /// element still lands at the far right without inverting the sort —
+    /// `priority` means the same thing (leftward → rightward) in all
+    /// three zones.
     pub fn zone_ordered(&self, zone: Zone) -> Vec<&ModelineElement> {
         let mut v: Vec<&ModelineElement> =
             self.elements.values().filter(|e| e.zone == zone).collect();
-        v.sort_by(|a, b| {
-            let ord = a.priority.cmp(&b.priority);
-            let ord = if zone == Zone::Right { ord.reverse() } else { ord };
-            ord.then_with(|| a.id.0.cmp(&b.id.0))
-        });
+        v.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.0.cmp(&b.id.0)));
         v
     }
 }
@@ -368,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn zone_ordered_left_ascending_right_descending() {
+    fn zone_ordered_ascending_in_every_zone() {
         let mut r = ModelineRegistry::new();
         r.register(el("l.b", Zone::Left, 20));
         r.register(el("l.a", Zone::Left, 10));
@@ -376,26 +375,18 @@ mod tests {
         r.register(el("r.a", Zone::Right, 10));
         r.register(el("c", Zone::Center, 0));
 
-        let left: Vec<&str> = r
-            .zone_ordered(Zone::Left)
-            .iter()
-            .map(|e| e.id.as_str())
-            .collect();
-        assert_eq!(left, ["l.a", "l.b"]); // ascending
-
-        let right: Vec<&str> = r
-            .zone_ordered(Zone::Right)
-            .iter()
-            .map(|e| e.id.as_str())
-            .collect();
-        assert_eq!(right, ["r.b", "r.a"]); // descending (top priority far right)
-
-        let center: Vec<&str> = r
-            .zone_ordered(Zone::Center)
-            .iter()
-            .map(|e| e.id.as_str())
-            .collect();
-        assert_eq!(center, ["c"]);
+        // Left-to-right visual order = ascending priority in ALL zones;
+        // the renderer right-aligns the Right block, so r.b (priority
+        // 20) still paints at the far right.
+        let order = |z| -> Vec<String> {
+            r.zone_ordered(z)
+                .iter()
+                .map(|e| e.id.as_str().to_string())
+                .collect()
+        };
+        assert_eq!(order(Zone::Left), ["l.a", "l.b"]);
+        assert_eq!(order(Zone::Right), ["r.a", "r.b"]);
+        assert_eq!(order(Zone::Center), ["c"]);
     }
 
     #[test]

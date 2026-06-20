@@ -96,11 +96,14 @@ pub struct Span {
 }
 ```
 
-Ordering within a zone: **Left** sorts by `priority` ascending (left→right);
-**Right** sorts descending (so the highest-priority element sits at the
-far right); **Center** ascending around the midpoint. An element whose
-content `spans` is empty is skipped for that frame (the cheap way a
-producer hides itself without deregistering).
+Ordering within a zone is **ascending `priority` = left-to-right visual
+order in every zone** (ties by `ElementId` for determinism). The
+renderer right-aligns the whole `Right` *zone block* (lualine/helix
+model), so the highest-priority `Right` element still lands at the far
+right without inverting the sort — `priority` means the same thing
+(leftward → rightward) in all three zones. An element whose content
+`spans` is empty is skipped for that frame (the cheap way a producer
+hides itself without deregistering).
 
 ---
 
@@ -122,6 +125,34 @@ changes rarely; content changes often):
 
 The renderer reads `(registry descriptors, content snapshot)` and lays
 out. It is a pure read: no locks, no producer calls.
+
+### Per-pane content resolution (the load-bearing rule)
+
+Descriptors are **global and uniform** (one registry); **content is
+resolved per pane** at render time. The modeline is drawn once per pane,
+and most content differs per pane (path, cursor, language, diagnostics,
+the LSP badge all key off the pane's buffer); only a few elements are
+genuinely global (indexing progress, a clock). So the renderer, for each
+descriptor in a zone, sources its content two ways:
+
+- **Built-in elements (`core.*`)** — content is *computed* host-side
+  from `(pane, render_state)` (mode label, path, cursor, language). Cheap
+  pure reads off the already-published `RenderState`; no allocation
+  proportional to document size (paramount #1).
+- **Pushed elements (modes / plugins)** — content is *looked up* in the
+  content store, keyed `(BufferId, ElementId)` for `PaneLocal` (resolved
+  against the pane's buffer) and `(ElementId)` for `Global` (rendered
+  only on the active pane, §7). Producers push per-buffer content over
+  the event bus (ML.3); the store is therefore keyed by buffer for the
+  pane-local case. Until a producer exists (≤ ML.1) the store is empty
+  and only built-ins render.
+
+This keeps the model uniform (one descriptor set, one zone layout, one
+theme path) while giving each pane its own correct content — the
+property the old per-pane `status_line_items` pull had, now preserved
+under the push model. The `(BufferId, ElementId)` content keying lands
+with the first real pusher in ML.3; ML.1 resolves built-ins per pane and
+treats the (empty) pushed store as global.
 
 ---
 

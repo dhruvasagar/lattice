@@ -923,6 +923,60 @@ two off-keystroke arrival shapes -- and is sequenced in
 [`../operations/slice-plans/lsp.md`](../operations/slice-plans/lsp.md)
 (slice L1).
 
+### The second gap: a publish must REQUEST a frame (slice L6)
+
+Firing `async_landed` only gets the arriving data *into* `RenderState`
+(via `run_tick_pending` + `publish_render_state`). It does **not** by
+itself put a frame on screen. Off-keystroke, the only repaint triggers
+are the **cells worker** and the **virtual-rows worker**, and each fires
+`paint_request` *only* on a content-changing `WorkerDecision`
+(`Recomputed` / `Clear`), never on `CacheHit`. So a change confined to a
+surface those workers do **not** own -- the modeline LSP-readiness badge
+(`lsp ⟳ … %` / `lsp ✓`), a diagnostics **overlay** (gutter / underline /
+inline summary), a popup, the minibuffer -- updated `RenderState` but
+never repainted until the next keystroke forced an unconditional redraw.
+That is the "the `lsp` progress badge / a diagnostic only updates when I
+press a key" report: a direct paramount-#4 (asynchronicity) / #1
+(no keystroke coupling) violation. The same class explains
+"undo → diagnostic disappears": the server re-publishes after the undo's
+`didChange`, `DiagnosticsLayer::apply` fires `async_landed`, the publish
+lands the diagnostics in the snapshot -- but the gutter/underline are
+overlays, so the cells worker returns `CacheHit` and nothing repaints.
+
+The contract's second half:
+
+> A real `publish_render_state` that changes a render-visible surface NOT
+> owned by the cells / virtual-rows workers MUST request a paint.
+
+Mechanism: `build_render_state` stamps `RenderState::paint_revision` -- a
+content hash over exactly that "everything else" set: the overlay sources
+(`lattice-cells/src/version.rs` enumerates them: diagnostics, cursor,
+selection, hlsearch, doc-highlights, search matches) plus the chrome the
+renderer paints straight from `RenderState` (modeline badge + element
+content, minibuffer, popups, echo line, tabs, lifecycle). It is the dual
+of the cells `MatrixVersion` (which gates *cell* rebuilds). Identity-
+preserving sub-states fold by `Arc` pointer; the rest by value/version,
+so a **no-op publish yields a stable revision**. `publish_render_state`
+returns whether the revision moved; the actor's off-keystroke arms
+(`async_landed`, the inline-diag timer) fire `paint_request` when it did.
+
+Two design points worth their own line:
+
+- **The keystroke path is untouched.** It already repaints on the input
+  wake, so firing `paint_request` there would be redundant -- worse, it
+  would drive the GPUI paint bridge (`paint_request` →
+  `run_tick_pending` → re-publish) into a full extra `build_render_state`
+  per keystroke. Gating the paint on *the actor's async arms* (not on
+  `publish_render_state` itself) keeps the hot path clean; gating on
+  *revision change* keeps the bridge from spinning (a no-op re-publish
+  yields the same revision → no further paint).
+- **Pointer identity must be meaningful.** `ModelineService::update` /
+  `clear` were unconditional `rcu` stores, so the content `Arc` churned
+  every publish (`sync_diff_modeline_element` re-applies the diff element
+  each `build_render_state`). They are now equivalence-gated, so the
+  content pointer is a true "did the modeline change" signal -- and the
+  store stops re-allocating an identical map every frame.
+
 ---
 
 ## 13. Server lifecycle state

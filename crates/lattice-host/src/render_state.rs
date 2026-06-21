@@ -160,6 +160,23 @@ pub struct RenderState {
     /// in `build_render_state` from
     /// `editor.virtual_rows_matrix_cell.load_full()`.
     pub virtual_rows: Arc<VirtualRowsRenderState>,
+    /// §12 async-result render-wake — the off-keystroke paint gate.
+    ///
+    /// A content hash over every render-visible surface that is NOT
+    /// owned by the cells / virtual-rows workers (those fire
+    /// `paint_request` on their own content change). The actor's
+    /// off-keystroke arms (`async_landed` / inline-diag) compare this
+    /// against the previously-published value and fire `paint_request`
+    /// only when it moved, so an async arrival that changes the modeline
+    /// badge, a diagnostics overlay, a popup, etc. reaches a frame
+    /// without a keystroke — and a no-op publish does NOT (which also
+    /// keeps the GPUI paint-bridge's `run_tick_pending` → re-publish
+    /// loop from spinning). Stamped by
+    /// [`Editor::compute_paint_revision`](crate::dispatch::Editor::compute_paint_revision)
+    /// in `build_render_state`. The cells `MatrixVersion` axis is the
+    /// dual: it gates cell rebuilds; this gates everything else
+    /// (`lattice-cells/src/version.rs` enumerates the overlay set).
+    pub paint_revision: u64,
 }
 
 impl Default for RenderState {
@@ -192,6 +209,7 @@ impl Default for RenderState {
             )),
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
+            paint_revision: 0,
         }
     }
 }
@@ -1546,6 +1564,17 @@ pub struct PublishCache {
     /// A suppressed publish occurred during the current batch; flushed
     /// once when the batch depth returns to 0.
     pub publish_pending: bool,
+    /// §12 paint gate: the `RenderState::paint_revision` of the last
+    /// real (un-suppressed) publish. `publish_render_state` compares the
+    /// freshly-built revision against this; a change means a
+    /// render-visible non-cell surface moved off-keystroke, so the actor
+    /// fires `paint_request`. Lives here (not on `Editor`) for the same
+    /// reason as the cache slots: `PublishCache` is `Default`-derived and
+    /// already the actor's single publish-side lock, so no `Editor`
+    /// construction churn. `u64::MAX` would be a valid revision, so this
+    /// starts at 0 and the first publish (revision rarely 0) paints — a
+    /// harmless extra first frame.
+    pub last_paint_revision: u64,
 }
 
 impl PublishCache {

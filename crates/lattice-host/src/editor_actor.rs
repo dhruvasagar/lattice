@@ -620,7 +620,18 @@ async fn run_actor(
             },
             _ = async_landed.notified() => {
                 let signals = editor.run_tick_pending();
-                editor.publish_render_state();
+                // §12 paint gate: an async arrival that moved a non-cell
+                // render-visible surface (LSP readiness badge, diagnostics
+                // overlay, popup, …) must reach a frame WITHOUT a keystroke
+                // — the cells / virtual-rows workers only paint on their
+                // own content change. `publish_render_state` reports
+                // whether `paint_revision` moved; fire `paint_request`
+                // when it did. Gated so a no-op publish doesn't spin the
+                // GPUI paint bridge.
+                let painted = editor.publish_render_state();
+                if painted {
+                    editor.paint_request.notify_one();
+                }
                 // Notify cells via the event bus so the wake is
                 // sequenced after the ArcSwap store in
                 // publish_render_state. Cells wakes via the
@@ -641,7 +652,13 @@ async fn run_actor(
             // presentation, not pending async work.
             _ = &mut inline_diag_sleep, if editor.inline_diag_deadline.is_some() => {
                 editor.fire_inline_diag_gate();
-                editor.publish_render_state();
+                // §12 paint gate: the idle gate flips the inline summary
+                // visible — a non-cell surface — so fire `paint_request`
+                // when the publish reports the change.
+                let painted = editor.publish_render_state();
+                if painted {
+                    editor.paint_request.notify_one();
+                }
                 editor.event_bus.publish_typed(
                     crate::events::AsyncRenderStatePublished,
                 );

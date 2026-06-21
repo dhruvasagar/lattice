@@ -727,6 +727,21 @@ impl Editor {
         // overrides one subsystem at a time. The `..Default::default()`
         // tail keeps unmigrated sub-states at their (empty)
         // defaults without enumerating every field on every edit.
+        //
+        // §12 paint gate: stamp the off-keystroke paint revision from
+        // the surfaces the cells / virtual-rows workers DON'T cover.
+        // Hoist the modeline snapshot so the signature can read its
+        // content pointer; it's then moved into the literal below.
+        let modeline_snapshot = self.modeline.snapshot();
+        let paint_revision = self.compute_paint_revision(
+            &panes_arc,
+            &modes_arc,
+            &buffer_locals_arc,
+            &buffers_arc,
+            &tabs_arc,
+            &modeline_snapshot,
+            static_overlay_version_val,
+        );
         RenderState {
             // Slice 3c.1: active-buffer hot-path projection.
             // Captures cursor/scroll/modal/etc. at publication
@@ -938,7 +953,7 @@ impl Editor {
             // element system (two Arc clones). Built-in element content
             // is written through `self.modeline` (ML.1); mode/plugin
             // content arrives via ModelineElementUpdate (ML.3).
-            modeline_elements: self.modeline.snapshot(),
+            modeline_elements: modeline_snapshot,
             // Slice 3c.final.B.10: typed-options registry handle.
             // The inner `ConfigRegistry` is already Arc-shared on
             // the editor side, so the publish is one Arc clone.
@@ -1283,8 +1298,102 @@ impl Editor {
                 matrix: self.virtual_rows_matrix_cell.load_full(),
                 pane_matrices: virtual_rows_pane_matrices,
             }),
+            // §12 paint gate (computed above, before the literal).
+            paint_revision,
             ..RenderState::default()
         }
+    }
+
+    /// §12 paint gate: a content hash over every render-visible surface
+    /// the cells / virtual-rows workers do NOT own, so an off-keystroke
+    /// publish that moves one of them requests a paint. Stamped onto
+    /// [`RenderState::paint_revision`](crate::render_state::RenderState::paint_revision);
+    /// the actor's `async_landed` / inline-diag arms fire `paint_request`
+    /// when it changes vs. the last publish.
+    ///
+    /// The cells `MatrixVersion` is the dual axis (text / syntax / inlay
+    /// / folds / theme / whitespace — the cell-content set). Everything
+    /// `lattice-cells/src/version.rs` lists as an *overlay* (diagnostics,
+    /// cursor, selection, hlsearch, doc-highlights, search matches) plus
+    /// the chrome the renderer paints from `RenderState` directly
+    /// (modeline badge, minibuffer, popups, echo line, tabs, lifecycle)
+    /// is folded here. Cheap: pointer/scalar reads + one SipHash walk,
+    /// once per real publish on the actor thread.
+    ///
+    /// Identity-preserving sub-states (the `cached_or_build` slots) fold
+    /// by pointer — a reused `Arc` means "unchanged". Sub-states rebuilt
+    /// every publish fold by value/version instead, so a NO-OP publish
+    /// yields a STABLE revision: that's what keeps the GPUI paint
+    /// bridge's `run_tick_pending` → re-publish from looping.
+    ///
+    /// NOTE: cells / virtual-rows are deliberately ABSENT — their
+    /// workers fire `paint_request` on their own content change; folding
+    /// them here would double-paint and risk an early frame before the
+    /// worker recompute lands. Any NEW render-visible non-cell field
+    /// must be added here.
+    fn compute_paint_revision(
+        &self,
+        panes: &std::sync::Arc<crate::render_state::PanesRenderState>,
+        modes: &std::sync::Arc<crate::render_state::ModesRenderState>,
+        buffer_locals: &std::sync::Arc<crate::render_state::BufferLocalsRenderState>,
+        buffers: &std::sync::Arc<crate::render_state::BuffersRenderState>,
+        tabs: &std::sync::Arc<crate::render_state::TabsRenderState>,
+        modeline: &lattice_mode::ModelineSnapshot,
+        static_overlay_version: u64,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Identity-preserving sub-states: pointer identity == change.
+        (std::sync::Arc::as_ptr(panes) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(modes) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(buffer_locals) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(buffers) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(tabs) as usize).hash(&mut h);
+        // Modeline element system (LSP readiness badge, diff status,
+        // plugin badges): the churning `content` map swaps its Arc on
+        // every `ModelineElementUpdate`; `registry` changes on (rare)
+        // descriptor (de)registration.
+        (std::sync::Arc::as_ptr(&modeline.content) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(&modeline.registry) as usize).hash(&mut h);
+        // Diagnostics overlay (gutter / underline / inline summary):
+        // each server push swaps the snapshot Arc.
+        self.lsp_diagnostics.snapshot_revision().hash(&mut h);
+        // Static overlays (doc-highlights + search matches + substitute
+        // preview), already content-hashed for the worker's bucket key.
+        static_overlay_version.hash(&mut h);
+        // Active-document chrome painted outside the cell grid. `cursor`
+        // is an OVERLAY (absent from MatrixVersion) so a cursor-only move
+        // needs this; scroll/viewport are cells-coupled but cheap here.
+        self.cursor.hash(&mut h);
+        self.scroll.hash(&mut h);
+        self.viewport_height.hash(&mut h);
+        std::mem::discriminant(&self.modal).hash(&mut h);
+        self.visual_anchor.hash(&mut h);
+        self.current_match
+            .as_ref()
+            .map(|r| (r.start, r.end))
+            .hash(&mut h);
+        // Minibuffer: command line + search line.
+        self.command_line.hash(&mut h);
+        self.search_line
+            .as_ref()
+            .map(|s| (s.pattern.clone(), s.direction))
+            .hash(&mut h);
+        // Popups / floats (presence + placement + anchor). Async result
+        // GROWTH inside an open picker/completion still rides a keystroke
+        // today; if that changes, fold a content count here.
+        self.popup_buffer.hash(&mut h);
+        std::mem::discriminant(&self.popup_placement).hash(&mut h);
+        self.popup_anchor.hash(&mut h);
+        self.picker.is_some().hash(&mut h);
+        self.completion_state.is_some().hash(&mut h);
+        self.insert_completion.is_some().hash(&mut h);
+        // Echo line.
+        self.last_message.is_some().hash(&mut h);
+        // Lifecycle chrome.
+        self.should_quit.hash(&mut h);
+        self.terminal_width.hash(&mut h);
+        h.finish()
     }
 
     /// Perf plan B.2 slice B.2.a: build the active buffer's LSP
@@ -1434,7 +1543,16 @@ impl Editor {
     /// `Arc<ArcSwap<RenderState>>`. One atomic release-store on
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
-    pub fn publish_render_state(&mut self) {
+    /// Returns `true` when this real publish moved
+    /// [`RenderState::paint_revision`](crate::render_state::RenderState::paint_revision)
+    /// — i.e. a render-visible surface that the cells / virtual-rows
+    /// workers do NOT own changed. The actor's off-keystroke arms
+    /// (`async_landed` / inline-diag) use the return to fire
+    /// `paint_request`; the keystroke path ignores it (it already paints
+    /// via the renderer's input wake). A suppressed (batched) publish
+    /// returns `false` — the real publish at batch-unwind reports the
+    /// net change.
+    pub fn publish_render_state(&mut self) -> bool {
         // Slice I.4 (publish coalescing): while a `dispatch` / `handle_effect`
         // batch is in flight (depth > 0), suppress this publish — mark it
         // pending and return. The single real publish fires when the outermost
@@ -1450,7 +1568,7 @@ impl Editor {
                 .expect("publish_cache mutex poisoned");
             if c.publish_batch_depth > 0 {
                 c.publish_pending = true;
-                return;
+                return false;
             }
             c.publish_pending = false;
         }
@@ -1505,6 +1623,10 @@ impl Editor {
                 &next_cells.whitespace,
             );
         }
+        // §12 paint gate: capture the revision before `next` is moved
+        // into the ArcSwap, then compare against the last real publish
+        // at the tail to decide whether the off-keystroke arms paint.
+        let paint_revision = next.paint_revision;
         self.render_state.store(std::sync::Arc::new(next));
         // Phase 5.8.AF.5 / Slice X2: wake the overlay worker.
         // `Notify::notify_one` is "permit-style" — if no one is
@@ -1539,6 +1661,20 @@ impl Editor {
         // to `Recomputed` once then `CacheHit` thereafter, so
         // dispatch-tick wakes are cheap.
         self.virtual_rows_wake.0.notify_one();
+        // §12 paint gate: did a non-cell render-visible surface move
+        // since the last real publish? The cells / virtual-rows workers
+        // own their own `paint_request` on content change; this covers
+        // everything else (modeline badge, diagnostics overlay, popups,
+        // minibuffer, …). The actor's off-keystroke arms read this to
+        // fire `paint_request`. A no-op publish returns `false`, so the
+        // GPUI paint bridge's run_tick_pending → re-publish doesn't spin.
+        let mut cache = self
+            .publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned");
+        let changed = cache.last_paint_revision != paint_revision;
+        cache.last_paint_revision = paint_revision;
+        changed
     }
 
     // ----------------------------------------------------------------
@@ -28415,6 +28551,74 @@ mod tests {
             msg.text.contains("No active diff session"),
             "unexpected message: {}",
             msg.text
+        );
+    }
+
+    // ── §12 paint gate: publish_render_state's off-keystroke paint
+    //    decision (lsp-architecture.md §12) ──────────────────────────
+    //
+    // The cells / virtual-rows workers fire `paint_request` only when
+    // THEIR content changes. A change confined to a non-cell surface
+    // (modeline badge, diagnostics overlay, minibuffer, popup, cursor …)
+    // would land in `RenderState` but never reach a frame off-keystroke
+    // — the "needs a keypress" bug. `publish_render_state` now returns
+    // whether `paint_revision` moved so the actor's async arms can fire
+    // `paint_request`; a no-op publish must return `false` (both to avoid
+    // a spurious paint AND to keep the GPUI paint bridge's
+    // run_tick_pending → re-publish from spinning).
+    #[test]
+    fn publish_render_state_paint_gate_tracks_non_cell_changes() {
+        let mut editor = Editor::default();
+        // Baseline publish seeds `last_paint_revision`.
+        let _ = editor.publish_render_state();
+        // Nothing changed since: must NOT request a paint.
+        assert!(
+            !editor.publish_render_state(),
+            "a no-op publish must not request a paint (loop-safety)"
+        );
+        // A minibuffer edit is a non-cell surface (RenderState.modeline
+        // .cmdline_text), invisible to the cells MatrixVersion — it MUST
+        // flip the gate.
+        editor.command_line.push('x');
+        assert!(
+            editor.publish_render_state(),
+            "a non-cell (minibuffer) change must request a paint"
+        );
+        // And settle back to a no-op once republished.
+        assert!(
+            !editor.publish_render_state(),
+            "a settled publish must not request a paint"
+        );
+        // The cursor is an OVERLAY (deliberately absent from the cells
+        // MatrixVersion — lattice-cells/src/version.rs), so a cursor-only
+        // move is exactly the class that used to need a keypress.
+        editor.cursor = lattice_protocol::Position::new(0, 1);
+        assert!(
+            editor.publish_render_state(),
+            "a cursor-only move (overlay) must request a paint"
+        );
+        assert!(
+            !editor.publish_render_state(),
+            "a settled publish must not request a paint"
+        );
+    }
+
+    // §12 paint gate: a suppressed (batched) publish returns `false` —
+    // the real publish at batch-unwind reports the net change, so the
+    // off-keystroke arms paint exactly once for a batch.
+    #[test]
+    fn publish_render_state_suppressed_during_batch_returns_false() {
+        let mut editor = Editor::default();
+        let _ = editor.publish_render_state();
+        editor
+            .publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth = 1;
+        editor.command_line.push('z');
+        assert!(
+            !editor.publish_render_state(),
+            "a publish suppressed inside a batch must return false even when state changed"
         );
     }
 

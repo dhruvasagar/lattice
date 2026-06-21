@@ -243,44 +243,66 @@ Dogfooding fixes on the L4 surfaces — all committed:
   elements; the mode-owned `gl` handler bakes a whole-line severity
   highlight per popup line.
 
-### L6 — LSP server-ready render-wake (the "needs a keypress" bug)  🗒
+### L6 — off-keystroke paint gate: a publish must request a frame  ✅
 
-**Symptom (recurring):** the first time an LSP server becomes ready,
-the first `K` (hover) / nav action does nothing; a second keypress
-works. Dhruva reports this has regressed several times.
+**Design:** lsp-architecture.md §12 ("The second gap").
 
-**Hypothesis:** the same no-wake class as the diagnostics fix above —
-the server **ready / initialize / capabilities** transition updates
-editor-visible state but does NOT fire `async_landed`, so the first
-action checks STALE readiness (server not-yet-ready / capability not
-yet registered) → no-op; the readiness lands (no repaint, no
-re-evaluation) → the second keypress sees ready → works. The first
-keypress's dispatch is what finally reflects it.
+**Original framing (disproved).** L6 was first spec'd as a "server-ready
+render-wake" — the theory that the first `K`/nav after a server goes
+ready no-ops because the readiness edge doesn't fire `async_landed`.
+Tracing the code disproved every link of that hypothesis: the mode gate
+(`active_modes`) is set **synchronously** by the cascade's sync prefix
+(`registry.rs` `activate_minor` / `record_implies_cascade`); the URI is
+registered **eagerly** at open; `servers_for(uri)` only ever returns
+**post-`initialize`** servers (`actor::spawn` awaits the handshake); and
+the hover/nav result already drains off-keystroke in **both** peers via
+the X1b `paint_request` → `run_tick_pending` bridge. The `K` bug was
+already fixed; firing a wake on the ready edge would have been a no-op
+patch on a wrong premise.
 
-**Investigation starting points:**
-- Does server attach / `initialize` response / `experimental/serverStatus`
-  (L2a `ed55eb30`, L2b `6824cffc`) fire `async_landed`? Compare to the
-  `wake_on` forwarders in `editor_boot.rs` (~969–1010) and the
-  diagnostics `set_wake` just added (~672) — readiness likely lacks one.
-- How does `K` / `action:lsp-hover` gate on readiness/capabilities
-  before firing? Trace `maybe_request_*` / the hover request spawn in
-  `dispatch.rs` (`drain_pending_hover` ~11062) and the capability check.
-  Is the capability set populated async (post-initialize) without a
-  wake/re-eval?
-- Is it instead a **mode-activation** race — `lsp-mode` (and its sub-mode
-  cascade) activates on first interaction, so the first chord activates
-  the mode but doesn't also fire the request? Check `LspMode::on_activate`
-  + the attach driver in `editor_boot.rs`.
-- Repro: open a fresh file with a slow-starting server (rust-analyzer),
-  wait for ready, `K` once (no popup), `K` again (popup).
+**The real bug (what Dhruva hit dogfooding).** The `lsp ⟳ … %` / `lsp ✓`
+progress badge — and any diagnostics **overlay** change (the
+"undo → diagnostic disappears" report) — updated `RenderState` but did
+**not** repaint until a keystroke. Root cause: `async_landed` lands the
+data in the snapshot, but the only off-keystroke repaint triggers are the
+cells / virtual-rows workers, which fire `paint_request` *only* on a
+content-changing `WorkerDecision`. A surface those workers don't own
+(modeline badge, diagnostics overlay, popup, minibuffer) never requested
+a frame. A paramount-#4/#1 violation, not the gate/readiness story.
 
-**Likely fix shape:** fire `async_landed` on the server-ready /
-capability-registered edge (a forwarder or a `set_wake`-style hook),
-mirroring the diagnostics fix. Confirm the first action then re-evaluates
-against fresh readiness.
+**Fix (Option A — single change-detection point).**
+- `build_render_state` stamps `RenderState::paint_revision`
+  (`Editor::compute_paint_revision`): a content hash over every
+  render-visible surface the cells / virtual-rows workers do NOT own
+  (the overlay set in `lattice-cells/src/version.rs` + modeline /
+  minibuffer / popup / echo / tabs / lifecycle chrome). Identity-
+  preserving sub-states fold by `Arc` pointer; the rest by value, so a
+  no-op publish yields a **stable** revision.
+- `publish_render_state` returns whether the revision moved; the actor's
+  **off-keystroke** arms (`async_landed`, inline-diag timer) fire
+  `paint_request` when it did. The keystroke path is untouched (it
+  already paints via the input wake) — this dodges a per-keystroke extra
+  `build_render_state` through the GPUI paint bridge, and the revision
+  gate stops that bridge's `run_tick_pending` → re-publish from spinning.
+- `DiagnosticsLayer::snapshot_revision()` feeds the diagnostics axis
+  (each `apply` swaps the snapshot `Arc`), so a pushed diagnostics change
+  (the undo case) repaints off-keystroke.
+- `ModelineService::update` / `clear` are now **equivalence-gated** — an
+  unconditional `rcu` re-stored a fresh content `Arc` every publish
+  (`sync_diff_modeline_element` re-applies the diff element each build),
+  which both churned allocations and broke the content pointer as a
+  change signal. Now the pointer means "the modeline actually changed".
 
-**Artefacts:** *test* — ready transition wakes a publish; *doc* — §12/§13.
-**Deps:** L1/L2.
+**Artefacts:** *code* — `compute_paint_revision` + `paint_revision` field
++ bool-returning `publish_render_state` + the two actor arms +
+`snapshot_revision` + the modeline equivalence-gate. *tests* —
+`publish_render_state_paint_gate_tracks_non_cell_changes` +
+`publish_render_state_suppressed_during_batch_returns_false`
+(`lattice-host`), `snapshot_revision_changes_on_apply_stable_otherwise`
+(`lattice-lsp`). *doc* — §12 "The second gap". *perf* — O(1) hash per
+publish; keystroke path unchanged (`keystroke_publish_ratchet` green).
+*parity* — host-side only; both renderers consume `paint_request`
+identically (no peer-specific code). **Deps:** L1/L2.
 
 ### L7 — LSP nav surface → full mode-ownership  🗒
 

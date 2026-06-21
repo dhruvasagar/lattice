@@ -94,7 +94,9 @@ impl App {
         // editor in sync.
         // S2.4.b (2026-05-26): `publish_render_state` became
         // `&mut self`. Switch to `mutate_editor`.
-        self.mutate_editor(move |e| e.publish_render_state());
+        self.mutate_editor(move |e| {
+            e.publish_render_state();
+        });
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_file_tree`].

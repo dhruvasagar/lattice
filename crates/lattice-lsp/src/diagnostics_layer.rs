@@ -148,6 +148,24 @@ impl DiagnosticsLayer {
         self.wake.store(Some(wake));
     }
 
+    /// §12 paint gate: a cheap change-token for the current snapshot.
+    ///
+    /// Every [`Self::apply`] swaps a fresh `Arc<DiagnosticsSnapshot>`
+    /// into the cell, so the snapshot's pointer address is a precise,
+    /// allocation-free "did the diagnostics change" signal — stable
+    /// while unchanged, distinct after any push (including the CLEAR
+    /// when an error is fixed). `build_render_state` folds this into
+    /// `RenderState::paint_revision` so a pushed diagnostics change
+    /// (which is an *overlay*, deliberately excluded from the cells
+    /// `MatrixVersion` — see `lattice-cells/src/version.rs`) still
+    /// requests an off-keystroke paint. Without it, the gutter /
+    /// underline / inline-summary would update in the snapshot but not
+    /// repaint until the next keypress (the "undo → diagnostic
+    /// disappears" report).
+    pub fn snapshot_revision(&self) -> usize {
+        Arc::as_ptr(&self.snapshot.load_full()) as *const () as usize
+    }
+
     /// Apply one [`DiagnosticEvent`]. Drops stale events; clears
     /// state on empty diagnostics; otherwise replaces the
     /// `(uri, server_id)` entry. Single-snapshot publish at the
@@ -610,6 +628,38 @@ mod tests {
         let d = l.diagnostics_for(&uri);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].message, "boom");
+    }
+
+    /// §12 paint gate: `snapshot_revision` is stable while unchanged and
+    /// moves on every push (including the CLEAR). `build_render_state`
+    /// folds it into `RenderState::paint_revision`, so an off-keystroke
+    /// diagnostics change — an OVERLAY, excluded from the cells
+    /// `MatrixVersion` — still requests a paint. This is the
+    /// "undo → diagnostic disappears" fix: the server re-publishes after
+    /// the undo's didChange and the gutter/underline/summary repaint
+    /// without a keypress.
+    #[test]
+    fn snapshot_revision_changes_on_apply_stable_otherwise() {
+        let l = layer();
+        let r0 = l.snapshot_revision();
+        // No push → identical revision → a no-op publish won't paint.
+        assert_eq!(r0, l.snapshot_revision(), "revision must be stable while unchanged");
+        // A server push swaps the snapshot Arc → revision moves.
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            Some(1),
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        let r1 = l.snapshot_revision();
+        assert_ne!(r0, r1, "a diagnostics push must change the snapshot revision");
+        // The CLEAR (error fixed) is also a change.
+        l.apply(ev("rust", "file:///x.rs", Some(2), vec![]));
+        assert_ne!(
+            r1,
+            l.snapshot_revision(),
+            "clearing diagnostics must change the snapshot revision"
+        );
     }
 
     #[tokio::test]

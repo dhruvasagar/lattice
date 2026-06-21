@@ -366,6 +366,17 @@ impl ModelineService {
     /// is registered. `key` selects the pane (`Buffer`) or global slot
     /// (§4 per-pane content resolution).
     pub fn update(&self, key: ModelineKey, id: ElementId, content: ElementContent) {
+        // Equivalence-gate: only swap the content `Arc` when the value
+        // actually changes. An unconditional `rcu` re-allocates the map
+        // (and a fresh `Arc`) on every call — wasteful, and it breaks the
+        // content-`Arc` pointer as a change signal for the §12 paint gate
+        // (`build_render_state` re-applies the diff element on every
+        // publish via `sync_diff_modeline_element`, and the §12 forwarder
+        // re-pushes badges). Single-writer (actor thread), so the
+        // load-then-rcu has no harmful TOCTOU.
+        if self.content.load().get(&(key, id.clone())) == Some(&content) {
+            return;
+        }
         self.content.rcu(|cur| {
             let mut next = (**cur).clone();
             next.insert((key, id.clone()), content.clone());
@@ -375,6 +386,11 @@ impl ModelineService {
 
     /// Clear an element's content under `(key, id)` (hides it). Idempotent.
     pub fn clear(&self, key: ModelineKey, id: &ElementId) {
+        // Equivalence-gate (see `update`): a clear of an already-absent
+        // entry must not churn the content `Arc`.
+        if !self.content.load().contains_key(&(key, id.clone())) {
+            return;
+        }
         self.content.rcu(|cur| {
             let mut next = (**cur).clone();
             next.remove(&(key, id.clone()));

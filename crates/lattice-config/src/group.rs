@@ -261,6 +261,17 @@ impl OptionGroup for Modeline {
         "Modeline (bottom per-pane status row): per-zone element layout + separator.";
 }
 
+/// Diagnostics presentation options. L4 (2026-06-21):
+/// `ui.diagnostics.inline` + `ui.diagnostics.inline-min-severity` drive
+/// the inline end-of-line diagnostic summary (`lsp-architecture.md`
+/// §15). The `:customize diagnostics` umbrella.
+pub struct Diagnostics;
+impl OptionGroup for Diagnostics {
+    const NAME: &'static str = "diagnostics";
+    const DOC: &'static str =
+        "Diagnostics presentation: inline end-of-line summary scope + min-severity.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -320,6 +331,10 @@ static SNIPPET_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_grou
 #[linkme::distributed_slice(GROUP_DECLS)]
 static MODELINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Modeline>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =
+    &OptionGroupMetadata::for_group::<Diagnostics>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -341,6 +356,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Search::NAME));
     assert!(!ends_with_mode_suffix(Snippet::NAME));
     assert!(!ends_with_mode_suffix(Modeline::NAME));
+    assert!(!ends_with_mode_suffix(Diagnostics::NAME));
 };
 
 #[cfg(test)]

@@ -692,6 +692,28 @@ crate::options! {
     pub ModelinePadding: i64 = 1;
 }
 
+// L4 (2026-06-21): diagnostics group — inline end-of-line diagnostic
+// summary presentation (`lsp-architecture.md` §15). `inline` scopes the
+// summary (off / cursor-line / all); `inline-min-severity` filters which
+// diagnostics count. Both are read host-side to gate + compute the
+// cursor-line summary (L4a.2).
+crate::options! {
+    group = crate::Diagnostics;
+
+    /// Where the inline (end-of-line virtual-text) diagnostic summary
+    /// renders: `off`, `cursor-line` (the default — cursor line only,
+    /// idle-gated, Insert-suppressed), or `all` (every viewport line).
+    #[name("ui.diagnostics.inline")]
+    pub DiagnosticsInlineOption: crate::DiagnosticsInline = crate::DiagnosticsInline::CursorLine;
+
+    /// Least-severe diagnostic level included in the inline summary:
+    /// `error`, `warning`, `info`, or `hint` (the default — include
+    /// everything). A diagnostic shows when it is as-or-more severe.
+    #[name("ui.diagnostics.inline-min-severity")]
+    pub DiagnosticsMinSeverityOption: crate::DiagnosticsSeverity =
+        crate::DiagnosticsSeverity::Hint;
+}
+
 // M.2.0c: `CoreOptions` struct and `register_core_options`
 // helper retired. Built-in options self-register via the
 // macro-generated `register_fn` thunks (`OPTION_DECLS` linkme

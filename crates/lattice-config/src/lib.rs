@@ -67,6 +67,7 @@ extern crate self as lattice_config;
 
 pub mod completion;
 pub mod core_options;
+mod diagnostics_options;
 mod domain;
 mod erased;
 pub mod group;
@@ -119,7 +120,8 @@ pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
-    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine, FoldEnable,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
     ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
@@ -130,9 +132,9 @@ pub use core_options::{
 };
 pub use erased::ErasedOption;
 pub use group::{
-    Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Messages,
-    Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline, Terminal,
-    ends_with_mode_suffix,
+    Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
+    Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
+    Terminal, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
@@ -141,6 +143,8 @@ pub use loader::{
 // ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
 // right}`). The first list-valued option; see `modeline_zone`.
 pub use modeline_zone::ModelineZone;
+// L4a: inline-diagnostics option value types (`ui.diagnostics.*`).
+pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated
 // `build_spec()` methods can name them, but they are no longer

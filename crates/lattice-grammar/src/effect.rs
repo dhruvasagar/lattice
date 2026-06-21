@@ -178,6 +178,16 @@ pub enum Effect {
         level: EchoLevel,
         text: String,
     },
+    /// L4b (lsp-architecture.md §15): show a cursor-anchored popup with
+    /// the pre-formatted diagnostic lines for the cursor's line. The
+    /// owning mode (`lsp-diagnostics-mode`) formats `lines` in its
+    /// `gl` handler; the host renders them through the hover popup
+    /// pipeline (`HelpContent` → `DisplayBufferRequest`,
+    /// `PopupPlacement::CursorAnchored`). Empty `lines` → host echoes
+    /// "no diagnostics on line" instead of an empty popup.
+    ShowDiagnosticsPopup {
+        lines: Vec<String>,
+    },
     /// `:reg[isters]` -- the host formats and displays its own register
     /// state.
     EchoRegisters,

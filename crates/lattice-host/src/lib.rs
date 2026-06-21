@@ -38,6 +38,7 @@ pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
 pub mod cursor_shape;
+pub mod diagnostics_query;
 pub mod dispatch;
 pub mod editor;
 pub mod visual;

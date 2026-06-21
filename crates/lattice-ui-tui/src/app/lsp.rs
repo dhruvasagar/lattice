@@ -5509,6 +5509,23 @@ mod tests {
         assert_eq!(app.editor.cursor, Position::new(3, 0));
     }
 
+    /// L4b: landing on a diagnostic echoes its message (shared by `]d`
+    /// / `:diag-next` / `:cnext`).
+    #[test]
+    fn next_diagnostic_echoes_landed_message() {
+        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
+        seed_diags_at_lines(&mut app, &[1, 3]);
+        app.editor.cursor = Position::new(0, 0);
+        app.do_next_diagnostic();
+        assert_eq!(app.editor.cursor, Position::new(1, 0));
+        let msg = app
+            .editor
+            .last_message
+            .as_ref()
+            .expect("jump should echo the landed diagnostic");
+        assert!(msg.text.contains("err on line 1"), "got: {}", msg.text);
+    }
+
     #[test]
     fn next_diagnostic_with_no_attachment_echoes_error() {
         let mut app = app_with("hi\n", 5);

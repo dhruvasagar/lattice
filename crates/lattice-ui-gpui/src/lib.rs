@@ -1020,6 +1020,7 @@ impl GpuiApp {
             | Effect::SetColorscheme(_)
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
+            | Effect::ShowDiagnosticsPopup { .. }
             | Effect::EchoRegisters
             | Effect::EchoMarks
             | Effect::ListBuffers

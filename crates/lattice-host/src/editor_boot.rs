@@ -1182,6 +1182,17 @@ impl Editor {
                 let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
                 s.register(lattice_mode::BufferStoreHandle::new(store));
                 s.register(lsp_logger.clone());
+                // L4b (lsp-architecture.md §15): diagnostics-query
+                // service so `lsp-diagnostics-mode`'s `gl` handler reads
+                // the cursor line's diagnostics (buffer_id → uri → layer
+                // over the live published render state) without a host
+                // method or its own URI map. Same `render_state_arc`
+                // every `publish_render_state` stores into.
+                let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle =
+                    Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
+                        render_state_arc.clone(),
+                    ));
+                s.register::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query);
                 // M.2.b.2 (2026-06-01): expose the typed
                 // multibuffer-handle lookup so providers
                 // (`create_multibuffer_view`, future M.6

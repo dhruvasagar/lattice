@@ -885,6 +885,7 @@ impl App {
             Effect::None
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
+            | Effect::ShowDiagnosticsPopup { .. }
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
@@ -1174,6 +1175,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        // L4b: the diagnostics popup neither mutates nor yanks.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -1273,6 +1276,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::Edits(_) => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
+        // L4b: the diagnostics popup is not a buffer mutation.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }

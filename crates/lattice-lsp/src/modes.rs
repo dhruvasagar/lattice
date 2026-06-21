@@ -25,11 +25,12 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_mode::{
-    BufferStoreHandle, CapabilitySet, DecorationCtx, GutterDecoration, GutterSeverityLevel,
-    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeActivationError, ModeContext, ModeId,
-    ModeKind, ModeRegistry, OptionOverrideSet, Subscription,
-    keymap_entry,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
+    DecorationCtx, GutterDecoration, GutterSeverityLevel, Keymap, KeymapEntry, LifecycleFuture,
+    Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
+    Subscription, keymap_entry,
 };
+use lattice_grammar::effect::Effect;
 use lattice_runtime::EventBus;
 
 use crate::supervisor::LspSupervisorHandle;
@@ -715,7 +716,149 @@ macro_rules! lsp_sub_mode {
 // `LspCompletionMode` lives in `crate::completion` -- it's
 // source-contributing rather than a pure marker.
 pub use crate::completion::LspCompletionMode;
-lsp_sub_mode!(LspDiagnosticsMode, "lsp-diagnostics-mode");
+// `lsp-diagnostics-mode` is a FULL mode (not the bare marker macro):
+// it owns the `gl` cursor popup + `]d`/`[d` jump bindings AND the
+// popup handler body (L4b, lsp-architecture.md §15). See below.
+
+/// L4b: read-only query handle the mode-owned diagnostic handlers in
+/// [`LspDiagnosticsMode`] use to read the cursor line's diagnostics
+/// for `gl`. The impl (lattice-host) resolves `buffer_id → uri →
+/// DiagnosticsLayer` over the live published render state, so the mode
+/// needs no host method, no direct layer access, and no URI map of
+/// its own. Register + look up under the
+/// [`DiagnosticsQueryHandle`] alias
+/// (`feedback_servicesregistry_arc_typeid`).
+pub trait DiagnosticsQuery: Send + Sync {
+    /// Diagnostics overlapping `line` of `buffer_id`, in the layer's
+    /// `(line, character)` order. Empty when the buffer has no URI
+    /// mapped / no LSP attachment.
+    fn on_line(&self, buffer_id: lattice_protocol::ids::BufferId, line: u32)
+    -> Vec<crate::Diagnostic>;
+}
+
+/// Service alias for [`DiagnosticsQuery`]. Register the host impl as
+/// this exact type and look it up the same way.
+pub type DiagnosticsQueryHandle = std::sync::Arc<dyn DiagnosticsQuery>;
+
+/// L4b: format the cursor line's diagnostics into one popup line each:
+/// `<severity glyph> <message> [source:code] (+N related)`. The glyph
+/// is the BMP-fallback severity mark (degrade-safe per the icon-palette
+/// rule); the message is collapsed to its first line. Empty input →
+/// empty `Vec` (the host echoes "no diagnostics on line").
+pub fn format_diagnostic_popup_lines(diags: &[crate::Diagnostic]) -> Vec<String> {
+    use crate::lsp_types::{DiagnosticSeverity, NumberOrString};
+    diags
+        .iter()
+        .map(|d| {
+            let glyph = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => '■',
+                Some(DiagnosticSeverity::WARNING) => '▲',
+                Some(DiagnosticSeverity::INFORMATION) => '●',
+                _ => '·',
+            };
+            let msg = d.message.lines().next().unwrap_or("").trim();
+            let mut line = format!("{glyph} {msg}");
+            let mut tags: Vec<String> = Vec::new();
+            if let Some(src) = &d.source {
+                tags.push(src.clone());
+            }
+            if let Some(code) = &d.code {
+                tags.push(match code {
+                    NumberOrString::Number(n) => n.to_string(),
+                    NumberOrString::String(s) => s.clone(),
+                });
+            }
+            if !tags.is_empty() {
+                line.push_str(&format!(" [{}]", tags.join(":")));
+            }
+            let related = d.related_information.as_ref().map_or(0, |r| r.len());
+            if related > 0 {
+                line.push_str(&format!(" (+{related} related)"));
+            }
+            line
+        })
+        .collect()
+}
+
+/// L4b: `lsp-diagnostics-mode` keymap — the three diagnostic chords,
+/// scoped to lsp-diagnostics-mode buffers by K.1.c (absent at the
+/// Builtin layer). `gl` → the mode's own popup handler;
+/// `]d` / `[d` → the existing diagnostic-jump ex-commands (the mode
+/// owns the *binding*; the shared jump + its landed-message echo live
+/// in the host ex-command, used identically by `:cnext` / `:diag-next`).
+fn lsp_diagnostics_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "gl",
+                doc: "Show diagnostics on the cursor line in a popup",
+                cmd: "action:lsp-diagnostic-popup"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]d",
+                doc: "Jump to the next diagnostic (echoes its message)",
+                cmd: "ex:diag-next"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[d",
+                doc: "Jump to the previous diagnostic (echoes its message)",
+                cmd: "ex:diag-prev"
+            },
+        ]
+    })
+}
+
+/// `lsp-diagnostics-mode` — owns the diagnostic cursor surfaces
+/// (L4b). Promoted from the `lsp_sub_mode!` marker so it can carry a
+/// keymap + the `gl` action handler.
+pub struct LspDiagnosticsMode;
+
+impl LspDiagnosticsMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("lsp-diagnostics-mode")
+    }
+}
+
+impl Mode for LspDiagnosticsMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(lsp_diagnostics_mode_keymap_entries())
+    }
+    /// `gl`: read the cursor line's diagnostics via the
+    /// [`DiagnosticsQueryHandle`] service, format them, and hand the
+    /// host an [`Effect::ShowDiagnosticsPopup`] to render through the
+    /// hover popup pipeline. Global (buffer-agnostic) — registered
+    /// once at boot; K.1.c scopes *where* `gl` fires.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        let handler: ActionHandler = std::sync::Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let query = ctx.services.get::<DiagnosticsQueryHandle>()?;
+            let diags = query.on_line(ctx.buffer_id, ctx.cursor.line);
+            Some(Effect::ShowDiagnosticsPopup {
+                lines: format_diagnostic_popup_lines(&diags),
+            })
+        });
+        vec![ActionHandlerContribution {
+            action_name: "action:lsp-diagnostic-popup",
+            handler,
+        }]
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
 lsp_sub_mode!(LspHoverMode, "lsp-hover-mode");
 lsp_sub_mode!(LspSignatureMode, "lsp-signature-mode");
 lsp_sub_mode!(LspFormatMode, "lsp-format-mode");
@@ -985,6 +1128,102 @@ mod tests {
         let m = LspMode::new();
         assert_eq!(m.kind(), ModeKind::Minor);
         assert_eq!(m.required_capabilities(), CapabilitySet::empty());
+    }
+
+    // ── L4b: lsp-diagnostics-mode owns gl / ]d / [d + the popup ──────────────
+
+    fn diag(
+        sev: crate::lsp_types::DiagnosticSeverity,
+        msg: &str,
+        source: Option<&str>,
+        code: Option<&str>,
+    ) -> crate::Diagnostic {
+        crate::Diagnostic {
+            range: crate::lsp_types::Range {
+                start: crate::lsp_types::Position { line: 0, character: 0 },
+                end: crate::lsp_types::Position { line: 0, character: 1 },
+            },
+            severity: Some(sev),
+            code: code.map(|c| crate::lsp_types::NumberOrString::String(c.to_string())),
+            code_description: None,
+            source: source.map(str::to_string),
+            message: msg.to_string(),
+            related_information: None,
+            tags: None,
+            data: None,
+        }
+    }
+
+    #[test]
+    fn lsp_diagnostics_mode_keymap_owns_the_three_chords() {
+        let km = LspDiagnosticsMode.keymap();
+        let pairs: Vec<(&str, &str)> = km
+            .entries
+            .iter()
+            .filter_map(|e| e.command.map(|c| (e.chord, c)))
+            .collect();
+        assert!(pairs.contains(&("gl", "action:lsp-diagnostic-popup")));
+        // `]d` / `[d` bind to the existing jump ex-commands (mode owns
+        // the binding; the shared jump + echo live in the host).
+        assert!(pairs.contains(&("]d", "ex:diag-next")));
+        assert!(pairs.contains(&("[d", "ex:diag-prev")));
+    }
+
+    #[test]
+    fn lsp_diagnostics_mode_contributes_only_the_popup_handler() {
+        let handlers = LspDiagnosticsMode.action_handlers();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].action_name, "action:lsp-diagnostic-popup");
+    }
+
+    #[test]
+    fn format_popup_lines_carries_glyph_message_source_code() {
+        use crate::lsp_types::DiagnosticSeverity;
+        let lines = format_diagnostic_popup_lines(&[diag(
+            DiagnosticSeverity::ERROR,
+            "mismatched types",
+            Some("rustc"),
+            Some("E0308"),
+        )]);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with('■'), "got {:?}", lines[0]);
+        assert!(lines[0].contains("mismatched types"));
+        assert!(lines[0].contains("[rustc:E0308]"));
+    }
+
+    #[test]
+    fn format_popup_lines_one_per_diagnostic_empty_for_none() {
+        use crate::lsp_types::DiagnosticSeverity;
+        assert!(format_diagnostic_popup_lines(&[]).is_empty());
+        let lines = format_diagnostic_popup_lines(&[
+            diag(DiagnosticSeverity::WARNING, "unused", None, None),
+            diag(DiagnosticSeverity::HINT, "consider", None, None),
+        ]);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with('▲'));
+        assert!(lines[1].starts_with('·'));
+    }
+
+    #[test]
+    fn format_popup_lines_appends_related_count() {
+        use crate::lsp_types::{
+            DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range, Uri,
+        };
+        use std::str::FromStr;
+        let mut d = diag(DiagnosticSeverity::ERROR, "boom", None, None);
+        let loc = Location {
+            uri: Uri::from_str("file:///x.rs").unwrap(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 0 },
+            },
+        };
+        d.related_information = Some(vec![
+            DiagnosticRelatedInformation { location: loc.clone(), message: "a".into() },
+            DiagnosticRelatedInformation { location: loc, message: "b".into() },
+        ]);
+        let lines = format_diagnostic_popup_lines(&[d]);
+        assert!(lines[0].contains("(+2 related)"), "got {:?}", lines[0]);
     }
 
     #[tokio::test]

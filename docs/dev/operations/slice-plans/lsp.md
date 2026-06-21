@@ -176,18 +176,39 @@ stays with the host that owns `cursor` / `modal` / the actor loop. The
   *Known seam:* GPUI's pre-existing diagnostic **underline** is NOT
   mode-gated (a separate parity gap, untouched here).
 
-#### L4b — cursor popup + jump echo  🗒
-**Owned by `lsp-diagnostics-mode`** (adds chords + handlers).
-- `gl` → `CursorAnchored` popup with full per-line diagnostics
-  (severity glyph / message / `source` / `code` / related count),
-  reusing the hover popup pipeline. Keymap at
-  `KeymapLayer::MinorMode(lsp-diagnostics)`, handler body in the mode's
-  crate — no host `Action` variant, no `Editor::do_*`.
-- `]d` / `[d` echo the landed diagnostic's message.
-**Artefacts:** *test* — popup contents for a multi-diagnostic line; `gl`
-on a clean line echoes "no diagnostics on line". *doc* — §15 + `user/lsp.md`.
-*parity* — popup render in both peers.
-**Deps:** L1 (repaint), L3 (mode-surface patterns).
+#### L4b — cursor popup + jump echo  (2026-06-21) ✅
+**Owned by `lsp-diagnostics-mode`**, promoted from the `lsp_sub_mode!`
+marker to a full `Mode`. "Mode-owned as much as possible" (Dhruva):
+- **Keymap** (`LspDiagnosticsMode::keymap()`, scoped by K.1.c): `gl` →
+  `action:lsp-diagnostic-popup`; `]d` / `[d` → the **existing**
+  `ex:diag-next` / `ex:diag-prev` ex-commands (the mode owns the
+  *binding*; reusing the shared jump rather than duplicating it).
+- **Handler** (`LspDiagnosticsMode::action_handlers()` closure, in
+  `lattice-lsp`): reads the cursor line's diagnostics via a new
+  `DiagnosticsQuery` service (`DiagnosticsQueryHandle`; host impl
+  `HostDiagnosticsQuery` resolves `buffer_id → uri → layer` over the
+  published render state), formats them (`format_diagnostic_popup_lines`
+  — glyph / message / `source:code` / `+N related`), and returns the
+  new `Effect::ShowDiagnosticsPopup { lines }`.
+- **Host boundary:** `Effect::ShowDiagnosticsPopup` renders through the
+  hover popup pipeline (`HelpContent` → `DisplayBufferRequest`,
+  `CursorAnchored`); empty → echoes "no diagnostics on line". `]d`/`[d`
+  echo is added to the shared `do_next/prev_diagnostic` (so `:cnext` /
+  `:diag-next` echo too). **No host `Action` enum variant, no
+  `Editor::do_*` bound to a chord** — `action:lsp-diagnostic-popup` is a
+  command-name registration with a dead `Effect::None` apply (the
+  `ActionHandlerRegistry` closure intercepts), exactly the
+  `snippet-expand` pattern.
+- **Effect blast radius:** the new variant was threaded through both
+  renderers' exhaustive effect classifiers (host-handled no-op list +
+  the mutate/yank classifiers) per `feedback_tui_gpui_parity`.
+
+*Tests:* 5 `lattice-lsp` (keymap owns the 3 chords; only the popup
+handler is contributed; formatter glyph/source/code/related/empty) + 1
+`lattice-ui-tui` (jump echoes the landed message). *doc:* §15 +
+`user/lsp.md` (four surfaces + the `gl`/`]d`/`[d` table). *parity:* the
+popup reuses the hover `DisplayBuffer` path → renders in both peers with
+no peer-specific code. **Deps:** L1 (repaint), L3 (mode-surface patterns).
 
 ### L5 — inline `all`-lines diagnostics (opt-in)  🗒
 **Design:** §15 (`ui.diagnostics.inline = "all"`).

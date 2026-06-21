@@ -2495,6 +2495,26 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // [`lattice_runtime::MessagePushed`].
             editor.set_message(echo_level_from_grammar(level), text);
         }
+        Effect::ShowDiagnosticsPopup { lines } => {
+            // L4b (lsp-architecture.md §15): `gl` — the owning
+            // `lsp-diagnostics-mode` handler pre-formatted the cursor
+            // line's diagnostics; render them through the hover popup
+            // pipeline (CursorAnchored). Empty → echo instead of an
+            // empty popup.
+            if lines.is_empty() {
+                editor.set_message(EchoLevel::Info, "no diagnostics on line".to_string());
+            } else {
+                let content = lattice_help::HelpContent::from_lines("diagnostics", lines)
+                    .with_markdown_syntax(editor.lang_registry.clone());
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+                        },
+                    )));
+            }
+        }
         Effect::EchoMarks => {
             // 5.5.E.2: `:marks` -- list every set mark in the echo
             // area. Pure editor.* read + `set_message`.
@@ -21107,11 +21127,18 @@ impl Editor {
                     || (d.range.start.line == cursor.line && d.range.start.character > cursor.byte)
             })
             .or_else(|| diags.first())
-            .map(|d| d.range.start)
+            .cloned()
         else {
             return;
         };
-        self.cursor = lattice_protocol::position::Position::new(next.line, next.character);
+        let pos = next.range.start;
+        self.cursor = lattice_protocol::position::Position::new(pos.line, pos.character);
+        // L4b: echo the landed diagnostic's message (shared by `]d`,
+        // `:diag-next`, `:cnext`).
+        self.set_message(
+            EchoLevel::Info,
+            next.message.lines().next().unwrap_or("").trim().to_string(),
+        );
     }
 
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
@@ -21143,11 +21170,18 @@ impl Editor {
                     || (d.range.start.line == cursor.line && d.range.start.character < cursor.byte)
             })
             .or_else(|| diags.last())
-            .map(|d| d.range.start)
+            .cloned()
         else {
             return;
         };
-        self.cursor = lattice_protocol::position::Position::new(prev.line, prev.character);
+        let pos = prev.range.start;
+        self.cursor = lattice_protocol::position::Position::new(pos.line, pos.character);
+        // L4b: echo the landed diagnostic's message (shared by `[d`,
+        // `:diag-prev`, `:cprev`).
+        self.set_message(
+            EchoLevel::Info,
+            prev.message.lines().next().unwrap_or("").trim().to_string(),
+        );
     }
 
     /// `:lsp-log [server]` -- open the `*lsp*` subsystem buffer
@@ -25812,6 +25846,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        // L4b: the diagnostics popup neither mutates nor yanks.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -25912,6 +25948,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::Edits(_) => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
+        // L4b: the diagnostics popup is not a buffer mutation.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }

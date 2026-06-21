@@ -221,12 +221,15 @@ four places:
 
 | Keystroke / command | Meaning                                                                                  |
 |---------------------|------------------------------------------------------------------------------------------|
-| `]d`                | Jump to the next diagnostic in the active buffer (wraps to next file in `:diagnostics`). |
-| `[d`                | Jump to the previous diagnostic.                                                         |
+| `]d`                | Jump to the next diagnostic in the active buffer (wraps), echoing its message. |
+| `[d`                | Jump to the previous diagnostic (wraps), echoing its message.                            |
+| `gl`                | Open a cursor-anchored popup listing every diagnostic on the cursor line (severity glyph, message, `source`/`code`, related-info count). |
 | `:diagnostics`      | Open the workspace diagnostics buffer.                                                   |
 | `:cnext` / `:cprev` | Walk the diagnostic list (alias of `]d` / `[d` for users coming from vim quickfix).      |
-| `<Space>e`          | Show the diagnostic at the cursor in a popup (full message + related-info if any).       |
 | `:diag-clear`       | Drop the renderer's overlay for the active buffer (server may republish).                |
+
+`]d` / `[d` / `gl` are owned by `lsp-diagnostics-mode` — they fire only
+in buffers with LSP diagnostics active.
 
 Diagnostics are version-tracked — if the server publishes
 diagnostics for a stale doc version (because an edit raced

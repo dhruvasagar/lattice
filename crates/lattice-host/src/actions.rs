@@ -94,6 +94,11 @@ pub struct ActionIds {
     pub delete_char_backward: CommandId,
     pub completion_trigger: CommandId,
     pub snippet_expand: CommandId,
+    /// L4b: `gl` in lsp-diagnostics-mode. Command-name registration
+    /// only — the handler body is `lsp-diagnostics-mode`'s mode-owned
+    /// `ActionHandlerRegistry` closure (emits `ShowDiagnosticsPopup`);
+    /// the `apply` below is a dead `Effect::None`, like `snippet_expand`.
+    pub lsp_diagnostic_popup: CommandId,
     pub exit_visual: CommandId,
     pub swap_visual_ends: CommandId,
     pub replace_undo_last: CommandId,
@@ -554,6 +559,21 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:snippet-expand",
             "Insert mode's `<C-x><C-s>`: direct snippet expansion (mode-owned; \
              `snippet-mode`'s handler emits `Effect::ExpandSnippet`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        ),
+        // L4b: command-name registration for lsp-diagnostics-mode's
+        // `gl`. The mode's `ActionHandlerRegistry` closure intercepts
+        // before this `apply`, so the body is a dead `Effect::None`
+        // (same shape as `snippet_expand`). Kept so the `CommandId`
+        // resolves for the chord binding + handler registration.
+        lsp_diagnostic_popup: registry.register_action(
+            "action:lsp-diagnostic-popup",
+            "lsp-diagnostics-mode's `gl`: show the cursor line's diagnostics in a \
+             cursor-anchored popup (mode-owned; the handler emits \
+             `Effect::ShowDiagnosticsPopup`).",
             ActionSpec {
                 apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
@@ -1327,6 +1347,7 @@ mod tests {
             (ids.delete_char_backward, "action:delete-char-backward"),
             (ids.completion_trigger, "action:completion-trigger"),
             (ids.snippet_expand, "action:snippet-expand"),
+            (ids.lsp_diagnostic_popup, "action:lsp-diagnostic-popup"),
             (ids.exit_visual, "action:exit-visual"),
             (ids.swap_visual_ends, "action:swap-visual-ends"),
             (ids.replace_undo_last, "action:replace-undo-last"),

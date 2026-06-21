@@ -3526,6 +3526,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-grammar",
  "lattice-help",
  "lattice-mode",
  "lattice-protocol",

@@ -1119,6 +1119,21 @@ pub struct Editor {
     /// `Default`, so `#[derive(Default)]` on `Editor` still holds.
     pub lsp_progress_store: lattice_lsp::modeline::LspProgressStoreHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
+    /// L4a.2 (lsp-architecture.md §15): inline cursor-line
+    /// diagnostic-summary idle gate. `inline_diag_line` is the line
+    /// the gate is currently timing (the cursor line at arm time);
+    /// `inline_diag_deadline` is the [`tokio::time::Instant`] at which
+    /// its summary becomes visible (the actor's pinned sleep targets
+    /// it); `inline_diag_visible` flips true when that deadline passes
+    /// and back to false on re-arm (new cursor line) / Insert mode /
+    /// `ui.diagnostics.inline = off`. The published summary in
+    /// `DiagnosticsRenderState::inline_summary` is recomputed each
+    /// `build_render_state` while visible, so diagnostics landing on
+    /// the line after the gate fires refresh it for free. See
+    /// `update_inline_diag_gate` / `fire_inline_diag_gate`.
+    pub inline_diag_line: Option<u32>,
+    pub inline_diag_deadline: Option<tokio::time::Instant>,
+    pub inline_diag_visible: bool,
     pub lsp_logger: LspLogger,
     /// 4.4.l.2 / 5.8.AA.o / 5.8.AF.5: file-watcher service handle.
     /// `None` until the first actor with `workspace/didChangeWatchedFiles`

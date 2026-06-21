@@ -1867,6 +1867,16 @@ pub struct DiagnosticsRenderState {
     /// The diagnostics layer the renderer queries for per-line
     /// severity, per-buffer diagnostic lists, and counts.
     pub layer: lattice_lsp::DiagnosticsLayer,
+    /// L4a.2 (lsp-architecture.md §15): the active inline end-of-line
+    /// diagnostic summary, as `(line, summary)`, when the cursor-line
+    /// idle gate has fired. `None` whenever the gate is disarmed
+    /// (`ui.diagnostics.inline = off`, Insert/Replace, pre-idle, or
+    /// the line carries no qualifying diagnostic). The renderer
+    /// (L4a.3) splices `summary.text` as trailing virtual text on
+    /// `line`, themed by `summary.severity_rank`. Recomputed each
+    /// publish while the gate is visible, so diagnostics that land on
+    /// the line after the gate fires refresh it for free.
+    pub inline_summary: Option<(u32, lattice_lsp::InlineDiagnosticSummary)>,
 }
 
 #[cfg(test)]
@@ -1962,6 +1972,186 @@ mod tests {
             rs.diagnostics.layer.line_severity(&uri, 0),
             None,
             "lines without a diagnostic return None through the same path"
+        );
+    }
+
+    // --- L4a.2: inline cursor-line diagnostic-summary idle gate ---
+
+    /// Build an editor whose active buffer maps to `uri` with one
+    /// ERROR diagnostic on `line`, cursor parked there. Used by the
+    /// inline-summary gate tests.
+    fn editor_with_diag_on_line(uri: &Uri, line: u32, message: &str) -> Editor {
+        use lattice_protocol::position::Position as ProtoPos;
+        let mut editor = Editor::default();
+        editor
+            .buffer_uris
+            .insert(editor.document_buffer_id, uri.clone());
+        editor.cursor = ProtoPos::new(line, 0);
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 5 },
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: None,
+            message: message.to_string(),
+            related_information: None,
+            tags: None,
+            data: None,
+        };
+        editor.lsp_diagnostics.apply(DiagnosticEvent::from_lsp(
+            Arc::from("rust"),
+            PublishDiagnosticsParams {
+                uri: uri.clone(),
+                version: None,
+                diagnostics: vec![diag],
+            },
+        ));
+        editor
+    }
+
+    /// Landing on a new line arms the idle gate (deadline set,
+    /// summary not yet visible). The eol summary only appears once the
+    /// timer fires — never on the cursor-move publish itself.
+    #[test]
+    fn inline_summary_armed_but_hidden_until_idle_fires() {
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 4, "synthetic");
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(4));
+        assert!(editor.inline_diag_deadline.is_some(), "gate armed");
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none(),
+            "no summary before the idle deadline fires"
+        );
+
+        // Simulate the editor actor's timer arm firing.
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let (line, summary) = rs
+            .diagnostics
+            .inline_summary
+            .clone()
+            .expect("summary visible after fire");
+        assert_eq!(line, 4);
+        assert_eq!(summary.severity_rank, 0);
+        assert!(summary.text.contains("synthetic"));
+        // Firing cleared the deadline so the pinned sleep won't refire.
+        assert!(editor.inline_diag_deadline.is_none());
+    }
+
+    /// Insert (active text entry) suppresses the summary: entering
+    /// Insert hides any visible summary and disarms the gate, which
+    /// re-arms on return to Normal.
+    #[test]
+    fn inline_summary_suppressed_in_insert() {
+        use lattice_grammar::ModalState;
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 2, "boom");
+        editor.publish_render_state();
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_some()
+        );
+
+        editor.modal = ModalState::Insert;
+        editor.publish_render_state();
+        assert!(!editor.inline_diag_visible);
+        assert!(editor.inline_diag_deadline.is_none());
+        assert!(
+            editor.inline_diag_line.is_none(),
+            "armed line cleared so the gate re-arms on leaving Insert"
+        );
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
+        );
+
+        // Back to Normal re-arms (hidden again until idle).
+        editor.modal = ModalState::Normal;
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(2));
+        assert!(editor.inline_diag_deadline.is_some());
+        assert!(!editor.inline_diag_visible);
+    }
+
+    /// Moving the cursor to a new line re-arms the gate and hides the
+    /// previous line's summary immediately.
+    #[test]
+    fn inline_summary_hidden_when_cursor_leaves_line() {
+        use lattice_protocol::position::Position as ProtoPos;
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 3, "err here");
+        editor.publish_render_state();
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_some()
+        );
+
+        // Cursor moves to a clean line: re-arm, summary gone.
+        editor.cursor = ProtoPos::new(0, 0);
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(0));
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
+        );
+    }
+
+    /// `ui.diagnostics.inline = off` disarms the gate entirely — even
+    /// with the cursor on a diagnostic line and the timer force-fired,
+    /// no summary is published.
+    #[test]
+    fn inline_summary_off_option_disarms() {
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 1, "nope");
+        editor.config.init_from_linkme();
+        editor
+            .config
+            .parse_and_set_command("ui.diagnostics.inline=off")
+            .unwrap();
+        // Force-fire, then publish: `update_inline_diag_gate` clears it
+        // because the option is Off before `build_render_state` reads.
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
         );
     }
 

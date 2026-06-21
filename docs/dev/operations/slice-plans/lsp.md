@@ -122,27 +122,56 @@ wiring. Glyphs degrade per the icon-palette rule.
   (ServiceRegistry `Arc`/`TypeId` lookup must match registration).
 **Deps:** L2.
 
-### L4 — diagnostics inline summary + cursor popup  🗒
-**Design:** §15. Owned by `lsp-diagnostics-mode`.
-**Change:**
-- Inline eol summary via the inlay-hint virtual-text span substrate;
-  cursor-line scope, ~300 ms idle gate, Insert-mode suppressed; options
-  `ui.diagnostics.inline` (`off`/`cursor-line`/`all`) +
-  `ui.diagnostics.inline-min-severity`.
+### L4 — diagnostics inline summary + cursor popup  🚧
+**Design:** §15. Carved into **L4a** (inline eol summary, host-plumbed
+decoration — sibling to inlay-hints/gutter/underline) and **L4b** (`gl`
+popup + `]d`/`[d`, mode-owned because they add chords + handlers).
+
+#### L4a — inline end-of-line summary
+The summary is a *passive decoration* in the same family as inlay
+hints, the gutter severity column, and the inline underline — all
+host-plumbed today (cache/state on `Editor` → `RenderState` → renderer
+reads). It adds **no chord, no `Action` variant, no `Editor::do_*`**, so
+the mode-ownership acid test is satisfied while the timing plumbing
+stays with the host that owns `cursor` / `modal` / the actor loop. The
+"what to show" formatter lives in `lattice-lsp` next to the layer.
+
+- **L4a.1** (`bb66f33b`) ✅ — `ui.diagnostics.inline`
+  (`off`/`cursor-line`/`all`) + `ui.diagnostics.inline-min-severity`
+  (`error`/`warning`/`info`/`hint`) typed options under a new
+  `Diagnostics` group; value types + `rank()` matching the
+  `diagnostics_layer` `severity_rank`. Self-contained.
+- **L4a.2** (2026-06-21) ✅ — host-side cursor-line summary compute +
+  idle gate. (1) `DiagnosticsLayer::inline_line_summary(uri, line,
+  min_rank) -> Option<InlineDiagnosticSummary>` in `lattice-lsp` (most-
+  severe qualifying message, first line, truncated + ` +N`). (2) Idle
+  gate on `Editor` (`inline_diag_{line,deadline,visible}`) recomputed in
+  `update_inline_diag_gate` from `publish_render_state`: `off`/Insert/
+  Replace disarm; a new cursor line arms a 300 ms deadline; the armed
+  line stays put on in-place edits. (3) A pinned-sleep `select!` arm in
+  the editor actor (mirroring the LSP actor's `flush_sleep`) fires the
+  gate on idle → republish + cells wake. (4) `build_render_state`
+  publishes `DiagnosticsRenderState::inline_summary = Some((line,
+  summary))` only while visible. *Tests:* 5 formatter
+  (`lattice-lsp::diagnostics_layer`) + 4 gate-transition
+  (`lattice-host::render_state`). No renderer touch yet → no parity
+  obligation this slice.
+- **L4a.3** 🗒 — render the published `inline_summary` as trailing eol
+  virtual text via `splice_virtual_text_into_spans`, severity-themed by
+  `severity_rank`. **TUI + GPUI in lockstep** (`feedback_tui_gpui_parity`).
+  *Artefacts:* parity grep, eol-render test in both peers, `user/lsp.md`.
+
+#### L4b — cursor popup + jump echo  🗒
+**Owned by `lsp-diagnostics-mode`** (adds chords + handlers).
 - `gl` → `CursorAnchored` popup with full per-line diagnostics
   (severity glyph / message / `source` / `code` / related count),
   reusing the hover popup pipeline. Keymap at
   `KeymapLayer::MinorMode(lsp-diagnostics)`, handler body in the mode's
   crate — no host `Action` variant, no `Editor::do_*`.
 - `]d` / `[d` echo the landed diagnostic's message.
-**Artefacts:**
-- *test* — summary text + cursor-line gating + Insert suppression;
-  popup contents for a multi-diagnostic line; option toggles
-  (`off`/`cursor-line`).
-- *doc* — §15 (done) + `user/lsp.md`.
-- *parity* — eol virtual text + popup render in both peers.
-- *error handling* — no-diagnostic line → no summary; `gl` on a clean
-  line echoes "no diagnostics on line".
+**Artefacts:** *test* — popup contents for a multi-diagnostic line; `gl`
+on a clean line echoes "no diagnostics on line". *doc* — §15 + `user/lsp.md`.
+*parity* — popup render in both peers.
 **Deps:** L1 (repaint), L3 (mode-surface patterns).
 
 ### L5 — inline `all`-lines diagnostics (opt-in)  🗒

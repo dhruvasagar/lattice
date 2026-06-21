@@ -963,6 +963,10 @@ impl Editor {
                 // access to the latest published diagnostics
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
+                // L4a.2: the cursor-line eol summary when the idle
+                // gate is visible; `None` otherwise (single-branch
+                // common path).
+                inline_summary: self.compute_inline_diag_summary(),
             }),
             // Perf plan B.4.b: cached `Arc<TabsRenderState>` reused
             // across publishes when the composite tabs key
@@ -1343,6 +1347,88 @@ impl Editor {
         std::sync::Arc::from(out.into_boxed_slice())
     }
 
+    /// L4a.2 (lsp-architecture.md §15): recompute the inline
+    /// cursor-line diagnostic-summary idle gate from the current
+    /// option / modal state / cursor line. Called from
+    /// [`Self::publish_render_state`] (the one chokepoint every
+    /// dispatch and typed setter funnels through), so it runs once
+    /// per coalesced publish on the actor thread — never the UI
+    /// thread.
+    ///
+    /// - `ui.diagnostics.inline = off` → fully disarmed.
+    /// - Insert / Replace (active text entry) → suppressed: summary
+    ///   hidden and the armed line cleared, so the gate re-arms when
+    ///   the user returns to Normal/Visual.
+    /// - cursor on a *new* line → (re)arm: stash the line, set the
+    ///   deadline `INLINE_DIAG_IDLE` out, hide any prior summary.
+    /// - cursor still on the armed line → leave the deadline +
+    ///   visibility untouched, so an in-place edit refreshes the text
+    ///   via `build_render_state` without restarting the timer.
+    ///
+    /// `All` scope is treated as cursor-line here; the all-viewport
+    /// fan-out is L5.
+    pub fn update_inline_diag_gate(&mut self) {
+        // Idle delay before the summary appears once the cursor
+        // settles on a new line (Helix's low-noise cursor-line model).
+        const INLINE_DIAG_IDLE: std::time::Duration = std::time::Duration::from_millis(300);
+        use lattice_config::DiagnosticsInline;
+        let inline = self
+            .config
+            .get_typed::<lattice_config::DiagnosticsInlineOption>()
+            .map(|v| *v)
+            .unwrap_or_default();
+        let suppressed = matches!(inline, DiagnosticsInline::Off)
+            || matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        if suppressed {
+            self.inline_diag_line = None;
+            self.inline_diag_deadline = None;
+            self.inline_diag_visible = false;
+            return;
+        }
+        let cur = self.cursor.line;
+        if self.inline_diag_line != Some(cur) {
+            self.inline_diag_line = Some(cur);
+            self.inline_diag_deadline = Some(tokio::time::Instant::now() + INLINE_DIAG_IDLE);
+            self.inline_diag_visible = false;
+        }
+        // else: same armed line — leave the deadline + visibility as-is.
+    }
+
+    /// L4a.2: the idle deadline elapsed — make the cursor-line summary
+    /// visible and clear the deadline so the actor's pinned sleep
+    /// doesn't refire for it. The caller (the editor actor's timer
+    /// arm) republishes + wakes so `build_render_state` emits the
+    /// summary into `DiagnosticsRenderState::inline_summary`.
+    pub fn fire_inline_diag_gate(&mut self) {
+        self.inline_diag_visible = true;
+        self.inline_diag_deadline = None;
+    }
+
+    /// L4a.2: compute the inline cursor-line diagnostic summary to
+    /// publish into [`DiagnosticsRenderState::inline_summary`] for the
+    /// current frame. `Some((line, summary))` only when the idle gate
+    /// is visible, the active buffer has a URI, and the armed line
+    /// carries a diagnostic at or above
+    /// `ui.diagnostics.inline-min-severity`. Cheap — gated on the
+    /// `inline_diag_visible` bool, so the common (disarmed / pre-idle)
+    /// path is a single branch; when visible it is one snapshot load
+    /// plus a single-line filter on the actor thread.
+    fn compute_inline_diag_summary(&self) -> Option<(u32, lattice_lsp::InlineDiagnosticSummary)> {
+        if !self.inline_diag_visible {
+            return None;
+        }
+        let line = self.inline_diag_line?;
+        let uri = self.buffer_uris.get(&self.document_buffer_id)?;
+        let min_rank = self
+            .config
+            .get_typed::<lattice_config::DiagnosticsMinSeverityOption>()
+            .map(|v| v.rank())
+            .unwrap_or_else(|| lattice_config::DiagnosticsSeverity::default().rank());
+        self.lsp_diagnostics
+            .inline_line_summary(uri, line, min_rank)
+            .map(|s| (line, s))
+    }
+
     /// Phase 5.8.AF.5 / Slice 3a. Build a fresh `RenderState`
     /// and atomically install it into the editor's
     /// `Arc<ArcSwap<RenderState>>`. One atomic release-store on
@@ -1368,6 +1454,13 @@ impl Editor {
             }
             c.publish_pending = false;
         }
+        // L4a.2: recompute the inline cursor-line diagnostic gate
+        // before `build_render_state` reads `inline_diag_visible` /
+        // `inline_diag_line` to emit the summary. Runs on the real
+        // (un-suppressed) publish only; cheap (one option read + a
+        // line compare). Also refreshes `inline_diag_deadline`, which
+        // the editor actor's timer arm re-reads to retarget its sleep.
+        self.update_inline_diag_gate();
         // D.5.a (2026-05-30): apply any diff-mode toggles
         // queued by the `DiffSubsystem` since the previous
         // tick. Must run before `build_render_state` reads

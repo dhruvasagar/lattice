@@ -240,6 +240,60 @@ impl DiagnosticsLayer {
             .min_by_key(severity_rank)
     }
 
+    /// L4a (lsp-architecture.md §15): a one-line end-of-line summary
+    /// of the qualifying diagnostics on `line` of `uri`, for the
+    /// inline cursor-line presentation. A diagnostic **qualifies**
+    /// when its severity rank is `<= min_rank` (as severe or more
+    /// severe than the configured floor); unknown-severity
+    /// diagnostics map to rank 4 and so only qualify when `min_rank`
+    /// is itself 4. Returns `None` when nothing on the line qualifies.
+    ///
+    /// The text is the **most-severe** qualifying diagnostic's message
+    /// (first line only, truncated to [`INLINE_SUMMARY_MAX_CHARS`] with
+    /// an ellipsis) plus ` +N` when `N` further qualifying diagnostics
+    /// share the line. Most-severe = lowest rank; ties resolve to the
+    /// earliest by `(line, character)` (the merged list is already so
+    /// ordered). Wait-free: one snapshot load + a single pass over the
+    /// URI's diagnostics, so it stays on the cheap side of the actor
+    /// thread's publish path.
+    pub fn inline_line_summary(
+        &self,
+        uri: &Uri,
+        line: u32,
+        min_rank: u8,
+    ) -> Option<InlineDiagnosticSummary> {
+        let snap = self.snapshot.load();
+        let arr = snap.by_uri.get(uri)?;
+        let mut best: Option<(u8, &Diagnostic)> = None;
+        let mut qualifying = 0usize;
+        for d in arr.iter() {
+            if d.range.start.line > line || line > d.range.end.line {
+                continue;
+            }
+            let rank = d.severity.as_ref().map(severity_rank).unwrap_or(4);
+            if rank > min_rank {
+                continue;
+            }
+            qualifying += 1;
+            // Replace only on a strictly-more-severe rank so ties keep
+            // the earlier (already (line, character)-ordered) entry.
+            if best.is_none_or(|(br, _)| rank < br) {
+                best = Some((rank, d));
+            }
+        }
+        let (rank, d) = best?;
+        let mut text = truncate_inline_message(&d.message);
+        let extra = qualifying - 1;
+        if extra > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(text, " +{extra}");
+        }
+        Some(InlineDiagnosticSummary {
+            severity_rank: rank,
+            text,
+        })
+    }
+
     /// Every URI with at least one stored diagnostic. Sorted
     /// alphabetically (stable for the `:diagnostics` buffer
     /// view).
@@ -411,6 +465,41 @@ fn severity_rank(s: &DiagnosticSeverity) -> u8 {
         DiagnosticSeverity::HINT => 3,
         _ => 4,
     }
+}
+
+/// Char budget for the inline summary message before it is cut and
+/// an ellipsis appended. Counted on `char` boundaries so multibyte
+/// text is never split mid-codepoint.
+const INLINE_SUMMARY_MAX_CHARS: usize = 80;
+
+/// First line of `msg`, trimmed and truncated to
+/// [`INLINE_SUMMARY_MAX_CHARS`] with a trailing `…`. Multi-line
+/// diagnostic messages (e.g. rustc with notes) collapse to their
+/// first line for the one-line inline summary.
+fn truncate_inline_message(msg: &str) -> String {
+    let first = msg.lines().next().unwrap_or("").trim();
+    if first.chars().count() <= INLINE_SUMMARY_MAX_CHARS {
+        return first.to_string();
+    }
+    let truncated: String = first.chars().take(INLINE_SUMMARY_MAX_CHARS).collect();
+    format!("{truncated}…")
+}
+
+/// L4a (lsp-architecture.md §15): a one-line end-of-line summary of
+/// the diagnostics on a single line, produced by
+/// [`DiagnosticsLayer::inline_line_summary`] for the inline
+/// cursor-line presentation. The renderer (L4a.3) splices `text` as
+/// trailing virtual text and themes it by `severity_rank`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineDiagnosticSummary {
+    /// Severity rank of the most-severe diagnostic on the line
+    /// (Error = 0 … Hint = 3, unknown = 4), matching
+    /// [`severity_rank`]. The renderer maps this to the themed
+    /// severity colour.
+    pub severity_rank: u8,
+    /// Pre-formatted summary text: the most-severe message (first
+    /// line, truncated) plus ` +N` when more diagnostics qualify.
+    pub text: String,
 }
 
 /// Drain a `DiagnosticEvent` broadcast receiver into the layer
@@ -650,6 +739,98 @@ mod tests {
         ));
         let uri = Uri::from_str("file:///x.rs").unwrap();
         assert_eq!(l.line_severity(&uri, 5), None);
+    }
+
+    #[test]
+    fn inline_summary_picks_most_severe_and_counts_extras() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(2, DiagnosticSeverity::WARNING, "warn"),
+                diag(2, DiagnosticSeverity::ERROR, "the error"),
+                diag(2, DiagnosticSeverity::HINT, "hint"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        // min_rank = 3 (hint floor) → all three qualify; most-severe
+        // is the error, with two further diagnostics on the line.
+        let s = l.inline_line_summary(&uri, 2, 3).unwrap();
+        assert_eq!(s.severity_rank, 0);
+        assert_eq!(s.text, "the error +2");
+    }
+
+    #[test]
+    fn inline_summary_filters_by_min_severity() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(2, DiagnosticSeverity::WARNING, "warn"),
+                diag(2, DiagnosticSeverity::HINT, "hint"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        // min_rank = 1 (warning floor) → only the warning qualifies;
+        // the hint is excluded, so no `+N` suffix.
+        let s = l.inline_line_summary(&uri, 2, 1).unwrap();
+        assert_eq!(s.severity_rank, 1);
+        assert_eq!(s.text, "warn");
+        // min_rank = 0 (error floor) → nothing on the line qualifies.
+        assert!(l.inline_line_summary(&uri, 2, 0).is_none());
+    }
+
+    #[test]
+    fn inline_summary_none_on_clean_line() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        assert!(l.inline_line_summary(&uri, 5, 3).is_none());
+    }
+
+    #[test]
+    fn inline_summary_truncates_long_first_line() {
+        let long = "x".repeat(INLINE_SUMMARY_MAX_CHARS + 40);
+        let multi = format!("{long}\nsecond line that must be dropped");
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![diag(1, DiagnosticSeverity::ERROR, &multi)],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        let s = l.inline_line_summary(&uri, 1, 3).unwrap();
+        // First line only, cut to the budget + an ellipsis.
+        assert_eq!(s.text.chars().count(), INLINE_SUMMARY_MAX_CHARS + 1);
+        assert!(s.text.ends_with('…'));
+        assert!(!s.text.contains("second line"));
+    }
+
+    #[test]
+    fn inline_summary_tie_keeps_earliest() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(3, DiagnosticSeverity::ERROR, "first error"),
+                diag(3, DiagnosticSeverity::ERROR, "second error"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        let s = l.inline_line_summary(&uri, 3, 3).unwrap();
+        assert_eq!(s.text, "first error +1");
     }
 
     #[test]

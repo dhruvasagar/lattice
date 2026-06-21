@@ -92,7 +92,9 @@ pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
 pub use configuration::{ConfigurationBus, InboundConfigurationRequest};
 pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};
-pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
+pub use diagnostics_layer::{
+    DiagnosticsLayer, InlineDiagnosticSummary, SeverityCounts, pump_diagnostics,
+};
 pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
 pub use error::{LspError, LspResult};
 pub use events::{

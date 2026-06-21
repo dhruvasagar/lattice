@@ -745,16 +745,19 @@ pub type DiagnosticsQueryHandle = std::sync::Arc<dyn DiagnosticsQuery>;
 /// is the BMP-fallback severity mark (degrade-safe per the icon-palette
 /// rule); the message is collapsed to its first line. Empty input →
 /// empty `Vec` (the host echoes "no diagnostics on line").
-pub fn format_diagnostic_popup_lines(diags: &[crate::Diagnostic]) -> Vec<String> {
+pub fn format_diagnostic_popup_lines(diags: &[crate::Diagnostic]) -> Vec<(String, u8)> {
     use crate::lsp_types::{DiagnosticSeverity, NumberOrString};
     diags
         .iter()
         .map(|d| {
-            let glyph = match d.severity {
-                Some(DiagnosticSeverity::ERROR) => '■',
-                Some(DiagnosticSeverity::WARNING) => '▲',
-                Some(DiagnosticSeverity::INFORMATION) => '●',
-                _ => '·',
+            // (glyph, severity rank) — rank is Error = 0 … Hint = 3
+            // (unknown clamps to Hint), matching the host's severity
+            // colour map; the host highlights each line by it.
+            let (glyph, rank) = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => ('■', 0u8),
+                Some(DiagnosticSeverity::WARNING) => ('▲', 1),
+                Some(DiagnosticSeverity::INFORMATION) => ('●', 2),
+                _ => ('·', 3),
             };
             let msg = d.message.lines().next().unwrap_or("").trim();
             let mut line = format!("{glyph} {msg}");
@@ -775,7 +778,7 @@ pub fn format_diagnostic_popup_lines(diags: &[crate::Diagnostic]) -> Vec<String>
             if related > 0 {
                 line.push_str(&format!(" (+{related} related)"));
             }
-            line
+            (line, rank)
         })
         .collect()
 }
@@ -1186,9 +1189,10 @@ mod tests {
             Some("E0308"),
         )]);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with('■'), "got {:?}", lines[0]);
-        assert!(lines[0].contains("mismatched types"));
-        assert!(lines[0].contains("[rustc:E0308]"));
+        assert_eq!(lines[0].1, 0, "error → rank 0");
+        assert!(lines[0].0.starts_with('■'), "got {:?}", lines[0]);
+        assert!(lines[0].0.contains("mismatched types"));
+        assert!(lines[0].0.contains("[rustc:E0308]"));
     }
 
     #[test]
@@ -1200,8 +1204,10 @@ mod tests {
             diag(DiagnosticSeverity::HINT, "consider", None, None),
         ]);
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with('▲'));
-        assert!(lines[1].starts_with('·'));
+        assert!(lines[0].0.starts_with('▲'));
+        assert_eq!(lines[0].1, 1, "warning → rank 1");
+        assert!(lines[1].0.starts_with('·'));
+        assert_eq!(lines[1].1, 3, "hint → rank 3");
     }
 
     #[test]
@@ -1223,7 +1229,7 @@ mod tests {
             DiagnosticRelatedInformation { location: loc, message: "b".into() },
         ]);
         let lines = format_diagnostic_popup_lines(&[d]);
-        assert!(lines[0].contains("(+2 related)"), "got {:?}", lines[0]);
+        assert!(lines[0].0.contains("(+2 related)"), "got {:?}", lines[0]);
     }
 
     #[tokio::test]

@@ -55,6 +55,20 @@ pub enum Style {
     /// List markers, thematic breaks, blockquote markers, and other markup
     /// punctuation.
     Markup,
+    // ---- Diagnostic severities (L4b: the `gl` popup colours each line
+    // by its diagnostic's severity). These resolve to the same theme
+    // colours the gutter glyph + inline underline use
+    // (`diagnostic_{error,warning,info,hint}` elements), via
+    // `syntax_element_id`. Not produced by any tree-sitter grammar —
+    // only the diagnostics-popup highlight builder emits them. ----
+    /// Error-severity diagnostic line.
+    DiagnosticError,
+    /// Warning-severity diagnostic line.
+    DiagnosticWarning,
+    /// Information-severity diagnostic line.
+    DiagnosticInfo,
+    /// Hint-severity diagnostic line.
+    DiagnosticHint,
 }
 
 /// Byte-range span within one source line, carrying a semantic [`Style`].

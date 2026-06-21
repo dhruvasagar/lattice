@@ -60,6 +60,12 @@ pub fn syntax_element_id(
         S::Url => ids.syntax_url,
         S::MarkupRaw => ids.syntax_markup_raw,
         S::Markup => ids.syntax_markup,
+        // L4b: diagnostic-severity styles (the `gl` popup) reuse the
+        // gutter/underline severity element colours.
+        S::DiagnosticError => ids.diagnostic_error,
+        S::DiagnosticWarning => ids.diagnostic_warning,
+        S::DiagnosticInfo => ids.diagnostic_info,
+        S::DiagnosticHint => ids.diagnostic_hint,
     }
 }
 
@@ -136,5 +142,25 @@ mod tests {
         let (resolved, ids) = defaults();
         let s = resolve_syntax_style(&resolved, &ids, lattice_syntax::Style::Default);
         assert_eq!(s.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+    }
+
+    /// L4b: the diagnostic-severity styles (the `gl` popup) resolve to
+    /// the SAME element colours the gutter glyph + underline use, and
+    /// the four severities are distinct.
+    #[test]
+    fn resolve_diagnostic_styles_match_severity_elements_and_differ() {
+        use lattice_syntax::Style as S;
+        let (resolved, ids) = defaults();
+        let err = resolve_syntax_style(&resolved, &ids, S::DiagnosticError);
+        let warn = resolve_syntax_style(&resolved, &ids, S::DiagnosticWarning);
+        let info = resolve_syntax_style(&resolved, &ids, S::DiagnosticInfo);
+        let hint = resolve_syntax_style(&resolved, &ids, S::DiagnosticHint);
+        // Identical to the elements the gutter/underline already use.
+        assert_eq!(err, resolved.get(ids.diagnostic_error));
+        assert_eq!(warn, resolved.get(ids.diagnostic_warning));
+        // Severities are visually distinct (error ≠ info).
+        assert!(err.fg.is_some());
+        assert_ne!(err.fg, info.fg);
+        assert_ne!(warn.fg, hint.fg);
     }
 }

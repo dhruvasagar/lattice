@@ -184,9 +184,13 @@ pub enum Effect {
     /// `gl` handler; the host renders them through the hover popup
     /// pipeline (`HelpContent` → `DisplayBufferRequest`,
     /// `PopupPlacement::CursorAnchored`). Empty `lines` → host echoes
-    /// "no diagnostics on line" instead of an empty popup.
+    /// "no diagnostics on line" instead of an empty popup. Each line is
+    /// `(text, severity_rank)` where rank is Error = 0 … Hint = 3
+    /// (matching `lattice_lsp`'s severity_rank); the host colours each
+    /// popup line by its severity via the matching `Style::Diagnostic*`
+    /// highlight.
     ShowDiagnosticsPopup {
-        lines: Vec<String>,
+        lines: Vec<(String, u8)>,
     },
     /// `:reg[isters]` -- the host formats and displays its own register
     /// state.

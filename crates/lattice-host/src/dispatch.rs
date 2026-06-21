@@ -2498,14 +2498,35 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::ShowDiagnosticsPopup { lines } => {
             // L4b (lsp-architecture.md §15): `gl` — the owning
             // `lsp-diagnostics-mode` handler pre-formatted the cursor
-            // line's diagnostics; render them through the hover popup
-            // pipeline (CursorAnchored). Empty → echo instead of an
-            // empty popup.
+            // line's diagnostics as (text, severity_rank); render them
+            // through the hover popup pipeline (CursorAnchored), with
+            // each line whole-line-highlighted by its severity via a
+            // `Style::Diagnostic*` span (resolves to the same theme
+            // colours the gutter glyph + underline use). NO markdown
+            // pass — the severity highlight is the only styling. Empty →
+            // echo instead of an empty popup.
             if lines.is_empty() {
                 editor.set_message(EchoLevel::Info, "no diagnostics on line".to_string());
             } else {
-                let content = lattice_help::HelpContent::from_lines("diagnostics", lines)
-                    .with_markdown_syntax(editor.lang_registry.clone());
+                let texts: Vec<String> = lines.iter().map(|(t, _)| t.clone()).collect();
+                let highlights: Vec<Vec<lattice_syntax::StyledSpan>> = lines
+                    .iter()
+                    .map(|(t, rank)| {
+                        let style = match rank {
+                            0 => lattice_syntax::Style::DiagnosticError,
+                            1 => lattice_syntax::Style::DiagnosticWarning,
+                            2 => lattice_syntax::Style::DiagnosticInfo,
+                            _ => lattice_syntax::Style::DiagnosticHint,
+                        };
+                        vec![lattice_syntax::StyledSpan {
+                            start: 0,
+                            end: t.len(),
+                            style,
+                        }]
+                    })
+                    .collect();
+                let mut content = lattice_help::HelpContent::from_lines("diagnostics", texts);
+                content.metadata.highlights = highlights;
                 out.renderer_signals
                     .push(RendererSignal::DisplayBuffer(Box::new(
                         DisplayBufferRequest {

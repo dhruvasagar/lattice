@@ -150,9 +150,12 @@ descriptor in a zone, sources its content two ways:
 This keeps the model uniform (one descriptor set, one zone layout, one
 theme path) while giving each pane its own correct content — the
 property the old per-pane `status_line_items` pull had, now preserved
-under the push model. The `(BufferId, ElementId)` content keying lands
-with the first real pusher in ML.3; ML.1 resolves built-ins per pane and
-treats the (empty) pushed store as global.
+under the push model. The content keying landed in ML.3 as
+`(ModelineKey, ElementId)` where `ModelineKey = Global | Buffer(BufferId)`;
+`ModelineSnapshot::resolve(el, buffer)` keys a `PaneLocal` descriptor by
+`Buffer`, a `Global` one by `Global`. `lsp` is the first real pusher
+(PaneLocal, one push per attached buffer); `diff` is `Global` (its session
+sign map is a single shared value — §7 gates Global to the active pane).
 
 ---
 
@@ -207,9 +210,14 @@ half-migration (mode registers the element but the host wires its click)
 does **not** satisfy the rule — the binding choice AND the handler body
 both stay with the owner.
 
-The current `Mode::status_line_items` trait becomes a thin built-in
-adapter in ML.1–ML.3, then retires once LSP/diff migrate to registered
-elements (ML.3).
+The `Mode::status_line_items` trait + its `StatusLineCtx`/`StatusLineItem`
+were a thin built-in adapter through ML.1–ML.2, then **retired in ML.3**
+once LSP + diff migrated to registered elements: LSP via the
+`lattice-lsp::modeline` forwarder (a relocated `LspProgressStore` the host
+also reads for `:lsp-progress-cancel`), diff via an actor-side push from
+its sign map. No mode contributes a status line through a Rust trait any
+more — the push path (`ModelineElementUpdate`) is the only one, and it
+crosses the WASM boundary unchanged.
 
 ---
 

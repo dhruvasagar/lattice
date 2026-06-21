@@ -139,6 +139,13 @@ impl DiffSignMap {
         self.entries.len()
     }
 
+    /// Build a sign map directly from `(line, kind)` entries (revision
+    /// 0). Test-only: classified lines without a `HunkIndex` to walk.
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Vec<(u32, DiffSignKind)>) -> Self {
+        Self { entries, revision: 0 }
+    }
+
     /// Lookup the sign for `line`, if any. `O(log n)` binary
     /// search over `entries`. Renderer hot path.
     pub fn sign_at(&self, line: u32) -> Option<DiffSignKind> {

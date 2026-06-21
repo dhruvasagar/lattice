@@ -84,24 +84,9 @@ fn populated_editor() -> Editor {
         editor.buffer_uris.insert(id, uri);
     }
 
-    for i in 0..6 {
-        let key = (
-            std::sync::Arc::<str>::from("rust-analyzer"),
-            format!("progress-{}", i),
-        );
-        editor.lsp_progress.insert(
-            key,
-            lattice_lsp::LspProgressUpdate {
-                server_id: std::sync::Arc::<str>::from("rust-analyzer"),
-                token: format!("progress-{}", i),
-                kind: lattice_lsp::LspProgressKind::Report,
-                title: Some(format!("Indexing {}", i)),
-                message: None,
-                percentage: Some(50),
-                cancellable: false,
-            },
-        );
-    }
+    // ML.3c: the `$/progress` publish-cache slot is gone — progress is
+    // accumulated in the lattice-lsp `LspProgressStore`, not the host
+    // render snapshot — so the bench no longer seeds `editor.lsp_progress`.
 
     // B.4.b: 4 tabs (1 default + 3 extras) so the `tabs` cache
     // saves the build_tabs_render_state walk on no-op publishes.
@@ -216,10 +201,6 @@ fn mutated_all(c: &mut Criterion) {
     editor.publish_render_state();
 
     let toggle_id = BufferId(9_999);
-    let toggle_progress = (
-        std::sync::Arc::<str>::from("benchmark"),
-        "toggle".to_string(),
-    );
     group.bench_function("mutated_all", |b| {
         b.iter(|| {
             // pane_tree: cheap version-bumping mutation that keeps
@@ -238,22 +219,8 @@ fn mutated_all(c: &mut Criterion) {
             } else {
                 editor.buffer_locals.insert(toggle_id, BufferLocals::new());
             }
-            if editor.lsp_progress.contains_key(&toggle_progress) {
-                editor.lsp_progress.remove(&toggle_progress);
-            } else {
-                editor.lsp_progress.insert(
-                    toggle_progress.clone(),
-                    lattice_lsp::LspProgressUpdate {
-                        server_id: std::sync::Arc::<str>::from("benchmark"),
-                        token: "toggle".to_string(),
-                        kind: lattice_lsp::LspProgressKind::Report,
-                        title: Some("toggle".to_string()),
-                        message: None,
-                        percentage: None,
-                        cancellable: false,
-                    },
-                );
-            }
+            // ML.3c: progress no longer flows through publish, so the
+            // per-iteration `$/progress` toggle is gone.
             editor.publish_render_state();
             black_box(editor.render_state.load_full());
         });

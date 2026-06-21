@@ -13,10 +13,11 @@
 //! - **descriptors** — [`register_builtin_elements`] registers the
 //!   `core.*` set into the shared [`ModelineService`] once at boot
 //!   (host owns the built-ins; modes/plugins own theirs, §6).
-//! - **content** — [`resolve_builtin_content`] (per-pane built-ins) and
-//!   [`resolve_mode_items_content`] (the temporary legacy mode-items
-//!   pull that feeds the Center zone until ML.3 migrates LSP/diff to
-//!   registered elements).
+//! - **content** — [`resolve_builtin_content`] computes per-pane
+//!   built-in (`core.*`) content host-side. Mode/plugin elements (`lsp`,
+//!   `diff`, …) are *pushed* over the event bus and drained into the
+//!   content store (ML.3); the renderer reads them from the snapshot, so
+//!   they never round-trip through this module.
 
 use lattice_core::ui::pane::PaneState;
 use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineRole, ModelineService, Zone};
@@ -191,63 +192,6 @@ pub fn resolve_builtin_content(
     }
 }
 
-/// The mode-contributed status items for `pane`, as one space-joined
-/// span (migrated host-side from the TUI `collect_status_line_items`).
-/// This is the **temporary** Center-zone feed: LSP progress / readiness
-/// and diff-sign counts still arrive through the `Mode::status_line_items`
-/// trait here, and move to registered elements pushed over the event
-/// bus in ML.3 (at which point this function and the trait retire).
-///
-/// Empty content (no active modes, or no items) ⇒ hidden this frame.
-pub fn resolve_mode_items_content(pane: &PaneState, rs: &RenderState) -> ElementContent {
-    use lattice_mode::{ServiceRegistry, StatusLineCtx};
-
-    let mut services = ServiceRegistry::new();
-    // LSP progress / readiness: process-wide; the mode picks what to show.
-    services.register(lattice_lsp::modes::LspProgressStatusData {
-        progress: rs.lsp.progress.clone(),
-        server_status: rs.lsp.server_status.clone(),
-    });
-    // Diff signs: active-buffer only (DiffRenderState is per active pane).
-    let ad = rs.active_document.load();
-    if pane.buffer_id == ad.document_buffer_id {
-        services.register(crate::diff::mode::DiffStatusData {
-            sign_map: rs.diff.sign_map.clone(),
-        });
-    }
-
-    let ctx = StatusLineCtx::new(pane.buffer_id, &services);
-
-    let modes_rs = rs.modes.clone();
-    let Some(active) = modes_rs.map.get(&pane.buffer_id) else {
-        return ElementContent::default();
-    };
-
-    let registry = &modes_rs.mode_registry;
-    let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
-    if let Some(major) = active.major() {
-        all_ids.push(major);
-    }
-    all_ids.extend_from_slice(active.minors());
-
-    let mut items: Vec<lattice_mode::StatusLineItem> = Vec::new();
-    for id in all_ids {
-        if let Some(mode) = registry.get(id) {
-            items.extend(mode.status_line_items(&ctx));
-        }
-    }
-    items.sort_by_key(|i| i.priority);
-    if items.is_empty() {
-        return ElementContent::default();
-    }
-    let text = items
-        .iter()
-        .map(|i| i.text.as_str())
-        .collect::<Vec<_>>()
-        .join("  ");
-    ElementContent::text(text, ModelineRole::new(ROLE_MODE_ITEM))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,7 +204,10 @@ mod tests {
         let editor = crate::editor::Editor::boot(document);
         let snap = editor.modeline.snapshot();
         let reg = &snap.registry;
-        assert_eq!(reg.len(), 4, "exactly the four core built-ins");
+        // Four `core.*` built-ins + the diff subsystem's `diff` element
+        // (ML.3b) + lattice-lsp's `lsp` element (ML.3c), all registered at
+        // boot by their owners.
+        assert_eq!(reg.len(), 6, "four core built-ins + diff + lsp");
 
         let mode = reg.get(&ElementId::new(CORE_MODE)).unwrap();
         assert_eq!((mode.zone, mode.priority), (Zone::Left, 0));

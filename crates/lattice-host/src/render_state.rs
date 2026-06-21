@@ -681,21 +681,9 @@ pub struct LspRenderState {
     /// the `previousResultId` short-circuit.
     pub pull_diagnostics:
         crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspPullDiagnosticsCache>,
-    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 4): LSP `$/progress`
-    /// updates keyed by `(server_name, token)`. Published as a fresh
-    /// `Arc<HashMap<...>>` per tick — typical concurrent progress
-    /// items < 10 so the clone is sub-µs. Renderers read
-    /// `rs.lsp.progress.iter()` to populate the modeline progress
-    /// strip instead of `app.editor.lsp_progress.iter()`.
-    pub progress: std::sync::Arc<
-        std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
-    >,
-    /// L2: latest `experimental/serverStatus` per server. Renderers
-    /// register it into `LspProgressStatusData` so the modeline shows
-    /// ✓ (quiescent) / ⟳ (indexing) / ✗ (health error).
-    pub server_status: std::sync::Arc<
-        std::collections::HashMap<std::sync::Arc<str>, lattice_lsp::LspServerStatusChanged>,
-    >,
+    // ML.3c: `progress` + `server_status` removed. The modeline badge
+    // they fed is produced by `lattice_lsp::modeline` from its own
+    // `LspProgressStore` (decision A); no renderer reads them.
     /// Slice 3c.final.B (group 4): LSP supervisor handle clone.
     /// The handle is internally `Arc<ArcSwap<SupervisorSnapshot>>`-
     /// backed so `Clone` is one Arc bump and `servers_for(uri)`
@@ -1510,11 +1498,9 @@ pub fn static_overlay_state_version(
 ///   `buffer_locals.entry(...).or_default()` / `.insert` / `.remove`
 ///   sites; otherwise stable. Largest savings because the per-entry
 ///   clone deep-walks the typed-map.
-/// - `lsp_progress` — INNER `Arc<HashMap<...>>` of the `lsp`
-///   sub-state. The outer `LspRenderState` Arc rebuilds every publish,
-///   but the inner progress map is reused; saves the HashMap clone
-///   when no `$/progress` event fired. (DR.2 retired the sibling
-///   `pane_highlights_map` inner-Arc cache.)
+/// (ML.3c retired the `lsp_progress` inner-Arc cache with
+/// `RenderState.lsp.progress`; DR.2 retired the sibling
+/// `pane_highlights_map` cache.)
 ///
 /// B.4.b (3 subs):
 ///
@@ -1536,16 +1522,8 @@ pub struct PublishCache {
     pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
     pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
     // DR.2 (decoration-retention): `pane_highlights_map` cache slot
-    // retired with the `pane_highlights` producer.
-    pub lsp_progress: Option<(
-        u64,
-        std::sync::Arc<
-            std::collections::HashMap<
-                (std::sync::Arc<str>, String),
-                lattice_lsp::LspProgressUpdate,
-            >,
-        >,
-    )>,
+    // retired with the `pane_highlights` producer. ML.3c: `lsp_progress`
+    // cache slot retired with `RenderState.lsp.progress`.
     /// Perf plan B.4.b: keyed on `buffer_uris.version()` only.
     pub buffers: Option<(u64, std::sync::Arc<BuffersRenderState>)>,
     /// Perf plan B.4.b: keyed on a composite of `tabs.version()`,
@@ -2264,14 +2242,8 @@ mod tests {
             std::sync::Arc::ptr_eq(&a.tabs, &b.tabs),
             "tabs sub-state should reuse its Arc when its composite key hasn't moved"
         );
-        // Inner-Arc cache (parent LspRenderState still rebuilds because
-        // its other fields churn per-frame). DR.2 retired the
-        // `syntax.pane_highlights` inner-Arc cache along with the
-        // per-pane span producer.
-        assert!(
-            std::sync::Arc::ptr_eq(&a.lsp.progress, &b.lsp.progress),
-            "lsp.progress inner Arc should be reused when lsp_progress.version() hasn't moved"
-        );
+        // ML.3c retired the `lsp.progress` inner-Arc cache assertion with
+        // the field; DR.2 retired the `syntax.pane_highlights` one.
     }
 
     /// Perf plan B.4.b: a registry-only mutation (no buffer_uris
@@ -2627,29 +2599,9 @@ mod tests {
         assert_eq!(rs.lifecycle.terminal_width, Some(120));
     }
 
-    #[test]
-    fn lsp_progress_reflects_published_map() {
-        use lattice_lsp::{LspProgressKind, LspProgressUpdate};
-        use std::sync::Arc;
-        let mut editor = Editor::default();
-        let key = (Arc::<str>::from("rust"), "token-1".to_string());
-        editor.lsp_progress.insert(
-            key.clone(),
-            LspProgressUpdate {
-                server_id: Arc::from("rust"),
-                token: "token-1".to_string(),
-                kind: LspProgressKind::Begin,
-                title: Some("indexing".to_string()),
-                message: None,
-                percentage: None,
-                cancellable: false,
-            },
-        );
-        editor.publish_render_state();
-        let rs = editor.render_state.load_full();
-        assert!(rs.lsp.progress.contains_key(&key));
-        assert_eq!(rs.lsp.progress.len(), 1);
-    }
+    // ML.3c: `lsp_progress_reflects_published_map` retired with the host
+    // accumulator + `RenderState.lsp.progress`. The progress fold + badge
+    // are now covered by `lattice_lsp::modeline`'s store tests.
 
     /// Slice 3c.final.B (group 4): popup_buffer / placement
     /// fields published into `PopupRenderState`. With no popup

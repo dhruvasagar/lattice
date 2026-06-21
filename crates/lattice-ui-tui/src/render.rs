@@ -2904,6 +2904,11 @@ fn modeline_spans(
     let resolve_zone = |zone: lattice_mode::Zone| -> Vec<ModelineSeg> {
         let mut runs: Vec<ModelineSeg> = Vec::new();
         for el in snap.registry.zone_ordered(zone) {
+            // §7: Global-scope elements (e.g. the diff summary) render
+            // only on the active pane; PaneLocal is the default.
+            if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
+                continue;
+            }
             let id = el.id.as_str();
             let content = if id.starts_with("core.") {
                 lattice_host::modeline::resolve_builtin_content(
@@ -2915,8 +2920,10 @@ fn modeline_spans(
                 )
             } else {
                 // Pushed elements (modes / plugins, ML.3): content from
-                // the published store, keyed by id.
-                snap.content_for(&el.id).cloned().unwrap_or_default()
+                // the published store, resolved per the descriptor's
+                // scope against this pane's buffer (PaneLocal) or the
+                // global slot.
+                snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
             };
             if content.is_empty() {
                 continue;
@@ -2931,14 +2938,11 @@ fn modeline_spans(
     };
 
     let left = resolve_zone(lattice_mode::Zone::Left);
+    // Center now resolves from the registry like the other zones (ML.3
+    // retired the legacy mode-items pull); empty until a producer or the
+    // config (ML.5) assigns Center elements.
+    let center = resolve_zone(lattice_mode::Zone::Center);
     let right = resolve_zone(lattice_mode::Zone::Right);
-    // Center: the temporary legacy mode-items pull (retired ML.3). Empty
-    // for provider panes — they own their full label.
-    let center = if provider_ref.is_some() {
-        Vec::new()
-    } else {
-        content_to_runs(lattice_host::modeline::resolve_mode_items_content(pane, &rs))
-    };
 
     let segments = compose_modeline_segments(width, left, center, right);
     segments

@@ -506,10 +506,9 @@ impl App {
         self.mutate_editor(|e| e.drain_lsp_detach_events());
     }
 
-    pub fn drain_lsp_progress_events(&mut self) {
-        // 5.8.AA.d: migrated to host.
-        self.mutate_editor(|e| e.drain_lsp_progress_events());
-    }
+    // ML.3c: `drain_lsp_progress_events` retired — `$/progress` is folded
+    // into the lattice-lsp `LspProgressStore` by that crate's forwarder,
+    // not host-accumulated.
 
     /// Drain server-initiated `workspace/configuration` requests.
     /// Each request lands as a `lattice_lsp::InboundConfigurationRequest`
@@ -4842,66 +4841,9 @@ mod tests {
         assert!(msg.text.contains("totally-fake-server-name"));
     }
 
-    /// 4.4.c: a Begin+Report+End sequence on the typed event
-    /// stream lands in `app.editor.lsp_progress`, gets updated, and is
-    /// removed at End.
-    #[test]
-    fn lsp_progress_drain_accumulates_lifecycle() {
-        let mut app = app_with("hi\n", 5);
-        let server: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.editor
-            .event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::Begin,
-                title: Some("Building".into()),
-                message: None,
-                percentage: Some(0),
-                cancellable: true,
-            });
-        app.drain_lsp_progress_events();
-        let key = (server.clone(), "build-1".to_string());
-        let entry = app.editor.lsp_progress.get(&key).expect("begin landed");
-        assert_eq!(entry.title.as_deref(), Some("Building"));
-        assert_eq!(entry.percentage, Some(0));
-
-        // Report without restating the title -- the drain merges
-        // with the existing entry's title.
-        app.editor
-            .event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::Report,
-                title: None,
-                message: Some("linking".into()),
-                percentage: Some(73),
-                cancellable: true,
-            });
-        app.drain_lsp_progress_events();
-        let entry = app.editor.lsp_progress.get(&key).expect("report landed");
-        assert_eq!(entry.title.as_deref(), Some("Building"));
-        assert_eq!(entry.message.as_deref(), Some("linking"));
-        assert_eq!(entry.percentage, Some(73));
-
-        app.editor
-            .event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::End,
-                title: None,
-                message: None,
-                percentage: None,
-                cancellable: false,
-            });
-        app.drain_lsp_progress_events();
-        assert!(
-            app.editor.lsp_progress.get(&key).is_none(),
-            "End should remove the entry"
-        );
-    }
+    // ML.3c: `lsp_progress_drain_accumulates_lifecycle` retired with the
+    // host accumulator. The Begin/Report/End fold is now covered by
+    // `lattice_lsp::modeline::tests::store_folds_progress_and_snapshots`.
 
     #[test]
     fn lsp_status_with_no_servers_renders_placeholder() {

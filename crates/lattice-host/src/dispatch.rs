@@ -529,6 +529,10 @@ impl Editor {
     /// rebuild method retires.
     pub fn build_render_state(&mut self) -> crate::render_state::RenderState {
         use crate::render_state::*;
+        // ML.3b: refresh the active document's `diff` modeline element
+        // from its session sign map (counted on the actor, not the render
+        // thread — paramount #1) before snapshotting the content store.
+        self.sync_diff_modeline_element();
         // Perf plan A.2 slice A.2b.2: build the gated inlay-hint
         // list once and pair it with its content hash. The hash
         // becomes the `VisibleHighlightsKey.inlay_version` axis the
@@ -570,7 +574,6 @@ impl Editor {
         let panes_v = self.pane_tree.version();
         let modes_v = self.active_modes.version();
         let buffer_locals_v = self.buffer_locals.version();
-        let lsp_progress_v = self.lsp_progress.version();
         // Perf plan B.4.b: `buffers` keyed on `buffer_uris.version()`
         // alone — the registry inside the cached `BuffersRenderState`
         // is `Arc<Mutex<...>>`-backed, so renderers see current
@@ -598,14 +601,7 @@ impl Editor {
             self.buffers.version().hash(&mut h);
             h.finish()
         };
-        let (
-            panes_arc,
-            modes_arc,
-            buffer_locals_arc,
-            lsp_progress_map_arc,
-            buffers_arc,
-            tabs_arc,
-        ) = {
+        let (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc) = {
             let mut cache = self
                 .publish_cache
                 .lock()
@@ -644,14 +640,9 @@ impl Editor {
                     })
                 },
             );
-            // Inner-Arc memoisation: outer `LspRenderState` still
-            // rebuilds; the inner progress HashMap is reused when no
-            // $/progress event fired between publishes.
-            let lsp_progress_map_arc = crate::render_state::cached_or_build(
-                &mut cache.lsp_progress,
-                lsp_progress_v,
-                || std::sync::Arc::new((*self.lsp_progress).clone()),
-            );
+            // ML.3c: the `$/progress` map cache is gone with
+            // `RenderState.lsp.progress` (the modeline reads its own
+            // lattice-lsp store now).
             // Perf plan B.4.b: full `Arc<BuffersRenderState>` cached.
             // The `registry` clone is one Arc bump (cheap); the win
             // is on the `buffer_uris.clone()` HashMap allocation.
@@ -670,14 +661,7 @@ impl Editor {
                 crate::render_state::cached_or_build(&mut cache.tabs, tabs_input_v, || {
                     std::sync::Arc::new(self.build_tabs_render_state())
                 });
-            (
-                panes_arc,
-                modes_arc,
-                buffer_locals_arc,
-                lsp_progress_map_arc,
-                buffers_arc,
-                tabs_arc,
-            )
+            (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc)
         };
         // D.4.d.1.a (2026-05-29): take the single-edit slot once
         // here so both the top-level `cells.last_edit` (active-doc
@@ -1000,22 +984,13 @@ impl Editor {
                 document_links: self.lsp_document_links_cache.clone(),
                 document_color: self.lsp_document_color_cache.clone(),
                 pull_diagnostics: self.lsp_pull_diagnostics_cache.clone(),
-                // Slice 3c.final.B (group 4): progress map + supervisor
-                // handle. Progress is small (~10 concurrent items
-                // typical); a per-publish HashMap clone is sub-µs.
-                // Supervisor handle is `Arc<ArcSwap<...>>`-backed so
-                // `Clone` is one Arc bump and `servers_for(uri)` stays
-                // wait-free on the renderer side.
-                // Perf plan B.4: inner Arc cached in publish_cache;
-                // outer `LspRenderState` still rebuilds (its other
-                // Arc fields are independent) but the HashMap clone
-                // is elided when no $/progress event fired.
-                progress: lsp_progress_map_arc,
-                // L2: serverStatus map — plain per-publish clone (tiny
-                // map, changes only a handful of times per session).
-                // Inlined here (not a pre-bound local) so it shares the
-                // construct's `self` capture, exactly like `supervisor`.
-                server_status: std::sync::Arc::new(self.lsp_server_status.clone()),
+                // ML.3c: `progress` + `server_status` dropped from the
+                // render snapshot — the modeline badge they fed is now
+                // produced by `lattice_lsp::modeline` from its own store
+                // (decision A), not read here.
+                // Slice 3c.final.B (group 4): supervisor handle.
+                // `Arc<ArcSwap<...>>`-backed so `Clone` is one Arc bump
+                // and `servers_for(uri)` stays wait-free renderer-side.
                 supervisor: self.lsp.clone(),
             }),
             // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): panes
@@ -3433,6 +3408,26 @@ impl Editor {
     ) -> Option<std::sync::Arc<crate::diff::overlay::DiffSignMap>> {
         let session = self.diff_subsystem.lookup(self.document_buffer_id)?;
         Some(session.sign_map())
+    }
+
+    /// ML.3b: refresh the `diff` modeline element's content from the
+    /// active document's session sign map. `Scope::Global`, so the
+    /// renderer paints it on the active pane only (modeline.md §7); the
+    /// content is the active session's shared `+N ~M` summary. Counting
+    /// happens here on the actor thread (once per publish), never on the
+    /// render path. Cleared when the active buffer has no session (or no
+    /// changes) so the badge disappears on `:diffoff`. The owner's
+    /// formatter lives in `crate::diff::mode::diff_content`.
+    fn sync_diff_modeline_element(&self) {
+        let id = lattice_mode::ElementId::new(crate::diff::mode::DIFF_ELEMENT);
+        match self.diff_signs_for_active() {
+            Some(sign_map) => self.modeline.apply(lattice_mode::ModelineElementUpdate {
+                key: lattice_mode::ModelineKey::Global,
+                id,
+                content: crate::diff::mode::diff_content(&sign_map),
+            }),
+            None => self.modeline.clear(lattice_mode::ModelineKey::Global, &id),
+        }
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —
@@ -10623,57 +10618,25 @@ impl Editor {
         }
     }
 
-    /// 4.4.c: drain queued `LspProgressUpdate` events; fold
-    /// Begin/Report/End into `editor.lsp_progress`. Phase
-    /// 5.8.AA.d: hoisted from TUI App.
-    pub fn drain_lsp_progress_events(&mut self) {
-        let Some(mut rx) = self.lsp_progress_event_rx.take() else {
-            return;
-        };
-        while let Ok(event) = rx.try_recv() {
-            let key = (event.server_id.clone(), event.token.clone());
-            match event.kind {
-                lattice_lsp::LspProgressKind::Begin => {
-                    self.lsp_progress.insert(key, event);
-                }
-                lattice_lsp::LspProgressKind::Report => {
-                    if let Some(prev) = self.lsp_progress.get(&key) {
-                        let title = event.title.clone().or_else(|| prev.title.clone());
-                        let merged = lattice_lsp::LspProgressUpdate {
-                            server_id: event.server_id,
-                            token: event.token,
-                            kind: event.kind,
-                            title,
-                            message: event.message,
-                            percentage: event.percentage.or(prev.percentage),
-                            cancellable: event.cancellable,
-                        };
-                        self.lsp_progress.insert(key, merged);
-                    } else {
-                        self.lsp_progress.insert(key, event);
-                    }
-                }
-                lattice_lsp::LspProgressKind::End => {
-                    self.lsp_progress.remove(&key);
-                }
-            }
-        }
-        self.lsp_progress_event_rx = Some(rx);
-    }
+    // ML.3c: `drain_lsp_progress_events` + `drain_lsp_server_status`
+    // retired. `$/progress` + `serverStatus` are folded into the
+    // `lattice-lsp`-owned `LspProgressStore` by that crate's modeline
+    // forwarder (decision A); the host no longer accumulates them.
 
-    /// L2: drain `experimental/serverStatus` events into the per-server
-    /// `lsp_server_status` map (latest wins). Drained each
-    /// `run_tick_pending`; the boot-side forwarder fires `async_landed`
-    /// on arrival so the readiness glyph repaints off-keystroke (§12).
-    pub fn drain_lsp_server_status(&mut self) {
-        let Some(mut rx) = self.lsp_server_status_event_rx.take() else {
+    /// ML.3: drain pushed [`lattice_mode::ModelineElementUpdate`] events
+    /// into the shared modeline content store (single-writer, actor
+    /// thread). Empty content clears the slot (`ModelineService::apply`).
+    /// The boot-side forwarder fires `async_landed` on arrival so a push
+    /// repaints off-keystroke (§12 wake). A closed/absent channel yields
+    /// no events — never panics.
+    pub fn drain_modeline_element_updates(&mut self) {
+        let Some(mut rx) = self.modeline_update_rx.take() else {
             return;
         };
-        while let Ok(event) = rx.try_recv() {
-            self.lsp_server_status
-                .insert(event.server_id.clone(), event);
+        while let Ok(update) = rx.try_recv() {
+            self.modeline.apply(update);
         }
-        self.lsp_server_status_event_rx = Some(rx);
+        self.modeline_update_rx = Some(rx);
     }
 
     /// Drain `LspBufferDetached` events; fire didClose + clear
@@ -11008,8 +10971,7 @@ impl Editor {
         self.drain_pending_insert_completion_lsp();
         self.drain_pending_completion_resolve();
         self.drain_lsp_log_events();
-        self.drain_lsp_progress_events();
-        self.drain_lsp_server_status();
+        self.drain_modeline_element_updates();
         self.drain_lsp_detach_events();
         self.drain_inbound_configuration_requests();
         self.drain_inbound_show_message_requests();
@@ -21192,10 +21154,11 @@ impl Editor {
         }
         let mut sent = 0usize;
         let mut skipped_non_cancellable = 0usize;
-        // Perf plan B.4: explicit deref through the `Versioned`
-        // wrapper because `&Versioned<HashMap<...>>` doesn't impl
-        // `IntoIterator`. `&*` calls `Deref`, no version bump.
-        for ((sid, token), update) in &*self.lsp_progress {
+        // ML.3c: in-flight progress now lives in the lattice-lsp-owned
+        // `LspProgressStore` (relocated out of the host); read a wait-free
+        // snapshot for the cancellable-token list.
+        let progress = self.lsp_progress_store.progress_snapshot();
+        for ((sid, token), update) in progress.iter() {
             if !allowed.contains(sid.as_ref()) {
                 continue;
             }
@@ -27659,21 +27622,26 @@ mod tests {
     /// via `ctx.service::<ModelineServiceHandle>()`.
     #[test]
     fn modeline_element_surfaces_through_render_state() {
-        use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineRole, Zone};
+        use lattice_mode::{
+            ElementContent, ElementId, ModelineElement, ModelineKey, ModelineRole, Zone,
+        };
         let document = lattice_core::Document::empty();
         let mut editor = crate::editor::Editor::boot(document);
+        let buffer = editor.pane_tree.active().buffer_id;
 
         editor
             .modeline
             .register(ModelineElement::new(ElementId::new("test.badge"), Zone::Right, 0));
         editor.modeline.update(
+            ModelineKey::Buffer(buffer),
             ElementId::new("test.badge"),
             ElementContent::text("hi", ModelineRole::new("modeline.normal")),
         );
 
-        // Publish path snapshots the live service.
+        // Publish path snapshots the live service. The element is
+        // PaneLocal, so it resolves against the active pane's buffer.
         let rs = editor.build_render_state();
-        let right = rs.modeline_elements.zone(Zone::Right);
+        let right = rs.modeline_elements.zone(Zone::Right, buffer);
         assert_eq!(right.len(), 1);
         assert_eq!(right[0].0.id.as_str(), "test.badge");
         assert_eq!(right[0].1.plain(), "hi");
@@ -27687,9 +27655,68 @@ mod tests {
         assert!(
             via_services
                 .snapshot()
-                .content_for(&ElementId::new("test.badge"))
+                .content_for(ModelineKey::Buffer(buffer), &ElementId::new("test.badge"))
                 .is_some(),
             "service-registry instance sees host-registered content (shared Arc)"
+        );
+    }
+
+    /// ML.3: a `ModelineElementUpdate` pushed on the event bus drains
+    /// into the content store and surfaces in the published snapshot with
+    /// **no keystroke** — the test never calls `dispatch()`. This is the
+    /// off-keystroke push path: `publish_typed` → boot subscription →
+    /// `run_tick_pending`'s `drain_modeline_element_updates` → store. The
+    /// §12 render-wake half is the same `wake_on` forwarder L1c proves
+    /// (it fires `async_landed`, which is what calls `run_tick_pending`).
+    #[test]
+    fn pushed_modeline_update_surfaces_without_keystroke() {
+        use lattice_mode::{
+            ElementContent, ElementId, ModelineElement, ModelineElementUpdate, ModelineKey,
+            ModelineRole, Zone,
+        };
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let buffer = editor.pane_tree.active().buffer_id;
+
+        // A producer registers its descriptor (mode `on_activate` shape).
+        editor
+            .modeline
+            .register(ModelineElement::new(ElementId::new("test.pushed"), Zone::Right, 0));
+        // …and pushes per-buffer content over the bus, exactly as a mode
+        // or plugin would (no direct store write).
+        editor.event_bus.publish_typed(ModelineElementUpdate {
+            key: ModelineKey::Buffer(buffer),
+            id: ElementId::new("test.pushed"),
+            content: ElementContent::text("pushed!", ModelineRole::new("modeline.mode_item")),
+        });
+
+        // Nothing has touched the store yet — only the bus carries it.
+        assert!(
+            editor
+                .modeline
+                .snapshot()
+                .resolve(
+                    &ModelineElement::new(ElementId::new("test.pushed"), Zone::Right, 0),
+                    buffer,
+                )
+                .is_none(),
+            "content must not appear until the actor drains the push"
+        );
+
+        // The actor's off-keystroke tick (what `async_landed` triggers)
+        // drains the push into the store; build+publish snapshots it.
+        editor.run_tick_pending();
+        let rs = editor.build_render_state();
+        let right = rs.modeline_elements.zone(Zone::Right, buffer);
+        assert_eq!(right.len(), 1, "pushed element renders after the drain");
+        assert_eq!(right[0].0.id.as_str(), "test.pushed");
+        assert_eq!(right[0].1.plain(), "pushed!");
+
+        // Per-buffer keyed: a different pane's buffer sees nothing.
+        let other = lattice_core::BufferId(buffer.0.wrapping_add(1));
+        assert!(
+            rs.modeline_elements.zone(Zone::Right, other).is_empty(),
+            "PaneLocal push is scoped to its buffer"
         );
     }
 

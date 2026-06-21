@@ -20,13 +20,16 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 use lattice_core::Document;
 use lattice_host::editor::Editor;
 use lattice_host::modeline;
-use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineRole, Zone};
+use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineKey, ModelineRole, Zone};
 
 /// Boot an editor (its four `core.*` built-ins registered) and push
 /// `extra` synthetic PaneLocal elements spread across the three zones,
 /// each with non-empty content so it renders.
 fn editor_with_elements(extra: usize) -> Editor {
     let editor = Editor::boot(Document::empty());
+    // Push content keyed to the active pane's buffer so the bench mirrors
+    // the renderer's per-pane `resolve` (ML.3 per-buffer content keying).
+    let buffer = editor.pane_tree.active().buffer_id;
     for i in 0..extra {
         let id = ElementId::new(format!("plugin.e{i}"));
         let zone = match i % 3 {
@@ -38,6 +41,7 @@ fn editor_with_elements(extra: usize) -> Editor {
             .modeline
             .register(ModelineElement::new(id.clone(), zone, 100 + i as i32));
         editor.modeline.update(
+            ModelineKey::Buffer(buffer),
             id,
             ElementContent::text(format!("e{i}"), ModelineRole::new(modeline::ROLE_MODE_ITEM)),
         );
@@ -61,7 +65,7 @@ fn bench_modeline_build(c: &mut Criterion) {
                         let content = if id.starts_with("core.") {
                             modeline::resolve_builtin_content(id, &pane, true, &rs, None)
                         } else {
-                            snap.content_for(&el.id).cloned().unwrap_or_default()
+                            snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
                         };
                         black_box(content.plain());
                     }

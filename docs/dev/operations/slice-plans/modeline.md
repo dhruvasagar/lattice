@@ -189,18 +189,64 @@ by-construction via the shared resolver). *parity grep* —
 all present in `lattice-ui-gpui/src/window.rs`. *error handling* — empty
 content hidden (`content.is_empty()` skip). **Deps:** ML.1.
 
-### ML.3 — event-bus update path + migrate modes + retire trait  🗒
-**Design:** §5, §6.
-**Change:** add `ModelineElementUpdate` typed event + a host forwarder
-that drains it into the content store and fires `async_landed` (§12
-wake). Migrate LSP (badge/progress/readiness) + diff signs from
-`status_line_items` to registered elements pushed via the event. Delete
-the `Mode::status_line_items` trait + the temporary ML.1 adapter.
-**Artefacts:** *test* — an event updates an element's content + repaints
-with NO keystroke (assert via the §12 wake, like L1c's test); LSP/diff
-elements render identically post-migration. *responsiveness* —
-`current_thread` runtime coverage. *doc* — §5/§6. *error handling* —
-closed channel exits the forwarder, never panics. **Deps:** ML.2.
+### ML.3 — event-bus update path + migrate modes + retire trait  ✅
+**Design:** §5, §6. Carved into ML.3a (plumbing) → ML.3b (diff) → ML.3c
+(LSP) → ML.3d (retire trait), all landed.
+
+#### ML.3a — event + per-buffer store + forwarder + drain  ✅
+`ModelineElementUpdate { key: ModelineKey, id, content }` typed event in
+`lattice-mode` (registered via `register_event!`); content store re-keyed
+`(ModelineKey, ElementId)` with `ModelineKey = Global | Buffer(BufferId)`
+so a descriptor carries distinct content per pane (`ModelineSnapshot::resolve(el, buffer)`).
+Boot subscribes the event into a drain channel + a `wake_on` forwarder
+(fires `async_landed`, the §12 wake); `run_tick_pending` →
+`drain_modeline_element_updates` applies each into the store
+(single-writer). Renderers resolve pushed elements via `resolve(el, pane.buffer_id)`.
+*Test:* `pushed_modeline_update_surfaces_without_keystroke` (publish →
+`run_tick_pending` → snapshot, no dispatch) + per-buffer keying +
+`apply` empty→clear. **Deps:** ML.2.
+
+#### ML.3b — migrate diff  ✅
+`diff` element owned by `lattice-host::diff` — descriptor registered at
+boot (`register_diff_modeline_element`), `Scope::Global`, Left/20. Content
+computed on the actor from the active session's sign map
+(`sync_diff_modeline_element`, counting off the render thread) +
+formatter `diff::mode::diff_content`. **Scope decision:** the diff session
+holds ONE shared sign map (not per-side), so "each side shows its own
+counts" is illusory — `Scope::Global` + the renderer's §7 active-pane gate
+preserves the active-pane-only badge with zero teardown/tracking. Deleted
+`DiffMode::status_line_items` + `DiffStatusData`. *Test:* `diff_content`
+counts + `register_diff_element_is_global_left`.
+
+#### ML.3c — migrate LSP (decision A: relocate accumulator)  ✅
+`lsp` element owned by `lattice-lsp::modeline` — PaneLocal, Right/5. The
+`$/progress` + `serverStatus` accumulation **relocated out of the host**
+into `lattice_lsp::modeline::LspProgressStore` (ArcSwap-backed shared
+handle): a forwarder task folds the events + pushes the badge per attached
+buffer (gating it to LSP buffers); the host reads the SAME store via the
+`LspProgressStoreHandle` it stashes at boot for `:lsp-progress-cancel`.
+**Why a handle, not pure relocation:** the actual code showed the LSP
+actor doesn't track progress (it only emits events) and `do_lsp_progress_cancel`
+reads the in-flight map host-side — so the relocated store must be
+host-readable. One accumulator (lattice-lsp), two readers (forwarder +
+cancel), zero duplication. Deleted host `lsp_progress`/`lsp_server_status`
++ their drains + `RenderState.lsp.progress`/`server_status` + the
+publish-cache slot + the prog/status wake forwarders + `LspProgressStatusData`
++ `LspMode`/`LspProgressMode::status_line_items`. *Test:*
+`store_folds_progress_and_snapshots`, badge `lsp_content` cases.
+
+#### ML.3d — retire the trait  ✅
+Deleted `Mode::status_line_items` + `DynMode::status_line_items` +
+`StatusLineCtx` + `StatusLineItem` (`lattice-mode`) + the host
+`resolve_mode_items_content` adapter + the Center pull at all renderer
+call sites (Center now resolves from the registry like Left/Right). The
+acid test holds: a new provider crate adds a modeline element via the
+`ModelineElementUpdate` event with zero `Editor::` methods + zero `Action`
+variants.
+
+*Error handling:* the forwarder/drain exit cleanly on a closed channel
+(never panic); truncation/empty-content paths unchanged. *doc:* §5/§6.
+**Deps:** ML.2.
 
 ### ML.5 — config surface  🗒
 **Design:** §11.

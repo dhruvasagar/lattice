@@ -10,9 +10,7 @@ pub use lattice_keymap::ModeId;
 use crate::action_handler_registry::ActionHandlerContribution;
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
-use crate::contributions::{
-    DecorationCtx, DecorationProvider, GutterDecoration, Keymap, StatusLineCtx, StatusLineItem,
-};
+use crate::contributions::{DecorationCtx, DecorationProvider, GutterDecoration, Keymap};
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
@@ -209,15 +207,11 @@ pub trait Mode: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Status-line segments this mode contributes while active.
-    /// Called by the renderer once per pane per frame with a
-    /// [`StatusLineCtx`] carrying relevant render-state snapshots.
-    /// Items are sorted by [`StatusLineItem::priority`] (ascending)
-    /// and joined with two spaces between the path label and the
-    /// position indicator. Default: empty (no contribution).
-    fn status_line_items(&self, _ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
-        Vec::new()
-    }
+    // ML.3: `status_line_items` retired. Modes contribute modeline
+    // content as registered elements pushed over the event bus
+    // (`lattice_mode::ModelineElementUpdate`, see modeline.rs §6), not via
+    // a render-path trait pull — a Rust trait can't cross the WASM plugin
+    // boundary, which is exactly the limitation the element model removes.
 
     /// Insert-mode completion sources this mode contributes while
     /// active on a buffer. Empty by default; minors that own a
@@ -358,7 +352,6 @@ pub trait DynMode: Send + Sync + 'static {
     fn keymap(&self) -> Keymap;
     fn decorations(&self) -> Vec<DecorationProvider>;
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
-    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem>;
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
     fn action_handlers(&self) -> Vec<ActionHandlerContribution>;
     fn required_capabilities(&self) -> CapabilitySet;
@@ -399,9 +392,6 @@ impl<M: Mode> DynMode for M {
     }
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
         <M as Mode>::gutter_decorations(self, ctx)
-    }
-    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
-        <M as Mode>::status_line_items(self, ctx)
     }
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
         <M as Mode>::completion_sources(self)

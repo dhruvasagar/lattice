@@ -1092,11 +1092,19 @@ impl EditorView {
         let zone_runs = |zone: Zone| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
             let mut runs: Vec<(String, Option<lattice_mode::ModelineRole>)> = Vec::new();
             for el in snap.registry.zone_ordered(zone) {
+                // §7: Global-scope elements (e.g. the diff summary) render
+                // only on the active pane; PaneLocal is the default.
+                if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
+                    continue;
+                }
                 let id = el.id.as_str();
                 let content = if id.starts_with("core.") {
                     lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs, None)
                 } else {
-                    snap.content_for(&el.id).cloned().unwrap_or_default()
+                    // Pushed elements (modes / plugins, ML.3): resolved
+                    // per the descriptor's scope against this pane's
+                    // buffer (PaneLocal) or the global slot.
+                    snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
                 };
                 if content.is_empty() {
                     continue;
@@ -1114,15 +1122,10 @@ impl EditorView {
         };
 
         let left = zone_runs(Zone::Left);
+        // Center now resolves from the registry like the other zones
+        // (ML.3 retired the legacy mode-items pull).
+        let center = zone_runs(Zone::Center);
         let right = zone_runs(Zone::Right);
-        // Center: the temporary legacy mode-items pull (retired ML.3).
-        let center: Vec<(String, Option<lattice_mode::ModelineRole>)> =
-            lattice_host::modeline::resolve_mode_items_content(pane, rs)
-                .spans
-                .into_iter()
-                .filter(|s| !s.text.is_empty())
-                .map(|s| (s.text, Some(s.role)))
-                .collect();
 
         // Style one run: inactive → uniform muted; active → per-role fg.
         let styled_run =

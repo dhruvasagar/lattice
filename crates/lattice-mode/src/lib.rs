@@ -100,7 +100,7 @@ pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{
     DecorationCtx, DecorationProvider, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
-    Keymap, KeymapBinding, StatusLineCtx, StatusLineItem,
+    Keymap, KeymapBinding,
     Subscription, // MO.4.c: real RAII type; use in mode Guards
 };
 pub use lattice_keymap::KeymapEntry;
@@ -116,8 +116,9 @@ pub use crate::modes::{
 pub use crate::services::ServiceRegistry;
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
-    ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineRegistry,
-    ModelineRole, ModelineService, ModelineServiceHandle, ModelineSnapshot, Scope, Span, Zone,
+    ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,
+    ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,
+    ModelineSnapshot, Scope, Span, Zone,
 };
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use lattice_core::BufferId;
 use lattice_protocol::ids::CommandId;
 
 /// Stable, namespaced element identifier — `"core.mode"`, `"lsp"`,
@@ -55,6 +56,20 @@ pub enum Scope {
     #[default]
     PaneLocal,
     Global,
+}
+
+/// Content-store key discriminator (ML.3). Content is keyed by
+/// `(ModelineKey, ElementId)` so a single descriptor can carry distinct
+/// content per pane: `Buffer(id)` for a [`Scope::PaneLocal`] element
+/// (resolved against the pane's buffer), `Global` for a [`Scope::Global`]
+/// element (one value, rendered only on the active pane). A producer
+/// pushes per-buffer content for each buffer it serves — e.g. each side
+/// of a split diff shows its own `+N ~M`. See
+/// `docs/dev/architecture/modeline.md` §4 (per-pane content resolution).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelineKey {
+    Global,
+    Buffer(BufferId),
 }
 
 /// Theme role key for a [`Span`]. Resolved by the renderer against the
@@ -117,6 +132,33 @@ impl ElementContent {
         self.spans.iter().map(|s| s.text.as_str()).collect()
     }
 }
+
+/// A typed event a producer (mode / plugin) publishes on the event bus
+/// to set an element's content (ML.3). The host forwarder fires the §12
+/// render-wake on arrival; the actor thread drains the event into the
+/// content store in `run_tick_pending` (single-writer). Empty `content`
+/// hides the element (the drain treats it as a [`ModelineService::clear`]).
+///
+/// This is the WIT-shaped push path: native modes and (later) plugins
+/// update content the same way, so no producer is invoked on the render
+/// path (paramount #1, §2 / §5). See
+/// `docs/dev/architecture/modeline.md` §5 (update flow), §6 (ownership).
+#[derive(Debug, Clone)]
+pub struct ModelineElementUpdate {
+    pub key: ModelineKey,
+    pub id: ElementId,
+    pub content: ElementContent,
+}
+
+// ML.3: register as a typed event so the bus's `publish_typed` /
+// `subscribe_typed` API can carry it. One type, one event name —
+// subscribers receive every push and the host forwarder drains them.
+lattice_protocol::register_event!(
+    ModelineElementUpdate,
+    "modeline.element-update",
+    "A producer (mode / plugin) set an element's modeline content.",
+    "lattice-mode",
+);
 
 /// Hover payload — a GPUI tooltip; ignored in the terminal (no hover).
 /// Realized in ML.4.
@@ -234,24 +276,44 @@ impl ModelineRegistry {
 #[derive(Debug, Clone, Default)]
 pub struct ModelineSnapshot {
     pub registry: Arc<ModelineRegistry>,
-    pub content: Arc<HashMap<ElementId, ElementContent>>,
+    pub content: Arc<HashMap<(ModelineKey, ElementId), ElementContent>>,
 }
 
 impl ModelineSnapshot {
-    /// Content for `id`, if any.
-    pub fn content_for(&self, id: &ElementId) -> Option<&ElementContent> {
-        self.content.get(id)
+    /// Content stored under an exact `(key, id)`, if any. Prefer
+    /// [`Self::resolve`] from a renderer — it derives the key from the
+    /// descriptor's scope + the pane's buffer.
+    pub fn content_for(&self, key: ModelineKey, id: &ElementId) -> Option<&ElementContent> {
+        self.content.get(&(key, id.clone()))
     }
 
-    /// Zone-ordered `(descriptor, content)` pairs, skipping elements
-    /// with absent or empty content (hidden this frame). This is the
-    /// renderer's per-zone input (ML.1 / ML.2).
-    pub fn zone(&self, zone: Zone) -> Vec<(&ModelineElement, &ElementContent)> {
+    /// Resolve `el`'s content for the pane showing `buffer` (ML.3). A
+    /// [`Scope::PaneLocal`] descriptor keys by `Buffer(buffer)`; a
+    /// [`Scope::Global`] descriptor keys by `Global`. This is the
+    /// renderer's per-element lookup (built-ins are computed host-side
+    /// and bypass the store). Returns `None` when no producer has pushed
+    /// content for this `(scope-key, id)` — the element is hidden.
+    pub fn resolve(&self, el: &ModelineElement, buffer: BufferId) -> Option<&ElementContent> {
+        let key = match el.scope {
+            Scope::Global => ModelineKey::Global,
+            Scope::PaneLocal => ModelineKey::Buffer(buffer),
+        };
+        self.content.get(&(key, el.id.clone()))
+    }
+
+    /// Zone-ordered `(descriptor, content)` pairs for the pane showing
+    /// `buffer`, skipping elements with absent or empty content (hidden
+    /// this frame). Resolves each descriptor's content per its scope via
+    /// [`Self::resolve`]. Built-in `core.*` elements are computed
+    /// host-side, not stored, so they do NOT appear here — the renderer
+    /// iterates `registry.zone_ordered` directly and routes core ids to
+    /// the host resolver. This helper is for pushed-content tests.
+    pub fn zone(&self, zone: Zone, buffer: BufferId) -> Vec<(&ModelineElement, &ElementContent)> {
         self.registry
             .zone_ordered(zone)
             .into_iter()
             .filter_map(|el| {
-                let c = self.content.get(&el.id)?;
+                let c = self.resolve(el, buffer)?;
                 (!c.is_empty()).then_some((el, c))
             })
             .collect()
@@ -269,7 +331,7 @@ impl ModelineSnapshot {
 #[derive(Debug, Default)]
 pub struct ModelineService {
     registry: ArcSwap<ModelineRegistry>,
-    content: ArcSwap<HashMap<ElementId, ElementContent>>,
+    content: ArcSwap<HashMap<(ModelineKey, ElementId), ElementContent>>,
 }
 
 /// Shared handle to the [`ModelineService`].
@@ -299,23 +361,37 @@ impl ModelineService {
         });
     }
 
-    /// Set an element's content. An update for an id with no descriptor
-    /// is harmless — it simply won't render until one is registered.
-    pub fn update(&self, id: ElementId, content: ElementContent) {
+    /// Set an element's content under `(key, id)`. An update for an id
+    /// with no descriptor is harmless — it simply won't render until one
+    /// is registered. `key` selects the pane (`Buffer`) or global slot
+    /// (§4 per-pane content resolution).
+    pub fn update(&self, key: ModelineKey, id: ElementId, content: ElementContent) {
         self.content.rcu(|cur| {
             let mut next = (**cur).clone();
-            next.insert(id.clone(), content.clone());
+            next.insert((key, id.clone()), content.clone());
             next
         });
     }
 
-    /// Clear an element's content (hides it). Idempotent.
-    pub fn clear(&self, id: &ElementId) {
+    /// Clear an element's content under `(key, id)` (hides it). Idempotent.
+    pub fn clear(&self, key: ModelineKey, id: &ElementId) {
         self.content.rcu(|cur| {
             let mut next = (**cur).clone();
-            next.remove(id);
+            next.remove(&(key, id.clone()));
             next
         });
+    }
+
+    /// Apply a pushed [`ModelineElementUpdate`] (the actor-thread drain's
+    /// per-event step, ML.3): empty content clears the slot (hidden),
+    /// non-empty content sets it. Routing empty → clear keeps the store
+    /// from accumulating dead entries as producers toggle visibility.
+    pub fn apply(&self, update: ModelineElementUpdate) {
+        if update.content.is_empty() {
+            self.clear(update.key, &update.id);
+        } else {
+            self.update(update.key, update.id, update.content);
+        }
     }
 
     /// Wait-free snapshot for the renderer (two `Arc` clones).
@@ -423,18 +499,87 @@ mod tests {
         assert_eq!(e.zone, Zone::Center);
     }
 
+    fn bid(n: u32) -> BufferId {
+        BufferId(n)
+    }
+
     #[test]
     fn service_register_update_snapshot() {
         let svc = ModelineService::new();
         svc.register(el("lsp", Zone::Right, 0));
         let role = ModelineRole::new("modeline.normal");
-        svc.update(ElementId::new("lsp"), ElementContent::text("lsp ✓", role));
+        svc.update(
+            ModelineKey::Buffer(bid(7)),
+            ElementId::new("lsp"),
+            ElementContent::text("lsp ✓", role),
+        );
         let snap = svc.snapshot();
-        let right = snap.zone(Zone::Right);
+        let right = snap.zone(Zone::Right, bid(7));
         assert_eq!(right.len(), 1);
         assert_eq!(right[0].0.id.as_str(), "lsp");
         assert_eq!(right[0].1.plain(), "lsp ✓");
-        assert_eq!(snap.content_for(&ElementId::new("lsp")).unwrap().plain(), "lsp ✓");
+        assert_eq!(
+            snap.content_for(ModelineKey::Buffer(bid(7)), &ElementId::new("lsp"))
+                .unwrap()
+                .plain(),
+            "lsp ✓"
+        );
+    }
+
+    /// ML.3: content is keyed per buffer. A PaneLocal descriptor's
+    /// pushed content shows only on the pane whose buffer matches;
+    /// Global content shows on every pane (resolved via the descriptor's
+    /// scope).
+    #[test]
+    fn service_content_is_per_buffer_keyed() {
+        let svc = ModelineService::new();
+        let role = ModelineRole::new("r");
+        // PaneLocal `diff` element, content pushed for buffer 1 only.
+        svc.register(el("diff", Zone::Left, 0));
+        svc.update(
+            ModelineKey::Buffer(bid(1)),
+            ElementId::new("diff"),
+            ElementContent::text("+3", role.clone()),
+        );
+        // Global `clock` element.
+        svc.register(
+            ModelineElement::new(ElementId::new("clock"), Zone::Right, 0).with_scope(Scope::Global),
+        );
+        svc.update(
+            ModelineKey::Global,
+            ElementId::new("clock"),
+            ElementContent::text("12:00", role),
+        );
+
+        let snap = svc.snapshot();
+        // Pane on buffer 1: sees its diff + the global clock.
+        assert_eq!(snap.zone(Zone::Left, bid(1)).len(), 1, "diff on its buffer");
+        assert_eq!(snap.zone(Zone::Right, bid(1)).len(), 1, "global clock");
+        // Pane on buffer 2: no diff content keyed for it; clock global.
+        assert!(snap.zone(Zone::Left, bid(2)).is_empty(), "diff hidden on other buffer");
+        assert_eq!(snap.zone(Zone::Right, bid(2)).len(), 1, "clock still global");
+    }
+
+    /// ML.3: `apply` routes empty content to a clear, non-empty to an
+    /// update — the actor-thread drain's per-event step.
+    #[test]
+    fn service_apply_routes_empty_to_clear() {
+        let svc = ModelineService::new();
+        svc.register(el("lsp", Zone::Right, 0));
+        let role = ModelineRole::new("r");
+        svc.apply(ModelineElementUpdate {
+            key: ModelineKey::Buffer(bid(1)),
+            id: ElementId::new("lsp"),
+            content: ElementContent::text("lsp ⟳", role),
+        });
+        assert_eq!(svc.snapshot().zone(Zone::Right, bid(1)).len(), 1);
+        // Empty content via apply → cleared (hidden).
+        svc.apply(ModelineElementUpdate {
+            key: ModelineKey::Buffer(bid(1)),
+            id: ElementId::new("lsp"),
+            content: ElementContent::default(),
+        });
+        assert!(svc.snapshot().zone(Zone::Right, bid(1)).is_empty());
     }
 
     #[test]
@@ -442,10 +587,10 @@ mod tests {
         let svc = ModelineService::new();
         svc.register(el("lsp", Zone::Right, 0));
         // descriptor exists but no content yet → hidden
-        assert!(svc.snapshot().zone(Zone::Right).is_empty());
+        assert!(svc.snapshot().zone(Zone::Right, bid(0)).is_empty());
         // explicit empty content → still hidden
-        svc.update(ElementId::new("lsp"), ElementContent::default());
-        assert!(svc.snapshot().zone(Zone::Right).is_empty());
+        svc.update(ModelineKey::Buffer(bid(0)), ElementId::new("lsp"), ElementContent::default());
+        assert!(svc.snapshot().zone(Zone::Right, bid(0)).is_empty());
     }
 
     #[test]
@@ -453,12 +598,12 @@ mod tests {
         let svc = ModelineService::new();
         let role = ModelineRole::new("r");
         svc.register(el("x", Zone::Left, 0));
-        svc.update(ElementId::new("x"), ElementContent::text("hi", role));
-        assert_eq!(svc.snapshot().zone(Zone::Left).len(), 1);
+        svc.update(ModelineKey::Buffer(bid(0)), ElementId::new("x"), ElementContent::text("hi", role));
+        assert_eq!(svc.snapshot().zone(Zone::Left, bid(0)).len(), 1);
         // clear content → hidden, but descriptor remains
-        svc.clear(&ElementId::new("x"));
+        svc.clear(ModelineKey::Buffer(bid(0)), &ElementId::new("x"));
         let snap = svc.snapshot();
-        assert!(snap.zone(Zone::Left).is_empty());
+        assert!(snap.zone(Zone::Left, bid(0)).is_empty());
         assert!(snap.registry.get(&ElementId::new("x")).is_some());
         // remove descriptor
         svc.remove(&ElementId::new("x"));

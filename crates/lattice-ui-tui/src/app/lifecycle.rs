@@ -353,32 +353,20 @@ impl App {
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
 
-    /// MO.4.b: status-line label for a pane — the legacy combined
-    /// string (`path[+]  <mode-items>`, or a pane provider's custom
-    /// label). Kept for its existing callers/tests; the modeline
-    /// renderer (`draw_pane_status_line`) no longer routes through it,
-    /// laying out zones from the registered elements instead.
+    /// Pane buffer-label string — the path/dirty segment (or a pane
+    /// provider's custom label). Kept for its existing callers/tests
+    /// (synthetic-name fallback, log/messages labels); the modeline
+    /// renderer (`draw_pane_status_line`) lays out zones from the
+    /// registered elements instead.
     ///
-    /// ML.1a-render: the path/dirty segment and the mode-items pull are
-    /// now resolved host-side (`lattice_host::modeline`) so the TUI and
-    /// GPUI peers share one content strategy; this method just stitches
-    /// the two parts into the old one-string shape.
+    /// ML.3 retired the appended mode-items (LSP / diff badges) — those
+    /// are registered modeline elements now, not part of this label.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
         let provider = self
             .pane_render_provider(pane.buffer_id)
             .map(|p| (p.status)(self, pane));
         let rs = self.render_state.load();
-        let base = lattice_host::modeline::pane_path_segment(pane, &rs, provider.as_deref());
-        // Provider panes own their whole label (the M.4 status closure);
-        // no mode-items appended — matching the legacy early return.
-        if provider.is_some() {
-            return base;
-        }
-        let items = lattice_host::modeline::resolve_mode_items_content(pane, &rs);
-        if items.is_empty() {
-            return base;
-        }
-        format!("{base}  {}", items.plain())
+        lattice_host::modeline::pane_path_segment(pane, &rs, provider.as_deref())
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte

@@ -71,6 +71,7 @@ pub mod framing;
 pub mod help_views;
 pub mod jsonrpc;
 pub mod logging;
+pub mod modeline;
 pub mod modes;
 pub mod pending;
 pub mod position;

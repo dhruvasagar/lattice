@@ -52,8 +52,9 @@
 use lattice_core::BufferId;
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{
-    DecorationCtx, GutterDecoration, GutterDiffKind, LifecycleFuture, Mode, ModeContext, ModeId,
-    ModeKind, StatusLineCtx, StatusLineItem,
+    DecorationCtx, ElementContent, ElementId, GutterDecoration, GutterDiffKind, LifecycleFuture,
+    Mode, ModeContext, ModeId, ModeKind, ModelineElement, ModelineRole, ModelineService, Scope,
+    Zone,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -62,19 +63,62 @@ use std::sync::Mutex;
 // DiffMode — the minor mode itself
 // ──────────────────────────────────────────────────────────────
 
-/// Render-time snapshot for `DiffMode::status_line_items`. Carries
-/// the active buffer's diff sign map so `DiffMode` can count
-/// added/changed lines without `lattice-mode` depending on
-/// `lattice-host` types.
-pub struct DiffStatusData {
+/// Render-time snapshot for `DiffMode::gutter_decorations`. Carries
+/// the active buffer's diff sign map; injected by the renderer only for
+/// the active-document buffer (sign_map is active-doc only).
+pub struct DiffDecorationData {
     pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
 }
 
-/// Render-time snapshot for `DiffMode::gutter_decorations`. Carries
-/// the same sign map as `DiffStatusData`; injected by the renderer
-/// only for the active-document buffer (sign_map is active-doc only).
-pub struct DiffDecorationData {
-    pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+// ──────────────────────────────────────────────────────────────
+// Modeline element (ML.3): the `+N ~M` diff-stats segment
+// ──────────────────────────────────────────────────────────────
+
+/// Modeline element id for the diff add/change summary. Owned by the
+/// diff subsystem (`feedback_mode_owns_its_surface`).
+pub const DIFF_ELEMENT: &str = "diff";
+
+/// Register the `diff` modeline descriptor (ML.3). `Scope::Global`: the
+/// active document's session sign-map is a single shared value, so the
+/// summary renders on the **active** pane's modeline (the renderer gates
+/// Global elements to the active pane, modeline.md §7) — there is no
+/// distinct per-side count to show. Content is computed host-side on the
+/// actor (where the sign map already lives, `sync_diff_modeline_element`)
+/// rather than counted on the render thread (paramount #1). Left zone,
+/// after `core.path`.
+pub fn register_diff_modeline_element(svc: &ModelineService) {
+    svc.register(
+        ModelineElement::new(ElementId::new(DIFF_ELEMENT), Zone::Left, 20).with_scope(Scope::Global),
+    );
+}
+
+/// Format a diff sign-map into the `+N ~M` modeline content (ML.3). The
+/// formatter the diff subsystem owns — moved here from the retired
+/// `DiffMode::status_line_items`. Empty content (no adds/changes) ⇒
+/// hidden this frame (the caller's `apply` clears the slot).
+pub fn diff_content(sign_map: &crate::diff::overlay::DiffSignMap) -> ElementContent {
+    use crate::diff::overlay::DiffSignKind;
+    let mut added = 0u32;
+    let mut changed = 0u32;
+    for (_line, kind) in sign_map.entries() {
+        match kind {
+            DiffSignKind::Add => added += 1,
+            DiffSignKind::Change | DiffSignKind::Conflict | DiffSignKind::Remove => {
+                changed += 1;
+            }
+        }
+    }
+    if added == 0 && changed == 0 {
+        return ElementContent::default();
+    }
+    let mut parts = Vec::new();
+    if added > 0 {
+        parts.push(format!("+{added}"));
+    }
+    if changed > 0 {
+        parts.push(format!("~{changed}"));
+    }
+    ElementContent::text(parts.join(" "), ModelineRole::new(crate::modeline::ROLE_MODE_ITEM))
 }
 
 /// `diff-mode` minor. Empty marker in v1 (D.5.a): the bit other
@@ -97,33 +141,9 @@ impl Mode for DiffMode {
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
     }
-    fn status_line_items(&self, ctx: &StatusLineCtx<'_>) -> Vec<StatusLineItem> {
-        use crate::diff::overlay::DiffSignKind;
-        let Some(data) = ctx.service::<DiffStatusData>() else {
-            return Vec::new();
-        };
-        let mut added = 0u32;
-        let mut changed = 0u32;
-        for (_line, kind) in data.sign_map.entries() {
-            match kind {
-                DiffSignKind::Add => added += 1,
-                DiffSignKind::Change | DiffSignKind::Conflict | DiffSignKind::Remove => {
-                    changed += 1;
-                }
-            }
-        }
-        if added == 0 && changed == 0 {
-            return Vec::new();
-        }
-        let mut parts = Vec::new();
-        if added > 0 {
-            parts.push(format!("+{added}"));
-        }
-        if changed > 0 {
-            parts.push(format!("~{changed}"));
-        }
-        vec![StatusLineItem { text: parts.join(" "), priority: 40 }]
-    }
+    // ML.3: the `+N ~M` summary moved off `status_line_items` to a
+    // registered modeline element (`register_diff_modeline_element` /
+    // `diff_content`), pushed via the actor's `sync_diff_modeline_element`.
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
         use crate::diff::overlay::DiffSignKind;
         let Some(data) = ctx.service::<DiffDecorationData>() else {
@@ -418,6 +438,42 @@ mod tests {
 
     fn bid(n: u32) -> BufferId {
         BufferId(n)
+    }
+
+    /// ML.3b: the formatter counts adds vs changes (Change/Conflict/Remove
+    /// fold into `~`), and yields empty (hidden) content for a clean map.
+    #[test]
+    fn diff_content_counts_adds_and_changes() {
+        use crate::diff::overlay::{DiffSignKind, DiffSignMap};
+        let map = DiffSignMap::from_entries(vec![
+            (1, DiffSignKind::Add),
+            (2, DiffSignKind::Add),
+            (3, DiffSignKind::Change),
+            (4, DiffSignKind::Conflict),
+            (5, DiffSignKind::Remove),
+        ]);
+        // 2 adds, 3 changed (Change + Conflict + Remove).
+        assert_eq!(diff_content(&map).plain(), "+2 ~3");
+
+        // Clean map → hidden.
+        assert!(diff_content(&DiffSignMap::default()).is_empty());
+
+        // Adds only → no `~` segment.
+        let adds = DiffSignMap::from_entries(vec![(1, DiffSignKind::Add)]);
+        assert_eq!(diff_content(&adds).plain(), "+1");
+    }
+
+    /// ML.3b: the descriptor is Global (active-pane only), Left zone,
+    /// after `core.path`.
+    #[test]
+    fn register_diff_element_is_global_left() {
+        let svc = ModelineService::new();
+        register_diff_modeline_element(&svc);
+        let snap = svc.snapshot();
+        let el = snap.registry.get(&ElementId::new(DIFF_ELEMENT)).expect("diff descriptor");
+        assert_eq!(el.zone, Zone::Left);
+        assert_eq!(el.priority, 20);
+        assert_eq!(el.scope, Scope::Global);
     }
 
     #[test]

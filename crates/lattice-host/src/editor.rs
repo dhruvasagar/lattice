@@ -1018,16 +1018,6 @@ pub struct Editor {
     /// every open buffer regardless of kind -- documents,
     /// file trees, future outline / diagnostics views.
     pub buffers: BufferRegistry,
-    /// Accumulated `$/progress` state keyed by
-    /// `(server_id, token)`. `Begin` inserts; `Report`
-    /// updates; `End` removes. The modeline picks the most
-    /// recent active entry to surface.
-    /// Perf plan B.4: wrapped in [`Versioned`]. `$/progress` events
-    /// fire at a moderate cadence (~10/s during compile bursts),
-    /// but most publish ticks don't see any change; the inner
-    /// HashMap clone in `build_render_state` can be elided via
-    /// the lsp.progress sub-state cache.
-    pub lsp_progress: Versioned<HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>>,
     /// ML.0b-2: shared modeline element service (descriptor registry +
     /// content store, ArcSwap-backed). The SAME `Arc` is registered into
     /// `services` at boot so modes reach it via
@@ -1037,15 +1027,15 @@ pub struct Editor {
     /// `Default`, so `#[derive(Default)]` on `Editor` still holds (the
     /// boot literal overrides it with the registered instance).
     pub modeline: lattice_mode::ModelineServiceHandle,
-    /// L2: latest `experimental/serverStatus` per server (readiness).
-    /// serverStatus fires only a handful of times per session, so a
-    /// plain map (cloned per publish) is cheaper than the Versioned
-    /// cache `lsp_progress` uses. `HashMap` / `Option` are `Default`,
-    /// so `#[derive(Default)]` on `Editor` still holds.
-    pub lsp_server_status:
-        std::collections::HashMap<std::sync::Arc<str>, lattice_lsp::LspServerStatusChanged>,
-    pub lsp_server_status_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspServerStatusChanged>>,
+    /// ML.3: actor-thread drain channel for [`lattice_mode::ModelineElementUpdate`]
+    /// events pushed by modes/plugins over the event bus. Boot subscribes
+    /// a sender; `drain_modeline_element_updates` (in `run_tick_pending`)
+    /// applies each into `modeline`'s content store (single-writer). A
+    /// separate boot subscription fires `async_landed` so a pushed update
+    /// repaints off-keystroke (§12 wake). `Option` is `Default` (None), so
+    /// `#[derive(Default)]` on `Editor` still holds.
+    pub modeline_update_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModelineElementUpdate>>,
     /// Cached `textDocument/selectionRange` chain for the
     /// smart-expansion operator.
     pub lsp_selection_chain: Option<LspSelectionChain>,
@@ -1122,6 +1112,12 @@ pub struct Editor {
         crate::per_buffer_cache::PerBufferCache<LspPullDiagnosticsCache>,
     // ---- LSP subsystem handles + log/progress channels ----
     pub lsp: LspSupervisorHandle,
+    /// ML.3c: handle to the `lattice-lsp`-owned progress/status store
+    /// (decision A — the accumulator relocated out of the host). The
+    /// modeline forwarder writes it; the host reads it here only for
+    /// `:lsp-progress-cancel` (in-flight cancellable tokens). `Arc<…>` is
+    /// `Default`, so `#[derive(Default)]` on `Editor` still holds.
+    pub lsp_progress_store: lattice_lsp::modeline::LspProgressStoreHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
     pub lsp_logger: LspLogger,
     /// 4.4.l.2 / 5.8.AA.o / 5.8.AF.5: file-watcher service handle.
@@ -1366,8 +1362,6 @@ pub struct Editor {
     /// downstream UI-redraw signal fired after a worker publishes.
     pub async_landed: std::sync::Arc<tokio::sync::Notify>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
-    pub lsp_progress_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
     pub lsp_config_tree: toml::Table,
     /// Perf plan B.4.b: wrapped in [`Versioned`] so the buffers
     /// sub-state cache can elide the per-publish HashMap clone.

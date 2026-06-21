@@ -413,16 +413,12 @@ impl Editor {
         let (lsp_log_tx, lsp_log_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspLogPushed>();
         event_bus.subscribe_typed(lsp_log_tx);
-        // LSP work-done progress.
-        let (lsp_progress_tx, lsp_progress_event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
-        event_bus.subscribe_typed(lsp_progress_tx);
-        // L2: serverStatus readiness drain channel (accumulated in
-        // `drain_lsp_server_status`; woken via the L1c forwarder which
-        // fires `async_landed`).
-        let (lsp_server_status_tx, lsp_server_status_event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspServerStatusChanged>();
-        event_bus.subscribe_typed(lsp_server_status_tx);
+        // ML.3c: LSP `$/progress` + `experimental/serverStatus` are no
+        // longer accumulated host-side. `lattice_lsp::modeline`'s
+        // forwarder subscribes them, folds them into the shared
+        // `LspProgressStore` (created below), and pushes the `lsp` element
+        // per attached buffer; the host reads the same store only for
+        // `:lsp-progress-cancel`.
         // `LspBufferDetached`: `LspMode::on_deactivate` publishes
         // this; the per-tick drain calls `lsp_close_buffer` for
         // each so the wire-level `didClose` + `buffer_uris`
@@ -436,6 +432,14 @@ impl Editor {
         let (mode_lifecycle_tx, mode_lifecycle_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModeEvent>();
         event_bus.subscribe_typed(mode_lifecycle_tx);
+        // ML.3: modeline element content pushed by modes/plugins over the
+        // bus. `drain_modeline_element_updates` applies each into the
+        // shared `modeline` content store (single-writer, actor thread);
+        // a separate subscription in the L1c wake block fires
+        // `async_landed` so the push repaints off-keystroke (§12 wake).
+        let (modeline_update_tx, modeline_update_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
+        event_bus.subscribe_typed(modeline_update_tx);
         // MA.2: minor-activation resolver input. One channel
         // subscribed to `Event::MajorEntered`; the per-tick
         // `drain_minor_activation` reads it, looks up each buffer's
@@ -972,10 +976,12 @@ impl Editor {
                     al.notify_one();
                 }
             }
-            let (prog_tx, prog_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
-            event_bus.subscribe_typed(prog_tx);
-            runtime_handle.spawn(wake_on(prog_rx, async_landed.clone()));
+            // ML.3c: the `$/progress` + `serverStatus` wake forwarders
+            // are gone — those events now reach the screen through the
+            // `lattice_lsp::modeline` forwarder, which folds them and
+            // publishes `ModelineElementUpdate`; the modeline wake below
+            // fires `async_landed` for that push. The `*/refresh`
+            // notifications still drain host-side, so they keep their wake.
             let (inlay_tx, inlay_rx) =
                 mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
             event_bus.subscribe_typed(inlay_tx);
@@ -992,10 +998,15 @@ impl Editor {
                 mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
             event_bus.subscribe_typed(lens_tx);
             runtime_handle.spawn(wake_on(lens_rx, async_landed.clone()));
-            let (status_tx, status_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspServerStatusChanged>();
-            event_bus.subscribe_typed(status_tx);
-            runtime_handle.spawn(wake_on(status_rx, async_landed.clone()));
+            // ML.3: a pushed modeline-element content update repaints
+            // off-keystroke. Same shape as the LSP forwarders above: a
+            // dedicated subscription whose only job is to fire
+            // `async_landed`; `drain_modeline_element_updates` (its own
+            // channel) does the accumulation in `run_tick_pending`.
+            let (ml_tx, ml_rx) =
+                mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
+            event_bus.subscribe_typed(ml_tx);
+            runtime_handle.spawn(wake_on(ml_rx, async_landed.clone()));
         }
 
         // AsyncRenderStatePublished: fired by the actor after every
@@ -1110,6 +1121,21 @@ impl Editor {
         // (`crate::modeline::resolve_builtin_content`) so both renderers
         // paint identical content.
         crate::modeline::register_builtin_elements(&modeline_service);
+        // ML.3b: the diff subsystem owns its `diff` element descriptor.
+        // Content is pushed by the actor's `sync_diff_modeline_element`.
+        crate::diff::mode::register_diff_modeline_element(&modeline_service);
+        // ML.3c: lattice-lsp owns the `lsp` element. Its forwarder folds
+        // `$/progress` + `serverStatus` into the shared `LspProgressStore`
+        // and pushes the badge per attached buffer; the host keeps the
+        // store handle for `:lsp-progress-cancel`.
+        lattice_lsp::modeline::register_lsp_modeline_element(&modeline_service);
+        let lsp_progress_store: lattice_lsp::modeline::LspProgressStoreHandle =
+            std::sync::Arc::default();
+        lattice_lsp::modeline::spawn_modeline_forwarder(
+            event_bus.clone(),
+            lsp_progress_store.clone(),
+            &runtime_handle,
+        );
 
         let mut editor = Editor {
             messages: messages_ring.clone(),
@@ -1485,8 +1511,8 @@ impl Editor {
             diff_subscription_guard: Some(diff_subscription_guard),
             diff_forwarders,
             lsp_log_event_rx: Some(lsp_log_event_rx),
-            lsp_progress_event_rx: Some(lsp_progress_event_rx),
-            lsp_server_status_event_rx: Some(lsp_server_status_event_rx),
+            lsp_progress_store: lsp_progress_store.clone(),
+            modeline_update_rx: Some(modeline_update_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
             pending_configuration_rx: Some(lsp_configuration_rx),
             pending_show_document_rx: Some(lsp_show_document_rx),

@@ -589,6 +589,29 @@ mod tests {
         );
     }
 
+    /// The preview centres the selected line (vim `zz`) so its context
+    /// is visible above AND below, instead of landing at the viewport
+    /// bottom. Drives the same `JumpInBuffer` preview path `gr` /
+    /// references / grep previews use.
+    #[test]
+    fn lines_picker_preview_centers_the_selected_line() {
+        let text: String = (0..20).map(|i| format!("line{i}\n")).collect();
+        let mut app = app_with(&text, 5);
+        app.open_picker("lines".into(), Vec::new());
+        {
+            let picker = app.editor.picker.as_mut().expect("picker open");
+            picker.selected = 15;
+        }
+        let _ = app.editor.preview_picker_selection();
+        assert_eq!(app.editor.cursor.line, 15);
+        // viewport 5 → centred scroll = 15 - 5/2 = 13 (line 15 sits at
+        // the middle row), not 11 (bottom-anchored).
+        assert_eq!(
+            app.editor.scroll, 13,
+            "preview should centre the selected line, not bottom-anchor it"
+        );
+    }
+
     /// Slice 7d.1: engine-shape sources registered via
     /// `CompletionRegistry::register_source` open through
     /// `:picker <id>`. Verifies the dual-lookup branch in

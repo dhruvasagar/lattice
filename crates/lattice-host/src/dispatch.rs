@@ -15125,6 +15125,12 @@ impl Editor {
                 let line_len = snap.buffer.line_byte_len(target_line);
                 let target_col = col.min(line_len);
                 self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                // `gr` / location preview: centre the previewed line
+                // (vim `zz`) so its usage context is visible above AND
+                // below, instead of the line landing at the viewport
+                // bottom. ensure_cursor_visible leaves a centred cursor
+                // untouched (it only clamps off-screen cursors).
+                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
                 self.previewing = false;
                 if needs_state {
                     self.activate_buffer_state()
@@ -15152,6 +15158,10 @@ impl Editor {
                 let line_len = snap.buffer.line_byte_len(target_line);
                 let target_col = col.min(line_len);
                 self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                // Centre the previewed line (vim `zz`) — see the
+                // JumpInBuffer arm above. Same rationale for cross-file
+                // location previews (`gr` into another file, grep hits).
+                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
                 self.previewing = false;
                 signals
             }

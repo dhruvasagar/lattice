@@ -218,6 +218,113 @@ option; O(viewport) fan-out only, never O(file).
 build stays flat at 100k lines; *doc*; *error handling*.
 **Deps:** L4. **Optional** — land only on request.
 
+### Diagnostics polish (landed 2026-06-21, post-L4b)
+
+Dogfooding fixes on the L4 surfaces — all committed:
+
+- **Preview centring** (`92dcbc90`) — `gr` / references / grep /
+  `:picker lines` previews landed the match at the viewport BOTTOM.
+  `preview_accept_action`'s `JumpInBuffer` / `JumpToFileLocation` arms
+  (`dispatch.rs`, the generic picker-preview engine — NOT lsp-specific)
+  now call `do_scroll_cursor_to(ScrollPos::Center)` after moving the
+  cursor (vim `zz`).
+- **Inline summary eol positioning** (`efda8692`) — the summary landed
+  mid-line. GPUI now uses the cell matrix's painted `col_count()` ×
+  advance (the cursor's EOL x) for unwrapped rows + `rposition` for the
+  last wrap segment; TUI splices at `usize::MAX` (append after inlays).
+- **Diagnostics repaint without a cursor move** (`efda8692`) — pushed
+  `publishDiagnostics` (incl. the CLEAR when an error is fixed) updated
+  `DiagnosticsLayer` but never woke the render loop (only pull-mode
+  `*/refresh` had a `wake_on` forwarder). `DiagnosticsLayer::apply` now
+  fires a render-wake `Notify` (`set_wake`, wired to `async_landed` in
+  `editor_boot.rs`). **This is the same no-wake class as L6 below.**
+- **`gl` popup severity colours** (`520bc051`) — 4 `Style::Diagnostic*`
+  variants → `syntax_element_id` → the gutter/underline severity
+  elements; the mode-owned `gl` handler bakes a whole-line severity
+  highlight per popup line.
+
+### L6 — LSP server-ready render-wake (the "needs a keypress" bug)  🗒
+
+**Symptom (recurring):** the first time an LSP server becomes ready,
+the first `K` (hover) / nav action does nothing; a second keypress
+works. Dhruva reports this has regressed several times.
+
+**Hypothesis:** the same no-wake class as the diagnostics fix above —
+the server **ready / initialize / capabilities** transition updates
+editor-visible state but does NOT fire `async_landed`, so the first
+action checks STALE readiness (server not-yet-ready / capability not
+yet registered) → no-op; the readiness lands (no repaint, no
+re-evaluation) → the second keypress sees ready → works. The first
+keypress's dispatch is what finally reflects it.
+
+**Investigation starting points:**
+- Does server attach / `initialize` response / `experimental/serverStatus`
+  (L2a `ed55eb30`, L2b `6824cffc`) fire `async_landed`? Compare to the
+  `wake_on` forwarders in `editor_boot.rs` (~969–1010) and the
+  diagnostics `set_wake` just added (~672) — readiness likely lacks one.
+- How does `K` / `action:lsp-hover` gate on readiness/capabilities
+  before firing? Trace `maybe_request_*` / the hover request spawn in
+  `dispatch.rs` (`drain_pending_hover` ~11062) and the capability check.
+  Is the capability set populated async (post-initialize) without a
+  wake/re-eval?
+- Is it instead a **mode-activation** race — `lsp-mode` (and its sub-mode
+  cascade) activates on first interaction, so the first chord activates
+  the mode but doesn't also fire the request? Check `LspMode::on_activate`
+  + the attach driver in `editor_boot.rs`.
+- Repro: open a fresh file with a slow-starting server (rust-analyzer),
+  wait for ready, `K` once (no popup), `K` again (popup).
+
+**Likely fix shape:** fire `async_landed` on the server-ready /
+capability-registered edge (a forwarder or a `set_wake`-style hook),
+mirroring the diagnostics fix. Confirm the first action then re-evaluates
+against fresh readiness.
+
+**Artefacts:** *test* — ready transition wakes a publish; *doc* — §12/§13.
+**Deps:** L1/L2.
+
+### L7 — LSP nav surface → full mode-ownership  🗒
+
+**Goal:** finish the half-migration. `gd` / `gD` / `gy` / `gI` / `gr` /
+`gx` / `K` have their KEYMAP in the mode (`lsp_mode_keymap_entries()`,
+`modes.rs:455`, `cmd: "action:lsp-*"`) but their HANDLERS are host
+ActionIds in `actions.rs` (`ids.lsp_hover_request`, `lsp_definition_request`,
+… ~266/452/1267). L4b made `gl`/`]d`/`[d` the FIRST fully mode-owned LSP
+surface; this slice brings the nav surface to the same standard
+(`feedback_mode_owns_its_surface`).
+
+**The complication (why this needs design, not a mechanical move):**
+unlike `gl` (a synchronous read of the local diagnostics layer), the nav
+actions fire ASYNC LSP requests (hover → popup, definition → jump,
+references → picker). The L4b shape (handler closure returns an `Effect`
+synchronously) doesn't map 1:1. Open questions to resolve first:
+- What is the right Effect/handler shape for an async request? Options:
+  (a) handler returns an `Effect::Lsp<Request>` the host spawns +
+  drains (the request substrate `maybe_request_*` / `drain_pending_*`
+  stays host — it IS legitimate shared substrate, like the cells
+  worker); (b) richer mode-side async via the M-async Guard machinery.
+  Decide which keeps the acid test (zero `Editor::do_*` bound to a
+  chord, zero new host `Action` variants) without duplicating the async
+  request plumbing.
+- The existing `actions.rs` `lsp_*_request` ActionIds: do they become
+  command-name-only registrations with dead applies (the `snippet-expand`
+  / `lsp-diagnostic-popup` pattern), with the real body moving to
+  `LspMode::action_handlers()` closures? Or do they stay as the
+  host-substrate request triggers? This is the crux.
+- Reuse from L4b: the `DiagnosticsQuery`-style service pattern for any
+  data the closures need (cursor/buffer/uri via the render-state
+  snapshot); the Effect-classifier threading discipline.
+
+**Files:** `lattice-lsp/src/modes.rs` (add `LspMode::action_handlers()`);
+`lattice-host/src/actions.rs` (the `lsp_*_request` ActionIds);
+`dispatch.rs` (the async request + drain substrate); both renderers'
+Effect classifiers if new Effects are added.
+
+**Acid test:** a future provider crate adds an LSP-ish chord with ZERO
+`Editor::` additions in `lattice-host` and ZERO new host `Action`
+variants. **Deps:** L4b (the pattern). **Confirm the Effect/handler
+shape with Dhruva before coding** — present the (a)/(b) options mapped
+to the heuristics.
+
 ---
 
 ## Cross-references

@@ -7,7 +7,7 @@ method's ✅/🚧 status) lives in
 [`../../notes/lsp-features.md`](../../notes/lsp-features.md). This file
 owns *when* and *in what order*; those own *what* and *why*.
 
-Status legend: ✅ done · 🚧 in progress · 🗒 planned.
+Status legend: ✅ done · 🟡 partial · 🚧 in progress · 🗒 planned.
 
 ---
 
@@ -29,41 +29,50 @@ matrix's ✅ rows hide.
 
 ## Active slices
 
-### L1 — async-result render-wake  🗒
-**Design:** lsp-architecture.md §12.
-**Problem:** direct-write request tasks and event-bus arrivals never
-fire `async_landed`, so semantic-token colour, inlay hints, and
-`$/progress` are invisible until the next keystroke runs
-`run_tick_pending` + publish.
-**Change:**
-- Fire `async_landed.notify_one()` from each direct-write request task
-  *after* its `insert_for`: `maybe_request_semantic_tokens`
-  (`dispatch.rs:~9513`, the reported symptom) first, then
-  `maybe_request_inlay_hint`, `_folding_range`, `_code_lens`,
-  `_document_color`, `_document_link`, `_document_highlight`,
-  `_pull_diagnostics`.
-- Route the render-relevant LSP event subscriptions (progress,
-  diagnostics/inlay/semantic/code-lens refresh, log) through a
-  forwarder that fires `async_landed` on delivery.
-- Templates (no LSP task fires it today): the tree-sitter syntax seed
-  closure `dispatch.rs:8986-8994`, and the `MultibufferExcerptsReady`
-  forwarder `editor_boot.rs:~940`.
-**Artefacts:**
-- *test* — headless proof that a semantic-token cache write and a
-  `$/progress` event each produce a published render state + a
-  `paint_request`, with NO keystroke (assert via the cells worker's
-  `WorkerDecision` + the paint `Notify`).
-- *responsiveness* — `current_thread` runtime coverage (the actor's
-  config): the forwarder/task lands the wake without a foreground
-  poll.
-- *doc* — §12 (done).
-- *error handling* — a closed/dropped channel logs (`debug!`) and exits
-  the forwarder; never panics, never swallows silently.
-**Deps:** none. **Unblocks:** L2/L3 (progress + readiness visibility),
-L4 (diagnostic repaint).
+### L1 — async-result render-wake  ✅
+**Design:** lsp-architecture.md §12. Carved into **L1a** (semantic
+tokens), **L1b** (inlay hints), **L1c** (progress/refresh-event
+forwarders), and the **L1-tail** (the remaining direct-write request
+tasks). All landed.
 
-### L2 — server lifecycle state  🗒
-**Design:** §13.
+- **L1a** (`d8661aff`) — `maybe_request_semantic_tokens` fires
+  `async_landed.notify_one()` after each cache write (data + authoritative
+  empty); the `Err`/cancelled arm keeps the prior overlay (no double
+  publish, `feedback_decorations_update_in_place`).
+- **L1b** (`b4d20334`) — same for `maybe_request_inlay_hint`.
+- **L1c** (`cc232d31`) — render-relevant LSP **events** (inlay /
+  semantic / diagnostic / code-lens `*/refresh`) routed through
+  `wake_on` forwarders in `editor_boot.rs` (fire `async_landed` on
+  delivery); `$/progress` + `serverStatus` reach the screen via the
+  `lattice_lsp::modeline` forwarder (ML.3c) instead of their own wake.
+- **L1-tail** (2026-06-21) — `maybe_request_{folding_range,
+  document_link, code_lens, document_color, document_highlight}` fire
+  the wake on their **data-landed** arm only (`Ok(Some) if !empty`), and
+  `maybe_request_pull_diagnostics` on a `Full` outcome (not `Unchanged`
+  / `Err`-collapsed `Empty`). **Decision (Option X):** wake only the
+  data branch, leaving the `_ =>` empty/cancel write untouched — a
+  superseded request can't flicker the decoration, and for the
+  cursor-scoped `document_highlight` keeping prior on cancel would be
+  *wrong* (stale highlights at the old position). The Err-keep-prior +
+  immediate-clear split (as L1a/b have it) is a separate
+  decoration-stability concern, not bundled here.
+
+**Artefacts:** *test* — the §12 wake mechanism is covered by the
+existing off-keystroke push-path test (`dispatch.rs:~27833`); the
+per-task `notify_one` is the identical one-liner L1a/L1b shipped
+**without** a per-task test (the spawned task can't fire without a mock
+server). *doc* — §12; this reconciliation. *error handling* — wake only
+on real writes; closed forwarder channels exit cleanly (L1c). **Deps:**
+none. **Unblocked:** L2/L3 (landed), L4 (diagnostic repaint).
+
+### L2 — server lifecycle state  ✅
+**Landed:** **L2a** (`ed55eb30`) receives rust-analyzer
+`experimental/serverStatus`; **L2b** (`6824cffc`) renders the persistent
+✓/⟳/✗ readiness from it. The full `LspServerState` enum below is the
+original design; the shipped form is the readiness projection L2a/b
+needed — revisit the richer state machine only if L3/L4 require it.
+
+**Design (original):** §13.
 **Change:** add `LspServerState` (`Spawning` / `Initializing` /
 `Ready` / `Indexing { title, pct }` / `Failed { reason }`) to the
 supervisor, keyed by `(workspace, server_id)`, published via an
@@ -81,12 +90,26 @@ the Ready/indexed edge for re-request triggers.
   logged `info!` (user-actionable).
 **Deps:** L1 (so transitions repaint).
 
-### L3 — status surfaces  🗒
+### L3 — status surfaces  🟡 partial (L3-lite ✅; rest re-scoped)
 **Design:** §14.
-**Change:** collapse the two LSP status-line segments (`LspMode` badge
-+ `LspProgressMode` percentage) into one state-driven segment in
-`LspMode::status_line_items` (state glyph + id + %); enrich
-`help_views::lsp_status_help` with the lifecycle line + active
+**Landed:** **L3-lite** (`f8e9fca7`) — explicit ready/indexing glyph in
+the LSP status segment.
+
+> **⚠ design stale.** The original change below — "collapse the LSP
+> status segments into `LspMode::status_line_items`" — is **obsolete**:
+> ML.3d **retired** `Mode::status_line_items`, and ML.3c already made the
+> LSP badge a registered **modeline element** (`lattice_lsp::modeline`,
+> PaneLocal Right/5, fed by the relocated `LspProgressStore`). So the
+> "collapse into the trait" work cannot happen and is unneeded — the
+> single state-driven segment now lives in the modeline element system.
+> Remaining L3 scope, re-cast: enrich `:lsp-status` help with the
+> lifecycle line + active progress, and live-refresh it. Re-confirm
+> against the modeline path before picking this up.
+
+**Change (original, partly obsolete):** collapse the two LSP status-line
+segments (`LspMode` badge + `LspProgressMode` percentage) into one
+state-driven segment in `LspMode::status_line_items` (state glyph + id +
+%); enrich `help_views::lsp_status_help` with the lifecycle line + active
 progress; make `:lsp-status` live-refresh via the log-buffer tail
 wiring. Glyphs degrade per the icon-palette rule.
 **Artefacts:**

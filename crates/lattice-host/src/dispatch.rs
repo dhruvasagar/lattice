@@ -9127,6 +9127,9 @@ impl Editor {
         // `DiagnosticsLayer` (already Arc-backed; thread-safe).
         let cache_slot = self.lsp_pull_diagnostics_cache.clone();
         let diagnostics_layer = self.lsp_diagnostics.clone();
+        // L1-tail: wake on an authoritative diagnostics report (Full —
+        // new or cleared); see the gated notify after `apply` below.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9179,7 +9182,18 @@ impl Editor {
                     document_version: version,
                 },
             };
+            // L1-tail: wake only when authoritative diagnostics landed
+            // (Full — new items or an authoritative clear). `Unchanged`
+            // is a no-op repaint, and the `Err`-collapsed `Empty` must
+            // not flicker the gutter on a superseded request.
+            let landed = matches!(
+                outcome,
+                lattice_lsp::cache::PullDiagnosticsOutcome::Full { .. }
+            );
             Editor::apply_pull_diagnostics_outcome(&cache_slot, &diagnostics_layer, outcome);
+            if landed {
+                async_landed.notify_one();
+            }
         });
     }
 
@@ -9225,6 +9239,11 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.1: clone the cache slot Arc into the task.
         let cache_slot = self.lsp_folds_cache.clone();
+        // L1-tail: wake the render pipeline when folds land off-keystroke
+        // (same contract as L1a/L1b). Fired only on the data-landed arm —
+        // the `_ =>` empty/cancel write keeps the existing masked
+        // behaviour, so a superseded request can't flicker the markers.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9255,6 +9274,7 @@ impl Editor {
                             folds,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -9294,6 +9314,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.4: cache slot Arc cloned into task.
         let cache_slot = self.lsp_document_links_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9323,6 +9345,7 @@ impl Editor {
                             links,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -9360,6 +9383,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.3: clone the cache slot Arc into the task.
         let cache_slot = self.lsp_code_lens_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9392,6 +9417,7 @@ impl Editor {
                             server_id: server_id_arc,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -9432,6 +9458,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.4: cache slot Arc cloned into task.
         let cache_slot = self.lsp_document_color_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9464,6 +9492,7 @@ impl Editor {
                             server_id: server_id_arc,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -10222,6 +10251,11 @@ impl Editor {
         // UI-thread drain. Renderers read wait-free via the
         // `RenderState` snapshot which holds the same Arc.
         let cache_slot = self.lsp_document_highlights.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        // The `_ => store(None)` cancel/empty arm stays unwoken — a
+        // superseded cursor-move request must clear, not flicker, and the
+        // move that superseded it already woke the pipeline.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -10250,6 +10284,7 @@ impl Editor {
                             highlights,
                         },
                     )));
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.store(None);

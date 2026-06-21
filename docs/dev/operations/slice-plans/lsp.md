@@ -156,10 +156,25 @@ stays with the host that owns `cursor` / `modal` / the actor loop. The
   (`lattice-lsp::diagnostics_layer`) + 4 gate-transition
   (`lattice-host::render_state`). No renderer touch yet → no parity
   obligation this slice.
-- **L4a.3** 🗒 — render the published `inline_summary` as trailing eol
-  virtual text via `splice_virtual_text_into_spans`, severity-themed by
-  `severity_rank`. **TUI + GPUI in lockstep** (`feedback_tui_gpui_parity`).
-  *Artefacts:* parity grep, eol-render test in both peers, `user/lsp.md`.
+- **L4a.3** (2026-06-21) ✅ — render the published `inline_summary` as
+  trailing eol virtual text, severity-themed by `severity_rank` +
+  italic, active pane only. **TUI:** `splice_virtual_text_into_spans`
+  at `map_ob(line_len)` in the compose loop (sibling to the inlay
+  splice). **GPUI:** a per-frame `ShapedLine` overlay painted at
+  `text_origin_x + shaped_text[row].width` — **decision (B):** NOT
+  spliced into the cells grid (which would churn the
+  decoration-retention cell cache on every cursor move, re-breaking
+  `project_decoration_retention_status`); the summary is cursor-
+  transient interaction state, so it lives with the cursor/underline
+  per-frame overlays. Both peers gate the render on lsp-diagnostics-
+  mode (TUI `view.lsp_diagnostics_enabled`; GPUI the active buffer's
+  `active_minor_modes`) so it tracks the gutter/underline visibility —
+  the host publishes unconditionally, the renderers gate. *Tests:* 2
+  TUI compose (`render::tests` — renders on cursor line, suppressed
+  when the mode is off). *Parity:* grep for `inline_diag_summary` in
+  `lattice-ui-gpui` is non-empty. *Doc:* `user/lsp.md` (four surfaces).
+  *Known seam:* GPUI's pre-existing diagnostic **underline** is NOT
+  mode-gated (a separate parity gap, untouched here).
 
 #### L4b — cursor popup + jump echo  🗒
 **Owned by `lsp-diagnostics-mode`** (adds chords + handlers).

@@ -192,7 +192,7 @@ a single-result `gd` jump or picked one of N references.
 ## Diagnostics
 
 When the server reports problems, lattice renders them in
-three places:
+four places:
 
 - **Gutter** — a glyph in the line-number column for every
   line with diagnostics (severity-coloured: red `■` for error,
@@ -200,6 +200,18 @@ three places:
   hint). The most severe wins on lines with multiple.
 - **Inline** — squiggly underline under the affected range
   (utf-8 / utf-16 column converted from the server's units).
+- **End-of-line summary** — a short trailing annotation on the
+  cursor's line, in the severity colour, showing the most-severe
+  message (truncated) plus ` +N` when the line carries more. It
+  appears ~300 ms after the cursor settles on a line (so it
+  doesn't flash while you move through the file), is hidden while
+  you type (Insert/Replace), and tracks only the focused cursor.
+  Tune it with two options:
+  - `ui.diagnostics.inline` — `off`, `cursor-line` (default), or
+    `all` (every viewport line; opt-in).
+  - `ui.diagnostics.inline-min-severity` — `error`, `warning`,
+    `info`, or `hint` (default; show everything). Only diagnostics
+    at or above this level count toward the summary.
 - **`:diagnostics` picker** — opens a vertico picker over
   every workspace diagnostic. Severity glyph (`[E]/[W]/[I]/[H]`)
   rides in the marginalia; type to filter; `<CR>` jumps; `<Esc>`

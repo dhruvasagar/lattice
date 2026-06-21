@@ -4217,6 +4217,28 @@ pub(crate) fn compose_pane_lines(
                 );
             }
         }
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. The host idle gate (L4a.2) publishes
+        // `rs.diagnostics.inline_summary = Some((line, summary))` for the
+        // ACTIVE buffer's cursor line; render it as trailing eol virtual
+        // text, severity-themed to match the gutter glyph. Active pane
+        // only — unlike the buffer-intrinsic inlay/underline decorations
+        // above, the cursor-line summary is interaction state tied to the
+        // focused cursor (Helix/Zed show it only in the focused view).
+        // Spliced at `map_ob(line_len)` so it lands past the line's last
+        // glyph; the leading gap separates it from the code.
+        if ctx.is_active
+            && view.lsp_diagnostics_enabled
+            && let Some((sum_line, summary)) = rs.diagnostics.inline_summary.as_ref()
+            && *sum_line == line_idx
+        {
+            body = splice_virtual_text_into_spans(
+                body,
+                map_ob(line_len),
+                format!("    {}", summary.text),
+                diagnostic_summary_style(summary.severity_rank, view),
+            );
+        }
         // Substitute live preview overlay (DESIGN.md §5.9.10): paint
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
@@ -4712,6 +4734,23 @@ fn inlay_hint_style(
     TuiStyle::default()
         .fg(fg)
         .add_modifier(Modifier::ITALIC)
+}
+
+/// L4a.3 (lsp-architecture.md §15): style for the inline end-of-line
+/// diagnostic summary. Reuses the gutter's per-severity themed style
+/// (so the eol text colour matches the gutter glyph exactly) and adds
+/// italic to read as virtual, non-document text — the same cue inlay
+/// hints use. `severity_rank` is Error = 0 … Hint = 3 (matching
+/// `lattice_lsp`'s `severity_rank` / the published summary).
+fn diagnostic_summary_style(severity_rank: u8, view: &FrameView<'_>) -> TuiStyle {
+    let theme = &view.app.theme;
+    let base = match severity_rank {
+        0 => theme.diagnostic_error_style,
+        1 => theme.diagnostic_warning_style,
+        2 => theme.diagnostic_info_style,
+        _ => theme.diagnostic_hint_style,
+    };
+    base.add_modifier(Modifier::ITALIC)
 }
 
 /// 4.4.h: apply LSP semantic styling to the spans intersecting
@@ -8068,6 +8107,67 @@ mod tests {
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('■'), "no LSP -> no error glyph: {row0:?}");
         assert!(!row0.contains('▲'), "no LSP -> no warn glyph: {row0:?}");
+    }
+
+    /// L4a.3: the inline cursor-line diagnostic summary renders as
+    /// trailing eol text on the cursor's line once the idle gate fires.
+    #[test]
+    fn inline_diagnostic_summary_renders_at_eol_on_cursor_line() {
+        let mut app = app_with("let x = 1;\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            5,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom error",
+        );
+        // seed_diagnostic enables lsp-mode (cascading lsp-diagnostics-
+        // mode on); ensure the render-side diagnostics gate is active.
+        if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+            app.toggle_mode_by_name("lsp-diagnostics-mode");
+        }
+        // Cursor is on line 0 by default. Arm the idle gate, then fire
+        // it (simulating the ~300 ms settle) so the summary is visible.
+        app.editor.publish_render_state();
+        app.editor.fire_inline_diag_gate();
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            row0.contains("boom error"),
+            "eol summary expected on the cursor line: {row0:?}"
+        );
+    }
+
+    /// L4a.3: the summary respects the render-side lsp-diagnostics-mode
+    /// gate — with the mode off it is suppressed even though the host
+    /// gate published it (matching the gutter / underline gate).
+    #[test]
+    fn inline_diagnostic_summary_suppressed_when_diagnostics_mode_off() {
+        let mut app = app_with("let x = 1;\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            5,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom error",
+        );
+        // Force lsp-diagnostics-mode OFF (the lsp-mode cascade in
+        // seed_diagnostic may have enabled it).
+        if app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+            app.toggle_mode_by_name("lsp-diagnostics-mode");
+        }
+        app.editor.publish_render_state();
+        app.editor.fire_inline_diag_gate();
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            !row0.contains("boom error"),
+            "mode-off must suppress the eol summary: {row0:?}"
+        );
     }
 
     #[test]

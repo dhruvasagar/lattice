@@ -186,6 +186,20 @@ pub(crate) struct DiagnosticUnderline {
     pub(crate) color: u32,
 }
 
+/// L4a.3 (lsp-architecture.md §15): the resolved inline cursor-line
+/// diagnostic summary for one pane. `line` is the absolute buffer
+/// line; `text` already carries the leading gap; `color` is
+/// `0xRRGGBB` from the severity's host-theme style. Resolved in
+/// `window.rs` from `render_state.diagnostics.inline_summary` on the
+/// ACTIVE pane only — it tracks the focused cursor, so it is painted
+/// per-frame (NOT spliced into the cells cache, which would churn on
+/// every cursor move).
+pub(crate) struct InlineDiagSummary {
+    pub(crate) line: u32,
+    pub(crate) text: String,
+    pub(crate) color: u32,
+}
+
 /// Pane element. One instance per pane per frame.
 ///
 /// Caller (`window::paint_pane`) extracts all referenced values up
@@ -309,6 +323,14 @@ pub(crate) struct EditorElement {
     /// `0xRRGGBB` for inlay virtual-text. `host_theme` resolved by
     /// the caller, Catppuccin overlay1 (0x7f849c) fallback.
     pub(crate) inlay_color: u32,
+    /// L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+    /// summary — trailing eol virtual text on the active pane's cursor
+    /// line. `None` on inactive panes / when the host idle gate is
+    /// disarmed. Painted per-frame at the row's end-of-content x by
+    /// `paint` (shaped in `prepaint`), NOT spliced into the cells
+    /// cache — it is cursor-transient, like the cursor / underline
+    /// overlays.
+    pub(crate) inline_diag_summary: Option<InlineDiagSummary>,
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
     /// pane; `None` for inactive panes (the cells worker publishes
@@ -499,6 +521,13 @@ pub(crate) struct EditorElementPrepaintState {
     /// rows (1:1 with `shaped_text`). Drives the title-only scaling in
     /// both paint paths so the leading `#` markers stay base-size.
     row_split: Vec<Option<HeadingSplit>>,
+    /// L4a.3 (lsp-architecture.md §15): the inline cursor-line
+    /// diagnostic summary, pre-shaped, as `(viewport_row, shaped)`.
+    /// `Some` only when `self.inline_diag_summary` is set and its line
+    /// is a visible row. `paint` paints it at
+    /// `text_origin_x + shaped_text[row].width` (the row's end-of-
+    /// content x, after any inlays).
+    inline_diag_overlay: Option<(usize, ShapedLine)>,
 }
 
 impl IntoElement for EditorElement {
@@ -1421,6 +1450,32 @@ impl Element for EditorElement {
             }
         };
 
+        // L4a.3: shape the inline cursor-line diagnostic summary (when
+        // armed + its line is a visible row) into its own ShapedLine,
+        // painted at the row's end-of-content x in `paint`. Active pane
+        // only — `self.inline_diag_summary` is `None` on inactive panes.
+        // Italic + severity colour mirror the TUI peer's eol style.
+        let inline_diag_overlay = self.inline_diag_summary.as_ref().and_then(|sum| {
+            let row = row_meta.iter().position(|(l, _)| *l == sum.line)?;
+            let mut italic = font.clone();
+            italic.style = gpui::FontStyle::Italic;
+            let runs = vec![TextRun {
+                len: sum.text.len(),
+                font: italic,
+                color: rgb(sum.color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let shaped = window.text_system().shape_line(
+                SharedString::from(sum.text.clone()),
+                font_size,
+                &runs,
+                None,
+            );
+            Some((row, shaped))
+        });
+
         EditorElementPrepaintState {
             shaped_text,
             shaped_gutter,
@@ -1440,6 +1495,7 @@ impl Element for EditorElement {
             wrap_width,
             row_scale,
             row_split,
+            inline_diag_overlay,
         }
     }
 
@@ -1820,6 +1876,28 @@ impl Element for EditorElement {
                 let quad_bounds =
                     Bounds::new(point(quad_x, underline_y), size(quad_w, px(2.0)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
+            }
+        }
+
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. Painted at the row's end-of-content x (after inlays),
+        // per-frame — no cells-cache involvement (the summary is
+        // cursor-transient interaction state, like the cursor / underline
+        // overlays). Mirrors the TUI peer's `splice_virtual_text_into_spans`
+        // eol splice ([[feedback_tui_gpui_parity]]).
+        if let Some((row, shaped)) = &prepaint.inline_diag_overlay {
+            let line_y = row_top(*row);
+            if line_y < pane_bottom {
+                let eol_x = text_origin_x + prepaint.shaped_text[*row].width;
+                if let Err(err) = shaped.paint(point(eol_x, line_y), row_h(*row), window, cx) {
+                    tracing::warn!(
+                        target: "lattice_gpui::editor_element",
+                        row = *row,
+                        pane = self.pane_idx,
+                        error = ?err,
+                        "inline diagnostic summary ShapedLine::paint failed"
+                    );
+                }
             }
         }
 

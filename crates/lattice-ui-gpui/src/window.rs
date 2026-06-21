@@ -1878,6 +1878,43 @@ impl EditorView {
             })
             .unwrap_or_default();
 
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. The host idle gate (L4a.2) publishes `(line, summary)`
+        // for the ACTIVE buffer's cursor line; resolve it only on the
+        // active pane (the summary tracks the focused cursor). The
+        // severity rank maps to the same host-theme colour the gutter
+        // glyph + underline use, via `diagnostic_glyph_and_color`.
+        let diag_mode_on = render_state
+            .translator
+            .active_minor_modes
+            .iter()
+            .any(|m| *m == lattice_lsp::modes::LspDiagnosticsMode::mode_id());
+        let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> = if is_active
+            && diag_mode_on
+        {
+            render_state
+                .diagnostics
+                .inline_summary
+                .as_ref()
+                .map(|(line, summary)| {
+                    let severity = match summary.severity_rank {
+                        0 => lattice_lsp::DiagnosticSeverity::ERROR,
+                        1 => lattice_lsp::DiagnosticSeverity::WARNING,
+                        2 => lattice_lsp::DiagnosticSeverity::INFORMATION,
+                        _ => lattice_lsp::DiagnosticSeverity::HINT,
+                    };
+                    let color =
+                        diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, severity).1;
+                    crate::editor_element::InlineDiagSummary {
+                        line: *line,
+                        text: format!("    {}", summary.text),
+                        color,
+                    }
+                })
+        } else {
+            None
+        };
+
         // T.6: inlay color resolves from the `inlay.hint` element
         // (shared with the TUI peer's `inlay_hint_style`).
         let inlay_color: u32 = resolved_theme
@@ -1981,6 +2018,7 @@ impl EditorView {
             inlay_hints,
             diagnostic_underlines,
             inlay_color,
+            inline_diag_summary,
             // S4.1 (2026-05-27): active pane consumes the cell
             // matrix published by the cell-builder worker;
             // inactive panes pass `None` (mirrors `visible_rows`

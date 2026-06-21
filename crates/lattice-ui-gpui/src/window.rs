@@ -300,6 +300,38 @@ fn collect_pane_geometries(
     }
 }
 
+/// Select the global bottom-row content (vim's shared cmdline / echo
+/// line) plus the echo level for colouring. While typing `:` / `/` it's
+/// the in-progress minibuffer; otherwise it's the last echo message — a
+/// `:set foo?` value, a command error, or the `-- INSERT --` showmode
+/// (ML.5d) — restoring the echo the TUI peer shows (GPUI previously left
+/// the row blank outside Command/Search). Pure, so it is unit-testable
+/// without a gpui render context.
+fn bottom_row_content(
+    modal: lattice_grammar::ModalState,
+    modeline: &lattice_host::render_state::ModelineRenderState,
+    messages: &lattice_host::render_state::MessagesRenderState,
+) -> (String, Option<lattice_host::action::EchoLevel>) {
+    use lattice_grammar::ModalState;
+    match modal {
+        ModalState::Command => (format!(":{}", modeline.cmdline_text), None),
+        ModalState::Search(dir) => {
+            let prefix = match dir {
+                lattice_grammar::SearchDirection::Forward => '/',
+                lattice_grammar::SearchDirection::Backward => '?',
+            };
+            let pattern = modeline.search_pattern.as_deref().unwrap_or("");
+            (format!("{prefix}{pattern}"), None)
+        }
+        // Any non-minibuffer mode shows the last echo message (until the
+        // next command / mode change overwrites or clears it).
+        _ => match messages.last.as_deref() {
+            Some(msg) => (msg.text.clone(), Some(msg.level)),
+            None => (String::new(), None),
+        },
+    }
+}
+
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
     // Slice 3c.final.B.10: typed-options registry via published
     // `options()` sub-state — wait-free Arc clone.
@@ -2807,18 +2839,14 @@ impl Render for EditorView {
         // Slice 3c.final.B.7: cmdline + search-line via published
         // `modeline()` sub-state — wait-free Arc clones.
         let modeline = self.app.modeline();
-        let bottom_row: String = match modal {
-            ModalState::Command => format!(":{}", modeline.cmdline_text),
-            ModalState::Search(dir) => {
-                let prefix = match dir {
-                    lattice_grammar::SearchDirection::Forward => '/',
-                    lattice_grammar::SearchDirection::Backward => '?',
-                };
-                let pattern = modeline.search_pattern.as_deref().unwrap_or("");
-                format!("{prefix}{pattern}")
-            }
-            _ => String::new(),
-        };
+        let messages = self.app.messages();
+        // Bottom global row: the in-progress `:`/`/` minibuffer while
+        // typing, otherwise the last echo message — a `:set foo?` value,
+        // a command error, or the `-- INSERT --` showmode (ML.5d). This
+        // is vim's shared bottom line; GPUI previously left it blank
+        // outside Command/Search, so echoes the TUI peer shows were
+        // invisible here. `bottom_echo_level` colours errors / warnings.
+        let (bottom_row, bottom_echo_level) = bottom_row_content(modal, &modeline, &messages);
         let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
 
         let theme = self.app.theme.clone();
@@ -3641,6 +3669,29 @@ impl Render for EditorView {
         root = root
             .child(document_area)
             .child({
+                // Level-coloured echo (errors red + bold, warnings
+                // yellow) to match the TUI echo line; cmdline / search /
+                // Info fall through to the default status foreground.
+                let mut msg = div().child(bottom_row);
+                match bottom_echo_level {
+                    Some(lattice_host::action::EchoLevel::Error) => {
+                        let fg = resolved_theme
+                            .get(theme_ids.diagnostic_error)
+                            .fg
+                            .map(|c| c.to_rgb_u32(0x00f3_8ba8))
+                            .unwrap_or(0x00f3_8ba8);
+                        msg = msg.text_color(rgb(fg)).font_weight(gpui::FontWeight::BOLD);
+                    }
+                    Some(lattice_host::action::EchoLevel::Warn) => {
+                        let fg = resolved_theme
+                            .get(theme_ids.diagnostic_warning)
+                            .fg
+                            .map(|c| c.to_rgb_u32(0x00f9_e2af))
+                            .unwrap_or(0x00f9_e2af);
+                        msg = msg.text_color(rgb(fg));
+                    }
+                    _ => {}
+                }
                 let row = div()
                     .bg(rgb(theme.status_background))
                     .text_color(rgb(theme.status_foreground))
@@ -3648,7 +3699,7 @@ impl Render for EditorView {
                     .py_1()
                     .flex()
                     .flex_row()
-                    .child(div().child(bottom_row));
+                    .child(msg);
                 if bottom_is_minibuffer {
                     row.child(
                         div()
@@ -3916,5 +3967,45 @@ mod modeline_tests {
         let inactive = resolved.get(ids.modeline_inactive);
         assert_eq!(inactive.bg.unwrap().to_rgb_u32(0), 0x0031_3244, "inactive bar = surface0");
         assert_eq!(inactive.fg.unwrap().to_rgb_u32(0), 0x006c_7086, "inactive fg = overlay");
+    }
+
+    /// The bottom global row shows the in-progress `:` minibuffer in
+    /// Command mode, but otherwise falls back to the last echo message
+    /// (e.g. a `:set wrap?` value) — the parity gap with the TUI peer
+    /// this fixes. `super::bottom_row_content` is the pure selector.
+    #[test]
+    fn bottom_row_falls_back_to_echo_outside_minibuffer() {
+        use lattice_grammar::ModalState;
+        use lattice_host::action::{EchoLevel, EchoMessage};
+        use lattice_host::render_state::{MessagesRenderState, ModelineRenderState};
+        use std::sync::Arc;
+
+        let echo = MessagesRenderState {
+            last: Some(Arc::new(EchoMessage {
+                text: "wrap=false".to_string(),
+                level: EchoLevel::Info,
+            })),
+        };
+        let modeline = ModelineRenderState::default();
+
+        // Normal mode → the echo (this is what GPUI used to drop).
+        let (row, level) =
+            super::bottom_row_content(ModalState::Normal, &modeline, &echo);
+        assert_eq!(row, "wrap=false");
+        assert!(matches!(level, Some(EchoLevel::Info)));
+
+        // Command mode → the `:` minibuffer wins over any pending echo.
+        let cmd = ModelineRenderState {
+            cmdline_text: Arc::from("set wrap?"),
+            ..Default::default()
+        };
+        let (row, level) = super::bottom_row_content(ModalState::Command, &cmd, &echo);
+        assert_eq!(row, ":set wrap?");
+        assert!(level.is_none(), "cmdline carries no echo level");
+
+        // Normal mode, no message → blank row.
+        let empty = MessagesRenderState { last: None };
+        let (row, _) = super::bottom_row_content(ModalState::Normal, &modeline, &empty);
+        assert!(row.is_empty());
     }
 }

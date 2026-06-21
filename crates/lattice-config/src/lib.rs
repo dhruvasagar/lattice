@@ -71,6 +71,7 @@ mod domain;
 mod erased;
 pub mod group;
 pub mod loader;
+mod modeline_zone;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
 // construction. Direct construction of `Option<T>` is the
@@ -121,6 +122,7 @@ pub use core_options::{
     CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
+    ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
     NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
     SignatureDisplay,
     TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
@@ -129,13 +131,16 @@ pub use core_options::{
 pub use erased::ErasedOption;
 pub use group::{
     Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Messages,
-    Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline, Terminal,
+    Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline, Terminal,
     ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
     load_file, lookup_dotted_path, project_config_path,
 };
+// ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
+// right}`). The first list-valued option; see `modeline_zone`.
+pub use modeline_zone::ModelineZone;
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated
 // `build_spec()` methods can name them, but they are no longer

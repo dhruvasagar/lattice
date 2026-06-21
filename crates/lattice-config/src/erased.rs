@@ -74,6 +74,13 @@ pub trait ErasedOption: Send + Sync {
     /// everything else false.
     fn is_bool(&self) -> bool;
 
+    /// Whether this option's value is list-shaped (ML.5). The config
+    /// loader consults this to decide whether a TOML **array** for this
+    /// key should be joined into the option's delimited parse form
+    /// (`true`) or rejected as a scalar/array mismatch (`false`).
+    /// Forwards to [`OptionType::accepts_list`].
+    fn accepts_list(&self) -> bool;
+
     /// Set the option to its negation value (only meaningful when
     /// [`Self::is_bool`] is true). Used by the `:set noNAME` path.
     /// Returns `Err` if called on a non-bool option (registry
@@ -164,6 +171,10 @@ impl<T: OptionType> ErasedOption for Option<T> {
 
     fn is_bool(&self) -> bool {
         T::is_bool()
+    }
+
+    fn accepts_list(&self) -> bool {
+        T::accepts_list()
     }
 
     fn negate(&self) -> Result<(), String> {

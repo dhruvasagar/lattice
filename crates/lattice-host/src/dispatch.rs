@@ -4382,6 +4382,19 @@ impl Editor {
         self.event_bus.publish_typed(MessagePushed { record });
     }
 
+    /// Set the transient echo-area message **without** recording it to
+    /// the `*messages*` ring (unlike [`Self::set_message`]). For
+    /// high-frequency ephemeral notices — the vim showmode indicator
+    /// (`-- INSERT --`, ML.5d) on a mode change — that belong in the
+    /// echo area but must never flood message history (the per-event
+    /// spam `feedback_log_levels` warns against).
+    pub fn set_ephemeral_echo(&mut self, level: EchoLevel, text: impl Into<String>) {
+        self.last_message = Some(crate::action::EchoMessage {
+            text: text.into(),
+            level,
+        });
+    }
+
     /// Scroll so [`Self::cursor`] is inside `[scroll, scroll +
     /// viewport_height)`. No-op when `viewport_height == 0` (the
     /// renderer hasn't recorded a draw yet).
@@ -14522,6 +14535,47 @@ impl Editor {
                 from: format!("{prior:?}"),
                 to: format!("{state:?}"),
             });
+            // ML.5d: the modeline shows only the lean tag (NOR/INS/…),
+            // so surface the full mode name in the echo area on a real
+            // transition — vim's showmode (`-- INSERT --`). Insert /
+            // Replace / Visual / Select get the indicator; entering
+            // Normal clears a lingering one; Command / Search /
+            // Operator-pending own their own line (cmdline / showcmd)
+            // and so leave the echo untouched.
+            use lattice_grammar::VisualKind;
+            let showmode = match state {
+                ModalState::Insert => Some("-- INSERT --"),
+                ModalState::Replace => Some("-- REPLACE --"),
+                ModalState::Visual(VisualKind::Charwise) => Some("-- VISUAL --"),
+                ModalState::Visual(VisualKind::Linewise) => Some("-- VISUAL LINE --"),
+                ModalState::Visual(VisualKind::Blockwise) => Some("-- VISUAL BLOCK --"),
+                ModalState::Select(VisualKind::Charwise) => Some("-- SELECT --"),
+                ModalState::Select(VisualKind::Linewise) => Some("-- SELECT LINE --"),
+                ModalState::Select(VisualKind::Blockwise) => Some("-- SELECT BLOCK --"),
+                ModalState::Normal
+                | ModalState::OperatorPending
+                | ModalState::Command
+                | ModalState::Search(_) => None,
+            };
+            match showmode {
+                Some(text) => self.set_ephemeral_echo(EchoLevel::Info, text),
+                None => {
+                    // Leaving a showmode mode (e.g. <Esc> from Insert)
+                    // clears the lingering `-- NAME --`. Gated on the
+                    // *prior* being a showmode mode so a message set
+                    // during a Command / operator (which leave from a
+                    // non-showmode prior) is never clobbered.
+                    if matches!(
+                        prior,
+                        ModalState::Insert
+                            | ModalState::Replace
+                            | ModalState::Visual(_)
+                            | ModalState::Select(_)
+                    ) {
+                        self.last_message = None;
+                    }
+                }
+            }
         }
     }
 
@@ -27612,6 +27666,83 @@ mod tests {
         assert_eq!(
             reg.resolved().get(kw).fg,
             Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+    }
+
+    /// ML.5d: entering an insert-like / visual mode surfaces the full
+    /// mode name in the echo area (vim's `-- INSERT --`) WITHOUT
+    /// recording it to the `*messages*` ring — the lean modeline tag
+    /// stays the persistent indicator; the echo is the transient
+    /// full-name reveal (no per-mode-change message spam).
+    #[test]
+    fn mode_change_echoes_showmode_without_message_spam() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let ring_len_before = editor.messages.lock().unwrap().len();
+
+        editor.enter_mode(ModalState::Insert);
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- INSERT --")
+        );
+        let ring = editor.messages.lock().unwrap();
+        assert_eq!(ring.len(), ring_len_before, "showmode must not hit the ring");
+        assert!(
+            !ring.records().iter().any(|r| r.text.contains("INSERT")),
+            "showmode text stays out of message history"
+        );
+    }
+
+    /// ML.5d: leaving a showmode mode (e.g. `<Esc>` from Insert) clears
+    /// the lingering `-- INSERT --` indicator.
+    #[test]
+    fn leaving_showmode_clears_the_echo() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Insert);
+        assert!(editor.last_message.is_some());
+        editor.enter_mode(ModalState::Normal);
+        assert!(
+            editor.last_message.is_none(),
+            "returning to Normal clears the showmode echo"
+        );
+    }
+
+    /// ML.5d: visual sub-kinds get distinct full-name indicators.
+    #[test]
+    fn visual_variants_have_distinct_showmode_text() {
+        use lattice_grammar::{ModalState, VisualKind};
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Visual(VisualKind::Linewise));
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- VISUAL LINE --")
+        );
+        editor.enter_mode(ModalState::Visual(VisualKind::Blockwise));
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- VISUAL BLOCK --")
+        );
+    }
+
+    /// ML.5d: a real echo message set during a Command (`:w` →
+    /// "written") survives the return to Normal — the clear is gated on
+    /// the *prior* being a showmode mode, and Command is not one.
+    #[test]
+    fn returning_to_normal_from_command_preserves_real_message() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Command);
+        editor.set_message(EchoLevel::Info, "written");
+        editor.enter_mode(ModalState::Normal);
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("written"),
+            "Command→Normal must not clobber a real message"
         );
     }
 

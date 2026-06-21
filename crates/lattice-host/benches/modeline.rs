@@ -58,9 +58,14 @@ fn bench_modeline_build(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let snap = &rs.modeline_elements;
-                // Mirror the renderer's per-frame zone resolution.
-                for zone in [Zone::Left, Zone::Center, Zone::Right] {
-                    for el in snap.registry.zone_ordered(zone) {
+                // Mirror the renderer's per-frame zone resolution exactly:
+                // ML.5 routes membership/order through `resolve_layout`
+                // (config read + claim-set + per-zone descriptor list),
+                // then resolves each descriptor's content. Still
+                // O(elements), independent of document size.
+                let layout = modeline::resolve_layout(&snap.registry, &rs.options.config);
+                for els in [&layout.left, &layout.center, &layout.right] {
+                    for el in els {
                         let id = el.id.as_str();
                         let content = if id.starts_with("core.") {
                             modeline::resolve_builtin_content(id, &pane, true, &rs, None)

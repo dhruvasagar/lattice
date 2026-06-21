@@ -249,6 +249,18 @@ impl OptionGroup for Snippet {
         "Snippet engine: activation policy + supported-language allowlist.";
 }
 
+/// Modeline (bottom per-pane status row) layout options. ML.5
+/// (2026-06-21): `ui.modeline.{left,center,right}` zone assignment +
+/// `ui.modeline.separator`. The `:customize modeline` umbrella for the
+/// configurable element-system modeline
+/// (`docs/dev/architecture/modeline.md` §11).
+pub struct Modeline;
+impl OptionGroup for Modeline {
+    const NAME: &'static str = "modeline";
+    const DOC: &'static str =
+        "Modeline (bottom per-pane status row): per-zone element layout + separator.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -305,6 +317,9 @@ static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group
 #[linkme::distributed_slice(GROUP_DECLS)]
 static SNIPPET_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Snippet>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static MODELINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Modeline>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -325,6 +340,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Terminal::NAME));
     assert!(!ends_with_mode_suffix(Search::NAME));
     assert!(!ends_with_mode_suffix(Snippet::NAME));
+    assert!(!ends_with_mode_suffix(Modeline::NAME));
 };
 
 #[cfg(test)]

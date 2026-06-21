@@ -19,8 +19,17 @@
 //!   content store (ML.3); the renderer reads them from the snapshot, so
 //!   they never round-trip through this module.
 
+use std::collections::HashSet;
+
+use lattice_config::{
+    ConfigRegistry, ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight,
+    ModelineSeparator, ModelineZone,
+};
 use lattice_core::ui::pane::PaneState;
-use lattice_mode::{ElementContent, ElementId, ModelineElement, ModelineRole, ModelineService, Zone};
+use lattice_mode::{
+    ElementContent, ElementId, ModelineElement, ModelineRegistry, ModelineRole, ModelineService,
+    Zone,
+};
 
 use crate::render_state::RenderState;
 
@@ -87,6 +96,36 @@ pub fn modal_label(rs: &RenderState) -> &'static str {
         ModalState::Command => "CMD",
         ModalState::Search(_) => "SEARCH",
         ModalState::Replace => "REPLACE",
+    }
+}
+
+/// Lean 3-letter modal label for the **modeline** (ML.5d). The full
+/// name ([`modal_label`]) is echoed in the echo area on mode *change*;
+/// the persistent modeline tag stays compact + modern (Helix-style
+/// `NOR`/`INS`/`VIS`), disambiguated by colour through the
+/// `modeline.mode` theme role. Same source-of-truth read as
+/// [`modal_label`] (published `RenderState`, no actor crossing).
+pub fn modal_label_short(rs: &RenderState) -> &'static str {
+    use lattice_grammar::ModalState;
+    let ad = rs.active_document.load();
+    if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
+        return if ad.terminal_insert_active {
+            "TIN"
+        } else if ad.terminal_visual_active {
+            "TVI"
+        } else {
+            "TRM"
+        };
+    }
+    match ad.modal {
+        ModalState::Normal => "NOR",
+        ModalState::Insert => "INS",
+        ModalState::Visual(_) => "VIS",
+        ModalState::Select(_) => "SEL",
+        ModalState::OperatorPending => "OPN",
+        ModalState::Command => "CMD",
+        ModalState::Search(_) => "SEA",
+        ModalState::Replace => "REP",
     }
 }
 
@@ -160,10 +199,10 @@ pub fn resolve_builtin_content(
     match id {
         CORE_MODE => {
             if is_active {
-                ElementContent::text(
-                    format!("[{}]", modal_label(rs)),
-                    ModelineRole::new(ROLE_MODE),
-                )
+                // Lean 3-letter tag, no brackets (ML.5d); colour comes
+                // from the `modeline.mode` role. The full mode name is
+                // echoed in the echo area on mode change instead.
+                ElementContent::text(modal_label_short(rs), ModelineRole::new(ROLE_MODE))
             } else {
                 ElementContent::default()
             }
@@ -192,9 +231,269 @@ pub fn resolve_builtin_content(
     }
 }
 
+// --- Config-driven zone layout (ML.5) -------------------------------
+// The renderers iterate THIS instead of `registry.zone_ordered(zone)`
+// so the `ui.modeline.{left,center,right}` options drive membership +
+// order, while built-in content stays computed host-side
+// (`resolve_builtin_content`) and pushed content stays read from the
+// snapshot. Shared by both peers so only paint differs (design §11).
+
+/// A pane modeline's resolved per-zone layout (ML.5): the ordered
+/// element descriptors for each zone after applying the `ui.modeline.*`
+/// config, plus the configured inter-element separator. Descriptors are
+/// borrowed from the snapshot registry (`'a`).
+pub struct ModelineLayout<'a> {
+    pub left: Vec<&'a ModelineElement>,
+    pub center: Vec<&'a ModelineElement>,
+    pub right: Vec<&'a ModelineElement>,
+    /// The effective inter-element separator the renderer inserts within
+    /// a zone — already padded: a non-blank `ui.modeline.separator` is
+    /// surrounded by a space each side (`|` → ` | `), a blank one is a
+    /// single space. So the renderer inserts it verbatim.
+    pub separator: String,
+    /// `ui.modeline.padding` — columns of blank margin at the start
+    /// (before Left) and end (after Right) of the row.
+    pub padding: usize,
+}
+
+/// Resolve `cfg` for one `zone` against `registry`. `Auto` → descriptor
+/// placement (`zone_ordered`) minus ids `claimed` by an explicit zone;
+/// explicit `Ids` → exactly those registered ids in order (unknown ids
+/// skipped + logged, never panic). Free fn (not a closure) so the
+/// `'a` borrow from `registry` is expressed cleanly.
+fn resolve_zone_descriptors<'a>(
+    registry: &'a ModelineRegistry,
+    zone: Zone,
+    cfg: &ModelineZone,
+    claimed: &HashSet<String>,
+) -> Vec<&'a ModelineElement> {
+    match cfg.ids() {
+        Some(ids) => ids
+            .iter()
+            .filter_map(|id| {
+                let el = registry.get(&ElementId::new(id.as_ref()));
+                if el.is_none() {
+                    tracing::debug!(
+                        target: "modeline",
+                        id = id.as_ref(),
+                        "ui.modeline.* references an unregistered element id; skipping"
+                    );
+                }
+                el
+            })
+            .collect(),
+        None => registry
+            .zone_ordered(zone)
+            .into_iter()
+            .filter(|el| !claimed.contains(el.id.as_str()))
+            .collect(),
+    }
+}
+
+/// Read a zone option's current value (cloned out of the wait-free
+/// snapshot), defaulting to `Auto` when the registry hasn't been seeded
+/// (tests / early boot).
+fn zone_option<D>(config: &ConfigRegistry) -> ModelineZone
+where
+    D: lattice_config::OptionDecl<Value = ModelineZone>,
+{
+    config
+        .get_typed::<D>()
+        .map(|a| (*a).clone())
+        .unwrap_or_default()
+}
+
+/// Resolve the full per-zone modeline layout for a pane from the
+/// descriptor registry + the `ui.modeline.{left,center,right,separator}`
+/// typed options (ML.5; design §11).
+///
+/// Per zone:
+/// - **`Auto`** (the default) → descriptor-driven: `zone_ordered(zone)`,
+///   minus any element id claimed by an *explicit* (non-`Auto`) other
+///   zone, so a moved element never double-renders. With no config at
+///   all every zone is `Auto` ⇒ exactly the pre-ML.5 descriptor layout.
+/// - **explicit `Ids`** → exactly those registered ids, in listed order;
+///   unknown / unregistered ids are skipped + logged (`debug!`, never
+///   panic). An empty list is an explicitly-blank zone.
+///
+/// The renderer still resolves each descriptor's *content* itself
+/// (built-ins host-side via [`resolve_builtin_content`], pushed via the
+/// snapshot) and applies the `separator`; this fn owns only the
+/// membership + order decision so both peers share it.
+pub fn resolve_layout<'a>(
+    registry: &'a ModelineRegistry,
+    config: &ConfigRegistry,
+) -> ModelineLayout<'a> {
+    let left_cfg = zone_option::<ModelineLeft>(config);
+    let center_cfg = zone_option::<ModelineCenter>(config);
+    let right_cfg = zone_option::<ModelineRight>(config);
+
+    // Effective separator: a non-blank glyph is auto-padded with a
+    // space each side (so `|` renders as ` | ` — the user gives the
+    // glyph, the renderer owns the spacing, sidestepping the `:set` /
+    // TOML whitespace-trim). A blank separator is a single space.
+    let raw_sep = config
+        .get_typed::<ModelineSeparator>()
+        .map(|a| (*a).clone())
+        .unwrap_or_else(|| " ".to_string());
+    let trimmed_sep = raw_sep.trim();
+    let separator = if trimmed_sep.is_empty() {
+        " ".to_string()
+    } else {
+        format!(" {trimmed_sep} ")
+    };
+
+    // Start/end row margin (`ui.modeline.padding`, default 1; validated
+    // 0..=16). Clamp defensively in case the registry isn't seeded.
+    let padding = config
+        .get_typed::<ModelinePadding>()
+        .map(|a| (*a).max(0) as usize)
+        .unwrap_or(1);
+
+    // Ids placed by any explicit (non-Auto) zone → removed from the Auto
+    // fallback of the other zones, so moving an element into an explicit
+    // zone doesn't leave a duplicate in its descriptor zone.
+    let mut claimed: HashSet<String> = HashSet::new();
+    for cfg in [&left_cfg, &center_cfg, &right_cfg] {
+        if let Some(ids) = cfg.ids() {
+            claimed.extend(ids.iter().map(|id| id.as_ref().to_string()));
+        }
+    }
+
+    ModelineLayout {
+        left: resolve_zone_descriptors(registry, Zone::Left, &left_cfg, &claimed),
+        center: resolve_zone_descriptors(registry, Zone::Center, &center_cfg, &claimed),
+        right: resolve_zone_descriptors(registry, Zone::Right, &right_cfg, &claimed),
+        separator,
+        padding,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- ML.5 resolve_layout -----------------------------------------
+
+    /// A registry holding just the four `core.*` built-ins (diff / lsp
+    /// are owner-registered at boot; not needed for layout tests).
+    fn builtin_registry() -> std::sync::Arc<ModelineRegistry> {
+        let svc = ModelineService::new();
+        register_builtin_elements(&svc);
+        svc.snapshot().registry
+    }
+
+    /// A config registry with every workspace option (incl. the real
+    /// `ui.modeline.*`) seeded at their defaults (all zones `Auto`).
+    fn modeline_config() -> ConfigRegistry {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r
+    }
+
+    fn zone_ids(els: &[&ModelineElement]) -> Vec<String> {
+        els.iter().map(|e| e.id.as_str().to_string()).collect()
+    }
+
+    /// No config (all zones `Auto`) ⇒ the pre-ML.5 descriptor layout,
+    /// and the default separator is a single space.
+    #[test]
+    fn resolve_layout_auto_matches_descriptor_order() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        let layout = resolve_layout(&reg, &cfg);
+        assert_eq!(zone_ids(&layout.left), ["core.mode", "core.path"]);
+        assert_eq!(zone_ids(&layout.right), ["core.position", "core.lang"]);
+        assert!(layout.center.is_empty());
+        assert_eq!(layout.separator, " ");
+    }
+
+    /// An explicit zone list reorders membership (by listed order, not
+    /// descriptor priority) — proves a live `:set` takes effect on the
+    /// next resolve.
+    #[test]
+    fn resolve_layout_explicit_list_reorders() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        cfg.parse_and_set_command("ui.modeline.right=core.lang,core.position")
+            .unwrap();
+        let layout = resolve_layout(&reg, &cfg);
+        // Listed order, not the descriptor priority order.
+        assert_eq!(zone_ids(&layout.right), ["core.lang", "core.position"]);
+    }
+
+    /// Unknown / unregistered ids in an explicit list are skipped (and
+    /// logged) — never panic.
+    #[test]
+    fn resolve_layout_skips_unknown_ids() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        cfg.parse_and_set_command("ui.modeline.left=core.mode,does.not.exist,core.path")
+            .unwrap();
+        let layout = resolve_layout(&reg, &cfg);
+        assert_eq!(zone_ids(&layout.left), ["core.mode", "core.path"]);
+    }
+
+    /// Moving an element into an explicit zone removes it from the
+    /// Auto fallback of its descriptor zone (no double-render).
+    #[test]
+    fn resolve_layout_claimed_id_drops_from_auto_zone() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        // Move core.position into an explicit Left; leave Right Auto.
+        cfg.parse_and_set_command("ui.modeline.left=core.mode,core.path,core.position")
+            .unwrap();
+        let layout = resolve_layout(&reg, &cfg);
+        assert_eq!(
+            zone_ids(&layout.left),
+            ["core.mode", "core.path", "core.position"]
+        );
+        // Right is Auto, but core.position is claimed by Left → only lang.
+        assert_eq!(zone_ids(&layout.right), ["core.lang"]);
+    }
+
+    /// An explicitly-empty list (`[]` / `:set ui.modeline.right=`)
+    /// blanks the zone, distinct from `Auto`.
+    #[test]
+    fn resolve_layout_empty_list_blanks_zone() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        cfg.parse_and_set_command("ui.modeline.right=").unwrap();
+        let layout = resolve_layout(&reg, &cfg);
+        assert!(layout.right.is_empty(), "explicit empty Right zone");
+        // Left untouched (still Auto / descriptor-driven).
+        assert_eq!(zone_ids(&layout.left), ["core.mode", "core.path"]);
+    }
+
+    /// A non-blank `ui.modeline.separator` is **auto-padded** with a
+    /// space on each side — the user gives the glyph, the renderer owns
+    /// the spacing (sidesteps the `:set` / TOML whitespace-trim, which
+    /// is why `|` and ` | ` previously rendered identically).
+    #[test]
+    fn resolve_layout_auto_pads_glyph_separator() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        cfg.parse_and_set_command("ui.modeline.separator=|").unwrap();
+        assert_eq!(resolve_layout(&reg, &cfg).separator, " | ");
+        // ` | ` trims to `|` then re-pads to the same — no double space.
+        cfg.parse_and_set_command("ui.modeline.separator= | ").unwrap();
+        assert_eq!(resolve_layout(&reg, &cfg).separator, " | ");
+        // A blank separator stays a single space (the default look).
+        cfg.parse_and_set_command("ui.modeline.separator= ").unwrap();
+        assert_eq!(resolve_layout(&reg, &cfg).separator, " ");
+    }
+
+    /// `ui.modeline.padding` defaults to 1 and flows into the layout.
+    #[test]
+    fn resolve_layout_reads_padding_default_and_set() {
+        let reg = builtin_registry();
+        let cfg = modeline_config();
+        assert_eq!(resolve_layout(&reg, &cfg).padding, 1, "default padding");
+        cfg.parse_and_set_command("ui.modeline.padding=3").unwrap();
+        assert_eq!(resolve_layout(&reg, &cfg).padding, 3);
+        cfg.parse_and_set_command("ui.modeline.padding=0").unwrap();
+        assert_eq!(resolve_layout(&reg, &cfg).padding, 0, "flush to edges");
+    }
 
     /// Boot registers the four built-ins with the spec'd zones +
     /// priorities (modeline.md §3 / slice plan ML.1a-render).
@@ -228,8 +527,9 @@ mod tests {
         let rs = editor.build_render_state();
         let pane = editor.pane_tree.active().clone();
 
+        // ML.5d: lean 3-letter tag, no brackets.
         let active_mode = resolve_builtin_content(CORE_MODE, &pane, true, &rs, None);
-        assert_eq!(active_mode.plain(), "[NORMAL]");
+        assert_eq!(active_mode.plain(), "NOR");
         let inactive_mode = resolve_builtin_content(CORE_MODE, &pane, false, &rs, None);
         assert!(inactive_mode.is_empty(), "mode hidden on inactive panes");
 

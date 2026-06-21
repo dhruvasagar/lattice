@@ -1072,7 +1072,6 @@ impl EditorView {
         is_active: bool,
         rs: &lattice_host::render_state::RenderState,
     ) -> gpui::Div {
-        use lattice_mode::Zone;
         const FALLBACK_FG: u32 = 0x00cd_d6f4; // palette `text`
         const FALLBACK_BAR: u32 = 0x001e_1e2e; // palette `base`
         let snap = &rs.modeline_elements;
@@ -1087,11 +1086,17 @@ impl EditorView {
         };
         let bar_bg = bar.bg.map(|c| c.to_rgb_u32(FALLBACK_BAR)).unwrap_or(FALLBACK_BAR);
 
-        // Resolve one zone's elements into role-tagged runs (same shape as
-        // the TUI's `resolve_zone`).
-        let zone_runs = |zone: Zone| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
+        // ML.5: the `ui.modeline.{left,center,right}` config drives zone
+        // membership + order; `resolve_layout` returns the per-zone
+        // descriptor lists (Auto = descriptor placement) + the configured
+        // separator. Content per descriptor is still resolved here
+        // (built-ins host-side, pushed from the snapshot) — same shape as
+        // the TUI's `resolve_zone`, parity in lockstep.
+        let layout = lattice_host::modeline::resolve_layout(&snap.registry, &rs.options.config);
+        let sep = layout.separator.clone();
+        let zone_runs = |els: &[&lattice_mode::ModelineElement]| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
             let mut runs: Vec<(String, Option<lattice_mode::ModelineRole>)> = Vec::new();
-            for el in snap.registry.zone_ordered(zone) {
+            for el in els {
                 // §7: Global-scope elements (e.g. the diff summary) render
                 // only on the active pane; PaneLocal is the default.
                 if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
@@ -1109,8 +1114,10 @@ impl EditorView {
                 if content.is_empty() {
                     continue;
                 }
-                if !runs.is_empty() {
-                    runs.push((" ".to_string(), None));
+                // Configured separator between elements within a zone
+                // (`ui.modeline.separator`, default a single space).
+                if !runs.is_empty() && !sep.is_empty() {
+                    runs.push((sep.clone(), None));
                 }
                 for span in content.spans {
                     if !span.text.is_empty() {
@@ -1121,11 +1128,18 @@ impl EditorView {
             runs
         };
 
-        let left = zone_runs(Zone::Left);
-        // Center now resolves from the registry like the other zones
-        // (ML.3 retired the legacy mode-items pull).
-        let center = zone_runs(Zone::Center);
-        let right = zone_runs(Zone::Right);
+        let mut left = zone_runs(&layout.left);
+        let center = zone_runs(&layout.center);
+        let mut right = zone_runs(&layout.right);
+        // `ui.modeline.padding`: blank margin at the row's start / end,
+        // expressed as content spaces so it matches the TUI peer exactly
+        // (the old `px_2` chrome in `pane_chrome` is dropped in favour of
+        // this configurable, cell-uniform margin).
+        if layout.padding > 0 {
+            let pad = (" ".repeat(layout.padding), None);
+            left.insert(0, pad.clone());
+            right.push(pad);
+        }
 
         // Style one run: inactive → uniform muted; active → per-role fg.
         let styled_run =
@@ -1203,7 +1217,10 @@ impl EditorView {
                     .opacity(content_opacity)
                     .child(inner),
             )
-            .child(status_row.px_2().py_1())
+            // Horizontal margin is now content-level (`ui.modeline.padding`,
+            // applied in `modeline_row` as leading/trailing spaces) so it
+            // matches the TUI peer exactly; only the vertical chrome stays.
+            .child(status_row.py_1())
     }
 
     /// render); inactive panes use the stashed `PaneState::cursor`

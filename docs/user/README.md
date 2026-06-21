@@ -47,6 +47,7 @@ same surface).
 | Narrow mode (`zn` operator, `:narrow` / `:widen`, edit-in-view → source, stacked one-hop, `znaf` in view)   | [narrow-mode.md](narrow-mode.md)    | ✅     |
 | Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
 | Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
+| Modeline (per-pane status row: zones, the modal tag + showmode echo, `ui.modeline.*` layout config)         | [modeline.md](modeline.md)          | ✅     |
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
 | Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
 | Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |

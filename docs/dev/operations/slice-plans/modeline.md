@@ -248,15 +248,81 @@ variants.
 (never panic); truncation/empty-content paths unchanged. *doc:* §5/§6.
 **Deps:** ML.2.
 
-### ML.5 — config surface  🗒
-**Design:** §11.
-**Change:** typed options `ui.modeline.{left,center,right,separator}`
-(Helix-shaped id lists) driving zone assignment + order; default layout
-when absent; unknown ids skipped + logged. `:set`/`:customize` reach
-them.
-**Artefacts:** *test* — option parse + reorder + unknown-id skip; live
-`:set` re-renders. *doc* — §11 + `user/` modeline help. *error handling*
-— malformed config falls back to default layout. **Deps:** ML.3.
+### ML.5 — config surface  ✅
+**Design:** §11. Carved into **ML.5a** (config layer) → **ML.5b** (host
+resolver + both renderers) → **ML.5d** (lean modal label + showmode
+echo) → **ML.5c** (docs). All landed.
+
+**Locked decision (value representation = option B):** the loader was
+**scalar-only** (TOML arrays warned "not applicable to scalar options"),
+so the design's Helix-array + typed-option shape wasn't free. Chose a
+real **`ModelineZone` typed list** (`Auto | Ids`) + a generic loader
+array-join (gated on `ErasedOption::accepts_list`) over a stringly-typed
+`String`-per-zone — protects paramount-#2 (reusable list-option
+primitive; the TOML array shape the design specifies) over the
+heuristic-#1 trap of routing around the loader gap. Per-zone default is
+`Auto` (descriptor-driven) so a newly-registered element auto-appears —
+Lattice's dynamic-registry adaptation of Helix's concrete-list defaults.
+
+#### ML.5a — `ModelineZone` option + `ui.modeline.*` + loader arrays  ✅
+**Landed:** `lattice_config::ModelineZone` (`Auto | Ids(Vec<Arc<str>>)`,
+`OptionType` — `auto` keyword, comma/whitespace-lenient parse,
+comma-join format, `accepts_list = true`); the four
+`ui.modeline.{left,center,right,separator}` typed options under a new
+`Modeline` `OptionGroup` (`:customize modeline`); loader
+`apply_array`/`apply_assignment` join string-arrays for list options
+(scalar options keep the "list not applicable" warning — the existing
+`list_at_scalar_position` test still holds). *Tests:* `modeline_zone`
+round-trips (7) + loader array-apply + empty-array-clears. 129 green,
+zero host/renderer changes.
+
+#### ML.5b — host `resolve_layout` + both renderers  ✅
+**Landed:** `lattice_host::modeline::resolve_layout(registry, config)` →
+`ModelineLayout { left, center, right, separator }`: `Auto` →
+`zone_ordered` minus ids **claimed** by an explicit zone (no
+double-render); explicit `Ids` → those registered ids in order, unknown
+skipped + `debug!`. Both `lattice-ui-tui::render::modeline_spans` and
+`lattice-ui-gpui::window::modeline_row` repointed off `zone_ordered` to
+the shared resolver in the SAME patch (parity); configured separator
+replaces the hardcoded space. *Tests:* 6 (Auto-matches-descriptor,
+explicit-reorder, unknown-skip, claim-removal, empty-blank,
+separator) + bench updated to the `resolve_layout` path (still
+O(elements)).
+
+#### ML.5d — lean modal label + showmode echo  ✅
+**Landed:** `core.mode` now shows a lean 3-letter tag (`NOR`/`INS`/…,
+terminal `TRM`/`TIN`/`TVI`), no brackets, via `modal_label_short`
+(full-name `modal_label` retained for echo/describe). `Editor::enter_mode`
+surfaces the full mode name in the echo area as vim showmode
+(`-- INSERT --`) on a real transition via `set_ephemeral_echo` (sets
+`last_message`, NOT the `*messages*` ring — no spam); entering Normal
+clears it; Command/Search/O-pending leave it untouched (no clobber of a
+real message). *Tests:* 4 (echo-no-spam, leave-clears, visual-variants,
+command→normal-preserves) + TUI render assertions updated `[NORMAL]`→`NOR`.
+
+#### ML.5e — modeline spacing (separator auto-pad + edge padding)  ✅
+**Trigger:** Dhruva set `separator = "|"` and `" | "` and saw the same
+result — the `:set`/TOML **trim** collapses both to `"|"`, and a bare
+glyph touches its neighbours. **Fix:** the renderer now *owns* the
+spacing. `resolve_layout` returns an **effective separator** — a
+non-blank `ui.modeline.separator` is auto-padded ` | ` (blank → single
+space), so the user supplies only the glyph. New
+**`ui.modeline.padding`** option (i64, default 1, validated 0..=16) —
+blank margin at the row start/end, applied as content-level spaces in
+BOTH peers (`compose_modeline_segments` gains a `padding` arg; GPUI
+`modeline_row` prepends/appends pad runs and `pane_chrome` drops its
+`px_2` so the cell margin is identical across peers). `ModelineLayout`
+gains `padding: usize`. *Tests:* host `resolve_layout_auto_pads_glyph_separator`
++ `resolve_layout_reads_padding_default_and_set`; TUI
+`compose_row_applies_edge_padding` (+ the 5 compose call-sites updated).
+Resolves the old "separator caveat".
+
+**Artefacts (whole ML.5):** *tests* — per-slice above (config 9, host
+resolver 8 + echo 4, loader 2, TUI compose 5). *bench* — `modeline.rs`
+measures the `resolve_layout` path. *doc* — design §11 + §11.1; user
+`modeline.md`; this plan. *error handling* — unknown ids skip+log,
+malformed/empty → blank zone, padding clamped, truncation saturates;
+never panic. **Deps:** ML.3.
 
 ### ML.4 — interaction (click + hover)  ⛔ deferred (API designed in ML.0)
 **Design:** §9. **Deferred per request**; the `Interaction` data model

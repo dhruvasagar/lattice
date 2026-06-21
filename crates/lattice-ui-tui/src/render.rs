@@ -8,7 +8,7 @@
 //! | gutter | buffer text                                           |
 //! | ...                                                            |
 //! +----------------------------------------------------------------+
-//! | mode line: \[NORMAL\]  path                line:col   lang     |
+//! | mode line: NOR  path                       line:col   lang     |
 //! +----------------------------------------------------------------+
 
 use std::sync::Arc;
@@ -2901,9 +2901,16 @@ fn modeline_spans(
         .map(|p| (p.status)(app, pane));
     let provider_ref = provider_label.as_deref();
 
-    let resolve_zone = |zone: lattice_mode::Zone| -> Vec<ModelineSeg> {
+    // ML.5: the `ui.modeline.{left,center,right}` config drives zone
+    // membership + order; `resolve_layout` returns the per-zone
+    // descriptor lists (Auto = descriptor placement) + the configured
+    // separator. The renderer still resolves each descriptor's content
+    // itself (built-ins host-side, pushed from the snapshot).
+    let layout = lattice_host::modeline::resolve_layout(&snap.registry, &rs.options.config);
+    let sep = layout.separator.clone();
+    let resolve_zone = |els: &[&lattice_mode::ModelineElement]| -> Vec<ModelineSeg> {
         let mut runs: Vec<ModelineSeg> = Vec::new();
-        for el in snap.registry.zone_ordered(zone) {
+        for el in els {
             // §7: Global-scope elements (e.g. the diff summary) render
             // only on the active pane; PaneLocal is the default.
             if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
@@ -2928,23 +2935,21 @@ fn modeline_spans(
             if content.is_empty() {
                 continue;
             }
-            // A single-space separator between elements within a zone.
-            if !runs.is_empty() {
-                runs.push((" ".to_string(), None));
+            // Configured separator between elements within a zone
+            // (`ui.modeline.separator`, default a single space).
+            if !runs.is_empty() && !sep.is_empty() {
+                runs.push((sep.clone(), None));
             }
             runs.extend(content_to_runs(content));
         }
         runs
     };
 
-    let left = resolve_zone(lattice_mode::Zone::Left);
-    // Center now resolves from the registry like the other zones (ML.3
-    // retired the legacy mode-items pull); empty until a producer or the
-    // config (ML.5) assigns Center elements.
-    let center = resolve_zone(lattice_mode::Zone::Center);
-    let right = resolve_zone(lattice_mode::Zone::Right);
+    let left = resolve_zone(&layout.left);
+    let center = resolve_zone(&layout.center);
+    let right = resolve_zone(&layout.right);
 
-    let segments = compose_modeline_segments(width, left, center, right);
+    let segments = compose_modeline_segments(width, layout.padding, left, center, right);
     segments
         .into_iter()
         .map(|(text, role)| {
@@ -3011,12 +3016,26 @@ fn truncate_runs(runs: Vec<ModelineSeg>, max: usize) -> Vec<ModelineSeg> {
 /// overlap (≥1 column between any two non-empty blocks).
 fn compose_modeline_segments(
     width: usize,
+    padding: usize,
     left: Vec<ModelineSeg>,
     center: Vec<ModelineSeg>,
     right: Vec<ModelineSeg>,
 ) -> Vec<ModelineSeg> {
     if width == 0 {
         return Vec::new();
+    }
+    // `ui.modeline.padding`: reserve a blank margin on each edge, lay the
+    // zones out into the inner width, then bookend with the margins so the
+    // total is still exactly `width`. Capped at half-width so a huge
+    // padding on a narrow pane can't underflow.
+    let pad = padding.min(width / 2);
+    if pad > 0 {
+        let inner = compose_modeline_segments(width - 2 * pad, 0, left, center, right);
+        let mut out: Vec<ModelineSeg> = Vec::with_capacity(inner.len() + 2);
+        out.push((" ".repeat(pad), None));
+        out.extend(inner);
+        out.push((" ".repeat(pad), None));
+        return out;
     }
     // Left is highest-priority: keep as much as fits.
     let left = truncate_runs(left, width);
@@ -8255,6 +8274,7 @@ mod tests {
     fn compose_row_places_left_and_right_at_edges() {
         let row = seg_text(&compose_modeline_segments(
             20,
+            0,
             vec![run("L")],
             vec![],
             vec![run("R")],
@@ -8265,10 +8285,27 @@ mod tests {
     }
 
     #[test]
+    fn compose_row_applies_edge_padding() {
+        // padding 2 ⇒ a 2-col blank margin at each edge; content fills
+        // the inner width; total still exactly `width`.
+        let row = seg_text(&compose_modeline_segments(
+            20,
+            2,
+            vec![run("L")],
+            vec![],
+            vec![run("R")],
+        ));
+        assert_eq!(row.chars().count(), 20, "row still fills width");
+        assert!(row.starts_with("  L"), "2-col left margin: {row:?}");
+        assert!(row.ends_with("R  "), "2-col right margin: {row:?}");
+    }
+
+    #[test]
     fn compose_row_centers_center_block() {
         // width 11, "mid" (3) ⇒ offset (11-3)/2 = 4.
         let row = seg_text(&compose_modeline_segments(
             11,
+            0,
             vec![],
             vec![run("mid")],
             vec![],
@@ -8279,7 +8316,8 @@ mod tests {
     #[test]
     fn compose_row_width_zero_is_empty() {
         assert!(
-            compose_modeline_segments(0, vec![run("L")], vec![run("C")], vec![run("R")]).is_empty()
+            compose_modeline_segments(0, 0, vec![run("L")], vec![run("C")], vec![run("R")])
+                .is_empty()
         );
     }
 
@@ -8289,6 +8327,7 @@ mod tests {
         // center budget saturates to 0 ⇒ dropped first.
         let row = seg_text(&compose_modeline_segments(
             12,
+            0,
             vec![run("LEFTLEFT")],
             vec![run("CENTER")],
             vec![run("RIGHTRIGHT")],
@@ -8300,6 +8339,7 @@ mod tests {
         // Extreme narrow width must not panic.
         let _ = compose_modeline_segments(
             1,
+            0,
             vec![run("LEFTLEFT")],
             vec![run("CENTER")],
             vec![run("RIGHTRIGHT")],
@@ -8307,7 +8347,7 @@ mod tests {
     }
 
     /// ML.1b: active-pane spans carry per-role foregrounds composed over
-    /// the active bar background (the `[NORMAL]` mode span is blue + bold
+    /// the active bar background (the `NOR` mode span is blue + bold
     /// on the surface1 bar in the default theme).
     #[test]
     fn modeline_active_spans_carry_per_role_styles() {
@@ -8316,9 +8356,10 @@ mod tests {
         let pane = app.panes().tree.active().clone();
         let spans = modeline_spans(&app, &pane, true, 60);
 
+        // ML.5d: lean 3-letter tag (no brackets).
         let mode = spans
             .iter()
-            .find(|s| s.content.contains("[NORMAL]"))
+            .find(|s| s.content.contains("NOR"))
             .expect("mode span present");
         assert_eq!(mode.style.fg, Some(Color::Rgb(0x89, 0xb4, 0xfa)), "mode fg = blue");
         assert!(
@@ -8375,7 +8416,7 @@ mod tests {
         (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
     }
 
-    /// Active pane: `core.mode` (`[NORMAL]`) + `core.path` in the Left
+    /// Active pane: `core.mode` (`NOR`) + `core.path` in the Left
     /// zone, `core.position` right-aligned in the Right zone — the same
     /// content the legacy single-string footer showed.
     #[test]
@@ -8384,8 +8425,9 @@ mod tests {
         let pane = app.panes().tree.active().clone();
         let row = render_status_row(&app, &pane, true, 40);
         assert_eq!(row.chars().count(), 40, "row fills pane width: {row:?}");
+        // ML.5d: lean 3-letter tag (no brackets).
         assert!(
-            row.trim_start().starts_with("[NORMAL]"),
+            row.trim_start().starts_with("NOR"),
             "Left zone leads with the modal label: {row:?}"
         );
         assert!(row.contains("[no name]"), "core.path present: {row:?}");
@@ -8402,7 +8444,7 @@ mod tests {
         let app = app_with("hello", 10);
         let pane = app.panes().tree.active().clone();
         let row = render_status_row(&app, &pane, false, 40);
-        assert!(!row.contains("[NORMAL]"), "no modal on inactive: {row:?}");
+        assert!(!row.contains("NOR"), "no modal on inactive: {row:?}");
         assert!(row.contains("[no name]"), "path still shows: {row:?}");
         assert!(
             row.trim_end().ends_with("1:0"),

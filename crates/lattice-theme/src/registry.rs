@@ -560,7 +560,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     reg_one(
         "modeline.mode",
         spec().fg("blue").bold(),
-        "Modal-state label (`[NORMAL]`) in the active modeline.",
+        "Lean modal-state tag (`NOR`/`INS`/…) in the active modeline.",
     );
     reg_one(
         "modeline.path",

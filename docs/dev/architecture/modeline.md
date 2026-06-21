@@ -307,14 +307,81 @@ Helix-shaped — element ids assigned to zones, in order:
 left      = ["core.mode", "core.path", "diagnostics"]
 center    = []                              # custom / plugin zone
 right     = ["lsp", "core.position", "core.lang"]
-separator = " "
+separator = "|"                             # auto-padded → " | "
+padding   = 1                               # start/end row margin (cols)
 ```
 
-Ids are registered `ElementId`s; unknown ids are skipped + logged
-(`debug!`, never panic). Absent config falls back to a built-in default
-layout. The `[ui.modeline]` keys are typed options (§5.12) so
-`:set`/`:customize` reach them; programmable assignment (predicates,
-per-language layouts) is the WASM-init job, not TOML.
+The five `[ui.modeline]` keys are **typed options** (§5.12) under the
+`modeline` group, so `:set` / `:customize modeline` reach them.
+
+**Value model — the `ModelineZone` typed list (ML.5).** The three zone
+keys hold a `ModelineZone`, the **first list-valued option** in the
+tree:
+
+- **`Auto`** (the default; TOML key *omitted*) → descriptor-driven:
+  the zone is `registry.zone_ordered(zone)` exactly as before ML.5. This
+  is what preserves **paramount #2**: a newly-registered mode/plugin
+  element appears in its descriptor's zone automatically, with **no**
+  config edit. (This is where Lattice deliberately diverges from Helix's
+  concrete-list defaults — Helix has a fixed element set; Lattice's
+  registry is dynamic, so a hard-coded default list would silence new
+  elements. The `Auto` fallback is the goal-driven adaptation, not a
+  copy — heuristic #2.)
+- **explicit list** (`["core.mode", …]`, or `[]` for a blank zone) →
+  exactly those registered ids, in listed order; unknown / unregistered
+  ids are **skipped + logged** (`debug!`, never panic).
+
+**Claim-removal (no double-render).** An id placed by any *explicit*
+zone is removed from the `Auto` fallback of the other zones, so moving
+e.g. `core.position` into an explicit `left` does not also leave it in
+the descriptor-default `right`. Resolution lives host-side in
+`lattice_host::modeline::resolve_layout(registry, config)` →
+`ModelineLayout { left, center, right, separator }`, consumed by **both**
+renderers (only paint differs — the §10 parity rule).
+
+**Surfaces.** TOML uses the Helix-shaped **array**
+(`left = ["core.mode", "core.path"]`); the config loader joins a string
+array into the option's delimited form via `ErasedOption::accepts_list`
+(scalar options still reject arrays). `:set` uses the comma form
+(`:set ui.modeline.left=core.mode,core.path`); `auto` is the reserved
+keyword that restores the descriptor default
+(`:set ui.modeline.left=auto`). `parse` is lenient (splits on commas or
+whitespace) so either TOML join round-trips.
+
+**Spacing (separator auto-pad + edge padding).** The `:set` / TOML
+scalar path trims surrounding whitespace, so the *user* can't carry
+spaces in a separator value. Instead the renderer **owns** the spacing:
+`resolve_layout` returns an *effective* separator — a non-blank
+`ui.modeline.separator` is auto-padded with a space each side (`|` →
+` | `), a blank one is a single space — so the user supplies only the
+glyph (`:set ui.modeline.separator=|` and `=" | "` resolve identically,
+which is the behaviour confusion this removed). Separately,
+`ui.modeline.padding` (int columns, default 1) is a blank margin at the
+row's start (before Left) and end (after Right). Both renderers apply
+the margin as content-level spaces — the TUI in
+`compose_modeline_segments`, GPUI in `modeline_row` (replacing the old
+`px_2` chrome) — so the cell margin is identical across peers.
+
+Programmable assignment (predicates, per-language layouts) is the
+WASM-init job, not TOML (§6).
+
+### 11.1 Modal label + showmode echo (ML.5d)
+
+The `core.mode` element shows a **lean 3-letter tag** — `NOR` / `INS` /
+`VIS` / `SEL` / `OPN` / `CMD` / `SEA` / `REP` (terminal: `TRM` / `TIN` /
+`TVI`) — no brackets, colour from the `modeline.mode` role (Helix-style,
+`feedback_convention_first`). `lattice_host::modeline::modal_label_short`
+sources it; the full-name `modal_label` is retained for the echo +
+`:describe`.
+
+On a real mode transition (`Editor::enter_mode`, gated on
+`prior != state`) the **full** mode name is surfaced in the echo area as
+vim's showmode (`-- INSERT --`, `-- VISUAL LINE --`, …) via
+`set_ephemeral_echo` — which sets `last_message` **without** recording to
+the `*messages*` ring (no per-change spam, `feedback_log_levels`).
+Entering `Normal` clears a lingering indicator; `Command` / `Search` /
+`Operator-pending` own their own line (cmdline / showcmd) and leave the
+echo untouched, so a real message (`:w` → "written") is never clobbered.
 
 ---
 

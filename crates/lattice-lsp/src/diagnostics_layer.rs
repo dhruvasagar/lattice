@@ -117,6 +117,15 @@ pub struct DiagnosticsLayer {
     /// I/O.
     write: Arc<Mutex<()>>,
     logger: LspLogger,
+    /// Render-wake fired after every `apply` (a server
+    /// `publishDiagnostics` push) so diagnostic CHANGES — including the
+    /// CLEAR when an error is fixed — repaint off-keystroke instead of
+    /// waiting for the next cursor-driven publish (the gutter,
+    /// underline, and inline summary all read this layer at render
+    /// time). `None` in tests / pre-boot; boot stores the editor's
+    /// `async_landed` via `set_wake`. Shared across clones (Arc), so
+    /// any actor pump's `apply` wakes the one render loop.
+    wake: Arc<arc_swap::ArcSwapOption<tokio::sync::Notify>>,
 }
 
 impl DiagnosticsLayer {
@@ -127,7 +136,16 @@ impl DiagnosticsLayer {
             snapshot: Arc::new(ArcSwap::from(Arc::new(DiagnosticsSnapshot::default()))),
             write: Arc::new(Mutex::new(())),
             logger,
+            wake: Arc::default(),
         }
+    }
+
+    /// Install the render-wake `Notify` (the editor's `async_landed`).
+    /// Boot calls this once after the layer is built; every subsequent
+    /// `apply` fires it so a pushed diagnostic change repaints
+    /// off-keystroke. Idempotent (last wins); shared across all clones.
+    pub fn set_wake(&self, wake: Arc<tokio::sync::Notify>) {
+        self.wake.store(Some(wake));
     }
 
     /// Apply one [`DiagnosticEvent`]. Drops stale events; clears
@@ -185,6 +203,14 @@ impl DiagnosticsLayer {
         }
         rebuild_by_uri(&mut next, &key.0);
         self.snapshot.store(Arc::new(next));
+        // Drop the write guard before the render-wake (notify_one is a
+        // bare atomic + doesn't re-enter the layer, but keep the lock
+        // window minimal). Wakes the render loop so this push — a new
+        // error OR the clear of a fixed one — repaints off-keystroke.
+        drop(_g);
+        if let Some(n) = self.wake.load_full() {
+            n.notify_one();
+        }
     }
 
     /// All diagnostics for a URI, merged across every server
@@ -584,6 +610,25 @@ mod tests {
         let d = l.diagnostics_for(&uri);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].message, "boom");
+    }
+
+    #[tokio::test]
+    async fn apply_fires_the_render_wake() {
+        let l = layer();
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        l.set_wake(notify.clone());
+        // `apply` (a server push) must wake the render loop so the
+        // change repaints off-keystroke. notify_one before notified()
+        // stores a permit, so the await resolves.
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            Some(1),
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        tokio::time::timeout(std::time::Duration::from_millis(200), notify.notified())
+            .await
+            .expect("apply should fire the render-wake");
     }
 
     #[test]

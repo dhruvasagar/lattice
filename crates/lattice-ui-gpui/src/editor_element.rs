@@ -524,10 +524,15 @@ pub(crate) struct EditorElementPrepaintState {
     /// L4a.3 (lsp-architecture.md §15): the inline cursor-line
     /// diagnostic summary, pre-shaped, as `(viewport_row, shaped)`.
     /// `Some` only when `self.inline_diag_summary` is set and its line
-    /// is a visible row. `paint` paints it at
-    /// `text_origin_x + shaped_text[row].width` (the row's end-of-
-    /// content x, after any inlays).
-    inline_diag_overlay: Option<(usize, ShapedLine)>,
+    /// is a visible row, as `(row, end_col, shaped)`. `end_col` is the
+    /// source line's TRUE painted column count (source + inlay cells)
+    /// from the cell matrix — the same width the cursor uses at EOL —
+    /// when wrap is off; `None` for wrapped rows (paint falls back to
+    /// the row's shaped width, which is segment-local). `paint` puts
+    /// the summary at `text_origin_x + advance*end_col` (or the shaped
+    /// width). Using the cell column count avoids landing mid-line when
+    /// the cell + combined column models differ (inlay edge cases).
+    inline_diag_overlay: Option<(usize, Option<u32>, ShapedLine)>,
 }
 
 impl IntoElement for EditorElement {
@@ -1456,7 +1461,22 @@ impl Element for EditorElement {
         // only — `self.inline_diag_summary` is `None` on inactive panes.
         // Italic + severity colour mirror the TUI peer's eol style.
         let inline_diag_overlay = self.inline_diag_summary.as_ref().and_then(|sum| {
-            let row = row_meta.iter().position(|(l, _)| *l == sum.line)?;
+            // LAST visible row for the source line (the only row when
+            // wrap is off; the final wrap segment otherwise) so the
+            // summary trails the whole line, not the first segment.
+            let row = row_meta.iter().rposition(|(l, _)| *l == sum.line)?;
+            // True painted end column (source + inlay cells) from the
+            // cell matrix — matches the cursor's EOL x. Only reliable
+            // with wrap off (one row per line); wrapped rows use the
+            // shaped width fallback in paint.
+            let end_col = if wrap_width == 0 {
+                self.cell_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(sum.line))
+                    .map(|r| r.col_count())
+            } else {
+                None
+            };
             let mut italic = font.clone();
             italic.style = gpui::FontStyle::Italic;
             let runs = vec![TextRun {
@@ -1473,7 +1493,7 @@ impl Element for EditorElement {
                 &runs,
                 None,
             );
-            Some((row, shaped))
+            Some((row, end_col, shaped))
         });
 
         EditorElementPrepaintState {
@@ -1885,10 +1905,18 @@ impl Element for EditorElement {
         // cursor-transient interaction state, like the cursor / underline
         // overlays). Mirrors the TUI peer's `splice_virtual_text_into_spans`
         // eol splice ([[feedback_tui_gpui_parity]]).
-        if let Some((row, shaped)) = &prepaint.inline_diag_overlay {
+        if let Some((row, end_col, shaped)) = &prepaint.inline_diag_overlay {
             let line_y = row_top(*row);
             if line_y < pane_bottom {
-                let eol_x = text_origin_x + prepaint.shaped_text[*row].width;
+                // Prefer the cell matrix's painted column count
+                // (source + inlay cells) × advance — the true end of
+                // the line, matching the cursor's EOL x. Fall back to
+                // the row's shaped width for wrapped (segment-local)
+                // rows where the column count isn't a flat line width.
+                let eol_x = match end_col {
+                    Some(c) => text_origin_x + advance * (*c as f32),
+                    None => text_origin_x + prepaint.shaped_text[*row].width,
+                };
                 if let Err(err) = shaped.paint(point(eol_x, line_y), row_h(*row), window, cx) {
                     tracing::warn!(
                         target: "lattice_gpui::editor_element",

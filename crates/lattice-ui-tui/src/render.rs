@@ -4225,8 +4225,11 @@ pub(crate) fn compose_pane_lines(
         // only — unlike the buffer-intrinsic inlay/underline decorations
         // above, the cursor-line summary is interaction state tied to the
         // focused cursor (Helix/Zed show it only in the focused view).
-        // Spliced at `map_ob(line_len)` so it lands past the line's last
-        // glyph; the leading gap separates it from the code.
+        // Spliced at `usize::MAX` so it appends at the very end of the
+        // rendered line — AFTER any inlay-hint virtual text spliced
+        // above — rather than at the source-text end (which would land
+        // it before trailing inlays, mid-line). The leading gap
+        // separates it from the code.
         if ctx.is_active
             && view.lsp_diagnostics_enabled
             && let Some((sum_line, summary)) = rs.diagnostics.inline_summary.as_ref()
@@ -4234,7 +4237,7 @@ pub(crate) fn compose_pane_lines(
         {
             body = splice_virtual_text_into_spans(
                 body,
-                map_ob(line_len),
+                usize::MAX,
                 format!("    {}", summary.text),
                 diagnostic_summary_style(summary.severity_rank, view),
             );

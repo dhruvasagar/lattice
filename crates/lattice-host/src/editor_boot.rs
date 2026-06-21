@@ -670,6 +670,13 @@ impl Editor {
         // be handed to the reparse worker as its `on_publish` callback;
         // it also seats the `Editor::async_landed` field below.
         let async_landed: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
+        // Wake the render loop on every server `publishDiagnostics`
+        // push so diagnostic changes — a new error OR the clear when one
+        // is fixed — repaint off-keystroke, instead of waiting for the
+        // next cursor-driven publish. The layer fires `async_landed`
+        // from `apply`; shared across every actor pump via the cloned
+        // `DiagnosticsLayer` (Arc-backed). See lsp-architecture.md §12.
+        lsp_diagnostics.set_wake(async_landed.clone());
         let syntax: Option<SyntaxHandle> =
             match Syntax::for_language_with_registry(lang, lang_registry.clone()) {
                 Ok(Some(mut s)) => {

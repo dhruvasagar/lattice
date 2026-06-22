@@ -102,6 +102,17 @@ jobs:
         # at the top of this file.
         run: cargo clippy --workspace --tests --locked
 
+      - name: Send Status to Discord
+        uses: appleboy/discord-action@v1.2.0
+        if: always() # Sends notification regardless of success or failure
+        with:
+            webhook_url: ${{ secrets.DISCORD_WEBHOOK }}
+            message: |
+              **Repository:** ${{ github.repository }}
+              **Triggered By:** ${{ github.actor }}
+              **Status:** ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
+              **Commit:**
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest

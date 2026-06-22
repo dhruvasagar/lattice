@@ -1379,15 +1379,17 @@ impl Editor {
                     crate::diff::mode::diff_mode_layer_bindings(&action_ids),
                 );
                 // emacs-keys (S1): push the `<C-x>` leader layer once.
-                // Hardcoded default prefix for now; the configurable
-                // `emacs-keys-prefix` option lands in S1b. K.1.c's filter
-                // gates the chords to buffers where the mode is active.
-                // S1b: read the configurable leader prefix
-                // (`emacs-keys-prefix`, default `<C-x>`) from config so
-                // lattice.toml can rebind it. `config` is still borrowable
-                // here (the field above clones it). A malformed value
-                // degrades to an empty tribute inside
-                // `emacs_keys_layer_bindings` (warn, no panic).
+                // K.1.c's filter gates the chords to buffers where the
+                // mode is active. S1b reads the configurable leader prefix
+                // + enable flag (`emacs-keys-prefix` / `emacs-keys`) from
+                // config so lattice.toml can rebind or disable the tribute;
+                // `:set` re-pushes the layer live (see dispatch.rs). `config`
+                // is still borrowable here (the field above clones it).
+                // Disabled, or a malformed prefix => empty layer (no panic).
+                let emacs_keys_enabled = config
+                    .get_typed::<lattice_config::core_options::EmacsKeys>()
+                    .map(|v| *v)
+                    .unwrap_or(true);
                 let emacs_keys_prefix = config
                     .get_typed::<lattice_config::core_options::EmacsKeysPrefix>()
                     .map(|v| (*v).clone())
@@ -1397,7 +1399,11 @@ impl Editor {
                         crate::emacs_keys::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys",
-                    crate::emacs_keys::emacs_keys_layer_bindings(&emacs_keys_prefix, &registry),
+                    crate::emacs_keys::emacs_keys_layer_bindings(
+                        emacs_keys_enabled,
+                        &emacs_keys_prefix,
+                        &registry,
+                    ),
                 );
                 // K.2.5 (2026-06-02): explicit push_layer calls
                 // for `multibuffer-mode` and

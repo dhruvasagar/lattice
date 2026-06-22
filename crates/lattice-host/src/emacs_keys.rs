@@ -49,10 +49,13 @@ impl Mode for EmacsKeysMode {
     }
 
     /// Default-on in every document buffer — the tribute is universal.
-    /// `:set noemacs-keys` (the enable option, S1b) will gate this; until
-    /// the option lands the mode is unconditionally global. `Global`
-    /// admits document buffers but not Help / oil / file-tree kinds, so
-    /// the leader never shadows those buffers' own chords.
+    /// The enable toggle (`:set noemacs-keys`) is NOT gated here: the
+    /// mode stays unconditionally `Global` and the *layer* carries the
+    /// gate — `enabled=false` rebuilds the leader map empty (see
+    /// `emacs_keys_layer_bindings`), so disabling reclaims `<C-x>`
+    /// without churning the per-buffer mode set. `Global` admits
+    /// document buffers but not Help / oil / file-tree kinds, so the
+    /// leader never shadows those buffers' own chords.
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::Global
     }
@@ -84,16 +87,22 @@ const TIER1_BINDINGS: &[(&str, &str)] = &[
     ("k", "ex:bdelete"),       // C-x k   — kill buffer
 ];
 
-/// Build the `emacs-keys` keymap layer for the given `prefix`, resolving
-/// each binding's command name against `registry`. Returns the per-mode
-/// trie map the host pushes under `MinorMode(emacs-keys)`.
+/// Build the `emacs-keys` keymap layer for the given `enabled` flag and
+/// `prefix`, resolving each binding's command name against `registry`.
+/// Returns the per-mode trie map the host pushes under
+/// `MinorMode(emacs-keys)`.
+///
+/// `enabled` is the `:set emacs-keys` toggle: `false` yields an EMPTY
+/// Normal trie. The layer is the gate (the mode itself stays a marker),
+/// so re-pushing an empty layer on `:set noemacs-keys` clears the leader
+/// live — `<C-x>` falls through to plain Normal-mode resolution.
 ///
 /// Graceful degradation: an unparseable `prefix + suffix` chord (bad user
 /// config) or an unregistered command name skips that binding with a
-/// `warn!` rather than aborting boot. A wholly-malformed prefix therefore
-/// yields an empty tribute — `<C-x>` falls through to plain Normal-mode
-/// resolution — instead of a panic.
+/// `warn!` rather than aborting. A wholly-malformed prefix therefore also
+/// yields an empty tribute instead of a panic.
 pub fn emacs_keys_layer_bindings(
+    enabled: bool,
     prefix: &str,
     registry: &lattice_grammar::CommandRegistry,
 ) -> std::collections::HashMap<crate::keymap::BindingMode, crate::keymap_trie::KeymapTrie> {
@@ -107,7 +116,10 @@ pub fn emacs_keys_layer_bindings(
     let layer = KeymapLayer::MinorMode(EmacsKeysMode::mode_id());
     let mut trie = KeymapTrie::new();
 
-    for (suffix, command) in TIER1_BINDINGS {
+    // Disabled => publish an empty Normal trie so a re-push clears any
+    // prior bindings. `<C-x>` then resolves as plain Normal-mode input.
+    let bindings: &[(&str, &str)] = if enabled { TIER1_BINDINGS } else { &[] };
+    for (suffix, command) in bindings {
         let chord_str = format!("{prefix}{suffix}");
         let seq = match lattice_protocol::parse_chord_sequence(&chord_str) {
             Ok(seq) => seq,
@@ -160,7 +172,7 @@ mod tests {
 
     #[test]
     fn default_prefix_binds_every_tier1_chord() {
-        let modes = emacs_keys_layer_bindings("<C-x>", &registry());
+        let modes = emacs_keys_layer_bindings(true, "<C-x>", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
         // Each full chord resolves to a terminal binding.
         for full in ["<C-x><C-f>", "<C-x><C-s>", "<C-x>b", "<C-x><C-b>", "<C-x>k"] {
@@ -177,7 +189,7 @@ mod tests {
 
     #[test]
     fn alternate_prefix_retargets_the_whole_map() {
-        let modes = emacs_keys_layer_bindings("<C-c>", &registry());
+        let modes = emacs_keys_layer_bindings(true, "<C-c>", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
         // The new prefix is live...
         assert!(matches!(trie.lookup(&seq("<C-c><C-f>")), LookupResult::Bound { .. }));
@@ -189,8 +201,20 @@ mod tests {
     fn malformed_prefix_degrades_to_empty_no_panic() {
         // A garbage prefix can't parse into a chord; every binding skips,
         // leaving an empty tribute rather than panicking on boot.
-        let modes = emacs_keys_layer_bindings("<C-", &registry());
+        let modes = emacs_keys_layer_bindings(true, "<C-", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
         assert!(matches!(trie.lookup(&seq("<C-x><C-f>")), LookupResult::Unbound));
+    }
+
+    #[test]
+    fn disabled_yields_empty_layer() {
+        // `:set noemacs-keys` => enabled=false => the Normal trie is
+        // present but empty, so `<C-x>` and `<C-x><C-f>` both fall
+        // through (Unbound). Re-pushing this empty layer is how the live
+        // toggle reclaims `<C-x>`.
+        let modes = emacs_keys_layer_bindings(false, "<C-x>", &registry());
+        let trie = modes.get(&BindingMode::Normal).unwrap();
+        assert!(matches!(trie.lookup(&seq("<C-x><C-f>")), LookupResult::Unbound));
+        assert!(matches!(trie.lookup(&seq("<C-x>")), LookupResult::Unbound));
     }
 }

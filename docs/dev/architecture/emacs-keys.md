@@ -86,11 +86,19 @@ which is untouched and coexists.
   pattern (`crates/lattice-host/src/diff/mode.rs:196`). The trie's generic
   `Partial` match (`lattice-keymap/src/trie.rs`) resolves the two-key
   sequence; no new `BindingMode` variant is needed.
-- **Default-on:** `ActivationPolicy::Global` (every document buffer — the
-  `lattice-snippet` precedent), folded from the `emacs-keys` option
-  (on → `Global`, off → `Manual`). K.1.c's per-keystroke filter scopes the
-  chords to buffers where the mode is active; inactive buffers fall
-  through to plain Normal-mode resolution and never see `<C-x>`.
+- **Default-on + enable / prefix toggles:** the mode is unconditionally
+  `ActivationPolicy::Global` (active on every document buffer — the
+  `lattice-snippet` precedent; not Help / oil / file-tree). The *layer* is
+  the gate, not mode activation: the `emacs-keys` enable flag and the
+  `emacs-keys-prefix` value are applied by (re)building the layer's
+  contents — **empty when disabled** — at boot and live on `:set` via the
+  dispatcher's option-change handler (`push_layer` is idempotent on
+  `mode_id`, so a re-push replaces rather than appends). K.1.c's
+  per-keystroke filter scopes the chords to the (document) buffers where
+  the mode is active. A policy-cell fold (deactivating the mode itself
+  when disabled, à la snippet) is a possible future refinement; the
+  layer-gate keeps the mode a pure marker and unifies enable + prefix into
+  one re-push.
 - **Prefix token:** the configured prefix string is parsed to a chord and
   prepended to each binding's suffix at layer-build time.
 - **Introspection:** every binding carries `SourceLocation::builtin_file`,

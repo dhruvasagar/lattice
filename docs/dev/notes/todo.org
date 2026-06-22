@@ -50,6 +50,7 @@
 - [ ] GPUI: Zooming Text
 - [ ] Spell Check
 - [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
+- [ ] <C-=>, <C--> for zooming (font-size) in GPUI
 - [ ] Implement basic emacs style <C-x> bindings
   - [ ] <C-x>b :buffer
   - [ ] <C-x><C-s> for :write

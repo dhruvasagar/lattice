@@ -25,7 +25,20 @@ Verified against source:
 - Gaps: **no `quit-all`** (`app_effect.rs` ships `Quit` only) and **no
   close-other-panes / `only`** effect. Both built in S3.
 
-## S1 — `emacs-keys` mode + Tier-1 (reuse) 🚧
+## S1 — `emacs-keys` mode + Tier-1 (reuse) ✅
+
+Landed in three sub-slices:
+- **S1a** ✅ — mode + `emacs_keys_layer_bindings` Tier-1 + boot push
+  (hardcoded `<C-x>`).
+- **S1b.1** ✅ — configurable `emacs-keys-prefix` string option;
+  boot reads it; `:set emacs-keys-prefix=…` re-pushes the layer live.
+- **S1b.2** ✅ — `emacs-keys` bool enable option (default `true`).
+  The mode stays unconditionally `Global`; the *layer* carries the
+  gate — `enabled=false` rebuilds the leader map empty, so
+  `:set noemacs-keys` reclaims `<C-x>` live without churning the
+  per-buffer mode set. 4 unit tests green (bound/partial/unbound,
+  alternate-prefix retarget, malformed-prefix degrade, disabled→empty).
+
 
 - New module `crates/lattice-host/src/emacs_keys.rs` (host-coupled mode,
   mirroring `diff/mode.rs`): `emacs_keys_mode_id()`,
@@ -65,4 +78,4 @@ Verified against source:
 
 ## Status
 
-S0 ✅ · S1 🚧 · S2 🗒 · S3 🗒
+S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 🗒 · S3 🗒

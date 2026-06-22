@@ -23524,6 +23524,29 @@ impl Editor {
                     lattice_snippet::fold_activation_policy(activation, &languages),
                 ));
             }
+            "emacs-keys" | "emacs-keys-prefix" => {
+                // Live-rebuild the `<C-x>` leader layer when the enable
+                // flag or the prefix changes. `push_layer` is idempotent
+                // on mode_id (replaces, not appends); disabled => empty
+                // layer => `<C-x>` falls through. Mirrors the boot push.
+                let enabled = self
+                    .config
+                    .get_typed::<lattice_config::core_options::EmacsKeys>()
+                    .map(|v| *v)
+                    .unwrap_or(true);
+                let prefix = self
+                    .config
+                    .get_typed::<lattice_config::core_options::EmacsKeysPrefix>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_else(|| "<C-x>".to_string());
+                self.keymap.push_layer(
+                    crate::keymap_registry::PushLayerKind::MinorMode(
+                        crate::emacs_keys::EmacsKeysMode::mode_id(),
+                    ),
+                    "emacs-keys",
+                    crate::emacs_keys::emacs_keys_layer_bindings(enabled, &prefix, &self.registry),
+                );
+            }
             n if n.starts_with("ui.") => {
                 // Sync the host-side neutral theme first, then
                 // signal the renderer to rebuild its typed mirror.

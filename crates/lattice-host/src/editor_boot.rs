@@ -1398,7 +1398,7 @@ impl Editor {
                     crate::keymap_registry::PushLayerKind::MinorMode(
                         crate::emacs_keys::EmacsKeysMode::mode_id(),
                     ),
-                    "emacs-keys",
+                    "emacs-keys-mode",
                     crate::emacs_keys::emacs_keys_layer_bindings(
                         emacs_keys_enabled,
                         &emacs_keys_prefix,

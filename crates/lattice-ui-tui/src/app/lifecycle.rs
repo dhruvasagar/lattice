@@ -791,6 +791,35 @@ mod tests {
     }
 
     #[test]
+    fn quit_last_pane_with_other_tabs_closes_tab_not_editor() {
+        // `:q` on the last pane of a tab, when other tabs exist, closes
+        // the TAB (vim's tab-page close), it does NOT quit the editor.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::NewTab);
+        assert_eq!(a.editor.tabs.len(), 2);
+        assert_eq!(a.editor.pane_tree.len(), 1, "new tab starts with one pane");
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
+        assert!(
+            !a.editor.should_quit,
+            ":q with other tabs open must not quit the editor"
+        );
+        assert_eq!(a.editor.tabs.len(), 1, ":q closed the tab, leaving one");
+    }
+
+    #[test]
+    fn quit_all_with_other_tabs_quits_editor() {
+        // `:qa` ignores tab count just like pane count.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::NewTab);
+        assert_eq!(a.editor.tabs.len(), 2);
+        a.do_quit(false, lattice_grammar::QuitScope::All);
+        assert!(
+            a.editor.should_quit,
+            ":qa must quit regardless of how many tabs are open"
+        );
+    }
+
+    #[test]
     fn quit_all_with_multiple_panes_quits_editor() {
         // `:qa` ignores pane count: unlike `:q`, an extra pane must
         // NOT turn the quit into a pane-close. Clean buffers → quit.

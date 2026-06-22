@@ -33,7 +33,11 @@ pub struct EmacsKeysMode;
 
 impl EmacsKeysMode {
     pub fn mode_id() -> ModeId {
-        ModeId::new("emacs-keys")
+        // The mode id carries the conventional `-mode` suffix (like
+        // `snippet-mode`, `diff-mode`, …) so it reads as `emacs-keys-mode`
+        // in `:describe-mode` / mode listings. The user-facing *option*
+        // is the bare `emacs-keys` (`:set emacs-keys`) — a distinct name.
+        ModeId::new("emacs-keys-mode")
     }
 }
 
@@ -196,6 +200,15 @@ mod tests {
 
     fn seq(s: &str) -> Vec<lattice_protocol::chord::KeyChord> {
         lattice_protocol::parse_chord_sequence(s).unwrap()
+    }
+
+    #[test]
+    fn mode_id_uses_the_mode_suffix() {
+        // Convention (mode_id.rs): every mode id ends in `-mode`. The
+        // emacs-keys mode is `emacs-keys-mode`, distinct from the
+        // `emacs-keys` *option* (`:set emacs-keys`). Guards the rename.
+        assert_eq!(EmacsKeysMode::mode_id().as_str(), "emacs-keys-mode");
+        assert!(EmacsKeysMode::mode_id().as_str().ends_with("-mode"));
     }
 
     #[test]

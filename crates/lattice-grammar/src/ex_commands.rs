@@ -237,6 +237,50 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // Pane-management ex-commands (vim `:sp` / `:vs` / `:clo`, emacs
+    // `C-x 2` / `C-x 3` / `C-x 0`). No-arg today: the split shows the
+    // current buffer (an optional `[file]` arg is a future addition).
+    // Pane ops like `:only`, emitting the AppEffect carrier; reached by
+    // name (aliases in the host alias table), no `ExBuiltins` field.
+    let _split = registry.register_ex_command(
+        "ex:split",
+        "Split the window horizontally (`:sp[lit]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneHorizontal))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _vsplit = registry.register_ex_command(
+        "ex:vsplit",
+        "Split the window vertically (`:vs[plit]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneVertical))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _close = registry.register_ex_command(
+        "ex:close",
+        "Close the active pane (`:clo[se]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::ClosePane))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let no_hlsearch = registry.register_ex_command(
         "ex:nohlsearch",
         "Clear the search-highlight overlay (`:noh[lsearch]`).",
@@ -2720,6 +2764,36 @@ mod tests {
                 ));
             }
             other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pane_split_and_close_commands_emit_app_effects() {
+        // `:split` / `:vsplit` / `:close` are pane ops (like `:only`):
+        // each emits the matching `AppEffect` carrier. Resolved by name
+        // (no `ExBuiltins` field, mirroring `:tabonly`).
+        let (registry, _ex, mut doc) = fixture();
+        for (name, want) in [
+            ("ex:split", AppEffect::SplitPaneHorizontal),
+            ("ex:vsplit", AppEffect::SplitPaneVertical),
+            ("ex:close", AppEffect::ClosePane),
+        ] {
+            let id = registry
+                .id_by_name(name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let eff = execute(
+                &registry,
+                &mut doc,
+                lattice_core::BufferId(0),
+                Position::ZERO,
+                CommandInvocation::of(id),
+                &CancellationToken::never(),
+            )
+            .unwrap();
+            match eff {
+                Effect::AppAction(got) => assert_eq!(got, want, "{name}"),
+                other => panic!("{name}: unexpected effect: {other:?}"),
+            }
         }
     }
 

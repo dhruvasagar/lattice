@@ -17520,11 +17520,12 @@ impl Editor {
     /// `:q[uit]` (`scope = Pane`) / `:qa[ll]` (`scope = All`) -- quit.
     ///
     /// `Pane` is vim's `:q`: close the active pane when there's more
-    /// than one open (multi-pane quit-closes-pane); with one pane
-    /// left, run the dirty guard and shut down the editor. `All` is
-    /// vim's `:qa`: ignore pane / tab count and shut the editor
-    /// outright. Both share the dirty guard and shutdown below; they
-    /// differ only in the close-pane short-circuit, gated on `scope`.
+    /// than one open; else, if other tabs remain, close the current
+    /// tab; only on the very last pane of the last tab does it run the
+    /// dirty guard and shut down the editor. `All` is vim's `:qa`:
+    /// ignore pane / tab count and shut the editor outright. Both
+    /// share the dirty guard + shutdown; they differ only in the
+    /// pane/tab close short-circuits, gated on `scope`.
     ///
     /// `force` (`!`) bypasses the dirty guard. Publishes
     /// `Event::BeforeQuit` for observability when the editor
@@ -17533,6 +17534,14 @@ impl Editor {
     pub fn do_quit(&mut self, force: bool, scope: lattice_grammar::QuitScope) {
         if scope == lattice_grammar::QuitScope::Pane && self.pane_tree.len() > 1 {
             self.do_close_pane();
+            return;
+        }
+        // Last pane of this tab, but other tabs remain: close the tab
+        // (vim's `:q` closes the tab page when it's the last window in
+        // it, rather than quitting the editor). `:qa` (scope = All)
+        // skips this and quits the whole editor regardless.
+        if scope == lattice_grammar::QuitScope::Pane && self.tabs.len() > 1 {
+            self.do_close_tab();
             return;
         }
         if !force {
@@ -23571,7 +23580,7 @@ impl Editor {
                     crate::keymap_registry::PushLayerKind::MinorMode(
                         crate::emacs_keys::EmacsKeysMode::mode_id(),
                     ),
-                    "emacs-keys",
+                    "emacs-keys-mode",
                     crate::emacs_keys::emacs_keys_layer_bindings(enabled, &prefix, &self.registry),
                 );
             }

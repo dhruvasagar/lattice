@@ -377,6 +377,14 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // (vim's `<C-w>o`). Pane axis of `:tabonly`.
     ("only", "ex:only"),
     ("on", "ex:only"),
+    // Pane splits + close (vim `:sp` / `:vs` / `:clo`).
+    ("split", "ex:split"),
+    ("sp", "ex:split"),
+    ("vsplit", "ex:vsplit"),
+    ("vsp", "ex:vsplit"),
+    ("vs", "ex:vsplit"),
+    ("close", "ex:close"),
+    ("clo", "ex:close"),
     ("noh", "ex:nohlsearch"),
     ("nohl", "ex:nohlsearch"),
     ("nohlsearch", "ex:nohlsearch"),

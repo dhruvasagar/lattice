@@ -41,6 +41,7 @@ pub mod cursor_shape;
 pub mod diagnostics_query;
 pub mod dispatch;
 pub mod editor;
+pub mod emacs_keys;
 pub mod visual;
 // Phase 5.7.B.1: Editor::boot extraction from
 // `lattice-ui-tui::app::boot::App::new`.

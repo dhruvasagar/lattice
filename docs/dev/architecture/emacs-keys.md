@@ -1,0 +1,122 @@
+# Emacs-keys — a configurable `<C-x>` leader (tribute layer)
+
+A built-in, default-on minor mode (`emacs-keys`) that contributes an
+emacs-style `<C-x>` prefix in Normal (and Visual) mode. The prefix is a
+configurable leader; its sub-bindings invoke commands and actions that
+already exist (plus two small new ones). It is a tribute to emacs muscle
+memory, **not** a change to the vim grammar.
+
+## Why a minor mode, not Builtin
+
+`<C-x>` is not vim grammar. The Builtin keymap is reserved for universal
+vim grammar (`feedback_mode_owns_its_surface`). Shipping the tribute as a
+separable, named, default-on minor mode:
+
+- keeps the vim Builtin keymap pure (paramount goal #3, strict vim);
+- makes the tribute toggleable — `:set noemacs-keys` reclaims `<C-x>`, so
+  a vim purist can have it back (e.g. for a future `<C-a>` / `<C-x>`
+  number increment/decrement, which lattice does not implement today);
+- keeps the binding choice **and** the handler wiring with the mode that
+  owns them, not the host.
+
+The mode owns its keymap layer, its prefix option, and its activation
+policy. The two new actions it needs (`quit-all`, `only`) are host-level
+pane/lifecycle actions and live with the other host actions, exactly as
+the `diff-mode` chords target host `action:diff-get` / `action:diff-put`.
+
+## The `<C-x>` slot
+
+- **Normal `<C-x>` is unbound today** — no increment/decrement exists, so
+  the prefix clobbers nothing.
+- **Insert `<C-x>` is taken and stays untouched** — it is vim's expansion
+  prefix (`<C-x><C-s>` snippet expand, `AfterCtrlX`). emacs-keys is
+  Normal/Visual only, a different binding mode → no conflict.
+- **Trade named:** claiming Normal `<C-x>` forecloses giving vim's
+  number-decrement its canonical binding. The toggle is the escape hatch;
+  this is a deliberate, reversible default, not a silent grab.
+
+## Configurable prefix (leader), not a general `mapleader`
+
+`emacs-keys-prefix` (chord string, default `"<C-x>"`) sets the leader.
+The mode rebuilds its keymap layer as `&[prefix, suffix]` per binding, so
+changing the option re-targets every tribute chord.
+
+This is a **mode-local** configurable prefix. It is deliberately *not* a
+general vim `mapleader`: introducing a foundational, reusable leader
+mechanism as a side effect of a tribute — and defaulting it to a non-vim
+key (`<C-x>` vs vim's `\`) — would design the leader around emacs rather
+than on its own merits (heuristic #1). A general `mapleader` remains a
+separate future feature with vim-faithful defaults; if it lands, the
+emacs-keys prefix can key off it then.
+
+## Default leader-map
+
+emacs convention: `<C-x>b` = *switch* buffer (picker), `<C-x><C-b>` =
+*list* buffers — distinct from each other and from vim's `<C-w>` family,
+which is untouched and coexists.
+
+| Chord        | Emacs                | Action            | Target                            | Status |
+|--------------|----------------------|-------------------|-----------------------------------|--------|
+| `<C-x><C-f>` | find-file            | open file (picker)| `ex:files`                        | reuse  |
+| `<C-x><C-s>` | save-buffer          | save              | `ex:write`                        | reuse  |
+| `<C-x>b`     | switch-to-buffer     | switch buffer     | `ex:buffer-picker`                | reuse  |
+| `<C-x><C-b>` | list-buffers         | list buffers      | `ex:buffers`                      | reuse  |
+| `<C-x>k`     | kill-buffer          | delete buffer     | `ex:bdelete`                      | reuse  |
+| `<C-x><C-c>` | save-buffers-kill     | quit all          | `ex:quit-all` (**new**)           | build  |
+| `<C-x>2`     | split-window-below   | split horizontal  | `AppEffect::SplitPaneHorizontal`  | reuse  |
+| `<C-x>3`     | split-window-right   | split vertical    | `AppEffect::SplitPaneVertical`    | reuse  |
+| `<C-x>0`     | delete-window        | close pane        | `AppEffect::ClosePane`            | reuse  |
+| `<C-x>1`     | delete-other-windows | close other panes | `AppEffect::OnlyPane` (**new**)   | build  |
+| `<C-x>o`     | other-window         | focus next pane   | `AppEffect::NextPane`             | reuse  |
+
+## New commands required
+
+- **`quit-all` / `:qa`** — `app_effect.rs` ships `Quit` only. emacs
+  `C-x C-c` quits the whole editor; `:qa` is vim-canonical and currently
+  missing. Adds `AppEffect::QuitAll` + `Action::QuitAll` + `ex:quit-all`
+  (aliases `qa`, `qall`).
+- **`only` / `:only`** — no close-other-panes effect exists (emacs
+  `C-x 1`, vim `<C-w>o`). Adds `AppEffect::OnlyPane` + a pane-tree
+  collapse-to-active op + `ex:only` (alias `on`).
+
+## Mechanism
+
+- **Keymap:** a `KeymapTrie` of multi-key chords pushed once at boot under
+  `PushLayerKind::MinorMode(emacs_keys_mode_id())` — the `diff-mode`
+  pattern (`crates/lattice-host/src/diff/mode.rs:196`). The trie's generic
+  `Partial` match (`lattice-keymap/src/trie.rs`) resolves the two-key
+  sequence; no new `BindingMode` variant is needed.
+- **Default-on:** `ActivationPolicy::Global` (every document buffer — the
+  `lattice-snippet` precedent), folded from the `emacs-keys` option
+  (on → `Global`, off → `Manual`). K.1.c's per-keystroke filter scopes the
+  chords to buffers where the mode is active; inactive buffers fall
+  through to plain Normal-mode resolution and never see `<C-x>`.
+- **Prefix token:** the configured prefix string is parsed to a chord and
+  prepended to each binding's suffix at layer-build time.
+- **Introspection:** every binding carries `SourceLocation::builtin_file`,
+  so `:describe-key` / `:keymap` render the tribute bindings with
+  provenance (DESIGN.md §5.11.1).
+
+## Paramount-goal alignment
+
+- **#1 perf:** one additional minor-mode layer; chord resolution stays
+  trie-O(depth). The existing keymap bench already exercises synthetic
+  minor-mode layers; the tribute reuses that shape.
+- **#2 extensibility:** configurable prefix + per-binding toggle via typed
+  options; the mode owns its full surface.
+- **#3 strict vim:** Builtin stays pure vim; the tribute is separable and
+  toggleable.
+- **UX (higher court):** emacs muscle memory works out of the box; no
+  flicker, no hot-path cost; vim users reclaim `<C-x>` with one `:set`.
+
+## Rejected alternatives
+
+- **Builtin placement** — smudges `default_keymap()` ("the vim default
+  keymap", with a drift test) with non-vim bindings, and isn't toggleable
+  as a unit. Rejected on heuristic #1 + the mode-ownership standing rule.
+- **General `mapleader` now** — introduces a foundational mechanism as a
+  side effect of a tribute and bakes a non-vim leader default. Deferred as
+  a separate, vim-faithful feature.
+
+See the slice plan for sequencing:
+`docs/dev/operations/slice-plans/emacs-keys.md`.

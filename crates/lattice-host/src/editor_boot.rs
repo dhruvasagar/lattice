@@ -319,6 +319,8 @@ impl Editor {
             // `do`/`dp` chords gate on per-buffer diff
             // participation.
             crate::diff::mode::register_diff_modes(&mut mr);
+            // emacs-keys minor — default-on `<C-x>` leader (tribute).
+            crate::emacs_keys::register_emacs_keys_modes(&mut mr);
             crate::tutor::register_tutor_modes(&mut mr);
             mr
         };
@@ -1375,6 +1377,17 @@ impl Editor {
                     ),
                     "diff-mode",
                     crate::diff::mode::diff_mode_layer_bindings(&action_ids),
+                );
+                // emacs-keys (S1): push the `<C-x>` leader layer once.
+                // Hardcoded default prefix for now; the configurable
+                // `emacs-keys-prefix` option lands in S1b. K.1.c's filter
+                // gates the chords to buffers where the mode is active.
+                h.push_layer(
+                    crate::keymap_registry::PushLayerKind::MinorMode(
+                        crate::emacs_keys::EmacsKeysMode::mode_id(),
+                    ),
+                    "emacs-keys",
+                    crate::emacs_keys::emacs_keys_layer_bindings("<C-x>", &registry),
                 );
                 // K.2.5 (2026-06-02): explicit push_layer calls
                 // for `multibuffer-mode` and

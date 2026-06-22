@@ -112,6 +112,21 @@ which is untouched and coexists.
   still falls through to the count accumulator. The check is
   mode-agnostic — any layer binding a `[prefix, digit]` chord benefits.
   Lives in `input::compute_normal_action`.
+  - **Blast radius (verified safe for counts):** the rule also covers the
+    `CharLiteral`-wildcard prefixes `"` / `m` / `` ` `` / `'` / `@` / `q`,
+    whose next key matches the wildcard. There a digit is the prefix's
+    *argument* (register / mark / macro name), never a count — so `"5p`
+    now selects numbered register 5 (vim-correct) instead of being
+    mis-counted, *correcting* a latent bug. No count flow regresses:
+    counts after these prefixes always come before the prefix (`2"ap`)
+    or after its argument (`"a2p`), never as the immediately-following
+    key. Enumerated prefixes (`g`, `z`, `<C-w>`, operators) bind no
+    `[prefix, 1-9]`, so `<C-w>5+`, `g5`, `d2w` count exactly as before;
+    char-arg motions `f` / `t` / `r` use a separate `AfterFindChar`
+    binding mode and never reach this code. Guarded by
+    `tests/emacs_keys_dispatch.rs` (`window_prefix_then_digit_still_counts`,
+    `g_prefix_then_digit_still_counts`,
+    `register_prefix_then_digit_selects_register_not_count`).
 - **Activation is per-tick, not at registration:** because the mode is
   `Global`, it enters `active_modes` when the buffer's `MajorEntered`
   event is drained by the generic resolver (`drain_minor_activation`,

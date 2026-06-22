@@ -71,6 +71,14 @@ Landed in three sub-slices:
   + digit]` chord win over count parsing, while an unbound one (`d2w`)
   still counts. Mode-agnostic. Behavior-preserving for all vim count
   flows (749 lib tests green).
+  - **Blast radius reviewed (sound, no count regression):** the rule also
+    covers the wildcard prefixes `"` / `m` / `` ` `` / `'` / `@` / `q`,
+    where a digit is the prefix's *argument* (never a count) — `"5p` now
+    selects register 5 (vim-correct), *correcting* a latent mis-count.
+    Enumerated prefixes (`g`/`z`/`<C-w>`/operators) bind no `[prefix,1-9]`
+    → `<C-w>5+`/`g5`/`d2w` count unchanged; `f`/`t`/`r` use a separate
+    binding mode. See the design fragment's digit-precedence bullet for
+    the full enumeration + heuristic mapping.
 - **False-green caught:** the S1/S2 trie unit tests passed while the
   feature was inert at runtime (the `Global` mode only activates on the
   per-tick `MajorEntered` drain). New integration test
@@ -78,8 +86,9 @@ Landed in three sub-slices:
   leader, and drives the chords through `dispatch_chord` — covers Tier-1
   liveness implicitly + Tier-2 + the digit fix + count regression.
 - **Tests:** trie unit `default_prefix_binds_every_tier2_pane_chord`
-  (+ id-target check) and 5 integration tests (split-h/split-v/close/next
-  resolve + execute; bare digit still counts).
+  (+ id-target check) and 8 integration tests (split-h/split-v/close/next
+  resolve + execute; bare digit still counts; + 3 count-regression guards
+  for `<C-w>`/`g`/`"` prefixes).
 
 ## S3 — build `quit-all` + `only`, bind the rest 🗒
 

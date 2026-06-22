@@ -15,7 +15,7 @@
 use lattice_core::Document as CoreDocument;
 use lattice_host::action::Action;
 use lattice_host::editor::Editor;
-use lattice_protocol::{parse_chord_sequence, KeyChord};
+use lattice_protocol::{KeyChord, parse_chord_sequence};
 
 /// First `KeyChord` of a parsed sequence (every string here is a single
 /// chord, e.g. `"<C-x>"` or `"2"`).
@@ -39,10 +39,12 @@ fn boot_with_leader() -> Editor {
     ));
     let _ = editor.drain_minor_activation(); // clear boot-queued events
     let proto = lattice_protocol::ids::BufferId::new(editor.document_buffer_id.0 as u64);
-    editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
-        buffer: proto,
-        major: "text-mode".into(),
-    });
+    editor
+        .event_bus
+        .publish(lattice_protocol::Event::MajorEntered {
+            buffer: proto,
+            major: "text-mode".into(),
+        });
     let _ = editor.drain_minor_activation();
     editor
 }
@@ -117,4 +119,59 @@ async fn bare_digit_still_starts_a_count() {
         matches!(action, Action::PushDigit(2)),
         "bare `2` must start a count, got {action:?}"
     );
+}
+
+// ---- Regression guards for the digit-precedence fix --------------------
+// The fix gates the digit->count hoist on `[prefix + digit]` being BOUND
+// in the trie. These prove it does NOT make prefixes greedily swallow
+// digits: a prefix that doesn't bind the digit still starts a count, and
+// only a genuinely-bound `[prefix, digit]` (literal or wildcard) routes to
+// the trie. This is the surface that could have regressed count flows.
+
+/// Boot (leader active), press `prefix` then `suffix`; return the editor
+/// plus the `Action` the suffix keystroke resolved to.
+fn chord_after(prefix: &str, suffix: &str) -> (Editor, Action) {
+    let mut editor = boot_with_leader();
+    let mut partial: Vec<KeyChord> = Vec::new();
+    let _ = editor.dispatch_chord(chord(prefix), &mut partial);
+    let action = editor.dispatch_chord(chord(suffix), &mut partial);
+    (editor, action)
+}
+
+#[tokio::test]
+async fn window_prefix_then_digit_still_counts() {
+    // `<C-w>` has an enumerated sub-tree (no digit child), so `<C-w>5`
+    // must still start a count — vim's `<C-w>5+` grows the window by 5.
+    // The fix must not let the window prefix swallow the digit.
+    let (_editor, action) = chord_after("<C-w>", "5");
+    assert!(
+        matches!(action, Action::PushDigit(5)),
+        "`<C-w>5` must start a count, got {action:?}"
+    );
+}
+
+#[tokio::test]
+async fn g_prefix_then_digit_still_counts() {
+    // `g` binds enumerated continuations (`gg`, `g0`, ...) but no
+    // `g<1-9>`, so `g5` still starts a count.
+    let (_editor, action) = chord_after("g", "5");
+    assert!(
+        matches!(action, Action::PushDigit(5)),
+        "`g5` must start a count, got {action:?}"
+    );
+}
+
+#[tokio::test]
+async fn register_prefix_then_digit_selects_register_not_count() {
+    // `"` captures its register name via a `CharLiteral` wildcard, so
+    // `"5` selects numbered register 5 (vim `"5p`) — the digit is the
+    // register ARGUMENT, never a count. Before the fix the digit hoist
+    // mis-counted it; this guards the correction AND that select-register
+    // accepts a digit char without panicking.
+    let (editor, action) = chord_after("\"", "5");
+    assert!(
+        !matches!(action, Action::PushDigit(_)),
+        "`\"5` must select a register, not count, got {action:?}"
+    );
+    assert_invokes(&editor, &action, "action:select-register");
 }

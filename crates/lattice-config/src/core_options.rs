@@ -237,6 +237,15 @@ crate::options! {
     #[aliases("scb")]
     #[name("scrollbind")]
     pub Scrollbind: bool = false;
+
+    /// The `emacs-keys` leader prefix — the chord that opens the
+    /// `<C-x>` tribute map (`docs/dev/architecture/emacs-keys.md`).
+    /// Default `<C-x>`. Each binding is `prefix + suffix`, parsed via
+    /// `parse_chord_sequence`; a malformed value degrades to an empty
+    /// tribute (warn, no panic) rather than breaking boot. Read at boot
+    /// today; live `:set` re-push lands in S1b.2.
+    #[name("emacs-keys-prefix")]
+    pub EmacsKeysPrefix: String = "<C-x>".into();
 }
 
 // ---- Completion group: insert-completion knobs ----

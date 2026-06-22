@@ -1382,12 +1382,22 @@ impl Editor {
                 // Hardcoded default prefix for now; the configurable
                 // `emacs-keys-prefix` option lands in S1b. K.1.c's filter
                 // gates the chords to buffers where the mode is active.
+                // S1b: read the configurable leader prefix
+                // (`emacs-keys-prefix`, default `<C-x>`) from config so
+                // lattice.toml can rebind it. `config` is still borrowable
+                // here (the field above clones it). A malformed value
+                // degrades to an empty tribute inside
+                // `emacs_keys_layer_bindings` (warn, no panic).
+                let emacs_keys_prefix = config
+                    .get_typed::<lattice_config::core_options::EmacsKeysPrefix>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_else(|| "<C-x>".to_string());
                 h.push_layer(
                     crate::keymap_registry::PushLayerKind::MinorMode(
                         crate::emacs_keys::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys",
-                    crate::emacs_keys::emacs_keys_layer_bindings("<C-x>", &registry),
+                    crate::emacs_keys::emacs_keys_layer_bindings(&emacs_keys_prefix, &registry),
                 );
                 // K.2.5 (2026-06-02): explicit push_layer calls
                 // for `multibuffer-mode` and

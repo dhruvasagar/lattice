@@ -2114,6 +2114,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Vertical)
         }
         Action::ClosePane => editor.do_close_pane(),
+        Action::OnlyPane => editor.do_only_pane(),
         Action::NavigatePane(dir) => editor.do_navigate_pane(dir),
         Action::EqualizePanes => {
             // Issue #28 (2026-05-22): <C-w>= — reset every
@@ -5595,6 +5596,7 @@ impl Editor {
             AppEffect::SplitPaneHorizontal => out.next_actions.push(Action::SplitPaneHorizontal),
             AppEffect::SplitPaneVertical => out.next_actions.push(Action::SplitPaneVertical),
             AppEffect::ClosePane => out.next_actions.push(Action::ClosePane),
+            AppEffect::OnlyPane => out.next_actions.push(Action::OnlyPane),
             AppEffect::NavigatePane(dir) => out.next_actions.push(Action::NavigatePane(dir)),
             AppEffect::NextPane => out.next_actions.push(Action::NextPane),
             AppEffect::PrevPane => out.next_actions.push(Action::PrevPane),
@@ -17496,14 +17498,40 @@ impl Editor {
         self.load_active_pane();
     }
 
-    /// `:q[uit]` -- close the active pane when there's more than
-    /// one open (vim-style multi-pane quit-closes-pane); with one
-    /// pane left, runs the dirty guard and shuts down the editor.
+    /// `<C-w>o` / `:only` / emacs `C-x 1` -- close every pane except
+    /// the active one, collapsing the tree to the active leaf. No-op
+    /// (with a warning) when only one pane is open. Mirrors
+    /// [`Self::do_only_tab`] for the pane axis. S3b (2026-06-22).
+    pub fn do_only_pane(&mut self) {
+        if self.pane_tree.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
+            return;
+        }
+        // Snapshot so the surviving (active) pane keeps its live
+        // cursor / scroll; collapse_to_active keeps that leaf and
+        // drops the rest. load_active_pane re-hydrates from it.
+        self.snapshot_active_pane();
+        if !self.pane_tree.collapse_to_active() {
+            return;
+        }
+        self.load_active_pane();
+    }
+
+    /// `:q[uit]` (`scope = Pane`) / `:qa[ll]` (`scope = All`) -- quit.
+    ///
+    /// `Pane` is vim's `:q`: close the active pane when there's more
+    /// than one open (multi-pane quit-closes-pane); with one pane
+    /// left, run the dirty guard and shut down the editor. `All` is
+    /// vim's `:qa`: ignore pane / tab count and shut the editor
+    /// outright. Both share the dirty guard and shutdown below; they
+    /// differ only in the close-pane short-circuit, gated on `scope`.
+    ///
     /// `force` (`!`) bypasses the dirty guard. Publishes
     /// `Event::BeforeQuit` for observability when the editor
-    /// actually quits. Phase 5.8.AC.1: hoisted from TUI App.
-    pub fn do_quit(&mut self, force: bool) {
-        if self.pane_tree.len() > 1 {
+    /// actually quits. Phase 5.8.AC.1: hoisted from TUI App;
+    /// S3a (2026-06-22): scope parameter for `:qa`.
+    pub fn do_quit(&mut self, force: bool, scope: lattice_grammar::QuitScope) {
+        if scope == lattice_grammar::QuitScope::Pane && self.pane_tree.len() > 1 {
             self.do_close_pane();
             return;
         }

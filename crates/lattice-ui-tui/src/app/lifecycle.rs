@@ -196,24 +196,26 @@ impl App {
         self.mutate_editor(move |e| e.do_write(path));
     }
 
-    /// `:q[uit]` -- vim-style window close. With multiple panes
-    /// open, closes the active pane (no dirty check; the buffer
-    /// lives on in the registry / other panes). With one pane
-    /// left, runs the dirty guard against any document with
-    /// unsaved changes and shuts down the editor. `force` (`!`)
-    /// bypasses the dirty guard. Publishes `Event::BeforeQuit`
-    /// for observability when the editor actually quits.
-    pub(super) fn do_quit(&mut self, force: bool) {
+    /// `:q[uit]` (`scope = Pane`) / `:qa[ll]` (`scope = All`) -- quit.
+    /// `Pane` is vim-style window close: with multiple panes open,
+    /// close the active pane (no dirty check; the buffer lives on in
+    /// the registry / other panes); with one pane left, run the dirty
+    /// guard and shut down the editor. `All` ignores pane count and
+    /// shuts down regardless. `force` (`!`) bypasses the dirty guard.
+    /// Publishes `Event::BeforeQuit` when the editor actually quits.
+    pub(super) fn do_quit(&mut self, force: bool, scope: lattice_grammar::QuitScope) {
         // Phase 5.8.AC.1: body migrated to
         // `lattice_host::dispatch::Editor::do_quit`. The
         // pane-close path still routes through the App-side
         // wrapper because `do_close_pane` calls App's
         // `gc_unreferenced_panel_buffers` after the host close.
-        if self.panes().tree.len() > 1 {
+        // `:qa` (scope = All) skips this short-circuit and always
+        // delegates to the host's quit (dirty guard + shutdown).
+        if scope == lattice_grammar::QuitScope::Pane && self.panes().tree.len() > 1 {
             self.do_close_pane();
             return;
         }
-        self.mutate_editor_with(move |e| e.do_quit(force));
+        self.mutate_editor_with(move |e| e.do_quit(force, scope));
     }
 
     // 5.5.H: `do_split_pane` App-side delegate retired (zero
@@ -736,11 +738,31 @@ mod tests {
     }
 
     #[test]
+    fn only_pane_collapses_all_other_panes() {
+        // `:only` / `<C-x>1`: from three panes, collapse to one.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::SplitPaneHorizontal);
+        assert_eq!(a.editor.pane_tree.len(), 3);
+        a.apply(Action::OnlyPane);
+        assert_eq!(a.editor.pane_tree.len(), 1);
+    }
+
+    #[test]
+    fn only_pane_single_pane_is_a_noop() {
+        // No panic, no quit, stays at one pane (failure-mode guard).
+        let mut a = app_with("xx", 10);
+        a.apply(Action::OnlyPane);
+        assert_eq!(a.editor.pane_tree.len(), 1);
+        assert!(!a.editor.should_quit);
+    }
+
+    #[test]
     fn quit_with_multiple_panes_closes_active_pane() {
         let mut a = app_with("xx", 10);
         a.apply(Action::SplitPaneVertical);
         assert_eq!(a.editor.pane_tree.len(), 2);
-        a.do_quit(false);
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
         assert!(
             !a.editor.should_quit,
             "extra pane: :q must not exit the editor"
@@ -756,7 +778,7 @@ mod tests {
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert!(a.editor.document.dirty());
-        a.do_quit(false);
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
         assert!(!a.editor.should_quit);
         assert_eq!(a.editor.pane_tree.len(), 1);
     }
@@ -764,8 +786,43 @@ mod tests {
     #[test]
     fn quit_with_last_pane_clean_quits_editor() {
         let mut a = app_with("xx", 10);
-        a.do_quit(false);
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
         assert!(a.editor.should_quit);
+    }
+
+    #[test]
+    fn quit_all_with_multiple_panes_quits_editor() {
+        // `:qa` ignores pane count: unlike `:q`, an extra pane must
+        // NOT turn the quit into a pane-close. Clean buffers → quit.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        assert_eq!(a.editor.pane_tree.len(), 2);
+        a.do_quit(false, lattice_grammar::QuitScope::All);
+        assert!(
+            a.editor.should_quit,
+            ":qa must exit the editor regardless of pane count"
+        );
+    }
+
+    #[test]
+    fn quit_all_dirty_refuses_then_force_quits() {
+        // `:qa` shares `:q`'s dirty guard: a dirty buffer blocks the
+        // quit (no `should_quit`, warning set), and `:qa!` forces past.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.editor.document.dirty());
+        a.do_quit(false, lattice_grammar::QuitScope::All);
+        assert!(
+            !a.editor.should_quit,
+            ":qa must honor the dirty guard (no force)"
+        );
+        // The extra pane is untouched — :qa did not degrade to a pane-close.
+        assert_eq!(a.editor.pane_tree.len(), 2);
+        a.do_quit(true, lattice_grammar::QuitScope::All);
+        assert!(a.editor.should_quit, ":qa! forces past the dirty guard");
     }
 
     #[test]
@@ -774,7 +831,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        a.do_quit(false);
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
         assert!(!a.editor.should_quit);
         assert!(
             a.editor
@@ -791,7 +848,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        a.do_quit(true);
+        a.do_quit(true, lattice_grammar::QuitScope::Pane);
         assert!(a.editor.should_quit);
     }
 
@@ -813,7 +870,7 @@ mod tests {
             a.editor.buffers.document_dirty(msgs),
             "test pre-condition: *messages* buffer reports dirty after append",
         );
-        a.do_quit(false);
+        a.do_quit(false, lattice_grammar::QuitScope::Pane);
         assert!(
             a.editor.should_quit,
             ":q must skip the dirty guard for NoFile = true buffers (e.g. *messages*)",

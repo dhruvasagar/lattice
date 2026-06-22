@@ -399,6 +399,22 @@ impl PaneTree {
         true
     }
 
+    /// `<C-w>o` / `:only` / emacs `C-x 1` -- close every pane except
+    /// the active one, collapsing the whole tree to a single leaf that
+    /// keeps the active pane's state. No-op (returns `false`) when only
+    /// one pane is open. Unlike repeated [`Self::close_active`], this
+    /// keeps the *active* pane and drops its siblings in one step.
+    pub fn collapse_to_active(&mut self) -> bool {
+        if self.leaves.len() <= 1 {
+            return false;
+        }
+        let survivor = self.leaves[self.active];
+        self.leaves = vec![survivor];
+        self.root = PaneNode::leaf(0);
+        self.active = 0;
+        true
+    }
+
     /// Issue #28 (2026-05-22): walk the tree and reset every
     /// split's ratio to [`DEFAULT_SPLIT_RATIO`] (0.5). Vim's
     /// `<C-w>=`. Returns `true` if any ratio actually changed,
@@ -751,6 +767,35 @@ mod tests {
         let mut t = PaneTree::single(doc_state());
         let removed = t.close_active();
         assert!(!removed);
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn collapse_to_active_keeps_active_drops_siblings() {
+        let mut t = PaneTree::single(doc_state());
+        t.split_active(SplitOrientation::Vertical);
+        t.split_active(SplitOrientation::Horizontal);
+        // Make a non-zero pane active so we prove the SURVIVOR is the
+        // active one, not just "leaf 0".
+        t.set_active(2);
+        let survivor_id = t.active().id;
+        let collapsed = t.collapse_to_active();
+        assert!(collapsed);
+        assert_eq!(t.len(), 1);
+        assert!(t.root().is_single_leaf());
+        assert_eq!(t.active_index(), 0);
+        assert_eq!(
+            t.active().id,
+            survivor_id,
+            "`:only` must keep the active pane, dropping its siblings"
+        );
+    }
+
+    #[test]
+    fn collapse_single_pane_is_a_noop() {
+        let mut t = PaneTree::single(doc_state());
+        let collapsed = t.collapse_to_active();
+        assert!(!collapsed);
         assert_eq!(t.len(), 1);
     }
 

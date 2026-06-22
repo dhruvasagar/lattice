@@ -154,6 +154,9 @@ pub struct ActionIds {
     pub split_pane_horizontal: CommandId,
     pub split_pane_vertical: CommandId,
     pub close_pane: CommandId,
+    /// `<C-w>o` / `:only` / emacs `C-x 1` -- close every pane except
+    /// the active one. S3b (2026-06-22).
+    pub only_pane: CommandId,
     pub navigate_pane_left: CommandId,
     pub navigate_pane_down: CommandId,
     pub navigate_pane_up: CommandId,
@@ -887,6 +890,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<C-w>c`: close the active pane.",
             AppEffect::ClosePane,
         ),
+        only_pane: register_simple(
+            registry,
+            "action:only-pane",
+            "Vim's `<C-w>o` / `:only`: close every pane except the active one.",
+            AppEffect::OnlyPane,
+        ),
         navigate_pane_left: register_simple(
             registry,
             "action:navigate-pane-left",
@@ -1412,6 +1421,7 @@ mod tests {
             (ids.split_pane_horizontal, "action:split-pane-horizontal"),
             (ids.split_pane_vertical, "action:split-pane-vertical"),
             (ids.close_pane, "action:close-pane"),
+            (ids.only_pane, "action:only-pane"),
             (ids.navigate_pane_left, "action:navigate-pane-left"),
             (ids.navigate_pane_down, "action:navigate-pane-down"),
             (ids.navigate_pane_up, "action:navigate-pane-up"),

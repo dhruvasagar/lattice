@@ -536,6 +536,9 @@ pub enum Action {
     SplitPaneVertical,
     /// `<C-w>c` / `<C-w>q` -- close the active pane.
     ClosePane,
+    /// `<C-w>o` / `:only` / emacs `C-x 1` -- close every pane except
+    /// the active one. S3b (2026-06-22).
+    OnlyPane,
     /// `<C-w>{h,j,k,l}` -- move the active pane cardinally.
     NavigatePane(PaneDirection),
     /// `<C-w>w` -- cycle to the next pane in declaration order.

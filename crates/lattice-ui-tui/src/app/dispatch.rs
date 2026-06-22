@@ -335,6 +335,7 @@ impl App {
             | Action::SplitPaneHorizontal
             | Action::SplitPaneVertical
             | Action::ClosePane
+            | Action::OnlyPane
             | Action::NavigatePane(_)
             | Action::NextPane
             | Action::PrevPane
@@ -946,7 +947,7 @@ impl App {
             // These come from ex-command apply closures registered in the
             // grammar registry; the host owns the side effects.
             Effect::SaveBuffer { path } => self.do_write(path),
-            Effect::QuitEditor { force } => self.do_quit(force),
+            Effect::QuitEditor { force, scope } => self.do_quit(force, scope),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
             // M.10.3 bug fix (2026-06-03): atomic open-and-position.
             // `do_edit` first (active doc switches to the file),

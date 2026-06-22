@@ -89,6 +89,22 @@ pub enum SubstituteScope {
     Whole,
 }
 
+/// Scope for `Effect::QuitEditor`. Mirrors vim's `:q` (close the active
+/// pane; quit only when it is the last one) vs. `:qa` (quit the editor
+/// regardless of how many panes / tabs are open). `:q` and `:qa` stay
+/// distinct *commands* (separate registrations + aliases); `QuitScope`
+/// is the one axis on which they differ, so the shared shutdown + dirty
+/// guard stays in a single `Editor::do_quit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QuitScope {
+    /// `:q[!]` -- close the active pane when more than one is open;
+    /// run the dirty guard and shut the editor only on the last pane.
+    Pane,
+    /// `:qa[!]` -- ignore pane / tab count; run the dirty guard and
+    /// shut the editor outright.
+    All,
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     None,
@@ -110,9 +126,18 @@ pub enum Effect {
     SaveBuffer {
         path: Option<PathBuf>,
     },
-    /// `:q` / `:q!` -- quit the editor. `force = true` ignores dirty state.
+    /// `:q[!]` (`scope = Pane`) / `:qa[!]` (`scope = All`) -- quit.
+    /// `force = true` ignores dirty state. The two are distinct
+    /// *commands* but one *effect*: quit is a single host operation
+    /// parameterized by scope, exactly as `force` is a parameter.
+    /// `Pane` closes the active pane when more than one is open and
+    /// only shuts the editor on the last pane (vim's `:q`); `All`
+    /// ignores pane/tab count and shuts the editor outright (vim's
+    /// `:qa`). The dirty guard (unless forced) is identical for both
+    /// and lives once in `Editor::do_quit`.
     QuitEditor {
         force: bool,
+        scope: QuitScope,
     },
     /// `:e[!] [path]` -- swap the current document for the file at `path`.
     /// With `path = None` reload from the document's existing path.

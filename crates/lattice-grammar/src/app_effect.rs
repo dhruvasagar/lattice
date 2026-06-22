@@ -441,6 +441,10 @@ pub enum AppEffect {
     /// Vim's `<C-w>c` / `<C-w>q`: close the active pane.
     /// Promoted from `Action::ClosePane` in slice 8.i.4.d.
     ClosePane,
+    /// Vim's `<C-w>o` / `:only` / emacs `C-x 1`: close every pane
+    /// except the active one (collapse the tree to the active leaf).
+    /// No-op when only one pane is open. S3b (2026-06-22).
+    OnlyPane,
     /// Vim's `<C-w>h/j/k/l` (and arrow / `<BS>` aliases): move
     /// focus to the pane in the named direction. Promoted from
     /// `Action::NavigatePane(_)` in slice 8.i.4.d.

@@ -368,6 +368,15 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("quit", "ex:quit"),
     ("wq", "ex:write-quit"),
     ("x", "ex:write-quit"),
+    // `:qa` quits the whole editor (every pane + tab), distinct from
+    // `:q` which closes a single pane unless it's the last one.
+    ("qa", "ex:quit-all"),
+    ("qall", "ex:quit-all"),
+    ("quitall", "ex:quit-all"),
+    // `:only` / `:on` -- close every pane except the active one
+    // (vim's `<C-w>o`). Pane axis of `:tabonly`.
+    ("only", "ex:only"),
+    ("on", "ex:only"),
     ("noh", "ex:nohlsearch"),
     ("nohl", "ex:nohlsearch"),
     ("nohlsearch", "ex:nohlsearch"),

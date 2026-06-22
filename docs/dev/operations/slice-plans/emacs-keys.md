@@ -90,17 +90,58 @@ Landed in three sub-slices:
   resolve + execute; bare digit still counts; + 3 count-regression guards
   for `<C-w>`/`g`/`"` prefixes).
 
-## S3 — build `quit-all` + `only`, bind the rest 🗒
+## S3 — build `quit-all` + `only`, bind the rest
 
-- `AppEffect::QuitAll` + `Action::QuitAll` + `ex:quit-all` (aliases
-  `qa`, `qall`) + handler. Bind `<C-x><C-c>`→`ex:quit-all`.
-- `AppEffect::OnlyPane` + pane-tree collapse-to-active + `ex:only`
-  (alias `on`) + handler. Bind `<C-x>1`→`action:only`.
-- TUI + GPUI parity for any new `AppEffect` classification.
-- **Tests incl. failure modes:** `:qa` sets `should_quit` and fires
-  `BeforeQuit`; `:qa` with a dirty buffer follows the existing dirty-quit
-  policy; `only` on a single pane is a no-op (no panic).
+**Mechanism correction (vs S0's gap note).** S0 said "no `quit-all`
+(`app_effect.rs` ships `Quit` only)" and the plan assumed
+`AppEffect::QuitAll` + `Action::QuitAll`. That was the wrong layer:
+`AppEffect::Quit` → `Action::Quit` is the brute `<C-c>` quit (no dirty
+guard, no pane awareness). `:q` actually flows through the grammar
+`Effect::QuitEditor` → pane-aware `Editor::do_quit`, which *already*
+implements the close-pane-unless-last semantics. `:qa` therefore mirrors
+`:q`'s `Effect` path, not the `AppEffect` path. See the design fragment's
+"New commands required" for the full heuristic mapping.
+
+### S3a — `quit-all` (`:qa`) via `QuitScope` ✅
+
+- `QuitScope { Pane, All }` in `lattice-grammar::effect`; extend
+  `Effect::QuitEditor { force }` → `{ force, scope }`. `apply_quit` →
+  `Pane`, new `apply_quit_all` → `All`, `apply_write_quit` → `Pane`.
+- `ex:quit-all` registered (reached by name, no `ExBuiltins` field, like
+  `:tabonly`); host aliases `qa` / `qall` / `quitall`.
+- `Editor::do_quit(force, scope)` — close-pane short-circuit gated on
+  `scope == Pane && len > 1`; shared dirty guard + shutdown below.
+  Threaded through the TUI `App::do_quit` wrapper + GPUI arm (parity).
+- Bind `<C-x><C-c>` → `ex:quit-all` (Tier-1). **Discovery:** the
+  universal `<C-c>` → Quit hatch in `input::translate` short-circuited
+  before partial-chord resolution, so `<C-x><C-c>` resolved to the brute
+  quit. Fixed by gating the hatch to yield to a bound `[partial + <C-c>]`
+  leader continuation — the same digit-precedence rule S2 applied to
+  `<C-x>2`. Normal-only (`lookup_normal_with_prefix`); bare `<C-c>` and
+  Visual/Insert/Command `<C-c>` unaffected.
+- **Tests:** grammar `quit_all_is_editor_scoped` (+ `:q`/`:wq` scope
+  Pane assertions); TUI `quit_all_with_multiple_panes_quits_editor`,
+  `quit_all_dirty_refuses_then_force_quits`; integration
+  `leader_ctrl_c_resolves_quit_all`; emacs-keys unit tier-1 now asserts
+  `<C-x><C-c>`. Existing `ctrl_c_quits_*` guards stay green.
+
+### S3b — `only` (`:only`) ✅
+
+- `PaneTree::collapse_to_active` (keep active leaf, drop siblings, no-op
+  on single pane); `AppEffect::OnlyPane` + `Action::OnlyPane` +
+  `Editor::do_only_pane` (mirrors `do_only_tab`).
+- `action:only-pane` registered; `ex:only` emits
+  `Effect::AppAction(AppEffect::OnlyPane)` (the `:tabonly` carrier);
+  host aliases `only` / `on`. Bind `<C-x>1` → `action:only-pane`.
+- Parity: pane `AppEffect`s are host-handled (`Effect::AppAction(_)` is a
+  GPUI no-op); the TUI `App` `match action` grouped no-op arm gains
+  `Action::OnlyPane`. No renderer-specific change.
+- **Tests:** pane `collapse_to_active_keeps_active_drops_siblings` +
+  `collapse_single_pane_is_a_noop`; TUI `only_pane_collapses_all_other_panes`
+  + `only_pane_single_pane_is_a_noop` (failure-mode); integration
+  `leader_1_collapses_to_only_pane`; emacs-keys unit tier-2 asserts
+  `<C-x>1`.
 
 ## Status
 
-S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 ✅ · S3 🗒
+S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 ✅ · S3 ✅ (S3a · S3b)

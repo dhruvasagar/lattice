@@ -87,6 +87,10 @@ const TIER1_BINDINGS: &[(&str, &str)] = &[
     ("b", "ex:buffer-picker"), // C-x b   — switch buffer
     ("<C-b>", "ex:buffers"),   // C-x C-b — list buffers
     ("k", "ex:bdelete"),       // C-x k   — kill buffer
+    // S3a: emacs `C-x C-c` = save-buffers-kill-emacs. Targets the
+    // dirty-guarded `:qa` (quit every pane + tab), not the brute
+    // `<C-c>` quit — so unsaved changes are honored, mirroring emacs.
+    ("<C-c>", "ex:quit-all"), // C-x C-c — quit all (dirty-guarded)
 ];
 
 /// Tier-2 (S2) — pane / window. Targets the pre-registered `action:*`
@@ -97,12 +101,13 @@ const TIER1_BINDINGS: &[(&str, &str)] = &[
 /// accumulation (mirrors emacs `C-x 2` / `C-x 3` / `C-x 0`).
 ///
 /// emacs: `2` splits below, `3` splits right, `0` deletes this window,
-/// `o` cycles focus. Lattice's split axis names are locked per the slice
-/// plan (`2`→horizontal, `3`→vertical). `<C-x>1` (only) lands in S3.
+/// `1` deletes other windows, `o` cycles focus. Lattice's split axis
+/// names are locked per the slice plan (`2`→horizontal, `3`→vertical).
 const TIER2_BINDINGS: &[(&str, &str)] = &[
     ("2", "action:split-pane-horizontal"), // C-x 2 — split below
     ("3", "action:split-pane-vertical"),   // C-x 3 — split right
     ("0", "action:close-pane"),            // C-x 0 — delete this pane
+    ("1", "action:only-pane"),             // C-x 1 — delete other panes (S3b)
     ("o", "action:next-pane"),             // C-x o — focus other pane
 ];
 
@@ -198,7 +203,14 @@ mod tests {
         let modes = emacs_keys_layer_bindings(true, "<C-x>", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
         // Each full chord resolves to a terminal binding.
-        for full in ["<C-x><C-f>", "<C-x><C-s>", "<C-x>b", "<C-x><C-b>", "<C-x>k"] {
+        for full in [
+            "<C-x><C-f>",
+            "<C-x><C-s>",
+            "<C-x>b",
+            "<C-x><C-b>",
+            "<C-x>k",
+            "<C-x><C-c>", // S3a: quit-all
+        ] {
             assert!(
                 matches!(trie.lookup(&seq(full)), LookupResult::Bound { .. }),
                 "expected `{full}` to be bound"
@@ -218,7 +230,7 @@ mod tests {
         // The digit suffixes (`2` / `3` / `0`) are matched as literal
         // second chords after the `<C-x>` partial -- they never enter
         // count accumulation -- alongside the `o` letter suffix.
-        for full in ["<C-x>2", "<C-x>3", "<C-x>0", "<C-x>o"] {
+        for full in ["<C-x>2", "<C-x>3", "<C-x>0", "<C-x>1", "<C-x>o"] {
             assert!(
                 matches!(trie.lookup(&seq(full)), LookupResult::Bound { .. }),
                 "expected pane chord `{full}` to be bound"

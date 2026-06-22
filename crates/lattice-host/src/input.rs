@@ -242,9 +242,31 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         return translate_command_chord_capture(chord);
     }
 
-    // Universal escape hatch.
+    // Universal escape hatch -- with one exception, mirroring the S2
+    // digit-precedence rule. When a Normal-mode partial chord is in
+    // flight (e.g. emacs-keys' `<C-x>` leader) and `[partial + <C-c>]`
+    // is a BOUND continuation, the leader chord wins so emacs
+    // `C-x C-c` (= quit-all) works. A bare `<C-c>` (empty partial) or
+    // any partial that does NOT bind `<C-c>` still hits the brute
+    // quit. The lookup is Normal-specific (`lookup_normal_with_prefix`),
+    // so Visual / Insert / Command `<C-c>` are unaffected.
     if chord == KeyChord::ctrl('c') {
-        return Action::Quit;
+        let continues_leader = matches!(ctx.modal, ModalState::Normal)
+            && !ctx.partial_chord.is_empty()
+            && !matches!(
+                crate::keymap_normal::lookup_normal_with_prefix(
+                    ctx.keymap,
+                    ctx.partial_chord,
+                    &chord,
+                    ctx.active_minor_modes,
+                ),
+                Action::None
+            );
+        if !continues_leader {
+            return Action::Quit;
+        }
+        // else: fall through to `translate_normal`, which resolves the
+        // `[partial + <C-c>]` leader chord via the partial-chord path.
     }
 
     // Buffer-local bindings for read-only buffers (Help / FileTree;

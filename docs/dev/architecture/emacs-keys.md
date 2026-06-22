@@ -71,13 +71,56 @@ which is untouched and coexists.
 
 ## New commands required
 
-- **`quit-all` / `:qa`** — `app_effect.rs` ships `Quit` only. emacs
-  `C-x C-c` quits the whole editor; `:qa` is vim-canonical and currently
-  missing. Adds `AppEffect::QuitAll` + `Action::QuitAll` + `ex:quit-all`
-  (aliases `qa`, `qall`).
-- **`only` / `:only`** — no close-other-panes effect exists (emacs
-  `C-x 1`, vim `<C-w>o`). Adds `AppEffect::OnlyPane` + a pane-tree
-  collapse-to-active op + `ex:only` (alias `on`).
+### `:qa` (quit-all) — distinct command, one effect with a `QuitScope`
+
+`:q` is **already** pane-aware: `Editor::do_quit` closes the active pane
+when more than one is open and only shuts the editor on the last pane
+(running a dirty guard over *all* document buffers unless forced). That
+is exactly vim's `:q`; no change needed there. The runtime path is
+`ex:quit` → `apply_quit` → `Effect::QuitEditor { force }` →
+(TUI + GPUI) `do_quit(force)`.
+
+`:qa` is a **distinct command** — it ignores pane / tab count and shuts
+the editor outright (subject to the same dirty guard). The S0 spike's
+note that "`app_effect.rs` ships `Quit` only" pointed at the *wrong*
+layer: that `AppEffect::Quit` → `Action::Quit` path is the brute `<C-c>`
+quit (no dirty guard, no pane awareness). `:qa` must NOT route there —
+it would either skip the dirty guard the user requires or duplicate it
+in the wrong layer. Instead `:qa` mirrors `:q`'s grammar-`Effect` path.
+
+The chosen model (heuristic #1, on merit): `:q` and `:qa` are the same
+*verb* differing on one axis — **scope**. So they stay distinct commands
+(separate `ex:quit` / `ex:quit-all` registrations, separate aliases
+`qa` / `qall` / `quitall`, separate help) but share **one** effect and
+**one** host method:
+
+- `Effect::QuitEditor { force, scope: QuitScope }`, `QuitScope ∈ {Pane,
+  All}` (`lattice-grammar::effect`). `apply_quit` → `Pane`,
+  `apply_quit_all` → `All`, `apply_write_quit` → `Pane`.
+- `Editor::do_quit(force, scope)`: the close-pane short-circuit is gated
+  on `scope == Pane && pane_count > 1`; the dirty guard + shutdown below
+  it are identical for both. Sibling variants (`Effect::QuitAll` + a
+  second `do_quit_all`) were rejected: they duplicate the guard and
+  double the TUI/GPUI parity arms for a one-branch difference
+  (kept-separate-for-symmetry, which heuristic #1 forbids).
+
+`<C-x><C-c>` (emacs `save-buffers-kill-emacs`) targets `ex:quit-all`, so
+it inherits the dirty guard — the emacs-faithful behavior — rather than
+the brute `<C-c>` quit. The universal `<C-c>` → quit hatch in
+`input::translate` is gated to yield to a bound `[partial + <C-c>]`
+leader continuation (the same digit-precedence rule as `<C-x>2`), so the
+two-key emacs chord resolves while a bare `<C-c>` still hard-quits.
+
+### `:only` (close other panes) — mirrors `:tabonly`
+
+No close-other-panes op existed (emacs `C-x 1`, vim `<C-w>o`). `:only`
+is a pane op exactly like the existing `:tabonly`, so it reuses that
+shape: `AppEffect::OnlyPane` + `Action::OnlyPane` + `Editor::do_only_pane`
+(backed by a new `PaneTree::collapse_to_active` that keeps the active
+leaf and drops its siblings in one step, no-op on a single pane). The
+chord `<C-x>1` targets `action:only-pane`; the ex-command `ex:only`
+(aliases `only` / `on`) emits `Effect::AppAction(AppEffect::OnlyPane)` —
+the same carrier `:tabonly` uses for `OnlyTab`.
 
 ## Mechanism
 

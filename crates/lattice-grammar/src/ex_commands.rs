@@ -26,7 +26,7 @@
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
 use crate::AppEffect;
-use crate::effect::{Effect, SubstituteScope};
+use crate::effect::{Effect, QuitScope, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
@@ -196,6 +196,43 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(apply_write_quit),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // `:qa[!]` -- quit the whole editor regardless of pane / tab count.
+    // Distinct from `:q` (which closes a pane unless it's the last);
+    // both flow through `Effect::QuitEditor`, differing only in
+    // `QuitScope`. Reached by name (aliases `qa` / `qall` / `quitall`
+    // live in the host alias table) -- no `ExBuiltins` field needed,
+    // mirroring `:tabonly`.
+    let _quit_all = registry.register_ex_command(
+        "ex:quit-all",
+        "Quit the editor, closing every pane and tab (`:qa[!]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: true,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(apply_quit_all),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // `:only` -- close every pane except the active one (vim `<C-w>o`,
+    // emacs `C-x 1`). A pane op like `:tabonly`, so it emits the same
+    // `Effect::AppAction(AppEffect::OnlyPane)` carrier (aliases `only`
+    // / `on` live in the host alias table). Reached by name -- no
+    // `ExBuiltins` field, mirroring `:tabonly`.
+    let _only = registry.register_ex_command(
+        "ex:only",
+        "Close every pane except the active one (`:only`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::OnlyPane))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2348,17 +2385,36 @@ fn apply_write(ctx: &ExCommandContext) -> GrammarResult<Effect> {
 }
 
 fn apply_quit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
-    Ok(Effect::QuitEditor { force: ctx.bang })
+    // `:q` is pane-scoped: close the active pane when more than one is
+    // open; quit the editor only on the last pane. See `QuitScope`.
+    Ok(Effect::QuitEditor {
+        force: ctx.bang,
+        scope: QuitScope::Pane,
+    })
+}
+
+fn apply_quit_all(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    // `:qa` is editor-scoped: ignore pane / tab count and shut the
+    // editor outright (subject to the same dirty guard as `:q` unless
+    // forced). Distinct command from `:q`, same `QuitEditor` effect
+    // with `scope = All`.
+    Ok(Effect::QuitEditor {
+        force: ctx.bang,
+        scope: QuitScope::All,
+    })
 }
 
 fn apply_write_quit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     // The bang on `:wq!` / `:x!` propagates to the quit step (vim's
     // semantics: force the quit even if the save fails). Save itself is
     // never forced -- writing a path you don't have permission for fails
-    // visibly.
+    // visibly. `:wq` is pane-scoped, mirroring `:q`.
     Ok(Effect::Many(vec![
         Effect::SaveBuffer { path: None },
-        Effect::QuitEditor { force: ctx.bang },
+        Effect::QuitEditor {
+            force: ctx.bang,
+            scope: QuitScope::Pane,
+        },
     ]))
 }
 
@@ -2578,7 +2634,10 @@ mod tests {
         )
         .unwrap();
         match eff {
-            Effect::QuitEditor { force } => assert!(force),
+            Effect::QuitEditor { force, scope } => {
+                assert!(force);
+                assert_eq!(scope, QuitScope::Pane, ":q is pane-scoped");
+            }
             other => panic!("unexpected effect: {other:?}"),
         }
     }
@@ -2596,8 +2655,44 @@ mod tests {
         )
         .unwrap();
         match eff {
-            Effect::QuitEditor { force } => assert!(!force),
+            Effect::QuitEditor { force, scope } => {
+                assert!(!force);
+                assert_eq!(scope, QuitScope::Pane, ":q is pane-scoped");
+            }
             other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quit_all_is_editor_scoped() {
+        // `:qa` is a distinct command from `:q` but the same effect:
+        // `QuitEditor` with `scope = All`. `:qa!` forces past the dirty
+        // guard. Resolved by name (no `ExBuiltins` field, like `:tabonly`).
+        let (registry, _ex, mut doc) = fixture();
+        let id = registry
+            .id_by_name("ex:quit-all")
+            .expect("ex:quit-all must be registered");
+        for (bang, want_force) in [(false, false), (true, true)] {
+            let mut inv = CommandInvocation::of(id);
+            if bang {
+                inv = inv.with_bang(true);
+            }
+            let eff = execute(
+                &registry,
+                &mut doc,
+                lattice_core::BufferId(0),
+                Position::ZERO,
+                inv,
+                &CancellationToken::never(),
+            )
+            .unwrap();
+            match eff {
+                Effect::QuitEditor { force, scope } => {
+                    assert_eq!(force, want_force);
+                    assert_eq!(scope, QuitScope::All, ":qa is editor-scoped");
+                }
+                other => panic!("unexpected effect: {other:?}"),
+            }
         }
     }
 
@@ -2616,7 +2711,13 @@ mod tests {
         match eff {
             Effect::Many(parts) => {
                 assert!(matches!(parts[0], Effect::SaveBuffer { .. }));
-                assert!(matches!(parts[1], Effect::QuitEditor { force: true }));
+                assert!(matches!(
+                    parts[1],
+                    Effect::QuitEditor {
+                        force: true,
+                        scope: QuitScope::Pane
+                    }
+                ));
             }
             other => panic!("unexpected effect: {other:?}"),
         }

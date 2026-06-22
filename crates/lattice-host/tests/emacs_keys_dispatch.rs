@@ -108,6 +108,24 @@ async fn leader_o_focuses_next_pane() {
 }
 
 #[tokio::test]
+async fn leader_1_collapses_to_only_pane() {
+    // `<C-x>1` (emacs delete-other-windows) must resolve the only-pane
+    // action, NOT a count — the digit-precedence rule covers it like
+    // `<C-x>2` / `<C-x>3` since `[<C-x>, 1]` is a bound chord.
+    let (editor, action) = leader_action("1");
+    assert_invokes(&editor, &action, "action:only-pane");
+}
+
+#[tokio::test]
+async fn leader_ctrl_c_resolves_quit_all() {
+    // S3a: emacs `C-x C-c` = save-buffers-kill-emacs. The leader chord
+    // must route to the dirty-guarded `:qa` (`ex:quit-all`), distinct
+    // from `:q` (`ex:quit`) and from the brute `<C-c>` quit path.
+    let (editor, action) = leader_action("<C-c>");
+    assert_invokes(&editor, &action, "ex:quit-all");
+}
+
+#[tokio::test]
 async fn bare_digit_still_starts_a_count() {
     // With an empty partial-chord stack the digit hoist must still fire:
     // `2` begins a count (vim `2j`), it is NOT a leader chord. Guards

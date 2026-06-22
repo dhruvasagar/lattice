@@ -1058,7 +1058,9 @@ impl GpuiApp {
             | Effect::AppAction(_)
             | Effect::RecordJump => {}
             // Renderer-coupled effects whose body lives host-side.
-            Effect::QuitEditor { force } => self.mutate_editor(move |e| e.do_quit(force)),
+            Effect::QuitEditor { force, scope } => {
+                self.mutate_editor(move |e| e.do_quit(force, scope))
+            }
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
             // M.10.3 bug fix (2026-06-03): atomic open-and-position.
             // GPUI parity with TUI per [[feedback_tui_gpui_parity]].

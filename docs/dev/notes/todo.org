@@ -2,11 +2,11 @@
 - [ ] diagnostics under cursor
 - [X] Terminal
 - [X] ligatures
-- [ ] variable size fonts in GUI, first consumer markdown
+- [X] variable size fonts in GUI, first consumer markdown
 - [X] diffing
-- [ ] Narrow mode
+- [X] Narrow mode
 - [ ] digraphs & emoji's with picker
-- [ ] Theme System (also with a theme picker with preview)
+- [X] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
 - [ ] :! shell execution
 - [ ] ! filter operator
@@ -49,6 +49,13 @@
 - [ ] auto formatting
 - [ ] GPUI: Zooming Text
 - [ ] Spell Check
+- [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
+- [ ] Implement basic emacs style <C-x> bindings
+  - [ ] <C-x>b :buffer
+  - [ ] <C-x><C-s> for :write
+  - [ ] <C-x><C-f> file :files
+  - [ ] <C-x>0 :close
+  - [ ] <C-x>1 :only
 
 * Plugins
 - [ ] plugin manager
@@ -149,7 +156,7 @@
 - [ ] Typing in rust buffer, the syntax highlighting lags behind by
   one character. The character just before the cursor doesn't get
   highlighted until one more key press.
-- [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
+- [X] echo in GPUI. `set wrap?` should echo the value.
 
 * Documentation
 - [X] lattice-tutor

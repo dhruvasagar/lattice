@@ -1784,6 +1784,16 @@ impl EditorView {
             .bg
             .map(|c| c.to_rgb_u32(0x313244))
             .unwrap_or(0x313244);
+        // Gate the cursorline quad on `:set cursorline`
+        // (`current-line-highlight`, default off) — same active-document
+        // option-cache seam the TUI reads (`render.rs` cursorline path)
+        // and the same seam used for `foldenable` above. Without this the
+        // GPUI peer painted the cursorline unconditionally.
+        let cursorline_enabled = rs_guard
+            .active_document
+            .load()
+            .option_cache
+            .current_line_highlight;
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive
@@ -2007,6 +2017,7 @@ impl EditorView {
             substitute_matches,
             doc_highlights,
             cursorline_bg,
+            cursorline_enabled,
             // T.4.b: resolve deletion-block backdrop colour from the
             // resolved table's `bg` channel so the paint pass doesn't
             // need to hold a Theme reference.

@@ -305,6 +305,12 @@ pub(crate) struct EditorElement {
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
     pub(crate) cursorline_bg: u32,
+    /// Whether the cursor-line tint is enabled for the active buffer
+    /// (`:set cursorline` / `current-line-highlight`, default off).
+    /// Mirrors the TUI's `option_cache.current_line_highlight` gate so
+    /// both renderers agree — without it the quad paints unconditionally
+    /// and `:set nocursorline` is a no-op in the GPUI peer.
+    pub(crate) cursorline_enabled: bool,
     /// D.3.b.3 (2026-05-29): backdrop colour for deletion-
     /// block virtual rows. Resolved at construction time
     /// from `host_theme.diff_deletion_block_bg.to_rgb_u32(0)`
@@ -1607,8 +1613,13 @@ impl Element for EditorElement {
         // symbol relations.
         if self.is_active && !prepaint.row_meta.is_empty() {
             // Cursorline: paint a full-row quad on whichever
-            // visible row hosts the cursor.
-            if let Some((_, cur_row)) = prepaint.cursor_layout {
+            // visible row hosts the cursor — but only when
+            // `:set cursorline` is on (`current-line-highlight`).
+            // Mirrors the TUI gate so `:set nocursorline` works in
+            // both renderers; default-off means no quad until opt-in.
+            if self.cursorline_enabled
+                && let Some((_, cur_row)) = prepaint.cursor_layout
+            {
                 let row_y = row_top(cur_row as usize);
                 let pane_width = bounds.size.width;
                 let row_bounds = Bounds::new(

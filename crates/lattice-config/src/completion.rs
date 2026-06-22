@@ -79,9 +79,17 @@ impl CandidateGenerator for OptionsGenerator {
         // `DocSnippetAnnotator` populates the marginalia column
         // from `OptionDecl::DOC`.
         for spec in self.registry.iter() {
-            out.push(RawCandidate {
-                text: spec.name().to_string(),
-                display: spec.name().to_string(),
+            // One candidate per accepted name form: the canonical
+            // name, the boolean `noNAME` negation, every alias
+            // (`cul` / `cursorline` for `current-line-highlight` —
+            // the canonical has no `s`, so `:set curs<Tab>` can only
+            // match through an alias), and the `noALIAS` negation of
+            // each alias for booleans. All carry the canonical `name`
+            // in `data` so accept + marginalia resolve through the
+            // same spec regardless of which form the user typed.
+            let mk = |text: String| RawCandidate {
+                text: text.clone(),
+                display: text,
                 kind: CandidateKind::Option,
                 data: CandidateData::Option {
                     name: spec.name().to_string(),
@@ -90,20 +98,16 @@ impl CandidateGenerator for OptionsGenerator {
                 },
                 source: None,
                 accept_action: None,
-            });
+            };
+            out.push(mk(spec.name().to_string()));
             for alt in spec.name_forms() {
-                out.push(RawCandidate {
-                    text: alt.clone(),
-                    display: alt,
-                    kind: CandidateKind::Option,
-                    data: CandidateData::Option {
-                        name: spec.name().to_string(),
-                        current_value: spec.get_formatted(),
-                        doc: spec.doc().to_string(),
-                    },
-                    source: None,
-                    accept_action: None,
-                });
+                out.push(mk(alt));
+            }
+            for alias in spec.aliases() {
+                out.push(mk(alias.to_string()));
+                if spec.is_bool() {
+                    out.push(mk(format!("no{alias}")));
+                }
             }
         }
         out
@@ -140,6 +144,59 @@ mod tests {
         assert!(names.contains(&"tabstop"));
         // tabstop is int, no `notabstop`.
         assert!(!names.contains(&"notabstop"));
+    }
+
+    #[test]
+    fn bare_prefix_enumerates_aliases_and_their_no_forms() {
+        let registry = Arc::new(ConfigRegistry::new());
+        // Mirror `current-line-highlight` (aliases `cul`/`cursorline`):
+        // the canonical name has no `s`, so `:set curs<Tab>` is only
+        // matchable through the alias candidate.
+        registry.register(
+            Option::<bool>::builder("current-line-highlight", false, "")
+                .aliases(&["cul", "cursorline"])
+                .build(),
+        );
+        registry.register(
+            Option::<i64>::builder("tabstop", 8, "")
+                .aliases(&["ts"])
+                .build(),
+        );
+        let g = OptionsGenerator::new(registry);
+        let doc = Document::from_text("");
+        let buf = doc.buffer();
+        let cmd_reg = CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "",
+            buffer: buf,
+            registry: &cmd_reg,
+            case_sensitive: false,
+        };
+        let out = g.generate(&ctx);
+        let names: Vec<&str> = out.iter().map(|c| c.text.as_str()).collect();
+        // Canonical + every alias surface as name candidates.
+        assert!(names.contains(&"current-line-highlight"));
+        assert!(names.contains(&"cursorline"));
+        assert!(names.contains(&"cul"));
+        // Booleans carry the `noNAME` negation of canonical AND aliases.
+        assert!(names.contains(&"nocurrent-line-highlight"));
+        assert!(names.contains(&"nocursorline"));
+        assert!(names.contains(&"nocul"));
+        // A non-bool alias surfaces, but without a `no` form.
+        assert!(names.contains(&"ts"));
+        assert!(!names.contains(&"nots"));
+        // Every alias candidate resolves back to the canonical spec so
+        // accept + marginalia stay correct regardless of typed form.
+        for c in &out {
+            if c.text == "cursorline" || c.text == "cul" || c.text == "nocursorline" {
+                match &c.data {
+                    CandidateData::Option { name, .. } => {
+                        assert_eq!(name, "current-line-highlight");
+                    }
+                    other => panic!("expected Option data, got {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]

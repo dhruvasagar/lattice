@@ -71,6 +71,7 @@ pub mod framing;
 pub mod help_views;
 pub mod jsonrpc;
 pub mod logging;
+pub mod modeline;
 pub mod modes;
 pub mod pending;
 pub mod position;
@@ -91,13 +92,15 @@ pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
 pub use configuration::{ConfigurationBus, InboundConfigurationRequest};
 pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};
-pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
+pub use diagnostics_layer::{
+    DiagnosticsLayer, InlineDiagnosticSummary, SeverityCounts, pump_diagnostics,
+};
 pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
 pub use error::{LspError, LspResult};
 pub use events::{
     LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspCodeLensRefresh,
     LspDiagnosticRefresh, LspDocumentChanged, LspInlayHintRefresh, LspLogPushed, LspProgressKind,
-    LspProgressUpdate, LspSemanticTokensRefresh,
+    LspProgressUpdate, LspSemanticTokensRefresh, LspServerHealth, LspServerStatusChanged,
 };
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use framing::{FrameError, FrameHeader};

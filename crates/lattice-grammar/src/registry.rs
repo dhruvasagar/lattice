@@ -71,6 +71,11 @@ pub struct MotionContext<'a> {
     pub buffer_id: BufferId,
     pub from: Position,
     pub count: Count,
+    /// True when the invocation carried an explicit count (e.g.
+    /// `5G`). False for bare invocations (`G` alone). Motions
+    /// whose semantic changes with an explicit count (goto-last-
+    /// line: last vs. specific line) use this to disambiguate.
+    pub has_explicit_count: bool,
     pub args: Args,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Hot
     /// loops should poll `cancel.check()?` on each iteration; on a
@@ -165,6 +170,49 @@ impl std::fmt::Debug for OperatorSpec {
     }
 }
 
+/// N.1.4a (2026-06-10): resolves a tree-sitter scope at the cursor for
+/// the structural text objects (`af` / `ac` / …). Defined here so
+/// `lattice-grammar` stays free of any tree-sitter dependency — the
+/// host implements it (backed by the buffer's `SyntaxSnapshot`) and
+/// threads it into [`TextObjectContext`]. `scope_at` returns the
+/// innermost matching node's byte-precise span as a half-open
+/// `[start, end)` [`ProtoRange`] (N.1.4c: byte columns, not just rows,
+/// so intra-line objects like `aa`/`ia` are charwise-accurate), or
+/// `None` when there's no parse / no match. End is exclusive, matching
+/// tree-sitter node ranges and the operator slice convention.
+pub trait ScopeResolver {
+    fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
+}
+
+/// N.1.6 (2026-06-10): per-buffer comment-leader descriptor for the
+/// comment text objects (`aC` / `iC`). Commentstring-driven (NOT
+/// tree-sitter) so it works for any language with a known leader, even
+/// without a parse tree. The host populates it from the active buffer's
+/// language (`Lang::comment_syntax`); `None` (or `line: None`) means the
+/// comment objects resolve nothing (graceful operator no-op).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommentSyntax {
+    /// Line-comment leader, e.g. `"//"` (rust / js) or `"#"` (python).
+    pub line: Option<String>,
+    /// Block-comment delimiters, e.g. `("/*", "*/")`. Reserved for a
+    /// follow-up; v1 comment objects use `line` only.
+    pub block: Option<(String, String)>,
+}
+
+/// N.1.6 (2026-06-10): the per-dispatch environment threaded to text
+/// objects. Bundles the inputs a text object's `apply` may read — the
+/// tree-sitter `scope_resolver` (`af`/`ac`, N.1.4) and the
+/// `comment_syntax` (`aC`/`iC`) — into ONE value so the dispatch seam
+/// carries a single env rather than a widening parameter list (the
+/// long-term-fit choice over parallel params). `Copy` (both fields are
+/// borrows); `default()` is the no-input case — the classic objects
+/// (`iw`/`ap`/`i{`) ignore the env entirely.
+#[derive(Clone, Copy, Default)]
+pub struct TextObjectEnv<'a> {
+    pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    pub comment_syntax: Option<&'a CommentSyntax>,
+}
+
 /// Context passed to a text-object's evaluator.
 pub struct TextObjectContext<'a> {
     pub buffer: &'a Buffer,
@@ -176,6 +224,17 @@ pub struct TextObjectContext<'a> {
     /// paragraph / sentence objects that walk further can poll
     /// `cancel.check()?` on their inner loops.
     pub cancel: &'a crate::CancellationToken,
+    /// N.1.4a: tree-sitter scope resolver for the structural text
+    /// objects (`af` / `ac` / …), injected by the host (backed by the
+    /// buffer's `SyntaxSnapshot`). `None` for buffers with no syntax —
+    /// the structural objects then resolve nothing; the classic
+    /// objects (`iw`, `ap`, `i{`) never read it.
+    pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    /// N.1.6: comment-leader descriptor for the comment objects
+    /// (`aC` / `iC`), injected by the host from the active buffer's
+    /// language. `None` (or `line: None`) ⇒ the comment objects resolve
+    /// nothing. Only `aC` / `iC` read it.
+    pub comment_syntax: Option<&'a CommentSyntax>,
 }
 
 type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;

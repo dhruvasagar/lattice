@@ -135,6 +135,21 @@ pub struct DispatchOutcome {
     pub next_actions: Vec<crate::action::Action>,
 }
 
+impl DispatchOutcome {
+    /// Drain `other` into `self`: append signals, effects, and
+    /// next_actions; OR the consumed flag. Used by picker-accept
+    /// paths that delegate to `apply_picker_outcome` and need to
+    /// forward the full outcome upward.
+    pub fn merge(&mut self, other: DispatchOutcome) {
+        self.renderer_signals.extend(other.renderer_signals);
+        self.effects.extend(other.effects);
+        self.next_actions.extend(other.next_actions);
+        if other.consumed {
+            self.consumed = true;
+        }
+    }
+}
+
 /// Slice I.7 — result of [`Editor::dispatch_fused`], the one-round-trip
 /// keystroke apply.
 ///
@@ -514,6 +529,10 @@ impl Editor {
     /// rebuild method retires.
     pub fn build_render_state(&mut self) -> crate::render_state::RenderState {
         use crate::render_state::*;
+        // ML.3b: refresh the active document's `diff` modeline element
+        // from its session sign map (counted on the actor, not the render
+        // thread — paramount #1) before snapshotting the content store.
+        self.sync_diff_modeline_element();
         // Perf plan A.2 slice A.2b.2: build the gated inlay-hint
         // list once and pair it with its content hash. The hash
         // becomes the `VisibleHighlightsKey.inlay_version` axis the
@@ -555,7 +574,6 @@ impl Editor {
         let panes_v = self.pane_tree.version();
         let modes_v = self.active_modes.version();
         let buffer_locals_v = self.buffer_locals.version();
-        let lsp_progress_v = self.lsp_progress.version();
         // Perf plan B.4.b: `buffers` keyed on `buffer_uris.version()`
         // alone — the registry inside the cached `BuffersRenderState`
         // is `Arc<Mutex<...>>`-backed, so renderers see current
@@ -583,14 +601,7 @@ impl Editor {
             self.buffers.version().hash(&mut h);
             h.finish()
         };
-        let (
-            panes_arc,
-            modes_arc,
-            buffer_locals_arc,
-            lsp_progress_map_arc,
-            buffers_arc,
-            tabs_arc,
-        ) = {
+        let (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc) = {
             let mut cache = self
                 .publish_cache
                 .lock()
@@ -612,6 +623,7 @@ impl Editor {
                             .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
                             .collect(),
                     ),
+                    mode_registry: self.mode_registry.clone(),
                 })
             });
             let buffer_locals_arc = crate::render_state::cached_or_build(
@@ -628,14 +640,9 @@ impl Editor {
                     })
                 },
             );
-            // Inner-Arc memoisation: outer `LspRenderState` still
-            // rebuilds; the inner progress HashMap is reused when no
-            // $/progress event fired between publishes.
-            let lsp_progress_map_arc = crate::render_state::cached_or_build(
-                &mut cache.lsp_progress,
-                lsp_progress_v,
-                || std::sync::Arc::new((*self.lsp_progress).clone()),
-            );
+            // ML.3c: the `$/progress` map cache is gone with
+            // `RenderState.lsp.progress` (the modeline reads its own
+            // lattice-lsp store now).
             // Perf plan B.4.b: full `Arc<BuffersRenderState>` cached.
             // The `registry` clone is one Arc bump (cheap); the win
             // is on the `buffer_uris.clone()` HashMap allocation.
@@ -654,14 +661,7 @@ impl Editor {
                 crate::render_state::cached_or_build(&mut cache.tabs, tabs_input_v, || {
                     std::sync::Arc::new(self.build_tabs_render_state())
                 });
-            (
-                panes_arc,
-                modes_arc,
-                buffer_locals_arc,
-                lsp_progress_map_arc,
-                buffers_arc,
-                tabs_arc,
-            )
+            (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc)
         };
         // D.4.d.1.a (2026-05-29): take the single-edit slot once
         // here so both the top-level `cells.last_edit` (active-doc
@@ -727,6 +727,21 @@ impl Editor {
         // overrides one subsystem at a time. The `..Default::default()`
         // tail keeps unmigrated sub-states at their (empty)
         // defaults without enumerating every field on every edit.
+        //
+        // §12 paint gate: stamp the off-keystroke paint revision from
+        // the surfaces the cells / virtual-rows workers DON'T cover.
+        // Hoist the modeline snapshot so the signature can read its
+        // content pointer; it's then moved into the literal below.
+        let modeline_snapshot = self.modeline.snapshot();
+        let paint_revision = self.compute_paint_revision(
+            &panes_arc,
+            &modes_arc,
+            &buffer_locals_arc,
+            &buffers_arc,
+            &tabs_arc,
+            &modeline_snapshot,
+            static_overlay_version_val,
+        );
         RenderState {
             // Slice 3c.1: active-buffer hot-path projection.
             // Captures cursor/scroll/modal/etc. at publication
@@ -753,7 +768,7 @@ impl Editor {
                 macro_recording: self.macro_recording.is_some(),
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
-                snippet_active: self.active_snippet.is_some(),
+                snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                 // Terminal-mode T2.a: published so the translate
                 // layer can build TranslateContext from the
                 // snapshot without reaching into active_modes.
@@ -906,7 +921,17 @@ impl Editor {
                 pending_redraw: self.pending_redraw,
                 terminal_width: self.terminal_width,
             }),
-            theme: self.host_theme,
+            // T.4 (theme-system): snapshot the resolved read table +
+            // builtin ids so renderers read `resolved.get(ids.x)`.
+            // `resolved()` is an `ArcSwap` load (rebuilt only when a
+            // theme/palette change marked it dirty — never the hot
+            // path; design §7).
+            resolved_theme: self
+                .services
+                .get::<crate::ui::theme::ThemeRegistryHandle>()
+                .map(|r| r.resolved())
+                .unwrap_or_default(),
+            theme_ids: self.builtin_element_ids,
             // Slice 3c.final.B.7: messages + modeline reads lifted
             // off `read_editor` round-trips. `Arc::new` per publish
             // keeps each sub-state's clone cheap (Arc bump only);
@@ -924,6 +949,11 @@ impl Editor {
                     .map(|s| std::sync::Arc::from(s.pattern.as_str())),
                 search_direction: self.search_line.as_ref().map(|s| s.direction),
             }),
+            // ML.0b-2: wait-free snapshot of the configurable-modeline
+            // element system (two Arc clones). Built-in element content
+            // is written through `self.modeline` (ML.1); mode/plugin
+            // content arrives via ModelineElementUpdate (ML.3).
+            modeline_elements: modeline_snapshot,
             // Slice 3c.final.B.10: typed-options registry handle.
             // The inner `ConfigRegistry` is already Arc-shared on
             // the editor side, so the publish is one Arc clone.
@@ -948,6 +978,10 @@ impl Editor {
                 // access to the latest published diagnostics
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
+                // L4a.2: the cursor-line eol summary when the idle
+                // gate is visible; `None` otherwise (single-branch
+                // common path).
+                inline_summary: self.compute_inline_diag_summary(),
             }),
             // Perf plan B.4.b: cached `Arc<TabsRenderState>` reused
             // across publishes when the composite tabs key
@@ -969,17 +1003,13 @@ impl Editor {
                 document_links: self.lsp_document_links_cache.clone(),
                 document_color: self.lsp_document_color_cache.clone(),
                 pull_diagnostics: self.lsp_pull_diagnostics_cache.clone(),
-                // Slice 3c.final.B (group 4): progress map + supervisor
-                // handle. Progress is small (~10 concurrent items
-                // typical); a per-publish HashMap clone is sub-µs.
-                // Supervisor handle is `Arc<ArcSwap<...>>`-backed so
-                // `Clone` is one Arc bump and `servers_for(uri)` stays
-                // wait-free on the renderer side.
-                // Perf plan B.4: inner Arc cached in publish_cache;
-                // outer `LspRenderState` still rebuilds (its other
-                // Arc fields are independent) but the HashMap clone
-                // is elided when no $/progress event fired.
-                progress: lsp_progress_map_arc,
+                // ML.3c: `progress` + `server_status` dropped from the
+                // render snapshot — the modeline badge they fed is now
+                // produced by `lattice_lsp::modeline` from its own store
+                // (decision A), not read here.
+                // Slice 3c.final.B (group 4): supervisor handle.
+                // `Arc<ArcSwap<...>>`-backed so `Clone` is one Arc bump
+                // and `servers_for(uri)` stays wait-free renderer-side.
                 supervisor: self.lsp.clone(),
             }),
             // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): panes
@@ -1031,18 +1061,18 @@ impl Editor {
                 anchor: self.popup_anchor,
                 doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,
             }),
-            // Phase 5.8.AF.5 / Slice X2: syntax inputs the
-            // highlights worker reads. The `visible_spans` cell is
-            // cloned from `self.syntax_visible_spans_cell` so the
-            // Arc identity stays stable across publishes — the
-            // worker holds its own clone of the same Arc, so its
-            // writes survive subsequent publishes.
+            // Phase 5.8.AF.5 / Slice X2: syntax inputs the overlay
+            // worker reads. display-line B4.2 (gut + rename) deleted
+            // the dead `visible_spans` / `visible_rows` prepaint cells
+            // — only the `static_overlay_quads` output cell (cloned
+            // below) survives, and its Arc identity stays stable
+            // across publishes so the worker's writes are observable.
             syntax: std::sync::Arc::new(SyntaxRenderState {
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
                 scroll: self.scroll,
                 viewport_height: self.viewport_height,
-                // Slice X2.9: stretch the worker's parse window
-                // past closed folds so syntax styling reaches
+                // Slice X2.9: stretch the worker's overlay window
+                // past closed folds so overlay backgrounds reach
                 // lines that appear after a collapsed fold within
                 // the visible viewport. Falls back to None
                 // (worker uses `scroll + viewport_height`) when
@@ -1050,14 +1080,6 @@ impl Editor {
                 end_line_override: self.fold_aware_highlight_end_line(),
                 fold_hash: crate::folds::compute_fold_hash(&self.folds),
                 text_version: self.document.text_version(),
-                visible_spans: self.syntax_visible_spans_cell.clone(),
-                // Perf plan A.2 slice A.2a: parallel pre-paint cell
-                // for the GPUI peer. Cloned from
-                // `self.syntax_visible_rows_cell` so its Arc identity
-                // matches the handle the worker writes to — every
-                // publish surfaces the worker's latest write without
-                // a republish round-trip.
-                visible_rows: self.syntax_visible_rows_cell.clone(),
                 // Perf plan A.2 slice A.2b.1: pre-gate + flatten
                 // the active document's LSP inlay hints into the
                 // syntax-input contract. Empty when the
@@ -1101,8 +1123,9 @@ impl Editor {
             // `syntax` version still proxies `text_version` until a
             // dedicated syntax-snapshot counter lands; the worker
             // re-resolves syntax fg on any text bump anyway.
-            // `theme` axis is `hash(self.host_theme) as u64` —
-            // theme changes are rare so an aggressive whole-doc
+            // `theme` axis is the resolved table's `resolved().version()`
+            // (T.6.t) — bumps on any palette / override / colorscheme
+            // change. Theme changes are rare so an aggressive whole-doc
             // rebuild is acceptable per the design doc.
             cells: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(CellsRenderState {
                 // D.4.d.1.b (2026-05-29): top-level `matrix`
@@ -1171,12 +1194,17 @@ impl Editor {
                         let h = crate::folds::compute_fold_hash(&self.folds);
                         if self.foldenable() { h } else { !h }
                     },
-                    theme: {
-                        use std::hash::{Hash, Hasher};
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        self.host_theme.hash(&mut h);
-                        h.finish()
-                    },
+                    // T.6.t: the `theme` axis is the resolved table's
+                    // `version()` — bumped on any palette / override /
+                    // colorscheme change (design §7). An integer load
+                    // (`ArcSwap` version field), cheaper than the old
+                    // `hash(host_theme)`; when it changes the cells
+                    // worker rebuilds with fresh fg/bg.
+                    theme: self
+                        .services
+                        .get::<crate::ui::theme::ThemeRegistryHandle>()
+                        .map(|r| r.resolved().version())
+                        .unwrap_or(0),
                     whitespace: {
                         // Hash the same whitespace fields so any
                         // `:set display.whitespace.*` bumps this
@@ -1219,7 +1247,14 @@ impl Editor {
                 // can attach the same delta to the active pane's
                 // entry without a second `take()`.
                 last_edit: last_edit_active,
-                theme: self.host_theme,
+                // T.5 (theme-system): resolved table + ids the cell
+                // builder reads for per-span syntax + whitespace.
+                resolved_theme: self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                    .map(|r| r.resolved())
+                    .unwrap_or_default(),
+                theme_ids: self.builtin_element_ids,
                 // D.4.d.1.a (2026-05-29): per-visible-Document-pane
                 // build inputs. Worker iteration consumes this in
                 // D.4.d.1.b. Renderers wanting per-pane reads use
@@ -1263,8 +1298,102 @@ impl Editor {
                 matrix: self.virtual_rows_matrix_cell.load_full(),
                 pane_matrices: virtual_rows_pane_matrices,
             }),
+            // §12 paint gate (computed above, before the literal).
+            paint_revision,
             ..RenderState::default()
         }
+    }
+
+    /// §12 paint gate: a content hash over every render-visible surface
+    /// the cells / virtual-rows workers do NOT own, so an off-keystroke
+    /// publish that moves one of them requests a paint. Stamped onto
+    /// [`RenderState::paint_revision`](crate::render_state::RenderState::paint_revision);
+    /// the actor's `async_landed` / inline-diag arms fire `paint_request`
+    /// when it changes vs. the last publish.
+    ///
+    /// The cells `MatrixVersion` is the dual axis (text / syntax / inlay
+    /// / folds / theme / whitespace — the cell-content set). Everything
+    /// `lattice-cells/src/version.rs` lists as an *overlay* (diagnostics,
+    /// cursor, selection, hlsearch, doc-highlights, search matches) plus
+    /// the chrome the renderer paints from `RenderState` directly
+    /// (modeline badge, minibuffer, popups, echo line, tabs, lifecycle)
+    /// is folded here. Cheap: pointer/scalar reads + one SipHash walk,
+    /// once per real publish on the actor thread.
+    ///
+    /// Identity-preserving sub-states (the `cached_or_build` slots) fold
+    /// by pointer — a reused `Arc` means "unchanged". Sub-states rebuilt
+    /// every publish fold by value/version instead, so a NO-OP publish
+    /// yields a STABLE revision: that's what keeps the GPUI paint
+    /// bridge's `run_tick_pending` → re-publish from looping.
+    ///
+    /// NOTE: cells / virtual-rows are deliberately ABSENT — their
+    /// workers fire `paint_request` on their own content change; folding
+    /// them here would double-paint and risk an early frame before the
+    /// worker recompute lands. Any NEW render-visible non-cell field
+    /// must be added here.
+    fn compute_paint_revision(
+        &self,
+        panes: &std::sync::Arc<crate::render_state::PanesRenderState>,
+        modes: &std::sync::Arc<crate::render_state::ModesRenderState>,
+        buffer_locals: &std::sync::Arc<crate::render_state::BufferLocalsRenderState>,
+        buffers: &std::sync::Arc<crate::render_state::BuffersRenderState>,
+        tabs: &std::sync::Arc<crate::render_state::TabsRenderState>,
+        modeline: &lattice_mode::ModelineSnapshot,
+        static_overlay_version: u64,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Identity-preserving sub-states: pointer identity == change.
+        (std::sync::Arc::as_ptr(panes) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(modes) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(buffer_locals) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(buffers) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(tabs) as usize).hash(&mut h);
+        // Modeline element system (LSP readiness badge, diff status,
+        // plugin badges): the churning `content` map swaps its Arc on
+        // every `ModelineElementUpdate`; `registry` changes on (rare)
+        // descriptor (de)registration.
+        (std::sync::Arc::as_ptr(&modeline.content) as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(&modeline.registry) as usize).hash(&mut h);
+        // Diagnostics overlay (gutter / underline / inline summary):
+        // each server push swaps the snapshot Arc.
+        self.lsp_diagnostics.snapshot_revision().hash(&mut h);
+        // Static overlays (doc-highlights + search matches + substitute
+        // preview), already content-hashed for the worker's bucket key.
+        static_overlay_version.hash(&mut h);
+        // Active-document chrome painted outside the cell grid. `cursor`
+        // is an OVERLAY (absent from MatrixVersion) so a cursor-only move
+        // needs this; scroll/viewport are cells-coupled but cheap here.
+        self.cursor.hash(&mut h);
+        self.scroll.hash(&mut h);
+        self.viewport_height.hash(&mut h);
+        std::mem::discriminant(&self.modal).hash(&mut h);
+        self.visual_anchor.hash(&mut h);
+        self.current_match
+            .as_ref()
+            .map(|r| (r.start, r.end))
+            .hash(&mut h);
+        // Minibuffer: command line + search line.
+        self.command_line.hash(&mut h);
+        self.search_line
+            .as_ref()
+            .map(|s| (s.pattern.clone(), s.direction))
+            .hash(&mut h);
+        // Popups / floats (presence + placement + anchor). Async result
+        // GROWTH inside an open picker/completion still rides a keystroke
+        // today; if that changes, fold a content count here.
+        self.popup_buffer.hash(&mut h);
+        std::mem::discriminant(&self.popup_placement).hash(&mut h);
+        self.popup_anchor.hash(&mut h);
+        self.picker.is_some().hash(&mut h);
+        self.completion_state.is_some().hash(&mut h);
+        self.insert_completion.is_some().hash(&mut h);
+        // Echo line.
+        self.last_message.is_some().hash(&mut h);
+        // Lifecycle chrome.
+        self.should_quit.hash(&mut h);
+        self.terminal_width.hash(&mut h);
+        h.finish()
     }
 
     /// Perf plan B.2 slice B.2.a: build the active buffer's LSP
@@ -1327,12 +1456,103 @@ impl Editor {
         std::sync::Arc::from(out.into_boxed_slice())
     }
 
+    /// L4a.2 (lsp-architecture.md §15): recompute the inline
+    /// cursor-line diagnostic-summary idle gate from the current
+    /// option / modal state / cursor line. Called from
+    /// [`Self::publish_render_state`] (the one chokepoint every
+    /// dispatch and typed setter funnels through), so it runs once
+    /// per coalesced publish on the actor thread — never the UI
+    /// thread.
+    ///
+    /// - `ui.diagnostics.inline = off` → fully disarmed.
+    /// - Insert / Replace (active text entry) → suppressed: summary
+    ///   hidden and the armed line cleared, so the gate re-arms when
+    ///   the user returns to Normal/Visual.
+    /// - cursor on a *new* line → (re)arm: stash the line, set the
+    ///   deadline `INLINE_DIAG_IDLE` out, hide any prior summary.
+    /// - cursor still on the armed line → leave the deadline +
+    ///   visibility untouched, so an in-place edit refreshes the text
+    ///   via `build_render_state` without restarting the timer.
+    ///
+    /// `All` scope is treated as cursor-line here; the all-viewport
+    /// fan-out is L5.
+    pub fn update_inline_diag_gate(&mut self) {
+        // Idle delay before the summary appears once the cursor
+        // settles on a new line (Helix's low-noise cursor-line model).
+        const INLINE_DIAG_IDLE: std::time::Duration = std::time::Duration::from_millis(300);
+        use lattice_config::DiagnosticsInline;
+        let inline = self
+            .config
+            .get_typed::<lattice_config::DiagnosticsInlineOption>()
+            .map(|v| *v)
+            .unwrap_or_default();
+        let suppressed = matches!(inline, DiagnosticsInline::Off)
+            || matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        if suppressed {
+            self.inline_diag_line = None;
+            self.inline_diag_deadline = None;
+            self.inline_diag_visible = false;
+            return;
+        }
+        let cur = self.cursor.line;
+        if self.inline_diag_line != Some(cur) {
+            self.inline_diag_line = Some(cur);
+            self.inline_diag_deadline = Some(tokio::time::Instant::now() + INLINE_DIAG_IDLE);
+            self.inline_diag_visible = false;
+        }
+        // else: same armed line — leave the deadline + visibility as-is.
+    }
+
+    /// L4a.2: the idle deadline elapsed — make the cursor-line summary
+    /// visible and clear the deadline so the actor's pinned sleep
+    /// doesn't refire for it. The caller (the editor actor's timer
+    /// arm) republishes + wakes so `build_render_state` emits the
+    /// summary into `DiagnosticsRenderState::inline_summary`.
+    pub fn fire_inline_diag_gate(&mut self) {
+        self.inline_diag_visible = true;
+        self.inline_diag_deadline = None;
+    }
+
+    /// L4a.2: compute the inline cursor-line diagnostic summary to
+    /// publish into [`DiagnosticsRenderState::inline_summary`] for the
+    /// current frame. `Some((line, summary))` only when the idle gate
+    /// is visible, the active buffer has a URI, and the armed line
+    /// carries a diagnostic at or above
+    /// `ui.diagnostics.inline-min-severity`. Cheap — gated on the
+    /// `inline_diag_visible` bool, so the common (disarmed / pre-idle)
+    /// path is a single branch; when visible it is one snapshot load
+    /// plus a single-line filter on the actor thread.
+    fn compute_inline_diag_summary(&self) -> Option<(u32, lattice_lsp::InlineDiagnosticSummary)> {
+        if !self.inline_diag_visible {
+            return None;
+        }
+        let line = self.inline_diag_line?;
+        let uri = self.buffer_uris.get(&self.document_buffer_id)?;
+        let min_rank = self
+            .config
+            .get_typed::<lattice_config::DiagnosticsMinSeverityOption>()
+            .map(|v| v.rank())
+            .unwrap_or_else(|| lattice_config::DiagnosticsSeverity::default().rank());
+        self.lsp_diagnostics
+            .inline_line_summary(uri, line, min_rank)
+            .map(|s| (line, s))
+    }
+
     /// Phase 5.8.AF.5 / Slice 3a. Build a fresh `RenderState`
     /// and atomically install it into the editor's
     /// `Arc<ArcSwap<RenderState>>`. One atomic release-store on
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
-    pub fn publish_render_state(&mut self) {
+    /// Returns `true` when this real publish moved
+    /// [`RenderState::paint_revision`](crate::render_state::RenderState::paint_revision)
+    /// — i.e. a render-visible surface that the cells / virtual-rows
+    /// workers do NOT own changed. The actor's off-keystroke arms
+    /// (`async_landed` / inline-diag) use the return to fire
+    /// `paint_request`; the keystroke path ignores it (it already paints
+    /// via the renderer's input wake). A suppressed (batched) publish
+    /// returns `false` — the real publish at batch-unwind reports the
+    /// net change.
+    pub fn publish_render_state(&mut self) -> bool {
         // Slice I.4 (publish coalescing): while a `dispatch` / `handle_effect`
         // batch is in flight (depth > 0), suppress this publish — mark it
         // pending and return. The single real publish fires when the outermost
@@ -1348,10 +1568,17 @@ impl Editor {
                 .expect("publish_cache mutex poisoned");
             if c.publish_batch_depth > 0 {
                 c.publish_pending = true;
-                return;
+                return false;
             }
             c.publish_pending = false;
         }
+        // L4a.2: recompute the inline cursor-line diagnostic gate
+        // before `build_render_state` reads `inline_diag_visible` /
+        // `inline_diag_line` to emit the summary. Runs on the real
+        // (un-suppressed) publish only; cheap (one option read + a
+        // line compare). Also refreshes `inline_diag_deadline`, which
+        // the editor actor's timer arm re-reads to retarget its sleep.
+        self.update_inline_diag_gate();
         // D.5.a (2026-05-30): apply any diff-mode toggles
         // queued by the `DiffSubsystem` since the previous
         // tick. Must run before `build_render_state` reads
@@ -1360,6 +1587,10 @@ impl Editor {
         // keystroke filter all consume the same state).
         // Idempotent and cheap when the queue is empty.
         self.apply_pending_diff_mode_changes();
+        // T.4: poll the active buffer's tutor session for success.
+        // Cheap: version-compare early-return when no session or no
+        // buffer change since the last tick.
+        self.check_tutor_session();
         // D.4.a (2026-05-29): propagate scroll bindings before
         // the render state snapshot so the snapshot reflects the
         // bound panes' updated stashed scrolls. Idempotent —
@@ -1381,15 +1612,23 @@ impl Editor {
         // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once
         // for the B2.3 sync edit-path rebuild.
         let next_cells = next.cells.load();
+        let next_ct = crate::cells_worker::CellTheme {
+            resolved: &next_cells.resolved_theme,
+            ids: &next_cells.theme_ids,
+        };
         for pane in next_cells.panes.iter() {
             crate::cells_worker::sync_rebuild_pane_on_edit(
                 pane,
-                &next_cells.theme,
+                next_ct,
                 &next_cells.whitespace,
             );
         }
+        // §12 paint gate: capture the revision before `next` is moved
+        // into the ArcSwap, then compare against the last real publish
+        // at the tail to decide whether the off-keystroke arms paint.
+        let paint_revision = next.paint_revision;
         self.render_state.store(std::sync::Arc::new(next));
-        // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
+        // Phase 5.8.AF.5 / Slice X2: wake the overlay worker.
         // `Notify::notify_one` is "permit-style" — if no one is
         // waiting, it stores a permit so the next `notified().await`
         // resolves immediately. A burst of publishes therefore wakes
@@ -1398,11 +1637,17 @@ impl Editor {
         // `render_state.load_full()` regardless of how many publishes
         // it missed during the burst. Cheap (~10ns) on the
         // dispatch tail; doesn't block.
-        // B4: disabled. The legacy highlights worker now only feeds
-        // inactive-pane `visible_rows`/`pane_highlights`; the active body
-        // reads the canonical `DisplayMatrix`. B4 migrates the inactive-pane
-        // consumer onto DisplayMatrix, then deletes the worker + this wake.
-        // self.highlight_wake.0.notify_one();
+        //
+        // B4 disabled the per-publish wake (the overlay worker's
+        // static-overlay bucket is a per-frame optimisation, and both
+        // renderers carry a per-frame `push_range_quads` fallback that
+        // paints search / substitute / doc-highlight backgrounds
+        // correctly without it). display-line B4.2 (gut + rename)
+        // deleted the dead span/row prepaint cache the worker also fed
+        // but left this disabled wake unchanged — re-enabling the
+        // worker-driven bucket is a separate perf slice, not part of
+        // the gut+rename. Renamed `highlight_wake` → `overlay_wake`.
+        // self.overlay_wake.0.notify_one();
         // S2.1 (2026-05-26): wake the cell-builder worker (S2.2+).
         // Same permit-style coalescing as the highlights wake.
         // Currently no consumer (worker lands in S2.2), so this is
@@ -1416,6 +1661,20 @@ impl Editor {
         // to `Recomputed` once then `CacheHit` thereafter, so
         // dispatch-tick wakes are cheap.
         self.virtual_rows_wake.0.notify_one();
+        // §12 paint gate: did a non-cell render-visible surface move
+        // since the last real publish? The cells / virtual-rows workers
+        // own their own `paint_request` on content change; this covers
+        // everything else (modeline badge, diagnostics overlay, popups,
+        // minibuffer, …). The actor's off-keystroke arms read this to
+        // fire `paint_request`. A no-op publish returns `false`, so the
+        // GPUI paint bridge's run_tick_pending → re-publish doesn't spin.
+        let mut cache = self
+            .publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned");
+        let changed = cache.last_paint_revision != paint_revision;
+        cache.last_paint_revision = paint_revision;
+        changed
     }
 
     // ----------------------------------------------------------------
@@ -1501,6 +1760,13 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::PasteText(_)
             | Action::EnterVisual(_)
             | Action::ExitVisual
+            // SN.3d: Select entry/overtype/exit/toggle change buffer or
+            // selection state — gated off read-only help buffers like
+            // their Visual peers.
+            | Action::EnterSelect(_)
+            | Action::SelectOvertype(_)
+            | Action::ExitSelect
+            | Action::ToggleVisualSelect
             | Action::ReselectLastVisual
             | Action::JoinLines { .. }
             | Action::ToggleCaseAtCursor
@@ -1637,8 +1903,26 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // The catch-all `_ => {}` is the seam: anything not yet moved
     // is still handled by App's match (which runs after this
     // function returns).
+    //
+    // goal_col (gj/gk sticky column): preserve only across
+    // display-line vertical moves; any other action resets it.
+    if !matches!(
+        action,
+        Action::DisplayLineDown | Action::DisplayLineUp
+    ) {
+        editor.goal_col = None;
+    }
     match action {
         Action::None => {}
+        // SN.3c.2b: a fall-through binding resolves to a sequence
+        // (mode action, then native). Apply each in order — sub-actions
+        // (e.g. `Invoke(snippet-leave)` then `Invoke(enter-normal)`)
+        // route through the same dispatcher.
+        Action::Chain(actions) => {
+            for a in actions {
+                handle_action(editor, a, _out);
+            }
+        }
         // ---- Slice 3c.final.C: renderer non-dispatch mutations ----
         Action::SetViewportHeight(h) => {
             editor.viewport_height = h.max(1);
@@ -1761,18 +2045,22 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::GotoPrevFold => editor.do_goto_fold(false),
         Action::StartMacroRecord(reg) => editor.do_start_macro_record(reg),
         Action::StopMacroRecord => editor.do_stop_macro_record(),
-        Action::SnippetLeave => {
-            // Snippet body has no host-side helper -- the App arm
-            // was literally these two field writes.
-            editor.active_snippet = None;
-            editor.modal = ModalState::Normal;
-        }
+        // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed.
+        // `<Esc>` is mode-owned now — `active-snippet-mode`'s
+        // per-buffer handler clears the session + returns
+        // `Effect::EnterMode(Normal)` (`feedback_mode_owns_its_surface`).
         // 5.5.G.2: pure-editor visual + mark arms. Bodies migrated
         // to [`Editor`] alongside the existing `do_enter_visual` /
         // `do_exit_visual` / `do_reselect_visual` cluster.
         Action::EnterVisual(kind) => editor.do_enter_visual(kind),
         Action::ExitVisual => editor.do_exit_visual(),
+        // SN.3d Select mode (Visual's sibling — see select-mode.md).
+        Action::EnterSelect(kind) => editor.do_enter_select(kind),
+        Action::SelectOvertype(c) => editor.do_select_overtype(c),
+        Action::ExitSelect => editor.do_exit_select(),
+        Action::ToggleVisualSelect => editor.do_toggle_visual_select(),
         Action::ReselectLastVisual => editor.do_reselect_visual(),
+        Action::SwapVisualEnds => editor.do_swap_visual_ends(),
         Action::SetMark(name) => {
             if name.is_ascii_alphabetic() || name.is_ascii_digit() {
                 editor.marks.insert(name, editor.cursor);
@@ -1797,6 +2085,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::JoinLines { with_space } => editor.do_join_lines(with_space),
         Action::ToggleCaseAtCursor => editor.do_toggle_case_at_cursor(),
         Action::EnterAppend => editor.do_enter_append(),
+        Action::EnterInsertFirstNonBlank => editor.do_enter_insert_first_non_blank(),
+        Action::EnterAppendEndOfLine => editor.do_enter_append_end_of_line(),
+        Action::DisplayLineDown => editor.do_display_line_down(),
+        Action::DisplayLineUp => editor.do_display_line_up(),
+        Action::DisplayLineStart => editor.do_display_line_start(),
+        Action::DisplayLineEnd => editor.do_display_line_end(),
         Action::OpenLineBelow => editor.do_open_line_below(),
         Action::OpenLineAbove => editor.do_open_line_above(),
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
@@ -1899,9 +2193,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::JumpToMarkExact(name) => editor.do_jump_mark(name, true),
         Action::JumpHistoryBack => editor.do_jump_history(-1),
         Action::JumpHistoryForward => editor.do_jump_history(1),
-        // 5.5.G.8: snippet placeholder navigation.
-        Action::SnippetNextPlaceholder => editor.do_snippet_next_placeholder(),
-        Action::SnippetPrevPlaceholder => editor.do_snippet_prev_placeholder(),
+        // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+        // navigation is mode-owned (`active-snippet-mode`'s
+        // `ActionHandlerRegistry` closures); the
+        // `Action::SnippetNext/PrevPlaceholder` arms + the
+        // `Editor::do_snippet_*` bodies are gone.
         // D.5.b: diff-mode `do` — resolve the hunk under
         // the cursor and rewrite the current side to match
         // the baseline.
@@ -1995,6 +2291,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             | BufferKind::Messages
             | BufferKind::Multibuffer => {}
         },
+        // Open the command picker (`:` / M-x). Editor::open_picker
+        // handles source lookup + async init; renderer signals flow
+        // through _out.renderer_signals as with other picker actions.
+        Action::OpenCommandPicker => {
+            let sigs = editor.open_picker("commands".to_string(), Vec::new());
+            _out.renderer_signals.extend(sigs);
+        }
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
         // and auto-dismisses a State-A help popup (so the user's
@@ -2002,7 +2305,24 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // history-step arms walk `command_history` cursor and
         // restore the pending unfinished line on the lower bound.
         Action::EnterCommandLine => {
-            editor.command_line.clear();
+            // Vim's Visual `:` → `:'<,'>`. When entering the command line
+            // from Visual, capture the selection into `last_visual` (the
+            // single source `'<` / `'>` and `Range::Selection` resolve
+            // from — see `resolve_grammar_range` + the narrow handler) and
+            // prefill the cmdline with the range, so `:s`, `:narrow`, etc.
+            // operate on the selection. From Normal the line starts blank.
+            if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal {
+                let sel = *editor.document.selections().primary();
+                editor.last_visual = Some(crate::state::LastVisual {
+                    anchor: sel.anchor,
+                    head: sel.head,
+                    kind,
+                });
+                editor.visual_anchor = None;
+                editor.command_line = "'<,'>".to_string();
+            } else {
+                editor.command_line.clear();
+            }
             editor.modal = ModalState::Command;
             editor.last_message = None;
             // Q16: opening the cmdline dismisses STATE A help
@@ -2082,8 +2402,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // stay App-side (picker machinery still resident there).
         Action::LspDocumentSymbolRequest => editor.lsp_document_symbol_request(),
         Action::LspWorkspaceSymbolRequest(query) => editor.lsp_workspace_symbol_request(&query),
-        // 5.5.SNIPPET.1: `<C-x><C-s>` -- direct snippet expansion.
-        Action::SnippetExpand => editor.do_snippet_expand_at_cursor(),
+        // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
+        // `<C-x><C-s>` is mode-owned now — `snippet-mode`'s
+        // `ActionHandlerRegistry` handler emits
+        // `Effect::ExpandSnippet`, resolved by the host effect arm.
         // 5.5.G.23: keystone — every operator / motion / text-object /
         // ex-command dispatch flows through here. `run_invocation`
         // selects the runner (action / oil / help / file-tree /
@@ -2093,7 +2415,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // renderer-coupled tail). The renderer-coupled tail still
         // runs through `App::apply_effect_app_arms` (drained by the
         // dispatch wrapper after `editor.dispatch` returns).
-        Action::Invoke(inv) => editor.run_invocation(inv, _out),
+        Action::Invoke(inv) => editor.dispatch_invocation(inv, _out),
         // 5.5.G.23.insert: Insert-mode text input. Host applies the
         // edit + drives insert-completion / sigHelp / onTypeFormatting
         // autopilots; LSP follow-ups defer through `out.next_actions`
@@ -2139,22 +2461,18 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // without double-invoking.
         Action::PickerAcceptInSplit => {
             editor.picker_open_target = lattice_picker::OpenTarget::Split;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAcceptInVSplit => {
             editor.picker_open_target = lattice_picker::OpenTarget::VSplit;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAcceptInTab => {
             editor.picker_open_target = lattice_picker::OpenTarget::Tab;
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerAccept => {
-            let signals = editor.do_picker_accept();
-            _out.renderer_signals.extend(signals);
+            _out.merge(editor.do_picker_accept());
         }
         Action::PickerDismiss => {
             let signals = editor.do_picker_dismiss();
@@ -2263,12 +2581,96 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.current_match = None;
             editor.all_matches.clear();
         }
+        Effect::SetColorscheme(name) => {
+            // T.12a: NO-arg (`:colorscheme` / empty name) opens the
+            // live-preview theme picker via the trait-driven source
+            // path. The grammar encodes the no-arg case as an empty
+            // `SetColorscheme("")` (`apply_colorscheme`).
+            if name.trim().is_empty() {
+                out.renderer_signals
+                    .extend(editor.open_picker("colorscheme".to_string(), Vec::new()));
+            } else {
+                // T.9.b: `:colorscheme <name>`. Look the name up in the
+                // builtin theme set; on a hit, swap the registry's palette +
+                // override set atomically and signal `ThemeChanged` so BOTH
+                // renderers rebuild their caches (mirrors how `SetOption`'s
+                // `ui.*` path fans out). An unknown name echoes a host-side
+                // error and leaves the active theme untouched -- never a
+                // panic (graceful degradation, paramount-goal-aligned).
+                // T.11.1: resolve against the registry's named-theme CATALOG
+                // (seeded with builtins at boot; `init.rs` / plugins append
+                // via `register_theme`) rather than the static
+                // `builtin_themes()` list — so user/plugin themes are
+                // swappable too. `apply_theme` swaps the palette + overrides
+                // atomically and returns `false` for an unknown name (active
+                // theme untouched — graceful, never a panic).
+                if let Some(reg) = editor
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                {
+                    if reg.apply_theme(&name) {
+                        out.renderer_signals.push(RendererSignal::ThemeChanged);
+                    } else {
+                        editor.set_message(
+                            EchoLevel::Error,
+                            format!("colorscheme: unknown theme `{name}`"),
+                        );
+                    }
+                } else {
+                    editor.set_message(
+                        EchoLevel::Error,
+                        "colorscheme: theme registry unavailable".to_string(),
+                    );
+                }
+            }
+        }
         Effect::Echo { level, text } => {
             // `:echo` and grammar-internal informational messages
             // (e.g. "pattern not found" from `/`). `set_message` also
             // appends to the `*messages*` ring and publishes
             // [`lattice_runtime::MessagePushed`].
             editor.set_message(echo_level_from_grammar(level), text);
+        }
+        Effect::ShowDiagnosticsPopup { lines } => {
+            // L4b (lsp-architecture.md §15): `gl` — the owning
+            // `lsp-diagnostics-mode` handler pre-formatted the cursor
+            // line's diagnostics as (text, severity_rank); render them
+            // through the hover popup pipeline (CursorAnchored), with
+            // each line whole-line-highlighted by its severity via a
+            // `Style::Diagnostic*` span (resolves to the same theme
+            // colours the gutter glyph + underline use). NO markdown
+            // pass — the severity highlight is the only styling. Empty →
+            // echo instead of an empty popup.
+            if lines.is_empty() {
+                editor.set_message(EchoLevel::Info, "no diagnostics on line".to_string());
+            } else {
+                let texts: Vec<String> = lines.iter().map(|(t, _)| t.clone()).collect();
+                let highlights: Vec<Vec<lattice_syntax::StyledSpan>> = lines
+                    .iter()
+                    .map(|(t, rank)| {
+                        let style = match rank {
+                            0 => lattice_syntax::Style::DiagnosticError,
+                            1 => lattice_syntax::Style::DiagnosticWarning,
+                            2 => lattice_syntax::Style::DiagnosticInfo,
+                            _ => lattice_syntax::Style::DiagnosticHint,
+                        };
+                        vec![lattice_syntax::StyledSpan {
+                            start: 0,
+                            end: t.len(),
+                            style,
+                        }]
+                    })
+                    .collect();
+                let mut content = lattice_help::HelpContent::from_lines("diagnostics", texts);
+                content.metadata.highlights = highlights;
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+                        },
+                    )));
+            }
         }
         Effect::EchoMarks => {
             // 5.5.E.2: `:marks` -- list every set mark in the echo
@@ -2295,15 +2697,41 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // 5.5.E.4: motion / selection-class effects emit a
             // SelectionSet; the host syncs `editor.cursor` to the
             // primary head. In Visual mode, the dispatcher's
-            // `replace_primary(Selection::cursor(...))` would
-            // collapse the selection -- refresh the actor's
-            // selection set with the preserved anchor so the
+            // `replace_primary(...)` would otherwise collapse the
+            // selection -- refresh the actor's selection set so the
             // extension survives.
-            let new_head = set.primary().head;
+            //
+            // The SHAPE of the incoming primary is the generic
+            // discriminant, with NO per-object branching (a text
+            // object never gets special-cased here):
+            //   * anchor == head -> a motion (`Selection::cursor`):
+            //     keep the running visual anchor and extend the head.
+            //   * anchor != head -> a text object resolved a full span
+            //     (`viw` / `vaf` / `vaC` / `vac` ...): adopt BOTH
+            //     endpoints, so the selection jumps to the object and
+            //     subsequent motions extend from the object's start.
+            let primary = *set.primary();
+            let new_head = primary.head;
             editor.cursor = new_head;
-            if let ModalState::Visual(kind) = editor.modal {
+            // SN.3d: Select extends its selection on motion exactly like
+            // Visual — same anchor/head bookkeeping, same `visual` kind on
+            // the resulting `Selection`. Gating this on `Visual(_)` alone
+            // would leave Select's bound motions collapsing the selection
+            // (a half-migration: d.2a bound the motions, this is the
+            // handler that makes them extend).
+            let active_kind = match editor.modal {
+                ModalState::Visual(kind) | ModalState::Select(kind) => Some(kind),
+                _ => None,
+            };
+            if let Some(kind) = active_kind {
+                let anchor = if primary.anchor != primary.head {
+                    editor.visual_anchor = Some(primary.anchor);
+                    primary.anchor
+                } else {
+                    editor.visual_anchor.unwrap_or(new_head)
+                };
                 let sel = Selection {
-                    anchor: editor.visual_anchor.unwrap_or(new_head),
+                    anchor,
                     head: new_head,
                     visual: Some(visual_kind_to_mode(kind)),
                 };
@@ -2317,6 +2745,20 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // file-tree refresh, mode mirroring, LSP fan-out) flow
             // back through `RendererSignal`s the cascade enqueued.
             let signals = editor.do_set(&spec);
+            out.renderer_signals.extend(signals);
+        }
+        Effect::SetLocalOption { spec } => {
+            // BL.1: `:setlocal foo=bar` -- writes to the buffer-local
+            // override layer for the active buffer only; does not touch
+            // the global config registry. The cascade is scoped to the
+            // active buffer.
+            let signals = editor.do_set_local(&spec);
+            out.renderer_signals.extend(signals);
+        }
+        Effect::SetGlobalOption { spec } => {
+            // BL.2: `:setglobal foo=bar` -- writes the global config
+            // registry only, leaving buffer-local overrides untouched.
+            let signals = editor.do_set_global(&spec);
             out.renderer_signals.extend(signals);
         }
         Effect::ListBuffers => {
@@ -2405,6 +2847,23 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // + metadata format. Unknown name routes E518 to the
             // echo ring; dispatcher skips the signal.
             if let Some(content) = editor.build_describe_option_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
+            }
+        }
+        Effect::DescribeElement { name } => {
+            // T.9.d: `:describe-element <name>` / `:describe-face` --
+            // reads the `ThemeRegistry::describe` snapshot + formats
+            // owner / doc / authoring spec / resolved style. Unknown
+            // name routes E to the echo ring; dispatcher skips the
+            // signal.
+            if let Some(content) = editor.build_describe_element_content(&name) {
                 out.renderer_signals
                     .push(RendererSignal::DisplayBuffer(Box::new(
                         DisplayBufferRequest {
@@ -2823,10 +3282,16 @@ impl Editor {
             if matches!(lang, lattice_syntax::Lang::Plain) {
                 None
             } else {
+                let resolved = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                    .map(|r| r.resolved())
+                    .unwrap_or_default();
                 Some(crate::diff::overlay::SyntaxContext {
                     lang,
                     registry: self.lang_registry.clone(),
-                    theme: self.host_theme,
+                    resolved,
+                    ids: self.builtin_element_ids,
                 })
             }
         };
@@ -3003,6 +3468,59 @@ impl Editor {
         self.pane_groups.len() != before
     }
 
+    /// D.0b: rebuild the singleton identity-mapper pane group
+    /// that backs `:set scrollbind`. Called from
+    /// `apply_option_cascade` on every `scrollbind` change.
+    ///
+    /// Walks `pane_tree.leaves()` and collects each leaf whose
+    /// current buffer's per-pane resolved `scrollbind` option is
+    /// `true`. Drops the old group (if any), then:
+    /// - ≥ 2 members → creates a fresh `IdentityRowMapper` group
+    ///   and stores its id in `scrollbind_group_id`.
+    /// - 0 or 1 members → no group (identity scroll-binding on a
+    ///   single pane is a no-op); clears `scrollbind_group_id`.
+    pub fn rebuild_scrollbind_group(&mut self) {
+        // Drop the previous group so no stale bindings remain.
+        if let Some(old_id) = self.scrollbind_group_id.take() {
+            self.drop_pane_group(old_id);
+        }
+
+        let members: Vec<crate::pane_group::PaneGroupMember> = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .filter_map(|leaf| {
+                let scrollbind =
+                    *self.resolved_option::<lattice_config::Scrollbind>(leaf.buffer_id);
+                if scrollbind {
+                    Some(crate::pane_group::PaneGroupMember {
+                        pane: leaf.id,
+                        buffer: leaf.buffer_id,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if members.len() < 2 {
+            // 0 or 1 panes with scrollbind=true — no group needed.
+            return;
+        }
+
+        match self.add_pane_group(
+            members,
+            std::sync::Arc::new(crate::pane_group::IdentityRowMapper),
+        ) {
+            Ok(id) => {
+                self.scrollbind_group_id = Some(id);
+            }
+            Err(e) => {
+                tracing::debug!("rebuild_scrollbind_group: add_pane_group failed: {e}");
+            }
+        }
+    }
+
     /// Remove a single `(pane, buffer)` member from a group.
     /// If the group is left empty, the group itself is
     /// dropped. Returns `true` if the member was removed.
@@ -3160,6 +3678,26 @@ impl Editor {
     ) -> Option<std::sync::Arc<crate::diff::overlay::DiffSignMap>> {
         let session = self.diff_subsystem.lookup(self.document_buffer_id)?;
         Some(session.sign_map())
+    }
+
+    /// ML.3b: refresh the `diff` modeline element's content from the
+    /// active document's session sign map. `Scope::Global`, so the
+    /// renderer paints it on the active pane only (modeline.md §7); the
+    /// content is the active session's shared `+N ~M` summary. Counting
+    /// happens here on the actor thread (once per publish), never on the
+    /// render path. Cleared when the active buffer has no session (or no
+    /// changes) so the badge disappears on `:diffoff`. The owner's
+    /// formatter lives in `crate::diff::mode::diff_content`.
+    fn sync_diff_modeline_element(&self) {
+        let id = lattice_mode::ElementId::new(crate::diff::mode::DIFF_ELEMENT);
+        match self.diff_signs_for_active() {
+            Some(sign_map) => self.modeline.apply(lattice_mode::ModelineElementUpdate {
+                key: lattice_mode::ModelineKey::Global,
+                id,
+                content: crate::diff::mode::diff_content(&sign_map),
+            }),
+            None => self.modeline.clear(lattice_mode::ModelineKey::Global, &id),
+        }
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —
@@ -4114,6 +4652,19 @@ impl Editor {
         self.event_bus.publish_typed(MessagePushed { record });
     }
 
+    /// Set the transient echo-area message **without** recording it to
+    /// the `*messages*` ring (unlike [`Self::set_message`]). For
+    /// high-frequency ephemeral notices — the vim showmode indicator
+    /// (`-- INSERT --`, ML.5d) on a mode change — that belong in the
+    /// echo area but must never flood message history (the per-event
+    /// spam `feedback_log_levels` warns against).
+    pub fn set_ephemeral_echo(&mut self, level: EchoLevel, text: impl Into<String>) {
+        self.last_message = Some(crate::action::EchoMessage {
+            text: text.into(),
+            level,
+        });
+    }
+
     /// Scroll so [`Self::cursor`] is inside `[scroll, scroll +
     /// viewport_height)`. No-op when `viewport_height == 0` (the
     /// renderer hasn't recorded a draw yet).
@@ -4130,15 +4681,27 @@ impl Editor {
         if self.viewport_height == 0 {
             return;
         }
+        // Sticky virtual rows (tutor HUD, diff-mode header, …) occupy
+        // the top N rows of the pane permanently regardless of scroll.
+        // They are excluded from virtual_rows_in_line_range (to avoid
+        // double-counting in the display-row walk), so scroll arithmetic
+        // must treat them as a fixed cost subtracted from the budget.
+        // Without this, bottom_anchored_scroll thinks there are more
+        // content rows than actually exist, allowing the scroll to settle
+        // at a position where the cursor is visually behind the header.
+        let buffer_id = self.active_buffer_id();
+        let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
+        let sticky_count = vrows.sticky_rows().count() as u32;
+        let effective_height = self.viewport_height.saturating_sub(sticky_count).max(1);
+
         // `scrolloff`: keep this many DOCUMENT lines of context
-        // above and below the cursor. Clamped to half the viewport
-        // so the two margins can't fight — vim's behaviour once
-        // `scrolloff >= height/2` is to keep the cursor centred,
-        // which `(viewport_height - 1) / 2` reproduces.
+        // above and below the cursor. Clamped to half the effective
+        // viewport so the two margins can't fight — vim's behaviour
+        // once `scrolloff >= height/2` is to keep the cursor centred.
         let scrolloff = self
             .option_cache
             .scrolloff
-            .min(self.viewport_height.saturating_sub(1) / 2);
+            .min(effective_height.saturating_sub(1) / 2);
 
         // Top margin: at least `scrolloff` lines visible above the
         // cursor (clamped at BOF). Doc-line space on purpose —
@@ -4154,16 +4717,12 @@ impl Editor {
         // Bottom margin: at least `scrolloff` lines visible below
         // the cursor, in *display-row* space so excerpt headers
         // (virtual rows) don't push the margin — or the cursor
-        // itself — behind the modeline (the `G` / bottom-scroll bug
-        // in multibuffer views). The target clamps to the last
-        // addressable line so EOF reserves no phantom space (vim:
-        // `G` puts the last line flush at the bottom). With
-        // `scrolloff == 0` and an empty virtual-row matrix this
-        // reduces exactly to the historical
-        // `scroll = cursor.line + 1 - viewport_height`.
+        // itself — behind the modeline. Uses effective_height so the
+        // sticky header rows are excluded from the budget — the
+        // cursor must remain in the scrollable content region.
         let last = last_addressable_line(&self.active_text());
         let bottom_target = self.cursor.line.saturating_add(scrolloff).min(last);
-        let min_scroll = self.bottom_anchored_scroll(bottom_target, self.viewport_height);
+        let min_scroll = self.bottom_anchored_scroll(bottom_target, effective_height);
         if self.scroll < min_scroll {
             self.scroll = min_scroll;
         }
@@ -4368,6 +4927,78 @@ impl Editor {
             // introduce scrollback-view position; until then,
             // return self.cursor so motion code has a sane value.
             BufferKind::Terminal => self.cursor,
+        }
+    }
+
+    /// N.1.5: resolve the real narrow source + source line range for a
+    /// narrow triggered at composed lines `[composed_start, composed_end]`.
+    ///
+    /// When the active buffer is a multibuffer (narrow view, search
+    /// results, project-diff -- any kind), translate both endpoints to
+    /// the original source via `translate_composed_to_source` (M.10.2),
+    /// so `create_narrow_view` is ALWAYS handed a `RopeDocumentHandle`,
+    /// never an intermediate multibuffer. This is the §7 one-hop
+    /// invariant: every narrow view is exactly one hop from the file, so
+    /// edits + save + `:widen` flow straight to the source with no
+    /// fragile N-hop translation stack.
+    ///
+    /// Both endpoints must land in the same source excerpt for a
+    /// contiguous narrow -- a one-excerpt narrow view always does; a
+    /// range spanning excerpts in a multi-excerpt search view falls back
+    /// to the start endpoint's excerpt (degenerate, but never the wrong
+    /// source). Returns `(source_id, source_handle, source_start,
+    /// source_end)`, or `None` when the source has no document handle.
+    fn resolve_narrow_target(
+        &mut self,
+        composed_start: u32,
+        composed_end: u32,
+    ) -> Option<(
+        BufferId,
+        std::sync::Arc<dyn lattice_runtime::Document>,
+        u32,
+        u32,
+    )> {
+        let active_id = self.active_pane_buffer_id();
+        // N.1.5 (review fix): the discriminant is a PROPERTY -- "does this
+        // buffer have a multibuffer handle in the registry?" -- not a
+        // `BufferKind` match (the everything-is-a-buffer rule). When it
+        // does, translate both endpoints to the original source (the
+        // one-hop invariant); otherwise narrow the plain document directly.
+        // The handle fetched for the check is the same one we translate
+        // through, so there's no redundant lookup.
+        let mb = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+            .and_then(|reg| reg.handle(active_id));
+        if let Some(mb) = mb {
+            let (src_a, pos_a) = mb.translate_composed_to_source(
+                lattice_protocol::position::Position::new(composed_start, 0),
+            )?;
+            let (src_b, pos_b) = mb.translate_composed_to_source(
+                lattice_protocol::position::Position::new(composed_end, 0),
+            )?;
+            let (source_id, start, end) = if src_b == src_a {
+                (
+                    src_a,
+                    pos_a.line.min(pos_b.line),
+                    pos_a.line.max(pos_b.line),
+                )
+            } else {
+                // Endpoints straddle excerpts (a multi-excerpt search
+                // view): narrow the cursor endpoint's source line. Surface
+                // it so the user isn't silently handed a one-line view.
+                self.set_message(
+                    EchoLevel::Warn,
+                    "narrow: selection crosses source boundaries; narrowed to the first line"
+                        .to_string(),
+                );
+                (src_a, pos_a.line, pos_a.line)
+            };
+            let handle = self.buffers.document_handle(source_id)?;
+            Some((source_id, handle, start, end))
+        } else {
+            let handle = self.buffers.document_handle(active_id)?;
+            Some((active_id, handle, composed_start, composed_end))
         }
     }
 
@@ -4872,9 +5503,11 @@ impl Editor {
             AppEffect::ScrollLineUp => out.next_actions.push(Action::ScrollLineUp),
             AppEffect::ScrollLineDown => out.next_actions.push(Action::ScrollLineDown),
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
+            AppEffect::OpenCommandPicker => out.next_actions.push(Action::OpenCommandPicker),
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
+            AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
             AppEffect::LspDefinitionRequest => out.next_actions.push(Action::LspDefinitionRequest),
@@ -4892,14 +5525,27 @@ impl Editor {
                 out.next_actions.push(Action::LspFollowLinkAtCursor)
             }
             AppEffect::EnterAppend => out.next_actions.push(Action::EnterAppend),
+            AppEffect::EnterInsertFirstNonBlank => {
+                out.next_actions.push(Action::EnterInsertFirstNonBlank)
+            }
+            AppEffect::EnterAppendEndOfLine => {
+                out.next_actions.push(Action::EnterAppendEndOfLine)
+            }
+            AppEffect::DisplayLineDown => out.next_actions.push(Action::DisplayLineDown),
+            AppEffect::DisplayLineUp => out.next_actions.push(Action::DisplayLineUp),
+            AppEffect::DisplayLineStart => out.next_actions.push(Action::DisplayLineStart),
+            AppEffect::DisplayLineEnd => out.next_actions.push(Action::DisplayLineEnd),
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
-            AppEffect::SnippetExpand => out.next_actions.push(Action::SnippetExpand),
+            // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed
+            // — `<C-x><C-s>` no longer round-trips through a host Action.
             AppEffect::ExitVisual => out.next_actions.push(Action::ExitVisual),
             AppEffect::ReplaceUndoLast => out.next_actions.push(Action::ReplaceUndoLast),
             AppEffect::EnterMode(state) => out.next_actions.push(Action::EnterMode(state)),
             AppEffect::EnterVisual(kind) => out.next_actions.push(Action::EnterVisual(kind)),
+            // SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`).
+            AppEffect::EnterSelect(kind) => out.next_actions.push(Action::EnterSelect(kind)),
             AppEffect::EnterSearch(dir) => out.next_actions.push(Action::EnterSearch(dir)),
             AppEffect::SearchWordUnderCursor(dir) => {
                 out.next_actions.push(Action::SearchWordUnderCursor(dir))
@@ -5004,15 +5650,29 @@ impl Editor {
             AppEffect::CompletionAcceptThenInsert(c) => {
                 out.next_actions.push(Action::CompletionAcceptThenInsert(c))
             }
-            AppEffect::SnippetNextPlaceholder => {
-                out.next_actions.push(Action::SnippetNextPlaceholder)
-            }
-            AppEffect::SnippetPrevPlaceholder => {
-                out.next_actions.push(Action::SnippetPrevPlaceholder)
-            }
-            AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
+            // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+            // navigation is now mode-owned. `active-snippet-mode`
+            // registers `ActionContext -> Effect` handlers on the
+            // `ActionHandlerRegistry`, which the chord dispatcher
+            // consults BEFORE this AppEffect path
+            // (`run_document_invocation`). These arms are dead
+            // fallbacks kept as no-ops because `register_simple`
+            // still registers the action specs that return these
+            // AppEffects (same shape as `SearchJumpToSource` /
+            // `SearchRefresh` post-M.10.x). The `Action::Snippet*`
+            // variants + `Editor::do_snippet_*` bodies are gone.
+            AppEffect::SnippetNextPlaceholder => {}
+            AppEffect::SnippetPrevPlaceholder => {}
+            // SN.3c.2 (2026-06-14): `AppEffect::SnippetLeave` removed —
+            // `<Esc>` no longer round-trips through a host Action.
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
             AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
+            AppEffect::TutorAdvance => {
+                out.renderer_signals.extend(self.do_tutor_advance());
+            }
+            AppEffect::TutorRetreat => {
+                out.renderer_signals.extend(self.do_tutor_retreat());
+            }
             AppEffect::MultibufferExpand { delta } => {
                 // M.10.4 (2026-06-03): the work moved to a
                 // substrate helper in `lattice-multibuffer`. No
@@ -5073,11 +5733,13 @@ impl Editor {
                             };
                         let query_for_echo = query.clone();
                         let registry_for_search = self.registry.clone();
+                        let lr_for_search = Some(self.lang_registry.clone());
                         match lattice_multibuffer::providers::search::project_search(
                             self,
                             query,
                             options,
                             registry_for_search,
+                            lr_for_search,
                         ) {
                             Some(view_id) => {
                                 if self.activate_buffer(view_id) {
@@ -5108,6 +5770,136 @@ impl Editor {
                         EchoLevel::Warn,
                         "search feature not compiled in this build".to_string(),
                     );
+                }
+            }
+            // N.1.1 (2026-06-10): `:narrow [{range}]`. Resolve the
+            // range against the active document, fetch its handle,
+            // and open a one-excerpt multibuffer focused on the
+            // region via the narrow provider's `create_narrow_view`.
+            // Mirrors the SearchTrigger entry shape: substrate owns
+            // view-creation; the host arm is generic glue (resolve
+            // range → create → activate).
+            AppEffect::NarrowTrigger { range } => {
+                // Resolve the requested range against the ACTIVE composed
+                // buffer (works for a plain document AND a multibuffer
+                // view -- `self.document` is the active document).
+                let composed = self.document.snapshot();
+                let last_line = composed.buffer.line_count().saturating_sub(1);
+                let cursor_line = self.active_cursor().line.min(last_line);
+                // N.1.2: the last Visual selection (preserved after `:`
+                // left Visual) supplies `Range::Selection` and the `'<` /
+                // `'>` marks.
+                let visual = self.last_visual.as_ref().map(|v| {
+                    let a = v.anchor.line.min(last_line);
+                    let h = v.head.line.min(last_line);
+                    (a.min(h), a.max(h))
+                });
+                let (composed_start, composed_end) = resolve_narrow_range(
+                    &range,
+                    cursor_line,
+                    last_line,
+                    visual,
+                    &self.marks,
+                    &composed.buffer,
+                );
+                // N.1.5: translate to the real source when the active
+                // buffer is a multibuffer (one-hop invariant); identity
+                // pass-through for a plain document.
+                match self.resolve_narrow_target(composed_start, composed_end) {
+                    Some((source_id, source_handle, start, end)) => {
+                        let label = self.buffers.name_of(source_id).unwrap_or_default();
+                        let registry = self.registry.clone();
+                        let lr = Some(self.lang_registry.clone());
+                        let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
+                            self,
+                            source_id,
+                            source_handle,
+                            start,
+                            end,
+                            &label,
+                            registry,
+                            lr,
+                        );
+                        if self.activate_buffer(view_id) {
+                            let signals = self.activate_buffer_state();
+                            self.enqueue_renderer_signals(signals);
+                        }
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("narrowed to L{}–{}", start + 1, end + 1),
+                        );
+                    }
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            ":narrow: the active buffer has no document".to_string(),
+                        );
+                    }
+                }
+            }
+            // N.1.1 (2026-06-10): `:widen` — close the active narrow
+            // view, restoring the full source buffer. Guarded to
+            // narrow views (NarrowMinorMode active) so it never
+            // deletes an arbitrary buffer or a non-narrow multibuffer
+            // (search / diff results).
+            AppEffect::NarrowWiden => {
+                let active = self.active_pane_buffer_id();
+                let narrow_id =
+                    lattice_multibuffer::providers::narrow::NarrowMinorMode::mode_id();
+                if self.minor_mode_enabled_for(active, narrow_id) {
+                    if self.do_buffer_delete(true) {
+                        let signals = self.activate_buffer_state();
+                        self.enqueue_renderer_signals(signals);
+                    }
+                    self.set_message(EchoLevel::Info, "widened".to_string());
+                } else {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        ":widen: not in a narrow view".to_string(),
+                    );
+                }
+            }
+            // N.1.3 (2026-06-10): the `zn` operator resolved its
+            // motion / text object to a pre-computed line span; narrow
+            // the active buffer to it via the same sink as `:narrow`.
+            AppEffect::NarrowLines {
+                start_line,
+                end_line,
+            } => {
+                // N.1.5: when narrowing from inside a multibuffer view,
+                // `resolve_narrow_target` translates the composed span to
+                // the original source (one-hop invariant). Identity
+                // pass-through for a plain document.
+                match self.resolve_narrow_target(start_line, end_line) {
+                    Some((source_id, source_handle, start, end)) => {
+                        let label = self.buffers.name_of(source_id).unwrap_or_default();
+                        let registry = self.registry.clone();
+                        let lr = Some(self.lang_registry.clone());
+                        let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
+                            self,
+                            source_id,
+                            source_handle,
+                            start,
+                            end,
+                            &label,
+                            registry,
+                            lr,
+                        );
+                        if self.activate_buffer(view_id) {
+                            let signals = self.activate_buffer_state();
+                            self.enqueue_renderer_signals(signals);
+                        }
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("narrowed to L{}–{}", start + 1, end + 1),
+                        );
+                    }
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            "zn: the active buffer has no document".to_string(),
+                        );
+                    }
                 }
             }
             // M.10.7 (2026-06-03): chord-dispatched routes are
@@ -5236,15 +6028,59 @@ impl Editor {
             first.prompt.to_string()
         };
         let info = crate::state::MissingArgPrompt {
-            // Prefill the cmdline with the name the caller
-            // passed verbatim. When the user typed
-            // `:describe-key<CR>` the cmdline keeps showing
-            // `:describe-key ` (their typed form); when a
-            // keymap binding or plugin passes the canonical
-            // `ex:describe-key`, the cmdline shows that.
-            // Symmetric with the cmdline-submit path's prefill
-            // (which uses the raw user-typed token).
-            prefill: format!("{command_name} "),
+            // Always show the user-facing name (strip the `ex:`
+            // namespace prefix) so the cmdline reads
+            // `describe-key ` not `ex:describe-key `.
+            prefill: format!(
+                "{} ",
+                command_name.strip_prefix("ex:").unwrap_or(command_name)
+            ),
+            kind: first.kind,
+            prompt,
+        };
+        self.apply_missing_arg_prompt(info);
+        true
+    }
+
+    /// Picker-only variant of [`arm_missing_arg_prompt`]: arms the
+    /// cmdline with a prefill whenever the command has ANY entry in
+    /// `args_schema`, regardless of `ArgDefault`. Commands with no
+    /// `args_schema` entries (`:q`, `:bn`, `:noh`, …) return `false`
+    /// and the picker executes them immediately. Commands with
+    /// optional args (`:oil`, `:write`, `:help`) arm the cmdline so
+    /// the user can optionally supply the arg or press `<CR>` again
+    /// to run with the default.
+    ///
+    /// The `do_command_line_submit` / `run_invocation` paths continue
+    /// to use `arm_missing_arg_prompt` (Required-only) so `:write<CR>`
+    /// still saves immediately without a second `<CR>`.
+    fn arm_picker_prompt(&mut self, command_name: &str) -> bool {
+        let canonical = self.registry.id_by_name(command_name).or_else(|| {
+            crate::excommand::aliases()
+                .get(command_name)
+                .copied()
+                .and_then(|c| self.registry.id_by_name(c))
+        });
+        let Some(canonical) = canonical else {
+            return false;
+        };
+        let Some(spec) = self.registry.ex_command_spec(canonical) else {
+            return false;
+        };
+        let Some(first) = spec.args_schema.first() else {
+            // No args declared → execute immediately from the picker.
+            return false;
+        };
+        let prompt = if first.prompt.is_empty() {
+            format!("{}:", first.name)
+        } else {
+            first.prompt.to_string()
+        };
+        let info = crate::state::MissingArgPrompt {
+            prefill: format!(
+                "{} ",
+                command_name.strip_prefix("ex:").unwrap_or(command_name)
+            ),
             kind: first.kind,
             prompt,
         };
@@ -5353,7 +6189,7 @@ impl Editor {
             chord_capture: self.auto_submit_after_chord,
             picker_open: false,
             insert_completion_open: false,
-            snippet_active: self.active_snippet.is_some(),
+            snippet_active: self.snippet_session.is_active(self.document_buffer_id),
             terminal_insert_active: false,
             terminal_esc_exits: false,
             terminal_app_cursor_keys: false,
@@ -5446,10 +6282,17 @@ impl Editor {
     /// `out.effects` for the renderer-coupled tail).
     pub fn execute_ex_line(&mut self, line: &str, out: &mut DispatchOutcome) {
         match crate::excommand::parse(line, &self.registry) {
-            Ok(inv) => match self.dispatch_blocking(inv) {
-                Ok(eff) => apply_effect_host(self, eff, out),
-                Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
-            },
+            // UD (unified dispatch): route the parsed invocation through
+            // the SINGLE command-dispatch entry — the same path the
+            // keymap's `Action::Invoke` (and, eventually, plugins) use.
+            // The ex line no longer re-implements a thin subset: it used
+            // to push jump-history itself and then run `dispatch_blocking`
+            // + `apply_effect_host`, skipping the find/till capture, fold
+            // expansion, dot-repeat recording and visual-exit that
+            // `dispatch_invocation`'s document path performs. `:N` / `:gg`
+            // / `:G` now get jump-history from that path too (it pushes
+            // for jump-class motions), so the duplicated push is gone.
+            Ok(inv) => self.dispatch_invocation(inv, out),
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
@@ -5755,7 +6598,7 @@ impl Editor {
             return;
         };
         let insert_replay = self.last_insert.clone();
-        self.run_invocation(inv, out);
+        self.dispatch_invocation(inv, out);
         if matches!(self.modal, ModalState::Insert)
             && let Some(text) = insert_replay
         {
@@ -5792,7 +6635,7 @@ impl Editor {
         };
         let inv = lattice_grammar::CommandInvocation::of(cmd_id)
             .with_args(lattice_grammar::Args::Char(last.target));
-        self.run_invocation(inv, out);
+        self.dispatch_invocation(inv, out);
     }
 
     /// 5.5.G.23.insert: host-side text insertion at the cursor (the
@@ -8427,14 +9270,18 @@ impl Editor {
             ) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
-                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                        s,
-                        lattice_runtime::runtime::lsp_runtime().handle(),
-                        // Slice B.1: wake the actor on idle reparse so
-                        // freshly-opened/reloaded buffers repaint when
-                        // syntax lands without a keystroke.
-                        Some(self.async_landed.clone()),
-                    ))
+                    {
+                        let al = self.async_landed.clone();
+                        let eb = self.event_bus.clone();
+                        Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                            s,
+                            lattice_runtime::runtime::lsp_runtime().handle(),
+                            Some(std::sync::Arc::new(move || {
+                                al.notify_one();
+                                eb.publish_typed(crate::events::SyntaxReparsed);
+                            })),
+                        ))
+                    }
                 }
                 _ => None,
             };
@@ -8550,6 +9397,9 @@ impl Editor {
         // `DiagnosticsLayer` (already Arc-backed; thread-safe).
         let cache_slot = self.lsp_pull_diagnostics_cache.clone();
         let diagnostics_layer = self.lsp_diagnostics.clone();
+        // L1-tail: wake on an authoritative diagnostics report (Full —
+        // new or cleared); see the gated notify after `apply` below.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -8602,7 +9452,18 @@ impl Editor {
                     document_version: version,
                 },
             };
+            // L1-tail: wake only when authoritative diagnostics landed
+            // (Full — new items or an authoritative clear). `Unchanged`
+            // is a no-op repaint, and the `Err`-collapsed `Empty` must
+            // not flicker the gutter on a superseded request.
+            let landed = matches!(
+                outcome,
+                lattice_lsp::cache::PullDiagnosticsOutcome::Full { .. }
+            );
             Editor::apply_pull_diagnostics_outcome(&cache_slot, &diagnostics_layer, outcome);
+            if landed {
+                async_landed.notify_one();
+            }
         });
     }
 
@@ -8648,6 +9509,11 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.1: clone the cache slot Arc into the task.
         let cache_slot = self.lsp_folds_cache.clone();
+        // L1-tail: wake the render pipeline when folds land off-keystroke
+        // (same contract as L1a/L1b). Fired only on the data-landed arm —
+        // the `_ =>` empty/cancel write keeps the existing masked
+        // behaviour, so a superseded request can't flicker the markers.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -8678,6 +9544,7 @@ impl Editor {
                             folds,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -8717,6 +9584,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.4: cache slot Arc cloned into task.
         let cache_slot = self.lsp_document_links_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -8746,6 +9615,7 @@ impl Editor {
                             links,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -8783,6 +9653,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.3: clone the cache slot Arc into the task.
         let cache_slot = self.lsp_code_lens_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -8815,6 +9687,7 @@ impl Editor {
                             server_id: server_id_arc,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -8855,6 +9728,8 @@ impl Editor {
         let lsp = self.lsp.clone();
         // Slice 3b.4: cache slot Arc cloned into task.
         let cache_slot = self.lsp_document_color_cache.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -8887,6 +9762,7 @@ impl Editor {
                             server_id: server_id_arc,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.insert_for(
@@ -8951,6 +9827,15 @@ impl Editor {
         // task has the same Arc identity as the editor, so the
         // read sees any concurrent writes consistently.
         let cache_slot = self.lsp_semantic_tokens_cache.clone();
+        // L1a: wake the render pipeline when tokens land off-keystroke.
+        // Firing `async_landed` makes the actor run `run_tick_pending`
+        // + `publish_render_state` (which wakes the cells/overlay
+        // worker), so freshly-indexed semantic colour appears without
+        // waiting for the next keypress. Only on actual writes -- the
+        // `Err` (superseded/cancelled) arms keep the prior overlay and
+        // must NOT publish, else every keystroke's stale request would
+        // double the publish rate. See lsp-architecture.md §12.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9000,6 +9885,7 @@ impl Editor {
                                 tokens: decoded,
                             },
                         );
+                        async_landed.notify_one();
                     }
                     Ok(Some(
                         lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
@@ -9018,6 +9904,7 @@ impl Editor {
                             &token_types,
                             &token_modifiers,
                         );
+                        async_landed.notify_one();
                     }
                     Ok(_) => {
                         // Authoritative empty (`Ok(None)`): clear.
@@ -9030,6 +9917,7 @@ impl Editor {
                                 tokens: Vec::new(),
                             },
                         );
+                        async_landed.notify_one();
                     }
                     Err(_) => {
                         // 2026-06-03: cancelled (superseded by a newer
@@ -9061,6 +9949,7 @@ impl Editor {
                             tokens: decoded,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Ok(_) => {
                     // Authoritative empty (`Ok(None)` / partial result):
@@ -9074,6 +9963,7 @@ impl Editor {
                             tokens: Vec::new(),
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Err(_) => {
                     // 2026-06-03: cancelled (superseded by a newer
@@ -9165,12 +10055,14 @@ impl Editor {
         );
         let active_buffer_id = self.document_buffer_id;
         let active_pane_id = self.pane_tree.active().id;
-        let theme_hash: u64 = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            self.host_theme.hash(&mut h);
-            h.finish()
-        };
+        // T.6.t: the `theme` axis is the resolved table's `version()`
+        // (snapshotted once per build), not a `hash(host_theme)`. Bumps
+        // on any palette / override / colorscheme change (design §7).
+        let theme_hash: u64 = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .map(|r| r.resolved().version())
+            .unwrap_or(0);
         let whitespace_hash: u64 = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -9239,6 +10131,38 @@ impl Editor {
             let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
                 self.document_syntax_for(buffer_id).cloned().map(Arc::new);
 
+            // K.4.7 (2026-06-08): per-excerpt syntax entries via Document
+            // trait — no BufferKind branch. excerpt_highlights() returns
+            // empty for regular single-file buffers; MultibufferDocumentHandle
+            // overrides to return one entry per syntax-bearing excerpt.
+            let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> =
+                if is_active_buffer {
+                    Some(self.document.as_arc())
+                } else {
+                    self.buffers.document_handle(buffer_id)
+                };
+            let excerpt_syntax_ver = doc_for_excerpts
+                .as_ref()
+                .map(|d| d.excerpt_syntax_version())
+                .unwrap_or(0);
+            let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> =
+                doc_for_excerpts
+                    .as_ref()
+                    .map(|d| {
+                        d.excerpt_highlights()
+                            .into_iter()
+                            .map(|eh| crate::render_state::ExcerptSyntax {
+                                composed_start: eh.composed_start,
+                                composed_end: eh.composed_end,
+                                source_start: eh.source_start,
+                                handle: eh.highlighter,
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice()
+                            .into()
+                    })
+                    .unwrap_or_else(|| Arc::from([]));
+
             // Folds. Active buffer: live mutable slot
             // (`Editor::folds`). Non-active: per-buffer entry on
             // `buffer_locals`.
@@ -9275,10 +10199,25 @@ impl Editor {
                 // rebuild with fresh colours. See the matching comment
                 // in `build_render_state`. Falls back to the doc version
                 // when the buffer has no syntax handle.
-                syntax: syntax_handle
-                    .as_ref()
-                    .map(|h| h.snapshot().text_version())
-                    .unwrap_or(text_version),
+                // K.4.7: for multibuffer panes fold in a XOR of all
+                // excerpt handle versions so a per-source reparse also
+                // invalidates the cache.
+                syntax: {
+                    let base = syntax_handle
+                        .as_ref()
+                        .map(|h| h.snapshot().text_version())
+                        .unwrap_or(text_version);
+                    // K.4.7: use wrapping_add, not XOR. XOR cancels when N
+                    // sources all share the same text_version (e.g. all=1
+                    // with even N → 0). Addition never cancels to zero
+                    // unless all terms are zero.
+                    base.wrapping_add(excerpt_syntax_ver)
+                        .wrapping_add(
+                            excerpt_syntax.iter()
+                                .map(|ex| ex.handle.highlight_version())
+                                .fold(0u64, u64::wrapping_add),
+                        )
+                },
                 inlay_hints: inlay_version,
                 folds: if foldenable { folds_hash } else { !folds_hash },
                 theme: theme_hash,
@@ -9328,6 +10267,7 @@ impl Editor {
                 } else {
                     None
                 },
+                excerpt_syntax,
             });
         }
         Arc::from(entries.into_boxed_slice())
@@ -9457,6 +10397,11 @@ impl Editor {
         // When the LSP response lands, write directly via
         // `insert_for` -- no channel.
         let cache_slot = self.lsp_inlay_hints_cache.clone();
+        // L1b: wake the render pipeline when hints land off-keystroke
+        // (same contract as semantic tokens, L1a). Only on actual
+        // writes; the `Err` (superseded/cancelled) arm keeps prior
+        // hints and must not publish. See lsp-architecture.md §12.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9490,6 +10435,7 @@ impl Editor {
                             requested_last_line: requested_last,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Ok(_) => {
                     // Authoritative empty (`Ok(None)` / `Ok(Some([]))`):
@@ -9504,6 +10450,7 @@ impl Editor {
                             requested_last_line: requested_last,
                         },
                     );
+                    async_landed.notify_one();
                 }
                 Err(_) => {
                     // 2026-06-03: a cancelled request (superseded by a
@@ -9574,6 +10521,11 @@ impl Editor {
         // UI-thread drain. Renderers read wait-free via the
         // `RenderState` snapshot which holds the same Arc.
         let cache_slot = self.lsp_document_highlights.clone();
+        // L1-tail: wake on the data-landed arm only (see folding_range).
+        // The `_ => store(None)` cancel/empty arm stays unwoken — a
+        // superseded cursor-move request must clear, not flicker, and the
+        // move that superseded it already woke the pipeline.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -9602,6 +10554,7 @@ impl Editor {
                             highlights,
                         },
                     )));
+                    async_landed.notify_one();
                 }
                 _ => {
                     cache_slot.store(None);
@@ -9983,42 +10936,25 @@ impl Editor {
         }
     }
 
-    /// 4.4.c: drain queued `LspProgressUpdate` events; fold
-    /// Begin/Report/End into `editor.lsp_progress`. Phase
-    /// 5.8.AA.d: hoisted from TUI App.
-    pub fn drain_lsp_progress_events(&mut self) {
-        let Some(mut rx) = self.lsp_progress_event_rx.take() else {
+    // ML.3c: `drain_lsp_progress_events` + `drain_lsp_server_status`
+    // retired. `$/progress` + `serverStatus` are folded into the
+    // `lattice-lsp`-owned `LspProgressStore` by that crate's modeline
+    // forwarder (decision A); the host no longer accumulates them.
+
+    /// ML.3: drain pushed [`lattice_mode::ModelineElementUpdate`] events
+    /// into the shared modeline content store (single-writer, actor
+    /// thread). Empty content clears the slot (`ModelineService::apply`).
+    /// The boot-side forwarder fires `async_landed` on arrival so a push
+    /// repaints off-keystroke (§12 wake). A closed/absent channel yields
+    /// no events — never panics.
+    pub fn drain_modeline_element_updates(&mut self) {
+        let Some(mut rx) = self.modeline_update_rx.take() else {
             return;
         };
-        while let Ok(event) = rx.try_recv() {
-            let key = (event.server_id.clone(), event.token.clone());
-            match event.kind {
-                lattice_lsp::LspProgressKind::Begin => {
-                    self.lsp_progress.insert(key, event);
-                }
-                lattice_lsp::LspProgressKind::Report => {
-                    if let Some(prev) = self.lsp_progress.get(&key) {
-                        let title = event.title.clone().or_else(|| prev.title.clone());
-                        let merged = lattice_lsp::LspProgressUpdate {
-                            server_id: event.server_id,
-                            token: event.token,
-                            kind: event.kind,
-                            title,
-                            message: event.message,
-                            percentage: event.percentage.or(prev.percentage),
-                            cancellable: event.cancellable,
-                        };
-                        self.lsp_progress.insert(key, merged);
-                    } else {
-                        self.lsp_progress.insert(key, event);
-                    }
-                }
-                lattice_lsp::LspProgressKind::End => {
-                    self.lsp_progress.remove(&key);
-                }
-            }
+        while let Ok(update) = rx.try_recv() {
+            self.modeline.apply(update);
         }
-        self.lsp_progress_event_rx = Some(rx);
+        self.modeline_update_rx = Some(rx);
     }
 
     /// Drain `LspBufferDetached` events; fire didClose + clear
@@ -10312,6 +11248,7 @@ impl Editor {
         signals.extend(self.drain_pending_signature_help());
         signals.extend(self.drain_pending_definitions());
         signals.extend(self.drain_mode_lifecycle_events());
+        signals.extend(self.drain_minor_activation());
         self.drain_pending_references();
         self.drain_pending_symbols();
         // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
@@ -10352,7 +11289,7 @@ impl Editor {
         self.drain_pending_insert_completion_lsp();
         self.drain_pending_completion_resolve();
         self.drain_lsp_log_events();
-        self.drain_lsp_progress_events();
+        self.drain_modeline_element_updates();
         self.drain_lsp_detach_events();
         self.drain_inbound_configuration_requests();
         self.drain_inbound_show_message_requests();
@@ -10840,20 +11777,63 @@ impl Editor {
     /// snippet" gating in `input::translate`.
     pub fn sync_keymap_overlays(&mut self) {
         let want_popup = self.insert_completion.is_some();
-        let want_snippet = self.active_snippet.is_some();
         let have_popup = self.completion_popup_layer.is_some();
-        let have_snippet = self.snippet_layer.is_some();
+
+        let buffer_id = self.document_buffer_id;
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+
+        // Session-backed minor modes: reconcile each registered
+        // `(predicate, mode-id)` on the active buffer — the mode is
+        // active iff its predicate is true. Modes contribute these
+        // at boot (`active-snippet-mode` keys off the shared
+        // `SnippetSession` via `snippet_active_predicate`), so this
+        // generic method carries no subsystem-specific
+        // `is_active()` literal (`feedback_mode_owns_its_surface`).
+        // MO.3: minors use K.2.4-registered keymap entries +
+        // `activate_minor` / `deactivate_minor` for K.1.c scoping
+        // (same pattern as LspMode); no push_layer/pop_layer.
+        //
+        // Snapshot the (cheap-`Arc`) entries first so the
+        // `&self.*` borrows the activate/deactivate calls need
+        // don't conflict with iterating `self.session_backed_minors`.
+        let session_minors: Vec<crate::editor::SessionBackedMinor> =
+            self.session_backed_minors.clone();
+        for minor in &session_minors {
+            // SN.3e: scope the predicate to the buffer being reconciled
+            // (`buffer_id == self.document_buffer_id`), so a snippet live
+            // in another buffer never activates the mode here.
+            let want = (minor.active)(buffer_id);
+            let have = active.has_minor(minor.mode_id);
+            if want && !have {
+                let _ = self.mode_registry.activate_minor(
+                    &mut active,
+                    &self.mode_guards,
+                    &self.config,
+                    &self.event_bus,
+                    &self.services,
+                    proto_id,
+                    minor.mode_id,
+                    lattice_mode::CapabilitySet::empty(),
+                );
+            } else if !want && have {
+                let _ = self.mode_registry.deactivate_minor(
+                    &mut active,
+                    &self.mode_guards,
+                    &self.event_bus,
+                    proto_id,
+                    minor.mode_id,
+                );
+            }
+        }
 
         // CSM.K1: bring `completion-popup-mode` activation in line
         // with `want_popup` (inlined from the prior App-side helper
         // since this is the sole caller). Per-buffer scope: the
         // popup belongs to the document the user is typing in.
-        let buffer_id = self.document_buffer_id;
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let currently = active.has_minor(popup_mode_id);
-        if want_popup && !currently {
+        let currently_popup = active.has_minor(popup_mode_id);
+        if want_popup && !currently_popup {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
                 &self.mode_guards,
@@ -10864,7 +11844,7 @@ impl Editor {
                 popup_mode_id,
                 lattice_mode::CapabilitySet::empty(),
             );
-        } else if !want_popup && currently {
+        } else if !want_popup && currently_popup {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
                 &self.mode_guards,
@@ -10880,30 +11860,12 @@ impl Editor {
         // snapshot.
         self.recompute_active_completion_sources_for(buffer_id);
 
-        if want_popup == have_popup && want_snippet == have_snippet {
+        if want_popup == have_popup {
             return;
         }
-        // Re-stack: pop everything, then push in the canonical
-        // order (snippet first, popup second).
+        // Re-stack the completion-popup layer only.
         if let Some(id) = self.completion_popup_layer.take() {
             self.keymap.pop_layer(id);
-        }
-        if let Some(id) = self.snippet_layer.take() {
-            self.keymap.pop_layer(id);
-        }
-        if want_snippet {
-            // K.1.b (2026-05-30): push the minor-mode layer
-            // keyed by the canonical ModeId so the per-keystroke
-            // merge (K.1.c) and `:describe-key` (K.1.d) resolve
-            // the right mode.
-            let id = self.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
-            );
-            self.snippet_layer = Some(id);
         }
         if want_popup {
             let id = self.keymap.push_layer(
@@ -11404,6 +12366,45 @@ impl Editor {
         signals
     }
 
+    /// MA.2: the minor-activation resolver (mode-architecture.md
+    /// §7.4, decision B). Drains `Event::MajorEntered` and
+    /// auto-activates each registered minor whose `ActivationPolicy`
+    /// admits the just-entered major on that buffer's kind — `Global`
+    /// minors only in real document buffers, `Majors([..])` minors
+    /// whenever the major matches. One subscription + an O(minors)
+    /// registry walk on a *rare* event (buffer open / major switch),
+    /// never per-keystroke.
+    ///
+    /// Mirrors [`Self::drain_mode_lifecycle_events`]: drain the
+    /// receiver into a plain list first (so the per-minor
+    /// `activate_mode_by_id` calls don't conflict with the receiver
+    /// borrow), then activate. `activate_mode_by_id` is idempotent, so
+    /// a minor already active (e.g. via the kind-based path) is a
+    /// no-op. Unknown buffers (no `kind_of`) are skipped, not panicked.
+    pub fn drain_minor_activation(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_major_entered_rx.take() else {
+            return Vec::new();
+        };
+        let mut to_activate: Vec<(BufferId, lattice_mode::ModeId)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let lattice_protocol::Event::MajorEntered { buffer, major } = evt {
+                let buffer_id = BufferId(buffer.raw() as u32);
+                let Some(kind) = self.buffers.kind_of(buffer_id) else {
+                    continue;
+                };
+                for minor_id in self.mode_registry.auto_activatable_minors(&major, kind) {
+                    to_activate.push((buffer_id, minor_id));
+                }
+            }
+        }
+        self.pending_major_entered_rx = Some(rx);
+        let mut signals = Vec::new();
+        for (buffer_id, mode_id) in to_activate {
+            signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
+        }
+        signals
+    }
+
     /// 5.5.F.5.5: lifecycle hook fired after a document buffer
     /// becomes the active buffer (via [`Self::activate_document`],
     /// after `:e <path>` opens a fresh file, or after `:bd` /
@@ -11459,8 +12460,9 @@ impl Editor {
         // DR.2 (decoration-retention): no per-pane span cache to drop
         // on buffer switch — inactive panes render from their retained
         // per-pane `DisplayMatrix`, and the cells worker rebuilds those
-        // on its own wake. Active-pane spans flow through the
-        // worker-published `syntax_visible_spans_cell`.
+        // on its own wake. (display-line B4.2: the active-pane span
+        // cache the comment used to cite was deleted; only the overlay
+        // worker's `static_overlay_quads_cell` remains.)
         signals
     }
 
@@ -11589,7 +12591,13 @@ impl Editor {
         // entirely until overlays land (D.3.f.1 reintroduces the
         // path for the hunk-overlay-on-manual case via its own
         // wake-driven `recompute_folds()` invocations).
-        if matches!(fm, FoldMethod::Manual) && self.fold_registry.overlays().count() == 0 {
+        // M.7: lock once; the guard is dropped after `next` is built
+        // so dispatch can mutate `self.folds` freely below.
+        let fold_reg = self
+            .fold_registry
+            .lock()
+            .expect("fold_registry poisoned");
+        if matches!(fm, FoldMethod::Manual) && fold_reg.overlays().count() == 0 {
             return;
         }
         // D.3.f.0 (2026-05-29): registry dispatch. The primary
@@ -11635,12 +12643,13 @@ impl Editor {
         };
 
         let mut next: Vec<Fold> = Vec::new();
-        if let Some(primary) = self.fold_registry.primary(fm) {
+        if let Some(primary) = fold_reg.primary(fm) {
             next.extend(primary.compute(&ctx));
         }
-        for overlay in self.fold_registry.overlays() {
+        for overlay in fold_reg.overlays() {
             next.extend(overlay.compute(&ctx));
         }
+        drop(fold_reg);
 
         // Carry over closed-state. Identity hash (heading text +
         // depth, node-kind for syntax, etc.) is the primary key so
@@ -11698,10 +12707,33 @@ impl Editor {
         // scratch document — a paramount-#3 (no kind-special-
         // casing in host) violation. The trait impl is now
         // honest; the kind-branch disappears.
-        lattice_runtime::block_on(self.document.dispatch_with_cancel(
+        // N.1.4b / N.1.6 (2026-06-10): build the per-dispatch
+        // `DispatchEnv` -- the active document's syntax snapshot (a
+        // tree-sitter `ScopeResolver` for af/ac/aa/al) + the language's
+        // comment leader (for aC/iC). `self.syntax` is the hot-path slot
+        // for the active Document buffer; for non-Document active buffers
+        // (oil / terminal / multibuffer) the env is empty, or the impl's
+        // default `dispatch_with_env` ignores it -- so no kind-branch is
+        // needed here ([[feedback_buffers_no_special_case]]). The snapshot
+        // is an immutable Arc (one Arc bump, no UI-thread parse --
+        // paramount #1); the comment leader is a small Arc'd string.
+        let scope_resolver: Option<lattice_runtime::ScopeResolverHandle> = self
+            .syntax
+            .as_ref()
+            .map(|h| -> lattice_runtime::ScopeResolverHandle { h.snapshot() });
+        let comment_syntax = {
+            let cs = lattice_syntax::Lang::detect_from_path(self.document.path().as_deref())
+                .comment_syntax();
+            cs.line.is_some().then(|| std::sync::Arc::new(cs))
+        };
+        lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
             self.cursor,
             lattice_protocol::CancellationToken::never(),
+            lattice_runtime::DispatchEnv {
+                scope_resolver,
+                comment_syntax,
+            },
         ))
     }
 
@@ -12110,10 +13142,10 @@ impl Editor {
         // deltas for the next syntax reparse request.
         // `maybe_reparse_syntax` drains this and ships them to the
         // worker. Slice X2.6 retirement: the synchronous shift
-        // of `visible_highlights` was deleted along with the field;
-        // the worker-published `syntax_visible_spans_cell` is the
-        // single source of truth and the worker wakes on every
-        // publish, so any flicker window is brief and self-healing.
+        // of `visible_highlights` was deleted along with the field.
+        // display-line B4.2: the worker-published span cache it cited
+        // is also gone now; syntax colours flow through the cells /
+        // `DisplayMatrix` substrate, self-healing within a frame or two.
         if self.syntax.is_some() {
             self.pending_syntax_edits
                 .extend(applied.iter().map(|a| a.delta));
@@ -12576,6 +13608,153 @@ impl Editor {
         self.modal = ModalState::Insert;
     }
 
+    /// Vim's `I` -- move to the first non-blank column of the
+    /// current line, then enter Insert mode.
+    pub fn do_enter_insert_first_non_blank(&mut self) {
+        let snap = self.document.snapshot();
+        let byte_offset = snap
+            .buffer
+            .line(self.cursor.line)
+            .map(|s| s.bytes().take_while(|b| b.is_ascii_whitespace()).count() as u32)
+            .unwrap_or(0);
+        self.cursor.byte = byte_offset;
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `A` -- move to end of the current line (past the last
+    /// byte), then enter Insert mode.
+    pub fn do_enter_append_end_of_line(&mut self) {
+        let len = self
+            .document
+            .snapshot()
+            .buffer
+            .line_byte_len(self.cursor.line);
+        self.cursor.byte = len;
+        self.modal = ModalState::Insert;
+    }
+
+    /// Return the wrap_width for the active buffer's cell matrix.
+    /// `0` means wrapping is off.
+    fn active_wrap_width(&self) -> u32 {
+        let bid = self.active_buffer_id();
+        self.cells_matrix_for(bid).load_full().wrap_width
+    }
+
+    /// Vim's `gj` -- move down one display-line segment.
+    /// When wrapping is off (`wrap_width == 0`), degrades to `j`.
+    pub fn do_display_line_down(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        if wrap_width == 0 {
+            let snap = self.document.snapshot();
+            let last = snap.buffer.line_count().saturating_sub(1);
+            let line = (self.cursor.line + 1).min(last);
+            let max_byte = snap.buffer.line_byte_len(line);
+            self.cursor.line = line;
+            self.cursor.byte = self.cursor.byte.min(max_byte);
+            self.ensure_cursor_visible();
+            return;
+        }
+        let snap = self.document.snapshot();
+        let cur_line = self.cursor.line;
+        let cur_byte = self.cursor.byte;
+        let cur_seg = cur_byte / wrap_width;
+        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        let seg_count = {
+            let bid = self.active_buffer_id();
+            self.cells_matrix_for(bid).load_full().segment_count(cur_line)
+        };
+        if cur_seg + 1 < seg_count {
+            // next segment on the same source line
+            let next_start = (cur_seg + 1) * wrap_width;
+            let next_end = ((cur_seg + 2) * wrap_width)
+                .min(snap.buffer.line_byte_len(cur_line));
+            self.cursor.byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
+        } else {
+            // first segment of the next source line
+            let last = snap.buffer.line_count().saturating_sub(1);
+            if cur_line >= last {
+                return;
+            }
+            let next_line = cur_line + 1;
+            let next_len = snap.buffer.line_byte_len(next_line);
+            self.cursor.line = next_line;
+            self.cursor.byte = goal.min(next_len.saturating_sub(1).max(0));
+        }
+        self.goal_col = Some(goal);
+        self.ensure_cursor_visible();
+    }
+
+    /// Vim's `gk` -- move up one display-line segment.
+    /// When wrapping is off (`wrap_width == 0`), degrades to `k`.
+    pub fn do_display_line_up(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        if wrap_width == 0 {
+            let snap = self.document.snapshot();
+            let line = self.cursor.line.saturating_sub(1);
+            let max_byte = snap.buffer.line_byte_len(line);
+            self.cursor.line = line;
+            self.cursor.byte = self.cursor.byte.min(max_byte);
+            self.ensure_cursor_visible();
+            return;
+        }
+        let snap = self.document.snapshot();
+        let cur_line = self.cursor.line;
+        let cur_byte = self.cursor.byte;
+        let cur_seg = cur_byte / wrap_width;
+        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        if cur_seg > 0 {
+            // previous segment on the same source line
+            let prev_start = (cur_seg - 1) * wrap_width;
+            let prev_end = cur_seg * wrap_width;
+            let line_len = snap.buffer.line_byte_len(cur_line);
+            let actual_end = prev_end.min(line_len);
+            self.cursor.byte = (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
+        } else {
+            // last segment of the previous source line
+            if cur_line == 0 {
+                return;
+            }
+            let prev_line = cur_line - 1;
+            let prev_len = snap.buffer.line_byte_len(prev_line);
+            let prev_segs = {
+                let bid = self.active_buffer_id();
+                self.cells_matrix_for(bid).load_full().segment_count(prev_line)
+            };
+            let last_seg_start = (prev_segs - 1) * wrap_width;
+            self.cursor.line = prev_line;
+            self.cursor.byte = (last_seg_start + goal)
+                .min(prev_len.saturating_sub(1).max(last_seg_start));
+        }
+        self.goal_col = Some(goal);
+        self.ensure_cursor_visible();
+    }
+
+    /// Vim's `g0` -- move to the first byte of the current display
+    /// segment. Degrades to `0` when wrapping is off.
+    pub fn do_display_line_start(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        self.cursor.byte = if wrap_width == 0 {
+            0
+        } else {
+            (self.cursor.byte / wrap_width) * wrap_width
+        };
+    }
+
+    /// Vim's `g$` -- move to the last byte of the current display
+    /// segment. Degrades to `$` when wrapping is off.
+    pub fn do_display_line_end(&mut self) {
+        let wrap_width = self.active_wrap_width();
+        let snap = self.document.snapshot();
+        let line_len = snap.buffer.line_byte_len(self.cursor.line);
+        self.cursor.byte = if wrap_width == 0 {
+            line_len.saturating_sub(1)
+        } else {
+            let cur_seg = self.cursor.byte / wrap_width;
+            let seg_end = ((cur_seg + 1) * wrap_width).min(line_len);
+            seg_end.saturating_sub(1)
+        };
+    }
+
     /// Vim's `o` -- splice `\n` at EOL, drop cursor on the new
     /// blank line, switch to Insert. Uses [`Self::active_text`] so
     /// the path works uniformly across Document / Oil / etc.
@@ -12883,6 +14062,78 @@ fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> bool {
         .line(line_idx)
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
+}
+
+/// N.1.2 (2026-06-10): resolve a `:narrow` range argument to an
+/// inclusive 0-based line span.
+///
+/// - bare `:narrow` (`None`) → the current paragraph (blank-line
+///   delimited, vim's `ip`);
+/// - `Range::Selection` and the `'<` / `'>` marks → the last Visual
+///   selection (`visual`);
+/// - other marks → `marks`; `.` → cursor; `$` → last line; numeric
+///   and offset bounds resolve directly; patterns are deferred.
+fn resolve_narrow_range(
+    range: &Option<lattice_grammar::range::Range>,
+    cursor: u32,
+    last: u32,
+    visual: Option<(u32, u32)>,
+    marks: &std::collections::HashMap<char, lattice_protocol::position::Position>,
+    buffer: &lattice_core::Buffer,
+) -> (u32, u32) {
+    use lattice_grammar::range::{Range, RangeBound};
+
+    fn resolve_bound(
+        b: &RangeBound,
+        cursor: u32,
+        last: u32,
+        visual: Option<(u32, u32)>,
+        marks: &std::collections::HashMap<char, lattice_protocol::position::Position>,
+    ) -> u32 {
+        match b {
+            RangeBound::Line(n) => (*n).min(last),
+            RangeBound::CurrentLine => cursor,
+            RangeBound::LastLine => last,
+            RangeBound::Mark('<') => visual.map(|(s, _)| s).unwrap_or(cursor),
+            RangeBound::Mark('>') => visual.map(|(_, e)| e).unwrap_or(cursor),
+            RangeBound::Mark(c) => marks.get(c).map(|p| p.line.min(last)).unwrap_or(cursor),
+            RangeBound::Offset { base, delta } => {
+                let bl = resolve_bound(base, cursor, last, visual, marks) as i64;
+                (bl + *delta as i64).clamp(0, last as i64) as u32
+            }
+            RangeBound::Pattern(_) => cursor,
+        }
+    }
+
+    match range {
+        None => paragraph_bounds(buffer, cursor, last),
+        Some(Range::CurrentLine) => (cursor, cursor),
+        Some(Range::Whole) => (0, last),
+        Some(Range::Selection) => visual.unwrap_or((cursor, cursor)),
+        Some(Range::Custom(_)) => (cursor, cursor),
+        Some(Range::Span { start, end }) => {
+            let s = resolve_bound(start, cursor, last, visual, marks);
+            let e = resolve_bound(end, cursor, last, visual, marks);
+            if s <= e { (s, e) } else { (e, s) }
+        }
+    }
+}
+
+/// N.1.2: blank-line-delimited paragraph around `cursor` (vim's `ip`,
+/// for bare `:narrow`). A blank cursor line narrows just that line.
+fn paragraph_bounds(buffer: &lattice_core::Buffer, cursor: u32, last: u32) -> (u32, u32) {
+    if is_blank_line(buffer, cursor) {
+        return (cursor, cursor);
+    }
+    let mut start = cursor;
+    while start > 0 && !is_blank_line(buffer, start - 1) {
+        start -= 1;
+    }
+    let mut end = cursor;
+    while end < last && !is_blank_line(buffer, end + 1) {
+        end += 1;
+    }
+    (start, end)
 }
 
 /// 5.5.G.4: pure-editor scroll / page / viewport / bracket /
@@ -13444,7 +14695,13 @@ impl Editor {
             );
             return Vec::new();
         }
-        let nerd_fonts = self.host_theme.nerd_fonts;
+        // T.6.t: `nerd_fonts` reads from the typed-options registry
+        // (was the deleted host `Theme.nerd_fonts`).
+        let nerd_fonts = self
+            .config
+            .get_typed::<crate::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
         let (tree, entries) = match lattice_file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
             Ok(t) => t,
             Err(e) => {
@@ -13583,6 +14840,47 @@ impl Editor {
                 from: format!("{prior:?}"),
                 to: format!("{state:?}"),
             });
+            // ML.5d: the modeline shows only the lean tag (NOR/INS/…),
+            // so surface the full mode name in the echo area on a real
+            // transition — vim's showmode (`-- INSERT --`). Insert /
+            // Replace / Visual / Select get the indicator; entering
+            // Normal clears a lingering one; Command / Search /
+            // Operator-pending own their own line (cmdline / showcmd)
+            // and so leave the echo untouched.
+            use lattice_grammar::VisualKind;
+            let showmode = match state {
+                ModalState::Insert => Some("-- INSERT --"),
+                ModalState::Replace => Some("-- REPLACE --"),
+                ModalState::Visual(VisualKind::Charwise) => Some("-- VISUAL --"),
+                ModalState::Visual(VisualKind::Linewise) => Some("-- VISUAL LINE --"),
+                ModalState::Visual(VisualKind::Blockwise) => Some("-- VISUAL BLOCK --"),
+                ModalState::Select(VisualKind::Charwise) => Some("-- SELECT --"),
+                ModalState::Select(VisualKind::Linewise) => Some("-- SELECT LINE --"),
+                ModalState::Select(VisualKind::Blockwise) => Some("-- SELECT BLOCK --"),
+                ModalState::Normal
+                | ModalState::OperatorPending
+                | ModalState::Command
+                | ModalState::Search(_) => None,
+            };
+            match showmode {
+                Some(text) => self.set_ephemeral_echo(EchoLevel::Info, text),
+                None => {
+                    // Leaving a showmode mode (e.g. <Esc> from Insert)
+                    // clears the lingering `-- NAME --`. Gated on the
+                    // *prior* being a showmode mode so a message set
+                    // during a Command / operator (which leave from a
+                    // non-showmode prior) is never clobbered.
+                    if matches!(
+                        prior,
+                        ModalState::Insert
+                            | ModalState::Replace
+                            | ModalState::Visual(_)
+                            | ModalState::Select(_)
+                    ) {
+                        self.last_message = None;
+                    }
+                }
+            }
         }
     }
 
@@ -13840,6 +15138,34 @@ impl Editor {
         let Some(c) = picker.selected_candidate() else {
             return Vec::new();
         };
+        // T.12a: live-preview hook. Trait-driven sources may return an
+        // outcome the host applies immediately as the selection moves
+        // (the colorscheme picker recolors the editor per candidate).
+        // Resolve the seated source's generator + the candidate's
+        // routing, ask `generator.preview(...)`; on `Some(outcome)`
+        // apply it (restoring on `<Esc>` is wired in `do_picker_dismiss`).
+        if let Some(source_id) = picker.source_id.clone()
+            && let Some(routing) = picker.routing_for(c).cloned()
+            && let Some(generator) = self.picker_registry.generator(&source_id).cloned()
+        {
+            let snap = self.document.snapshot();
+            let ctx = self.build_picker_context(&snap);
+            let preview = generator.preview(&ctx, &routing);
+            drop(ctx);
+            drop(snap);
+            if let Some(outcome) = preview {
+                return self.apply_picker_preview_outcome(outcome);
+            }
+        }
+        // Re-borrow after the (possibly side-effecting) preview hook
+        // above released the immutable borrow. The picker is still
+        // seated; only its preview side effects (theme swap) ran.
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        let Some(c) = picker.selected_candidate() else {
+            return Vec::new();
+        };
         // Prefer the typed accept_action (set by all 10 first-
         // party picker sources via 7b.1-7b.6, and any plugin
         // source via SourceRegistration).
@@ -13870,6 +15196,45 @@ impl Editor {
             self.activate_buffer_state()
         } else {
             Vec::new()
+        }
+    }
+
+    /// T.12a helper: apply a `PickerAcceptOutcome` returned by a
+    /// source's live-preview hook (`PickerSourceGenerator::preview`).
+    /// Today only `ApplyColorscheme` is previewable; other outcomes
+    /// are inert in preview context (buffer / jump previews go through
+    /// the `accept_action` path in `preview_picker_selection`).
+    ///
+    /// On the FIRST `ApplyColorscheme` preview it snapshots the active
+    /// theme into `pending_theme_preview_restore` so `<Esc>` (in
+    /// `do_picker_dismiss`) can revert to the theme active when the
+    /// picker opened; subsequent previews reuse that snapshot. Then it
+    /// applies the previewed theme + signals `ThemeChanged`.
+    fn apply_picker_preview_outcome(
+        &mut self,
+        outcome: lattice_picker::PickerAcceptOutcome,
+    ) -> Vec<RendererSignal> {
+        use lattice_picker::PickerAcceptOutcome;
+        match outcome {
+            PickerAcceptOutcome::ApplyColorscheme { name } => {
+                let Some(reg) = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                else {
+                    return Vec::new();
+                };
+                // Capture the pre-open theme on the first preview so
+                // Esc can restore it (mirrors `preview_origin`).
+                if self.pending_theme_preview_restore.is_none() {
+                    self.pending_theme_preview_restore = Some(reg.active_theme());
+                }
+                if reg.apply_theme(&name) {
+                    vec![RendererSignal::ThemeChanged]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -13917,6 +15282,12 @@ impl Editor {
                 let line_len = snap.buffer.line_byte_len(target_line);
                 let target_col = col.min(line_len);
                 self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                // `gr` / location preview: centre the previewed line
+                // (vim `zz`) so its usage context is visible above AND
+                // below, instead of the line landing at the viewport
+                // bottom. ensure_cursor_visible leaves a centred cursor
+                // untouched (it only clamps off-screen cursors).
+                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
                 self.previewing = false;
                 if needs_state {
                     self.activate_buffer_state()
@@ -13944,6 +15315,10 @@ impl Editor {
                 let line_len = snap.buffer.line_byte_len(target_line);
                 let target_col = col.min(line_len);
                 self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                // Centre the previewed line (vim `zz`) — see the
+                // JumpInBuffer arm above. Same rationale for cross-file
+                // location previews (`gr` into another file, grep hits).
+                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
                 self.previewing = false;
                 signals
             }
@@ -14754,25 +16129,22 @@ impl Editor {
     }
 }
 
-/// 5.5.G.8 + 5.5.SNIPPET.1: pure-editor snippet placeholder
-/// navigation and snippet expansion. With `active_language_id`
-/// and `is_word_char_byte` now host-side, `do_snippet_expand_at_cursor`
-/// migrates here too.
+/// 5.5.SNIPPET.1: pure-editor snippet expansion.
+///
+/// SN.3c.1 (2026-06-14): the chord trigger + word-prefix scan moved
+/// to `snippet-mode` (`lattice-snippet`); the host keeps only the
+/// *expansion mechanics* as `Editor::expand_snippet_from_range`
+/// (language detection + registry lookup + variable render + splice),
+/// invoked by the `Effect::ExpandSnippet { replace_range }` arm. The
+/// old `do_snippet_expand_at_cursor` (which also did the scan) is gone
+/// (`feedback_mode_owns_its_surface`).
+///
+/// SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder navigation
+/// (`do_snippet_next/prev_placeholder` + `move_cursor_to_snippet_group`)
+/// relocated to `active-snippet-mode` in `lattice-snippet` — the
+/// mode that owns the chords now owns the handler bodies
+/// (`feedback_mode_owns_its_surface`).
 impl Editor {
-    /// `<Tab>` while a snippet is active -- step to the next
-    /// placeholder group; close the session if we've walked off
-    /// the end.
-    pub fn do_snippet_next_placeholder(&mut self) {
-        let Some(active) = self.active_snippet.as_mut() else {
-            return;
-        };
-        let next = active.next().cloned();
-        match next {
-            Some(group) => self.move_cursor_to_snippet_group(&group),
-            None => self.active_snippet = None,
-        }
-    }
-
     /// D.5.b (2026-05-30): handler for the diff-mode `do`
     /// (diff-get) chord. Reads the active document's cursor
     /// row, asks the diff subsystem to compute the get-edit
@@ -14929,27 +16301,6 @@ impl Editor {
         }
     }
 
-    /// `<S-Tab>` -- step to the previous placeholder.
-    pub fn do_snippet_prev_placeholder(&mut self) {
-        let Some(active) = self.active_snippet.as_mut() else {
-            return;
-        };
-        if let Some(group) = active.prev().cloned() {
-            self.move_cursor_to_snippet_group(&group);
-        }
-    }
-
-    /// Move the cursor to the start of `group.ranges.first()`.
-    fn move_cursor_to_snippet_group(&mut self, group: &lattice_snippet::TabstopGroup) {
-        let Some(first) = group.ranges.first() else {
-            return;
-        };
-        let snap = self.document.snapshot();
-        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
-            self.cursor = pos;
-        }
-    }
-
     /// Active buffer's snippet language id. Maps the active
     /// document's filename extension to a language string the
     /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
@@ -15038,44 +16389,72 @@ impl Editor {
             .unwrap_or_default();
         if !rendered.tabstops.is_empty() {
             let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            // SN.3d.3: focus the first tabstop. A non-empty placeholder
+            // default is SELECTED (charwise Select) so the next printable
+            // key overtypes it — same UX as the `<Tab>` nav path
+            // (`snippet_group_cursor_effect`), but here the host mutates
+            // state directly (the expansion callers don't thread a
+            // `DispatchOutcome`, so routing through the effect pipeline
+            // would be invasive). An empty tabstop keeps the bare Insert
+            // cursor.
+            let mut entered_select = false;
             if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
+                && let Some(first) = group.ranges.first().cloned()
             {
-                self.cursor = pos;
+                let buffer = self.document.snapshot().buffer.clone();
+                if let Ok(start) = buffer.byte_to_position(first.start) {
+                    if first.end > first.start
+                        && let Ok(head) = buffer.byte_to_position(first.end - 1)
+                    {
+                        self.set_selections_blocking(SelectionSet::single(Selection {
+                            anchor: start,
+                            head,
+                            visual: Some(VisualMode::Charwise),
+                        }));
+                        self.visual_anchor = Some(start);
+                        self.cursor = head;
+                        self.modal = ModalState::Select(VisualKind::Charwise);
+                        entered_select = true;
+                    }
+                    if !entered_select {
+                        self.cursor = start;
+                    }
+                }
             }
-            self.active_snippet = Some(active);
-            self.modal = ModalState::Insert;
+            self.snippet_session.set(self.document_buffer_id, active);
+            if !entered_select {
+                self.modal = ModalState::Insert;
+            }
         } else {
             self.cursor = applied.inserted_range.end;
         }
     }
 
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
-    /// Looks up the word at the cursor in the per-language snippet
-    /// registry; expands the matching snippet directly without
-    /// surfacing the popup.
-    pub fn do_snippet_expand_at_cursor(&mut self) {
-        if !matches!(self.modal, ModalState::Insert) {
-            return;
-        }
+    /// SN.3c.1: host-owned snippet resolution + expansion for a
+    /// known trigger range. The mode-owned `<C-x><C-s>` handler
+    /// (`snippet-mode`'s `action_handlers()`) does the word-prefix
+    /// scan and emits `Effect::ExpandSnippet { replace_range }`; this
+    /// host arm owns the *expansion mechanics*: `prefix` = the buffer
+    /// text inside `replace_range`; `language` =
+    /// [`active_language_id`](Self::active_language_id) (host-owned
+    /// path→language detection — duplicating it in the mode would be
+    /// worse, so the mode does NOT resolve the snippet); lookup
+    /// `(language, prefix)` then the `"*"` bucket; render with the
+    /// host-owned `VariableContext`; reuse
+    /// [`expand_snippet`](Self::expand_snippet) for the splice +
+    /// session + cursor. The range end IS the cursor (the handler
+    /// emits `token-start..cursor` and the cursor hasn't moved), so
+    /// `expand_snippet`'s `anchor..cursor` replace is correct.
+    /// Graceful: no prefix / no matching snippet → quiet info echo.
+    pub fn expand_snippet_from_range(&mut self, replace_range: lattice_protocol::position::Range) {
         let snap = self.document.snapshot();
-        let line_text = snap.buffer.line(self.cursor.line).unwrap_or_default();
-        let bytes = line_text.as_bytes();
-        let cursor_byte = self.cursor.byte as usize;
-        let mut start = cursor_byte;
-        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        let anchor = lattice_protocol::position::Position::new(self.cursor.line, start as u32);
-        let prefix: String = line_text
-            .get(start..cursor_byte.min(line_text.len()))
-            .unwrap_or("")
-            .to_string();
+        let line_text = snap
+            .buffer
+            .line(replace_range.start.line)
+            .unwrap_or_default();
+        let start = (replace_range.start.byte as usize).min(line_text.len());
+        let end = (replace_range.end.byte as usize).min(line_text.len());
+        let prefix: String = line_text.get(start..end).unwrap_or("").to_string();
         if prefix.is_empty() {
             self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
             return;
@@ -15094,7 +16473,7 @@ impl Editor {
             self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
             return;
         };
-        self.expand_snippet(&snippet.body, anchor);
+        self.expand_snippet(&snippet.body, replace_range.start);
     }
 }
 
@@ -17520,23 +18899,25 @@ impl Editor {
     pub fn apply_picker_outcome(
         &mut self,
         outcome: lattice_picker::PickerAcceptOutcome,
-    ) -> Vec<RendererSignal> {
+    ) -> DispatchOutcome {
         use lattice_picker::PickerAcceptOutcome::*;
         // Issue #32 (2026-05-22): consume the open-target
         // override AT ENTRY so even nested apply paths see
         // Default. The four file-targeting arms below honor it
         // via `prepare_open_target_pane`; the rest ignore.
         let target = std::mem::take(&mut self.picker_open_target);
-        let mut signals = Vec::new();
+        let mut out = DispatchOutcome::default();
         match outcome {
             OpenFile { path } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                let edit_outcome = self.do_edit(Some(path), false);
+                match edit_outcome {
                     DoEditOutcome::Opened(s)
                     | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    | DoEditOutcome::Reloaded(s) => out.renderer_signals.extend(s),
+                    DoEditOutcome::Directory(d) => {
+                        out.renderer_signals.extend(self.do_open_oil(Some(d)))
+                    }
                     DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
                 }
             }
@@ -17545,10 +18926,10 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
             }
@@ -17562,10 +18943,10 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
                 let snap = self.document.snapshot();
@@ -17575,20 +18956,52 @@ impl Editor {
                 self.cursor = lattice_protocol::Position::new(line, col);
             }
             JumpToLocation { path, line, col } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
             OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
+            ApplyColorscheme { name } => {
+                // T.12a: accept (`<CR>`) keeps the chosen theme. Clear
+                // the restore snapshot so dismiss/Esc no longer reverts;
+                // then apply + signal ThemeChanged so BOTH renderers
+                // rebuild their caches (same fan-out as the direct
+                // `:colorscheme <name>` swap).
+                self.pending_theme_preview_restore = None;
+                if let Some(reg) = self
+                    .services
+                    .get::<crate::ui::theme::ThemeRegistryHandle>()
+                {
+                    if reg.apply_theme(&name) {
+                        out.renderer_signals.push(RendererSignal::ThemeChanged);
+                    } else {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!("colorscheme: unknown theme `{name}`"),
+                        );
+                    }
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "colorscheme: theme registry unavailable".to_string(),
+                    );
+                }
+            }
             NoOp => {}
             JumpToMark { name } => {
                 self.do_jump_mark(name, true);
             }
             InvokeCommand { id, .. } => {
-                let user_facing = id.strip_prefix("ex:").unwrap_or(&id).to_string();
-                let mut out = DispatchOutcome::default();
-                self.execute_ex_line(&user_facing, &mut out);
-                signals.extend(std::mem::take(&mut out.renderer_signals));
+                // Use `arm_picker_prompt` (not `arm_missing_arg_prompt`):
+                // the picker arms the cmdline for any command with
+                // args_schema entries, so the user can provide optional
+                // args or press <CR> to accept the default. Commands with
+                // no args_schema (`:q`, `:bn`, …) execute immediately.
+                if !self.arm_picker_prompt(&id) {
+                    let mut inner = DispatchOutcome::default();
+                    self.execute_ex_line(&id, &mut inner);
+                    out.merge(inner);
+                }
             }
             PasteRegister { name } => {
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
@@ -17605,7 +19018,7 @@ impl Editor {
                 let snippet = self.snippet_registry.load().by_name(&id).cloned();
                 let Some(snippet) = snippet else {
                     self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
-                    return signals;
+                    return out;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
             }
@@ -17624,7 +19037,7 @@ impl Editor {
                 ),
             ),
         }
-        signals
+        out
     }
 
     /// `:help [topic]` direct-call entry. Phase 5.8.AD.5.
@@ -17919,13 +19332,32 @@ impl Editor {
     /// `Vec<RendererSignal>` because `do_edit` may emit signals.
     pub fn do_tutor(&mut self, lesson: Option<u32>) -> Vec<RendererSignal> {
         let lesson_num = lesson.unwrap_or(1);
-        let lesson_text: &'static str = match lesson_num {
-            1 => include_str!("../../../docs/user/tutor/lesson-1.md"),
+        let (lesson_text, exercises_toml): (&'static str, &'static str) = match lesson_num {
+            1 => (
+                include_str!("../../../docs/user/tutor/lesson-1.md"),
+                include_str!("../../../docs/user/tutor/lesson-1.exercises.toml"),
+            ),
+            2 => (
+                include_str!("../../../docs/user/tutor/lesson-2.md"),
+                include_str!("../../../docs/user/tutor/lesson-2.exercises.toml"),
+            ),
+            3 => (
+                include_str!("../../../docs/user/tutor/lesson-3.md"),
+                include_str!("../../../docs/user/tutor/lesson-3.exercises.toml"),
+            ),
+            4 => (
+                include_str!("../../../docs/user/tutor/lesson-4.md"),
+                include_str!("../../../docs/user/tutor/lesson-4.exercises.toml"),
+            ),
+            5 => (
+                include_str!("../../../docs/user/tutor/lesson-5.md"),
+                include_str!("../../../docs/user/tutor/lesson-5.exercises.toml"),
+            ),
             n => {
                 self.set_message(
                     EchoLevel::Error,
                     format!(
-                        "lesson {n} doesn't exist yet (lessons 1 available); \
+                        "lesson {n} doesn't exist (lessons 1-5 available); \
                          contributions welcome"
                     ),
                 );
@@ -17933,7 +19365,7 @@ impl Editor {
             }
         };
         let mut path = std::env::temp_dir();
-        path.push(format!("lattice-tutor-lesson-{lesson_num}.txt"));
+        path.push(format!("lattice-tutor-lesson-{lesson_num}.md"));
         if let Err(e) = std::fs::write(&path, lesson_text) {
             self.set_message(
                 EchoLevel::Error,
@@ -17942,13 +19374,254 @@ impl Editor {
             return Vec::new();
         }
         let outcome = self.do_edit(Some(path), false);
-        match outcome {
+        let signals = match outcome {
             DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) | DoEditOutcome::Reloaded(s) => {
                 s
             }
             DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
-            DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+            DoEditOutcome::NoFileName | DoEditOutcome::Failed => return Vec::new(),
+        };
+        // T.4: seed TutorSession, TutorHeaderlineProvider, and tutor-mode
+        // on the buffer that was just opened (now self.document_buffer_id).
+        let buffer_id = self.document_buffer_id;
+        let mut session =
+            match crate::tutor::TutorSession::load(lesson_num, 5, lesson_text, exercises_toml) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("tutor: failed to load session: {e}"),
+                    );
+                    return signals;
+                }
+            };
+        // T.B: seed the HUD's HI: field from persisted scores.
+        session.high_score =
+            crate::tutor::TutorScores::load_or_default().high_score(lesson_num);
+        // Provider — unregister any stale one (re-open path) then register fresh.
+        let provider_id = buffer_id.0 as u64 ^ crate::tutor::TUTOR_PROVIDER_TAG;
+        self.virtual_row_providers.unregister(buffer_id, provider_id);
+        let handle = lattice_cells::SimpleHeaderlineHandle::new(
+            crate::tutor::TutorViewState::default(),
+            crate::tutor::render_tutor_headerline,
+        );
+        handle.update(|s| s.update_for_display(&session, crate::tutor::TutorHudKind::Normal));
+        self.virtual_row_providers
+            .register(buffer_id, std::sync::Arc::new(handle.provider(provider_id)));
+        // Store the state handle and session as buffer-locals.
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(crate::tutor::TutorHeaderlineState(handle));
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
+        // Activate tutor-mode on this buffer.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            crate::tutor::TutorMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        self.active_modes.insert(buffer_id, active);
+        signals
+    }
+
+    /// `<CR>` / `<C-j>` in tutor-mode.
+    ///
+    /// - **GameOver**: skip past the current exercise (lose this one;
+    ///   advance without scoring).
+    /// - **Lesson complete**: open the next lesson, or show AllComplete
+    ///   if on the final lesson.
+    /// - **ManualAdvance exercise**: always advance (no penalty).
+    /// - **Condition met** (auto-detected by tick): advance.
+    /// - **Condition NOT met**: drain one life. If lives hit 0 the
+    ///   session transitions to `GameOver` and the headerline updates.
+    pub fn do_tutor_advance(&mut self) -> Vec<RendererSignal> {
+        use crate::tutor::{SuccessCondition, TutorGameState};
+
+        let buffer_id = self.document_buffer_id;
+        let Some(mut session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return Vec::new();
+        };
+
+        // GameOver: <CR> skips — advance without scoring.
+        if session.state == TutorGameState::GameOver {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
         }
+
+        // Lesson already complete: open the next lesson.
+        if session.is_complete() {
+            return self.tutor_open_next_or_complete(session);
+        }
+
+        let is_manual = matches!(
+            session.current_exercise().map(|e| &e.success),
+            Some(SuccessCondition::ManualAdvance)
+        );
+
+        if is_manual {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
+        }
+
+        // Peek: is the condition currently met?
+        let text = self.document.snapshot().buffer.as_string();
+        let owned: Vec<String> = text.lines().map(|l| l.to_owned()).collect();
+        let lines: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+
+        if session.is_condition_met(&lines) {
+            session.advance();
+            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            return self.tutor_after_advance(buffer_id, session);
+        }
+
+        // Wrong answer: drain a life.
+        session.drain_life();
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// `<C-k>` in tutor-mode.
+    ///
+    /// - **GameOver**: reload the current lesson from scratch (retry).
+    /// - **Active**: retreat to the previous exercise.
+    pub fn do_tutor_retreat(&mut self) -> Vec<RendererSignal> {
+        use crate::tutor::TutorGameState;
+
+        let buffer_id = self.document_buffer_id;
+        let Some(session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return Vec::new();
+        };
+
+        if session.state == TutorGameState::GameOver {
+            // Full lesson reload: resets buffer text + spawns a fresh session.
+            return self.do_tutor(Some(session.lesson));
+        }
+
+        let mut session = session;
+        session.retreat();
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// After a successful `session.advance()`, either open the next lesson
+    /// (lesson complete) or update the headerline for the new exercise.
+    fn tutor_after_advance(
+        &mut self,
+        buffer_id: BufferId,
+        session: crate::tutor::TutorSession,
+    ) -> Vec<RendererSignal> {
+        if session.is_complete() {
+            return self.tutor_open_next_or_complete(session);
+        }
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// Open the next lesson, or mark AllComplete on the final lesson.
+    /// Saves the lesson's score to disk on every completion.
+    fn tutor_open_next_or_complete(
+        &mut self,
+        mut session: crate::tutor::TutorSession,
+    ) -> Vec<RendererSignal> {
+        use crate::tutor::TutorGameState;
+        // T.B: persist high score whenever a lesson is cleared.
+        let mut scores = crate::tutor::TutorScores::load_or_default();
+        let new_record = scores.record(session.lesson, session.score);
+        scores.save();
+        if new_record {
+            session.high_score = session.score;
+        }
+        let next = session.lesson + 1;
+        if next <= session.total_lessons {
+            return self.do_tutor(Some(next));
+        }
+        // Final lesson complete.
+        let buffer_id = self.document_buffer_id;
+        session.state = TutorGameState::AllComplete;
+        self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
+        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        Vec::new()
+    }
+
+    /// Ask the tutor headerline provider for `buffer_id` to recompute
+    /// its HUD from `session`. All formatting stays in `TutorViewState`.
+    fn tutor_update_headerline(
+        &self,
+        buffer_id: BufferId,
+        session: &crate::tutor::TutorSession,
+        kind: crate::tutor::TutorHudKind,
+    ) {
+        if let Some(state) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorHeaderlineState>())
+        {
+            state.0.update(|s| s.update_for_display(session, kind));
+        }
+    }
+
+    /// Auto-detect success per tick. Awards score when the condition
+    /// is first met; updates the headerline to a "STAGE CLEAR" prompt.
+    /// Does NOT drain lives — that only happens on explicit `<CR>` via
+    /// `do_tutor_advance`. Called from `publish_render_state`.
+    fn check_tutor_session(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let Some(mut session) = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::tutor::TutorSession>())
+            .cloned()
+        else {
+            return;
+        };
+        use crate::tutor::TutorGameState;
+        if session.state == TutorGameState::GameOver || session.is_complete() {
+            return;
+        }
+        let current_version = self.document.version();
+        if current_version == session.last_version {
+            return;
+        }
+        session.last_version = current_version;
+        let text = self.document.snapshot().buffer.as_string();
+        let owned: Vec<String> = text.lines().map(|l| l.to_owned()).collect();
+        let lines: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let success = session.check(&lines);
+        let kind = if success {
+            crate::tutor::TutorHudKind::StageClear
+        } else {
+            crate::tutor::TutorHudKind::Normal
+        };
+        self.tutor_update_headerline(buffer_id, &session, kind);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
     }
 
     /// Insert-mode auto-trigger: fire `textDocument/onTypeFormatting`
@@ -18040,27 +19713,33 @@ impl Editor {
         })
     }
 
-    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
-    /// configured snippet directory and rebuild the per-language
-    /// registry. The previous registry is replaced atomically;
-    /// if no directories are configured the user gets a clear
-    /// "no snippet sources configured" echo so the no-op doesn't
-    /// look like a silent failure. Phase 5.8.AF.3.
-    pub fn do_reload_snippets(&mut self) {
-        if self.snippet_dirs.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no snippet sources configured (set App::snippet_dirs)",
-            );
-            return;
-        }
-        let mut next = lattice_snippet::SnippetRegistry::new();
-        let mut total = 0usize;
+    /// Build the snippet registry: embedded built-ins first, then
+    /// user packs from `snippet_dirs` overlaid on top (so user packs
+    /// augment / override the built-ins rather than replacing them).
+    /// A configured dir that doesn't exist yet is skipped silently
+    /// (the default `~/.config/lattice/snippets` is absent on a
+    /// fresh install — not an error); other read / parse failures
+    /// accumulate in the returned `errors`. Pure read (no `&mut`,
+    /// no side effects beyond filesystem reads); the caller stores
+    /// the registry and reports. Shared by `do_reload_snippets`
+    /// (echoes, user-initiated) and `load_snippets_at_startup`
+    /// (quiet, boot).
+    fn build_snippet_registry(
+        &self,
+    ) -> (lattice_snippet::SnippetRegistry, usize, usize, Vec<String>) {
+        let mut next = lattice_snippet::load_builtins();
+        let builtin_total = next.len();
+        let mut user_total = 0usize;
         let mut errors: Vec<String> = Vec::new();
-        let dirs = self.snippet_dirs.clone();
-        for dir in &dirs {
+        for dir in &self.snippet_dirs {
             let entries = match std::fs::read_dir(dir) {
                 Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Default user dir simply doesn't exist yet —
+                    // not an error, the user just hasn't added any
+                    // packs.
+                    continue;
+                }
                 Err(e) => {
                     errors.push(format!("{}: {e}", dir.display()));
                     continue;
@@ -18093,7 +19772,7 @@ impl Editor {
                     Ok(snips) => {
                         for s in snips {
                             next.insert(&language, s);
-                            total += 1;
+                            user_total += 1;
                         }
                     }
                     Err(e) => {
@@ -18102,17 +19781,62 @@ impl Editor {
                 }
             }
         }
+        (next, builtin_total, user_total, errors)
+    }
+
+    /// `:reload-snippets` (Phase 4.2.g.4) -- rebuild the registry
+    /// (built-ins + user packs) and echo a summary. The previous
+    /// registry is replaced atomically. User-initiated, so it
+    /// echoes; read failures surface so a genuine problem doesn't
+    /// look like a silent no-op. Phase 5.8.AF.3 / built-ins
+    /// 2026-06-12.
+    pub fn do_reload_snippets(&mut self) {
+        let (next, builtin_total, user_total, errors) = self.build_snippet_registry();
+        let total = next.len();
         self.snippet_registry.store(std::sync::Arc::new(next));
         if errors.is_empty() {
-            self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "reloaded {total} snippets ({builtin_total} built-in + {user_total} user)"
+                ),
+            );
         } else {
             self.set_message(
                 EchoLevel::Warn,
                 format!(
-                    "reloaded {total} snippets ({} error(s); first: {})",
+                    "reloaded {total} snippets ({builtin_total} built-in + {user_total} user; \
+                     {} error(s); first: {})",
                     errors.len(),
                     errors[0]
                 ),
+            );
+        }
+    }
+
+    /// Load built-ins + user snippet packs into the live registry at
+    /// **startup**. Quiet — the user didn't ask, so it logs (debug /
+    /// warn) instead of echoing. Production entry points (TUI
+    /// `runtime`, GPUI `lib`) call this once after
+    /// `load_persistent_config`. Test `App`s that skip it keep an
+    /// empty registry, so completion tests stay isolated from the
+    /// built-in snippet set unless they opt in via `:reload-snippets`.
+    /// (built-ins 2026-06-13)
+    pub fn load_snippets_at_startup(&mut self) {
+        let (next, builtin_total, user_total, errors) = self.build_snippet_registry();
+        let total = next.len();
+        self.snippet_registry.store(std::sync::Arc::new(next));
+        if errors.is_empty() {
+            tracing::debug!(
+                target: "lattice_host::snippet",
+                total, builtin_total, user_total,
+                "loaded snippets at startup"
+            );
+        } else {
+            tracing::warn!(
+                target: "lattice_host::snippet",
+                total, builtin_total, user_total, ?errors,
+                "loaded snippets at startup with errors"
             );
         }
     }
@@ -18272,7 +19996,7 @@ impl Editor {
             {
                 self.cursor = pos;
             }
-            self.active_snippet = Some(active);
+            self.snippet_session.set(self.document_buffer_id, active);
             self.modal = lattice_grammar::ModalState::Insert;
         } else {
             self.cursor = main_applied.inserted_range.end;
@@ -19570,11 +21294,18 @@ impl Editor {
                     || (d.range.start.line == cursor.line && d.range.start.character > cursor.byte)
             })
             .or_else(|| diags.first())
-            .map(|d| d.range.start)
+            .cloned()
         else {
             return;
         };
-        self.cursor = lattice_protocol::position::Position::new(next.line, next.character);
+        let pos = next.range.start;
+        self.cursor = lattice_protocol::position::Position::new(pos.line, pos.character);
+        // L4b: echo the landed diagnostic's message (shared by `]d`,
+        // `:diag-next`, `:cnext`).
+        self.set_message(
+            EchoLevel::Info,
+            next.message.lines().next().unwrap_or("").trim().to_string(),
+        );
     }
 
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
@@ -19606,11 +21337,18 @@ impl Editor {
                     || (d.range.start.line == cursor.line && d.range.start.character < cursor.byte)
             })
             .or_else(|| diags.last())
-            .map(|d| d.range.start)
+            .cloned()
         else {
             return;
         };
-        self.cursor = lattice_protocol::position::Position::new(prev.line, prev.character);
+        let pos = prev.range.start;
+        self.cursor = lattice_protocol::position::Position::new(pos.line, pos.character);
+        // L4b: echo the landed diagnostic's message (shared by `[d`,
+        // `:diag-prev`, `:cprev`).
+        self.set_message(
+            EchoLevel::Info,
+            prev.message.lines().next().unwrap_or("").trim().to_string(),
+        );
     }
 
     /// `:lsp-log [server]` -- open the `*lsp*` subsystem buffer
@@ -19799,10 +21537,11 @@ impl Editor {
         }
         let mut sent = 0usize;
         let mut skipped_non_cancellable = 0usize;
-        // Perf plan B.4: explicit deref through the `Versioned`
-        // wrapper because `&Versioned<HashMap<...>>` doesn't impl
-        // `IntoIterator`. `&*` calls `Deref`, no version bump.
-        for ((sid, token), update) in &*self.lsp_progress {
+        // ML.3c: in-flight progress now lives in the lattice-lsp-owned
+        // `LspProgressStore` (relocated out of the host); read a wait-free
+        // snapshot for the cancellable-token list.
+        let progress = self.lsp_progress_store.progress_snapshot();
+        for ((sid, token), update) in progress.iter() {
             if !allowed.contains(sid.as_ref()) {
                 continue;
             }
@@ -20185,15 +21924,29 @@ impl Editor {
             inflight.cancel.cancel();
         }
         self.pending_tag_origin = None;
+        // T.12a: if the colorscheme picker live-previewed a theme,
+        // restore the theme active when the picker opened (`<Esc>`
+        // reverts the preview). Always clear the snapshot so it can't
+        // leak into a later picker. `set_theme` marks the table dirty;
+        // `ThemeChanged` makes BOTH renderers rebuild their caches.
+        let mut theme_restore_signals = Vec::new();
+        if let Some((palette, overrides)) = self.pending_theme_preview_restore.take()
+            && let Some(reg) = self
+                .services
+                .get::<crate::ui::theme::ThemeRegistryHandle>()
+        {
+            reg.set_theme(palette, overrides);
+            theme_restore_signals.push(RendererSignal::ThemeChanged);
+        }
         let Some(picker) = self.picker.take() else {
-            return Vec::new();
+            return theme_restore_signals;
         };
         if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
             picker.source
         {
             self.finalize_show_message_request(request_id, None);
             self.open_next_queued_show_message_request();
-            return Vec::new();
+            return theme_restore_signals;
         }
         if let Some(source_id) = picker.source_id.as_deref() {
             self.event_bus
@@ -20209,17 +21962,19 @@ impl Editor {
                 let needs_state = self.activate_buffer(origin);
                 self.previewing = false;
                 if needs_state {
-                    return self.activate_buffer_state();
+                    let mut signals = theme_restore_signals;
+                    signals.extend(self.activate_buffer_state());
+                    return signals;
                 }
             }
         }
-        Vec::new()
+        theme_restore_signals
     }
 
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body
     /// including the trait-driven generator path + MRU recording
     /// + event-bus publish + legacy routing arms.
-    pub fn do_picker_accept(&mut self) -> Vec<RendererSignal> {
+    pub fn do_picker_accept(&mut self) -> DispatchOutcome {
         // Issue #32 (2026-05-22): consume the open-target
         // override AT ENTRY so every early-return path (no
         // candidate, no routing, generator error, ...) leaves
@@ -20233,7 +21988,7 @@ impl Editor {
         // returns, `self.picker_open_target == Default`.
         let target = std::mem::take(&mut self.picker_open_target);
         let Some(picker) = self.picker.take() else {
-            return Vec::new();
+            return DispatchOutcome::default();
         };
         // Issue #37 (2026-05-22): stash picker's preview_origin
         // so `prepare_open_target_pane` /
@@ -20249,10 +22004,13 @@ impl Editor {
                 let needs_state = self.activate_buffer(BufferId(origin));
                 self.previewing = false;
                 if needs_state {
-                    return self.activate_buffer_state();
+                    return DispatchOutcome {
+                        renderer_signals: self.activate_buffer_state(),
+                        ..Default::default()
+                    };
                 }
             }
-            return Vec::new();
+            return DispatchOutcome::default();
         };
         let routing = match picker.routing_for(c).cloned() {
             Some(r) => r,
@@ -20266,10 +22024,13 @@ impl Editor {
                     let needs_state = self.activate_buffer(BufferId(origin));
                     self.previewing = false;
                     if needs_state {
-                        return self.activate_buffer_state();
+                        return DispatchOutcome {
+                            renderer_signals: self.activate_buffer_state(),
+                            ..Default::default()
+                        };
                     }
                 }
-                return Vec::new();
+                return DispatchOutcome::default();
             }
         };
         // Slice `3c.unify.picker-registry-cutover` (7d.0):
@@ -20296,7 +22057,7 @@ impl Editor {
                 Ok(a) => a,
                 Err(e) => {
                     self.set_message(EchoLevel::Error, e);
-                    return Vec::new();
+                    return DispatchOutcome::default();
                 }
             };
             // Defensive: the handler is supposed to return the
@@ -20346,7 +22107,7 @@ impl Editor {
                 Ok(o) => o,
                 Err(e) => {
                     self.set_message(EchoLevel::Error, e);
-                    return Vec::new();
+                    return DispatchOutcome::default();
                 }
             };
             drop(ctx);
@@ -20376,17 +22137,17 @@ impl Editor {
         // (`:b`) uses RoutingPayload::Buffer which never sets
         // accept_action, so it falls through to this arm
         // bypassing apply_picker_outcome's target handling.
-        let mut signals = Vec::new();
+        let mut out = DispatchOutcome::default();
         match routing {
             lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
-                        signals.extend(self.activate_buffer_state());
+                        out.renderer_signals.extend(self.activate_buffer_state());
                     }
                 }
             }
@@ -20410,25 +22171,25 @@ impl Editor {
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
-                signals.extend(self.prepare_open_target_pane(target));
-                signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             lattice_picker::RoutingPayload::LspCompletion { index } => {
                 let Some(items) = self.pending_completion_items.take() else {
-                    return signals;
+                    return out;
                 };
                 let Some(item) = items.into_iter().nth(index as usize) else {
                     self.set_message(
                         EchoLevel::Error,
                         format!("picker: completion idx {index} out of range"),
                     );
-                    return signals;
+                    return out;
                 };
                 self.apply_lsp_completion_item(&item);
             }
             lattice_picker::RoutingPayload::LspCodeAction { index } => {
                 let Some(items) = self.pending_code_action_items.take() else {
-                    return signals;
+                    return out;
                 };
                 let handle = self.pending_code_action_handle.take();
                 let Some(row) = items.into_iter().nth(index as usize) else {
@@ -20436,18 +22197,20 @@ impl Editor {
                         EchoLevel::Error,
                         format!("picker: code-action idx {index} out of range"),
                     );
-                    return signals;
+                    return out;
                 };
-                signals.extend(self.apply_lsp_code_action(row, handle));
+                out.renderer_signals.extend(self.apply_lsp_code_action(row, handle));
             }
             lattice_picker::RoutingPayload::OpenFile { path } => {
-                signals.extend(self.prepare_open_target_pane(target));
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
+                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                let edit_outcome = self.do_edit(Some(path), false);
+                match edit_outcome {
                     DoEditOutcome::Opened(s)
                     | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    | DoEditOutcome::Reloaded(s) => out.renderer_signals.extend(s),
+                    DoEditOutcome::Directory(d) => {
+                        out.renderer_signals.extend(self.do_open_oil(Some(d)))
+                    }
                     DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
                 }
             }
@@ -20462,7 +22225,7 @@ impl Editor {
                 // (InvokeCommand / PasteRegister / JumpToMark)
                 // below don't need the restore — target is moot.
                 self.picker_open_target = target;
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::JumpInBuffer {
                         buffer_id,
                         line,
@@ -20471,22 +22234,22 @@ impl Editor {
                 ));
             }
             lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
                 ));
             }
             lattice_picker::RoutingPayload::PasteRegister { name } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::PasteRegister { name },
                 ));
             }
             lattice_picker::RoutingPayload::JumpToMark { name } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::JumpToMark { name },
                 ));
             }
             lattice_picker::RoutingPayload::ExpandSnippet { id } => {
-                signals.extend(self.apply_picker_outcome(
+                out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 ));
             }
@@ -20503,8 +22266,17 @@ impl Editor {
             lattice_picker::RoutingPayload::ColorPresentation { index } => {
                 self.accept_lsp_color_presentation(index);
             }
+            lattice_picker::RoutingPayload::Colorscheme { name } => {
+                // T.12: defensive arm — the colorscheme picker is
+                // trait-driven (source_id = "colorscheme") so accept
+                // normally routes through the generator path above.
+                // This keeps the legacy match exhaustive.
+                out.merge(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::ApplyColorscheme { name },
+                ));
+            }
         }
-        signals
+        out
     }
 
     /// `:b` no-arg / `<leader>b` -- open the vertico-style buffer
@@ -20874,6 +22646,103 @@ impl Editor {
         }
     }
 
+    /// SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`): anchor a
+    /// zero-width Select selection of the given kind at the cursor,
+    /// mirroring [`Self::do_enter_visual`]'s fresh-entry path. Typing
+    /// then overtypes; motions extend. No toggle/switch semantics — the
+    /// entry chords always fresh-anchor (the Visual↔Select toggle is
+    /// `<C-g>` → [`Self::do_toggle_visual_select`]); programmatic entry
+    /// (snippets) sets the selection explicitly and uses
+    /// `EnterMode(Select(k))` instead (select-mode.md §3).
+    pub fn do_enter_select(&mut self, kind: lattice_grammar::VisualKind) {
+        self.modal = ModalState::Select(kind);
+        self.visual_anchor = Some(self.cursor);
+        let sel = lattice_protocol::selection::Selection {
+            anchor: self.cursor,
+            head: self.cursor,
+            visual: Some(visual_kind_to_mode(kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
+
+    /// SN.3d.1 Select-mode overtype: a printable key in Select replaces
+    /// the whole selection with that char and drops into Insert. The
+    /// load-bearing new behaviour (select-mode.md §3).
+    ///
+    /// **One replace-range edit, NOT delete-then-insert.** The char is
+    /// the replacement text of a single `Edit::replace(span → c)`, so a
+    /// single `u` undoes the whole overtype. Two effects
+    /// (`Effect::Many([delete, insert])`) would risk two undo units.
+    ///
+    /// Graceful: a degenerate / unresolvable selection range falls back
+    /// to a plain insert-at-cursor — the keystroke is never dropped and
+    /// the editor never panics (select-mode.md §9).
+    pub fn do_select_overtype(&mut self, c: char) {
+        // Defensive: only meaningful in Select. A stray call from any
+        // other state is a no-op, never a panic.
+        if !matches!(self.modal, ModalState::Select(_)) {
+            return;
+        }
+        let range = {
+            let sels = self.document.selections();
+            crate::visual::selection_extent(sels.primary())
+        };
+        let mut buf = [0u8; 4];
+        let s: &str = c.encode_utf8(&mut buf);
+        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, &*s)) {
+            Ok(applied) => self.cursor = applied.inserted_range.end,
+            Err(_) => {
+                if let Ok(applied) = self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &*s))
+                {
+                    self.cursor = applied.inserted_range.end;
+                }
+            }
+        }
+        // Collapse the selection and land in Insert at the new cursor.
+        self.visual_anchor = None;
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(self.cursor),
+        ));
+        self.enter_mode(ModalState::Insert);
+    }
+
+    /// SN.3d.1 Select-mode `<Esc>`: capture the selection as
+    /// `last_visual` (so `gv` can restore it), collapse to a cursor at
+    /// the current head, and drop to Normal. The Select analogue of
+    /// [`Self::do_exit_visual`]; no terminal branch because Select is a
+    /// document-only state (terminals carry Visual on the buffer).
+    pub fn do_exit_select(&mut self) {
+        if let ModalState::Select(kind) = self.modal {
+            let sels = self.document.selections();
+            let sel = sels.primary();
+            self.last_visual = Some(crate::state::LastVisual {
+                anchor: sel.anchor,
+                head: sel.head,
+                kind,
+            });
+        }
+        self.modal = ModalState::Normal;
+        self.visual_anchor = None;
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(self.cursor),
+        ));
+    }
+
+    /// SN.3d.1 `<C-g>`: flip `Visual(k)` ↔ `Select(k)`, preserving the
+    /// selection geometry. The selection set + `visual_anchor` are
+    /// untouched — Select shares Visual's extent verbatim
+    /// (select-mode.md §2), so the toggle is a pure modal pivot. One
+    /// handler serves both directions (the Select `<C-g>` and the
+    /// Visual `<C-g>` entry chord wired in d.2).
+    pub fn do_toggle_visual_select(&mut self) {
+        match self.modal {
+            ModalState::Visual(kind) => self.modal = ModalState::Select(kind),
+            ModalState::Select(kind) => self.modal = ModalState::Visual(kind),
+            _ => {}
+        }
+    }
+
     /// `gv` -- restore the prior selection captured by `do_exit_visual`,
     /// or echo an error if there's no captured visual to reselect.
     pub fn do_reselect_visual(&mut self) {
@@ -20917,6 +22786,35 @@ impl Editor {
         };
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
     }
+
+    /// Vim's `o` in Visual mode: swap the cursor (head) to the other
+    /// end of the selection. Anchor and head trade places so a
+    /// following motion / text object grows or shrinks the selection
+    /// at the end the cursor now sits on.
+    ///
+    /// No-op outside Visual / Select mode, and no-op when
+    /// `visual_anchor` is unset -- the latter naturally skips buffer
+    /// kinds that keep their Visual region elsewhere (terminal), so
+    /// this needs no `BufferKind` branch. SN.3d: `o` is bound in Select
+    /// too (it shares Visual's selection geometry), so the swap fires
+    /// for both states.
+    pub fn do_swap_visual_ends(&mut self) {
+        let (ModalState::Visual(kind) | ModalState::Select(kind)) = self.modal else {
+            return;
+        };
+        let Some(other_end) = self.visual_anchor else {
+            return;
+        };
+        let new_anchor = self.cursor;
+        self.visual_anchor = Some(new_anchor);
+        self.cursor = other_end;
+        let sel = lattice_protocol::selection::Selection {
+            anchor: new_anchor,
+            head: other_end,
+            visual: Some(visual_kind_to_mode(kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
 }
 
 /// Phase 5.5.E.6: host-side option-cascade infrastructure. These
@@ -20936,44 +22834,56 @@ impl Editor {
     pub fn sync_host_theme_from_config(&mut self) {
         use crate::ui::theme as host_theme;
         use crate::ui::theme_options::{
-            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
-            UiStatuslineInactiveFg,
+            UiSeparatorColor, UiStatuslineActiveFg, UiStatuslineInactiveFg,
         };
-        let dim_inactive = *self
-            .config
-            .get_typed::<UiDimInactive>()
-            .expect("UiDimInactive");
-        let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
-        let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
-        let sep_char = sep.chars().next().unwrap_or('│');
-        self.host_theme.dim_inactive_panes = dim_inactive;
-        self.host_theme.nerd_fonts = nerd_fonts;
-        self.host_theme.pane_separator_vertical = sep_char;
+        // T.6.t: the non-style chrome (`dim_inactive_panes` /
+        // `nerd_fonts` / separator chars + diagnostic glyphs) is read
+        // directly from the typed-options registry at each consumer
+        // (renderers via the published `OptionsRenderState`/native
+        // cache; host helpers via `self.config.get_typed::<…>()`), so
+        // there is nothing to mirror onto a host struct anymore. This
+        // fn now only applies the `:set ui.*_color` chrome overrides to
+        // the theme registry (T.9.a). `set_override` marks the registry
+        // dirty; the post-sync `RendererSignal::ThemeChanged` rebuilds
+        // the renderer caches from the freshly-`resolved()` table.
+        let theme_reg = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>();
         // ui.separator_color -- color name; host parser returned
         // Ok during validate so unwrap-via-fallback is safe.
         let sep_color = self
             .config
             .get_typed::<UiSeparatorColor>()
             .expect("UiSeparatorColor");
-        if let Ok(c) = host_theme::parse_color(&sep_color) {
-            self.host_theme.pane_separator = host_theme::Style::empty().fg(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&sep_color)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.separator"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
-        // ui.statusline_active_fg / _inactive_fg -- foreground
-        // only; preserve modifiers / background by chaining `.fg(c)`
-        // on the current host style.
+        // ui.statusline_active_fg / _inactive_fg -- foreground only;
+        // overlaying a `StyleSpec` with only `fg` set preserves the
+        // element default's modifiers/background (active = reverse+bold,
+        // inactive = dim).
         let active_fg = self
             .config
             .get_typed::<UiStatuslineActiveFg>()
             .expect("UiStatuslineActiveFg");
-        if let Ok(c) = host_theme::parse_color(&active_fg) {
-            self.host_theme.pane_status_active.fg = Some(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&active_fg)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.status.active"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
         let inactive_fg = self
             .config
             .get_typed::<UiStatuslineInactiveFg>()
             .expect("UiStatuslineInactiveFg");
-        if let Ok(c) = host_theme::parse_color(&inactive_fg) {
-            self.host_theme.pane_status_inactive.fg = Some(c);
+        if let (Some(reg), Ok(c)) = (&theme_reg, host_theme::parse_color(&inactive_fg)) {
+            reg.set_override(
+                lattice_theme::ElementName::from_static("pane.status.inactive"),
+                lattice_theme::StyleSpec::new().fg(c),
+            );
         }
     }
 
@@ -21169,7 +23079,7 @@ impl Editor {
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
+            Number, RelativeNumber, Scrollbind, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
             WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing,
             Wrap,
         };
@@ -21196,6 +23106,7 @@ impl Editor {
             whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
             whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
             terminal_esc_exits: *self.resolved_option::<TerminalEscExits>(buffer),
+            scrollbind: *self.resolved_option::<Scrollbind>(buffer),
         };
     }
 
@@ -21216,18 +23127,24 @@ impl Editor {
             .bootstrap_resolved_with_current_values(&mut resolved);
 
         // Active modes (layers 4 + 3): walk in activation order
-        // for minors, prepend major.
+        // for minors, prepend major. Each entry carries its origin.
         let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
-        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
+        let mut mode_contributions: Vec<(lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
             Vec::with_capacity(modes_snapshot.minors().len() + 1);
         if let Some(major_id) = modes_snapshot.major()
             && let Some(major) = self.mode_registry.get(major_id)
         {
-            mode_contributions.push(major.options());
+            mode_contributions.push((
+                major.options(),
+                lattice_config::OptionOrigin::ModeContribution { mode_id: major_id.to_string() },
+            ));
         }
         for &minor_id in modes_snapshot.minors() {
             if let Some(minor) = self.mode_registry.get(minor_id) {
-                mode_contributions.push(minor.options());
+                mode_contributions.push((
+                    minor.options(),
+                    lattice_config::OptionOrigin::ModeContribution { mode_id: minor_id.to_string() },
+                ));
             }
         }
 
@@ -21241,15 +23158,18 @@ impl Editor {
         // Modal-state layer (1) is empty for now; M.7 wires it.
         let modal_layer = lattice_config::OptionOverrideSet::new();
 
-        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
-        layered.push(&modal_layer);
-        layered.push(&buffer_local);
-        for set in mode_contributions.iter().rev() {
-            layered.push(set);
+        // Build the origin-tagged layer list (highest priority first).
+        // Layer 1: modal-state  Layer 2: buffer-local  Layers 3+: modes
+        let mut layered: Vec<(&lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
+            Vec::new();
+        layered.push((&modal_layer, lattice_config::OptionOrigin::Default));
+        layered.push((&buffer_local, lattice_config::OptionOrigin::BufferLocal));
+        for (set, origin) in mode_contributions.iter().rev() {
+            layered.push((set, origin.clone()));
         }
 
         let resolver = lattice_config::Resolver::new();
-        resolver.resolve_into(layered, &mut resolved);
+        resolver.resolve_into_with_origins(layered, &mut resolved);
 
         self.resolved_options.insert(buffer, resolved);
         // M.4: keep `option_cache` in lockstep with the active
@@ -21305,6 +23225,186 @@ impl Editor {
         let signals = self.drain_option_changes();
         self.set_message(EchoLevel::Info, echo);
         signals
+    }
+
+    /// `:setlocal` write path (BL.1). Parses `option` and writes the
+    /// result to `buffer_local_overrides` for the active buffer only,
+    /// then triggers a per-buffer recompute + cascade.
+    ///
+    /// Handles the full `:setlocal` surface:
+    /// - `name=value` / `noname` / `name` (bool→true) — write override
+    /// - `name?` — echo local value or "not set locally (global: X)"
+    /// - `name&` — clear override for `name`; bare `&` clears all
+    pub fn do_set_local(&mut self, option: &str) -> Vec<RendererSignal> {
+        use lattice_config::{ParsedSet, parse_set};
+        let parsed = match parse_set(option) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e);
+                return Vec::new();
+            }
+        };
+        let buffer_id = self.document_buffer_id;
+        match parsed {
+            ParsedSet::Reset(name) if name.is_empty() => {
+                // `:setlocal &` — clear all local overrides for active buffer.
+                self.buffer_local_overrides.remove(&buffer_id);
+                self.recompute_options_for_buffer(buffer_id);
+                self.rebuild_option_cache();
+                Vec::new()
+            }
+            ParsedSet::Reset(name) => {
+                // `:setlocal name&` — clear one override.
+                if let Some(set) = self.buffer_local_overrides.get_mut(&buffer_id) {
+                    // Resolve canonical name so aliases work.
+                    let canonical = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.name().to_string())
+                        .unwrap_or(name.clone());
+                    let type_id = match self
+                        .config
+                        .parse_for_buffer_local(&format!("{canonical}=0"))
+                    {
+                        // We only need the TypeId; discard the value.
+                        Ok((tid, _, _)) => tid,
+                        Err(_) => {
+                            // Fall back: try to find by name via a bool parse.
+                            match self.config.parse_for_buffer_local(&canonical) {
+                                Ok((tid, _, _)) => tid,
+                                Err(e) => {
+                                    self.set_message(EchoLevel::Error, e.to_string());
+                                    return Vec::new();
+                                }
+                            }
+                        }
+                    };
+                    // Remove the override for this TypeId.
+                    let overrides: Vec<_> = set
+                        .iter()
+                        .filter(|o| o.option_type_id != type_id)
+                        .cloned()
+                        .collect();
+                    *set = overrides.into_iter().collect();
+                }
+                self.recompute_options_for_buffer(buffer_id);
+                self.rebuild_option_cache();
+                Vec::new()
+            }
+            ParsedSet::Query(name) => {
+                // `:setlocal name?` — echo local value or "not set locally (global: X)".
+                let msg = if let Some(type_id) = self.config.type_id_for_name(&name) {
+                    let global_fmt = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.get_formatted())
+                        .unwrap_or_default();
+                    let canonical_name = self
+                        .config
+                        .lookup(&name)
+                        .map(|o| o.name().to_string())
+                        .unwrap_or(name.clone());
+                    let local_fmt = self
+                        .buffer_local_overrides
+                        .get(&buffer_id)
+                        .and_then(|set| set.iter().filter(|ov| ov.option_type_id == type_id).last())
+                        .and_then(|ov| {
+                            self.config
+                                .lookup(&canonical_name)
+                                .and_then(|o| o.format_erased_value(&ov.value))
+                        });
+                    if let Some(local) = local_fmt {
+                        format!("{canonical_name}={local}  (buffer-local)")
+                    } else {
+                        format!("{canonical_name}  not set locally (global: {global_fmt})")
+                    }
+                } else {
+                    format!("E518: Unknown option: {name}")
+                };
+                self.set_message(EchoLevel::Info, msg);
+                Vec::new()
+            }
+            ParsedSet::NameOnly(ref name) => {
+                // For non-bool, behave like `:set name` (echo current value).
+                // For bool, fall through to the write path below.
+                if let Some(opt) = self.config.lookup(name) {
+                    if !opt.is_bool() {
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("{}={}", opt.name(), opt.get_formatted()),
+                        );
+                        return Vec::new();
+                    }
+                }
+                // Bool NameOnly: write override (sets to true).
+                self.do_set_local_write(option)
+            }
+            _ => self.do_set_local_write(option),
+        }
+    }
+
+    /// Inner write path for `do_set_local`: calls `parse_for_buffer_local`,
+    /// pushes to `buffer_local_overrides`, recomputes + cascades.
+    fn do_set_local_write(&mut self, option: &str) -> Vec<RendererSignal> {
+        let buffer_id = self.document_buffer_id;
+        let (type_id, erased, canonical) = match self.config.parse_for_buffer_local(option) {
+            Ok(triple) => triple,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e.to_string());
+                return Vec::new();
+            }
+        };
+        let override_val = lattice_config::OptionOverride {
+            option_type_id: type_id,
+            value: erased,
+            priority: lattice_config::OverridePriority::Normal,
+        };
+        self.buffer_local_overrides
+            .entry(buffer_id)
+            .or_default()
+            .push(override_val);
+        self.recompute_options_for_buffer(buffer_id);
+        let mut signals = Vec::new();
+        self.apply_option_cascade(&canonical, &mut signals);
+        self.set_message(
+            EchoLevel::Info,
+            format!("{}={}  (buffer-local)", canonical, {
+                let opt = self.config.lookup(&canonical);
+                opt.map(|o| o.get_formatted()).unwrap_or_default()
+            }),
+        );
+        signals
+    }
+
+    /// `:setglobal` write path (BL.2). Writes only the global config
+    /// registry; buffer-local override layers are untouched. On
+    /// `name?` query, echoes the global registry value (not the
+    /// resolved per-buffer value).
+    pub fn do_set_global(&mut self, option: &str) -> Vec<RendererSignal> {
+        use lattice_config::{ParsedSet, parse_set};
+        let parsed = match parse_set(option) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, e);
+                return Vec::new();
+            }
+        };
+        match parsed {
+            ParsedSet::Query(name) => {
+                // `:setglobal name?` — echo the global registry value.
+                let msg = if let Some(opt) = self.config.lookup(&name) {
+                    format!("{}={}  (global)", opt.name(), opt.get_formatted())
+                } else {
+                    format!("E518: Unknown option: {name}")
+                };
+                self.set_message(EchoLevel::Info, msg);
+                Vec::new()
+            }
+            _ => {
+                // All write forms delegate to the canonical global path.
+                self.do_set(option)
+            }
+        }
     }
 
     /// Drain queued [`Event::OptionChanged`] events from the typed-
@@ -21374,6 +23474,14 @@ impl Editor {
                 // returns immediately).
                 self.recompute_folds();
             }
+            "scrollbind" => {
+                // D.0b: rebuild the singleton scrollbind group so the
+                // new state of this pane's option is reflected. Drops
+                // the old group and creates a fresh one containing all
+                // panes currently with scrollbind=true; no-ops when
+                // < 2 panes are bound.
+                self.rebuild_scrollbind_group();
+            }
             "messages.filter" => {
                 // msg-mode.2: live-reload the `MessagesLayer`'s
                 // `EnvFilter` directive. Validator already rejected
@@ -21391,6 +23499,30 @@ impl Editor {
                         format!("messages.filter reload skipped: {e}"),
                     );
                 }
+            }
+            "snippet.activation" | "snippet.languages" => {
+                // SN.3b: re-fold the snippet activation policy into
+                // the shared cell the `snippet-mode` gate reads. The
+                // mode-owned fold (`lattice_snippet::fold_activation_policy`)
+                // maps `snippet.activation` + `snippet.languages` to
+                // an `ActivationPolicy`; storing it makes the next
+                // `MajorEntered` resolve with the new policy. Already-
+                // open buffers are not retroactively re-resolved
+                // (SN.3b scope) — the change applies on their next
+                // major entry.
+                let activation = self
+                    .config
+                    .get_typed::<lattice_snippet::SnippetActivation>()
+                    .map(|v| *v)
+                    .unwrap_or_default();
+                let languages = self
+                    .config
+                    .get_typed::<lattice_snippet::SnippetLanguages>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_default();
+                self.snippet_activation_policy.store(std::sync::Arc::new(
+                    lattice_snippet::fold_activation_policy(activation, &languages),
+                ));
             }
             n if n.starts_with("ui.") => {
                 // Sync the host-side neutral theme first, then
@@ -21566,9 +23698,8 @@ impl Editor {
                 // ~23440–23475 for the picker-source rendering).
                 BufferKind::Messages => {
                     let label = row.name.clone().unwrap_or_else(|| "*messages*".to_string());
-                    let dirty = if row.doc_dirty { "[+]" } else { "   " };
                     lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} msg  {dirty} {label}",
+                        "  {active_marker}{listed_marker} #{:<3} msg       {label}",
                         id.0
                     ));
                 }
@@ -21623,10 +23754,40 @@ impl Editor {
         ));
         lines.push(format!("macros stored:  {}", self.macros.len()));
         lines.push(format!("folds:          {}", self.folds.len()));
-        lines.push(format!(
-            "options:        number={}  relativenumber={}",
-            self.option_cache.show_line_numbers, self.option_cache.relative_line_numbers,
-        ));
+        // Buffer-local options section (BL.3).
+        let buf_id = self.document_buffer_id;
+        let local_set = self.buffer_local_overrides.get(&buf_id);
+        let local_count = local_set.map(|s| s.len()).unwrap_or(0);
+        lines.push(String::new());
+        lines.push(format!("## Buffer-local options ({local_count} overrides)"));
+        if local_count == 0 {
+            lines.push("(no buffer-local overrides)".into());
+        } else {
+            let local_set = local_set.unwrap();
+            // Collect canonical names from OPTION_DECLS so we can display them.
+            // Deduplicate by TypeId (last-pushed wins, matching resolver semantics).
+            let mut seen = std::collections::HashMap::new();
+            for ov in local_set.iter() {
+                seen.insert(ov.option_type_id, ov);
+            }
+            // Sort by canonical name for deterministic output.
+            let mut entries: Vec<_> = lattice_config::OPTION_DECLS
+                .iter()
+                .filter_map(|meta| {
+                    let tid = (meta.type_id)();
+                    seen.get(&tid).map(|ov| (meta.name, tid, *ov))
+                })
+                .collect();
+            entries.sort_by_key(|(name, _, _)| *name);
+            for (name, _tid, ov) in entries {
+                let value_str = self
+                    .config
+                    .lookup(name)
+                    .and_then(|opt| opt.format_erased_value(&ov.value))
+                    .unwrap_or_else(|| "?".into());
+                lines.push(format!("- {name}={value_str}"));
+            }
+        }
         // Active modes on the document buffer. Each mode name is a
         // clickable `[name](mode:name)` link.
         lines.push(String::new());
@@ -21801,9 +23962,12 @@ impl Editor {
         };
 
         // Active-mode set for the current buffer (for `active` flags).
+        // Use active_buffer_id() so focused Multibuffer/Terminal/etc.
+        // panes see their own mode contributions as active, not the
+        // last-seen Document buffer's modes.
         let active_modes: Vec<lattice_mode::mode::ModeId> = self
             .active_modes
-            .get(&self.document_buffer_id)
+            .get(&self.active_buffer_id())
             .map(|m| m.minors().to_vec())
             .unwrap_or_default();
 
@@ -21845,7 +24009,14 @@ impl Editor {
                     .unwrap_or_else(|| {
                         format!("{:?}", winner.command.command.command)
                     });
-                lines.push(format!("  → {cmd_name}  (fires now)"));
+                // SN.3c.2b: a `fall_through` winner augments-and-continues
+                // — flag it and render the continuation chain below.
+                let fires = if winner.command.fall_through {
+                    "(fires now → falls through ↓)"
+                } else {
+                    "(fires now)"
+                };
+                lines.push(format!("  → {cmd_name}  {fires}"));
                 lines.push(format!(
                     "    layer: {}",
                     self.keymap.layer_label_string(winner.layer),
@@ -21854,6 +24025,33 @@ impl Editor {
                     "    source: {}",
                     winner.command.source.as_link(),
                 ));
+                // SN.3c.2b: walk the fall-through continuation — each
+                // active hit below a `fall_through` one runs too, until
+                // a non-fall-through binding (or the bottom) stops it.
+                let active_desc: Vec<&lattice_keymap::LayerHit> =
+                    resolution.hits.iter().rev().filter(|h| h.active).collect();
+                for i in 1..active_desc.len() {
+                    if !active_desc[i - 1].command.fall_through {
+                        break;
+                    }
+                    let hit = active_desc[i];
+                    let next_name = self
+                        .registry
+                        .lookup(hit.command.command.command)
+                        .map(|spec| spec.name.clone())
+                        .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
+                    let tail = if hit.command.fall_through {
+                        " → falls through ↓"
+                    } else {
+                        ""
+                    };
+                    lines.push(format!("  ↳ then: {next_name}{tail}"));
+                    lines.push(format!(
+                        "    layer: {}",
+                        self.keymap.layer_label_string(hit.layer),
+                    ));
+                    lines.push(format!("    source: {}", hit.command.source.as_link()));
+                }
             } else {
                 lines.push(
                     "  (registered but not active — \
@@ -21867,10 +24065,12 @@ impl Editor {
                 lines.push(String::new());
                 lines.push("  All layers (ascending priority):".to_string());
                 for hit in &resolution.hits {
-                    let status = if hit.active {
-                        "[active]"
-                    } else {
-                        "[inactive]"
+                    // SN.3c.2b: surface `fall_through` alongside activeness.
+                    let status = match (hit.active, hit.command.fall_through) {
+                        (true, true) => "[active · fall-through]",
+                        (true, false) => "[active]",
+                        (false, true) => "[inactive · fall-through]",
+                        (false, false) => "[inactive]",
                     };
                     let cmd_name = self
                         .registry
@@ -21943,7 +24143,11 @@ impl Editor {
             BindingMode::Help,
         ];
         for entry in entries() {
-            by_mode.entry(entry.mode.label()).or_default().push(entry);
+            // B-field: an entry may be live in several modes; list it
+            // under each mode group in the `:keymap` output.
+            for mode in entry.modes {
+                by_mode.entry(mode.label()).or_default().push(entry);
+            }
         }
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
@@ -22006,6 +24210,61 @@ impl Editor {
         )
     }
 
+    /// T.9.d: build the `:describe-element <name>` / `:describe-face`
+    /// content. Reads the [`ThemeRegistry::describe`] snapshot and
+    /// formats the element's owner, doc, authoring (reference-form)
+    /// style spec (palette keys + inherit parent), and the concrete
+    /// resolved style under the active theme. The introspection
+    /// counterpart of `:describe-option` for theme elements (design
+    /// §8). An unknown element name echoes an error and returns `None`
+    /// (the dispatcher then skips the display signal) — never a panic.
+    pub fn build_describe_element_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(registry) = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "theme registry unavailable".to_string(),
+            );
+            return None;
+        };
+        let element_name = crate::ui::theme::ElementName::from(name.to_string());
+        let Some(info) = registry.describe(&element_name) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E518: Unknown theme element: {name}"),
+            );
+            return None;
+        };
+
+        let owner = match &info.owner {
+            crate::ui::theme::ElementOwner::Core => "Core".to_string(),
+            crate::ui::theme::ElementOwner::Mode(id) => format!("Mode ({id})"),
+            crate::ui::theme::ElementOwner::Plugin(id) => format!("Plugin ({id})"),
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# {}", info.name));
+        lines.push(format!("owner:    {owner}"));
+        lines.push(format!("resolved: {}", format_resolved_style(&info.resolved)));
+        lines.push(format!("spec:     {}", format_style_spec(&info.default)));
+        lines.push(String::new());
+        lines.push(if info.doc.is_empty() {
+            "(no documentation)".to_string()
+        } else {
+            info.doc.to_string()
+        });
+
+        Some(
+            lattice_help::HelpContent::from_lines(format!("describe-element {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
     /// 5.5.F.3: build the `:options` content. Live reference of
     /// every registered customizable option, grouped by
     /// [`lattice_config::OptionGroup`]. Self-updating: walks the
@@ -22013,7 +24272,7 @@ impl Editor {
     /// `options! { ... }` declaration lights up here at the next
     /// build with no extra wiring.
     pub fn build_list_options_content(&self) -> lattice_help::HelpContent {
-        use lattice_config::{GROUP_DECLS, OPTION_DECLS};
+        use lattice_config::{GROUP_DECLS, OPTION_DECLS, OptionOrigin};
         use std::collections::BTreeMap;
 
         let mut by_group: BTreeMap<&'static str, Vec<&'static lattice_config::OptionDeclMetadata>> =
@@ -22077,6 +24336,33 @@ impl Editor {
                     )
                 };
                 lines.push(header);
+                // BL.3: show per-buffer effective value + origin when it
+                // differs from the global registry value.
+                let type_id = (meta.type_id)();
+                let buf_id = self.document_buffer_id;
+                let origin = self
+                    .resolved_options
+                    .get(&buf_id)
+                    .map(|r| r.get_origin_for_typeid(type_id))
+                    .unwrap_or_default();
+                let effective = self
+                    .resolved_options
+                    .get(&buf_id)
+                    .and_then(|r| r.get_erased(type_id))
+                    .and_then(|erased| spec.as_ref().and_then(|o| o.format_erased_value(erased)));
+                match (&origin, &effective) {
+                    (OptionOrigin::BufferLocal, Some(eff)) => {
+                        lines.push(format!(
+                            "  effective (this buffer): {eff}  [buffer-local]"
+                        ));
+                    }
+                    (OptionOrigin::ModeContribution { mode_id }, Some(eff)) if eff != &current => {
+                        lines.push(format!(
+                            "  effective (this buffer): {eff}  [mode: {mode_id}]"
+                        ));
+                    }
+                    _ => {}
+                }
                 for doc_line in meta.doc.lines() {
                     let trimmed = doc_line.trim();
                     if !trimmed.is_empty() {
@@ -23535,14 +25821,13 @@ pub fn raw_buffer_candidates(
                 format!("#{:<3} {}", id.0, t.label),
                 format!("term{active_marker}"),
             ),
-            BufferData::Messages(d) => {
+            BufferData::Messages(_) => {
                 let label = entry
                     .name
                     .clone()
                     .unwrap_or_else(|| "*messages*".to_string());
-                let dirty = if d.handle.dirty() { " [+]" } else { "" };
                 (
-                    format!("#{:<3} {label}{dirty}", id.0),
+                    format!("#{:<3} {label}", id.0),
                     format!("msg{active_marker}"),
                 )
             }
@@ -23675,12 +25960,12 @@ pub fn picker_buffer_entry(
             ("oil".to_string(), dir, title, false)
         }
         BufferData::Terminal(t) => ("term".to_string(), None, t.label.clone(), false),
-        BufferData::Messages(d) => {
+        BufferData::Messages(_) => {
             let title = entry
                 .name
                 .clone()
                 .unwrap_or_else(|| "*messages*".to_string());
-            ("msg".to_string(), None, title, d.handle.dirty())
+            ("msg".to_string(), None, title, false)
         }
         BufferData::Multibuffer(_) => {
             let title = entry
@@ -23728,6 +26013,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        // L4b: the diagnostics popup neither mutates nor yanks.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -23735,6 +26022,9 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -23754,6 +26044,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -23788,7 +26079,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -23824,6 +26115,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::Edits(_) => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
+        // L4b: the diagnostics popup is not a buffer mutation.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
@@ -23832,6 +26125,9 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -23851,6 +26147,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -23885,7 +26182,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -23926,6 +26223,137 @@ pub(crate) fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     } else {
         last_idx
     }
+}
+
+/// T.9.d: render a resolved [`crate::ui::theme::Style`] as a single
+/// human-readable line for `:describe-element`. fg/bg show as
+/// `#rrggbb` for `Rgb`, the ANSI name for `Named`, `idxNNN` for
+/// `Indexed`, `default` for `Default`, `-` when the channel is unset;
+/// every set modifier is listed.
+fn format_resolved_style(style: &crate::ui::theme::Style) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("fg {}", format_color_opt(&style.fg)));
+    parts.push(format!("bg {}", format_color_opt(&style.bg)));
+    parts.extend(format_modifiers(&style.modifiers));
+    if let Some(scale) = style.scale {
+        parts.push(format!("scale {:.2}x", scale.as_ratio()));
+    }
+    if let Some(family) = style.family {
+        parts.push(format!("family #{}", family.0));
+    }
+    if let Some(weight) = style.weight {
+        parts.push(format!("weight {weight:?}"));
+    }
+    parts.join("  ")
+}
+
+/// T.9.d: render the authoring (reference-form) [`StyleSpec`] for
+/// `:describe-element`. Colors show what they *reference* — a palette
+/// key (`palette "mauve"`), a literal (`#rrggbb` / name), or `default`
+/// — not the baked color, so the user sees the element's definition.
+/// The inherit parent (if any) leads the list.
+fn format_style_spec(spec: &crate::ui::theme::StyleSpec) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(parent) = &spec.inherit {
+        parts.push(format!("inherit {parent}"));
+    }
+    if let Some(fg) = &spec.fg {
+        parts.push(format!("fg = {}", format_color_ref(fg)));
+    }
+    if let Some(bg) = &spec.bg {
+        parts.push(format!("bg = {}", format_color_ref(bg)));
+    }
+    parts.extend(format_spec_modifiers(&spec.modifiers));
+    if let Some(scale) = spec.scale {
+        parts.push(format!("scale {scale:.2}x"));
+    }
+    if let Some(family) = spec.family {
+        parts.push(format!("family #{}", family.0));
+    }
+    if let Some(weight) = spec.weight {
+        parts.push(format!("weight {weight:?}"));
+    }
+    if parts.is_empty() {
+        "(empty)".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Format an optional resolved [`crate::ui::theme::Color`] channel:
+/// the color form, or `-` when unset.
+fn format_color_opt(color: &Option<crate::ui::theme::Color>) -> String {
+    match color {
+        Some(c) => format_color(c),
+        None => "-".to_string(),
+    }
+}
+
+/// Format a resolved [`crate::ui::theme::Color`]: `#rrggbb` for `Rgb`,
+/// the ANSI name for `Named`, `idxNNN` for `Indexed`, `default` for
+/// the terminal/window default channel.
+fn format_color(color: &crate::ui::theme::Color) -> String {
+    use crate::ui::theme::Color;
+    match color {
+        Color::Default => "default".to_string(),
+        Color::Named(n) => format!("{n:?}").to_lowercase(),
+        Color::Indexed(i) => format!("idx{i}"),
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}
+
+/// Format an authoring [`crate::ui::theme::ColorRef`]: a palette-key
+/// reference shows as `palette "key"`, a literal as its color form, a
+/// default as `default`.
+fn format_color_ref(cref: &crate::ui::theme::ColorRef) -> String {
+    use crate::ui::theme::ColorRef;
+    match cref {
+        ColorRef::Palette(key) => format!("palette \"{}\"", key.as_str()),
+        ColorRef::Literal(c) => format_color(c),
+        ColorRef::Default => "default".to_string(),
+    }
+}
+
+/// The set modifiers of a resolved [`crate::ui::theme::Modifiers`],
+/// as a list of names (`bold`, `italic`, ...). Empty when none set.
+fn format_modifiers(m: &crate::ui::theme::Modifiers) -> Vec<String> {
+    let mut out = Vec::new();
+    if m.bold {
+        out.push("bold".to_string());
+    }
+    if m.italic {
+        out.push("italic".to_string());
+    }
+    if m.underline {
+        out.push("underline".to_string());
+    }
+    if m.dim {
+        out.push("dim".to_string());
+    }
+    if m.reverse {
+        out.push("reverse".to_string());
+    }
+    out
+}
+
+/// The tri-state modifiers of an authoring [`ModifierSet`], rendered
+/// for the spec line: a set-true modifier shows as its name, a
+/// set-false (explicit clear) as `no-<name>`, an unset (inherit) is
+/// omitted. Distinguishing the three is the point — emacs faces treat
+/// "unspecified" and "off" differently.
+fn format_spec_modifiers(m: &lattice_theme::ModifierSet) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |name: &str, v: Option<bool>| match v {
+        Some(true) => out.push(name.to_string()),
+        Some(false) => out.push(format!("no-{name}")),
+        None => {}
+    };
+    push("bold", m.bold);
+    push("italic", m.italic);
+    push("underline", m.underline);
+    push("dim", m.dim);
+    push("reverse", m.reverse);
+    out
 }
 
 /// 5.5.G.23.cmdline: `:`-history capacity. Submit pushes the line
@@ -24091,7 +26519,11 @@ pub fn prefer_aliases_for_command_candidates(
         }
         let canonical = c.raw.text.clone();
         let alias = crate::excommand::preferred_alias_for(&canonical);
-        let new_text = alias.map(|a| a.to_string()).unwrap_or(canonical);
+        // Fallback: strip the `ex:` namespace prefix so the user
+        // sees `oil` not `ex:oil` when no short alias exists.
+        let new_text = alias
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| canonical.strip_prefix("ex:").unwrap_or(&canonical).to_string());
         c.raw.text = new_text.clone();
         c.raw.display = new_text.clone();
         c.match_ranges = subsequence_match_ranges(&needle, &new_text);
@@ -24475,12 +26907,16 @@ impl Editor {
     /// into `do_*` helpers downstream.
     pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_grammar::Effect;
-        // Action-kind commands (`:` enter command line, `/`
-        // enter search, LSP navigation, ...) don't apply to the
-        // oil text buffer; let the grammar Action gate handle
-        // them centrally.
+        // Action- and ExCommand-kind commands don't apply to the oil
+        // text buffer. Action: grammar Action gate handles them centrally.
+        // ExCommand: ex-command dispatcher produces AppAction effects
+        // (e.g. `describe-buffer`, `describe-key`) that work buffer-
+        // agnostically — fall through to `run_document_invocation`.
         if let Some(spec) = self.registry.lookup(inv.command)
-            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
+            && matches!(
+                spec.kind,
+                lattice_grammar::CommandKind::Action | lattice_grammar::CommandKind::ExCommand
+            )
         {
             return false;
         }
@@ -24590,7 +27026,16 @@ impl Editor {
     /// [`apply_effect_host`] (recursive `Effect::Many` flatten +
     /// host migrated-arm pass + push to `out.effects` for the
     /// renderer-coupled tail).
-    pub fn run_invocation(
+    /// UD (unified dispatch): the single command-dispatch entry. Every
+    /// `CommandInvocation` — from the keymap (`Action::Invoke`), the `:`
+    /// line (`execute_ex_line`), macro replay, and (eventually) plugins —
+    /// flows through here: missing-arg arming, mode-contributed
+    /// action-handlers, the per-kind buffer runner, the grammar Action
+    /// gate, and the rich document path (`run_document_invocation`:
+    /// jump-history, find/till capture, count + fold expansion,
+    /// dot-repeat, visual-exit). There is no second, thinner dispatcher —
+    /// `:` and plugins get identical treatment to a keystroke.
+    pub fn dispatch_invocation(
         &mut self,
         inv: lattice_grammar::CommandInvocation,
         out: &mut DispatchOutcome,
@@ -25149,19 +27594,14 @@ impl Editor {
         //   are silently swallowed (claim with `true`) to match
         //   pre-refactor behaviour.
         match self.registry.lookup(cmd).map(|s| s.kind) {
-            Some(lattice_grammar::CommandKind::Action) => false,
+            Some(lattice_grammar::CommandKind::Action)
+            | Some(lattice_grammar::CommandKind::ExCommand) => false,
             Some(lattice_grammar::CommandKind::Motion) | None => true,
             Some(lattice_grammar::CommandKind::Operator)
             | Some(lattice_grammar::CommandKind::TextObject) => {
                 self.pending_count = 0;
                 self.op_count = 0;
                 self.dispatch_synthetic_operator(inv);
-                true
-            }
-            Some(_) => {
-                self.pending_count = 0;
-                self.op_count = 0;
-                self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
                 true
             }
         }
@@ -25238,7 +27678,10 @@ impl Editor {
         let Some(spec) = self.registry.lookup(inv.command) else {
             return true;
         };
-        if matches!(spec.kind, lattice_grammar::CommandKind::Action) {
+        if matches!(
+            spec.kind,
+            lattice_grammar::CommandKind::Action | lattice_grammar::CommandKind::ExCommand
+        ) {
             return false;
         }
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
@@ -25304,6 +27747,79 @@ fn cells_edit_delta_from_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── N.1.2: narrow `:narrow` range resolution ────────────────
+    #[test]
+    fn narrow_paragraph_bounds_are_blank_delimited() {
+        let buf = lattice_core::Buffer::from_text("a\nb\n\nc\nd\n");
+        let last = buf.line_count().saturating_sub(1);
+        assert_eq!(paragraph_bounds(&buf, 1, last), (0, 1));
+        assert_eq!(paragraph_bounds(&buf, 3, last), (3, 4));
+        // A blank cursor line narrows just that line.
+        assert_eq!(paragraph_bounds(&buf, 2, last), (2, 2));
+    }
+
+    #[test]
+    fn narrow_range_explicit_span_resolves_lines() {
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Span {
+                start: lattice_grammar::range::RangeBound::Line(1),
+                end: lattice_grammar::range::RangeBound::Line(3),
+            }),
+            0,
+            5,
+            None,
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (1, 3));
+    }
+
+    #[test]
+    fn narrow_range_selection_uses_last_visual() {
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Selection),
+            0,
+            5,
+            Some((2, 4)),
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (2, 4));
+    }
+
+    #[test]
+    fn narrow_range_visual_marks_resolve_via_last_visual() {
+        // `:'<,'>narrow` — the `'<` / `'>` marks resolve to the last
+        // Visual selection's bounds.
+        let buf = lattice_core::Buffer::from_text("0\n1\n2\n3\n4\n5\n");
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(
+            &Some(lattice_grammar::range::Range::Span {
+                start: lattice_grammar::range::RangeBound::Mark('<'),
+                end: lattice_grammar::range::RangeBound::Mark('>'),
+            }),
+            0,
+            5,
+            Some((1, 4)),
+            &marks,
+            &buf,
+        );
+        assert_eq!(r, (1, 4));
+    }
+
+    #[test]
+    fn narrow_range_bare_is_current_paragraph() {
+        let buf = lattice_core::Buffer::from_text("a\nb\n\nc\n");
+        let last = buf.line_count().saturating_sub(1);
+        let marks = std::collections::HashMap::new();
+        let r = resolve_narrow_range(&None, 1, last, None, &marks, &buf);
+        assert_eq!(r, (0, 1));
+    }
 
     /// `RendererSignal` is `Clone` so the renderer can fan signals
     /// out without consuming the host's `Vec<RendererSignal>` (and
@@ -25446,6 +27962,476 @@ mod tests {
         assert!(out.renderer_signals.is_empty());
     }
 
+    /// T.9.b: `:colorscheme <name>` swaps the active theme via the
+    /// registry service and emits `RendererSignal::ThemeChanged` so
+    /// both renderer caches rebuild (mirrors `Effect::SetOption`'s
+    /// `ui.*` path). After the swap, `syntax.keyword` resolves to
+    /// Macchiato's mauve.
+    #[test]
+    fn set_colorscheme_swaps_theme_and_signals_theme_changed() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        // Before: mocha mauve.
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            Some(lattice_theme::Color::Rgb(0xcb, 0xa6, 0xf7))
+        );
+        let out =
+            editor.handle_effect(Effect::SetColorscheme("catppuccin-macchiato".to_string()));
+        assert!(
+            out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "swap emits ThemeChanged"
+        );
+        // After: Macchiato mauve.
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+    }
+
+    /// ML.5d: entering an insert-like / visual mode surfaces the full
+    /// mode name in the echo area (vim's `-- INSERT --`) WITHOUT
+    /// recording it to the `*messages*` ring — the lean modeline tag
+    /// stays the persistent indicator; the echo is the transient
+    /// full-name reveal (no per-mode-change message spam).
+    #[test]
+    fn mode_change_echoes_showmode_without_message_spam() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let ring_len_before = editor.messages.lock().unwrap().len();
+
+        editor.enter_mode(ModalState::Insert);
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- INSERT --")
+        );
+        let ring = editor.messages.lock().unwrap();
+        assert_eq!(ring.len(), ring_len_before, "showmode must not hit the ring");
+        assert!(
+            !ring.records().iter().any(|r| r.text.contains("INSERT")),
+            "showmode text stays out of message history"
+        );
+    }
+
+    /// ML.5d: leaving a showmode mode (e.g. `<Esc>` from Insert) clears
+    /// the lingering `-- INSERT --` indicator.
+    #[test]
+    fn leaving_showmode_clears_the_echo() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Insert);
+        assert!(editor.last_message.is_some());
+        editor.enter_mode(ModalState::Normal);
+        assert!(
+            editor.last_message.is_none(),
+            "returning to Normal clears the showmode echo"
+        );
+    }
+
+    /// ML.5d: visual sub-kinds get distinct full-name indicators.
+    #[test]
+    fn visual_variants_have_distinct_showmode_text() {
+        use lattice_grammar::{ModalState, VisualKind};
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Visual(VisualKind::Linewise));
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- VISUAL LINE --")
+        );
+        editor.enter_mode(ModalState::Visual(VisualKind::Blockwise));
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("-- VISUAL BLOCK --")
+        );
+    }
+
+    /// ML.5d: a real echo message set during a Command (`:w` →
+    /// "written") survives the return to Normal — the clear is gated on
+    /// the *prior* being a showmode mode, and Command is not one.
+    #[test]
+    fn returning_to_normal_from_command_preserves_real_message() {
+        use lattice_grammar::ModalState;
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.enter_mode(ModalState::Command);
+        editor.set_message(EchoLevel::Info, "written");
+        editor.enter_mode(ModalState::Normal);
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            Some("written"),
+            "Command→Normal must not clobber a real message"
+        );
+    }
+
+    /// ML.0b-2: a descriptor + content registered through
+    /// `editor.modeline` surfaces through `build_render_state` into
+    /// `RenderState.modeline_elements` (the renderer's wait-free input),
+    /// and the `ServiceRegistry` exposes the SAME instance modes reach
+    /// via `ctx.service::<ModelineServiceHandle>()`.
+    #[test]
+    fn modeline_element_surfaces_through_render_state() {
+        use lattice_mode::{
+            ElementContent, ElementId, ModelineElement, ModelineKey, ModelineRole, Zone,
+        };
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let buffer = editor.pane_tree.active().buffer_id;
+
+        editor
+            .modeline
+            .register(ModelineElement::new(ElementId::new("test.badge"), Zone::Right, 0));
+        editor.modeline.update(
+            ModelineKey::Buffer(buffer),
+            ElementId::new("test.badge"),
+            ElementContent::text("hi", ModelineRole::new("modeline.normal")),
+        );
+
+        // Publish path snapshots the live service. The element is
+        // PaneLocal, so it resolves against the active pane's buffer.
+        let rs = editor.build_render_state();
+        let right = rs.modeline_elements.zone(Zone::Right, buffer);
+        assert_eq!(right.len(), 1);
+        assert_eq!(right[0].0.id.as_str(), "test.badge");
+        assert_eq!(right[0].1.plain(), "hi");
+
+        // Same instance is reachable through the service registry (the
+        // path modes use). Deref walks the double-Arc.
+        let via_services = editor
+            .services
+            .get::<lattice_mode::ModelineServiceHandle>()
+            .expect("modeline service registered at boot");
+        assert!(
+            via_services
+                .snapshot()
+                .content_for(ModelineKey::Buffer(buffer), &ElementId::new("test.badge"))
+                .is_some(),
+            "service-registry instance sees host-registered content (shared Arc)"
+        );
+    }
+
+    /// ML.3: a `ModelineElementUpdate` pushed on the event bus drains
+    /// into the content store and surfaces in the published snapshot with
+    /// **no keystroke** — the test never calls `dispatch()`. This is the
+    /// off-keystroke push path: `publish_typed` → boot subscription →
+    /// `run_tick_pending`'s `drain_modeline_element_updates` → store. The
+    /// §12 render-wake half is the same `wake_on` forwarder L1c proves
+    /// (it fires `async_landed`, which is what calls `run_tick_pending`).
+    #[test]
+    fn pushed_modeline_update_surfaces_without_keystroke() {
+        use lattice_mode::{
+            ElementContent, ElementId, ModelineElement, ModelineElementUpdate, ModelineKey,
+            ModelineRole, Zone,
+        };
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let buffer = editor.pane_tree.active().buffer_id;
+
+        // A producer registers its descriptor (mode `on_activate` shape).
+        editor
+            .modeline
+            .register(ModelineElement::new(ElementId::new("test.pushed"), Zone::Right, 0));
+        // …and pushes per-buffer content over the bus, exactly as a mode
+        // or plugin would (no direct store write).
+        editor.event_bus.publish_typed(ModelineElementUpdate {
+            key: ModelineKey::Buffer(buffer),
+            id: ElementId::new("test.pushed"),
+            content: ElementContent::text("pushed!", ModelineRole::new("modeline.mode_item")),
+        });
+
+        // Nothing has touched the store yet — only the bus carries it.
+        assert!(
+            editor
+                .modeline
+                .snapshot()
+                .resolve(
+                    &ModelineElement::new(ElementId::new("test.pushed"), Zone::Right, 0),
+                    buffer,
+                )
+                .is_none(),
+            "content must not appear until the actor drains the push"
+        );
+
+        // The actor's off-keystroke tick (what `async_landed` triggers)
+        // drains the push into the store; build+publish snapshots it.
+        editor.run_tick_pending();
+        let rs = editor.build_render_state();
+        let right = rs.modeline_elements.zone(Zone::Right, buffer);
+        assert_eq!(right.len(), 1, "pushed element renders after the drain");
+        assert_eq!(right[0].0.id.as_str(), "test.pushed");
+        assert_eq!(right[0].1.plain(), "pushed!");
+
+        // Per-buffer keyed: a different pane's buffer sees nothing.
+        let other = lattice_core::BufferId(buffer.0.wrapping_add(1));
+        assert!(
+            rs.modeline_elements.zone(Zone::Right, other).is_empty(),
+            "PaneLocal push is scoped to its buffer"
+        );
+    }
+
+    /// T.9.b: an unknown theme name echoes an error and leaves the
+    /// active theme untouched — no `ThemeChanged`, no panic.
+    #[test]
+    fn set_colorscheme_unknown_name_errors_without_signal() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        let before = reg.resolved().get(kw).fg;
+        let out = editor.handle_effect(Effect::SetColorscheme("no-such-theme".to_string()));
+        assert!(
+            !out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "unknown name emits no ThemeChanged"
+        );
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            before,
+            "active theme is untouched on an unknown name"
+        );
+    }
+
+    /// T.12a test helper: move the seated picker's selection to the
+    /// candidate whose display text equals `name`. Candidate order is
+    /// MRU-tilted, so positional `select_next()` is unreliable across
+    /// runs; selecting by name keeps the tests order-independent.
+    fn select_picker_candidate_by_name(editor: &mut crate::editor::Editor, name: &str) {
+        let picker = editor.picker.as_mut().expect("picker seated");
+        let idx = picker
+            .candidates
+            .iter()
+            .position(|c| c.raw.display == name)
+            .unwrap_or_else(|| panic!("candidate `{name}` not in picker"));
+        picker.selected = idx;
+    }
+
+    /// T.12a: `:colorscheme` with NO arg opens the live-preview theme
+    /// picker, seated with one candidate per registered theme name.
+    #[test]
+    fn theme_picker_opens_on_no_arg_colorscheme() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let want_names = reg.theme_names();
+        assert!(
+            want_names.len() >= 2,
+            "boot seeds the builtin theme catalog"
+        );
+        // No-arg colorscheme (encoded as an empty SetColorscheme).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        let picker = editor.picker.as_ref().expect("picker is seated");
+        assert_eq!(picker.source_id.as_deref(), Some("colorscheme"));
+        assert_eq!(
+            picker.candidates.len(),
+            want_names.len(),
+            "one candidate per registered theme"
+        );
+        // Each candidate carries a Colorscheme routing payload.
+        for c in &picker.candidates {
+            assert!(matches!(
+                picker.routing_for(c),
+                Some(lattice_picker::RoutingPayload::Colorscheme { .. })
+            ));
+        }
+    }
+
+    /// T.12a: arrowing the selection LIVE-PREVIEWS the candidate theme
+    /// (the editor really recolors), and DISMISS (`<Esc>`) restores the
+    /// theme active when the picker opened.
+    #[test]
+    fn theme_picker_preview_recolors_and_dismiss_restores() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        // Before open: Mocha mauve (the default active theme).
+        let mocha_kw = Some(lattice_theme::Color::Rgb(0xcb, 0xa6, 0xf7));
+        assert_eq!(reg.resolved().get(kw).fg, mocha_kw);
+        // Open the picker (no-arg).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        // Select the macchiato candidate BY NAME (candidate order can be
+        // tilted by MRU recency, so don't rely on a positional index).
+        // The candidate display text is the theme name.
+        select_picker_candidate_by_name(&mut editor, "catppuccin-macchiato");
+        // Firing the live-preview hook via preview_picker_selection.
+        let sigs = editor.preview_picker_selection();
+        assert!(
+            sigs.iter().any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "preview emits ThemeChanged"
+        );
+        // The editor really recolored: syntax.keyword now Macchiato mauve.
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        let macchiato_kw = Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6));
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            macchiato_kw,
+            "preview applied the macchiato theme"
+        );
+        assert!(
+            editor.pending_theme_preview_restore.is_some(),
+            "first preview captured the restore snapshot"
+        );
+        // Dismiss (Esc) restores the pre-open theme.
+        let dismiss_sigs = editor.do_picker_dismiss();
+        assert!(
+            dismiss_sigs
+                .iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            "dismiss emits ThemeChanged for the restore"
+        );
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            mocha_kw,
+            "dismiss restored the original (mocha) theme"
+        );
+        assert!(
+            editor.pending_theme_preview_restore.is_none(),
+            "restore snapshot cleared after dismiss"
+        );
+    }
+
+    /// T.12a: ACCEPT (`<CR>`) keeps the previewed theme — no restore.
+    #[test]
+    fn theme_picker_accept_keeps_previewed_theme() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("theme registry registered at boot");
+        let kw = reg
+            .id(&lattice_theme::ElementName::from_static("syntax.keyword"))
+            .expect("syntax.keyword registered");
+        let macchiato_kw = Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6));
+        // Open + preview macchiato (by name — MRU may reorder rows).
+        let _ = editor.handle_effect(Effect::SetColorscheme(String::new()));
+        select_picker_candidate_by_name(&mut editor, "catppuccin-macchiato");
+        let _ = editor.preview_picker_selection();
+        assert!(editor.pending_theme_preview_restore.is_some());
+        // Accept (`<CR>`) keeps the previewed theme.
+        let _ = editor.do_picker_accept();
+        assert!(
+            editor.pending_theme_preview_restore.is_none(),
+            "accept clears the restore snapshot (keeps the chosen theme)"
+        );
+        assert!(editor.picker.is_none(), "picker closes on accept");
+        let reg = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .expect("registry still registered");
+        assert_eq!(
+            reg.resolved().get(kw).fg,
+            macchiato_kw,
+            "accept kept the macchiato theme"
+        );
+    }
+
+    /// T.9.d: `:describe-element <name>` builds a help view from the
+    /// `ThemeRegistry::describe` snapshot. The title carries the
+    /// element name and the body surfaces owner / resolved / spec /
+    /// doc lines.
+    #[test]
+    fn describe_element_builds_help_content_for_known_element() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let content = editor
+            .build_describe_element_content("syntax.keyword")
+            .expect("syntax.keyword is a registered core element");
+        let body = content.lines().join("\n");
+        assert!(content.title.contains("syntax.keyword"));
+        assert!(body.contains("owner:    Core"), "owner line: {body}");
+        // Resolved mocha mauve + bold (the concrete style).
+        assert!(body.contains("#cba6f7"), "resolved fg hex: {body}");
+        assert!(body.contains("bold"), "bold modifier: {body}");
+        // Authoring spec shows the palette-key reference, not the hex.
+        // T.11.0a renamed the Catppuccin-specific key `mauve` → the
+        // generic role-key `purple` (resolved value #cba6f7 unchanged).
+        assert!(body.contains("palette \"purple\""), "spec palette ref: {body}");
+        assert!(body.contains("Language keywords."), "doc: {body}");
+    }
+
+    /// T.9.d: an unknown element name echoes an error and returns
+    /// `None` (the dispatcher then skips the display signal) — never a
+    /// panic.
+    #[test]
+    fn describe_element_unknown_name_errors_and_returns_none() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        assert!(
+            editor
+                .build_describe_element_content("no.such.element")
+                .is_none()
+        );
+    }
+
+    /// T.9.d: `Effect::DescribeElement` for a known element emits a
+    /// `DisplayBuffer(HelpDescribe)` signal; an unknown one emits no
+    /// display signal.
+    #[test]
+    fn describe_element_effect_emits_display_buffer_signal() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let out = editor.handle_effect(Effect::DescribeElement {
+            name: "diff.add.sign".to_string(),
+        });
+        assert!(
+            out.renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::DisplayBuffer(_))),
+            "known element emits a DisplayBuffer signal"
+        );
+        let out_unknown = editor.handle_effect(Effect::DescribeElement {
+            name: "nope.nope".to_string(),
+        });
+        assert!(
+            !out_unknown
+                .renderer_signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::DisplayBuffer(_))),
+            "unknown element emits no DisplayBuffer signal"
+        );
+    }
+
     /// Issue #32 (2026-05-22): one-shot guarantee for picker
     /// open-target overrides. After ANY call to
     /// `do_picker_accept` — happy or error path — the
@@ -25470,6 +28456,64 @@ mod tests {
             lattice_picker::OpenTarget::Default,
             "picker_open_target must reset after every do_picker_accept call \
              (slice 32 one-shot guarantee)"
+        );
+    }
+
+    #[test]
+    fn stacked_narrow_targets_original_source_one_hop() {
+        // N.1.5 one-hop invariant: narrowing from inside a narrow view
+        // creates the new view on the ORIGINAL source (a
+        // RopeDocumentHandle), never the intermediate multibuffer -- so
+        // every narrow is exactly one hop from the file.
+        use lattice_grammar::AppEffect;
+
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let original_id = editor.active_pane_buffer_id();
+        let mut out = DispatchOutcome::default();
+
+        // Narrow the file to source lines [2, 5].
+        editor.apply_app_effect(
+            AppEffect::NarrowLines {
+                start_line: 2,
+                end_line: 5,
+            },
+            &mut out,
+        );
+        let narrow_a = editor.active_pane_buffer_id();
+        assert_ne!(narrow_a, original_id, "narrow A is a new view");
+        assert_eq!(editor.active_buffer, BufferKind::Multibuffer);
+
+        // From narrow A (composed rows 0..=3 == source 2..=5), narrow
+        // composed rows [0, 1] == source rows [2, 3].
+        editor.apply_app_effect(
+            AppEffect::NarrowLines {
+                start_line: 0,
+                end_line: 1,
+            },
+            &mut out,
+        );
+        let narrow_b = editor.active_pane_buffer_id();
+        assert_ne!(narrow_b, narrow_a, "narrow B is a distinct view");
+
+        // B's single excerpt sources the ORIGINAL document, not narrow A,
+        // and covers source rows [2, 3] (the translated span).
+        let mb = editor
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+            .and_then(|reg| reg.handle(narrow_b))
+            .expect("narrow B is a registered multibuffer");
+        let excerpts = mb.excerpts();
+        assert_eq!(excerpts.len(), 1, "narrow B has one excerpt");
+        assert_eq!(
+            excerpts[0].source, original_id,
+            "stacked narrow sources the ORIGINAL file, not the intermediate \
+             narrow view (one-hop invariant)"
+        );
+        assert_eq!(
+            (excerpts[0].start_line, excerpts[0].end_line),
+            (2, 3),
+            "composed [0,1] translated to source [2,3]"
         );
     }
 
@@ -25507,6 +28551,74 @@ mod tests {
             msg.text.contains("No active diff session"),
             "unexpected message: {}",
             msg.text
+        );
+    }
+
+    // ── §12 paint gate: publish_render_state's off-keystroke paint
+    //    decision (lsp-architecture.md §12) ──────────────────────────
+    //
+    // The cells / virtual-rows workers fire `paint_request` only when
+    // THEIR content changes. A change confined to a non-cell surface
+    // (modeline badge, diagnostics overlay, minibuffer, popup, cursor …)
+    // would land in `RenderState` but never reach a frame off-keystroke
+    // — the "needs a keypress" bug. `publish_render_state` now returns
+    // whether `paint_revision` moved so the actor's async arms can fire
+    // `paint_request`; a no-op publish must return `false` (both to avoid
+    // a spurious paint AND to keep the GPUI paint bridge's
+    // run_tick_pending → re-publish from spinning).
+    #[test]
+    fn publish_render_state_paint_gate_tracks_non_cell_changes() {
+        let mut editor = Editor::default();
+        // Baseline publish seeds `last_paint_revision`.
+        let _ = editor.publish_render_state();
+        // Nothing changed since: must NOT request a paint.
+        assert!(
+            !editor.publish_render_state(),
+            "a no-op publish must not request a paint (loop-safety)"
+        );
+        // A minibuffer edit is a non-cell surface (RenderState.modeline
+        // .cmdline_text), invisible to the cells MatrixVersion — it MUST
+        // flip the gate.
+        editor.command_line.push('x');
+        assert!(
+            editor.publish_render_state(),
+            "a non-cell (minibuffer) change must request a paint"
+        );
+        // And settle back to a no-op once republished.
+        assert!(
+            !editor.publish_render_state(),
+            "a settled publish must not request a paint"
+        );
+        // The cursor is an OVERLAY (deliberately absent from the cells
+        // MatrixVersion — lattice-cells/src/version.rs), so a cursor-only
+        // move is exactly the class that used to need a keypress.
+        editor.cursor = lattice_protocol::Position::new(0, 1);
+        assert!(
+            editor.publish_render_state(),
+            "a cursor-only move (overlay) must request a paint"
+        );
+        assert!(
+            !editor.publish_render_state(),
+            "a settled publish must not request a paint"
+        );
+    }
+
+    // §12 paint gate: a suppressed (batched) publish returns `false` —
+    // the real publish at batch-unwind reports the net change, so the
+    // off-keystroke arms paint exactly once for a batch.
+    #[test]
+    fn publish_render_state_suppressed_during_batch_returns_false() {
+        let mut editor = Editor::default();
+        let _ = editor.publish_render_state();
+        editor
+            .publish_cache
+            .lock()
+            .expect("publish_cache mutex poisoned")
+            .publish_batch_depth = 1;
+        editor.command_line.push('z');
+        assert!(
+            !editor.publish_render_state(),
+            "a publish suppressed inside a batch must return false even when state changed"
         );
     }
 
@@ -26441,6 +29553,325 @@ mod tests {
         );
     }
 
+    // ── D.0b: rebuild_scrollbind_group ──────────────────────────
+
+    /// Helper: mark `buffer_id` as having scrollbind=`val` in
+    /// `editor.resolved_options`. Bypasses `init_from_linkme`
+    /// so the test can drive the option without a full boot.
+    fn set_resolved_scrollbind(editor: &mut Editor, buffer_id: BufferId, val: bool) {
+        editor
+            .resolved_options
+            .entry(buffer_id)
+            .or_insert_with(lattice_config::ResolvedOptions::default)
+            .insert::<lattice_config::Scrollbind>(val);
+    }
+
+    /// Single pane with scrollbind=true → no group created
+    /// (need ≥ 2 panes for binding to be meaningful).
+    #[test]
+    fn scrollbind_single_pane_no_group() {
+        let mut editor = Editor::default();
+        let leaf = editor.pane_tree.leaves()[0];
+        set_resolved_scrollbind(&mut editor, leaf.buffer_id, true);
+        editor.rebuild_scrollbind_group();
+        assert!(
+            editor.scrollbind_group_id.is_none(),
+            "single scrollbound pane must not create a group"
+        );
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    /// Two panes both with scrollbind=true → group created and id
+    /// stored; propagation follows identity mapper.
+    #[test]
+    fn scrollbind_two_panes_creates_group() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+
+        editor.rebuild_scrollbind_group();
+
+        assert!(
+            editor.scrollbind_group_id.is_some(),
+            "two scrollbound panes must create a group"
+        );
+        assert_eq!(editor.pane_groups.len(), 1);
+
+        // Scroll propagation follows identity mapper.
+        editor.scroll = 77;
+        editor.propagate_pane_group_scroll();
+        let l1_after = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .find(|p| p.id == l1.id)
+            .expect("second leaf present");
+        assert_eq!(l1_after.scroll, 77, "identity mapper propagates scroll");
+    }
+
+    /// Calling rebuild a second time with one pane now set to
+    /// scrollbind=false drops the group and clears the id.
+    #[test]
+    fn scrollbind_toggle_off_drops_group() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+        editor.rebuild_scrollbind_group();
+        assert!(editor.scrollbind_group_id.is_some());
+
+        // Turn off scrollbind on the second pane then rebuild.
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, false);
+        editor.rebuild_scrollbind_group();
+
+        assert!(
+            editor.scrollbind_group_id.is_none(),
+            "only one pane left with scrollbind=true; group must drop"
+        );
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    /// Rebuilding twice when both panes remain bound must not
+    /// accumulate extra groups — old group is replaced atomically.
+    #[test]
+    fn scrollbind_rebuild_is_idempotent() {
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let l0 = editor.pane_tree.leaves()[0];
+        let l1 = editor.pane_tree.leaves()[1];
+        set_resolved_scrollbind(&mut editor, l0.buffer_id, true);
+        set_resolved_scrollbind(&mut editor, l1.buffer_id, true);
+
+        editor.rebuild_scrollbind_group();
+        let id_first = editor.scrollbind_group_id.unwrap();
+        editor.rebuild_scrollbind_group();
+        let id_second = editor.scrollbind_group_id.unwrap();
+
+        assert_ne!(id_first, id_second, "second rebuild mints a fresh group id");
+        assert_eq!(
+            editor.pane_groups.len(),
+            1,
+            "only one group must exist after double rebuild"
+        );
+    }
+
+    // ── BL.1: do_set_local ──────────────────────────────────────
+
+    /// Helper: boot the registry on an Editor so `parse_for_buffer_local`
+    /// can look up option TypeIds.
+    fn boot_config(editor: &mut Editor) {
+        editor.config.init_from_linkme();
+    }
+
+    /// `:setlocal number=false` writes to buffer_local_overrides for the
+    /// active buffer and does not touch the global registry value.
+    #[test]
+    fn set_local_writes_override_for_active_buffer() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Global value before: number=true (registered default).
+        let global_before = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(global_before, "global number must start true");
+        editor.do_set_local("number=false");
+        // Buffer-local override must be present.
+        assert!(
+            editor.buffer_local_overrides.contains_key(&buf),
+            "buffer_local_overrides must have an entry for the active buffer"
+        );
+        assert_eq!(
+            editor.buffer_local_overrides[&buf].len(),
+            1,
+            "exactly one override pushed"
+        );
+        // Global value must be unchanged.
+        let global_after = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(global_after, "global number must remain true after :setlocal");
+    }
+
+    /// Two buffers get independent local overrides.
+    #[test]
+    fn set_local_overrides_are_per_buffer() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf_a = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        // Synthesize a second buffer id and point the active buffer at it.
+        let buf_b = crate::buffers::BufferId(buf_a.0 + 1);
+        editor.document_buffer_id = buf_b;
+        editor.do_set_local("number=true");
+        // buf_a retains its own override.
+        assert!(editor.buffer_local_overrides.contains_key(&buf_a));
+        // buf_b has its own independent override.
+        assert!(editor.buffer_local_overrides.contains_key(&buf_b));
+        assert_ne!(buf_a, buf_b);
+    }
+
+    /// `:setlocal number&` clears the override, reverting to global.
+    #[test]
+    fn set_local_name_ampersand_clears_override() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        assert!(editor.buffer_local_overrides.contains_key(&buf));
+        editor.do_set_local("number&");
+        let set = editor.buffer_local_overrides.get(&buf);
+        assert!(
+            set.map(|s| s.is_empty()).unwrap_or(true),
+            "override for `number` must be removed after `number&`"
+        );
+    }
+
+    /// `:setlocal &` clears ALL overrides for the active buffer.
+    #[test]
+    fn set_local_bare_ampersand_clears_all_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        editor.do_set_local("wrap=true");
+        // Both overrides present.
+        assert_eq!(editor.buffer_local_overrides.get(&buf).map(|s| s.len()), Some(2));
+        editor.do_set_local("&");
+        assert!(
+            !editor.buffer_local_overrides.contains_key(&buf),
+            "`:setlocal &` must clear all buffer-local overrides"
+        );
+    }
+
+    // ── BL.2: origin tracking + do_set_global ───────────────────
+
+    /// `:setglobal number=false` writes the global registry only;
+    /// buffer-local overrides are untouched.
+    #[test]
+    fn set_global_writes_registry_not_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Confirm global starts at its registered default.
+        let before = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(before, "number must start true");
+        editor.do_set_global("number=false");
+        // Global registry must reflect the new value.
+        let after = *editor.config.get_typed::<lattice_config::Number>().unwrap();
+        assert!(!after, "global number must be false after :setglobal");
+        // Buffer-local overrides must be untouched.
+        assert!(
+            !editor.buffer_local_overrides.contains_key(&buf),
+            ":setglobal must not create buffer-local overrides"
+        );
+    }
+
+    /// After `:setlocal number=false`, the resolved options for the
+    /// active buffer carry `OptionOrigin::BufferLocal` for `number`.
+    #[test]
+    fn resolved_origin_is_buffer_local_after_set_local() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        editor.do_set_local("number=false");
+        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let origin = resolved.get_origin::<lattice_config::Number>();
+        assert_eq!(
+            origin,
+            lattice_config::OptionOrigin::BufferLocal,
+            "after :setlocal the origin must be BufferLocal"
+        );
+    }
+
+    /// Without any local override, the resolved origin is GlobalConfig.
+    #[test]
+    fn resolved_origin_is_global_config_without_local_override() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let buf = editor.document_buffer_id;
+        // Force a recompute with no local overrides.
+        editor.recompute_options_for_buffer(buf);
+        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let origin = resolved.get_origin::<lattice_config::Number>();
+        assert_eq!(
+            origin,
+            lattice_config::OptionOrigin::GlobalConfig,
+            "without a local override the origin must be GlobalConfig"
+        );
+    }
+
+    // ── BL.3: describe-buffer options section + :options view ───
+
+    /// `:describe-buffer` shows no overrides section when none are set.
+    #[test]
+    fn describe_buffer_options_section_empty_when_no_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let content = editor.build_describe_buffer_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("Buffer-local options (0 overrides)"),
+            "must show 0 overrides header; got:\n{text}"
+        );
+        assert!(
+            text.contains("(no buffer-local overrides)"),
+            "must show empty-state message; got:\n{text}"
+        );
+    }
+
+    /// After `:setlocal number=false`, `:describe-buffer` lists the override.
+    #[test]
+    fn describe_buffer_options_section_shows_local_overrides() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        editor.do_set_local("number=false");
+        let content = editor.build_describe_buffer_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("Buffer-local options (1 overrides)"),
+            "must show 1 override header; got:\n{text}"
+        );
+        assert!(
+            text.contains("number=false"),
+            "must list the number override; got:\n{text}"
+        );
+    }
+
+    /// `:options` output contains all registered options.
+    #[test]
+    fn list_options_content_contains_registered_options() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        let content = editor.build_list_options_content();
+        let text = content.buffer.content.as_string();
+        // A few core options that must always be present.
+        assert!(text.contains("number"), "must contain `number`; got:\n{text}");
+        assert!(text.contains("tabstop"), "must contain `tabstop`; got:\n{text}");
+        assert!(text.contains("wrap"), "must contain `wrap`; got:\n{text}");
+    }
+
+    /// After `:setlocal wrap=true`, `:options` shows the effective buffer value.
+    #[test]
+    fn list_options_shows_buffer_local_effective_value() {
+        let mut editor = Editor::default();
+        boot_config(&mut editor);
+        editor.do_set_local("wrap=true");
+        let content = editor.build_list_options_content();
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("effective (this buffer): true  [buffer-local]"),
+            "must show effective buffer-local value for wrap; got:\n{text}"
+        );
+    }
+
     /// Closed-state survives a republish that produces the
     /// same hunk span. The identity hash namespaces by span;
     /// the carry-over loop in `recompute_folds` matches old
@@ -26581,6 +30012,93 @@ mod tests {
         );
     }
 
+    /// DR.4 (decoration-retention): a PURE focus change — toggling which
+    /// pane is active, with no edit and no resize — must recompute ZERO
+    /// visible Document panes. The cells worker's own decision is the
+    /// proof: `recompute_pane` returns `CacheHit` ("inputs' version
+    /// matches the published matrix; worker does nothing", leaving the
+    /// matrix bit-identical). If a focus toggle ever bumped a cells
+    /// version axis (an active-keyed field creeping into the per-pane
+    /// inputs), the worker would return `Recomputed` and this test fails.
+    ///
+    /// `pane_tree.set_active` deliberately bumps the PANE-TREE version
+    /// (layout), but that is NOT a cells version axis — decorations are
+    /// buffer-intrinsic and survive a focus change untouched. This is the
+    /// DR invariant: "focus change does ZERO decoration recompute." It is
+    /// the focus-path sibling of `recompute_with_matching_version_is_cache_hit`
+    /// (same version → CacheHit) and the inverse of
+    /// `version_bump_rebuilds_matrix`.
+    #[test]
+    fn focus_toggle_does_not_recompute_pane_cells() {
+        use crate::cells_worker::{WhitespaceConfig, WorkerDecision, recompute_pane};
+        use lattice_core::ui::pane::SplitOrientation;
+
+        // Both panes inherit the booted (registered) buffer, so each gets a
+        // real snapshot in `build_cells_panes` (unlike the synthetic
+        // `BufferId(99)` in `vsplit_two_buffers`, which would `Clear`).
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(20));
+        editor.do_split_pane(SplitOrientation::Vertical);
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            2,
+            "precondition: vertical split produced two Document panes"
+        );
+
+        let theme_reg = crate::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved_theme = {
+            use crate::ui::theme::ThemeRegistry as _;
+            theme_reg.resolved()
+        };
+        let theme_ids = crate::ui::theme::BuiltinElementIds::capture(&theme_reg);
+        let ct = crate::cells_worker::CellTheme {
+            resolved: &resolved_theme,
+            ids: &theme_ids,
+        };
+        let ws = WhitespaceConfig::default();
+
+        // Prime the panes' matrices. Matrices are keyed by `buffer_id`
+        // (`cells_matrix_for`), so the two panes sharing the booted buffer
+        // share ONE matrix: the first pane to touch it reports `Recomputed`,
+        // the sibling is already a `CacheHit`. Require that priming did real
+        // work somewhere — otherwise the post-toggle `CacheHit` would be
+        // vacuous (empty matrix at version ZERO matching empty inputs).
+        let primed: Vec<WorkerDecision> = editor
+            .build_cells_panes(None)
+            .iter()
+            .map(|pane| recompute_pane(pane, ct, &ws))
+            .collect();
+        assert!(
+            primed.iter().any(|d| matches!(
+                d,
+                WorkerDecision::Recomputed | WorkerDecision::RecomputedIncremental
+            )),
+            "precondition: priming must materialise the matrix (a real build \
+             at a non-zero version), got {primed:?}"
+        );
+
+        // Pure focus change: toggle the active pane. No edit, no resize.
+        let start = editor.pane_tree.active_index();
+        let other = if start == 0 { 1 } else { 0 };
+        assert!(
+            editor.pane_tree.set_active(other),
+            "focus toggled to pane index {other}"
+        );
+
+        // Re-derive the inputs (this reads the NEW active state) and
+        // recompute: EVERY pane must be a CacheHit — the focus change bumped
+        // no cells version axis, so the worker short-circuits. Zero
+        // decoration recompute on focus.
+        for pane in editor.build_cells_panes(None).iter() {
+            assert_eq!(
+                recompute_pane(pane, ct, &ws),
+                WorkerDecision::CacheHit,
+                "focus toggle recomputed pane {:?} — DR invariant violated \
+                 (a cells version axis is keyed on focus / active state)",
+                pane.pane_id,
+            );
+        }
+    }
+
     // ── D.4.d.2.0: virtual_rows_matrices registry ───────────
 
     /// Mirror of [`cells_matrix_for_active_doc_shares_field_arc`]
@@ -26649,6 +30167,7 @@ mod tests {
                 cells: std::sync::Arc::from([] as [lattice_cells::Cell; 0]),
                 height: 1,
                 kind: lattice_cells::VirtualRowKind::Generic,
+                bg: None,
             })
             .collect();
         let matrix = lattice_cells::VirtualRowMatrix::build(
@@ -27379,6 +30898,179 @@ mod tests {
         editor
     }
 
+    // ── MA.2: minor-activation resolver wiring ──────────────────
+    // The decision logic (ActivationPolicy::admits kind-gate,
+    // auto_activatable_minors) is unit-tested in lattice-mode. These
+    // tests assert the host glue: Event::MajorEntered → kind lookup →
+    // auto_activatable_minors → activate_mode_by_id.
+
+    /// A marker minor mode with a configurable ActivationPolicy.
+    struct PolicyMinor {
+        id: lattice_mode::ModeId,
+        policy: lattice_mode::ActivationPolicy,
+    }
+    impl lattice_mode::Mode for PolicyMinor {
+        type Guard = ();
+        fn id(&self) -> lattice_mode::ModeId {
+            self.id
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            lattice_mode::ModeKind::Minor
+        }
+        fn activation_policy(&self) -> lattice_mode::ActivationPolicy {
+            self.policy.clone()
+        }
+        fn on_activate(
+            &self,
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn minor_active_on(
+        editor: &crate::editor::Editor,
+        buffer: lattice_core::BufferId,
+        mode: lattice_mode::ModeId,
+    ) -> bool {
+        editor
+            .active_modes
+            .get(&buffer)
+            .map(|am| am.has_minor(mode))
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn major_entered_resolver_activates_global_minor_on_document() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        let doc = editor.document_buffer_id;
+        // Sanity: the boot buffer is a real document buffer (the
+        // resolver's Global gate keys on this).
+        assert_eq!(editor.buffers.kind_of(doc), Some(lattice_core::BufferKind::Document));
+
+        let global_id = lattice_mode::ModeId::new("test-global-minor");
+        let rusty_id = lattice_mode::ModeId::new("test-rust-minor");
+        let mut registry = lattice_mode::ModeRegistry::new();
+        registry
+            .register(PolicyMinor {
+                id: global_id,
+                policy: lattice_mode::ActivationPolicy::Global,
+            })
+            .unwrap();
+        registry
+            .register(PolicyMinor {
+                id: rusty_id,
+                policy: lattice_mode::ActivationPolicy::Majors(vec![lattice_mode::ModeId::new(
+                    "rust-mode",
+                )]),
+            })
+            .unwrap();
+        editor.mode_registry = std::sync::Arc::new(registry);
+
+        // Clear any MajorEntered the boot path already queued, so we
+        // assert against exactly the event we publish.
+        let _ = editor.drain_minor_activation();
+
+        // A document enters its (text) major.
+        let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
+        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
+            buffer: proto,
+            major: "text-mode".into(),
+        });
+        let _ = editor.drain_minor_activation();
+
+        assert!(
+            minor_active_on(&editor, doc, global_id),
+            "Global minor must auto-activate on a document buffer"
+        );
+        assert!(
+            !minor_active_on(&editor, doc, rusty_id),
+            "a Majors([rust-mode]) minor must NOT activate under text-mode"
+        );
+    }
+
+    /// SN.3a: the real `snippet-mode` (Global) auto-activates on a
+    /// document via the resolver, and its `implies`
+    /// `snippet-completion-mode` (the source provider) rides the
+    /// gate — proving the source reaches the buffer even though it
+    /// was dropped from the language-blind
+    /// `auto_activated_minors_for_buffer_kind` list.
+    #[tokio::test]
+    async fn major_entered_resolver_activates_snippet_mode_and_implied_source() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        let doc = editor.document_buffer_id;
+        assert_eq!(
+            editor.buffers.kind_of(doc),
+            Some(lattice_core::BufferKind::Document)
+        );
+        // Clear boot-queued events, then publish a clean MajorEntered.
+        let _ = editor.drain_minor_activation();
+        let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
+        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
+            buffer: proto,
+            major: "text-mode".into(),
+        });
+        let _ = editor.drain_minor_activation();
+
+        assert!(
+            minor_active_on(&editor, doc, lattice_snippet::SnippetMode::mode_id()),
+            "snippet-mode (Global) auto-activates on a document"
+        );
+        assert!(
+            minor_active_on(&editor, doc, lattice_snippet::SnippetCompletionMode::mode_id()),
+            "implied snippet-completion-mode rides snippet-mode's gate"
+        );
+    }
+
+    /// SN.3b: `:set snippet.activation=...` (and `snippet.languages`)
+    /// re-folds the shared policy cell the `snippet-mode` gate reads.
+    /// The resolver reads that cell live (proven in
+    /// `lattice_snippet::modes` tests + `auto_activatable_minors`),
+    /// so this exercises the host's fold seam end-to-end:
+    /// `do_set` → `apply_option_cascade` → folded `ActivationPolicy`.
+    #[tokio::test]
+    async fn set_snippet_activation_refolds_the_policy_cell() {
+        use lattice_mode::{ActivationPolicy, ModeId};
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("x\n"));
+        // Boot default (`snippet.activation = global`) → Global.
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Global,
+            "boot folds the default `global` to Global"
+        );
+
+        let _ = editor.do_set("snippet.activation=off");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Manual,
+            "`off` folds to Manual (never auto-activate)"
+        );
+
+        // `supported-languages` + a language list → Majors([<lang>-mode]).
+        let _ = editor.do_set("snippet.languages=rust,python");
+        let _ = editor.do_set("snippet.activation=supported-languages");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Majors(vec![ModeId::new("rust-mode"), ModeId::new("python-mode")]),
+            "`supported-languages` maps the language list to `<lang>-mode` majors"
+        );
+
+        // Editing only the language list re-folds too (same arm).
+        let _ = editor.do_set("snippet.languages=rust");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Majors(vec![ModeId::new("rust-mode")]),
+            "editing `snippet.languages` alone re-folds under the active mode"
+        );
+
+        // Back to global clears the language gating.
+        let _ = editor.do_set("snippet.activation=global");
+        assert_eq!(
+            **editor.snippet_activation_policy.load(),
+            ActivationPolicy::Global,
+        );
+    }
+
     /// Inline session activates diff-mode on the *current*
     /// buffer only — the file-on-disk baseline has no live
     /// buffer to mark.
@@ -27757,13 +31449,77 @@ mod tests {
         // Active buffer does NOT have diff-mode active.
         let content = editor.build_describe_key_content("do");
         let body = content.lines().join("\n");
+        // T12 format: binding is found (non-empty resolution) but
+        // all layers are inactive on the current buffer.
         assert!(
-            body.contains("Runtime registry:"),
-            "describe-key must include the runtime registry section, got:\n{body}"
+            !body.contains("is not bound in any mode"),
+            "describe-key must find the diff-mode registration, got:\n{body}"
         );
         assert!(
-            body.contains("[inactive"),
-            "minor-mode binding must be marked [inactive] when the mode isn't active, got:\n{body}"
+            body.contains("registered but not active"),
+            "inactive minor-mode binding must show 'registered but not active', got:\n{body}"
+        );
+    }
+
+    /// SN.3c.2b: `:describe-key` surfaces a binding's `fall_through`
+    /// flag in the layer trace so the augment-and-continue behavior is
+    /// introspectable (§5.11). Mirrors the inactive-minor test above:
+    /// pushes a `fall_through` `<Esc>` binding on an (inactive) minor
+    /// layer and asserts the trace tags it `fall-through`.
+    #[test]
+    fn describe_key_surfaces_fall_through_flag() {
+        use crate::keymap_registry::PushLayerKind;
+        use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
+        use lattice_grammar::CommandInvocation;
+        use lattice_grammar::SourceLocation;
+        use lattice_mode::mode::ModeId;
+        use lattice_protocol::ids::CommandId;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let editor = crate::editor::Editor::default();
+        let snippet_mode = ModeId::new("active-snippet-mode");
+        let esc = ChordPattern::Literal(crate::chord::KeyChord::special(
+            crate::chord::SpecialKey::Esc,
+        ));
+
+        // Builtin (always-on) `<Esc>` → the native binding it would fall
+        // through TO, so the trace has >1 layer and the "All layers"
+        // block (which carries the fall-through tag) renders.
+        editor.keymap.bind(
+            KeymapLayer::Builtin,
+            crate::keymap::BindingMode::Insert,
+            std::slice::from_ref(&esc),
+            CommandInvocation::of(CommandId::new(0xE17E)),
+            SourceLocation::synthetic("test:builtin.esc"),
+        );
+
+        // Minor-layer `<Esc>` with `fall_through: true`.
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        trie.insert(
+            std::slice::from_ref(&esc),
+            Arc::new(
+                BoundCommand::from_invocation(
+                    CommandInvocation::of(CommandId::new(0x5EFF)),
+                    SourceLocation::synthetic("test:active-snippet.esc"),
+                    KeymapLayer::MinorMode(snippet_mode),
+                )
+                .with_fall_through(true),
+            ),
+        );
+        bindings.insert(crate::keymap::BindingMode::Insert, trie);
+        editor.keymap.push_layer(
+            PushLayerKind::MinorMode(snippet_mode),
+            "active-snippet-mode",
+            bindings,
+        );
+
+        let content = editor.build_describe_key_content("i_<Esc>");
+        let body = content.lines().join("\n");
+        assert!(
+            body.contains("fall-through"),
+            "describe-key must surface the fall_through flag, got:\n{body}"
         );
     }
 
@@ -28233,13 +31989,16 @@ mod tests {
     #[test]
     fn arm_missing_arg_prompt_canonical_name_works() {
         // The canonical CommandRegistry name (with `ex:` prefix)
-        // should also resolve — same prompt is armed, with the
-        // canonical form in the cmdline.
+        // should also resolve. The armed cmdline always shows the
+        // user-facing name with the `ex:` namespace prefix STRIPPED
+        // (the prefix is internal and must never leak into the
+        // command line the user types into) — so passing the
+        // canonical form arms `describe-key `, identical to the alias.
         let document = lattice_core::Document::empty();
         let mut editor = Editor::boot(document);
         let armed = editor.arm_missing_arg_prompt("ex:describe-key");
         assert!(armed);
-        assert_eq!(editor.command_line, "ex:describe-key ");
+        assert_eq!(editor.command_line, "describe-key ");
     }
 
     #[test]
@@ -28265,6 +32024,115 @@ mod tests {
     }
 
     #[test]
+    fn ex_line_operator_with_target_mutates_via_unified_dispatch() {
+        // UD: an operator WITH a target invoked on the `:` line flows
+        // through the same `dispatch_invocation` -> `execute_operator`
+        // path as the keystroke `dw`, resolving the motion as a range and
+        // committing the edit. Both the space-separated and canonical
+        // forms parse to the same operator+motion invocation.
+        for line in ["operator delete word-forward", "operator:delete motion:word-forward"] {
+            let document = lattice_core::Document::from_text("hello world\n");
+            let mut editor = Editor::boot(document);
+            editor.cursor = lattice_protocol::position::Position::new(0, 0);
+            let mut out = DispatchOutcome::default();
+            editor.execute_ex_line(line, &mut out);
+            assert_eq!(
+                editor.document.snapshot().buffer.as_string(),
+                "world\n",
+                "`:{line}` should delete the first word via the unified dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn visual_colon_enters_command_line_with_range_prefill() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        let document = lattice_core::Document::from_text("aaa\nbbb\nccc\nddd\n");
+        let mut editor = Editor::boot(document);
+        // Enter Visual linewise selecting lines 1..=2.
+        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+        editor.visual_anchor = Some(Position::new(1, 0));
+        editor.cursor = Position::new(2, 0);
+        editor.set_selections_blocking(SelectionSet::single(Selection {
+            anchor: Position::new(1, 0),
+            head: Position::new(2, 0),
+            visual: Some(lattice_protocol::selection::VisualMode::Linewise),
+        }));
+        // `:` from Visual.
+        let _ = editor.dispatch(Action::EnterCommandLine);
+        assert!(
+            matches!(editor.modal, ModalState::Command),
+            "Visual `:` must enter Command mode, got {:?}",
+            editor.modal
+        );
+        assert_eq!(
+            editor.command_line, "'<,'>",
+            "Visual `:` prefills the visual range (vim's `:'<,'>`)"
+        );
+        let lv = editor.last_visual.as_ref().expect("last_visual captured");
+        assert_eq!(lv.anchor, Position::new(1, 0));
+        assert_eq!(lv.head, Position::new(2, 0));
+        // The captured `last_visual` is what `'<` / `'>` and
+        // `Range::Selection` resolve from (`resolve_grammar_range`
+        // dispatch.rs ~13659; the narrow handler ~5396), so the typed
+        // `:'<,'>narrow` / `:'<,'>...` now operates on the selection.
+    }
+
+    #[test]
+    fn visual_narrow_narrows_the_selection_end_to_end() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        // The user's reported scenario: select lines in Visual, then
+        // `:narrow`. Before the Visual `:` binding this was impossible
+        // (`:` was unbound in Visual).
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\n");
+        let mut editor = Editor::boot(document);
+        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+        editor.visual_anchor = Some(Position::new(1, 0));
+        editor.cursor = Position::new(2, 0);
+        editor.set_selections_blocking(SelectionSet::single(Selection {
+            anchor: Position::new(1, 0),
+            head: Position::new(2, 0),
+            visual: Some(VisualMode::Linewise),
+        }));
+        // `:` (prefills `'<,'>` + captures the selection) then `narrow`.
+        let _ = editor.dispatch(Action::EnterCommandLine);
+        editor.command_line.push_str("narrow");
+        let mut out = DispatchOutcome::default();
+        let line = editor.command_line.clone();
+        editor.execute_ex_line(&line, &mut out);
+        let msg = editor.last_message.as_ref().expect("narrow echo present");
+        assert!(
+            msg.text.contains("narrowed to L2"),
+            "`:'<,'>narrow` should narrow the selected lines (L2–3), got: {:?}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn ex_line_motion_routes_through_unified_dispatch() {
+        // UD (unified dispatch): a motion typed on the `:` line is
+        // dispatched through the SAME `dispatch_invocation` the keymap
+        // uses (no thin ex-only path), so `:motion:*` moves the cursor
+        // exactly like the key-bound motion.
+        let document = lattice_core::Document::from_text("L0\nL1\nL2\nL3\nL4\n");
+        let mut editor = Editor::boot(document);
+        editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("motion:goto-last-line", &mut out);
+        assert_eq!(
+            editor.cursor.line, 4,
+            ":motion:goto-last-line moves to the last line"
+        );
+        editor.execute_ex_line("motion:goto-first-line", &mut out);
+        assert_eq!(
+            editor.cursor.line, 0,
+            ":motion:goto-first-line moves to the first line"
+        );
+    }
+
+    #[test]
     fn run_invocation_arms_prompt_when_required_arg_missing() {
         // The user-reported regression: a keymap binding invokes
         // `ex:describe-key` with no args (the K.3.2 binding
@@ -28280,7 +32148,7 @@ mod tests {
             .expect("ex:describe-key registered by ex_commands::populate");
         let inv = lattice_grammar::CommandInvocation::of(describe_key_id);
         let mut out = DispatchOutcome::default();
-        editor.run_invocation(inv, &mut out);
+        editor.dispatch_invocation(inv, &mut out);
         assert_eq!(
             editor.command_line, "describe-key ",
             "run_invocation must arm the prompt with the alias form"
@@ -28303,7 +32171,7 @@ mod tests {
             .expect("ex:describe-command registered");
         let inv = lattice_grammar::CommandInvocation::of(id);
         let mut out = DispatchOutcome::default();
-        editor.run_invocation(inv, &mut out);
+        editor.dispatch_invocation(inv, &mut out);
         assert_eq!(editor.command_line, "describe-command ");
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
         assert!(
@@ -28311,4 +32179,522 @@ mod tests {
             "ArgKind::String args must NOT arm chord auto-submit"
         );
     }
+
+    // ---- I / A mode-entry ----
+
+    // ---- W.7: :set wrap live toggle + viewport width change ----
+
+    #[test]
+    fn set_wrap_updates_option_cache_and_pane_cells_inputs() {
+        let doc = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(doc);
+        assert!(!editor.option_cache.wrap_lines, "wrap must default to false");
+
+        let _signals = editor.do_set("wrap");
+        assert!(editor.option_cache.wrap_lines, "option_cache must reflect :set wrap");
+
+        // do_set is a direct call; publish_render_state is normally called by
+        // the dispatch() wrapper. Drive it explicitly here.
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(pane.wrap, "PaneCellsInputs.wrap must be true after :set wrap");
+    }
+
+    #[test]
+    fn set_nowrap_reverts_pane_cells_inputs_wrap() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        let _ = editor.do_set("wrap");
+        editor.publish_render_state();
+        let _ = editor.do_set("nowrap");
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(!pane.wrap, "PaneCellsInputs.wrap must be false after :set nowrap");
+    }
+
+    #[test]
+    fn set_pane_viewport_width_propagates_to_pane_cells_inputs() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[0].viewport_width = 60;
+        }
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert_eq!(pane.viewport_width, 60, "viewport_width must propagate to PaneCellsInputs");
+    }
+
+    #[test]
+    fn wrap_and_width_together_give_nonzero_effective_wrap() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[0].viewport_width = 80;
+        }
+        let _ = editor.do_set("wrap");
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("at least one pane");
+        assert!(pane.wrap, "wrap on");
+        assert_eq!(pane.viewport_width, 80, "width propagated");
+        // cells_worker: effective_wrap = viewport_width = 80 when wrap is true
+    }
+
+    // ---- gj / gk / g0 / g$ display-line motions ----
+
+    fn seed_wrap_matrix(editor: &crate::editor::Editor, wrap_width: u32, line_count: u32) {
+        // Build a CellMatrix where every source line has col_count = wrap_width * 2,
+        // so each line spans exactly 2 display segments at this wrap_width.
+        let rows: Arc<[lattice_cells::CellRow]> = (0..line_count)
+            .map(|i| {
+                lattice_cells::CellRow::new(
+                    vec![lattice_cells::Cell::default(); (wrap_width * 2) as usize],
+                    i,
+                    [],
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let chunk = Arc::new(lattice_cells::CellChunk::new(
+            0,
+            rows,
+            lattice_cells::version::MatrixVersion::ZERO,
+        ));
+        let mut matrix = lattice_cells::CellMatrix::whole_doc(chunk, line_count);
+        matrix.wrap_width = wrap_width;
+        let bid = editor.active_buffer_id();
+        editor
+            .cells_matrix_for(bid)
+            .store(std::sync::Arc::new(matrix));
+    }
+
+    #[test]
+    fn display_line_down_advances_segment_within_line() {
+        // Line "abcdefgh\n" (8 bytes), wrap_width=4 → 2 segments.
+        // Cursor at byte 1 (segment 0). gj → segment 1, goal=1.
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.byte, 5, "segment 1 start(4) + goal(1) = 5");
+        assert_eq!(editor.goal_col, Some(1));
+    }
+
+    #[test]
+    fn display_line_down_at_last_segment_goes_to_next_line() {
+        // Two source lines, wrap_width=4. Cursor on line 0, seg 1 (byte 5).
+        // gj → line 1, byte = goal=1.
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(0, 5);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 1, "goal=5%4=1");
+    }
+
+    #[test]
+    fn display_line_up_retreats_segment_within_line() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 5); // seg 1
+        editor.do_display_line_up();
+        assert_eq!(editor.cursor.byte, 1, "seg 0 start(0) + goal(1) = 1");
+    }
+
+    #[test]
+    fn display_line_up_at_first_segment_goes_to_prev_line_last_seg() {
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(1, 1); // line 1, seg 0
+        editor.do_display_line_up();
+        assert_eq!(editor.cursor.line, 0);
+        // last seg of line 0 starts at byte 4; goal=1 → byte 5
+        assert_eq!(editor.cursor.byte, 5);
+    }
+
+    #[test]
+    fn display_line_start_moves_to_seg_start() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 6); // seg 1
+        editor.do_display_line_start();
+        assert_eq!(editor.cursor.byte, 4, "seg 1 start = 4");
+        assert_eq!(editor.goal_col, None, "g0 resets goal_col");
+    }
+
+    #[test]
+    fn display_line_end_moves_to_seg_end() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1); // seg 0
+        editor.do_display_line_end();
+        // seg 0 end = min(2*4, line_len=8) - 1 = 3
+        assert_eq!(editor.cursor.byte, 3);
+    }
+
+    #[test]
+    fn display_line_down_degrades_to_j_when_wrap_off() {
+        let doc = lattice_core::Document::from_text("hello\nworld\n");
+        let mut editor = Editor::boot(doc);
+        // wrap_width stays 0 (default matrix)
+        editor.cursor = lattice_protocol::position::Position::new(0, 2);
+        editor.do_display_line_down();
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 2);
+    }
+
+    #[test]
+    fn goal_col_reset_on_non_display_line_action() {
+        let doc = lattice_core::Document::from_text("abcdefgh\nABCD\n");
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 2);
+        editor.cursor = lattice_protocol::position::Position::new(0, 1);
+        editor.do_display_line_down();
+        assert!(editor.goal_col.is_some(), "goal_col set after gj");
+        // Any non-display-line action via handle_action clears goal_col.
+        let mut out = DispatchOutcome::default();
+        handle_action(&mut editor, Action::None, &mut out);
+        assert_eq!(editor.goal_col, None, "goal_col cleared by non-display action");
+    }
+
+    #[test]
+    fn enter_insert_first_non_blank_moves_to_first_non_blank() {
+        let doc = lattice_core::Document::from_text("   hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.cursor = lattice_protocol::position::Position::new(0, 6);
+        editor.do_enter_insert_first_non_blank();
+        assert_eq!(editor.cursor.byte, 3, "first non-blank is at byte 3");
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "must enter Insert mode"
+        );
+    }
+
+    #[test]
+    fn enter_insert_first_non_blank_on_blank_line_stays_at_zero() {
+        let doc = lattice_core::Document::from_text("\n");
+        let mut editor = Editor::boot(doc);
+        editor.do_enter_insert_first_non_blank();
+        assert_eq!(editor.cursor.byte, 0);
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
+    }
+
+    #[test]
+    fn enter_append_end_of_line_moves_cursor_past_last_byte() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_enter_append_end_of_line();
+        // line_byte_len excludes the newline, so len("hello") = 5
+        assert_eq!(editor.cursor.byte, 5, "cursor must land past last content byte");
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "must enter Insert mode"
+        );
+    }
+
+    #[test]
+    fn enter_append_end_of_line_on_empty_line_stays_at_zero() {
+        let doc = lattice_core::Document::from_text("\n");
+        let mut editor = Editor::boot(doc);
+        editor.do_enter_append_end_of_line();
+        assert_eq!(editor.cursor.byte, 0);
+        assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
+    }
+
+    // ---- *messages* dirty-flag must never show [+] ----
+
+    #[test]
+    fn messages_buffer_never_shows_dirty_in_picker() {
+        use crate::buffer_registry::BufferData;
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.ensure_messages_buffer();
+        // Append content so the underlying DocumentEntry is marked dirty.
+        let id = editor.ensure_messages_buffer();
+        editor.append_to_owned_buffer(id, "some log line\n");
+        editor.publish_render_state();
+
+        // picker_buffer_entry must not include "[+]" for the Messages entry.
+        let registry = &editor.buffers;
+        let locals = &editor.buffer_locals;
+        let active = editor.document_buffer_id;
+        let mut found = false;
+        registry.for_each(|entry| {
+            if matches!(entry.data, BufferData::Messages(_)) {
+                let row = crate::dispatch::picker_buffer_entry(entry, locals);
+                assert!(
+                    !row.dirty,
+                    "*messages* picker entry must not be dirty"
+                );
+                assert!(
+                    !row.title.contains("[+]"),
+                    "*messages* picker title must not contain [+]: {:?}",
+                    row.title
+                );
+                found = true;
+            }
+        });
+        assert!(found, "expected a Messages buffer to exist");
+        let _ = active;
+    }
+
+    #[test]
+    fn messages_buffer_never_shows_dirty_in_ls() {
+        let doc = lattice_core::Document::from_text("hello\n");
+        let mut editor = Editor::boot(doc);
+        editor.ensure_messages_buffer();
+        let id = editor.ensure_messages_buffer();
+        editor.append_to_owned_buffer(id, "some log line\n");
+
+        let content = editor.build_list_buffers_content();
+        let text = content.lines().join("\n");
+        assert!(
+            !text.contains("[+]"),
+            ":ls output must not contain [+] for *messages*: {text}"
+        );
+    }
+
+    // ── SN.3d.1: Select-mode host handlers ──────────────────────
+    //
+    // The dispatch-table mapping (printable → SelectOvertype etc.)
+    // is covered in `keymap_select::tests`; these exercise the
+    // *handler bodies* end-to-end on a real `Editor`.
+
+    fn select_over(text: &str, anchor: (u32, u32), head: (u32, u32)) -> Editor {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        let mut editor = Editor::boot(lattice_core::Document::from_text(text));
+        editor.modal = ModalState::Select(lattice_grammar::VisualKind::Charwise);
+        let sel = Selection {
+            anchor: Position::new(anchor.0, anchor.1),
+            head: Position::new(head.0, head.1),
+            visual: Some(VisualMode::Charwise),
+        };
+        editor.set_selections_blocking(SelectionSet::single(sel));
+        editor.cursor = Position::new(head.0, head.1);
+        editor
+    }
+
+    #[test]
+    fn select_overtype_replaces_whole_span_as_one_undo() {
+        use lattice_protocol::position::Position;
+        // Charwise selection "hello" — head is inclusive (byte 4),
+        // so `selection_extent` spans 0..5.
+        let mut editor = select_over("hello world\n", (0, 0), (0, 4));
+        editor.do_select_overtype('X');
+        assert_eq!(
+            editor.document.text(),
+            "X world\n",
+            "the whole selection is replaced by the typed char"
+        );
+        assert_eq!(
+            editor.cursor,
+            Position::new(0, 1),
+            "cursor lands after the inserted char (Insert position)"
+        );
+        assert!(
+            matches!(editor.modal, ModalState::Insert),
+            "overtype drops into Insert"
+        );
+        // ONE replace-range edit ⇒ a single `u` restores the whole
+        // span (select-mode.md §3). Not delete-then-insert.
+        let _ = editor.undo_blocking();
+        assert_eq!(
+            editor.document.text(),
+            "hello world\n",
+            "a single undo restores the entire overtyped span"
+        );
+    }
+
+    #[test]
+    fn select_overtype_on_empty_buffer_is_graceful() {
+        // Degenerate selection at the start of an empty line: the
+        // overtype must never panic and must not drop the keystroke
+        // (select-mode.md §9).
+        let mut editor = select_over("\n", (0, 0), (0, 0));
+        editor.do_select_overtype('Z');
+        assert!(
+            editor.document.text().contains('Z'),
+            "the typed char still lands"
+        );
+        assert!(matches!(editor.modal, ModalState::Insert));
+    }
+
+    #[test]
+    fn exit_select_collapses_to_normal_and_stashes_gv() {
+        let mut editor = select_over("hello\n", (0, 0), (0, 4));
+        editor.do_exit_select();
+        assert!(
+            matches!(editor.modal, ModalState::Normal),
+            "<Esc> in Select returns to Normal"
+        );
+        assert!(
+            editor.last_visual.is_some(),
+            "the prior selection is captured so `gv` can restore it"
+        );
+    }
+
+    #[test]
+    fn enter_select_anchors_zero_width_selection_at_cursor() {
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        editor.cursor = Position::new(0, 2);
+        editor.do_enter_select(lattice_grammar::VisualKind::Charwise);
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "gh enters Select(Charwise)"
+        );
+        assert_eq!(
+            editor.visual_anchor,
+            Some(Position::new(0, 2)),
+            "selection is anchored at the cursor"
+        );
+        let sels = editor.document.selections();
+        let sel = sels.primary();
+        assert_eq!(sel.anchor, sel.head, "fresh entry is a zero-width selection");
+    }
+
+    #[test]
+    fn toggle_flips_visual_and_select_both_ways() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        editor.do_enter_visual(lattice_grammar::VisualKind::Charwise);
+        assert!(matches!(
+            editor.modal,
+            ModalState::Visual(lattice_grammar::VisualKind::Charwise)
+        ));
+        editor.do_toggle_visual_select();
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "<C-g> from Visual enters Select, same kind"
+        );
+        editor.do_toggle_visual_select();
+        assert!(
+            matches!(
+                editor.modal,
+                ModalState::Visual(lattice_grammar::VisualKind::Charwise)
+            ),
+            "<C-g> from Select returns to Visual, same kind"
+        );
+    }
+
+    // SN.3d.2b: Select reuses Visual's selection geometry verbatim, so
+    // the render-publish surface (`visual_selection_range` /
+    // `visual_block_extents`, read by both renderer peers via the
+    // published `ActiveDocumentRenderState`) must fire for Select with
+    // byte-identical extents — otherwise Select selections would be
+    // invisible. Same anchor/head ⇒ same painted span, regardless of
+    // which of the two modes owns it.
+    #[test]
+    fn select_publishes_same_selection_range_as_visual() {
+        // Identical (anchor, head); only the modal flag differs.
+        let mut vis = select_over("hello world\n", (0, 0), (0, 4));
+        vis.modal = ModalState::Visual(lattice_grammar::VisualKind::Charwise);
+        let sel = select_over("hello world\n", (0, 0), (0, 4));
+
+        let vis_range = vis
+            .visual_selection_range()
+            .expect("Visual publishes a range");
+        let sel_range = sel
+            .visual_selection_range()
+            .expect("Select must publish a range too, or it renders invisibly");
+        assert_eq!(
+            sel_range, vis_range,
+            "Select's painted span is byte-identical to Visual's"
+        );
+    }
+
+    #[test]
+    fn select_blockwise_publishes_block_extents_like_visual() {
+        use lattice_protocol::position::Position;
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        let build = |modal: ModalState| {
+            let mut editor =
+                Editor::boot(lattice_core::Document::from_text("hello\nworld\nthere\n"));
+            editor.modal = modal;
+            editor.set_selections_blocking(SelectionSet::single(Selection {
+                anchor: Position::new(0, 1),
+                head: Position::new(2, 3),
+                visual: Some(VisualMode::Blockwise),
+            }));
+            editor
+        };
+        let vis = build(ModalState::Visual(lattice_grammar::VisualKind::Blockwise));
+        let sel = build(ModalState::Select(lattice_grammar::VisualKind::Blockwise));
+        let vis_block = vis.visual_block_extents().expect("Visual block extents");
+        let sel_block = sel
+            .visual_block_extents()
+            .expect("Select(Blockwise) must publish a block band too");
+        assert_eq!(
+            (
+                sel_block.start_line,
+                sel_block.end_line,
+                sel_block.start_col,
+                sel_block.end_col
+            ),
+            (
+                vis_block.start_line,
+                vis_block.end_line,
+                vis_block.start_col,
+                vis_block.end_col
+            ),
+            "Select's per-line column band matches Visual's"
+        );
+    }
+
+    // SN.3d.2c: a motion in Select EXTENDS the selection (same as Visual)
+    // — it does not collapse to a bare cursor. Half-migration guard: d.2a
+    // bound the motions into `BindingMode::Select`; this asserts the
+    // `Effect::SelectionChange` host arm actually extends them, and that
+    // `o` (also bound in Select) swaps the ends.
+    #[test]
+    fn motion_extends_and_swap_ends_work_in_select() {
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.set_cursor(Position::new(0, 0));
+        editor.do_enter_select(lattice_grammar::VisualKind::Charwise);
+
+        // `e` (word_end) lands on 'o' of "hello" (0,4); in Select the
+        // selection extends anchor(0,0)..head(0,4) instead of collapsing.
+        let mut out = DispatchOutcome::default();
+        editor.dispatch_invocation(
+            lattice_grammar::CommandInvocation::of(editor.builtins.word_end.0),
+            &mut out,
+        );
+        {
+            let sels = editor.document.selections();
+            let p = sels.primary();
+            assert_eq!(p.anchor, Position::new(0, 0), "anchor stays at the entry point");
+            assert_eq!(p.head, Position::new(0, 4), "head extends to word_end");
+            assert!(p.visual.is_some(), "the extended selection keeps a visual kind");
+        }
+
+        // `o` swaps ends: cursor jumps to the anchor end, anchor adopts
+        // the old head.
+        editor.do_swap_visual_ends();
+        assert_eq!(editor.cursor, Position::new(0, 0), "o moves the cursor to the anchor end");
+        assert_eq!(
+            editor.visual_anchor,
+            Some(Position::new(0, 4)),
+            "o moves the anchor to the old head"
+        );
+    }
 }
+

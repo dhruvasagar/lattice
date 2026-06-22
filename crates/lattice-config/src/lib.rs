@@ -67,10 +67,12 @@ extern crate self as lattice_config;
 
 pub mod completion;
 pub mod core_options;
+mod diagnostics_options;
 mod domain;
 mod erased;
 pub mod group;
 pub mod loader;
+mod modeline_zone;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
 // construction. Direct construction of `Option<T>` is the
@@ -80,6 +82,7 @@ pub mod loader;
 pub mod option;
 mod option_decl;
 mod option_type;
+mod origin;
 // M.4 dep-inversion: layer-input types (`OptionOverride`,
 // `OptionOverrideSet`, `OverridePriority`) live here now.
 // Previously hosted in `lattice-mode` to break a cycle through
@@ -113,25 +116,35 @@ pub use completion::OptionsGenerator;
 // crate root for ergonomic type-keyed access.
 // Callers write `config.get_typed::<lattice_config::Tabstop>()`
 // instead of the longer `lattice_config::core_options::Tabstop`.
+pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
-    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine, FoldEnable,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
-    NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay,
+    ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
+    NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
+    SignatureDisplay,
     TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
     WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{
-    Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Messages,
-    Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Tabline, Terminal, ends_with_mode_suffix,
+    Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
+    Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
+    Terminal, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
     load_file, lookup_dotted_path, project_config_path,
 };
+// ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
+// right}`). The first list-valued option; see `modeline_zone`.
+pub use modeline_zone::ModelineZone;
+// L4a: inline-diagnostics option value types (`ui.diagnostics.*`).
+pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated
 // `build_spec()` methods can name them, but they are no longer
@@ -143,6 +156,7 @@ pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
 // Layer-input types live in this crate now (post M.4 dep
 // inversion). Modes pull them in via lattice-mode's re-export.
+pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{ConfigError, ConfigRegistry, EventPublisher};

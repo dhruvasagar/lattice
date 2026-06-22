@@ -94,7 +94,9 @@ impl App {
         // editor in sync.
         // S2.4.b (2026-05-26): `publish_render_state` became
         // `&mut self`. Switch to `mutate_editor`.
-        self.mutate_editor(move |e| e.publish_render_state());
+        self.mutate_editor(move |e| {
+            e.publish_render_state();
+        });
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_file_tree`].
@@ -353,57 +355,20 @@ impl App {
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
 
-    /// M.4: status-line label for a pane. Dispatches through
-    /// `pane_render_provider` (walks active minors then major) so
-    /// each mode owns its own status formatter; falls back to the
-    /// document path when no provider matches. Replaces the
-    /// previous `match buffer.kind` dispatch so plugin-installed
-    /// modes can contribute status formatting through the same
-    /// registry the renderer uses.
+    /// Pane buffer-label string — the path/dirty segment (or a pane
+    /// provider's custom label). Kept for its existing callers/tests
+    /// (synthetic-name fallback, log/messages labels); the modeline
+    /// renderer (`draw_pane_status_line`) lays out zones from the
+    /// registered elements instead.
+    ///
+    /// ML.3 retired the appended mode-items (LSP / diff badges) — those
+    /// are registered modeline elements now, not part of this label.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
-        if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
-            return (provider.status)(self, pane);
-        }
-        // 2026-05-25: non-Document panes without a registered
-        // [[PaneRenderProvider]] (Terminal today) fall through to
-        // the default path. Honour the registry `name` slot when
-        // the buffer exists — Terminal buffers register a label
-        // like `[zsh]` at spawn — instead of bailing out with the
-        // generic "[no buffer]" marker. The document branch below
-        // still gates `contains_document` for the path / dirty
-        // lookups, which only apply to Documents.
-        if !self.buffers().registry.contains_document(pane.buffer_id) {
-            return self
-                .buffers()
-                .registry
-                .name_of(pane.buffer_id)
-                .unwrap_or_else(|| "[no buffer]".to_string());
-        }
-        // Slice 3c.final.E.5j: registry lookup via published
-        // `buffers()` sub-state.
-        let label = self
-            .buffers()
-            .registry
-            .document_path(pane.buffer_id)
-            .map(|p| p.display().to_string())
-            .or_else(|| self.buffers().registry.name_of(pane.buffer_id))
-            .unwrap_or_else(|| "[no name]".to_string());
-        // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
-        // name but no path; their content is streamed by the
-        // subsystem that owns them, never user-edited. The
-        // underlying Document's dirty flag flips on every owner
-        // append, which is meaningful for path-backed Documents
-        // (signals "save before close") but misleading for
-        // synthetic ones -- the user can't "save" a streaming
-        // buffer's current state because new records keep
-        // arriving. Suppress the marker for synthetics.
-        let synthetic = self.buffers().registry.name_of(pane.buffer_id).is_some();
-        let dirty = if !synthetic && self.buffers().registry.document_dirty(pane.buffer_id) {
-            " [+]"
-        } else {
-            ""
-        };
-        format!("{label}{dirty}")
+        let provider = self
+            .pane_render_provider(pane.buffer_id)
+            .map(|p| (p.status)(self, pane));
+        let rs = self.render_state.load();
+        lattice_host::modeline::pane_path_segment(pane, &rs, provider.as_deref())
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
@@ -1040,10 +1005,10 @@ mod tests {
     }
 
     #[test]
-    fn active_pane_content_height_subtracts_status_row_in_horizontal_split() {
-        // Single pane: content = full buffer height.
+    fn active_pane_content_height_subtracts_status_row_always() {
+        // Option A: every pane (including single) reserves a status row.
         let mut app = app_with("hi\n", 5);
-        assert_eq!(app.active_pane_content_height(20), 20);
+        assert_eq!(app.active_pane_content_height(20), 19);
         // Horizontal split -> two panes, each ~half the buffer
         // height; minus the per-pane status row.
         app.editor

@@ -18,6 +18,7 @@ members = [
 	"crates/lattice-oil",
 	"crates/lattice-lsp",
 	"crates/lattice-terminal",
+	"crates/lattice-theme",
 	"crates/lattice-cells",
 	"crates/lattice-multibuffer",
 	"crates/lattice-host",

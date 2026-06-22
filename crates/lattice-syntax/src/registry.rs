@@ -34,6 +34,12 @@ const RUST_FOLDS_QUERY: &str = include_str!("../queries/rust/folds.scm");
 const PYTHON_FOLDS_QUERY: &str = include_str!("../queries/python/folds.scm");
 const JAVASCRIPT_FOLDS_QUERY: &str = include_str!("../queries/javascript/folds.scm");
 const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm");
+// Custom markdown (block) highlights — the bundled tree-sitter-md query
+// captures headings level-less (`@text.title`); this one distinguishes
+// `@text.title.1` … `.6` by atx marker so headings get per-level size +
+// colour (see the query file's header + style.rs `text.title.N`).
+const MARKDOWN_HIGHLIGHTS_QUERY: &str =
+    include_str!("../queries/markdown/highlights.scm");
 
 // Symbol queries -- one per language that supports the
 // `gen:tree-sitter-symbol` insert-completion source (Phase
@@ -42,6 +48,18 @@ const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm")
 const RUST_SYMBOLS_QUERY: &str = include_str!("../queries/rust/symbols.scm");
 const PYTHON_SYMBOLS_QUERY: &str = include_str!("../queries/python/symbols.scm");
 const JAVASCRIPT_SYMBOLS_QUERY: &str = include_str!("../queries/javascript/symbols.scm");
+
+// Text-object queries -- one per language that supports narrow-mode's
+// tree-sitter targets (`:narrow-function` / `:narrow-class` /
+// `:narrow-block`, N.1.3) and the future text-object operator set.
+// Capture names follow the nvim-treesitter / Helix convention
+// (`@function.outer`, `@class.outer`, `@block.outer`).
+// `SyntaxSnapshot::scope_at_cursor` reads them. Markdown ships none
+// (prose has no function/class/block semantics).
+const RUST_TEXTOBJECTS_QUERY: &str = include_str!("../queries/rust/textobjects.scm");
+const PYTHON_TEXTOBJECTS_QUERY: &str = include_str!("../queries/python/textobjects.scm");
+const JAVASCRIPT_TEXTOBJECTS_QUERY: &str =
+    include_str!("../queries/javascript/textobjects.scm");
 
 /// Per-language compiled state held by the shared registry.
 ///
@@ -88,6 +106,12 @@ pub(crate) struct LangConfig {
     /// symbols query (markdown family, currently); the source
     /// emits no candidates for those buffers.
     pub(crate) symbols: Option<Query>,
+    /// Compiled `textobjects.scm` query (N.1.0) -- captures
+    /// whole-construct (`@*.outer`) tree-sitter text objects that
+    /// narrow-mode targets via [`crate::SyntaxSnapshot::scope_at_cursor`].
+    /// `None` for languages that don't ship one (markdown family);
+    /// `scope_at_cursor` returns `None` for those buffers.
+    pub(crate) textobjects: Option<Query>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -127,6 +151,7 @@ impl LangRegistry {
                 "",
                 Some(RUST_FOLDS_QUERY),
                 Some(RUST_SYMBOLS_QUERY),
+                Some(RUST_TEXTOBJECTS_QUERY),
             )?,
         );
         configs.insert(
@@ -139,6 +164,7 @@ impl LangRegistry {
                 "",
                 Some(PYTHON_FOLDS_QUERY),
                 Some(PYTHON_SYMBOLS_QUERY),
+                Some(PYTHON_TEXTOBJECTS_QUERY),
             )?,
         );
         configs.insert(
@@ -151,6 +177,7 @@ impl LangRegistry {
                 tree_sitter_javascript::LOCALS_QUERY,
                 Some(JAVASCRIPT_FOLDS_QUERY),
                 Some(JAVASCRIPT_SYMBOLS_QUERY),
+                Some(JAVASCRIPT_TEXTOBJECTS_QUERY),
             )?,
         );
 
@@ -167,10 +194,11 @@ impl LangRegistry {
             build_config(
                 tree_sitter_md::LANGUAGE.into(),
                 "markdown",
-                tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+                MARKDOWN_HIGHLIGHTS_QUERY,
                 tree_sitter_md::INJECTION_QUERY_BLOCK,
                 "",
                 Some(MARKDOWN_FOLDS_QUERY),
+                None,
                 None,
             )?,
         );
@@ -182,6 +210,7 @@ impl LangRegistry {
                 tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
                 tree_sitter_md::INJECTION_QUERY_INLINE,
                 "",
+                None,
                 None,
                 None,
             )?,
@@ -227,6 +256,17 @@ impl LangRegistry {
         self.lookup(name).and_then(|c| c.symbols.as_ref())
     }
 
+    /// Compiled `textobjects.scm` query for `name` (N.1.0), when the
+    /// language ships one. Used by
+    /// [`crate::SyntaxSnapshot::scope_at_cursor`] to resolve narrow-mode's
+    /// tree-sitter targets (`:narrow-function` / `:narrow-class` /
+    /// `:narrow-block`). `None` for languages without a text-object
+    /// query (markdown family today). Resolves the same aliases as the
+    /// other per-query lookups.
+    pub fn textobjects_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).and_then(|c| c.textobjects.as_ref())
+    }
+
     /// Resolve the `tree_sitter::Language` for `name` (with the same
     /// alias mapping as the other per-query lookups). Returned by value because
     /// `Language` is a cheap `Arc`-equivalent handle in tree-sitter
@@ -261,6 +301,11 @@ impl LangRegistry {
     }
 }
 
+// Crate-private per-language config builder. The positional arg list
+// grows by one optional query source per query type (folds, symbols,
+// textobjects, ...); past the clippy default of 7 it's still clearer
+// here than threading a builder struct through five call sites.
+#[allow(clippy::too_many_arguments)]
 fn build_config(
     language: tree_sitter::Language,
     name: &str,
@@ -269,6 +314,7 @@ fn build_config(
     locals: &str,
     folds: Option<&str>,
     symbols: Option<&str>,
+    textobjects: Option<&str>,
 ) -> Result<LangConfig, SyntaxError> {
     let folds = match folds {
         Some(src) => Some(
@@ -304,6 +350,12 @@ fn build_config(
         ),
         None => None,
     };
+    let textobjects = match textobjects {
+        Some(src) => Some(Query::new(&language, src).map_err(|e| {
+            SyntaxError::Language(format!("compile {name} textobjects.scm: {e}"))
+        })?),
+        None => None,
+    };
     let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,
@@ -313,6 +365,7 @@ fn build_config(
         highlight_priorities,
         injections,
         symbols,
+        textobjects,
     })
 }
 
@@ -365,6 +418,40 @@ mod tests {
         assert!(r.folds_query("py").is_some());
         assert!(r.folds_query("js").is_some());
         assert!(r.folds_query("md").is_some());
+    }
+
+    #[test]
+    fn textobjects_query_compiled_for_each_code_language() {
+        // N.1.0: every code language ships a textobjects.scm; if any
+        // capture references an invalid node kind, `Query::new` errors
+        // at `standard()` construction and `.unwrap()` panics here.
+        let r = LangRegistry::standard().unwrap();
+        assert!(r.textobjects_query("rust").is_some(), "rust textobjects");
+        assert!(
+            r.textobjects_query("python").is_some(),
+            "python textobjects"
+        );
+        assert!(
+            r.textobjects_query("javascript").is_some(),
+            "javascript textobjects"
+        );
+        // Prose has no function/class/block semantics -- no query.
+        assert!(
+            r.textobjects_query("markdown").is_none(),
+            "markdown ships no textobjects.scm"
+        );
+        assert!(
+            r.textobjects_query("markdown_inline").is_none(),
+            "markdown_inline ships no textobjects.scm"
+        );
+    }
+
+    #[test]
+    fn textobjects_query_resolves_aliases() {
+        let r = LangRegistry::standard().unwrap();
+        assert!(r.textobjects_query("rs").is_some());
+        assert!(r.textobjects_query("py").is_some());
+        assert!(r.textobjects_query("js").is_some());
     }
 
     #[test]

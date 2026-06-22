@@ -20,3 +20,9 @@
 
 #[cfg(feature = "search")]
 pub mod search;
+
+/// N.1.1 (2026-06-10): narrow mode — a focused, editable one-excerpt
+/// multibuffer view of a region. Unlike `search`, narrow is a
+/// first-class built-in (no cargo feature gate): no async scan, no
+/// service, no per-view state beyond the excerpt.
+pub mod narrow;

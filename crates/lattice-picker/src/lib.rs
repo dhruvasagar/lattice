@@ -194,6 +194,10 @@ pub enum RoutingPayload {
     /// the chosen `ColorPresentation.text_edit` (or `label`
     /// fallback) into the buffer at the cached color range.
     ColorPresentation { index: u32 },
+    /// T.12: the theme name a colorscheme-picker candidate carries.
+    /// Both accept and live-preview resolve the name against the
+    /// `ThemeRegistry` catalog and swap the active theme.
+    Colorscheme { name: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

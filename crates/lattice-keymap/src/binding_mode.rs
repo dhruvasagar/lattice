@@ -19,6 +19,12 @@ pub enum BindingMode {
     /// table; differences are in the operator dispatch (Range::Selection
     /// resolution).
     Visual,
+    /// Vim Select mode (SN.3d). Its own chord table — distinct from
+    /// [`Self::Visual`] because a bare printable key dispatches
+    /// differently (Visual: command lookup; Select: replace-and-insert).
+    /// Motions/extensions are duplicated from the Visual table and kept
+    /// honest by a parity test. See `docs/dev/architecture/select-mode.md`.
+    Select,
     Replace,
     /// `:` minibuffer.
     Command,
@@ -85,6 +91,7 @@ impl BindingMode {
             BindingMode::Normal => "Normal",
             BindingMode::Insert => "Insert",
             BindingMode::Visual => "Visual",
+            BindingMode::Select => "Select",
             BindingMode::Replace => "Replace",
             BindingMode::Command => "Command",
             BindingMode::Search => "Search",
@@ -112,7 +119,7 @@ impl BindingMode {
     pub fn all() -> &'static [BindingMode] {
         use BindingMode::*;
         &[
-            Normal, Insert, Visual, Replace, Command, Search,
+            Normal, Insert, Visual, Select, Replace, Command, Search,
             OperatorPending, AfterG, AfterZ, AfterMark,
             AfterJumpMarkLine, AfterJumpMarkExact, AfterRegister,
             AfterMacroStart, AfterMacroPlay, AfterFindChar,
@@ -139,6 +146,7 @@ mod tests {
             BindingMode::Normal,
             BindingMode::Insert,
             BindingMode::Visual,
+            BindingMode::Select,
             BindingMode::Replace,
             BindingMode::Command,
             BindingMode::Search,
@@ -174,7 +182,7 @@ mod tests {
     #[test]
     fn all_covers_every_variant() {
         // Must match the count in `label_covers_all_variants`.
-        assert_eq!(BindingMode::all().len(), 22);
+        assert_eq!(BindingMode::all().len(), 23);
         // Every variant must appear exactly once (no duplicates).
         let mut seen = std::collections::HashSet::new();
         for m in BindingMode::all() {

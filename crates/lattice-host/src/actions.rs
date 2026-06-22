@@ -71,6 +71,7 @@ pub struct ActionIds {
     pub scroll_line_up: CommandId,
     pub scroll_line_down: CommandId,
     pub redraw_screen: CommandId,
+    pub open_command_picker: CommandId,
     pub enter_command_line: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
@@ -83,11 +84,23 @@ pub struct ActionIds {
     pub lsp_references_request: CommandId,
     pub lsp_follow_link_at_cursor: CommandId,
     pub enter_append: CommandId,
+    pub enter_insert_first_non_blank: CommandId,
+    pub enter_append_end_of_line: CommandId,
+    pub display_line_down: CommandId,
+    pub display_line_up: CommandId,
+    pub display_line_start: CommandId,
+    pub display_line_end: CommandId,
     pub create_fold_from_visual: CommandId,
     pub delete_char_backward: CommandId,
     pub completion_trigger: CommandId,
     pub snippet_expand: CommandId,
+    /// L4b: `gl` in lsp-diagnostics-mode. Command-name registration
+    /// only — the handler body is `lsp-diagnostics-mode`'s mode-owned
+    /// `ActionHandlerRegistry` closure (emits `ShowDiagnosticsPopup`);
+    /// the `apply` below is a dead `Effect::None`, like `snippet_expand`.
+    pub lsp_diagnostic_popup: CommandId,
     pub exit_visual: CommandId,
+    pub swap_visual_ends: CommandId,
     pub replace_undo_last: CommandId,
     pub enter_mode_insert: CommandId,
     pub enter_mode_normal: CommandId,
@@ -95,6 +108,10 @@ pub struct ActionIds {
     pub enter_visual_charwise: CommandId,
     pub enter_visual_linewise: CommandId,
     pub enter_visual_blockwise: CommandId,
+    /// SN.3d Select-mode entry chords `gh` / `gH` / `g<C-h>`.
+    pub enter_select_charwise: CommandId,
+    pub enter_select_linewise: CommandId,
+    pub enter_select_blockwise: CommandId,
     pub enter_search_forward: CommandId,
     pub enter_search_backward: CommandId,
     pub search_word_under_cursor_forward: CommandId,
@@ -399,6 +416,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<C-l>`: force a full screen redraw.",
             AppEffect::RedrawScreen,
         ),
+        open_command_picker: register_simple(
+            registry,
+            "action:open-command-picker",
+            "Vim's `:` / Emacs' `M-x`: open the command picker.",
+            AppEffect::OpenCommandPicker,
+        ),
         enter_command_line: register_simple(
             registry,
             "action:enter-command-line",
@@ -471,6 +494,42 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `a`: move right one byte and enter Insert.",
             AppEffect::EnterAppend,
         ),
+        enter_insert_first_non_blank: register_simple(
+            registry,
+            "action:enter-insert-first-non-blank",
+            "Vim's `I`: move to first non-blank of line and enter Insert.",
+            AppEffect::EnterInsertFirstNonBlank,
+        ),
+        enter_append_end_of_line: register_simple(
+            registry,
+            "action:enter-append-end-of-line",
+            "Vim's `A`: move to end of line and enter Insert.",
+            AppEffect::EnterAppendEndOfLine,
+        ),
+        display_line_down: register_simple(
+            registry,
+            "action:display-line-down",
+            "Vim's `gj`: move down one display line (wrap segment).",
+            AppEffect::DisplayLineDown,
+        ),
+        display_line_up: register_simple(
+            registry,
+            "action:display-line-up",
+            "Vim's `gk`: move up one display line (wrap segment).",
+            AppEffect::DisplayLineUp,
+        ),
+        display_line_start: register_simple(
+            registry,
+            "action:display-line-start",
+            "Vim's `g0`: move to the start of the current display segment.",
+            AppEffect::DisplayLineStart,
+        ),
+        display_line_end: register_simple(
+            registry,
+            "action:display-line-end",
+            "Vim's `g$`: move to the end of the current display segment.",
+            AppEffect::DisplayLineEnd,
+        ),
         create_fold_from_visual: register_simple(
             registry,
             "action:create-fold-from-visual",
@@ -489,17 +548,48 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Insert mode's `<C-Space>` / `<C-x><C-o>`: trigger the completion popup.",
             AppEffect::CompletionTrigger,
         ),
-        snippet_expand: register_simple(
-            registry,
+        // SN.3c.1 (2026-06-14): the CommandSpec stays (the
+        // `snippet-mode` chord binds it + the mode's global
+        // `ActionHandlerRegistry` handler keys on it), but its
+        // `apply` is now a dead `Effect::None`: the handler always
+        // intercepts before the grammar Action gate, so this body
+        // never runs. Kept (not deleted) so the `CommandId` resolves
+        // for the chord binding + handler registration.
+        snippet_expand: registry.register_action(
             "action:snippet-expand",
-            "Insert mode's `<C-x><C-s>`: direct snippet expansion.",
-            AppEffect::SnippetExpand,
+            "Insert mode's `<C-x><C-s>`: direct snippet expansion (mode-owned; \
+             `snippet-mode`'s handler emits `Effect::ExpandSnippet`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        ),
+        // L4b: command-name registration for lsp-diagnostics-mode's
+        // `gl`. The mode's `ActionHandlerRegistry` closure intercepts
+        // before this `apply`, so the body is a dead `Effect::None`
+        // (same shape as `snippet_expand`). Kept so the `CommandId`
+        // resolves for the chord binding + handler registration.
+        lsp_diagnostic_popup: registry.register_action(
+            "action:lsp-diagnostic-popup",
+            "lsp-diagnostics-mode's `gl`: show the cursor line's diagnostics in a \
+             cursor-anchored popup (mode-owned; the handler emits \
+             `Effect::ShowDiagnosticsPopup`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         exit_visual: register_simple(
             registry,
             "action:exit-visual",
             "Visual mode's `<Esc>` / `v` / `V`: exit Visual to Normal.",
             AppEffect::ExitVisual,
+        ),
+        swap_visual_ends: register_simple(
+            registry,
+            "action:swap-visual-ends",
+            "Visual mode's `o`: swap the cursor to the other end of the selection.",
+            AppEffect::SwapVisualEnds,
         ),
         replace_undo_last: register_simple(
             registry,
@@ -542,6 +632,24 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:enter-visual-blockwise",
             "Vim's `<C-v>` / `<C-q>`: enter blockwise Visual at the current cursor.",
             AppEffect::EnterVisual(VisualKind::Blockwise),
+        ),
+        enter_select_charwise: register_simple(
+            registry,
+            "action:enter-select-charwise",
+            "Vim's `gh`: enter charwise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Charwise),
+        ),
+        enter_select_linewise: register_simple(
+            registry,
+            "action:enter-select-linewise",
+            "Vim's `gH`: enter linewise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Linewise),
+        ),
+        enter_select_blockwise: register_simple(
+            registry,
+            "action:enter-select-blockwise",
+            "Vim's `g<C-h>`: enter blockwise Select at the current cursor (SN.3d).",
+            AppEffect::EnterSelect(VisualKind::Blockwise),
         ),
         enter_search_forward: register_simple(
             registry,
@@ -1018,11 +1126,20 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Active-snippet `<S-Tab>`: jump to the previous placeholder.",
             AppEffect::SnippetPrevPlaceholder,
         ),
-        snippet_leave: register_simple(
-            registry,
+        // SN.3c.2 (2026-06-14): the CommandSpec stays (the
+        // `active-snippet-mode` chord binds it + the mode's
+        // per-buffer `ActionHandlerRegistry` handler keys on it), but
+        // its `apply` is now a dead `Effect::None`: the handler always
+        // intercepts before the grammar Action gate, so this body
+        // never runs. Same shape as `snippet_expand` (SN.3c.1).
+        snippet_leave: registry.register_action(
             "action:snippet-leave",
-            "Active-snippet `<Esc>`: exit the snippet.",
-            AppEffect::SnippetLeave,
+            "Active-snippet `<Esc>`: exit the snippet (mode-owned; \
+             `active-snippet-mode`'s handler clears the session + enters Normal).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         search_jump_to_source: register_simple(
             registry,
@@ -1195,6 +1312,7 @@ mod tests {
             (ids.scroll_line_up, "action:scroll-line-up"),
             (ids.scroll_line_down, "action:scroll-line-down"),
             (ids.redraw_screen, "action:redraw-screen"),
+            (ids.open_command_picker, "action:open-command-picker"),
             (ids.enter_command_line, "action:enter-command-line"),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),
@@ -1211,13 +1329,27 @@ mod tests {
             (ids.lsp_follow_link_at_cursor, "action:lsp-follow-link"),
             (ids.enter_append, "action:enter-append"),
             (
+                ids.enter_insert_first_non_blank,
+                "action:enter-insert-first-non-blank",
+            ),
+            (
+                ids.enter_append_end_of_line,
+                "action:enter-append-end-of-line",
+            ),
+            (ids.display_line_down, "action:display-line-down"),
+            (ids.display_line_up, "action:display-line-up"),
+            (ids.display_line_start, "action:display-line-start"),
+            (ids.display_line_end, "action:display-line-end"),
+            (
                 ids.create_fold_from_visual,
                 "action:create-fold-from-visual",
             ),
             (ids.delete_char_backward, "action:delete-char-backward"),
             (ids.completion_trigger, "action:completion-trigger"),
             (ids.snippet_expand, "action:snippet-expand"),
+            (ids.lsp_diagnostic_popup, "action:lsp-diagnostic-popup"),
             (ids.exit_visual, "action:exit-visual"),
+            (ids.swap_visual_ends, "action:swap-visual-ends"),
             (ids.replace_undo_last, "action:replace-undo-last"),
             (ids.enter_mode_insert, "action:enter-mode-insert"),
             (ids.enter_mode_normal, "action:enter-mode-normal"),

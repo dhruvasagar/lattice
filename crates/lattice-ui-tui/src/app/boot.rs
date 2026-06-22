@@ -33,13 +33,9 @@ impl App {
         // RenderState cell, captured before Editor moves to the
         // actor thread.
         let render_state = editor.render_state.clone();
-        // Slice 3c.final.E.1: clone the worker's output cell.
-        let syntax_visible_spans_cell = editor.syntax_visible_spans_cell.clone();
-        // Perf plan A.2 slice A.2a: parallel pre-paint cell clone
-        // so `refresh_highlights` can pass the 3rd `recompute`
-        // argument without an actor round-trip.
-        let syntax_visible_rows_cell = editor.syntax_visible_rows_cell.clone();
-        // Perf plan B.2 slice B.2.a: static-overlay-quads cell clone.
+        // Perf plan B.2 slice B.2.a: clone the overlay worker's
+        // output cell. display-line B4.2: the dead span/row prepaint
+        // cell clones were deleted with the worker's span/row cache.
         let syntax_static_overlay_quads_cell =
             editor.syntax_static_overlay_quads_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
@@ -80,8 +76,6 @@ impl App {
             #[cfg(test)]
             editor: editor_field,
             render_state,
-            syntax_visible_spans_cell,
-            syntax_visible_rows_cell,
             syntax_static_overlay_quads_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
@@ -157,14 +151,25 @@ impl App {
     }
 
     /// Rebuild the cached TUI-typed [`crate::theme::Theme`] from
-    /// the renderer-neutral [`lattice_host::ui::theme::Theme`].
-    /// Cheap (every field is `Copy`); the rebuild fires only on
-    /// option cascade or on a host-emitted
+    /// the renderer-neutral [`lattice_host::ui::theme::Theme`] **plus**
+    /// the resolved theme table (T.4). Cheap (every field is `Copy`);
+    /// the rebuild fires only on option cascade or on a host-emitted
     /// [`lattice_host::dispatch::RendererSignal::ThemeChanged`],
-    /// never per frame. A future GPUI renderer implements an
-    /// equivalent `rebuild_gpui_theme` on its own `App`.
+    /// never per frame — so a `:colorscheme` / palette swap (which
+    /// bumps `ResolvedTheme::version()` and emits `ThemeChanged`)
+    /// recolors the cache without any per-frame style adaptation. A
+    /// future GPUI renderer implements an equivalent
+    /// `rebuild_gpui_theme` on its own `App`.
     pub fn rebuild_tui_theme(&mut self) {
-        self.theme = crate::theme::Theme::from(&self.render_state.load().theme);
+        let rs = self.render_state.load();
+        // T.6.t: non-style chrome (glyphs, separator chars, dim/
+        // nerd-fonts flags) sources from the published typed-options
+        // registry; style fields from the resolved table.
+        self.theme = crate::theme::build_tui_theme(
+            &rs.options.config,
+            &rs.resolved_theme,
+            &rs.theme_ids,
+        );
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and
@@ -194,6 +199,27 @@ impl App {
         let workspace_root = workspace_root.map(|p| p.to_path_buf());
         let signals =
             self.mutate_editor_with(move |e| e.load_persistent_config(workspace_root.as_deref()));
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
+
+    /// Load built-in + user snippet packs into the registry at
+    /// startup (built-ins 2026-06-13). Delegates to
+    /// [`lattice_host::dispatch::Editor::load_snippets_at_startup`].
+    /// Called by the runtime right after `load_persistent_config`
+    /// so a fresh editor has its snippet set ready; quiet (logs, no
+    /// echo). Kept out of `App::new` so test `App`s start with an
+    /// empty registry.
+    pub fn load_snippets_at_startup(&mut self) {
+        self.mutate_editor(|e| e.load_snippets_at_startup());
+    }
+
+    /// T.5: open the tutor at lesson `lesson`. Called from
+    /// `lattice-cli` when `--tutor [N]` is passed; fires after
+    /// `load_persistent_config` so user config lands first.
+    pub fn open_tutor(&mut self, lesson: u32) {
+        let signals = self.mutate_editor_with(move |e| e.do_tutor(Some(lesson)));
         for s in signals {
             self.handle_renderer_signal(s);
         }

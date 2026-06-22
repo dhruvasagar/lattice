@@ -22,42 +22,19 @@
 //!   `(prior_foldmethod, config_handle)`; Drop restores the prior
 //!   value.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lattice_mode::{
-    BufferStoreHandle, CapabilitySet, LifecycleFuture, Mode, ModeActivationError, ModeContext,
-    ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
+    DecorationCtx, GutterDecoration, GutterSeverityLevel, Keymap, KeymapEntry, LifecycleFuture,
+    Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
+    Subscription, keymap_entry,
 };
-use lattice_runtime::{EventBus, SubscriptionId};
+use lattice_grammar::effect::Effect;
+use lattice_runtime::EventBus;
 
 use crate::supervisor::LspSupervisorHandle;
 
-/// Common Guard for the three log majors. Holds the event-bus
-/// handle + subscription id; on Drop, unsubscribes. The drain
-/// tokio task observes the channel close (sender dropped on
-/// unsubscribe) and exits naturally.
-pub struct LogSubscriptionGuard {
-    handle: Option<(Arc<EventBus>, SubscriptionId)>,
-}
-
-impl Drop for LogSubscriptionGuard {
-    fn drop(&mut self) {
-        if let Some((bus, id)) = self.handle.take() {
-            bus.unsubscribe(id);
-        }
-    }
-}
-
-impl LogSubscriptionGuard {
-    fn none() -> Self {
-        Self { handle: None }
-    }
-    fn with(bus: Arc<EventBus>, id: SubscriptionId) -> Self {
-        Self {
-            handle: Some((bus, id)),
-        }
-    }
-}
 
 /// `lsp-server-log-mode` -- major mode for the per-instance
 /// `*lsp:<server>:<workspace>*` buffer (B'.4 / B'.7).
@@ -74,7 +51,7 @@ impl LspServerLogMode {
 }
 
 impl Mode for LspServerLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -95,19 +72,19 @@ impl Mode for LspServerLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(instance) = crate::parse_lsp_server_log_name(&name) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             // B'.4: seed the buffer from the per-instance ring so
@@ -196,7 +173,7 @@ impl Mode for LspServerLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }
@@ -213,7 +190,7 @@ impl LspLogMode {
 }
 
 impl Mode for LspLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -234,13 +211,13 @@ impl Mode for LspLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             // B'.4: seed the buffer from the in-memory ring so
@@ -314,7 +291,7 @@ impl Mode for LspLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }
@@ -330,7 +307,7 @@ impl LspTraceLogMode {
 }
 
 impl Mode for LspTraceLogMode {
-    type Guard = LogSubscriptionGuard;
+    type Guard = Option<Subscription>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -351,19 +328,19 @@ impl Mode for LspTraceLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(instance) = crate::parse_lsp_trace_log_name(&name) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(LogSubscriptionGuard::none());
+                return Ok(None);
             };
 
             if let Some(logger) = ctx.service::<crate::LspLogger>() {
@@ -451,7 +428,7 @@ impl Mode for LspTraceLogMode {
                 }
             });
 
-            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+            Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
 }
@@ -471,6 +448,52 @@ impl Drop for LspModeGuard {
         self.bus
             .publish_typed(crate::events::LspBufferDetached { id: self.buffer_id });
     }
+}
+
+/// MO.1: 7 Normal-mode LSP navigation bindings contributed by `LspMode::keymap()`.
+/// Moved out of `keymap_normal.rs` Builtin layer so K.1.c scoping fires them
+/// only when `lsp-mode` is active on the buffer, not globally.
+fn lsp_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "K",
+                doc: "Show hover documentation",
+                cmd: "action:lsp-hover"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gd",
+                doc: "Go to definition",
+                cmd: "action:lsp-definition"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gD",
+                doc: "Go to declaration",
+                cmd: "action:lsp-declaration"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gy",
+                doc: "Go to type definition",
+                cmd: "action:lsp-type-definition"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gI",
+                doc: "Go to implementation",
+                cmd: "action:lsp-implementation"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gr",
+                doc: "Find references",
+                cmd: "action:lsp-references"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gx",
+                doc: "Follow document link at cursor",
+                cmd: "action:lsp-follow-link"
+            },
+        ]
+    })
 }
 
 /// `lsp-mode` -- the umbrella minor that gates LSP traffic on a
@@ -524,6 +547,11 @@ impl Mode for LspMode {
     fn implies(&self) -> &[ModeId] {
         &self.sub_modes
     }
+    /// MO.1: 7 Normal-mode LSP navigation bindings.
+    /// Scoped to lsp-mode buffers by K.1.c; absent at the Builtin layer.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(lsp_mode_keymap_entries())
+    }
     fn options(&self) -> OptionOverrideSet {
         OptionOverrideSet::default()
     }
@@ -560,6 +588,46 @@ impl Mode for LspMode {
     /// fails the epoch match, the Guard drops on the spawn
     /// side (publishing `LspBufferDetached`), and the App stays
     /// consistent.
+    // ML.3c: the `lsp` readiness badge moved off `status_line_items` to a
+    // registered modeline element produced by `crate::modeline`
+    // (`lsp_content` + the forwarder that accumulates `$/progress` /
+    // `serverStatus` and pushes per attached buffer).
+
+    /// MO.4.a: gutter severity column. Reads `LspDiagnosticsData`
+    /// injected by the renderer for this pane's buffer URI.
+    /// Aggregates to max `GutterSeverityLevel` per line.
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        let Some(data) = ctx.service::<LspDiagnosticsData>() else {
+            return Vec::new();
+        };
+        let Some(diags) = &data.diagnostics else {
+            return Vec::new();
+        };
+        let mut per_line: std::collections::HashMap<u32, GutterSeverityLevel> =
+            Default::default();
+        for diag in diags.iter() {
+            let level = match diag.severity {
+                Some(crate::DiagnosticSeverity::ERROR) => GutterSeverityLevel::Error,
+                Some(crate::DiagnosticSeverity::WARNING) => GutterSeverityLevel::Warning,
+                Some(crate::DiagnosticSeverity::INFORMATION) => GutterSeverityLevel::Info,
+                Some(crate::DiagnosticSeverity::HINT) => GutterSeverityLevel::Hint,
+                _ => continue,
+            };
+            per_line
+                .entry(diag.range.start.line)
+                .and_modify(|e| {
+                    if level > *e {
+                        *e = level;
+                    }
+                })
+                .or_insert(level);
+        }
+        per_line
+            .into_iter()
+            .map(|(line, level)| GutterDecoration::Severity { line, level })
+            .collect()
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0);
@@ -648,7 +716,152 @@ macro_rules! lsp_sub_mode {
 // `LspCompletionMode` lives in `crate::completion` -- it's
 // source-contributing rather than a pure marker.
 pub use crate::completion::LspCompletionMode;
-lsp_sub_mode!(LspDiagnosticsMode, "lsp-diagnostics-mode");
+// `lsp-diagnostics-mode` is a FULL mode (not the bare marker macro):
+// it owns the `gl` cursor popup + `]d`/`[d` jump bindings AND the
+// popup handler body (L4b, lsp-architecture.md §15). See below.
+
+/// L4b: read-only query handle the mode-owned diagnostic handlers in
+/// [`LspDiagnosticsMode`] use to read the cursor line's diagnostics
+/// for `gl`. The impl (lattice-host) resolves `buffer_id → uri →
+/// DiagnosticsLayer` over the live published render state, so the mode
+/// needs no host method, no direct layer access, and no URI map of
+/// its own. Register + look up under the
+/// [`DiagnosticsQueryHandle`] alias
+/// (`feedback_servicesregistry_arc_typeid`).
+pub trait DiagnosticsQuery: Send + Sync {
+    /// Diagnostics overlapping `line` of `buffer_id`, in the layer's
+    /// `(line, character)` order. Empty when the buffer has no URI
+    /// mapped / no LSP attachment.
+    fn on_line(&self, buffer_id: lattice_protocol::ids::BufferId, line: u32)
+    -> Vec<crate::Diagnostic>;
+}
+
+/// Service alias for [`DiagnosticsQuery`]. Register the host impl as
+/// this exact type and look it up the same way.
+pub type DiagnosticsQueryHandle = std::sync::Arc<dyn DiagnosticsQuery>;
+
+/// L4b: format the cursor line's diagnostics into one popup line each:
+/// `<severity glyph> <message> [source:code] (+N related)`. The glyph
+/// is the BMP-fallback severity mark (degrade-safe per the icon-palette
+/// rule); the message is collapsed to its first line. Empty input →
+/// empty `Vec` (the host echoes "no diagnostics on line").
+pub fn format_diagnostic_popup_lines(diags: &[crate::Diagnostic]) -> Vec<(String, u8)> {
+    use crate::lsp_types::{DiagnosticSeverity, NumberOrString};
+    diags
+        .iter()
+        .map(|d| {
+            // (glyph, severity rank) — rank is Error = 0 … Hint = 3
+            // (unknown clamps to Hint), matching the host's severity
+            // colour map; the host highlights each line by it.
+            let (glyph, rank) = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => ('■', 0u8),
+                Some(DiagnosticSeverity::WARNING) => ('▲', 1),
+                Some(DiagnosticSeverity::INFORMATION) => ('●', 2),
+                _ => ('·', 3),
+            };
+            let msg = d.message.lines().next().unwrap_or("").trim();
+            let mut line = format!("{glyph} {msg}");
+            let mut tags: Vec<String> = Vec::new();
+            if let Some(src) = &d.source {
+                tags.push(src.clone());
+            }
+            if let Some(code) = &d.code {
+                tags.push(match code {
+                    NumberOrString::Number(n) => n.to_string(),
+                    NumberOrString::String(s) => s.clone(),
+                });
+            }
+            if !tags.is_empty() {
+                line.push_str(&format!(" [{}]", tags.join(":")));
+            }
+            let related = d.related_information.as_ref().map_or(0, |r| r.len());
+            if related > 0 {
+                line.push_str(&format!(" (+{related} related)"));
+            }
+            (line, rank)
+        })
+        .collect()
+}
+
+/// L4b: `lsp-diagnostics-mode` keymap — the three diagnostic chords,
+/// scoped to lsp-diagnostics-mode buffers by K.1.c (absent at the
+/// Builtin layer). `gl` → the mode's own popup handler;
+/// `]d` / `[d` → the existing diagnostic-jump ex-commands (the mode
+/// owns the *binding*; the shared jump + its landed-message echo live
+/// in the host ex-command, used identically by `:cnext` / `:diag-next`).
+fn lsp_diagnostics_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "gl",
+                doc: "Show diagnostics on the cursor line in a popup",
+                cmd: "action:lsp-diagnostic-popup"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]d",
+                doc: "Jump to the next diagnostic (echoes its message)",
+                cmd: "ex:diag-next"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[d",
+                doc: "Jump to the previous diagnostic (echoes its message)",
+                cmd: "ex:diag-prev"
+            },
+        ]
+    })
+}
+
+/// `lsp-diagnostics-mode` — owns the diagnostic cursor surfaces
+/// (L4b). Promoted from the `lsp_sub_mode!` marker so it can carry a
+/// keymap + the `gl` action handler.
+pub struct LspDiagnosticsMode;
+
+impl LspDiagnosticsMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("lsp-diagnostics-mode")
+    }
+}
+
+impl Mode for LspDiagnosticsMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(lsp_diagnostics_mode_keymap_entries())
+    }
+    /// `gl`: read the cursor line's diagnostics via the
+    /// [`DiagnosticsQueryHandle`] service, format them, and hand the
+    /// host an [`Effect::ShowDiagnosticsPopup`] to render through the
+    /// hover popup pipeline. Global (buffer-agnostic) — registered
+    /// once at boot; K.1.c scopes *where* `gl` fires.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        let handler: ActionHandler = std::sync::Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let query = ctx.services.get::<DiagnosticsQueryHandle>()?;
+            let diags = query.on_line(ctx.buffer_id, ctx.cursor.line);
+            Some(Effect::ShowDiagnosticsPopup {
+                lines: format_diagnostic_popup_lines(&diags),
+            })
+        });
+        vec![ActionHandlerContribution {
+            action_name: "action:lsp-diagnostic-popup",
+            handler,
+        }]
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
 lsp_sub_mode!(LspHoverMode, "lsp-hover-mode");
 lsp_sub_mode!(LspSignatureMode, "lsp-signature-mode");
 lsp_sub_mode!(LspFormatMode, "lsp-format-mode");
@@ -656,7 +869,48 @@ lsp_sub_mode!(LspRenameMode, "lsp-rename-mode");
 lsp_sub_mode!(LspSymbolsMode, "lsp-symbols-mode");
 lsp_sub_mode!(LspCodeActionMode, "lsp-code-action-mode");
 lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
-lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
+
+/// Render-time service data for `LspMode::gutter_decorations`.
+/// The renderer registers one instance per pane render, populated
+/// from `rs.diagnostics.layer.diagnostics_arc(uri)` for the pane's
+/// buffer URI. `None` diagnostics means no URI mapped or no LSP
+/// attachment — no severity decorations are contributed.
+pub struct LspDiagnosticsData {
+    pub diagnostics: Option<std::sync::Arc<[crate::Diagnostic]>>,
+}
+
+/// `lsp-progress-mode` — a marker minor mode (ML.3c removed its
+/// hand-written `status_line_items`; the in-flight `$/progress` detail
+/// now ships as part of the `lsp` modeline element produced by
+/// `crate::modeline`). Kept as a distinct mode so existing activation /
+/// gating keys off it unchanged.
+pub struct LspProgressMode;
+
+impl LspProgressMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("lsp-progress-mode")
+    }
+}
+
+impl Mode for LspProgressMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 lsp_sub_mode!(LspDocumentHighlightMode, "lsp-document-highlight-mode");
 lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
 lsp_sub_mode!(LspInlayHintMode, "lsp-inlay-hint-mode");
@@ -838,11 +1092,144 @@ mod tests {
         assert!(registry.is_registered(LspSemanticTokensMode::mode_id()));
     }
 
+    // ── MO.1: keymap convention checks ──────────────────────────────────────
+
+    #[test]
+    fn lsp_mode_keymap_has_seven_entries() {
+        let km = LspMode::new().keymap();
+        assert_eq!(km.entries.len(), 7, "expected exactly 7 LSP nav entries");
+    }
+
+    #[test]
+    fn lsp_mode_keymap_entries_have_expected_commands() {
+        let km = LspMode::new().keymap();
+        let cmds: Vec<&str> = km.entries.iter().filter_map(|e| e.command).collect();
+        for expected in [
+            "action:lsp-hover",
+            "action:lsp-definition",
+            "action:lsp-declaration",
+            "action:lsp-type-definition",
+            "action:lsp-implementation",
+            "action:lsp-references",
+            "action:lsp-follow-link",
+        ] {
+            assert!(cmds.contains(&expected), "missing command {expected}");
+        }
+    }
+
+    #[test]
+    fn lsp_mode_keymap_includes_all_chord_strings() {
+        let km = LspMode::new().keymap();
+        let chords: Vec<&str> = km.entries.iter().map(|e| e.chord).collect();
+        for expected in ["K", "gd", "gD", "gy", "gI", "gr", "gx"] {
+            assert!(chords.contains(&expected), "missing chord {expected}");
+        }
+    }
+
     #[test]
     fn lsp_mode_is_minor_with_no_capability_requirements() {
         let m = LspMode::new();
         assert_eq!(m.kind(), ModeKind::Minor);
         assert_eq!(m.required_capabilities(), CapabilitySet::empty());
+    }
+
+    // ── L4b: lsp-diagnostics-mode owns gl / ]d / [d + the popup ──────────────
+
+    fn diag(
+        sev: crate::lsp_types::DiagnosticSeverity,
+        msg: &str,
+        source: Option<&str>,
+        code: Option<&str>,
+    ) -> crate::Diagnostic {
+        crate::Diagnostic {
+            range: crate::lsp_types::Range {
+                start: crate::lsp_types::Position { line: 0, character: 0 },
+                end: crate::lsp_types::Position { line: 0, character: 1 },
+            },
+            severity: Some(sev),
+            code: code.map(|c| crate::lsp_types::NumberOrString::String(c.to_string())),
+            code_description: None,
+            source: source.map(str::to_string),
+            message: msg.to_string(),
+            related_information: None,
+            tags: None,
+            data: None,
+        }
+    }
+
+    #[test]
+    fn lsp_diagnostics_mode_keymap_owns_the_three_chords() {
+        let km = LspDiagnosticsMode.keymap();
+        let pairs: Vec<(&str, &str)> = km
+            .entries
+            .iter()
+            .filter_map(|e| e.command.map(|c| (e.chord, c)))
+            .collect();
+        assert!(pairs.contains(&("gl", "action:lsp-diagnostic-popup")));
+        // `]d` / `[d` bind to the existing jump ex-commands (mode owns
+        // the binding; the shared jump + echo live in the host).
+        assert!(pairs.contains(&("]d", "ex:diag-next")));
+        assert!(pairs.contains(&("[d", "ex:diag-prev")));
+    }
+
+    #[test]
+    fn lsp_diagnostics_mode_contributes_only_the_popup_handler() {
+        let handlers = LspDiagnosticsMode.action_handlers();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].action_name, "action:lsp-diagnostic-popup");
+    }
+
+    #[test]
+    fn format_popup_lines_carries_glyph_message_source_code() {
+        use crate::lsp_types::DiagnosticSeverity;
+        let lines = format_diagnostic_popup_lines(&[diag(
+            DiagnosticSeverity::ERROR,
+            "mismatched types",
+            Some("rustc"),
+            Some("E0308"),
+        )]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].1, 0, "error → rank 0");
+        assert!(lines[0].0.starts_with('■'), "got {:?}", lines[0]);
+        assert!(lines[0].0.contains("mismatched types"));
+        assert!(lines[0].0.contains("[rustc:E0308]"));
+    }
+
+    #[test]
+    fn format_popup_lines_one_per_diagnostic_empty_for_none() {
+        use crate::lsp_types::DiagnosticSeverity;
+        assert!(format_diagnostic_popup_lines(&[]).is_empty());
+        let lines = format_diagnostic_popup_lines(&[
+            diag(DiagnosticSeverity::WARNING, "unused", None, None),
+            diag(DiagnosticSeverity::HINT, "consider", None, None),
+        ]);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].0.starts_with('▲'));
+        assert_eq!(lines[0].1, 1, "warning → rank 1");
+        assert!(lines[1].0.starts_with('·'));
+        assert_eq!(lines[1].1, 3, "hint → rank 3");
+    }
+
+    #[test]
+    fn format_popup_lines_appends_related_count() {
+        use crate::lsp_types::{
+            DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range, Uri,
+        };
+        use std::str::FromStr;
+        let mut d = diag(DiagnosticSeverity::ERROR, "boom", None, None);
+        let loc = Location {
+            uri: Uri::from_str("file:///x.rs").unwrap(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 0 },
+            },
+        };
+        d.related_information = Some(vec![
+            DiagnosticRelatedInformation { location: loc.clone(), message: "a".into() },
+            DiagnosticRelatedInformation { location: loc, message: "b".into() },
+        ]);
+        let lines = format_diagnostic_popup_lines(&[d]);
+        assert!(lines[0].0.contains("(+2 related)"), "got {:?}", lines[0]);
     }
 
     #[tokio::test]

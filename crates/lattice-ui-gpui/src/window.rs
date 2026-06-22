@@ -62,8 +62,9 @@
 use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
+    FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    SharedString, Styled, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -89,14 +90,18 @@ use crate::{GpuiApp, GpuiTheme};
 /// through `lattice_host::ui::theme::Theme::syntax_style`, so a
 /// single edit reflects everywhere.
 ///
-/// `Theme::default()` is used today because per-instance theme
-/// customization for syntax styles isn't wired through the cmdline
-/// yet. The fallback when `fg` is unset is the Catppuccin Text
-/// (`0xcdd6f4`) — matches what `SyntaxStyle::Default` resolves to
-/// and what `EditorElement` paints on un-spanned bytes.
-fn syntax_color(style: SyntaxStyle) -> u32 {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    let host_style = host_default.syntax_style(style);
+/// T.5.b: resolves `style` through the active theme's resolved table
+/// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
+/// for the retired `Theme::syntax_style`. The fallback when `fg` is
+/// unset is the Catppuccin Text (`0xcdd6f4`) — matches what
+/// `SyntaxStyle::Default` resolves to and what `EditorElement` paints
+/// on un-spanned bytes.
+fn syntax_color(
+    style: SyntaxStyle,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
+    let host_style = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
     host_style
         .fg
         .map(|c| c.to_rgb_u32(0xcdd6f4))
@@ -295,6 +300,38 @@ fn collect_pane_geometries(
     }
 }
 
+/// Select the global bottom-row content (vim's shared cmdline / echo
+/// line) plus the echo level for colouring. While typing `:` / `/` it's
+/// the in-progress minibuffer; otherwise it's the last echo message — a
+/// `:set foo?` value, a command error, or the `-- INSERT --` showmode
+/// (ML.5d) — restoring the echo the TUI peer shows (GPUI previously left
+/// the row blank outside Command/Search). Pure, so it is unit-testable
+/// without a gpui render context.
+fn bottom_row_content(
+    modal: lattice_grammar::ModalState,
+    modeline: &lattice_host::render_state::ModelineRenderState,
+    messages: &lattice_host::render_state::MessagesRenderState,
+) -> (String, Option<lattice_host::action::EchoLevel>) {
+    use lattice_grammar::ModalState;
+    match modal {
+        ModalState::Command => (format!(":{}", modeline.cmdline_text), None),
+        ModalState::Search(dir) => {
+            let prefix = match dir {
+                lattice_grammar::SearchDirection::Forward => '/',
+                lattice_grammar::SearchDirection::Backward => '?',
+            };
+            let pattern = modeline.search_pattern.as_deref().unwrap_or("");
+            (format!("{prefix}{pattern}"), None)
+        }
+        // Any non-minibuffer mode shows the last echo message (until the
+        // next command / mode change overwrites or clears it).
+        _ => match messages.last.as_deref() {
+            Some(msg) => (msg.text.clone(), Some(msg.level)),
+            None => (String::new(), None),
+        },
+    }
+}
+
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
     // Slice 3c.final.B.10: typed-options registry via published
     // `options()` sub-state — wait-free Arc clone.
@@ -443,6 +480,7 @@ fn gpui_source_display_label(id: &str) -> &'static str {
 /// `padded`: when true, applies `px_2()` for the strip variants
 /// that need horizontal padding. The overlay variants paint
 /// inside a bordered container that already has its own padding.
+#[allow(clippy::too_many_arguments)]
 fn paint_candidate_row(
     cand: &lattice_completion::RenderedCandidate,
     selected: bool,
@@ -450,6 +488,10 @@ fn paint_candidate_row(
     padded: bool,
     display_col_chars: usize,
     columns: &lattice_completion::AnnotationColumns,
+    // T.6: the resolved theme table + ids so annotation base colors
+    // read from the registered `completion.annotation.*` elements.
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> gpui::Div {
     // Issue #35 (2026-05-22): match highlight now uses
     // `picker_match_highlight` (Catppuccin peach by default,
@@ -578,7 +620,7 @@ fn paint_candidate_row(
                     let text = ann.display_text().into_owned();
                     let text_chars = text.chars().count();
                     let cell_pad = col_width.saturating_sub(text_chars);
-                    let fg = rgb(annotation_color_rgb(ann, selected));
+                    let fg = rgb(annotation_color_rgb(ann, selected, resolved, ids));
                     row = row.child(
                         div()
                             .text_color(fg)
@@ -628,28 +670,41 @@ fn paint_candidate_row(
 ///   chord highlight)
 /// - source      → mauve (purple/magenta)
 /// - custom      → blue (fallback for plugin annotations)
-fn annotation_color_rgb(ann: &lattice_completion::Annotation, selected: bool) -> u32 {
+/// T.6: resolve a completion-annotation color. The *base*
+/// (unselected) color now reads from the registered
+/// `completion.annotation.{kind,doc,keybinding,source,custom}`
+/// elements (shared with the host's theme registry). The selected-row
+/// BRIGHTENING stays renderer logic: a selected row returns the
+/// pre-existing brightened literal so the contrast against the
+/// status-background stays intact (the brightening is NOT a separate
+/// element). Fallbacks reproduce the legacy base literals.
+fn annotation_color_rgb(
+    ann: &lattice_completion::Annotation,
+    selected: bool,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
     use lattice_completion::Annotation;
-    match ann {
-        Annotation::Kind(_) => {
-            if selected { 0xcdd6f4 } else { 0x9399b2 }
-        }
-        Annotation::DocSnippet(_) => {
-            if selected { 0xbfeaf5 } else { 0x89dceb }
-        }
-        Annotation::Keybinding(_) => {
-            if selected { 0xfff0b8 } else { 0xf9e2af }
-        }
-        Annotation::Source(_) => {
-            if selected { 0xe2cfff } else { 0xcba6f7 }
-        }
+    let (id, base_fallback, brightened) = match ann {
+        Annotation::Kind(_) => (ids.completion_annotation_kind, 0x9399b2, 0xcdd6f4),
+        Annotation::DocSnippet(_) => (ids.completion_annotation_doc, 0x89dceb, 0xbfeaf5),
+        Annotation::Keybinding(_) => (ids.completion_annotation_keybinding, 0xf9e2af, 0xfff0b8),
+        Annotation::Source(_) => (ids.completion_annotation_source, 0xcba6f7, 0xe2cfff),
         // Plugin / extension fallback. Unknown `slot` strings
         // all resolve to this colour pre-Phase-4; the typed
         // theme registry that resolves slot keys to colours
         // lands with the WASM plugin host.
-        Annotation::Custom { .. } => {
-            if selected { 0xb6d3ff } else { 0x89b4fa }
-        }
+        Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+    };
+    if selected {
+        // Brightened form preserved as renderer logic on top of the base.
+        brightened
+    } else {
+        resolved
+            .get(id)
+            .fg
+            .map(|c| c.to_rgb_u32(base_fallback))
+            .unwrap_or(base_fallback)
     }
 }
 
@@ -664,30 +719,59 @@ fn annotation_color_rgb(ann: &lattice_completion::Annotation, selected: bool) ->
 /// overrides flow to both renderer peers identically. Falls back
 /// to overlay2 grey on Unknown severities (rare; future LSP versions
 /// could add new variants).
+/// T.6.t: read a single-char `ui.diagnostic-*-glyph` typed option,
+/// falling back to `dflt` (matches the deleted host `Theme::default()`
+/// glyph literals: `■▲●·`). The TUI peer reads the same options via its
+/// native `Theme` cache (`build_tui_theme`).
+fn diagnostic_glyph_option<D>(config: &lattice_config::ConfigRegistry, dflt: char) -> char
+where
+    D: lattice_config::OptionDecl<Value = String>,
+{
+    config
+        .get_typed::<D>()
+        .and_then(|s| s.chars().next())
+        .unwrap_or(dflt)
+}
+
 fn diagnostic_glyph_and_color(
-    host_theme: &lattice_host::ui::theme::Theme,
+    config: &lattice_config::ConfigRegistry,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     severity: lattice_lsp::DiagnosticSeverity,
 ) -> (char, u32) {
+    // T.6.t: the severity glyph reads from the `ui.diagnostic-*-glyph`
+    // typed options (was the deleted host `Theme.*_glyph` char); the
+    // *style* reads from the resolved table.
     let (glyph, style) = match severity {
         lattice_lsp::DiagnosticSeverity::ERROR => (
-            host_theme.diagnostic_error_glyph,
-            host_theme.diagnostic_error_style,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
+            >(config, '■'),
+            resolved.get(ids.diagnostic_error),
         ),
         lattice_lsp::DiagnosticSeverity::WARNING => (
-            host_theme.diagnostic_warning_glyph,
-            host_theme.diagnostic_warning_style,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
+            >(config, '▲'),
+            resolved.get(ids.diagnostic_warning),
         ),
         lattice_lsp::DiagnosticSeverity::INFORMATION => (
-            host_theme.diagnostic_info_glyph,
-            host_theme.diagnostic_info_style,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+            >(config, '●'),
+            resolved.get(ids.diagnostic_info),
         ),
         lattice_lsp::DiagnosticSeverity::HINT => (
-            host_theme.diagnostic_hint_glyph,
-            host_theme.diagnostic_hint_style,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
+            >(config, '·'),
+            resolved.get(ids.diagnostic_hint),
         ),
         _ => (
-            host_theme.diagnostic_info_glyph,
-            host_theme.diagnostic_info_style,
+            diagnostic_glyph_option::<
+                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+            >(config, '●'),
+            resolved.get(ids.diagnostic_info),
         ),
     };
     // 0x9399b2 is Catppuccin overlay2 — the v1 muted fallback if
@@ -706,8 +790,8 @@ fn diagnostic_glyph_and_color(
 /// `EditorView::render` used to fire `ensure_cursor_in_viewport()`
 /// and `dispatch_action(RefreshPaneHighlights)` unconditionally every
 /// frame. Both dispatches walk the full `publish_render_state` tail
-/// (rebuilding every sub-state `Arc`, notifying the highlights worker,
-/// nudging `paint_request`) regardless of whether the underlying
+/// (rebuilding every sub-state `Arc`, notifying the background
+/// workers, nudging `paint_request`) regardless of whether the underlying
 /// inputs changed — the dominant slice of `ensure_us` in the trace
 /// data the perf plan opens with.
 ///
@@ -759,16 +843,16 @@ struct EditorView {
 impl EditorView {
     fn new(document: Document, cx: &mut Context<Self>) -> Self {
         let app = GpuiApp::new(document);
-        // X1b: spawn the worker-paint-request bridge. The
-        // highlights worker fires `editor.paint_request.notify_one()`
-        // after every `WorkerDecision::Recomputed`; this future
-        // awaits each wake and calls `cx.notify()` so GPUI
-        // schedules a paint even when no user input is in flight.
-        // Without this bridge, an async worker recompute that
-        // finishes while the user is idle (e.g. final reparse
-        // after a held-key burst settles) would publish fresh
-        // spans into `syntax_visible_spans_cell` that nothing
-        // reads until the next keystroke -- breaking goal-#4
+        // X1b: spawn the worker-paint-request bridge. The background
+        // workers (cells / display-matrix, overlay) fire
+        // `editor.paint_request.notify_one()` after every
+        // content-changing `WorkerDecision::Recomputed`; this future
+        // awaits each wake and calls `cx.notify()` so GPUI schedules
+        // a paint even when no user input is in flight. Without this
+        // bridge, an async worker recompute that finishes while the
+        // user is idle (e.g. final reparse after a held-key burst
+        // settles) would publish fresh matrix / overlay output that
+        // nothing reads until the next keystroke -- breaking goal-#4
         // asynchronicity (the renderer would effectively poll on
         // keystrokes for worker output).
         //
@@ -1000,33 +1084,155 @@ impl EditorView {
     /// file-tree, ...) so no kind can render past its allocated
     /// vertical space and bleed into the modeline / cmdline
     /// [[feedback_buffers_no_special_case]].
+    /// ML.2: build the per-pane modeline as a zone / per-`Span` flex row,
+    /// reusing the SAME host resolver the TUI uses
+    /// (`lattice_host::modeline`) so the *content* is identical across
+    /// peers — only this paint differs. Three zones via `justify_between`
+    /// (Left flush-left, Right flush-right, Center between); flexbox gives
+    /// the zone layout natively. Per-role colours are adapted inline from
+    /// the resolved theme (GPUI keeps no style cache;
+    /// `feedback_renderer_cache_protects_ux`). Active panes compose the
+    /// per-role fg over the `modeline.active` bar bg; inactive panes use
+    /// the uniform muted `modeline.inactive` bar.
+    ///
+    /// `provider_label` is `None`: the GPUI peer has no M.4 pane-render
+    /// provider registry yet (Document → path, Terminal → registry name
+    /// slot, both via the resolver). A GPUI provider registry mirrors the
+    /// TUI's M.4 later; until then file-tree/oil aren't GPUI pane-rendered.
+    fn modeline_row(
+        pane: &PaneState,
+        is_active: bool,
+        rs: &lattice_host::render_state::RenderState,
+    ) -> gpui::Div {
+        const FALLBACK_FG: u32 = 0x00cd_d6f4; // palette `text`
+        const FALLBACK_BAR: u32 = 0x001e_1e2e; // palette `base`
+        let snap = &rs.modeline_elements;
+        let resolved = &rs.resolved_theme;
+        let ids = &rs.theme_ids;
+
+        // Bar background — active (`surface1`) vs inactive (`surface0`).
+        let bar = if is_active {
+            resolved.get(ids.modeline_active)
+        } else {
+            resolved.get(ids.modeline_inactive)
+        };
+        let bar_bg = bar.bg.map(|c| c.to_rgb_u32(FALLBACK_BAR)).unwrap_or(FALLBACK_BAR);
+
+        // ML.5: the `ui.modeline.{left,center,right}` config drives zone
+        // membership + order; `resolve_layout` returns the per-zone
+        // descriptor lists (Auto = descriptor placement) + the configured
+        // separator. Content per descriptor is still resolved here
+        // (built-ins host-side, pushed from the snapshot) — same shape as
+        // the TUI's `resolve_zone`, parity in lockstep.
+        let layout = lattice_host::modeline::resolve_layout(&snap.registry, &rs.options.config);
+        let sep = layout.separator.clone();
+        let zone_runs = |els: &[&lattice_mode::ModelineElement]| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
+            let mut runs: Vec<(String, Option<lattice_mode::ModelineRole>)> = Vec::new();
+            for el in els {
+                // §7: Global-scope elements (e.g. the diff summary) render
+                // only on the active pane; PaneLocal is the default.
+                if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
+                    continue;
+                }
+                let id = el.id.as_str();
+                let content = if id.starts_with("core.") {
+                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs, None)
+                } else {
+                    // Pushed elements (modes / plugins, ML.3): resolved
+                    // per the descriptor's scope against this pane's
+                    // buffer (PaneLocal) or the global slot.
+                    snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
+                };
+                if content.is_empty() {
+                    continue;
+                }
+                // Configured separator between elements within a zone
+                // (`ui.modeline.separator`, default a single space).
+                if !runs.is_empty() && !sep.is_empty() {
+                    runs.push((sep.clone(), None));
+                }
+                for span in content.spans {
+                    if !span.text.is_empty() {
+                        runs.push((span.text, Some(span.role)));
+                    }
+                }
+            }
+            runs
+        };
+
+        let mut left = zone_runs(&layout.left);
+        let center = zone_runs(&layout.center);
+        let mut right = zone_runs(&layout.right);
+        // `ui.modeline.padding`: blank margin at the row's start / end,
+        // expressed as content spaces so it matches the TUI peer exactly
+        // (the old `px_2` chrome in `pane_chrome` is dropped in favour of
+        // this configurable, cell-uniform margin).
+        if layout.padding > 0 {
+            let pad = (" ".repeat(layout.padding), None);
+            left.insert(0, pad.clone());
+            right.push(pad);
+        }
+
+        // Style one run: inactive → uniform muted; active → per-role fg.
+        let styled_run =
+            move |text: String, role: Option<lattice_mode::ModelineRole>| -> gpui::Div {
+                use lattice_host::modeline as ml;
+                let style = if is_active {
+                    // Per-role element id (inferred type; inline to avoid
+                    // naming `lattice_theme::ElementId` here).
+                    let id = match role.as_ref().map(|r| r.as_str()) {
+                        Some(ml::ROLE_MODE) => ids.modeline_mode,
+                        Some(ml::ROLE_PATH) => ids.modeline_path,
+                        Some(ml::ROLE_POSITION) => ids.modeline_position,
+                        Some(ml::ROLE_LANG) => ids.modeline_lang,
+                        Some(ml::ROLE_MODE_ITEM) => ids.modeline_mode_item,
+                        // Padding / unknown: text-ish on the bar.
+                        _ => ids.modeline_path,
+                    };
+                    resolved.get(id)
+                } else {
+                    resolved.get(ids.modeline_inactive)
+                };
+                let fg = style.fg.map(|c| c.to_rgb_u32(FALLBACK_FG)).unwrap_or(FALLBACK_FG);
+                let mut span = div().text_color(rgb(fg)).child(text);
+                if style.modifiers.bold {
+                    span = span.font_weight(gpui::FontWeight::BOLD);
+                }
+                span
+            };
+        let zone_div = |runs: Vec<(String, Option<lattice_mode::ModelineRole>)>| -> gpui::Div {
+            let mut z = div().flex().flex_row();
+            for (text, role) in runs {
+                z = z.child(styled_run(text, role));
+            }
+            z
+        };
+
+        div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .justify_between()
+            .bg(rgb(bar_bg))
+            .child(zone_div(left))
+            .child(zone_div(center))
+            .child(zone_div(right))
+    }
+
+    /// Wrap a pane's `inner` content with the per-pane modeline row
+    /// beneath it. The row is the styled flex element built by
+    /// [`Self::modeline_row`] (it already carries the bar bg + per-role
+    /// spans); this just stacks content + row and dims inactive content.
     fn pane_chrome(
         inner: AnyElement,
-        status_text: String,
+        status_row: gpui::Div,
         render_active: bool,
-        theme: &GpuiTheme,
         inactive_opacity: f32,
     ) -> gpui::Div {
-        let (status_bg, status_fg) = if render_active {
-            (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
-        } else {
-            (rgb(theme.status_background), rgb(theme.status_foreground))
-        };
-        // 2026-05-27: dim the buffer content (NOT the status row)
-        // when this pane is inactive. The TUI peer composes
-        // `inactive_pane_overlay = Style::empty().dim()` over every
-        // inactive pane's painted text — visible separation between
-        // "where input goes" and "everywhere else". The GPUI peer
-        // had no equivalent; only the status row colour changed,
-        // which the user reported as "too subtle".
-        //
-        // Applied as `.opacity()` on the content wrapper. Status row
-        // stays at full opacity so the pane identity / cursor coords
-        // are still legible on inactive panes.
-        //
-        // `inactive_opacity` is user-configurable via
-        // `:set ui.inactive_pane_opacity=N` (percent 0-100). Default
-        // 50 (= 0.5 alpha).
+        // 2026-05-27: dim the buffer content (NOT the status row) when
+        // this pane is inactive. `inactive_opacity` is user-configurable
+        // via `:set ui.inactive_pane_opacity=N`. The status row stays at
+        // full opacity (its own muted styling marks it inactive).
         let content_opacity: f32 = if render_active { 1.0 } else { inactive_opacity };
         div()
             .flex()
@@ -1043,16 +1249,10 @@ impl EditorView {
                     .opacity(content_opacity)
                     .child(inner),
             )
-            .child(
-                div()
-                    .bg(status_bg)
-                    .text_color(status_fg)
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .flex_row()
-                    .child(div().child(status_text)),
-            )
+            // Horizontal margin is now content-level (`ui.modeline.padding`,
+            // applied in `modeline_row` as leading/trailing spaces) so it
+            // matches the TUI peer exactly; only the vertical chrome stays.
+            .child(status_row.py_1())
     }
 
     /// render); inactive panes use the stashed `PaneState::cursor`
@@ -1072,15 +1272,11 @@ impl EditorView {
         // borrow held across the function body.
         let ad = self.app.ad();
         let rs_guard = self.app.render_state.load();
-        let active_spans_guard = rs_guard.syntax.visible_spans.load();
-        // S4.3 (2026-05-27): the prepaint `visible_rows` load
-        // retired here — `EditorElement`'s active-pane shaping
-        // now reads from `rs_guard.cells.matrix` (S4.1 wiring),
-        // falling back to `active_spans_guard` / pane-cached
-        // spans for boot frames / folded rows / inactive panes.
-        // The highlights worker still publishes `visible_rows`
-        // for TUI markdown / help / messages bodies in other
-        // render functions.
+        // display-line B4.2: the `visible_spans` / `visible_rows`
+        // prepaint loads retired here. `EditorElement`'s active-pane
+        // shaping reads from `rs_guard.cells.matrix` /
+        // `rs_guard.cells.display_matrix`, falling back to
+        // default-styled text for boot frames / folded rows.
         // Perf plan B.2 slice B.2.a: worker's per-row pre-bucketed
         // static-overlay quads (doc_highlight / all_matches /
         // substitute). Active pane consumes this directly; inactive
@@ -1114,19 +1310,15 @@ impl EditorView {
             // always paint the block so the user can still see
             // where each shell's cursor sits.
             let insert_active = is_active && ad.terminal_insert_active;
-            let (inner, status_text) = self.build_terminal_inner(
-                pane,
-                &rs_guard,
-                theme,
-                insert_active,
-                is_active,
-                row_px,
-            );
+            let inner =
+                self.build_terminal_inner(pane, &rs_guard, theme, insert_active, is_active, row_px);
+            // ML.2: terminal panes get the same zone/per-Span modeline as
+            // every other kind (shared resolver) — no kind-specific status.
+            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
             return Self::pane_chrome(
                 inner,
-                status_text,
+                status_row,
                 is_active,
-                theme,
                 inactive_pane_opacity(&self.app),
             );
         }
@@ -1248,35 +1440,24 @@ impl EditorView {
         let total_lines_for_gutter = total_lines.max(1);
         let gutter_width = total_lines_for_gutter.to_string().len();
 
-        // 5.8.I: per-line severity lookup. URI for this pane's
-        // buffer comes from `rs_guard.buffers.uris` (slice 3c.final.B
-        // group 1: published HashMap clone of `editor.buffer_uris`,
-        // populated when LSP attaches). `None` means: unsaved
-        // scratch, no LSP attachment, or LSP-mode disabled for this
-        // buffer. The gutter then renders a blank sign column (one
-        // space) so the line-number alignment stays stable
-        // regardless of whether diagnostics are present.
+        // MO.4.a: URI + render_state used by the gutter-decoration
+        // pre-loop below to inject LspDiagnosticsData service.
         let uri = rs_guard.buffers.uris.get(&pane.buffer_id);
-        // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
-        // `RenderState` contract instead of `editor.lsp_diagnostics`
-        // directly. Symmetric with the TUI peer's
-        // `severity_for_line` migration. `load_full` is wait-free
-        // (~2ns); the returned snapshot's diagnostics layer is
-        // internally `Arc<ArcSwap<...>>`-backed so the inner
-        // `line_severity` call stays wait-free too.
         // Slice 3c.final.E.swap: render_state via App's own Arc.
         let render_state = self.app.render_state.load_full();
-        let line_severity = |line_idx: u32| -> Option<lattice_lsp::DiagnosticSeverity> {
-            uri.and_then(|u| render_state.diagnostics.layer.line_severity(u, line_idx))
-        };
 
-        // 5.8.N: severity glyph + colour come from host_theme so
-        // `:set ui.diagnostics.*` overrides flow through identically
-        // for both renderer peers.
-        // Slice 3c.final.B (group 6): host theme via published
-        // top-level field. Theme is `Copy` so this is a plain
-        // struct move.
-        let host_theme = rs_guard.theme;
+        // T.6.t: the severity glyph reads from the published
+        // typed-options registry (`ui.diagnostic-*-glyph`); `:set`
+        // overrides flow through identically for both renderer peers.
+        // The deleted host `Theme` carried the glyph char; the *style*
+        // still resolves through the table below.
+        let config = render_state.options.config.clone();
+        // T.4 (theme-system): the resolved read table + builtin ids,
+        // snapshotted into `RenderState`. GPUI has no native theme
+        // cache — it adapts inline via `to_rgb_u32` per read — so the
+        // migrated diagnostic styles read `resolved.get(ids.x)` here.
+        let resolved_theme = rs_guard.resolved_theme.clone();
+        let theme_ids = rs_guard.theme_ids;
 
         // Phase 5.8.AF.5 / Slice X3.full.2 + 3c.final.B (group 2):
         // gather per-row gutter metadata for the visible window.
@@ -1310,50 +1491,134 @@ impl EditorView {
         // `snapshot`. None for regular Documents (gutter shows
         // composed-row identity); Some(arr) for Multibuffer.
         let display_line_numbers_for_meta = pane_display_line_numbers.clone();
+        // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
+        // pane's buffer once; accumulate GutterDecoration contributions into
+        // per-line maps. Replaces per-line render_state reads inside gutter_meta.
+        let (diff_gutter, severity_gutter) = {
+            use lattice_mode::{
+                DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+                ServiceRegistry,
+            };
+            let mut services = ServiceRegistry::new();
+            // DiffDecorationData: active-doc only (sign_map is per active doc).
+            if pane.buffer_id == ad.document_buffer_id {
+                services.register(lattice_host::diff::mode::DiffDecorationData {
+                    sign_map: rs_guard.diff.sign_map.clone(),
+                });
+            }
+            // LspDiagnosticsData: inject when URI resolves (lsp-mode gate is
+            // implicit — LspMode::gutter_decorations returns empty when service absent).
+            {
+                let diagnostics = uri
+                    .and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u));
+                services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
+            }
+            let deco_ctx = DecorationCtx::new(pane.buffer_id, &services);
+            let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> =
+                Default::default();
+            let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> =
+                Default::default();
+            if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
+                let registry = &rs_guard.modes.mode_registry;
+                let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+                if let Some(major) = active.major() {
+                    all_ids.push(major);
+                }
+                all_ids.extend_from_slice(active.minors());
+                for id in all_ids {
+                    if let Some(mode) = registry.get(id) {
+                        for deco in mode.gutter_decorations(&deco_ctx) {
+                            match deco {
+                                GutterDecoration::Diff { line, kind } => {
+                                    diff_map.entry(line).or_insert(kind);
+                                }
+                                GutterDecoration::Severity { line, level } => {
+                                    sev_map
+                                        .entry(line)
+                                        .and_modify(|e| {
+                                            if level > *e {
+                                                *e = level;
+                                            }
+                                        })
+                                        .or_insert(level);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (diff_map, sev_map)
+        };
+        // T.6.t: hoist the four severity glyphs out of the per-line
+        // closure — one typed-option read each instead of O(viewport)
+        // lookups. The *style* still resolves per-line from the table.
+        let glyph_error = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
+        >(&config, '■');
+        let glyph_warning = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
+        >(&config, '▲');
+        let glyph_info = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
+        >(&config, '●');
+        let glyph_hint = diagnostic_glyph_option::<
+            lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
+        >(&config, '·');
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
                 let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
-                let severity =
-                    line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
+                // MO.4.a: read from pre-built mode-walk map.
+                let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
+                    use lattice_mode::GutterSeverityLevel;
+                    // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
+                    // option chars; style from the resolved table.
+                    let (glyph, style) = match level {
+                        GutterSeverityLevel::Error => (
+                            glyph_error,
+                            resolved_theme.get(theme_ids.diagnostic_error),
+                        ),
+                        GutterSeverityLevel::Warning => (
+                            glyph_warning,
+                            resolved_theme.get(theme_ids.diagnostic_warning),
+                        ),
+                        GutterSeverityLevel::Info => (
+                            glyph_info,
+                            resolved_theme.get(theme_ids.diagnostic_info),
+                        ),
+                        GutterSeverityLevel::Hint => (
+                            glyph_hint,
+                            resolved_theme.get(theme_ids.diagnostic_hint),
+                        ),
+                    };
+                    let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
+                    (glyph, color)
+                });
                 let display_line = display_line_numbers_for_meta
                     .as_ref()
                     .and_then(|m| m.get(line_idx).copied())
                     .unwrap_or(line_idx as u32);
-                // D.3.d.2 (2026-05-29): diff sign lookup —
-                // read through the same `RenderState::diff`
-                // substate the TUI uses. Lock-free Arc load.
-                let diff_sign = rs_guard
-                    .diff
-                    .sign_map
-                    .sign_at(line_idx as u32)
-                    .map(|kind| {
-                        use lattice_host::diff::overlay::DiffSignKind;
-                        // D.3.b.3 (2026-05-29): read sign
-                        // colours from the host theme. Glyphs
-                        // stay hardcoded (convention).
-                        let style = match kind {
-                            DiffSignKind::Add => host_theme.diff_add_sign_style,
-                            DiffSignKind::Change => host_theme.diff_change_sign_style,
-                            DiffSignKind::Remove => host_theme.diff_remove_sign_style,
-                            // D.6.f (2026-05-31): three-way Conflict.
-                            DiffSignKind::Conflict => host_theme.diff_conflict_sign_style,
-                        };
-                        // Diff-sign default styles always set `fg`;
-                        // this fallback is a safety net. Use the
-                        // Catppuccin text default the gutter uses
-                        // elsewhere (the host `Theme` has no general
-                        // foreground slot to read here).
-                        let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
-                        let glyph = match kind {
-                            DiffSignKind::Add => '+',
-                            DiffSignKind::Change => '~',
-                            DiffSignKind::Remove => '-',
-                            // D.6.f: `?` for Conflict.
-                            DiffSignKind::Conflict => '?',
-                        };
-                        (glyph, fg)
-                    });
+                // MO.4.a: read from pre-built mode-walk map.
+                let diff_sign = diff_gutter.get(&(line_idx as u32)).copied().map(|kind| {
+                    use lattice_mode::GutterDiffKind;
+                    // T.4.b: read sign styles from the resolved table.
+                    let style = match kind {
+                        GutterDiffKind::Add => resolved_theme.get(theme_ids.diff_add_sign),
+                        GutterDiffKind::Change => resolved_theme.get(theme_ids.diff_change_sign),
+                        GutterDiffKind::Remove => resolved_theme.get(theme_ids.diff_remove_sign),
+                        GutterDiffKind::Conflict => {
+                            resolved_theme.get(theme_ids.diff_conflict_sign)
+                        }
+                    };
+                    let fg = style.fg.map(|c| c.to_rgb_u32(0xcdd6f4)).unwrap_or(0xcdd6f4);
+                    let glyph = match kind {
+                        GutterDiffKind::Add => '+',
+                        GutterDiffKind::Change => '~',
+                        GutterDiffKind::Remove => '-',
+                        GutterDiffKind::Conflict => '?',
+                    };
+                    (glyph, fg)
+                });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     display_line,
@@ -1376,18 +1641,23 @@ impl EditorView {
             .map(|line_idx| {
                 rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
                     use lattice_host::diff::overlay::DiffSignKind;
-                    // D.3.b.3 (2026-05-29): read line tint
-                    // colours from the host theme.
+                    // T.4.b: read line tint colours from the resolved
+                    // table's `bg` channel (`None` ⇒ no tint).
                     match kind {
-                        DiffSignKind::Add => Some(host_theme.diff_add_line_bg.to_rgb_u32(0)),
-                        DiffSignKind::Change => {
-                            Some(host_theme.diff_change_line_bg.to_rgb_u32(0))
-                        }
+                        DiffSignKind::Add => resolved_theme
+                            .get(theme_ids.diff_add_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
+                        DiffSignKind::Change => resolved_theme
+                            .get(theme_ids.diff_change_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
                         DiffSignKind::Remove => None,
                         // D.6.f (2026-05-31): three-way Conflict tint.
-                        DiffSignKind::Conflict => {
-                            Some(host_theme.diff_conflict_line_bg.to_rgb_u32(0))
-                        }
+                        DiffSignKind::Conflict => resolved_theme
+                            .get(theme_ids.diff_conflict_line)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0)),
                     }
                 })
             })
@@ -1506,7 +1776,24 @@ impl EditorView {
         // overrides. Fallback Catppuccin surface0.
         // Slice 3c.final.B (group 6): reuse `host_theme` bound
         // above from `rs_guard.theme`.
-        let cursorline_bg = host_theme.cursor_line_bg.to_rgb_u32(0x313244);
+        // T.4.d: current-line tint from the resolved table's `bg`
+        // channel (legacy `Color::Indexed(236)` → the 0x313244
+        // fallback, matching prior behaviour since Indexed has no Rgb).
+        let cursorline_bg = resolved_theme
+            .get(theme_ids.editor_cursor_line)
+            .bg
+            .map(|c| c.to_rgb_u32(0x313244))
+            .unwrap_or(0x313244);
+        // Gate the cursorline quad on `:set cursorline`
+        // (`current-line-highlight`, default off) — same active-document
+        // option-cache seam the TUI reads (`render.rs` cursorline path)
+        // and the same seam used for `foldenable` above. Without this the
+        // GPUI peer painted the cursorline unconditionally.
+        let cursorline_enabled = rs_guard
+            .active_document
+            .load()
+            .option_cache
+            .current_line_highlight;
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive
@@ -1571,7 +1858,15 @@ impl EditorView {
                         );
                         let color = d
                             .severity
-                            .map(|s| diagnostic_glyph_and_color(&host_theme, s).1)
+                            .map(|s| {
+                                diagnostic_glyph_and_color(
+                                    &config,
+                                    &resolved_theme,
+                                    &theme_ids,
+                                    s,
+                                )
+                                .1
+                            })
                             // Unknown severity: fall back to overlay2
                             // (matches `diagnostic_glyph_and_color`).
                             .unwrap_or(0x9399b2);
@@ -1593,42 +1888,58 @@ impl EditorView {
             })
             .unwrap_or_default();
 
-        // Inlay color: Catppuccin overlay1; host-theme override
-        // hook lands when `host_theme.inlay_foreground` is added.
-        let inlay_color: u32 = 0x7f849c;
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. The host idle gate (L4a.2) publishes `(line, summary)`
+        // for the ACTIVE buffer's cursor line; resolve it only on the
+        // active pane (the summary tracks the focused cursor). The
+        // severity rank maps to the same host-theme colour the gutter
+        // glyph + underline use, via `diagnostic_glyph_and_color`.
+        let diag_mode_on = render_state
+            .translator
+            .active_minor_modes
+            .iter()
+            .any(|m| *m == lattice_lsp::modes::LspDiagnosticsMode::mode_id());
+        let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> = if is_active
+            && diag_mode_on
+        {
+            render_state
+                .diagnostics
+                .inline_summary
+                .as_ref()
+                .map(|(line, summary)| {
+                    let severity = match summary.severity_rank {
+                        0 => lattice_lsp::DiagnosticSeverity::ERROR,
+                        1 => lattice_lsp::DiagnosticSeverity::WARNING,
+                        2 => lattice_lsp::DiagnosticSeverity::INFORMATION,
+                        _ => lattice_lsp::DiagnosticSeverity::HINT,
+                    };
+                    let color =
+                        diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, severity).1;
+                    crate::editor_element::InlineDiagSummary {
+                        line: *line,
+                        text: format!("    {}", summary.text),
+                        color,
+                    }
+                })
+        } else {
+            None
+        };
 
-        // Per-pane status line at the pane's bottom. Format
-        // matches the TUI's per-pane status: path + cursor coords.
-        // Active pane uses the cursor color for the bar so the
-        // user can tell which pane has focus at a glance.
-        let path_label = snapshot
-            .path()
-            .map(|p| {
-                let display = match std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| p.strip_prefix(&cwd).ok().map(|s| s.to_path_buf()))
-                {
-                    Some(rel) => rel.display().to_string(),
-                    None => p.display().to_string(),
-                };
-                if snapshot.dirty {
-                    format!("{display} [+]")
-                } else {
-                    display
-                }
-            })
-            .unwrap_or_else(|| {
-                if snapshot.dirty {
-                    "[scratch][+]".to_string()
-                } else {
-                    "[scratch]".to_string()
-                }
-            });
-        let status_line = format!("  {path_label}   L:{}  C:{}", cursor.line + 1, cursor.byte);
-        // Status-bar fg/bg colours are picked inside `pane_chrome`
-        // off `render_active` so every kind goes through one
-        // styling path; the document arm no longer derives them
-        // locally.
+        // T.6: inlay color resolves from the `inlay.hint` element
+        // (shared with the TUI peer's `inlay_hint_style`).
+        let inlay_color: u32 = resolved_theme
+            .get(theme_ids.inlay_hint)
+            .fg
+            .map(|c| c.to_rgb_u32(0x7f849c))
+            .unwrap_or(0x7f849c);
+
+        // ML.2: the per-pane modeline is built by `Self::modeline_row`
+        // (zone / per-Span flex row) from the SHARED host resolver
+        // (`lattice_host::modeline`) at the `pane_chrome` call below —
+        // identical content to the TUI peer, only the paint differs. The
+        // old inline modal-label + path + mode-items + lang assembly (and
+        // its `PENDING`/`COMMAND` drift from the host `O-PEND`/`CMD`) is
+        // gone; the host resolver is the single source.
 
         // Phase 5.8.AF.5 / Slice X3.full.2: pane body is one
         // `EditorElement` that shapes + paints visible lines
@@ -1655,27 +1966,12 @@ impl EditorView {
             // The element subtracts `scroll` from line_idx to
             // index this visible-window subset.
             text: std::sync::Arc::new(raw_lines.join("\n")),
-            // DR.2 (decoration-retention): inactive panes render from
-            // their per-pane `DisplayMatrix` (same producer as active —
-            // see `cell_matrix` / `display_matrix` below), so they no
-            // longer consult the legacy `pane_highlights` span map.
-            // `visible_spans` is only the shape_row fallback for when the
-            // matrix is absent/stale: for the active pane it's the live
-            // worker spans; for an inactive pane the matrix is already
-            // built (the cells worker covers every visible pane), so the
-            // empty fallback matters only for the one transient frame
-            // right after a split — identical to the active pane's
-            // first-frame behaviour. This retires the `pane_highlights`
-            // producer (host-side teardown removed in the same slice).
-            visible_spans: if render_active {
-                (*active_spans_guard).clone()
-            } else {
-                lattice_host::render_state::VisibleSpans {
-                    spans: Vec::<Vec<lattice_syntax::StyledSpan>>::new().into(),
-                    computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
-                }
-                .into()
-            },
+            // display-line B4.2: the `visible_spans` field was deleted
+            // from `EditorElement`. Both active and inactive panes
+            // render syntax colour from their per-pane `DisplayMatrix`
+            // (`cell_matrix` / `display_matrix` below, built by the
+            // cells worker for every visible pane); rows the matrix
+            // doesn't yet cover render default-styled.
             // Perf plan B.2 slice B.2.a: active pane consumes the
             // worker's static-overlay bucket; inactive panes keep
             // the per-frame `push_range_quads` path (only
@@ -1721,13 +2017,19 @@ impl EditorView {
             substitute_matches,
             doc_highlights,
             cursorline_bg,
-            // D.3.b.3 (2026-05-29): resolve deletion-block
-            // backdrop colour from the host theme so the paint
-            // pass doesn't need to hold a Theme reference.
-            diff_deletion_block_bg: host_theme.diff_deletion_block_bg.to_rgb_u32(0),
+            cursorline_enabled,
+            // T.4.b: resolve deletion-block backdrop colour from the
+            // resolved table's `bg` channel so the paint pass doesn't
+            // need to hold a Theme reference.
+            diff_deletion_block_bg: resolved_theme
+                .get(theme_ids.diff_deletion_block)
+                .bg
+                .map(|c| c.to_rgb_u32(0))
+                .unwrap_or(0),
             inlay_hints,
             diagnostic_underlines,
             inlay_color,
+            inline_diag_summary,
             // S4.1 (2026-05-27): active pane consumes the cell
             // matrix published by the cell-builder worker;
             // inactive panes pass `None` (mirrors `visible_rows`
@@ -1785,9 +2087,12 @@ impl EditorView {
                     .map(|cell| cell.load_full())
                     .filter(|m| m.version.text == snapshot.text_version)
             },
-            // B3: host theme (Copy) for resolving DisplayRun style tags →
-            // TextRun colours at shape time (display_line_to_text_runs).
-            host_theme,
+            // T.5.b: the resolved table + builtin ids the display-line
+            // path resolves syntax styles through (`resolve_syntax_style`),
+            // replacing the `host_theme.syntax_style` read. Reuses the
+            // T.4 locals bound from `rs_guard` above.
+            resolved_theme: resolved_theme.clone(),
+            theme_ids,
             // S4.final.b (2026-05-27): per-window glyph-id
             // cache. Always carries the shared resolver from
             // `EditorView`; consumption is gated on
@@ -1797,11 +2102,11 @@ impl EditorView {
             glyph_resolver: self.glyph_resolver.clone(),
         };
 
+        let status_row = Self::modeline_row(pane, render_active, &rs_guard);
         Self::pane_chrome(
             editor_element.into_any_element(),
-            status_line,
+            status_row,
             render_active,
-            theme,
             inactive_pane_opacity(&self.app),
         )
     }
@@ -1830,7 +2135,10 @@ impl EditorView {
         insert_active: bool,
         is_active: bool,
         row_px: f32,
-    ) -> (AnyElement, String) {
+    ) -> AnyElement {
+        // ML.2: returns the inner content only; the per-pane modeline row
+        // is built uniformly by `Self::modeline_row` at the call site (no
+        // kind-specific status, `feedback_buffers_no_special_case`).
         let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
             (
                 t.snapshot.load_full(),
@@ -1841,15 +2149,11 @@ impl EditorView {
             )
         });
         let Some((snap, current_match, mut visual, all_matches, mut nav_cursor)) = snap_opt else {
-            let placeholder = div()
+            return div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
                 .child(format!("(terminal #{} unavailable)", pane.buffer_id.0))
                 .into_any_element();
-            return (
-                placeholder,
-                format!("  [terminal #{} unavailable]", pane.buffer_id.0),
-            );
         };
         // T-clean-1 Phase A.2 (2026-05-28): active pane reads
         // cursor + visual from the publisher's derived render-
@@ -1881,16 +2185,14 @@ impl EditorView {
         // prefer the registry `name` slot ("[zsh]", "[bash]", …)
         // populated at spawn time, falling back to the legacy
         // `terminal #N` form when the buffer hasn't been named.
+        // Used only by the seq==0 placeholder below; the per-pane status
+        // bar (terminal name + position) is built by `Self::modeline_row`
+        // via the shared resolver (`core.path` reads this same name slot).
         let name_label = rs_guard
             .buffers
             .registry
             .name_of(pane.buffer_id)
             .unwrap_or_else(|| format!("[terminal #{}]", pane.buffer_id.0));
-        let status_text = format!(
-            "  {name_label}   R:{}  C:{}",
-            snap.cursor_row + 1,
-            snap.cursor_col,
-        );
         // Diagnostic placeholder while the reader hasn't
         // published its first frame: a string of spaces renders
         // as nothing visible, so the user perceives a fully
@@ -1909,7 +2211,7 @@ impl EditorView {
                     snap.rows, snap.cols,
                 ))
                 .into_any_element();
-            return (placeholder, status_text);
+            return placeholder;
         }
         // T2 substrate swap (2026-05-25): per-cell SGR colors
         // from alacritty's grid. The xterm-default 16-colour
@@ -2195,7 +2497,7 @@ impl EditorView {
         for row in rows {
             col = col.child(row);
         }
-        (col.into_any_element(), status_text)
+        col.into_any_element()
     }
 }
 
@@ -2295,7 +2597,7 @@ impl Render for EditorView {
         let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let pane_status_row_px = estimated_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let global_bottom_row_px = estimated_row_px; // modeline / cmdline content
+        let global_bottom_row_px = estimated_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
         let per_leaf_v_chrome_px =
             pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
         let per_leaf_h_chrome_px = pane_padding_h_px;
@@ -2348,8 +2650,12 @@ impl Render for EditorView {
         // Clone font family before the block so the immutable borrow of
         // self.app drops before the mutable borrows below.
         let font_family_for_advance = self.app.theme.font_family.clone();
+        let ligatures_enabled = self.app.theme.ligatures;
         let glyph_advance_px = {
-            let ref_font = font(font_family_for_advance);
+            let mut ref_font = font(font_family_for_advance);
+            if !ligatures_enabled {
+                ref_font.features = FontFeatures::disable_ligatures();
+            }
             let ref_run = TextRun {
                 len: 1,
                 font: ref_font,
@@ -2534,15 +2840,15 @@ impl Render for EditorView {
         let after_ensure = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X2.5: the per-frame
         // `self.app.refresh_highlights()` call has been removed.
-        // Active-pane highlights are now produced by the
-        // background highlights worker
-        // (`lattice_host::highlights_worker`) which subscribes to
-        // `Editor::highlight_wake` and publishes results into
-        // `render_state.syntax.visible_spans`. `paint_pane` reads
-        // those spans through `rs_guard.syntax.visible_spans.load()`.
-        // Pre-X2 cost: ~178µs at 80 lines per frame; post-X2: zero
-        // UI-thread parse cost. Goal #1 violation B1 closed for the
-        // GPUI peer.
+        // display-line B-series: active-pane syntax colour is now
+        // produced by the cells worker into the `DisplayMatrix`
+        // substrate; overlay backgrounds by the
+        // `lattice_host::overlay_worker` (woken via
+        // `Editor::overlay_wake`). `paint_pane` reads the matrix via
+        // `rs_guard.cells.display_matrix`; B4.2 deleted the old
+        // worker span cell (`visible_spans`). Pre-X2 cost: ~178µs at
+        // 80 lines per frame; now zero UI-thread parse cost. Goal #1
+        // violation B1 closed for the GPUI peer.
         // DR.2 (decoration-retention): the per-frame
         // `RefreshPaneHighlights` dispatch is gone. Inactive panes now
         // read their own retained per-pane `DisplayMatrix` (built by the
@@ -2574,56 +2880,22 @@ impl Render for EditorView {
         let ad = self.app.ad();
         let modal = ad.modal;
 
-        // 2026-05-25: terminal panes surface `TERMINAL-INSERT` /
-        // `TERMINAL-VISUAL` / `TERMINAL` on the bottom row in
-        // place of the underlying modal (which stays `Normal`
-        // while terminal-insert-mode owns input). The running
-        // program basename is rendered as the buffer *name*
-        // by `pane_status_label` (registry lookup); we don't
-        // repeat it here.
-        let modal_label: &str = if matches!(
-            ad.buffer_kind,
-            lattice_core::BufferKind::Terminal,
-        ) {
-            if ad.terminal_insert_active {
-                "TERMINAL-INSERT"
-            } else if ad.terminal_visual_active {
-                "TERMINAL-VISUAL"
-            } else {
-                "TERMINAL"
-            }
-        } else {
-            match modal {
-                ModalState::Normal => "NORMAL",
-                ModalState::Insert => "INSERT",
-                ModalState::Visual(_) => "VISUAL",
-                ModalState::OperatorPending => "PENDING",
-                ModalState::Command => "COMMAND",
-                ModalState::Search(_) => "SEARCH",
-                ModalState::Replace => "REPLACE",
-            }
-        };
         drop(ad);
-        // 5.8.C / 5.8.H: bottom global row. In Command/Search
-        // modes it shows the in-progress `:cmd` / `/pattern`
-        // minibuffer; otherwise it shows the global modal label.
-        // Per-pane path + cursor coords now live inside each
-        // pane's own status line (built in `paint_pane`).
+        // 5.8.C / 5.8.H: bottom global row. In Command/Search modes
+        // it shows the in-progress `:cmd` / `/pattern` minibuffer;
+        // otherwise it is empty — the modal indicator moved to each
+        // pane's own status footer (Option-A modeline overhaul, MO.4.b).
         // Slice 3c.final.B.7: cmdline + search-line via published
         // `modeline()` sub-state — wait-free Arc clones.
         let modeline = self.app.modeline();
-        let bottom_row: String = match modal {
-            ModalState::Command => format!(":{}", modeline.cmdline_text),
-            ModalState::Search(dir) => {
-                let prefix = match dir {
-                    lattice_grammar::SearchDirection::Forward => '/',
-                    lattice_grammar::SearchDirection::Backward => '?',
-                };
-                let pattern = modeline.search_pattern.as_deref().unwrap_or("");
-                format!("{prefix}{pattern}")
-            }
-            _ => format!("  {modal_label}"),
-        };
+        let messages = self.app.messages();
+        // Bottom global row: the in-progress `:`/`/` minibuffer while
+        // typing, otherwise the last echo message — a `:set foo?` value,
+        // a command error, or the `-- INSERT --` showmode (ML.5d). This
+        // is vim's shared bottom line; GPUI previously left it blank
+        // outside Command/Search, so echoes the TUI peer shows were
+        // invisible here. `bottom_echo_level` colours errors / warnings.
+        let (bottom_row, bottom_echo_level) = bottom_row_content(modal, &modeline, &messages);
         let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
 
         let theme = self.app.theme.clone();
@@ -2644,6 +2916,10 @@ impl Render for EditorView {
         // Slice 3c.final.E.5j: render-state load via App's own Arc
         // (cloned from `editor.render_state` at construction time).
         let render_state = self.app.render_state.load_full();
+        // T.6: the resolved theme table + ids for completion-annotation
+        // base colors (`paint_candidate_row` → `annotation_color_rgb`).
+        let resolved_theme = render_state.resolved_theme.clone();
+        let theme_ids = render_state.theme_ids;
         let active_idx = render_state.panes.tree.active_index();
         let document_area = self
             .paint_pane_tree(
@@ -2704,6 +2980,8 @@ impl Render for EditorView {
                             &theme,
                             false,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();
@@ -2814,6 +3092,8 @@ impl Render for EditorView {
                         &theme,
                         false,
                         display_col_chars, &columns,
+                        &resolved_theme,
+                        &theme_ids,
                     )
                 })
                 .collect();
@@ -2931,6 +3211,8 @@ impl Render for EditorView {
                                 &theme,
                                 true,
                                 display_col_chars, &columns,
+                                &resolved_theme,
+                                &theme_ids,
                             )
                         })
                         .collect()
@@ -3026,6 +3308,8 @@ impl Render for EditorView {
                             &theme,
                             true,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();
@@ -3076,6 +3360,8 @@ impl Render for EditorView {
                             &theme,
                             false,
                             display_col_chars, &columns,
+                            &resolved_theme,
+                            &theme_ids,
                         )
                     })
                     .collect();
@@ -3098,6 +3384,11 @@ impl Render for EditorView {
         // `render_state.popup.X`; bind locally so the borrows live
         // for the closure.
         let popup_substate = self.app.render_state.load().popup.clone();
+        // T.5.b: the popup-overlay cell renderer resolves syntax
+        // styles through the active theme's resolved table (loaded
+        // once; captured by the popup closure below).
+        let popup_resolved = self.app.render_state.load().resolved_theme.clone();
+        let popup_ids = self.app.render_state.load().theme_ids;
         let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
             let title = buf.title.clone();
             let body_text = buf.content.as_string();
@@ -3266,7 +3557,7 @@ impl Render for EditorView {
                                     .text_color(rgb(theme.cursor_foreground))
                                     .child(c.to_string())
                             } else {
-                                base.text_color(rgb(syntax_color(style)))
+                                base.text_color(rgb(syntax_color(style, &popup_resolved, &popup_ids)))
                                     .child(c.to_string())
                             }
                         })
@@ -3427,6 +3718,29 @@ impl Render for EditorView {
         root = root
             .child(document_area)
             .child({
+                // Level-coloured echo (errors red + bold, warnings
+                // yellow) to match the TUI echo line; cmdline / search /
+                // Info fall through to the default status foreground.
+                let mut msg = div().child(bottom_row);
+                match bottom_echo_level {
+                    Some(lattice_host::action::EchoLevel::Error) => {
+                        let fg = resolved_theme
+                            .get(theme_ids.diagnostic_error)
+                            .fg
+                            .map(|c| c.to_rgb_u32(0x00f3_8ba8))
+                            .unwrap_or(0x00f3_8ba8);
+                        msg = msg.text_color(rgb(fg)).font_weight(gpui::FontWeight::BOLD);
+                    }
+                    Some(lattice_host::action::EchoLevel::Warn) => {
+                        let fg = resolved_theme
+                            .get(theme_ids.diagnostic_warning)
+                            .fg
+                            .map(|c| c.to_rgb_u32(0x00f9_e2af))
+                            .unwrap_or(0x00f9_e2af);
+                        msg = msg.text_color(rgb(fg));
+                    }
+                    _ => {}
+                }
                 let row = div()
                     .bg(rgb(theme.status_background))
                     .text_color(rgb(theme.status_foreground))
@@ -3434,7 +3748,7 @@ impl Render for EditorView {
                     .py_1()
                     .flex()
                     .flex_row()
-                    .child(div().child(bottom_row));
+                    .child(msg);
                 if bottom_is_minibuffer {
                     row.child(
                         div()
@@ -3674,3 +3988,73 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 // `lattice_host::cursor_shape::tests`; the GPUI peer's local
 // duplicates were removed. Window-side tests (popup focus, dispatch
 // integration) still live in `crate::tests` at the lib's root.
+
+#[cfg(test)]
+mod modeline_tests {
+    use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+
+    /// ML.2: the `modeline.*` elements GPUI's `modeline_row` paints through
+    /// resolve to the expected u32 colours under the default palette —
+    /// pinning the exact `resolved.get(id).fg.to_rgb_u32` adaptation the
+    /// row uses. CONTENT parity with the TUI is guaranteed by construction
+    /// (both peers call the same `lattice_host::modeline` resolver), so
+    /// this covers the GPUI-specific colour path.
+    #[test]
+    fn modeline_elements_resolve_to_gpui_colours() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+
+        let mode = resolved.get(ids.modeline_mode);
+        assert_eq!(mode.fg.unwrap().to_rgb_u32(0), 0x0089_b4fa, "mode fg = blue");
+        assert!(mode.modifiers.bold, "mode is bold");
+        assert_eq!(
+            resolved.get(ids.modeline_active).bg.unwrap().to_rgb_u32(0),
+            0x0045_475a,
+            "active bar bg = surface1"
+        );
+        let inactive = resolved.get(ids.modeline_inactive);
+        assert_eq!(inactive.bg.unwrap().to_rgb_u32(0), 0x0031_3244, "inactive bar = surface0");
+        assert_eq!(inactive.fg.unwrap().to_rgb_u32(0), 0x006c_7086, "inactive fg = overlay");
+    }
+
+    /// The bottom global row shows the in-progress `:` minibuffer in
+    /// Command mode, but otherwise falls back to the last echo message
+    /// (e.g. a `:set wrap?` value) — the parity gap with the TUI peer
+    /// this fixes. `super::bottom_row_content` is the pure selector.
+    #[test]
+    fn bottom_row_falls_back_to_echo_outside_minibuffer() {
+        use lattice_grammar::ModalState;
+        use lattice_host::action::{EchoLevel, EchoMessage};
+        use lattice_host::render_state::{MessagesRenderState, ModelineRenderState};
+        use std::sync::Arc;
+
+        let echo = MessagesRenderState {
+            last: Some(Arc::new(EchoMessage {
+                text: "wrap=false".to_string(),
+                level: EchoLevel::Info,
+            })),
+        };
+        let modeline = ModelineRenderState::default();
+
+        // Normal mode → the echo (this is what GPUI used to drop).
+        let (row, level) =
+            super::bottom_row_content(ModalState::Normal, &modeline, &echo);
+        assert_eq!(row, "wrap=false");
+        assert!(matches!(level, Some(EchoLevel::Info)));
+
+        // Command mode → the `:` minibuffer wins over any pending echo.
+        let cmd = ModelineRenderState {
+            cmdline_text: Arc::from("set wrap?"),
+            ..Default::default()
+        };
+        let (row, level) = super::bottom_row_content(ModalState::Command, &cmd, &echo);
+        assert_eq!(row, ":set wrap?");
+        assert!(level.is_none(), "cmdline carries no echo level");
+
+        // Normal mode, no message → blank row.
+        let empty = MessagesRenderState { last: None };
+        let (row, _) = super::bottom_row_content(ModalState::Normal, &modeline, &empty);
+        assert!(row.is_empty());
+    }
+}

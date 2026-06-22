@@ -8,6 +8,11 @@ license.workspace = true
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
+# L4b: lsp-diagnostics-mode's `gl` action handler returns
+# `lattice_grammar::Effect::ShowDiagnosticsPopup`. Edge already exists
+# transitively (lattice-mode -> lattice-grammar); direct dep makes the
+# import path explicit.
+lattice-grammar = { path = "../lattice-grammar" }
 lattice-config = { path = "../lattice-config" }
 # CSM.8: lsp-completion-mode contributes the LSP completion
 # source through `lattice-completion::AsyncCompletionSource`.

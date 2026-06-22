@@ -173,6 +173,11 @@ pub struct GpuiTheme {
     pub font_family: String,
     /// Font size in points. Configurable via `ui.font_size`.
     pub font_size_pt: u32,
+    /// Whether OpenType ligatures are enabled. Configurable via
+    /// `ui.ligatures` (default `true`). When `false`,
+    /// `FontFeatures::disable_ligatures()` is applied to every
+    /// `Font` before shaping, suppressing `calt` (drives programming ligatures).
+    pub ligatures: bool,
     /// Main document background.
     pub background: u32,
     /// Main document foreground (text + non-cursor chars).
@@ -213,6 +218,7 @@ impl Default for GpuiTheme {
         Self {
             font_family: String::from("Menlo"),
             font_size_pt: 14,
+            ligatures: true,
             // Catppuccin Mocha base.
             background: 0x1e1e2e,
             // Catppuccin Mocha text.
@@ -345,6 +351,10 @@ impl GpuiApp {
         let workspace_root = Editor::workspace_root_from_cwd();
         let _ = editor.load_persistent_config(workspace_root.as_deref());
         editor.apply_per_language_toml_overrides();
+        // built-ins 2026-06-13: load embedded + user snippet packs
+        // once at startup (parity with the TUI runtime). Quiet —
+        // logs, no echo.
+        editor.load_snippets_at_startup();
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 
@@ -528,16 +538,11 @@ impl GpuiApp {
         self.dispatch_action(lattice_host::action::Action::DismissPopup);
     }
 
-    /// X2.6 compatibility shim: the background `highlights_worker`
-    /// now keeps the active-pane span cell up to date; the GPUI
-    /// peer no longer needs to drive a synchronous recompute. Kept
-    /// as a no-op so any external caller (smoke tests, demo code)
-    /// continues to compile. Production paint reads through
-    /// `render_state.syntax.visible_spans.load()`.
-    pub fn refresh_highlights(&mut self) {
-        // No-op; the worker subscribes to `Editor::highlight_wake`
-        // and republishes on every `publish_render_state`.
-    }
+    // display-line B4.2: the `refresh_highlights` no-op compatibility
+    // shim was deleted. It carried no behaviour (the worker drove the
+    // span cell that was itself deleted) and had no callers. Syntax
+    // colour flows through the cells / `DisplayMatrix` substrate;
+    // overlay backgrounds through `lattice_host::overlay_worker`.
 
     /// Auto-scroll the active pane so the cursor stays in the
     /// visible viewport (`[scroll, scroll + viewport_height)`).
@@ -771,34 +776,67 @@ impl GpuiApp {
     /// slice unblocks.
     pub fn rebuild_gpui_theme(&mut self) {
         // Phase 5.8.K: live-cascade host_theme → GpuiTheme for the
-        // fields where the host's `Theme` carries a matching colour
-        // today. Fields without a host source (the bulk of the
-        // window-only palette: editor bg/fg, cursor inversion,
-        // popup chrome) keep their Catppuccin defaults until the
-        // host's `Theme` grows window-color fields. The wiring is
-        // already in place — `RendererSignal::ThemeChanged` fires
-        // this method — so adding host fields later flows through
-        // automatically.
+        // fields the resolved element table sources today. T.11.0b
+        // closed the last canvas gap: editor bg/fg, the block-cursor
+        // inversion, and the popup surface now read from the palette-
+        // driven `editor.*` / `ui.popup.background` elements (below), so
+        // a `:colorscheme` / palette swap recolors the whole canvas. The
+        // wiring is driven by `RendererSignal::ThemeChanged` firing this
+        // method, so a palette/theme swap flows through automatically.
         // Slice 3c.final.E.5: theme via published top-level field.
-        let host = self.render_state.load().theme;
-        let host = &host;
+        // T.9: the pane-chrome STYLE fields moved off the host `Theme`
+        // onto theme elements; read them from the published resolved
+        // table (`resolved_theme.get(theme_ids.<elem>)`) which already
+        // reflects any `:set ui.*` registry overrides.
+        let rs = self.render_state.load();
+        let resolved: &lattice_host::ui::theme::ResolvedTheme = &rs.resolved_theme;
+        let ids: &lattice_host::ui::theme::BuiltinElementIds = &rs.theme_ids;
         let defaults = GpuiTheme::default();
 
-        // Status line ↔ host's `pane_status_active` (mirrors the
-        // TUI's active-pane status row). Inactive pane status maps
-        // to GpuiTheme's `popup_border` accent for now (visually
-        // distinct from the active row).
-        if let Some(bg) = host.pane_status_active.bg {
+        // Status line ↔ `pane.status.active` element (mirrors the
+        // TUI's active-pane status row).
+        let pane_status_active = resolved.get(ids.pane_status_active);
+        if let Some(bg) = pane_status_active.bg {
             self.theme.status_background = bg.to_rgb_u32(defaults.status_background);
         }
-        if let Some(fg) = host.pane_status_active.fg {
+        if let Some(fg) = pane_status_active.fg {
             self.theme.status_foreground = fg.to_rgb_u32(defaults.status_foreground);
         }
-        // Popup border ↔ host's pane_separator (same conceptual
+        // Popup border ↔ `pane.separator` element (same conceptual
         // role: thin accent line between visual regions).
-        if let Some(fg) = host.pane_separator.fg {
+        if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
         }
+        // T.11.0b: source the canvas (window bg/fg, block-cursor
+        // inversion, popup surface) from the resolved table so a
+        // `:colorscheme` / palette swap recolors the whole canvas — the
+        // light-theme seam. Each falls back to the GpuiTheme default
+        // (Catppuccin Mocha) when the element leaves the channel unset,
+        // keeping the default render byte-identical.
+        self.theme.background = resolved
+            .get(ids.editor_background)
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.background))
+            .unwrap_or(defaults.background);
+        self.theme.foreground = resolved
+            .get(ids.editor_foreground)
+            .fg
+            .map(|c| c.to_rgb_u32(defaults.foreground))
+            .unwrap_or(defaults.foreground);
+        let editor_cursor = resolved.get(ids.editor_cursor);
+        self.theme.cursor_background = editor_cursor
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.cursor_background))
+            .unwrap_or(defaults.cursor_background);
+        self.theme.cursor_foreground = editor_cursor
+            .fg
+            .map(|c| c.to_rgb_u32(defaults.cursor_foreground))
+            .unwrap_or(defaults.cursor_foreground);
+        self.theme.popup_background = resolved
+            .get(ids.ui_popup_background)
+            .bg
+            .map(|c| c.to_rgb_u32(defaults.popup_background))
+            .unwrap_or(defaults.popup_background);
         // Font family + size: read live from the published options
         // config so `:set ui.font_family=...` takes effect on the
         // next frame without restarting.
@@ -808,6 +846,9 @@ impl GpuiApp {
         }
         if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
             self.theme.font_size_pt = (*size).max(4).min(96) as u32;
+        }
+        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>() {
+            self.theme.ligatures = *ligatures;
         }
     }
 
@@ -845,11 +886,9 @@ impl GpuiApp {
         // migrate.
         match &action {
             Action::PickerAccept => {
-                let signals = self.mutate_editor_with(|e| e.do_picker_accept());
-                let mut outcome = DispatchOutcome::default();
+                let mut outcome = self.mutate_editor_with(|e| e.do_picker_accept());
                 outcome.consumed = true;
-                outcome.renderer_signals = signals.clone();
-                for s in signals {
+                for s in std::mem::take(&mut outcome.renderer_signals) {
                     self.handle_renderer_signal(s);
                 }
                 return outcome;
@@ -972,14 +1011,23 @@ impl GpuiApp {
             | Effect::EnterMode(_)
             | Effect::Yank { .. }
             | Effect::SetOption { .. }
+            | Effect::SetLocalOption { .. }
+            | Effect::SetGlobalOption { .. }
+            // T.9.b: `:colorscheme` swaps the registry palette/overrides
+            // host-side in `editor.handle_effect`; the renderer rebuilds
+            // off the emitted `RendererSignal::ThemeChanged`, so there's
+            // nothing to apply here (parity with `SetOption`'s `ui.*`).
+            | Effect::SetColorscheme(_)
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
+            | Effect::ShowDiagnosticsPopup { .. }
             | Effect::EchoRegisters
             | Effect::EchoMarks
             | Effect::ListBuffers
             | Effect::DescribeBuffer
             | Effect::ListKeymap
             | Effect::DescribeOption { .. }
+            | Effect::DescribeElement { .. }
             | Effect::ListOptions
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
@@ -1077,7 +1125,12 @@ impl GpuiApp {
             // them through the same dispatch.
             Effect::LspSignatureHelp => self.mutate_editor(|e| e.lsp_signature_help_request()),
             Effect::LspComplete => self.mutate_editor(|e| e.lsp_completion_request()),
-            Effect::SnippetExpand => self.mutate_editor(|e| e.do_snippet_expand_at_cursor()),
+            // SN.3c.1: mode-owned `<C-x><C-s>` emits the trigger
+            // range; the host resolves + expands (peer parity with
+            // TUI). `feedback_tui_gpui_parity`.
+            Effect::ExpandSnippet { replace_range } => {
+                self.mutate_editor(move |e| e.expand_snippet_from_range(replace_range))
+            }
             // 5.5.LSP.5: symbol helpers host-side; both peers reach
             // them through the same dispatch.
             Effect::LspDocumentSymbol => self.mutate_editor(|e| e.lsp_document_symbol_request()),
@@ -1417,6 +1470,28 @@ mod tests {
             ModalState::Insert,
             "ad() must observe the post-dispatch modal state through render_state"
         );
+    }
+
+    /// LG.1: `rebuild_gpui_theme` propagates `ui.ligatures` to
+    /// `GpuiTheme.ligatures`. Default is `true`; setting the option
+    /// to `false` flips the field.
+    #[test]
+    fn rebuild_gpui_theme_propagates_ligatures() {
+        let mut app = GpuiApp::new(Document::empty());
+        // Default is true (ligatures on by default).
+        assert!(app.theme.ligatures, "default ligatures should be true");
+        // Override via the config registry that's already in the render state.
+        let rs = app.render_state.load();
+        rs.options.config.parse_and_set_command("ui.ligatures=off").unwrap();
+        drop(rs);
+        app.rebuild_gpui_theme();
+        assert!(!app.theme.ligatures, "ligatures should be false after ui.ligatures=off");
+        // Toggle back on.
+        let rs = app.render_state.load();
+        rs.options.config.parse_and_set_command("ui.ligatures=on").unwrap();
+        drop(rs);
+        app.rebuild_gpui_theme();
+        assert!(app.theme.ligatures, "ligatures should be true after ui.ligatures=on");
     }
 
     /// Slice 3c.atomic.K: `set_viewport_height` clamps height

@@ -103,6 +103,11 @@ pub enum ConfigError {
     /// `parse` impl. Wording is the impl's verbatim.
     #[error("{0}")]
     Parse(String),
+    /// `name?` passed to `parse_for_buffer_local`. Query forms are
+    /// not writes; callers should use `:set name?` or `:setlocal name?`
+    /// to echo instead of calling into the write path.
+    #[error("E474: query form not allowed in :setlocal; use :set {0}? to echo")]
+    QueryNotAllowed(String),
     #[error("E474: type mismatch: handle expected `{expected}`, registry has `{actual}`")]
     TypeMismatch {
         expected: &'static str,
@@ -305,8 +310,20 @@ impl ConfigRegistry {
         for (type_id, &idx) in inner.by_typeid.iter() {
             let arc = std::sync::Arc::clone(&inner.by_id[idx]);
             let value_erased = arc.current_value_erased();
-            out.insert_erased(*type_id, value_erased);
+            out.insert_erased_with_origin(
+                *type_id,
+                value_erased,
+                crate::OptionOrigin::GlobalConfig,
+            );
         }
+    }
+
+    /// Look up the `TypeId` registered for an option's canonical name.
+    /// Returns `None` if the option was not registered via
+    /// `register_with_typeid` (e.g. a bare `try_register` call, or the
+    /// option simply doesn't exist).
+    pub fn type_id_for_name(&self, name: &str) -> std::option::Option<std::any::TypeId> {
+        self.typeid_for_name(name).ok()
     }
 
     /// Boot loop: walk the [`OPTION_DECLS`] linkme slice and
@@ -503,7 +520,101 @@ impl ConfigRegistry {
                     .ok_or(ConfigError::UnknownOption(name.clone()))?;
                 Ok(format!("{}={}", opt.name(), opt.get_formatted()))
             }
+            ParsedSet::Reset(name) => {
+                let opt = self
+                    .lookup(&name)
+                    .ok_or(ConfigError::UnknownOption(name.clone()))?;
+                let canonical = opt.name();
+                let old = opt.get_formatted();
+                // Reset to the registered default (the string stored at
+                // registration time from `default_formatted`).
+                opt.parse_and_set(opt.default_formatted())
+                    .map_err(ConfigError::Validation)?;
+                self.publish_change(canonical, Some(old));
+                Ok(format!("{}={}", opt.name(), opt.get_formatted()))
+            }
         }
+    }
+
+    /// Parse an option spec string for use as a buffer-local override,
+    /// without writing to the global registry. Returns the triple
+    /// `(TypeId, erased_value, canonical_name)` needed to construct an
+    /// [`lattice_mode::OptionOverride`] for the buffer-local layer.
+    ///
+    /// - `NameOnly(name)` — for bool options, returns erased `true`.
+    ///   For non-bool, returns `Err` (callers echo the value instead).
+    /// - `Negate(name)` — returns erased `false` (rejects non-bool via
+    ///   the option's own error message).
+    /// - `Assign { name, value }` — parses `value` against the option's
+    ///   [`crate::OptionType`] and validates without writing.
+    /// - `Query(name)` — always returns [`ConfigError::QueryNotAllowed`];
+    ///   callers use `:setlocal name?` echo path instead.
+    /// - `Reset(name)` — returns [`ConfigError::QueryNotAllowed`]; the
+    ///   caller's `:setlocal name&` clear-override path handles it before
+    ///   reaching here.
+    pub fn parse_for_buffer_local(
+        &self,
+        input: &str,
+    ) -> Result<(std::any::TypeId, std::sync::Arc<dyn std::any::Any + Send + Sync>, String), ConfigError>
+    {
+        let parsed = parse_set(input).map_err(ConfigError::Parse)?;
+        match parsed {
+            ParsedSet::NameOnly(name) => {
+                let opt = self
+                    .lookup(&name)
+                    .ok_or(ConfigError::UnknownOption(name.clone()))?;
+                if !opt.is_bool() {
+                    return Err(ConfigError::Parse(format!(
+                        "E474: use :setlocal {name}=value to set a non-boolean option"
+                    )));
+                }
+                let type_id = self.typeid_for_name(opt.name())?;
+                let erased = opt.parse_to_erased("true").map_err(ConfigError::Validation)?;
+                Ok((type_id, erased, opt.name().to_string()))
+            }
+            ParsedSet::Negate(name) => {
+                let opt = self
+                    .lookup(&name)
+                    .ok_or(ConfigError::UnknownOption(name.clone()))?;
+                if !opt.is_bool() {
+                    return Err(ConfigError::NotBoolean(name));
+                }
+                let type_id = self.typeid_for_name(opt.name())?;
+                let erased = opt.parse_to_erased("false").map_err(ConfigError::Validation)?;
+                Ok((type_id, erased, opt.name().to_string()))
+            }
+            ParsedSet::Assign { name, value } => {
+                let opt = self
+                    .lookup(&name)
+                    .ok_or(ConfigError::UnknownOption(name.clone()))?;
+                let type_id = self.typeid_for_name(opt.name())?;
+                let erased = opt
+                    .parse_to_erased(&value)
+                    .map_err(ConfigError::Validation)?;
+                Ok((type_id, erased, opt.name().to_string()))
+            }
+            ParsedSet::Query(name) | ParsedSet::Reset(name) => {
+                Err(ConfigError::QueryNotAllowed(name))
+            }
+        }
+    }
+
+    /// Internal helper: look up the `TypeId` registered for an option's
+    /// canonical name. Returns `ConfigError::UnknownOption` if the
+    /// option was registered without a typeid (e.g. via bare
+    /// `try_register` rather than `register_with_typeid`).
+    fn typeid_for_name(&self, canonical: &str) -> Result<std::any::TypeId, ConfigError> {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let &idx = inner
+            .by_name
+            .get(canonical)
+            .ok_or_else(|| ConfigError::UnknownOption(canonical.to_string()))?;
+        inner
+            .by_typeid
+            .iter()
+            .find(|(_, i)| **i == idx)
+            .map(|(tid, _)| *tid)
+            .ok_or_else(|| ConfigError::UnknownOption(canonical.to_string()))
     }
 
     fn erased_at(&self, idx: usize) -> std::option::Option<Arc<dyn ErasedOption>> {

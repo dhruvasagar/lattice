@@ -112,6 +112,7 @@ fn built_in_picker_registry(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
     snippet_registry: Arc<ArcSwap<SnippetRegistry>>,
+    theme_registry: lattice_theme::ThemeRegistryHandle,
 ) -> PickerRegistry {
     let mut reg = PickerRegistry::new();
     for generator in
@@ -120,6 +121,12 @@ fn built_in_picker_registry(
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
+    // T.12a: the live-preview theme picker (`:colorscheme` no-arg).
+    // Holds a clone of the host's `ThemeRegistryHandle` so it can
+    // enumerate registered theme names + drive live preview.
+    reg.register_generator(Arc::new(crate::host_generators::ThemePickerSource::new(
+        theme_registry,
+    )));
     reg
 }
 
@@ -243,6 +250,15 @@ impl Editor {
         // field below holds. `:reload-snippets` updates the inner
         // via `.store()`; the mode + source see the fresh data on
         // the next produce().
+        //
+        // Constructed empty; the embedded built-in packs + user
+        // packs load at the production startup seam via
+        // `Editor::load_snippets_at_startup` (called from the TUI /
+        // GPUI entry points alongside `load_persistent_config`), NOT
+        // here. Keeping content-loading out of the constructor means
+        // test `App`s start with an empty registry — completion
+        // tests stay isolated from the built-in snippet set unless
+        // they opt in via `:reload-snippets`.
         let snippet_registry_handle: Arc<ArcSwap<SnippetRegistry>> =
             Arc::new(ArcSwap::from_pointee(SnippetRegistry::new()));
 
@@ -259,6 +275,11 @@ impl Editor {
         // registry first so we can iterate it and register a
         // `:<mode-name>` toggle ex-command per mode. The mode
         // registry is then wrapped in `Arc`.
+        // SN.3b: captured out of the registry-build block so boot
+        // can fold `snippet.activation` / `snippet.languages` into
+        // it (below) and `Editor` can hold the clone the cascade
+        // re-folds.
+        let snippet_activation_policy;
         let mode_registry = {
             let mut mr = ModeRegistry::new();
             lattice_mode::register_foundation_modes(&mut mr);
@@ -269,7 +290,8 @@ impl Editor {
             lattice_lsp::completion::register_lsp_completion_mode(&mut mr, lsp.clone());
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
-            lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
+            snippet_activation_policy =
+                lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
             // Issue #40 / Terminal-mode T1: register the
             // `terminal-mode` major so option contributions
             // (ReadOnly + NoFile) apply to Terminal buffers.
@@ -289,11 +311,15 @@ impl Editor {
             // below.
             #[cfg(feature = "search")]
             lattice_multibuffer::providers::search::register_project_search_mode(&mut mr);
+            // N.1.1 (2026-06-10): narrow provider-minor mode (marker
+            // for narrow views). First-class — no feature gate.
+            lattice_multibuffer::providers::narrow::register_narrow_mode(&mut mr);
             // D.5.a (2026-05-30): `diff-mode` minor — marker bit
             // consulted by K.1.c per-keystroke lookup so D.5.b/c
             // `do`/`dp` chords gate on per-buffer diff
             // participation.
             crate::diff::mode::register_diff_modes(&mut mr);
+            crate::tutor::register_tutor_modes(&mut mr);
             mr
         };
         register_mode_toggle_commands(&mut registry, &mode_registry);
@@ -332,6 +358,23 @@ impl Editor {
         lattice_multibuffer::register_multibuffer_ex_commands(&mut registry);
         #[cfg(feature = "search")]
         lattice_multibuffer::providers::search::register_search_ex_command(&mut registry);
+        // N.1.1 (2026-06-10): `:narrow` + `:widen`. First-class — no
+        // feature gate.
+        lattice_multibuffer::providers::narrow::register_narrow_ex_commands(&mut registry);
+        // N.1.3 (2026-06-10): register the `zn` narrow operator SPEC
+        // (owned by the narrow provider) and capture its OperatorId;
+        // the `zn` chord is wired into the universal operator-pending
+        // layer below, right after `register_normal_bindings`.
+        let narrow_operator_id =
+            lattice_multibuffer::providers::narrow::register_narrow_operator(&mut registry);
+
+        // N.1.4c: register the structural (tree-sitter) text objects
+        // (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`) -- owned by
+        // lattice-syntax -- and capture their ids so the universal
+        // operator-pending keymap (`register_normal_bindings` + the `zn`
+        // operator below) can bind their chords. Must run while
+        // `registry` is still `&mut` (before the Arc freeze below).
+        let syntax_textobject_ids = lattice_syntax::register_syntax_text_objects(&mut registry);
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
@@ -370,10 +413,12 @@ impl Editor {
         let (lsp_log_tx, lsp_log_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspLogPushed>();
         event_bus.subscribe_typed(lsp_log_tx);
-        // LSP work-done progress.
-        let (lsp_progress_tx, lsp_progress_event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
-        event_bus.subscribe_typed(lsp_progress_tx);
+        // ML.3c: LSP `$/progress` + `experimental/serverStatus` are no
+        // longer accumulated host-side. `lattice_lsp::modeline`'s
+        // forwarder subscribes them, folds them into the shared
+        // `LspProgressStore` (created below), and pushes the `lsp` element
+        // per attached buffer; the host reads the same store only for
+        // `:lsp-progress-cancel`.
         // `LspBufferDetached`: `LspMode::on_deactivate` publishes
         // this; the per-tick drain calls `lsp_close_buffer` for
         // each so the wire-level `didClose` + `buffer_uris`
@@ -387,6 +432,31 @@ impl Editor {
         let (mode_lifecycle_tx, mode_lifecycle_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModeEvent>();
         event_bus.subscribe_typed(mode_lifecycle_tx);
+        // ML.3: modeline element content pushed by modes/plugins over the
+        // bus. `drain_modeline_element_updates` applies each into the
+        // shared `modeline` content store (single-writer, actor thread);
+        // a separate subscription in the L1c wake block fires
+        // `async_landed` so the push repaints off-keystroke (§12 wake).
+        let (modeline_update_tx, modeline_update_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
+        event_bus.subscribe_typed(modeline_update_tx);
+        // MA.2: minor-activation resolver input. One channel
+        // subscribed to `Event::MajorEntered`; the per-tick
+        // `drain_minor_activation` reads it, looks up each buffer's
+        // kind, and auto-activates the minors whose ActivationPolicy
+        // admits the entered major (Global gated to document buffers).
+        let (major_entered_tx, major_entered_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::MajorEntered),
+            lattice_runtime::SubscriptionTarget::Channel(major_entered_tx),
+        );
+        // SN.2: the live snippet session, shared between the host
+        // (creates it on expand) and `SnippetActiveMode`'s
+        // `<Tab>`/`<S-Tab>` handlers (navigate it). The same Arc is
+        // both stored on the Editor and registered in ServiceRegistry.
+        let snippet_session: lattice_snippet::SnippetSessionHandle =
+            Arc::new(lattice_snippet::SnippetSession::new());
         // Inlay-hint refresh.
         let (lsp_inlay_refresh_tx, lsp_inlay_refresh_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
@@ -526,10 +596,20 @@ impl Editor {
         // sources that capture it (CommandsSource) can clone
         // here.
         let registry = Arc::new(registry);
+        // T.3/T.4 (theme-system): the theme-element registry, seeded
+        // with the default palette + all builtin elements (resolved +
+        // ready). Created here (ahead of the struct literal) so the
+        // T.12a colorscheme picker source can capture a clone, AND the
+        // `services:` block / `builtin_element_ids` capture / the
+        // `theme_registry` field all share the one Arc. See
+        // theme-system.md §3.5 / §7.
+        let theme_registry: lattice_theme::ThemeRegistryHandle =
+            Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
         let picker_registry: Arc<PickerRegistry> = Arc::new(built_in_picker_registry(
             registry.clone(),
             config.clone(),
             snippet_registry_handle.clone(),
+            theme_registry.clone(),
         ));
 
         // MRU cache load. Honor `picker.mru.persist` at boot;
@@ -587,17 +667,29 @@ impl Editor {
         let initial_text = document.text();
         let initial_text_version = document.text_version();
         // Slice B.1: created here (before the syntax handle) so it can
-        // be handed to the reparse worker as its `on_publish` wake; it
-        // also seats the `Editor::async_landed` field below.
+        // be handed to the reparse worker as its `on_publish` callback;
+        // it also seats the `Editor::async_landed` field below.
         let async_landed: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
+        // Wake the render loop on every server `publishDiagnostics`
+        // push so diagnostic changes — a new error OR the clear when one
+        // is fixed — repaint off-keystroke, instead of waiting for the
+        // next cursor-driven publish. The layer fires `async_landed`
+        // from `apply`; shared across every actor pump via the cloned
+        // `DiagnosticsLayer` (Arc-backed). See lsp-architecture.md §12.
+        lsp_diagnostics.set_wake(async_landed.clone());
         let syntax: Option<SyntaxHandle> =
             match Syntax::for_language_with_registry(lang, lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
+                    let al = async_landed.clone();
+                    let eb = event_bus.clone();
                     Some(SyntaxHandle::seeded_with_runtime(
                         s,
                         &runtime_handle,
-                        Some(async_landed.clone()),
+                        Some(std::sync::Arc::new(move || {
+                            al.notify_one();
+                            eb.publish_typed(crate::events::SyntaxReparsed);
+                        })),
                     ))
                 }
                 _ => None,
@@ -669,35 +761,25 @@ impl Editor {
         // also hold one (BufferRegistry is `Clone` via Arc).
         let buffers_for_services = buffers.clone();
 
-        // Phase 5.8.AF.5 / Slice X2.4: instantiate the highlights
-        // worker's shared cells BEFORE the Editor literal so we
-        // can hand the worker its own clones at spawn time. The
-        // Editor literal below assigns these into the struct
-        // fields explicitly (overriding the `..Editor::default()`
-        // tail) so all three holders (Editor, RenderState, worker)
-        // share the SAME Arc identities — the worker's writes
-        // into `spans_cell` are observable through every
-        // `render_state.load_full().syntax.visible_spans.load()`.
-        let highlight_wake = crate::editor::HighlightWake::default();
-        let syntax_visible_spans_cell: std::sync::Arc<
-            arc_swap::ArcSwap<crate::render_state::VisibleSpans>,
-        > = std::sync::Arc::default();
-        // Perf plan A.2 slice A.2a: parallel pre-paint cell created
-        // here so the worker (spawned below), the Editor field, and
-        // the `SyntaxRenderState.visible_rows` clone on every
+        // Phase 5.8.AF.5 / Slice X2.4 (gut + rename B4.2):
+        // instantiate the overlay worker's shared cell BEFORE the
+        // Editor literal so we can hand the worker its own clone at
+        // spawn time. The Editor literal below assigns these into the
+        // struct fields explicitly (overriding the
+        // `..Editor::default()` tail) so all three holders (Editor,
+        // RenderState, worker) share the SAME Arc identity — the
+        // worker's writes into the quads cell are observable through
+        // every
+        // `render_state.load_full().syntax.static_overlay_quads.load()`.
+        let overlay_wake = crate::editor::OverlayWake::default();
+        // Perf plan B.2 slice B.2.a: cell carrying the worker's
+        // per-row pre-bucketed static-overlay quads (doc_highlight /
+        // all_matches / substitute). Created here so the worker
+        // (spawned below), the Editor field, and the
+        // `SyntaxRenderState.static_overlay_quads` clone on every
         // `publish_render_state` all share the SAME `Arc` identity.
-        // Without this shared identity the worker's `.store()`
-        // would not be observable through `RenderState.load_full()`
-        // after later publishes.
-        let syntax_visible_rows_cell: std::sync::Arc<
-            arc_swap::ArcSwap<crate::render_state::VisibleRows>,
-        > = std::sync::Arc::default();
-        // Perf plan B.2 slice B.2.a: parallel cell carrying the
-        // worker's per-row pre-bucketed static-overlay quads
-        // (doc_highlight / all_matches / substitute). Same
-        // same-Arc-identity construction as
-        // `syntax_visible_rows_cell` so the worker's `.store()`
-        // is observable through `RenderState.load_full()` across
+        // Without this shared identity the worker's `.store()` would
+        // not be observable through `RenderState.load_full()` after
         // later publishes.
         let syntax_static_overlay_quads_cell: std::sync::Arc<
             arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>,
@@ -715,17 +797,15 @@ impl Editor {
         // loop blocks on; GPUI: foreground-executor future that calls
         // `cx.notify()`).
         let paint_request: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
-        runtime_handle.spawn(crate::highlights_worker::run(
+        runtime_handle.spawn(crate::overlay_worker::run(
             render_state_arc.clone(),
-            highlight_wake.clone(),
-            syntax_visible_spans_cell.clone(),
-            syntax_visible_rows_cell.clone(),
+            overlay_wake.clone(),
             syntax_static_overlay_quads_cell.clone(),
             paint_request.clone(),
         ));
 
         // S2.2 (2026-05-26): cell-builder worker. Same same-Arc-
-        // identity pattern as the highlights worker — `cells_wake`
+        // identity pattern as the overlay worker — `cells_wake`
         // and `cells_matrix_cell` are constructed here, cloned into
         // the worker, then assigned into the Editor literal below
         // (overriding `..Editor::default()` so all three holders
@@ -843,6 +923,119 @@ impl Editor {
             paint_request.clone(),
         ));
 
+        // Event-bus → cells_wake bridges.
+        //
+        // SyntaxReparsed: fired by the on_publish callback in every
+        // SyntaxHandle after a snapshot is published. Wakes the cells
+        // worker so a fresh display matrix is built once tree-sitter
+        // finishes — without this, a reparse that completes with no
+        // keystroke in flight doesn't repaint.
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) = mpsc::unbounded_channel::<crate::events::SyntaxReparsed>();
+            event_bus.subscribe_typed::<crate::events::SyntaxReparsed>(tx);
+            let cw = cells_wake.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    cw.0.notify_one();
+                }
+            });
+        }
+
+        // MultibufferExcerptsReady: fired by the project-search
+        // forwarder after each batch of excerpts is appended.
+        // Only fires async_landed so the actor calls
+        // publish_render_state (picking up the new excerpt_syntax
+        // entries). The actor then publishes AsyncRenderStatePublished
+        // via the event bus; the bridge below wakes cells_wake AFTER
+        // the ArcSwap store — no race possible.
+        #[cfg(feature = "search")]
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) = mpsc::unbounded_channel::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>();
+            event_bus.subscribe_typed::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>(tx);
+            let al = async_landed.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    al.notify_one();
+                }
+            });
+        }
+
+        // L1c: wake the render pipeline when render-relevant LSP
+        // events arrive off-keystroke. Without this, `$/progress` and
+        // the `*/refresh` notifications only reach the screen on the
+        // next keypress (their drains run inside `run_tick_pending`), so
+        // indexing progress accumulates then batch-drains to empty and
+        // is never seen, and a refresh that lands while idle doesn't
+        // repaint. Mirrors the SyntaxReparsed / MultibufferExcerptsReady
+        // forwarders: dedicated subscriptions whose only job is to fire
+        // `async_landed`; the existing per-type drain channels still do
+        // the accumulation. See lsp-architecture.md §12,
+        // slice-plans/lsp.md L1c.
+        {
+            use tokio::sync::mpsc;
+            async fn wake_on<T: Send + 'static>(
+                mut rx: mpsc::UnboundedReceiver<T>,
+                al: std::sync::Arc<tokio::sync::Notify>,
+            ) {
+                while rx.recv().await.is_some() {
+                    al.notify_one();
+                }
+            }
+            // ML.3c: the `$/progress` + `serverStatus` wake forwarders
+            // are gone — those events now reach the screen through the
+            // `lattice_lsp::modeline` forwarder, which folds them and
+            // publishes `ModelineElementUpdate`; the modeline wake below
+            // fires `async_landed` for that push. The `*/refresh`
+            // notifications still drain host-side, so they keep their wake.
+            let (inlay_tx, inlay_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
+            event_bus.subscribe_typed(inlay_tx);
+            runtime_handle.spawn(wake_on(inlay_rx, async_landed.clone()));
+            let (sem_tx, sem_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspSemanticTokensRefresh>();
+            event_bus.subscribe_typed(sem_tx);
+            runtime_handle.spawn(wake_on(sem_rx, async_landed.clone()));
+            let (diag_tx, diag_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
+            event_bus.subscribe_typed(diag_tx);
+            runtime_handle.spawn(wake_on(diag_rx, async_landed.clone()));
+            let (lens_tx, lens_rx) =
+                mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
+            event_bus.subscribe_typed(lens_tx);
+            runtime_handle.spawn(wake_on(lens_rx, async_landed.clone()));
+            // ML.3: a pushed modeline-element content update repaints
+            // off-keystroke. Same shape as the LSP forwarders above: a
+            // dedicated subscription whose only job is to fire
+            // `async_landed`; `drain_modeline_element_updates` (its own
+            // channel) does the accumulation in `run_tick_pending`.
+            let (ml_tx, ml_rx) =
+                mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
+            event_bus.subscribe_typed(ml_tx);
+            runtime_handle.spawn(wake_on(ml_rx, async_landed.clone()));
+        }
+
+        // AsyncRenderStatePublished: fired by the actor after every
+        // publish_render_state triggered by the async_landed arm.
+        // Wakes cells_wake so the cells worker reads the freshly-
+        // written PaneCellsInputs. Ordering guarantee: the event is
+        // published after the ArcSwap store, so cells always sees
+        // fresh state. This replaces the racy direct notify_one that
+        // previously fired from the async event handlers.
+        {
+            use tokio::sync::mpsc;
+            let (tx, mut rx) =
+                mpsc::unbounded_channel::<crate::events::AsyncRenderStatePublished>();
+            event_bus.subscribe_typed::<crate::events::AsyncRenderStatePublished>(tx);
+            let cw = cells_wake.clone();
+            runtime_handle.spawn(async move {
+                while rx.recv().await.is_some() {
+                    cw.0.notify_one();
+                }
+            });
+        }
+
         // D.3.a.1 (2026-05-29): bind the diff subsystem to the
         // event bus. The drainer task subscribes to
         // DocumentChanged + DocumentClosed and routes through
@@ -872,6 +1065,85 @@ impl Editor {
             >,
         > = std::sync::Arc::default();
 
+        // M.7: pre-create shared fold registry so `FoldOverlayServiceImpl`
+        // and the `fold_registry:` field both point at the same Arc.
+        let fold_registry = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::fold_provider::FoldRegistry::with_builtins(),
+        ));
+
+        // SN.3b: fold the loaded `snippet.activation` /
+        // `snippet.languages` config into the shared policy cell so
+        // the `snippet-mode` gate resolves with the user's settings
+        // from the first buffer onward. Defaults (`global` / empty)
+        // reproduce the pre-SN.3b Global behavior. Re-folded live on
+        // `:set` via `apply_option_cascade`.
+        {
+            let activation = config
+                .get_typed::<lattice_snippet::SnippetActivation>()
+                .map(|v| *v)
+                .unwrap_or_default();
+            let languages = config
+                .get_typed::<lattice_snippet::SnippetLanguages>()
+                .map(|v| (*v).clone())
+                .unwrap_or_default();
+            snippet_activation_policy.store(std::sync::Arc::new(
+                lattice_snippet::fold_activation_policy(activation, &languages),
+            ));
+        }
+
+        // SN.3c.0: the shared action-handler registry. Created here
+        // (not inside the `services:` block below) so the boot walk
+        // can register modes' declarative *global* action handlers
+        // (`Mode::action_handlers()`) and the resulting app-lifetime
+        // tokens land on `Editor.global_action_handler_regs`. The
+        // same Arc is registered as a service so per-buffer handlers
+        // still register from `on_activate`. See
+        // `mode_action_handlers::register_mode_action_handlers`.
+        let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
+            Arc::new(lattice_mode::ActionHandlerRegistry::new());
+        let global_action_handler_regs =
+            crate::mode_action_handlers::register_mode_action_handlers(
+                &action_handlers,
+                &mode_registry,
+                &registry,
+            );
+
+        // T.3/T.4 (theme-system): the builtin element ids, captured from
+        // the theme-element registry created earlier (above the picker
+        // registry so the T.12a colorscheme picker could capture a
+        // clone). The registry is registered into `services` below + held
+        // in the `theme_registry` field. See theme-system.md §3.5 / §7.
+        let builtin_element_ids =
+            lattice_theme::BuiltinElementIds::capture(theme_registry.as_ref());
+
+        // ML.0b-2: one ModelineService instance, shared three ways —
+        // registered into `services` (modes reach it via
+        // `ctx.service::<ModelineServiceHandle>()`), stashed on
+        // `Editor.modeline` (host built-ins write content + the publish
+        // path snapshots it), and thus read wait-free by the renderers.
+        let modeline_service: lattice_mode::ModelineServiceHandle = std::sync::Arc::default();
+        // ML.1a-render: register the host's built-in descriptors
+        // (`core.mode` / `core.path` / `core.position` / `core.lang`).
+        // Content is resolved per-pane host-side at render time
+        // (`crate::modeline::resolve_builtin_content`) so both renderers
+        // paint identical content.
+        crate::modeline::register_builtin_elements(&modeline_service);
+        // ML.3b: the diff subsystem owns its `diff` element descriptor.
+        // Content is pushed by the actor's `sync_diff_modeline_element`.
+        crate::diff::mode::register_diff_modeline_element(&modeline_service);
+        // ML.3c: lattice-lsp owns the `lsp` element. Its forwarder folds
+        // `$/progress` + `serverStatus` into the shared `LspProgressStore`
+        // and pushes the badge per attached buffer; the host keeps the
+        // store handle for `:lsp-progress-cancel`.
+        lattice_lsp::modeline::register_lsp_modeline_element(&modeline_service);
+        let lsp_progress_store: lattice_lsp::modeline::LspProgressStoreHandle =
+            std::sync::Arc::default();
+        lattice_lsp::modeline::spawn_modeline_forwarder(
+            event_bus.clone(),
+            lsp_progress_store.clone(),
+            &runtime_handle,
+        );
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -882,7 +1154,13 @@ impl Editor {
             picker_registry: picker_registry.clone(),
             picker_mru,
             picker_mru_path,
-            config,
+            // MH.A3 (2026-06-19): clone so the `services:` block below
+            // can register the same `Arc<ConfigRegistry>` (read by
+            // multibuffer's `create_multibuffer_view` for the
+            // `ui.nerd_fonts` icon-palette default). Field initializers
+            // run top-down; `config,` would otherwise move the binding
+            // before `services:` evaluates.
+            config: config.clone(),
             // K.2.4 (2026-06-01): clone the Arc so the
             // `keymap: { ... }` block below can still borrow
             // `mode_registry` to run the mode-keymap
@@ -891,9 +1169,15 @@ impl Editor {
             // otherwise be moved into the struct before
             // `keymap:` evaluates.
             mode_registry: mode_registry.clone(),
+            // ML.0b-2: the shared modeline service (same Arc registered
+            // into `services` below).
+            modeline: modeline_service.clone(),
             services: {
                 let mut s = ServiceRegistry::new();
                 s.register(lsp.clone());
+                // ML.0b-2: same Arc as `Editor.modeline` below, so modes
+                // register/update the instance the renderer snapshots.
+                s.register(modeline_service.clone());
                 // T-mode-1 (2026-05-27): TerminalStoreHandle so
                 // `TerminalNormalMode` can install / clear the
                 // SyntheticDoc on a TerminalBuffer from its
@@ -905,6 +1189,17 @@ impl Editor {
                 let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
                 s.register(lattice_mode::BufferStoreHandle::new(store));
                 s.register(lsp_logger.clone());
+                // L4b (lsp-architecture.md §15): diagnostics-query
+                // service so `lsp-diagnostics-mode`'s `gl` handler reads
+                // the cursor line's diagnostics (buffer_id → uri → layer
+                // over the live published render state) without a host
+                // method or its own URI map. Same `render_state_arc`
+                // every `publish_render_state` stores into.
+                let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle =
+                    Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
+                        render_state_arc.clone(),
+                    ));
+                s.register::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query);
                 // M.2.b.2 (2026-06-01): expose the typed
                 // multibuffer-handle lookup so providers
                 // (`create_multibuffer_view`, future M.6
@@ -933,8 +1228,10 @@ impl Editor {
                 // serves every mode activation. See
                 // `mode-architecture.md` §5.3 +
                 // `feedback_mode_owns_its_surface`.
-                let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
-                    Arc::new(lattice_mode::ActionHandlerRegistry::new());
+                // SN.3c.0: reuse the Arc created above (after the
+                // boot action-handler walk); register it as a service
+                // so per-buffer handlers still register from
+                // `on_activate`.
                 s.register::<lattice_mode::ActionHandlerRegistryHandle>(
                     action_handlers.clone(),
                 );
@@ -948,8 +1245,46 @@ impl Editor {
                 // Same `Arc<X>` alias pattern as
                 // ActionHandlerRegistryHandle.
                 s.register::<lattice_grammar::CommandRegistryHandle>(registry.clone());
+                // M.7: expose the fold-overlay service so
+                // `MultibufferMode::on_activate` can register
+                // `ExcerptFoldProvider` without depending on
+                // `lattice-host`. Same Arc as `fold_registry` above.
+                let fold_svc: lattice_core::FoldOverlayServiceHandle = Arc::new(
+                    crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()),
+                );
+                s.register::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
+                // SN.2: register the live snippet session so
+                // `SnippetActiveMode`'s `<Tab>`/`<S-Tab>` handlers can
+                // reach it from `on_activate`. Same Arc as the
+                // `Editor.snippet_session` field (set below).
+                s.register::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
+                // T.3/T.4 (theme-system): register the theme-element
+                // registry (created above the struct literal) so modes
+                // + renderers look it up via
+                // `services().get::<ThemeRegistryHandle>()`. Register +
+                // look up the SAME `Arc<dyn ThemeRegistry>` type per
+                // the ServiceRegistry Arc/TypeId rule
+                // (`feedback_servicesregistry_arc_typeid`). The
+                // renderers read the resolved table via the
+                // `RenderState` snapshot (T.4); modes intern their
+                // own `ElementId`s from `on_activate` (T.7).
+                s.register::<lattice_theme::ThemeRegistryHandle>(theme_registry);
+                // MH.A3 (2026-06-19): expose the ConfigRegistry so
+                // extension-crate code (`create_multibuffer_view`) can
+                // read global option defaults — e.g. `ui.nerd_fonts`
+                // for the rich excerpt-header icon palette — without
+                // depending on `lattice-host`'s typed option decls.
+                // Same `Arc<X>` register/lookup pair per the
+                // ServiceRegistry Arc/TypeId rule. Read by name
+                // (`get_bool_by_name`) so multibuffer needn't import
+                // the `UiNerdFonts` decl (which lives in host).
+                s.register::<Arc<ConfigRegistry>>(config.clone());
                 Arc::new(s)
             },
+            // T.4 (theme-system): builtin ids captured (above) from the
+            // theme registry, which is registered into `services` for
+            // the renderer snapshot + mode lookups.
+            builtin_element_ids,
             // Perf plan B.4: wrap the seeded HashMap so the
             // buffer_locals sub-state cache can detect when no
             // mutation has fired between publishes.
@@ -972,9 +1307,52 @@ impl Editor {
             keymap: {
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h, &action_ids);
-                crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
+                crate::keymap_visual::register_visual_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
+                // SN.3d.2: Select mode's motion/text-object table —
+                // duplicated from Visual, kept honest by the parity test
+                // in `keymap_select` (select-mode.md §4).
+                crate::keymap_select::register_select_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
-                crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                crate::keymap_normal::register_normal_bindings(
+                    &h,
+                    &builtins,
+                    &action_ids,
+                    &syntax_textobject_ids,
+                );
+                // N.1.3 (2026-06-10): wire the narrow `zn` operator
+                // chord into the universal operator-pending layer.
+                // `zn{motion|text-object}` narrows that span; `znn`
+                // narrows the current line. The operator SPEC + apply
+                // are owned by `lattice-multibuffer::providers::narrow`;
+                // only this chord-wiring lives host-side (it needs the
+                // resolved `Builtins`).
+                crate::keymap_normal::register_operator_bindings(
+                    &h,
+                    &[
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('z'),
+                        ),
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('n'),
+                        ),
+                    ],
+                    narrow_operator_id,
+                    lattice_protocol::chord::ChordPattern::Literal(
+                        lattice_protocol::chord::KeyChord::char('n'),
+                    ),
+                    &builtins,
+                    &syntax_textobject_ids,
+                );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
                 // KeymapLayer::Builtin (Normal-mode only) —
                 // <C-h><C-h> / <C-h>? open :help-for-help;
@@ -1109,13 +1487,11 @@ impl Editor {
             // reads of `syntax` inputs see the SAME atomic snapshots
             // the renderer reads.
             render_state: render_state_arc,
-            // X2.4: same-Arc-identity values constructed above and
-            // shared with the highlights worker. Overrides the
-            // `..Editor::default()` tail (which would otherwise
-            // construct fresh, unshared cells).
-            highlight_wake,
-            syntax_visible_spans_cell,
-            syntax_visible_rows_cell,
+            // X2.4 (gut + rename B4.2): same-Arc-identity values
+            // constructed above and shared with the overlay worker.
+            // Overrides the `..Editor::default()` tail (which would
+            // otherwise construct fresh, unshared cells).
+            overlay_wake,
             syntax_static_overlay_quads_cell,
             paint_request,
             // Slice B.1: same Notify the initial document's reparse
@@ -1153,13 +1529,15 @@ impl Editor {
             diff_subscription_guard: Some(diff_subscription_guard),
             diff_forwarders,
             lsp_log_event_rx: Some(lsp_log_event_rx),
-            lsp_progress_event_rx: Some(lsp_progress_event_rx),
+            lsp_progress_store: lsp_progress_store.clone(),
+            modeline_update_rx: Some(modeline_update_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
             pending_configuration_rx: Some(lsp_configuration_rx),
             pending_show_document_rx: Some(lsp_show_document_rx),
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
+            pending_major_entered_rx: Some(major_entered_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),
             semantic_tokens_refresh_pending: std::collections::HashSet::new(),
@@ -1169,13 +1547,41 @@ impl Editor {
             popup_back_stack: Vec::new(),
             insert_completion: None,
             snippet_registry: snippet_registry_handle,
+            snippet_activation_policy,
+            global_action_handler_regs,
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: HashMap::new(),
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
             completion_in_path_context: false,
-            active_snippet: None,
-            snippet_dirs: Vec::new(),
+            // Generic session-backed-minor registration (composition
+            // root): the host reconciles `active-snippet-mode` from
+            // the shared `SnippetSession` predicate each overlay-sync
+            // (`Editor::sync_keymap_overlays`) instead of a
+            // snippet-specific block. `feedback_mode_owns_its_surface`:
+            // the "when is my mode active?" policy lives in
+            // `lattice-snippet` (`snippet_active_predicate`); the host
+            // runs a generic loop. Clone the handle so
+            // `snippet_session` still moves into its own field below.
+            session_backed_minors: vec![crate::editor::SessionBackedMinor {
+                active: lattice_snippet::snippet_active_predicate(snippet_session.clone()),
+                mode_id: lattice_snippet::modes::SnippetActiveMode::mode_id(),
+            }],
+            snippet_session,
+            // Default user snippet dir: `~/.config/lattice/snippets`
+            // (the same config root as `lattice.toml`, via
+            // `dirs::config_dir`). `:reload-snippets` merges any
+            // `<language>.json` packs here on top of the embedded
+            // built-ins. Absent dir → skipped gracefully by the
+            // reload path (not an error — the user just hasn't
+            // added any packs).
+            snippet_dirs: dirs::config_dir()
+                .map(|d| d.join("lattice").join("snippets"))
+                .into_iter()
+                .collect(),
+            // M.7: use the pre-created Arc so the `services:` block
+            // and `fold_registry` field share identity.
+            fold_registry,
             ..Editor::default()
         };
         // 2026-05-26: register the built-in invocation runners

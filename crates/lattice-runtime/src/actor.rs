@@ -41,7 +41,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::{Buffer, CoreError, Document};
-use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect, execute};
+use lattice_grammar::{
+    CancellationToken, CommandInvocation, CommandRegistry, Effect, execute_with_env,
+};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
@@ -112,6 +114,12 @@ pub(crate) enum ActorMsg {
         invocation: CommandInvocation,
         cursor: Position,
         cancel: CancellationToken,
+        /// N.1.4b / N.1.6 (2026-06-10): the per-dispatch text-object
+        /// env — the tree-sitter `scope_resolver` (af/ac/aa/al) + the
+        /// `comment_syntax` (aC/iC). Empty for buffers with no syntax /
+        /// no leader. Crosses the channel as Arc bumps; the snapshot is
+        /// immutable so the actor reads it wait-free.
+        env: crate::document::DispatchEnv,
         reply: oneshot::Sender<Result<Effect, RuntimeError>>,
     },
 }
@@ -209,15 +217,32 @@ impl DocumentActor {
                 invocation,
                 cursor,
                 cancel,
+                env,
                 reply,
             } => {
-                let result = execute(
+                // N.1.4b / N.1.6 (2026-06-10): borrow the owned env's Arc
+                // handles into the grammar's `TextObjectEnv`, dropping the
+                // `+ Send + Sync` auto traits the channel required. Empty
+                // fields when the buffer has no syntax / no comment leader
+                // -- the structural + comment objects then resolve nothing;
+                // the classic objects never read it.
+                let scope_resolver: Option<&dyn lattice_grammar::ScopeResolver> =
+                    match env.scope_resolver.as_deref() {
+                        Some(r) => Some(r),
+                        None => None,
+                    };
+                let to_env = lattice_grammar::TextObjectEnv {
+                    scope_resolver,
+                    comment_syntax: env.comment_syntax.as_deref(),
+                };
+                let result = execute_with_env(
                     &self.registry,
                     &mut self.document,
                     buffer_id,
                     cursor,
                     invocation,
                     &cancel,
+                    to_env,
                 )
                 .map_err(RuntimeError::Grammar);
                 self.publish();
@@ -387,5 +412,106 @@ mod tests {
             result,
             Err(RuntimeError::Grammar(CommandError::UnknownCommand))
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_with_scope_resolver_threads_resolver_to_text_object() {
+        // N.1.4b: the resolver handed to `dispatch_with_scope_resolver`
+        // must reach the grammar's `TextObjectContext.scope_resolver`
+        // inside the actor's `execute` call. A bare text object discards
+        // its range (Effect::None until visual integration lands), so the
+        // probe text object records, out of band, what the resolver
+        // returned -- proving the whole wire: host handle -> ActorMsg ->
+        // execute_with_scope_resolver -> text-object apply.
+        use lattice_grammar::registry::{ScopeResolver, TextObjectSpec};
+        use std::sync::Mutex;
+
+        // Mock resolver: returns a fixed byte-precise span so the
+        // assertion can distinguish "resolver reached the context" from
+        // "resolver was absent" (None).
+        struct MockResolver;
+        impl ScopeResolver for MockResolver {
+            fn scope_at(
+                &self,
+                _line: u32,
+                _col_byte: u32,
+                _suffix: &str,
+            ) -> Option<lattice_protocol::position::Range> {
+                Some(lattice_protocol::position::Range::new(
+                    Position::new(3, 2),
+                    Position::new(9, 5),
+                ))
+            }
+        }
+
+        // Outer Option = "apply ran at all"; inner Option = the
+        // scope_at result the text object observed.
+        let observed: Arc<Mutex<Option<Option<lattice_protocol::position::Range>>>> =
+            Arc::new(Mutex::new(None));
+        let probe = observed.clone();
+
+        let mut registry = CommandRegistry::new();
+        let tobj = registry.register_text_object(
+            "test-scope-probe",
+            "N.1.4b test: records the scope resolver result it is handed",
+            TextObjectSpec {
+                apply: Box::new(move |ctx| {
+                    let resolved = ctx
+                        .scope_resolver
+                        .and_then(|r| r.scope_at(ctx.at.line, 0, ".function.outer"));
+                    *probe.lock().unwrap() = Some(resolved);
+                    Ok(lattice_protocol::position::Range::empty(ctx.at))
+                }),
+                args_schema: Vec::new(),
+            },
+        );
+
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("fn a() {}\nfn b() {}\nfn c() {}\n"),
+            Arc::new(registry),
+        );
+
+        // Positive: a resolver is supplied -> the text object sees Some
+        // and scope_at returns the mock range.
+        let resolver: crate::document::ScopeResolverHandle = Arc::new(MockResolver);
+        handle
+            .dispatch_with_env(
+                CommandInvocation::of(tobj.0),
+                Position::ZERO,
+                CancellationToken::never(),
+                crate::document::DispatchEnv {
+                    scope_resolver: Some(resolver),
+                    comment_syntax: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(Some(lattice_protocol::position::Range::new(
+                Position::new(3, 2),
+                Position::new(9, 5),
+            ))),
+            "resolver passed to dispatch_with_scope_resolver must reach the text object context"
+        );
+
+        // Negative: the no-resolver path (`dispatch_with_cancel`) -> the
+        // text object sees None. Proves the resolver is genuinely
+        // threaded, not a hard-coded Some.
+        *observed.lock().unwrap() = None;
+        handle
+            .dispatch_with_cancel(
+                CommandInvocation::of(tobj.0),
+                Position::ZERO,
+                CancellationToken::never(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(None),
+            "without a resolver the text object's scope_resolver must be None"
+        );
     }
 }

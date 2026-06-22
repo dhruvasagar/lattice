@@ -197,9 +197,9 @@ mod tests {
     // invalidates_*` tests were retired with the
     // `Editor::visible_highlights_key` field they pinned. Equivalent
     // coverage for the worker's cache-invalidation contract
-    // (fold change, fold toggle, edit -> new snapshot) belongs in
-    // `lattice_host::highlights_worker::recompute` tests, pending
-    // as slice X2.9.
+    // (fold change, fold toggle, edit -> new snapshot) lives in
+    // `lattice_host::overlay_worker::recompute` tests (display-line
+    // B4.2: the span-cache worker was gutted to the overlay bucket).
 
     // ---- compute_fold_hash ----
 
@@ -627,49 +627,15 @@ mod tests {
         );
     }
 
-    // X2.9 fix: `Editor::fold_aware_highlight_end_line` is now
-    // wired through `SyntaxRenderState::end_line_override`; the
-    // worker walks the stretched window so syntax styling
-    // reaches lines that appear below a collapsed fold within
-    // the viewport.
-    #[test]
-    fn refresh_highlights_covers_buffer_lines_below_a_closed_fold() {
-        // Regression: with a closed fold inside the viewport, the
-        // highlight window must stretch to include lines that
-        // appear *below* the fold's collapsed row but are still in
-        // the visible region. Otherwise spans drop to empty and
-        // syntax styling visibly disappears for content under
-        // every fold.
-        let mut a = app_with(
-            "fn a() {\n    1;\n    2;\n    3;\n    4;\n}\nfn b() {\n    5;\n}\n",
-            5, // viewport = 5 rows
-        );
-        // Wire up a real syntax instance so highlight_lines runs.
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        // Close the first fn (lines 0..=5, 6 buffer lines collapsed
-        // onto one row). With a 5-row viewport that means `fn b`
-        // (line 6) and its body (lines 7, 8) all sit in the visible
-        // region.
-        a.editor.folds.push(Fold {
-            start_line: 0,
-            end_line: 5,
-            closed: true,
-            identity: None,
-        });
-        a.refresh_highlights();
-        // Without the fix: visible_highlights is sized 5 (height),
-        // so line 6 (offset 6) returns &[] -> no syntax. Now: the
-        // highlight window stretches to cover line 8, so line 6's
-        // spans are populated.
-        assert!(
-            !a.highlights_for_buffer_line(6).is_empty(),
-            "fn b heading must be highlighted under a closed fold"
-        );
-        assert!(
-            !a.highlights_for_buffer_line(7).is_empty(),
-            "fn b body must be highlighted under a closed fold"
-        );
-    }
+    // display-line B4.2: `refresh_highlights_covers_buffer_lines_below_a_closed_fold`
+    // was deleted here. It asserted through the now-removed
+    // `App::refresh_highlights` + `highlights_for_buffer_line` span
+    // readers (the dead span/row cache). The fold-aware window
+    // stretch it guarded (`Editor::fold_aware_highlight_end_line` →
+    // `SyntaxRenderState::end_line_override`) still exists and is
+    // exercised by the overlay worker's `recompute_honours_*` path;
+    // syntax styling under folds now flows through the cells /
+    // `DisplayMatrix` substrate, covered by the cells worker tests.
 
     #[test]
     fn syntax_fold_zc_on_indented_let_with_if_else_reports_five_lines() {

@@ -23,7 +23,7 @@
 //! * **Handle**: `MultibufferDocumentHandle` — read-only impl of
 //!   `lattice_runtime::Document` composing N source handles into
 //!   one view. M.3 lifts the read-only restriction.
-//! * **Header provider**: `MultibufferHeaderProvider` (impl
+//! * **Header provider**: `MultibufferExcerptHeaderProvider` (impl
 //!   `lattice_cells::VirtualRowProvider`) emitting one virtual
 //!   row per excerpt header.
 //!
@@ -63,18 +63,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 use lattice_cells::cell::Cell;
+use lattice_cells::headerline::{Headerline, HeaderlineProvider, HeaderlineRow};
 use lattice_cells::virtual_rows::{
     AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowProvider,
 };
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
-use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect};
+use lattice_grammar::{
+    CancellationToken, CommandInvocation, CommandKind, CommandRegistry, Effect, execute_with_env,
+};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
 use lattice_runtime::{
     Document, DocumentSnapshot, Pending, PublishedSnapshot, RuntimeError, SnapshotCache,
+};
+// K.4.7 (2026-06-07): per-excerpt syntax highlighting.
+use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle, SyntaxSnapshot};
+// T.7 (2026-06-18): mode-owned theme elements for the excerpt header.
+use lattice_theme::{
+    Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle,
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -94,15 +103,29 @@ impl ExcerptId {
     }
 }
 
-/// Header presentation for an excerpt — title + style.
+/// Header presentation for an excerpt — title + style + the
+/// mode-owned semantic data the rich header renderer reads
+/// (MH.A2, see multibuffer-views.md §3.8).
 #[derive(Debug, Clone)]
 pub struct ExcerptHeader {
     /// Human-readable label. Conventionally
     /// `"<path> : <start_line+1>-<end_line+1>"` for a regular
     /// file excerpt (1-indexed for display). Empty string = no
-    /// header rendered.
+    /// header rendered. Fallback basename when `path` is `None`.
     pub title: String,
     pub style: ExcerptHeaderStyle,
+    /// MH.A2: the source file path. Drives the leading file-type
+    /// icon and the basename-bright / dir-dim split in
+    /// [`header_cells`]. `None` ⇒ fall back to `title`. Set by the
+    /// producing mode (e.g. the search provider) at excerpt
+    /// creation, NOT baked into cells here — the glyph + colours
+    /// are resolved live in `collect()` so `ui.nerd_fonts` /
+    /// `:colorscheme` toggles re-render correctly.
+    pub path: Option<std::path::PathBuf>,
+    /// MH.A2: hit count for the `· N matches` badge. Mode-consumed
+    /// datum set at production (the search mode counts hits per
+    /// source). `None` ⇒ no badge rendered.
+    pub match_count: Option<u32>,
 }
 
 impl ExcerptHeader {
@@ -110,6 +133,8 @@ impl ExcerptHeader {
         Self {
             title: title.into(),
             style: ExcerptHeaderStyle::default(),
+            path: None,
+            match_count: None,
         }
     }
 }
@@ -119,6 +144,8 @@ impl Default for ExcerptHeader {
         Self {
             title: String::new(),
             style: ExcerptHeaderStyle::default(),
+            path: None,
+            match_count: None,
         }
     }
 }
@@ -194,16 +221,29 @@ pub struct RowTranslation {
 
 impl RowTranslation {
     pub fn build(excerpts: &[Excerpt]) -> Self {
-        let mut entries = Vec::new();
+        let mut this = Self::default();
+        this.append(excerpts);
+        this
+    }
+
+    /// MH.B1 (2026-06-19): extend the translation in place with a
+    /// batch of newly-appended excerpts. Because `build` is pure
+    /// concatenation (one `RowEntry::Excerpt` per source row, per
+    /// excerpt, in order — no cross-excerpt state), appending a
+    /// batch's entries to an existing translation yields exactly
+    /// the same `Vec<RowEntry>` as rebuilding from the full excerpt
+    /// list. This is the row-translation half of the O(batch)
+    /// incremental `append_excerpts`; the equivalence is pinned by
+    /// `incremental_append_matches_full_build`.
+    pub fn append(&mut self, excerpts: &[Excerpt]) {
         for excerpt in excerpts {
             for row in excerpt.start_line..=excerpt.end_line {
-                entries.push(RowEntry::Excerpt {
+                self.entries.push(RowEntry::Excerpt {
                     excerpt_id: excerpt.id,
                     source_row: row,
                 });
             }
         }
-        Self { entries }
     }
 }
 
@@ -250,6 +290,10 @@ struct MultibufferInner {
     // `set_headerline` which also publishes
     // `MultibufferHeaderlineChanged`.
     headerline: ArcSwap<HeaderlineStatus>,
+    // M.6.5 (2026-06-08): monotonic version for the view-status headerline.
+    // Bumped in `set_headerline` so `MultibufferStatusProvider::version()`
+    // advances and the cells worker rebuilds the sticky row.
+    headerline_version: AtomicU64,
     // M.4 (2026-06-01): event-bus subscription bookkeeping for
     // the auto-recompose forwarder. `SubscriptionId`s registered
     // by `attach_event_subscriptions` are unsubscribed on Drop.
@@ -263,6 +307,26 @@ struct MultibufferInner {
     // multibuffer's own `Document::dispatch_with_cancel` impl
     // now does the work uniformly).
     registry: Arc<CommandRegistry>,
+    // K.4.7 (2026-06-07): language registry for per-source
+    // SyntaxHandle creation. Set once after construction via
+    // `set_lang_registry`; `None` until the host wires it.
+    lang_registry: std::sync::OnceLock<Arc<LangRegistry>>,
+    // K.4.7 (2026-06-08): monotonic generation counter. Incremented
+    // every time `source_syntax` gains a new handle (`add_source` /
+    // `set_lang_registry`). Folded into `MatrixVersion::syntax` in
+    // `publish_render_state` so the cells worker invalidates its cache
+    // when per-source handles are first populated. XOR of individual
+    // handle text_versions is unreliable: N handles all at version=1
+    // XOR to 0 for even N, colliding with the initial-zero and
+    // producing a false cache hit that freezes highlighting.
+    excerpt_syntax_gen: std::sync::atomic::AtomicU64,
+    // K.4.7 (2026-06-08): monotonic publish counter. Stamped as the
+    // `text_version` on every DocumentSnapshot emitted by
+    // `append_excerpts` / `replace_excerpts`. Document::from_text()
+    // always returns text_version=0, so without this counter the
+    // MatrixVersion.text axis is permanently 0 and the cells worker
+    // always returns CacheHit — the "empty until keypress" bug.
+    publish_seq: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -295,14 +359,31 @@ impl Drop for MultibufferInner {
 /// forwarder task doesn't need to re-walk the row translation
 /// (which may have shifted by the time the task runs).
 #[derive(Debug)]
-struct SourceForwardMsg {
-    source_handle: Arc<dyn Document>,
-    source_edit: Edit,
+enum SourceForwardMsg {
+    /// Propagate a composed-coordinate edit to its source actor.
+    Edit {
+        source_handle: Arc<dyn Document>,
+        source_edit: Edit,
+    },
+    /// Save-flush barrier (2026-06-10). Sent by
+    /// [`MultibufferDocumentHandle::save`] through the SAME FIFO
+    /// channel as edits, so by the time the forwarder pops it every
+    /// prior edit has been applied to (and `await`ed on) its source
+    /// actor. The forwarder then signals `done`, telling `save()` the
+    /// sources are current — without this, `:w` would race the async
+    /// forwarder and persist stale sources (drop the last keystrokes).
+    Flush {
+        done: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 struct MultibufferState {
     sources: HashMap<BufferId, Arc<dyn Document>>,
     excerpts: Vec<Excerpt>,
+    /// K.4.7 (2026-06-07): per-source SyntaxHandle for excerpt
+    /// highlighting. Populated by `add_source` when `lang_registry`
+    /// is set. Sources with `Lang::Plain` are absent.
+    source_syntax: HashMap<BufferId, Arc<SyntaxHandle>>,
     /// K.4.5 (2026-06-02): composed-coordinate selection set
     /// for the view. Multibuffers don't propagate selections to
     /// their source buffers (M.3 design — composed coordinates
@@ -322,7 +403,7 @@ struct MultibufferState {
 // ─────────────────────────────────────────────────────────────────
 
 /// View-level headerline status. Rendered above the first
-/// excerpt (M.2.a `MultibufferHeaderProvider` extends to handle
+/// excerpt (M.2.a `MultibufferExcerptHeaderProvider` extends to handle
 /// the view header in a later renderer slice).
 ///
 /// Async providers transition `Idle → InProgress → Complete` /
@@ -451,10 +532,24 @@ impl MultibufferDocumentHandle {
             tokio::sync::mpsc::unbounded_channel::<SourceForwardMsg>();
         lattice_runtime::shared_runtime().spawn(async move {
             while let Some(msg) = source_forward_rx.recv().await {
-                // Discard the AppliedEdit — the multibuffer's
-                // local composed_doc is already authoritative.
-                // Best-effort propagation.
-                let _ = msg.source_handle.apply_edit(msg.source_edit).await;
+                match msg {
+                    // Discard the AppliedEdit — the multibuffer's
+                    // local composed_doc is already authoritative.
+                    // Best-effort propagation.
+                    SourceForwardMsg::Edit {
+                        source_handle,
+                        source_edit,
+                    } => {
+                        let _ = source_handle.apply_edit(source_edit).await;
+                    }
+                    // FIFO: every prior Edit was applied + awaited
+                    // above, so the sources are now current. Signal
+                    // `save()` to proceed (best-effort — a dropped
+                    // `done` just means save() falls through).
+                    SourceForwardMsg::Flush { done } => {
+                        let _ = done.send(());
+                    }
+                }
             }
         });
 
@@ -465,6 +560,7 @@ impl MultibufferDocumentHandle {
                 state: std::sync::Mutex::new(MultibufferState {
                     sources,
                     excerpts,
+                    source_syntax: HashMap::new(),
                     selections: Arc::new(SelectionSet::default()),
                 }),
                 composed_doc: std::sync::Mutex::new(composed_doc),
@@ -472,8 +568,12 @@ impl MultibufferDocumentHandle {
                 snapshot_cell,
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
+                headerline_version: AtomicU64::new(0),
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
                 registry,
+                lang_registry: std::sync::OnceLock::new(),
+                excerpt_syntax_gen: std::sync::atomic::AtomicU64::new(0),
+                publish_seq: std::sync::atomic::AtomicU64::new(0),
             }),
         })
     }
@@ -669,6 +769,11 @@ impl MultibufferDocumentHandle {
             return;
         }
         let mut state = self.lock_state();
+        // MH.B1 (2026-06-19): collect the excerpts actually added
+        // this call (mirroring the skip-if-missing-source filter)
+        // so we can compose + translate ONLY the batch, not the
+        // accumulated total.
+        let mut added: Vec<Excerpt> = Vec::with_capacity(excerpts.len());
         for ex in excerpts {
             if !state.sources.contains_key(&ex.source) {
                 // Silently drop — the provider is responsible
@@ -677,39 +782,74 @@ impl MultibufferDocumentHandle {
                 // this in its scan task.
                 continue;
             }
-            state.excerpts.push(ex);
+            state.excerpts.push(ex.clone());
+            added.push(ex);
         }
-        // M.11 (2026-06-02): rebuild composed_doc from sources
-        // so user edits (which apply to composed_doc) target a
-        // rope that reflects the current excerpts. Without this,
-        // the search provider constructs an EMPTY multibuffer
-        // then streams hits via append_excerpts — the published
-        // snapshot reflects the hits (via compose below) but
-        // composed_doc stays empty. When the user enters insert
-        // mode + types, composed_doc.apply_edit either fails
-        // out-of-range or no-ops on the empty rope, and
-        // do_insert_text silently returns. This was the root
-        // cause of "typing does nothing." Rebuild keeps the two
-        // in sync. CLOBBERS any local edits present at the time
-        // — acceptable for v1 since the search provider's
-        // streaming phase precedes user editing.
-        let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
-        let new_composed_doc = lattice_core::Document::from_text(composed_text);
-        let snapshot = snapshot_from_composed_doc(
-            &new_composed_doc,
-            self.inner.id,
-            state.selections.clone(),
-        );
-        let translation = RowTranslation::build(&state.excerpts);
+        if added.is_empty() {
+            // Every excerpt was dropped (unknown source). Nothing
+            // to compose or publish — leave the view untouched.
+            return;
+        }
+        // MH.B1 (2026-06-19): compose ONLY the batch we just added.
+        // `compose_text_from_sources` carries no cross-excerpt
+        // state — each line is pulled independently and given a
+        // trailing `\n` — so composing the added sub-list yields
+        // exactly the bytes that sub-list contributes to the full
+        // composition. Appending those bytes to the END of the
+        // existing composed_doc is therefore byte-identical to
+        // `from_text(old_full_text + batch_text)`, at O(batch)
+        // instead of O(total). Pinned by
+        // `incremental_append_matches_full_build`.
+        let batch_text = compose_text_from_sources(&state.sources, &added);
+        // K.4.7: stamp with monotonic seq — `Document::apply_edit`
+        // bumps text_version, but starting from a `from_text`-built
+        // rope (which begins at text_version=0) means an empty view
+        // streaming its first batch would land at text_version=1
+        // regardless; we use the inner monotonic publish_seq so the
+        // MatrixVersion advances on every publish.
+        let seq = self.inner.publish_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let selections = state.selections.clone();
+        // MH.B1: extend (not rebuild) the row translation by the
+        // batch's entries. Pure concatenation == byte-identical to
+        // `RowTranslation::build(&state.excerpts)`.
+        let mut translation = (*self.inner.row_translation.load_full()).clone();
+        translation.append(&added);
         drop(state);
-        {
+        // MH.B1 (2026-06-02 superseded): append the batch text to
+        // the END of composed_doc rather than rebuilding it from
+        // all sources. This APPENDS — it preserves any local edits
+        // already present in composed_doc (the previous full-rebuild
+        // here CLOBBERED them). Insert-at-end keeps the local rope
+        // authoritative + in sync with the growing excerpt set so
+        // user edits land on a rope reflecting current content.
+        let snapshot = {
             let mut doc = self
                 .inner
                 .composed_doc
                 .lock()
                 .expect("composed_doc mutex poisoned");
-            *doc = new_composed_doc;
-        }
+            if !batch_text.is_empty() {
+                // Insert at the very end of the current rope. The
+                // end Position is derived from the rope's byte
+                // length so it is correct whether or not the rope
+                // ends in a trailing newline.
+                let end_byte = doc.buffer().byte_len() as usize;
+                let at = doc
+                    .buffer()
+                    .byte_to_position(end_byte)
+                    .expect("end-of-rope position is always in bounds");
+                // Best-effort: a failed append leaves the rope as-is
+                // (recoverable — we still publish the extended
+                // translation + bumped seq). Never panic on this path.
+                if let Err(err) = doc.apply_edit(Edit::insert(at, batch_text)) {
+                    tracing::debug!(?err, "append_excerpts: composed_doc append failed; rope unchanged");
+                }
+            }
+            let mut snapshot =
+                snapshot_from_composed_doc(&doc, self.inner.id, selections);
+            snapshot.text_version = seq;
+            snapshot
+        };
         self.inner.snapshot_cell.store(snapshot);
         self.inner.row_translation.store(Arc::new(translation));
     }
@@ -739,11 +879,14 @@ impl MultibufferDocumentHandle {
         // user edits land on a rope reflecting current content.
         let composed_text = compose_text_from_sources(&state.sources, &state.excerpts);
         let new_composed_doc = lattice_core::Document::from_text(composed_text);
-        let snapshot = snapshot_from_composed_doc(
+        // K.4.7: same monotonic seq stamp as append_excerpts.
+        let seq = self.inner.publish_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut snapshot = snapshot_from_composed_doc(
             &new_composed_doc,
             self.inner.id,
             state.selections.clone(),
         );
+        snapshot.text_version = seq;
         let translation = RowTranslation::build(&state.excerpts);
         drop(state);
         {
@@ -763,9 +906,113 @@ impl MultibufferDocumentHandle {
     /// reference it. Idempotent: re-adding an existing source
     /// updates the handle reference (which may have been
     /// replaced via slot-replacement upstream).
+    ///
+    /// K.4.7 (2026-06-07): if `set_lang_registry` has been called,
+    /// detect the source's language from its path and create a
+    /// long-lived `SyntaxHandle` for it. The handle worker runs on
+    /// the tokio runtime of the caller (the scan task); subsequent
+    /// reparsing is async and wait-free at read time.
     pub fn add_source(&self, id: BufferId, source: Arc<dyn Document>) {
         let mut state = self.lock_state();
-        state.sources.insert(id, source);
+        state.sources.insert(id, source.clone());
+        let path = source.path();
+        tracing::debug!(
+            buffer = ?id,
+            path = ?path,
+            has_lang_registry = self.inner.lang_registry.get().is_some(),
+            "add_source: checking for syntax handle creation"
+        );
+        if let Some(lr) = self.inner.lang_registry.get() {
+            let lang = Lang::detect_from_path(path.as_deref());
+            tracing::debug!(buffer = ?id, ?lang, "add_source: detected language");
+            if lang != Lang::Plain {
+                match Syntax::for_language_with_registry(lang, lr.clone()) {
+                    Ok(Some(mut syntax)) => {
+                        let snap = source.snapshot();
+                        let text = snap.buffer.as_string();
+                        syntax.parse(&text);
+                        let handle = SyntaxHandle::seeded(syntax);
+                        state.source_syntax.insert(id, Arc::new(handle));
+                        self.inner.excerpt_syntax_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::debug!(buffer = ?id, ?lang, "add_source: syntax handle created");
+                    }
+                    Ok(None) => {
+                        tracing::debug!(buffer = ?id, ?lang, "add_source: no grammar registered");
+                    }
+                    Err(e) => {
+                        tracing::debug!(buffer = ?id, ?lang, error = ?e, "add_source: grammar error");
+                    }
+                }
+            }
+        }
+    }
+
+    /// K.4.7 (2026-06-07): enable per-source syntax highlighting.
+    /// Called by the host immediately after `create_multibuffer_view`.
+    /// Subsequent `add_source` calls use the registry to detect the
+    /// source language and create a `SyntaxHandle` per source.
+    ///
+    /// Also retroactively creates handles for sources that were already
+    /// added before this call (the common case: `new(sources, ...)` is
+    /// called first, then `set_lang_registry` wires highlighting).
+    pub fn set_lang_registry(&self, lr: Arc<LangRegistry>) {
+        if self.inner.lang_registry.set(lr.clone()).is_err() {
+            return;
+        }
+        let mut state = self.lock_state();
+        let ids: Vec<(BufferId, Arc<dyn Document>)> = state
+            .sources
+            .iter()
+            .filter(|(id, _)| !state.source_syntax.contains_key(id))
+            .map(|(id, src)| (*id, src.clone()))
+            .collect();
+        let mut added = 0u64;
+        for (id, source) in ids {
+            let lang = Lang::detect_from_path(source.path().as_deref());
+            if lang == Lang::Plain {
+                continue;
+            }
+            if let Ok(Some(mut syntax)) = Syntax::for_language_with_registry(lang, lr.clone()) {
+                let snap = source.snapshot();
+                let text = snap.buffer.as_string();
+                syntax.parse(&text);
+                let handle = SyntaxHandle::seeded(syntax);
+                state.source_syntax.insert(id, Arc::new(handle));
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.inner.excerpt_syntax_gen.fetch_add(added, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// K.4.7 (2026-06-08): monotonic version that increments whenever
+    /// per-source `SyntaxHandle`s are created. Used by `publish_render_state`
+    /// to invalidate the cells-worker cache when handles are first populated.
+    pub fn excerpt_syntax_version(&self) -> u64 {
+        self.inner.excerpt_syntax_gen.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// K.4.7 (2026-06-07): per-excerpt syntax entries for the cells
+    /// worker. Each entry is `(composed_start, composed_end,
+    /// source_start, handle)` where `composed_start`/`composed_end`
+    /// are inclusive row bounds in the composed snapshot (0-indexed)
+    /// and `source_start` is the first source row mapped to
+    /// `composed_start`. Only excerpts with a `SyntaxHandle` are
+    /// included.
+    pub fn excerpt_syntax_entries(&self) -> Vec<(u32, u32, u32, Arc<SyntaxHandle>)> {
+        let state = self.lock_state();
+        let mut entries = Vec::new();
+        let mut composed_row = 0u32;
+        for ex in &state.excerpts {
+            let line_count = ex.end_line.saturating_sub(ex.start_line) + 1;
+            if let Some(handle) = state.source_syntax.get(&ex.source) {
+                let composed_end = composed_row + line_count - 1;
+                entries.push((composed_row, composed_end, ex.start_line, handle.clone()));
+            }
+            composed_row += line_count;
+        }
+        entries
     }
 
     /// Recompose the snapshot from current source state.
@@ -816,6 +1063,7 @@ impl MultibufferDocumentHandle {
             .ok()
             .and_then(|book| book.bus.clone());
         self.inner.headerline.store(Arc::new(status.clone()));
+        self.inner.headerline_version.fetch_add(1, Ordering::Release);
         if let Some(bus) = bus {
             bus.publish_typed(MultibufferHeaderlineChanged {
                 view: self.inner.buffer_id,
@@ -1055,7 +1303,7 @@ impl Document for MultibufferDocumentHandle {
         let state = self.lock_state();
         let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
             let source_edit = build_source_edit(&target, &edit);
-            SourceForwardMsg {
+            SourceForwardMsg::Edit {
                 source_handle: target.source_handle.clone(),
                 source_edit,
             }
@@ -1122,7 +1370,7 @@ impl Document for MultibufferDocumentHandle {
             let state = self.lock_state();
             let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
                 let source_edit = build_source_edit(&target, &edit);
-                SourceForwardMsg {
+                SourceForwardMsg::Edit {
                     source_handle: target.source_handle.clone(),
                     source_edit,
                 }
@@ -1227,10 +1475,67 @@ impl Document for MultibufferDocumentHandle {
     }
 
     fn save(&self) -> Pending<std::path::PathBuf> {
-        // Multibuffers aren't on-disk files; `:w` is a no-op
-        // until a provider attaches save semantics (e.g.
-        // M.6 SearchProvider's "save all sources" wrapper).
-        Pending::ready(Err(RuntimeError::ReadOnly))
+        // 2026-06-10: save every dirty source back to disk. Generic
+        // for ALL multibuffer views (narrow, project-search, future
+        // diff / references): the host's `save_blocking` calls this
+        // `Document::save` uniformly, so `:w` persists the underlying
+        // files with no kind-branch.
+        //
+        // Edits reach sources ASYNC via the source-forwarder, so we
+        // FLUSH it first — a barrier sent through the same FIFO
+        // channel guarantees every queued edit has been applied to
+        // (and awaited on) its source actor before we read + save the
+        // sources. Without the flush, `:w` races the forwarder and
+        // could persist a source missing the user's last keystrokes.
+        let sources: Vec<Arc<dyn Document>> = {
+            let state = self.lock_state();
+            state.sources.values().cloned().collect()
+        };
+        let forward_tx = self.inner.source_forward_tx.clone();
+        Pending::spawn(async move {
+            // Flush barrier. Best-effort: if the forwarder is gone the
+            // send fails and we fall through (sources are as current
+            // as they can be); if `done` is dropped the await errors
+            // and we likewise proceed.
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            if forward_tx
+                .send(SourceForwardMsg::Flush { done: done_tx })
+                .is_ok()
+            {
+                let _ = done_rx.await;
+            }
+
+            // Save each dirty source; report the first saved path for
+            // the `:w` echo. A view whose sources are all clean reports
+            // the first source's path as a no-op success (matching
+            // vim's `:w` on an unmodified buffer); an empty view (no
+            // sources) is `ReadOnly`.
+            let mut saved_path: Option<std::path::PathBuf> = None;
+            let mut fallback_path: Option<std::path::PathBuf> = None;
+            let mut last_err: Option<RuntimeError> = None;
+            for source in &sources {
+                if fallback_path.is_none() {
+                    fallback_path = source.path();
+                }
+                if !source.dirty() {
+                    continue;
+                }
+                match source.save().await {
+                    Ok(path) => {
+                        saved_path.get_or_insert(path);
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+            saved_path
+                .or(fallback_path)
+                .ok_or(RuntimeError::ReadOnly)
+        })
     }
 
     fn save_as(&self, _path: std::path::PathBuf) -> Pending<()> {
@@ -1289,6 +1594,34 @@ impl Document for MultibufferDocumentHandle {
         Some(Arc::from(rows.into_boxed_slice()))
     }
 
+    // K.4.7 (2026-06-08): mode owns its highlighting surface. The host's
+    // `publish_render_state` calls these uniformly on every document; no
+    // `BufferKind` branch needed there.
+    fn excerpt_highlights(&self) -> Vec<lattice_cells::ExcerptHighlight> {
+        let state = self.lock_state();
+        let mut out = Vec::new();
+        let mut composed_row = 0u32;
+        for ex in &state.excerpts {
+            let line_count = ex.end_line.saturating_sub(ex.start_line) + 1;
+            if let Some(handle) = state.source_syntax.get(&ex.source) {
+                out.push(lattice_cells::ExcerptHighlight {
+                    composed_start: composed_row,
+                    composed_end: composed_row + line_count - 1,
+                    source_start: ex.start_line,
+                    highlighter: Arc::clone(handle) as Arc<dyn lattice_cells::ExcerptHighlighter>,
+                });
+            }
+            composed_row += line_count;
+        }
+        out
+    }
+
+    fn excerpt_syntax_version(&self) -> u64 {
+        self.inner
+            .excerpt_syntax_gen
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn dispatch_with_cancel(
         &self,
         invocation: CommandInvocation,
@@ -1329,16 +1662,159 @@ impl Document for MultibufferDocumentHandle {
         let mut scratch = lattice_core::Document::from_buffer(snapshot.buffer.clone());
         let buffer_id = self.inner.buffer_id;
         let registry = Arc::clone(&self.inner.registry);
-        let result = lattice_grammar::execute(
+        // N.1.5: tree-sitter text objects (`af` / `daf` / `znaf`) inside a
+        // multibuffer view resolve against the SOURCE syntax, not the
+        // composed text (which has no parse tree of its own). Build a
+        // composed↔source `ScopeResolver` from the per-excerpt source
+        // SyntaxSnapshots (K.4.7) and hand it to the dispatcher. Only
+        // built for Operator / TextObject invocations -- motions
+        // (j/k/w/...) never read it, so navigation in a big search view
+        // stays O(1) per keystroke (paramount #1).
+        let composed_resolver = if matches!(
+            registry.lookup(invocation.command).map(|s| s.kind),
+            Some(CommandKind::Operator | CommandKind::TextObject)
+        ) {
+            ComposedScopeResolver::build(&self.lock_state())
+        } else {
+            None
+        };
+        let result = execute_with_env(
             &registry,
             &mut scratch,
             buffer_id,
             cursor,
             invocation,
             &cancel,
+            lattice_grammar::TextObjectEnv {
+                scope_resolver: composed_resolver
+                    .as_ref()
+                    .map(|r| r as &dyn lattice_grammar::ScopeResolver),
+                // Comment objects inside multibuffer views would resolve
+                // the per-excerpt source's comment leader -- deferred (a
+                // follow-up, like N.1.5's scope resolver was). v1: None.
+                comment_syntax: None,
+            },
         )
         .map_err(RuntimeError::Grammar);
         Pending::ready(result)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// N.1.5 — composed↔source scope resolver
+// ──────────────────────────────────────────────────────────────
+
+/// N.1.5: a [`lattice_grammar::ScopeResolver`] that bridges composed
+/// multibuffer coordinates to the per-excerpt SOURCE syntax. Tree-sitter
+/// text objects dispatched against a multibuffer view (narrow / search /
+/// project-diff) resolve their enclosing scope against the source file's
+/// parse tree — the composed text has no tree of its own — and the
+/// result is mapped back to composed coordinates so the operator applies
+/// in the view. Built per Operator/TextObject dispatch from a snapshot
+/// of the excerpt layout + source `SyntaxSnapshot`s (cheap Arc clones);
+/// see [`MultibufferDocumentHandle::dispatch_with_cancel`].
+struct ComposedScopeResolver {
+    excerpts: Vec<ComposedExcerptSpan>,
+    snapshots: HashMap<BufferId, Arc<SyntaxSnapshot>>,
+}
+
+/// One excerpt's placement: its source rows `[start_line, start_line +
+/// line_count)` occupy composed rows `[composed_offset, composed_offset
+/// + line_count)`.
+struct ComposedExcerptSpan {
+    source: BufferId,
+    start_line: u32,
+    line_count: u32,
+    composed_offset: u32,
+}
+
+impl ComposedScopeResolver {
+    /// Snapshot the excerpt layout + per-source `SyntaxSnapshot`s.
+    /// Returns `None` when no excerpt has a source `SyntaxHandle` (a
+    /// plain-text / no-language multibuffer) — the resolver would
+    /// resolve nothing, so the caller passes `None` and text objects
+    /// degrade to empty (graceful operator no-op).
+    fn build(state: &MultibufferState) -> Option<Self> {
+        let mut excerpts = Vec::with_capacity(state.excerpts.len());
+        let mut snapshots: HashMap<BufferId, Arc<SyntaxSnapshot>> = HashMap::new();
+        let mut composed_offset = 0u32;
+        for ex in &state.excerpts {
+            excerpts.push(ComposedExcerptSpan {
+                source: ex.source,
+                start_line: ex.start_line,
+                line_count: ex.line_count(),
+                composed_offset,
+            });
+            composed_offset = composed_offset.saturating_add(ex.line_count());
+            if !snapshots.contains_key(&ex.source)
+                && let Some(h) = state.source_syntax.get(&ex.source)
+            {
+                snapshots.insert(ex.source, h.snapshot());
+            }
+        }
+        if snapshots.is_empty() {
+            return None;
+        }
+        Some(Self {
+            excerpts,
+            snapshots,
+        })
+    }
+}
+
+impl lattice_grammar::ScopeResolver for ComposedScopeResolver {
+    fn scope_at(
+        &self,
+        composed_line: u32,
+        col_byte: u32,
+        suffix: &str,
+    ) -> Option<lattice_protocol::position::Range> {
+        for ex in &self.excerpts {
+            // First composed row PAST this excerpt (exclusive upper bound).
+            let composed_end_exclusive = ex.composed_offset.saturating_add(ex.line_count);
+            if composed_line < composed_end_exclusive {
+                let source_line = ex.start_line + (composed_line - ex.composed_offset);
+                let snap = self.snapshots.get(&ex.source)?;
+                let src = snap.scope_at_cursor(source_line, col_byte, suffix)?;
+                // Clamp the source range to THIS excerpt's source bounds,
+                // then map back to composed rows. A scope extending past
+                // the excerpt (a narrowed sub-region) is clipped to the
+                // visible rows; a clamped edge loses its byte column
+                // (falls to col 0) since it no longer marks a real token.
+                // `saturating_sub` guards a (shouldn't-happen) zero-line
+                // excerpt rather than underflowing to u32::MAX.
+                let ex_last = ex
+                    .start_line
+                    .saturating_add(ex.line_count)
+                    .saturating_sub(1);
+                let cs = src.start.line.max(ex.start_line);
+                let ce = src.end.line.min(ex_last);
+                if cs > ce {
+                    return None;
+                }
+                let start_byte = if src.start.line >= ex.start_line {
+                    src.start.byte
+                } else {
+                    0
+                };
+                let end_byte = if src.end.line <= ex_last {
+                    src.end.byte
+                } else {
+                    0
+                };
+                return Some(lattice_protocol::position::Range::new(
+                    lattice_protocol::position::Position::new(
+                        ex.composed_offset + (cs - ex.start_line),
+                        start_byte,
+                    ),
+                    lattice_protocol::position::Position::new(
+                        ex.composed_offset + (ce - ex.start_line),
+                        end_byte,
+                    ),
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -1470,38 +1946,384 @@ pub enum MultibufferError {
 
 /// Namespace prefix for multibuffer header provider ids.
 /// Distinct from the diff filler / overlay namespaces (`0xD1FF_*`).
-const MULTIBUFFER_HEADER_NAMESPACE: u64 = 0xBBBB_0001_0000_0000;
+const MULTIBUFFER_EXCERPT_HEADER_NAMESPACE: u64 = 0xBBBB_0001_0000_0000;
 
-pub fn multibuffer_header_provider_id(buffer_id: BufferId) -> ProviderId {
-    MULTIBUFFER_HEADER_NAMESPACE | u64::from(buffer_id.0)
+pub fn multibuffer_excerpt_header_provider_id(buffer_id: BufferId) -> ProviderId {
+    MULTIBUFFER_EXCERPT_HEADER_NAMESPACE | u64::from(buffer_id.0)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// T.7 (2026-06-18): mode-owned theme elements for the excerpt header.
+//
+// The multibuffer MODE owns these elements + their defaults — they
+// are NOT core builtins ([[feedback_mode_owns_its_surface]]). The
+// mode registers them (idempotent by name) so the excerpt-header
+// provider can resolve them into BAKED `u32` colors at row-build
+// time (off the UI thread, the established cell/virtual-row pattern).
+//
+// This is the extensibility acid test: a provider crate adds ZERO
+// host `Theme`/style fields and ZERO renderer match arms — it
+// registers elements + references them, and the renderer paints
+// `VirtualRow.bg` / `Cell.fg` generically.
+// ─────────────────────────────────────────────────────────────────
+
+/// Element name: the excerpt-header row's backdrop (a neutral
+/// surface tint, distinct from the diff-deletion-block red the
+/// renderer would otherwise fall a `bg: None` Generic row through to).
+pub const ELEM_EXCERPT_HEADER: &str = "multibuffer.excerpt_header";
+/// Element name: the excerpt-header file-path / title foreground.
+pub const ELEM_EXCERPT_HEADER_PATH: &str = "multibuffer.excerpt_header.path";
+/// Element name: the excerpt-header match-count foreground.
+pub const ELEM_EXCERPT_HEADER_COUNT: &str = "multibuffer.excerpt_header.count";
+
+// MH.A4 (2026-06-20): view-status headerline foreground elements.
+// The status row (` ⟳ Searching … ` / ` ◆ N hits ` / ` ■ reason `)
+// previously hardcoded its fg as ad-hoc hex (0x999999 / 0x44cc88 /
+// 0xff4444); these map the three states onto palette role-keys so a
+// `:colorscheme` swap recolors the status line.
+/// Element name: the in-progress status row foreground (neutral grey).
+pub const ELEM_STATUS_IN_PROGRESS: &str = "multibuffer.status.in_progress";
+/// Element name: the completed status row foreground (green).
+pub const ELEM_STATUS_COMPLETE: &str = "multibuffer.status.complete";
+/// Element name: the failed status row foreground (red).
+pub const ELEM_STATUS_FAILED: &str = "multibuffer.status.failed";
+
+/// Register the multibuffer mode's theme elements against `reg`.
+/// Idempotent by name (safe to call on every mode activation /
+/// every view creation). Returns the interned [`ElementId`]s the
+/// excerpt-header provider bakes from.
+///
+/// `owner` is the mode's id string ([`MultibufferMode::mode_id`] →
+/// `as_str`), so `:describe-element` attributes these to the mode
+/// rather than core. `lattice-theme` is a leaf crate that can't
+/// depend on `lattice-mode`, hence the string owner.
+pub fn register_multibuffer_theme_elements(
+    reg: &dyn lattice_theme::ThemeRegistry,
+    owner: ElementOwner,
+) -> MultibufferHeaderElementIds {
+    let backdrop = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER.to_string()),
+        owner.clone(),
+        // Neutral surface backdrop (Catppuccin "surface0"-ish), NOT
+        // the diff-deletion red — that was the smell this slice fixes.
+        StyleSpec::new().bg(Color::Rgb(0x31, 0x32, 0x44)),
+        "Multibuffer excerpt header backdrop.",
+    );
+    let path = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_PATH.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("blue".into())),
+        "Excerpt header file path.",
+    );
+    let count = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_COUNT.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("overlay2".into())),
+        "Excerpt header match count.",
+    );
+    // MH.A4: status-row state colors. `in_progress` maps to the
+    // muted `subtext` grey (the old 0x999999), `complete` to `green`
+    // (old 0x44cc88), `failed` to `red` (old 0xff4444) — the nearest
+    // semantic role-keys in the registered palette.
+    let status_in_progress = reg.register(
+        ElementName::from(ELEM_STATUS_IN_PROGRESS.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("subtext".into())),
+        "Multibuffer in-progress status foreground.",
+    );
+    let status_complete = reg.register(
+        ElementName::from(ELEM_STATUS_COMPLETE.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("green".into())),
+        "Multibuffer completed status foreground.",
+    );
+    let status_failed = reg.register(
+        ElementName::from(ELEM_STATUS_FAILED.to_string()),
+        owner,
+        StyleSpec::new().fg(ColorRef::Palette("red".into())),
+        "Multibuffer failed status foreground.",
+    );
+    MultibufferHeaderElementIds {
+        backdrop,
+        path,
+        count,
+        status_in_progress,
+        status_complete,
+        status_failed,
+    }
+}
+
+/// The interned [`ElementId`]s for the excerpt-header elements,
+/// captured once at view-creation and held by the provider so each
+/// `collect()` is an array-index resolve (`resolved.get(id)`), never
+/// a per-row name lookup. `Copy`; cheap to thread through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultibufferHeaderElementIds {
+    pub backdrop: ElementId,
+    pub path: ElementId,
+    pub count: ElementId,
+    /// MH.A4: view-status row foregrounds, interned alongside the
+    /// header elements so the status provider's `collect()` resolves
+    /// by array index (never a per-row name lookup).
+    pub status_in_progress: ElementId,
+    pub status_complete: ElementId,
+    pub status_failed: ElementId,
+}
+
+impl Default for MultibufferHeaderElementIds {
+    /// All-INVALID placeholder for test paths that build the provider
+    /// without a theme registry. Reads against an empty/default table
+    /// return `Style::empty()` (no bg/fg baked) — never a panic.
+    fn default() -> Self {
+        Self {
+            backdrop: ElementId::INVALID,
+            path: ElementId::INVALID,
+            count: ElementId::INVALID,
+            status_in_progress: ElementId::INVALID,
+            status_complete: ElementId::INVALID,
+            status_failed: ElementId::INVALID,
+        }
+    }
 }
 
 /// Emits one virtual row per excerpt header, anchored above the
 /// excerpt's first composed row. Cheap-clone reference to the
 /// multibuffer handle; re-reads excerpts on each `collect()`.
-#[derive(Debug)]
-pub struct MultibufferHeaderProvider {
+///
+/// T.7: when a [`ThemeRegistryHandle`] + the header element ids are
+/// supplied, `collect()` resolves the backdrop + path elements and
+/// bakes them into the row's `bg` / cells' `fg` — resolution happens
+/// off-thread at row-build time, never on a paint path. Without a
+/// handle (test paths) the rows fall back to `bg: None` (the renderer
+/// then picks its kind default).
+///
+/// `Debug` is hand-rolled because `ThemeRegistryHandle` (a
+/// `dyn ThemeRegistry` trait object) is not `Debug`; the
+/// `VirtualRowProvider` trait requires `Debug`.
+pub struct MultibufferExcerptHeaderProvider {
     multibuffer: MultibufferDocumentHandle,
+    /// T.7: `None` for test paths that don't wire a theme registry.
+    theme: Option<ThemeRegistryHandle>,
+    elements: MultibufferHeaderElementIds,
+    /// MH.A3: `ui.nerd_fonts`, captured at view construction so the
+    /// leading file-type icon picks the nerd-font glyph vs the BMP
+    /// fallback. Folded into `version()` so a global toggle re-runs
+    /// `collect()`.
+    ///
+    /// MH.A3 follow-on: this is the GLOBAL default captured once at
+    /// view creation — a live per-buffer `ui.nerd_fonts` toggle does
+    /// not yet re-render the header. Reading per-buffer
+    /// `ui.nerd_fonts` here needs the `FrameView::for_buffer` seam
+    /// plumbed into the provider, deferred to avoid over-building.
+    nerd_fonts: bool,
 }
 
-impl MultibufferHeaderProvider {
-    pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
-        Self { multibuffer }
+impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultibufferExcerptHeaderProvider")
+            .field("buffer_id", &self.multibuffer.buffer_id())
+            .field("has_theme", &self.theme.is_some())
+            .field("elements", &self.elements)
+            .field("nerd_fonts", &self.nerd_fonts)
+            .finish()
     }
 }
 
-impl VirtualRowProvider for MultibufferHeaderProvider {
+impl MultibufferExcerptHeaderProvider {
+    /// Construct without theme wiring — headers render with no baked
+    /// bg/fg (the renderer's kind default applies). Test convenience;
+    /// production uses [`Self::with_theme`]. Defaults `nerd_fonts` to
+    /// `false` (BMP-fallback palette).
+    pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
+        Self {
+            multibuffer,
+            theme: None,
+            elements: MultibufferHeaderElementIds::default(),
+            nerd_fonts: false,
+        }
+    }
+
+    /// T.7: construct with the resolved theme handle + the header
+    /// element ids so `collect()` bakes the registered backdrop / path
+    /// colors into the header rows. MH.A3: `nerd_fonts` selects the
+    /// icon palette (captured at view creation; see the struct field
+    /// doc for the per-buffer-toggle follow-on note).
+    pub fn with_theme(
+        multibuffer: MultibufferDocumentHandle,
+        theme: ThemeRegistryHandle,
+        elements: MultibufferHeaderElementIds,
+        nerd_fonts: bool,
+    ) -> Self {
+        Self {
+            multibuffer,
+            theme: Some(theme),
+            elements,
+            nerd_fonts,
+        }
+    }
+}
+
+impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
     fn id(&self) -> ProviderId {
-        multibuffer_header_provider_id(self.multibuffer.buffer_id())
+        multibuffer_excerpt_header_provider_id(self.multibuffer.buffer_id())
     }
 
     fn version(&self) -> u64 {
-        self.multibuffer.snapshot().version
+        // T.7: fold the resolved theme version into the provider
+        // version so a `:colorscheme` / `:set ui.*` change re-runs
+        // `collect()` and re-bakes the header colors. Mirrors how the
+        // cell matrix invalidates via `MatrixVersion::theme =
+        // resolved().version()` (dispatch.rs). The worker's
+        // fingerprint is `hash[(id, version)]`, so a version bump on
+        // any axis (excerpt content OR theme) triggers a rebuild.
+        let content = self.multibuffer.snapshot().version;
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
+        // MH.A3: fold the nerd_fonts term so a global toggle re-runs
+        // `collect()` (the worker fingerprint is `hash[(id, version)]`).
+        content
+            .wrapping_add(theme)
+            .wrapping_add(if self.nerd_fonts { 1 } else { 0 })
     }
 
     fn collect(&self) -> Vec<VirtualRow> {
-        compose_header_rows(&self.multibuffer.excerpts(), default_header_cells)
+        // Resolve the backdrop bg + all three segment fgs ONCE per
+        // collect (off the UI thread), then bake into each header
+        // row. `0` (the Cell "transparent / use default" sentinel) is
+        // the fg fallback when an element is unresolved.
+        //
+        // header_fg = `multibuffer.excerpt_header` (the base/backdrop
+        //   element)'s `.fg` — currently unset in the default
+        //   registration (only `.bg`), so this resolves to 0 until a
+        //   future slice adds a base fg; the renderer then uses its
+        //   default fg. path_fg / count_fg come from the dedicated
+        //   `.path` / `.count` elements.
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        let header_bg: Option<u32> = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.backdrop).bg)
+            .map(|c| c.to_rgb_u32(0));
+        let header_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.backdrop).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let path_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.path).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let count_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.count).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
+        let nerd_fonts = self.nerd_fonts;
+        compose_header_rows(&self.multibuffer.excerpts(), |excerpt| {
+            header_cells(&excerpt.header, nerd_fonts, header_fg, path_fg, count_fg)
+        })
+        .into_iter()
+        .map(|mut row| {
+            row.bg = header_bg;
+            row
+        })
+        .collect()
     }
+}
+
+/// MH.A3: rich per-segment header builder. Replaces the old
+/// single-fg `themed_header_cells`. Layout (per multibuffer-views.md
+/// §3.8):
+///
+/// ```text
+///   filename.rs  src/multibuffer/  ·  7 matches
+/// ```
+///
+/// - leading file-type **icon** (resolved live from `header.path`'s
+///   extension via [`lattice_core::ui::icons::glyph_for_entry`];
+///   nerd glyph when `nerd_fonts`, BMP fallback otherwise — both the
+///   same cell width) + a trailing space, fg `header_fg`.
+/// - **basename** (`header.path.file_name()`, else `header.title`),
+///   fg `header_fg`.
+/// - a space + the **dir** path (dimmed) when `header.path` has a
+///   parent, fg `path_fg`.
+/// - ` · {n} matches` / ` · {n} match` when `header.match_count` is
+///   `Some`, fg `count_fg`.
+/// - empty title AND no path ⇒ `[untitled]` fallback in `header_fg`.
+///
+/// Colours are **resolved in `collect()` and passed in** — never
+/// baked at excerpt-creation time — so a live `ui.nerd_fonts` /
+/// `:colorscheme` toggle re-renders the whole surface. A fg of `0`
+/// is the Cell "use renderer default" sentinel (test paths without a
+/// theme).
+pub(crate) fn header_cells(
+    header: &ExcerptHeader,
+    nerd_fonts: bool,
+    header_fg: u32,
+    path_fg: u32,
+    count_fg: u32,
+) -> Arc<[Cell]> {
+    let mut cells: Vec<Cell> = Vec::new();
+
+    let push = |cells: &mut Vec<Cell>, s: &str, fg: u32| {
+        for ch in s.chars() {
+            cells.push(Cell::new(ch as u32, fg, 0, 0));
+        }
+    };
+
+    match &header.path {
+        Some(path) => {
+            // Leading file-type icon (already 2 cells wide: glyph +
+            // trailing space in both palettes) — fg `header_fg`.
+            let icon = lattice_core::ui::icons::glyph_for_entry(path, false, nerd_fonts);
+            push(&mut cells, icon, header_fg);
+
+            // Basename (bright). Fall back to the whole path string,
+            // then to the title, if `file_name()` is unavailable.
+            let basename: std::borrow::Cow<'_, str> = path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| path.to_string_lossy());
+            if basename.is_empty() {
+                push(&mut cells, header.title.as_str(), header_fg);
+            } else {
+                push(&mut cells, basename.as_ref(), header_fg);
+            }
+
+            // Directory path (dimmed) when there's a parent.
+            if let Some(parent) = path.parent() {
+                let parent_str = parent.to_string_lossy();
+                if !parent_str.is_empty() {
+                    push(&mut cells, "  ", path_fg);
+                    push(&mut cells, parent_str.as_ref(), path_fg);
+                }
+            }
+        }
+        None => {
+            // No path → use the title; `[untitled]` when even that is
+            // empty so the row never collapses to nothing.
+            if header.title.is_empty() {
+                push(&mut cells, "[untitled]", header_fg);
+            } else {
+                push(&mut cells, header.title.as_str(), header_fg);
+            }
+        }
+    }
+
+    // Match-count badge (` · N matches`), fg `count_fg`.
+    if let Some(n) = header.match_count {
+        let badge = if n == 1 {
+            format!(" · {n} match")
+        } else {
+            format!(" · {n} matches")
+        };
+        push(&mut cells, badge.as_str(), count_fg);
+    }
+
+    Arc::from(cells)
 }
 
 /// Pure function from excerpt list → header virtual rows.
@@ -1535,12 +2357,184 @@ pub fn compose_header_rows(
                 cells,
                 height: 1,
                 kind: VirtualRowKind::Generic,
+                bg: None,
             });
             last_source = Some(excerpt.source);
         }
         composed_cursor = composed_cursor.saturating_add(excerpt.line_count());
     }
     rows
+}
+
+// ─────────────────────────────────────────────────────────────────
+// M.6.5 (2026-06-08): view-status sticky headerline
+// ─────────────────────────────────────────────────────────────────
+
+/// Namespace prefix for the view-status headerline provider.
+/// Distinct from the excerpt-header namespace (`0xBBBB_0001_*`).
+const MULTIBUFFER_STATUS_NAMESPACE: u64 = 0xBBBB_0002_0000_0000;
+
+pub fn multibuffer_status_provider_id(buffer_id: BufferId) -> ProviderId {
+    MULTIBUFFER_STATUS_NAMESPACE | u64::from(buffer_id.0)
+}
+
+/// MH.A4: fallback hex used when no theme is wired (test paths). These
+/// are the pre-MH.A4 hardcoded colors; production resolves the
+/// `multibuffer.status.*` theme elements instead.
+const STATUS_IN_PROGRESS_FALLBACK_FG: u32 = 0x999999;
+const STATUS_COMPLETE_FALLBACK_FG: u32 = 0x44cc88;
+const STATUS_FAILED_FALLBACK_FG: u32 = 0xff4444;
+
+/// Pure function: `HeaderlineStatus` → display row (or `None` when idle).
+///
+/// MH.A4: the per-state foregrounds are **resolved in `collect()` and
+/// passed in** (from the `multibuffer.status.*` theme elements) — never
+/// hardcoded here — so a `:colorscheme` swap recolors the status line.
+/// Color legend:
+///   InProgress — `in_progress_fg` (neutral grey), theme bg
+///   Complete   — `complete_fg` (green), green `◆` prefix, theme bg
+///   Failed     — `failed_fg` (red), red `■` prefix, theme bg
+fn render_multibuffer_status(
+    status: &HeaderlineStatus,
+    in_progress_fg: u32,
+    complete_fg: u32,
+    failed_fg: u32,
+) -> Option<HeaderlineRow> {
+    let text: String = match status {
+        HeaderlineStatus::Idle => return None,
+        HeaderlineStatus::InProgress { label, count: None } => {
+            format!(" ⟳ {label} … ")
+        }
+        HeaderlineStatus::InProgress { label, count: Some(n) } => {
+            format!(" ⟳ {label} ({n}) … ")
+        }
+        HeaderlineStatus::Complete { summary } => {
+            format!(" ◆ {summary} ")
+        }
+        HeaderlineStatus::Failed { reason } => {
+            format!(" ■ {reason} ")
+        }
+    };
+    let fg: u32 = match status {
+        HeaderlineStatus::InProgress { .. } => in_progress_fg,
+        HeaderlineStatus::Complete { .. }   => complete_fg,
+        HeaderlineStatus::Failed { .. }     => failed_fg,
+        HeaderlineStatus::Idle              => unreachable!(),
+    };
+    let cells: Arc<[Cell]> = text
+        .chars()
+        .map(|c| Cell::new(c as u32, fg, 0, 0))
+        .collect::<Vec<_>>()
+        .into();
+    Some(HeaderlineRow { cells, bg: None })
+}
+
+/// Sticky headerline provider that surfaces the view's
+/// [`HeaderlineStatus`] as a pinned row above line 0.
+///
+/// Implements [`Headerline`] directly — the status lives in
+/// `MultibufferInner` (behind an `ArcSwap`); no extra dedicated
+/// state allocation is needed.
+pub struct MultibufferStatusProvider {
+    multibuffer: MultibufferDocumentHandle,
+    /// MH.A4: `None` for test paths that don't wire a theme registry —
+    /// `render()` then falls back to the pre-MH.A4 hardcoded hex.
+    theme: Option<ThemeRegistryHandle>,
+    /// MH.A4: the interned status element ids (mirrors the
+    /// excerpt-header provider's `elements`), captured once at
+    /// view-creation so `render()` resolves by array index.
+    elements: MultibufferHeaderElementIds,
+}
+
+impl std::fmt::Debug for MultibufferStatusProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultibufferStatusProvider")
+            .field("buffer_id", &self.multibuffer.buffer_id())
+            .field("has_theme", &self.theme.is_some())
+            .field("elements", &self.elements)
+            .finish()
+    }
+}
+
+impl MultibufferStatusProvider {
+    /// Construct without theme wiring — the status row renders with the
+    /// pre-MH.A4 fallback hex. Test convenience; production uses
+    /// [`Self::with_theme`].
+    pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
+        Self {
+            multibuffer,
+            theme: None,
+            elements: MultibufferHeaderElementIds::default(),
+        }
+    }
+
+    /// MH.A4: construct with the resolved theme handle + the interned
+    /// status element ids so `render()` resolves the
+    /// `multibuffer.status.*` foregrounds (mirrors the excerpt-header
+    /// provider's `with_theme`).
+    pub fn with_theme(
+        multibuffer: MultibufferDocumentHandle,
+        theme: ThemeRegistryHandle,
+        elements: MultibufferHeaderElementIds,
+    ) -> Self {
+        Self {
+            multibuffer,
+            theme: Some(theme),
+            elements,
+        }
+    }
+
+    pub fn into_provider(self, buffer_id: BufferId) -> HeaderlineProvider {
+        HeaderlineProvider::new(
+            multibuffer_status_provider_id(buffer_id),
+            Arc::new(self),
+        )
+    }
+
+    /// Resolve the three status foregrounds from the wired theme,
+    /// falling back to the pre-MH.A4 hex per-state when the theme or an
+    /// element is unresolved (test paths).
+    fn status_fgs(&self) -> (u32, u32, u32) {
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        let resolve = |id: ElementId, fallback: u32| -> u32 {
+            resolved
+                .as_ref()
+                .and_then(|r| r.get(id).fg)
+                .map(|c| c.to_rgb_u32(fallback))
+                .unwrap_or(fallback)
+        };
+        (
+            resolve(self.elements.status_in_progress, STATUS_IN_PROGRESS_FALLBACK_FG),
+            resolve(self.elements.status_complete, STATUS_COMPLETE_FALLBACK_FG),
+            resolve(self.elements.status_failed, STATUS_FAILED_FALLBACK_FG),
+        )
+    }
+}
+
+impl Headerline for MultibufferStatusProvider {
+    fn version(&self) -> u64 {
+        // MH.A4: fold the resolved theme version into the status
+        // version so a `:colorscheme` / `:set ui.*` change re-runs
+        // `render()` and re-resolves the status foregrounds. Mirrors
+        // the excerpt-header provider's version composition.
+        let content = self.multibuffer.inner.headerline_version.load(Ordering::Acquire);
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
+        content.wrapping_add(theme)
+    }
+
+    fn render(&self) -> Option<HeaderlineRow> {
+        let (in_progress_fg, complete_fg, failed_fg) = self.status_fgs();
+        render_multibuffer_status(
+            &self.multibuffer.inner.headerline.load(),
+            in_progress_fg,
+            complete_fg,
+            failed_fg,
+        )
+    }
 }
 
 /// M.10.4 (2026-06-03): host glue for the
@@ -1744,20 +2738,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn save_still_rejected_post_m3() {
-        // M.3 (2026-06-01): apply_edit / undo / redo now
-        // propagate. K.4.5 (2026-06-02): set_selections now
-        // stores composed-coordinate selections (see
-        // `set_selections_stores_composed_selections_post_k_4_5`).
-        // save / save_as / dispatch_with_cancel still stay
-        // rejected per the design comments in `impl Document`
-        // (`:w` is no-op until a provider attaches save
-        // semantics; grammar dispatch runs at the host layer).
+    async fn save_is_readonly_for_a_pathless_view() {
+        // A path-less in-memory source has nothing to persist on
+        // disk, so `:w` on such a view is `ReadOnly`. Real
+        // file-backed sources DO save now — see
+        // `save_persists_view_edits_to_the_source_file`.
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
+    }
+
+    /// 2026-06-10: editing a multibuffer view and calling `save()`
+    /// flushes the source-forwarder and persists the edit to the
+    /// source FILE on disk — the generic `:w`-saves-sources path that
+    /// narrow + project-search both rely on. The flush is load-
+    /// bearing: without it `save()` would race the async forwarder
+    /// and write the pre-edit source.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_persists_view_edits_to_the_source_file() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lattice-mb-save-{unique}.txt"));
+        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let id = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text("alpha\nbeta\ngamma\n")
+            .with_path(path.clone())
+            .build();
+        let handle = spawn_document(id, doc, empty_registry());
+        let source: Arc<dyn Document> = Arc::new(handle);
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, source);
+        let excerpts = vec![Excerpt::new(id, 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Insert "X" at the start of row 1 in the composed view.
+        mb.apply_edit(Edit::insert(Position::new(1, 0), "X"))
+            .await
+            .expect("edit applies");
+
+        // save() flushes the forwarder (so the source has the edit)
+        // then writes the source file back to disk.
+        let saved = mb.save().await.expect("save ok");
+        assert_eq!(saved, path);
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, "alpha\nXbeta\ngamma\n");
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2094,6 +3126,111 @@ mod tests {
             .translate_composed_to_source(Position::new(2, 0))
             .expect("composed (2,0) must translate");
         assert_eq!(target.1, Position::new(7, 0));
+    }
+
+    // ---- N.1.5: ComposedScopeResolver (composed↔source text objects) ----
+
+    use lattice_grammar::ScopeResolver as _;
+
+    fn rust_snapshot(src: &str) -> Arc<SyntaxSnapshot> {
+        let lr = LangRegistry::standard().unwrap();
+        let mut syntax = Syntax::for_language_with_registry(Lang::Rust, lr)
+            .unwrap()
+            .unwrap();
+        syntax.parse(src);
+        SyntaxHandle::seeded(syntax).snapshot()
+    }
+
+    #[test]
+    fn composed_resolver_maps_function_outer_to_source() {
+        // Source: a `target` fn on rows 1..=3, narrowed into a one-excerpt
+        // view (composed rows 0..=2 == source rows 1..=3).
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![ComposedExcerptSpan {
+                source: BufferId(1),
+                start_line: 1,
+                line_count: 3,
+                composed_offset: 0,
+            }],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        // Cursor at composed (1,4) == source (2,4), inside `target`'s body.
+        // `af` resolves the whole function (source rows 1..=3) and maps
+        // back to composed rows 0..=2.
+        let r = resolver.scope_at(1, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 0),
+                lattice_protocol::position::Position::new(2, 1),
+            )),
+            "af inside a narrow view resolves the source function, mapped to composed rows"
+        );
+    }
+
+    #[test]
+    fn composed_resolver_clamps_scope_to_excerpt() {
+        // Excerpt covers only source row 2 (the body line). `af` resolves
+        // the function (source 1..=3) but the result is CLAMPED to the
+        // single visible row — never out-of-bounds composed rows.
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![ComposedExcerptSpan {
+                source: BufferId(1),
+                start_line: 2,
+                line_count: 1,
+                composed_offset: 0,
+            }],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        let r = resolver.scope_at(0, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 0),
+                lattice_protocol::position::Position::new(0, 0),
+            )),
+            "a scope extending past the excerpt is clipped to the visible rows"
+        );
+    }
+
+    #[test]
+    fn composed_resolver_applies_composed_offset_for_second_excerpt() {
+        // Two excerpts from the same source: [0,0] then [1,3]. The second
+        // sits at composed_offset 1, so resolving inside it must add the
+        // offset back when mapping the source range to composed rows.
+        let src = "fn keep_a() {}\nfn target() {\n    let x = 1;\n}\nfn keep_b() {}\n";
+        let snap = rust_snapshot(src);
+        let resolver = ComposedScopeResolver {
+            excerpts: vec![
+                ComposedExcerptSpan {
+                    source: BufferId(1),
+                    start_line: 0,
+                    line_count: 1,
+                    composed_offset: 0,
+                },
+                ComposedExcerptSpan {
+                    source: BufferId(1),
+                    start_line: 1,
+                    line_count: 3,
+                    composed_offset: 1,
+                },
+            ],
+            snapshots: HashMap::from([(BufferId(1), snap)]),
+        };
+        // Composed row 2 lives in the second excerpt → source row 2.
+        let r = resolver.scope_at(2, 4, "function.outer");
+        assert_eq!(
+            r,
+            Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(1, 0),
+                lattice_protocol::position::Position::new(3, 1),
+            )),
+            "the second excerpt's composed_offset (1) is added to the mapped rows"
+        );
     }
 
     /// M.10.2 (2026-06-03): out-of-range composed cursor
@@ -2771,6 +3908,160 @@ mod tests {
         );
     }
 
+    // MH.B2 (2026-06-19): the correctness gate for the incremental
+    // `append_excerpts`. Build one view by streaming the excerpt
+    // list in N batches; build a second view with the identical
+    // full excerpt list in ONE shot. The composed rope TEXT and
+    // the row-translation entries MUST be identical between the
+    // two — this proves incremental append == full build, both for
+    // the rope (insert-at-end == from_text(old + batch)) and for
+    // the translation (concatenation == build-from-all).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incremental_append_matches_full_build() {
+        // Six sources, each multi-line, so each batch contributes
+        // several composed rows.
+        let texts = [
+            "a1\na2\na3\n",
+            "b1\nb2\nb3\n",
+            "c1\nc2\nc3\n",
+            "d1\nd2\nd3\n",
+            "e1\ne2\ne3\n",
+            "f1\nf2\nf3\n",
+        ];
+        let (sources, ids) = make_sources(&texts);
+
+        // The full excerpt list, varied start/end so spans differ.
+        let all_excerpts = vec![
+            Excerpt::new(ids[0], 0, 1),
+            Excerpt::new(ids[1], 1, 2),
+            Excerpt::new(ids[2], 0, 2),
+            Excerpt::new(ids[3], 2, 2),
+            Excerpt::new(ids[4], 0, 0),
+            Excerpt::new(ids[5], 1, 2),
+        ];
+
+        // INCREMENTAL: empty view, stream in 3 batches of 2.
+        let incremental =
+            MultibufferDocumentHandle::new(sources.clone(), Vec::new(), empty_registry())
+                .unwrap();
+        for batch in all_excerpts.chunks(2) {
+            incremental.append_excerpts(batch.to_vec());
+        }
+
+        // FULL: same source map + the entire excerpt list at once,
+        // via the constructor's full build.
+        let full =
+            MultibufferDocumentHandle::new(sources, all_excerpts.clone(), empty_registry())
+                .unwrap();
+
+        // (a) composed rope text byte-identical.
+        assert_eq!(
+            incremental.snapshot().buffer.as_string(),
+            full.snapshot().buffer.as_string(),
+            "incremental append must produce a byte-identical composed rope",
+        );
+
+        // (b) row_translation entries identical (same Vec<RowEntry>),
+        // modulo the ExcerptId values — the two views allocate
+        // distinct ExcerptIds, so compare structurally on
+        // (source_row) ordering within the same shape. We assert
+        // the entry COUNT and source_row sequence match; the
+        // excerpt_id mapping is per-view by construction.
+        let inc_entries = incremental.row_translation().entries.clone();
+        let full_entries = full.row_translation().entries.clone();
+        assert_eq!(
+            inc_entries.len(),
+            full_entries.len(),
+            "row translation length must match the full build",
+        );
+        let inc_rows: Vec<u32> = inc_entries
+            .iter()
+            .map(|RowEntry::Excerpt { source_row, .. }| *source_row)
+            .collect();
+        let full_rows: Vec<u32> = full_entries
+            .iter()
+            .map(|RowEntry::Excerpt { source_row, .. }| *source_row)
+            .collect();
+        assert_eq!(
+            inc_rows, full_rows,
+            "row translation source_row sequence must match the full build",
+        );
+    }
+
+    // MH.B2 (2026-06-19): edge case — a batch containing an excerpt
+    // whose source was never added is dropped identically by both
+    // the incremental and full paths, leaving the composed text +
+    // translation in lock-step.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incremental_append_skips_unknown_source_like_full_build() {
+        let (sources, ids) = make_sources(&["a1\na2\n", "b1\nb2\n"]);
+        let bogus = BufferId(0xBADC_0DE);
+
+        let valid = vec![Excerpt::new(ids[0], 0, 0), Excerpt::new(ids[1], 1, 1)];
+
+        // INCREMENTAL: stream one valid excerpt, then a batch that
+        // mixes a valid + a bogus-source excerpt (bogus dropped).
+        let incremental =
+            MultibufferDocumentHandle::new(sources.clone(), Vec::new(), empty_registry())
+                .unwrap();
+        incremental.append_excerpts(vec![valid[0].clone()]);
+        incremental.append_excerpts(vec![Excerpt::new(bogus, 0, 0), valid[1].clone()]);
+
+        // FULL: only the two valid excerpts (the constructor would
+        // reject an unknown source, so the full build's coherent
+        // input is the valid set — the same set the incremental
+        // path retains after dropping the bogus excerpt).
+        let full =
+            MultibufferDocumentHandle::new(sources, valid.clone(), empty_registry()).unwrap();
+
+        assert_eq!(incremental.excerpt_count(), 2);
+        assert_eq!(
+            incremental.snapshot().buffer.as_string(),
+            full.snapshot().buffer.as_string(),
+            "dropping an unknown-source excerpt must leave the rope identical to the full build",
+        );
+        assert_eq!(
+            incremental.row_translation().entries.len(),
+            full.row_translation().entries.len(),
+        );
+    }
+
+    // MH.B2 (2026-06-19): structural pin on the O(batch) guarantee.
+    // Appending a 1-excerpt batch (covering R source rows) to an
+    // N-excerpt view must grow the row translation by EXACTLY R
+    // entries and grow the composed rope by EXACTLY the batch
+    // text's byte length — i.e. no full recompute. Together with
+    // `incremental_append_matches_full_build` this pins both the
+    // correctness AND the incremental nature of `append_excerpts`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_excerpts_grows_by_exactly_the_batch() {
+        let (sources, ids) = make_sources(&["l0\nl1\nl2\nl3\nl4\n"]);
+        let mb =
+            MultibufferDocumentHandle::new(sources, Vec::new(), empty_registry()).unwrap();
+
+        // Seed with a 2-row excerpt.
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 0, 1)]);
+        let rows_before = mb.row_translation().entries.len();
+        let bytes_before = mb.snapshot().buffer.byte_len();
+        assert_eq!(rows_before, 2);
+
+        // Append a 3-row excerpt (rows 2..=4 → "l2\nl3\nl4\n" = 9 bytes).
+        mb.append_excerpts(vec![Excerpt::new(ids[0], 2, 4)]);
+        let rows_after = mb.row_translation().entries.len();
+        let bytes_after = mb.snapshot().buffer.byte_len();
+
+        assert_eq!(
+            rows_after - rows_before,
+            3,
+            "translation must grow by exactly the batch's source-row count (O(batch))",
+        );
+        assert_eq!(
+            bytes_after - bytes_before,
+            "l2\nl3\nl4\n".len() as u64,
+            "composed rope must grow by exactly the batch text length (insert-at-end, no recompute)",
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn replace_excerpts_swaps_atomically() {
         let (sources_a, ids_a) = make_sources(&["a-1\na-2\n"]);
@@ -2935,6 +4226,148 @@ mod tests {
         }
     }
 
+    // ── MH.A3 / MH.A5: rich per-segment header_cells ────────────
+
+    /// Collect the codepoints of every cell carrying `fg` into a String.
+    fn cells_with_fg(cells: &[Cell], fg: u32) -> String {
+        cells
+            .iter()
+            .filter(|c| c.fg == fg)
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect()
+    }
+
+    fn cells_to_string(cells: &[Cell]) -> String {
+        cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect()
+    }
+
+    #[test]
+    fn header_cells_with_path_splits_basename_and_dir() {
+        // header_fg=0xAA, path_fg=0xBB, count_fg=0xCC (distinct).
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/multibuffer/view.rs")),
+            ..ExcerptHeader::new("fallback-title")
+        };
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+
+        // First cell is the (BMP-fallback) file-type icon in header_fg.
+        let expected_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/multibuffer/view.rs"),
+            false,
+            false,
+        );
+        let first_icon_ch = expected_icon.chars().next().unwrap();
+        assert_eq!(cells[0].codepoint, first_icon_ch as u32);
+        assert_eq!(cells[0].fg, 0xAA, "icon carries header_fg");
+
+        // Basename present in header_fg.
+        let header_seg = cells_with_fg(&cells, 0xAA);
+        assert!(
+            header_seg.contains("view.rs"),
+            "basename rendered in header_fg; got {header_seg:?}"
+        );
+        assert!(
+            !header_seg.contains("src/multibuffer"),
+            "dir must NOT be in header_fg; got {header_seg:?}"
+        );
+
+        // Directory path present in path_fg (dim).
+        let path_seg = cells_with_fg(&cells, 0xBB);
+        assert!(
+            path_seg.contains("src/multibuffer"),
+            "dir rendered in path_fg; got {path_seg:?}"
+        );
+    }
+
+    #[test]
+    fn header_cells_match_count_badge_in_count_fg() {
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("a/b.rs")),
+            match_count: Some(3),
+            ..ExcerptHeader::default()
+        };
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let count_seg = cells_with_fg(&cells, 0xCC);
+        assert!(
+            count_seg.contains("3 matches"),
+            "plural badge in count_fg; got {count_seg:?}"
+        );
+
+        // Singular form for n == 1.
+        let header1 = ExcerptHeader {
+            match_count: Some(1),
+            ..header.clone()
+        };
+        let cells1 = header_cells(&header1, false, 0xAA, 0xBB, 0xCC);
+        let count_seg1 = cells_with_fg(&cells1, 0xCC);
+        assert!(
+            count_seg1.contains("1 match") && !count_seg1.contains("matches"),
+            "singular badge for n==1; got {count_seg1:?}"
+        );
+    }
+
+    #[test]
+    fn header_cells_nerd_vs_bmp_same_width_different_icon() {
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/lib.rs")),
+            ..ExcerptHeader::default()
+        };
+        let bmp = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let nerd = header_cells(&header, true, 0xAA, 0xBB, 0xCC);
+
+        // Width parity: the icon helper emits a 2-cell glyph in both
+        // palettes, so total cell count is identical.
+        assert_eq!(
+            bmp.len(),
+            nerd.len(),
+            "nerd vs BMP must occupy the same cell count (column geometry stable)"
+        );
+
+        // Different leading icon codepoint between palettes.
+        let bmp_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/lib.rs"),
+            false,
+            false,
+        );
+        let nerd_icon = lattice_core::ui::icons::glyph_for_entry(
+            std::path::Path::new("src/lib.rs"),
+            false,
+            true,
+        );
+        // (Guard: only assert "different" if the helper actually
+        // returns distinct glyphs for this extension — it does for
+        // `.rs`, but keep the test honest about its premise.)
+        assert_ne!(
+            bmp_icon.chars().next(),
+            nerd_icon.chars().next(),
+            "nerd and BMP icon glyphs differ for .rs"
+        );
+        assert_eq!(bmp[0].codepoint, bmp_icon.chars().next().unwrap() as u32);
+        assert_eq!(nerd[0].codepoint, nerd_icon.chars().next().unwrap() as u32);
+    }
+
+    #[test]
+    fn header_cells_empty_title_no_path_falls_back() {
+        let header = ExcerptHeader::default(); // empty title, no path
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let s = cells_to_string(&cells);
+        assert_eq!(s, "[untitled]", "empty title + no path renders fallback");
+        // Fallback rendered in header_fg.
+        assert!(cells.iter().all(|c| c.fg == 0xAA));
+    }
+
+    #[test]
+    fn header_cells_no_path_uses_title() {
+        let header = ExcerptHeader::new("my synthetic title");
+        let cells = header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let s = cells_to_string(&cells);
+        assert_eq!(s, "my synthetic title");
+        assert!(cells.iter().all(|c| c.fg == 0xAA));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn provider_collects_one_row_per_distinct_source() {
         // K.4.6 follow-up (2026-06-02): two excerpts from the
@@ -2947,7 +4380,7 @@ mod tests {
             Excerpt::new(ids[0], 2, 2).with_header(ExcerptHeader::new("second")),
         ];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
-        let provider = MultibufferHeaderProvider::new(mb);
+        let provider = MultibufferExcerptHeaderProvider::new(mb);
         let rows = provider.collect();
 
         assert_eq!(rows.len(), 1);
@@ -2957,7 +4390,7 @@ mod tests {
     #[test]
     fn provider_id_namespace_is_stable() {
         let buffer_id = BufferId(42);
-        let id = multibuffer_header_provider_id(buffer_id);
+        let id = multibuffer_excerpt_header_provider_id(buffer_id);
         assert_eq!(id & 0xFFFF_FFFF, 42);
         assert!(id < 0xD1FF_0000_0000_0000 || id >= 0xD200_0000_0000_0000);
     }
@@ -2968,7 +4401,7 @@ mod tests {
         let source = sources.get(&ids[0]).unwrap().clone();
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
-        let provider = MultibufferHeaderProvider::new(mb.clone());
+        let provider = MultibufferExcerptHeaderProvider::new(mb.clone());
 
         let v_before = provider.version();
         source
@@ -2981,5 +4414,559 @@ mod tests {
             v_after > v_before,
             "version must bump after recompose; before={v_before} after={v_after}"
         );
+    }
+
+    // ── T.7: mode-owned theme-element acid test ─────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn excerpt_header_elements_register_and_bake_into_virtual_row() {
+        // T.7 acid test: the multibuffer mode registers its OWN theme
+        // elements (`multibuffer.excerpt_header[.path|.count]`) and the
+        // header provider resolves+bakes them into the header
+        // VirtualRow's `bg`. No host `Theme` field, no renderer match
+        // arm — the renderer paints `VirtualRow.bg` generically.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+
+        // A registry with the default palette (so `blue` / `overlay2`
+        // palette keys resolve) but NO core builtins — proving the mode
+        // is the sole registrant of these elements.
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+
+        // The mode registers its elements (idempotent by name).
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+
+        // 1) The element is registered + resolves to the neutral backdrop.
+        let backdrop_name = ElementName::from(ELEM_EXCERPT_HEADER.to_string());
+        let id = registry
+            .id(&backdrop_name)
+            .expect("multibuffer.excerpt_header registered after activation");
+        assert_eq!(id, ids.backdrop);
+        let resolved = registry.resolved();
+        assert_eq!(
+            resolved.get(id).bg,
+            Some(Color::Rgb(0x31, 0x32, 0x44)),
+            "excerpt_header backdrop resolves to the neutral surface tint, \
+             NOT the diff-deletion red"
+        );
+
+        // 2) The built header VirtualRow carries the BAKED bg —
+        //    `Some(0x313244)`, not `None` (which would fall through to
+        //    the renderer's diff-deletion-block tint).
+        let theme: ThemeRegistryHandle = registry.clone();
+        let (sources, src_ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        // MH.A3: supply a `path` so the rich header renders the dir
+        // segment in the resolved `.path` (blue) fg — the basename is
+        // in `header_fg` (the backdrop element's `.fg`, unset here).
+        let header = ExcerptHeader {
+            path: Some(std::path::PathBuf::from("src/file.rs")),
+            ..ExcerptHeader::new("file.rs")
+        };
+        let excerpts = vec![Excerpt::new(src_ids[0], 0, 1).with_header(header)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let provider =
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids, false);
+        let rows = provider.collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].bg,
+            Some(0x0031_3244),
+            "header VirtualRow.bg is the baked backdrop, not None"
+        );
+        assert_eq!(rows[0].kind, VirtualRowKind::Generic);
+        // The dir-path cells carry the baked `blue` fg (0x89b4fa).
+        assert!(
+            rows[0].cells.iter().any(|c| c.fg == 0x0089_b4fa),
+            "dir-path cells carry the resolved path fg (blue)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn excerpt_header_provider_version_folds_theme_version() {
+        // T.7 invalidation: a theme change bumps the provider version
+        // (the worker's fingerprint axis), so `collect()` re-runs and
+        // re-bakes — mirrors `MatrixVersion::theme = resolved().version()`.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+        let theme: ThemeRegistryHandle = registry.clone();
+        let (sources, src_ids) = make_sources(&["a\nb\n"]);
+        let excerpts = vec![Excerpt::new(src_ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let provider =
+            MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids, false);
+
+        // Force the table to resolve so the version is established.
+        let _ = registry.resolved();
+        let v_before = provider.version();
+        // A `:set ui.*`-style override dirties the table → next
+        // `resolved()` bumps the version.
+        registry.set_override(
+            ElementName::from(ELEM_EXCERPT_HEADER.to_string()),
+            StyleSpec::new().bg(Color::Rgb(1, 2, 3)),
+        );
+        let v_after = provider.version();
+        assert!(
+            v_after > v_before,
+            "theme change must bump provider version; before={v_before} after={v_after}"
+        );
+    }
+
+    // ── M.6.5: MultibufferStatusProvider ────────────────────────
+
+    #[test]
+    fn status_provider_hidden_when_idle() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(mb.buffer_id());
+        // Idle → no sticky row
+        assert!(provider.collect().is_empty());
+    }
+
+    #[test]
+    fn status_provider_emits_sticky_row_when_in_progress() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        mb.set_headerline(HeaderlineStatus::InProgress {
+            label: "searching".into(),
+            count: Some(3),
+        });
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(mb.buffer_id());
+        let rows = provider.collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, VirtualRowKind::Sticky);
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[0].bg, None); // theme bg
+    }
+
+    #[test]
+    fn status_provider_version_bumps_on_set_headerline() {
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        let buffer_id = mb.buffer_id();
+        let provider = MultibufferStatusProvider::new(mb.clone())
+            .into_provider(buffer_id);
+        let v0 = provider.version();
+        mb.set_headerline(HeaderlineStatus::Complete { summary: "done".into() });
+        assert!(provider.version() > v0, "version must advance after set_headerline");
+    }
+
+    #[test]
+    fn status_provider_namespace_does_not_collide_with_excerpt_header() {
+        let buf = BufferId(7);
+        let excerpt_id = multibuffer_excerpt_header_provider_id(buf);
+        let status_id  = multibuffer_status_provider_id(buf);
+        assert_ne!(excerpt_id, status_id);
+        assert_eq!(status_id & 0xFFFF_FFFF, 7);
+    }
+
+    // ── MH.A4: status colors resolve from theme elements ────────
+
+    #[test]
+    fn status_provider_no_theme_uses_fallback_hex() {
+        // Test path (no theme service): the three states render with
+        // the pre-MH.A4 fallback hex so nothing regresses where the
+        // theme isn't wired.
+        let cases = [
+            (
+                HeaderlineStatus::InProgress { label: "x".into(), count: None },
+                STATUS_IN_PROGRESS_FALLBACK_FG,
+            ),
+            (
+                HeaderlineStatus::Complete { summary: "done".into() },
+                STATUS_COMPLETE_FALLBACK_FG,
+            ),
+            (
+                HeaderlineStatus::Failed { reason: "boom".into() },
+                STATUS_FAILED_FALLBACK_FG,
+            ),
+        ];
+        for (status, expected_fg) in cases {
+            let mb = MultibufferDocumentHandle::empty(empty_registry());
+            mb.set_headerline(status);
+            let provider = MultibufferStatusProvider::new(mb);
+            let row = provider.render().expect("non-idle status renders a row");
+            assert!(
+                row.cells.iter().all(|c| c.fg == expected_fg),
+                "no-theme status uses fallback fg {expected_fg:#08x}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_elements_register_and_bake_resolved_fg() {
+        // MH.A4 acid test: the mode registers `multibuffer.status.*`
+        // elements; the status provider resolves them and bakes the
+        // per-state fg into the rendered row. Assert against the
+        // RESOLVED palette role-key (green / red / subtext), NOT the old
+        // ad-hoc hex.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+
+        // 1) The three elements are registered + resolve to the mapped
+        //    palette role-keys.
+        let resolved = registry.resolved();
+        let palette = default_palette();
+        let role = |key: &str| palette.get(&key.to_string().into()).unwrap();
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_IN_PROGRESS.to_string())).unwrap())
+                .fg,
+            Some(role("subtext")),
+            "in_progress maps to the grey `subtext` role-key"
+        );
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_COMPLETE.to_string())).unwrap())
+                .fg,
+            Some(role("green")),
+            "complete maps to the `green` role-key"
+        );
+        assert_eq!(
+            resolved
+                .get(registry.id(&ElementName::from(ELEM_STATUS_FAILED.to_string())).unwrap())
+                .fg,
+            Some(role("red")),
+            "failed maps to the `red` role-key"
+        );
+
+        // 2) The rendered status row bakes the resolved fg per state.
+        let theme: ThemeRegistryHandle = registry.clone();
+        let expect_fg = |status: HeaderlineStatus, key: &str| {
+            let mb = MultibufferDocumentHandle::empty(empty_registry());
+            mb.set_headerline(status);
+            let provider = MultibufferStatusProvider::with_theme(mb, theme.clone(), ids);
+            let row = provider.render().expect("non-idle status renders a row");
+            let want = role(key).to_rgb_u32(0);
+            assert!(
+                row.cells.iter().all(|c| c.fg == want),
+                "status row baked fg = resolved {key} ({want:#08x})"
+            );
+        };
+        expect_fg(
+            HeaderlineStatus::InProgress { label: "s".into(), count: Some(2) },
+            "subtext",
+        );
+        expect_fg(HeaderlineStatus::Complete { summary: "done".into() }, "green");
+        expect_fg(HeaderlineStatus::Failed { reason: "err".into() }, "red");
+    }
+
+    #[test]
+    fn status_provider_version_folds_theme_version() {
+        // MH.A4: a colorscheme swap (theme override) bumps the status
+        // provider version so the headerline re-renders the recolored
+        // status row.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+            ThemeRegistryHandle, default_palette,
+        };
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner =
+            ElementOwner::Mode(crate::MultibufferMode::mode_id().as_str().to_string().into());
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+        let theme: ThemeRegistryHandle = registry.clone();
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        mb.set_headerline(HeaderlineStatus::Complete { summary: "done".into() });
+        let provider = MultibufferStatusProvider::with_theme(mb, theme, ids);
+
+        let _ = registry.resolved();
+        let v_before = provider.version();
+        registry.set_override(
+            ElementName::from(ELEM_STATUS_COMPLETE.to_string()),
+            StyleSpec::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        let v_after = provider.version();
+        assert!(
+            v_after > v_before,
+            "theme change must bump status provider version; before={v_before} after={v_after}"
+        );
+    }
+}
+
+// ── M.7: ExcerptFoldProvider ────────────────────────────────────────────────
+
+/// Namespace for excerpt fold provider IDs: `0xBBBB_0003_0000_0000 | buffer_id`.
+/// Distinct from the header provider (`0xBBBB_0001_*`) and status
+/// provider (`0xBBBB_0002_*`) namespaces.
+const EXCERPT_FOLD_NAMESPACE: u64 = 0xBBBB_0003_0000_0000;
+const FILE_BOUNDARY_FOLD_NAMESPACE: u64 = 0xBBBB_0004_0000_0000;
+
+/// M.7: computes one open [`lattice_core::Fold`] per excerpt in the
+/// composed multibuffer. Registered as a
+/// [`lattice_core::FoldSource`] by `MultibufferMode::on_activate`
+/// via `FoldOverlayService`; the `FoldSourceAdapter` in `lattice-host`
+/// gates `compute_folds` to calls where `FoldContext::buffer_id`
+/// matches this multibuffer's buffer ID.
+pub struct ExcerptFoldProvider {
+    id: lattice_core::ProviderId,
+    handle: MultibufferDocumentHandle,
+}
+
+impl ExcerptFoldProvider {
+    pub fn new(handle: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        let id = lattice_core::ProviderId(EXCERPT_FOLD_NAMESPACE | buffer_id.0 as u64);
+        Self { id, handle }
+    }
+}
+
+impl lattice_core::FoldSource for ExcerptFoldProvider {
+    fn id(&self) -> lattice_core::ProviderId {
+        self.id
+    }
+
+    fn compute_folds(&self) -> Vec<lattice_core::Fold> {
+        let excerpts = self.handle.excerpts();
+        let starts = crate::motions::excerpt_start_rows(&excerpts);
+        excerpts
+            .iter()
+            .zip(starts.iter())
+            .map(|(excerpt, &start)| {
+                let line_count = excerpt.line_count();
+                let end = start.saturating_add(line_count.saturating_sub(1));
+                lattice_core::Fold {
+                    start_line: start,
+                    end_line: end,
+                    closed: false,
+                    identity: Some(excerpt.id.0),
+                }
+            })
+            .collect()
+    }
+}
+
+/// M.8: computes one open [`lattice_core::Fold`] per distinct source
+/// [`BufferId`] (file), spanning the composed-row range from the first
+/// to the last excerpt belonging to that file. Registered alongside
+/// `ExcerptFoldProvider` by `MultibufferMode::on_activate`. Enables
+/// collapsing all excerpts from a file to its header row with `za`.
+pub struct FileBoundaryFoldProvider {
+    id: lattice_core::ProviderId,
+    handle: MultibufferDocumentHandle,
+}
+
+impl FileBoundaryFoldProvider {
+    pub fn new(handle: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        let id = lattice_core::ProviderId(FILE_BOUNDARY_FOLD_NAMESPACE | buffer_id.0 as u64);
+        Self { id, handle }
+    }
+}
+
+impl lattice_core::FoldSource for FileBoundaryFoldProvider {
+    fn id(&self) -> lattice_core::ProviderId {
+        self.id
+    }
+
+    fn compute_folds(&self) -> Vec<lattice_core::Fold> {
+        let excerpts = self.handle.excerpts();
+        if excerpts.is_empty() {
+            return Vec::new();
+        }
+        let starts = crate::motions::excerpt_start_rows(&excerpts);
+        // Group by source BufferId: track (start_row, end_row) per file.
+        // First appearance sets start_row; later excerpts from the same
+        // file extend end_row (handles non-contiguous same-file excerpts).
+        let mut by_source: std::collections::HashMap<BufferId, (u32, u32)> =
+            std::collections::HashMap::new();
+        for (excerpt, &start) in excerpts.iter().zip(starts.iter()) {
+            let end = start.saturating_add(excerpt.line_count().saturating_sub(1));
+            by_source
+                .entry(excerpt.source)
+                .and_modify(|(_, e)| *e = end)
+                .or_insert((start, end));
+        }
+        // Sort by start_row for deterministic output order.
+        let mut groups: Vec<(BufferId, (u32, u32))> = by_source.into_iter().collect();
+        groups.sort_by_key(|(_, (start, _))| *start);
+        groups
+            .into_iter()
+            .map(|(source, (start, end))| lattice_core::Fold {
+                start_line: start,
+                end_line: end,
+                closed: false,
+                identity: Some(source.0 as u64),
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod excerpt_fold_tests {
+    #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use lattice_core::Document as CoreDocument;
+    use lattice_core::{FoldOverlayService, FoldOverlayServiceHandle, FoldSource};
+    use lattice_grammar::CommandRegistry;
+    use lattice_runtime::spawn_document;
+
+    use super::*;
+
+    fn reg() -> Arc<CommandRegistry> {
+        Arc::new(CommandRegistry::new())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compute_folds_returns_one_fold_per_excerpt() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 2), // 3 lines → composed rows 0–2
+            Excerpt::new(buf_b, 0, 1), // 2 lines → composed rows 3–4
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let provider = ExcerptFoldProvider::new(mb, buf_id);
+        let folds = provider.compute_folds();
+        assert_eq!(folds.len(), 2);
+        assert_eq!(folds[0].start_line, 0);
+        assert_eq!(folds[0].end_line, 2);
+        assert!(!folds[0].closed);
+        assert!(folds[0].identity.is_some());
+        assert_eq!(folds[1].start_line, 3);
+        assert_eq!(folds[1].end_line, 4);
+        assert!(!folds[1].closed);
+        assert!(folds[1].identity.is_some());
+    }
+
+    #[test]
+    fn excerpt_fold_namespace_distinct_from_header_and_status() {
+        let buf = BufferId(42);
+        let fold_id = ExcerptFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        // header/status ProviderId uses lattice_cells::virtual_rows::ProviderId;
+        // compare raw u64 values to verify no namespace collision.
+        let header_raw: u64 = multibuffer_excerpt_header_provider_id(buf);
+        let status_raw: u64 = multibuffer_status_provider_id(buf);
+        assert_ne!(fold_id.0, header_raw);
+        assert_ne!(fold_id.0, status_raw);
+        assert_eq!(fold_id.0 >> 32, 0xBBBB_0003);
+        assert_eq!(fold_id.0 & 0xFFFF_FFFF, 42);
+    }
+
+    #[test]
+    fn compute_folds_empty_when_no_excerpts() {
+        let mb = MultibufferDocumentHandle::empty(reg());
+        let buf_id = mb.buffer_id();
+        let provider = ExcerptFoldProvider::new(mb, buf_id);
+        assert!(provider.compute_folds().is_empty());
+    }
+
+    // ── MultibufferModeGuard drop ───────────────────────────────────────
+
+    struct MockFoldService {
+        removed: Arc<AtomicBool>,
+    }
+    impl FoldOverlayService for MockFoldService {
+        fn add_source(
+            &self,
+            _source: Arc<dyn FoldSource>,
+            _buffer_id: BufferId,
+        ) -> lattice_core::ProviderId {
+            lattice_core::ProviderId(1)
+        }
+        fn remove_source(&self, _id: lattice_core::ProviderId) {
+            self.removed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn mode_guard_drop_calls_remove_source() {
+        let removed = Arc::new(AtomicBool::new(false));
+        let svc: FoldOverlayServiceHandle = Arc::new(MockFoldService {
+            removed: removed.clone(),
+        });
+        {
+            let _guard = crate::mode::MultibufferModeGuard {
+                fold_registrations: vec![(svc, lattice_core::ProviderId(1))],
+            };
+        }
+        assert!(removed.load(Ordering::SeqCst), "remove_source must fire on guard drop");
+    }
+
+    // ── FileBoundaryFoldProvider ────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_boundary_folds_one_fold_per_source_file() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        // Two excerpts from buf_a, one from buf_b.
+        // buf_a excerpt 1: rows 0-2 (3 lines); buf_a excerpt 2: rows 3-4 (2 lines);
+        // buf_b excerpt:   rows 5-6 (2 lines)
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 2),
+            Excerpt::new(buf_a, 0, 1),
+            Excerpt::new(buf_b, 0, 1),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let provider = FileBoundaryFoldProvider::new(mb, buf_id);
+        let folds = provider.compute_folds();
+        assert_eq!(folds.len(), 2, "one fold per source file");
+        // buf_a fold spans rows 0-4 (first excerpt start to second excerpt end).
+        let a_fold = folds.iter().find(|f| f.start_line == 0).expect("buf_a fold");
+        assert_eq!(a_fold.end_line, 4);
+        assert_eq!(a_fold.identity, Some(buf_a.0 as u64));
+        // buf_b fold spans rows 5-6.
+        let b_fold = folds.iter().find(|f| f.start_line == 5).expect("buf_b fold");
+        assert_eq!(b_fold.end_line, 6);
+        assert_eq!(b_fold.identity, Some(buf_b.0 as u64));
+    }
+
+    #[test]
+    fn file_boundary_fold_namespace_distinct() {
+        let buf = BufferId(42);
+        let fold_id = FileBoundaryFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        let excerpt_id = ExcerptFoldProvider::new(
+            MultibufferDocumentHandle::empty(reg()),
+            buf,
+        ).id;
+        let header_raw: u64 = multibuffer_excerpt_header_provider_id(buf);
+        let status_raw: u64 = multibuffer_status_provider_id(buf);
+        assert_ne!(fold_id.0, excerpt_id.0);
+        assert_ne!(fold_id.0, header_raw);
+        assert_ne!(fold_id.0, status_raw);
+        assert_eq!(fold_id.0 >> 32, 0xBBBB_0004);
+        assert_eq!(fold_id.0 & 0xFFFF_FFFF, 42);
+    }
+
+    #[test]
+    fn file_boundary_folds_empty_when_no_excerpts() {
+        let mb = MultibufferDocumentHandle::empty(reg());
+        let buf_id = mb.buffer_id();
+        let provider = FileBoundaryFoldProvider::new(mb, buf_id);
+        assert!(provider.compute_folds().is_empty());
     }
 }

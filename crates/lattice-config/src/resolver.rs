@@ -36,8 +36,8 @@
 
 use std::any::TypeId;
 
+use crate::origin::OptionOrigin;
 use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
-
 use crate::resolved::ResolvedOptions;
 
 /// Walks layered overrides and emits a fresh [`ResolvedOptions`].
@@ -70,27 +70,46 @@ impl Resolver {
     /// same priority resolve to last-pushed (per
     /// `mode-architecture.md` §6.2 conflict policy; M.2.1 hooks
     /// this to a `ModeEvent::OptionConflict` emission).
+    ///
+    /// Origin is not tracked; use [`Self::resolve_into_with_origins`]
+    /// when `:set name?` / `:setlocal name?` echo is needed.
     pub fn resolve_into<'a, L>(&self, layers: L, out: &mut ResolvedOptions)
     where
         L: IntoIterator<Item = &'a OptionOverrideSet>,
     {
-        // Walk all layers, tracking the best-seen candidate per
-        // option type. One HashMap allocation per recompute call
-        // is fine -- this is per-buffer, not per-frame.
+        // Delegate to the origin-aware path, tagging every layer
+        // with `GlobalConfig` as a neutral fallback. The bootstrap
+        // already wrote the correct origin before this is called.
+        self.resolve_into_with_origins(
+            layers
+                .into_iter()
+                .map(|set| (set, OptionOrigin::GlobalConfig)),
+            out,
+        );
+    }
 
+    /// Origin-aware resolution. Each element is an
+    /// `(&OptionOverrideSet, OptionOrigin)` pair; the origin is
+    /// recorded alongside the winning value in `out`. The caller is
+    /// responsible for assigning the correct [`OptionOrigin`] to each
+    /// layer (e.g. `BufferLocal` for the buffer-local override set,
+    /// `ModeContribution { mode_id }` for each mode's set).
+    pub fn resolve_into_with_origins<'a>(
+        &self,
+        layers: impl IntoIterator<Item = (&'a OptionOverrideSet, OptionOrigin)>,
+        out: &mut ResolvedOptions,
+    ) {
         let mut winners: std::collections::HashMap<TypeId, Candidate<'_>> =
             std::collections::HashMap::new();
 
-        for (layer_idx, set) in layers.into_iter().enumerate() {
-            // Caller contract: layers iterated highest-priority
-            // first. Encode as a decreasing rank so larger ⇒
-            // more authoritative.
+        for (layer_idx, (set, origin)) in layers.into_iter().enumerate() {
             let layer_rank = usize::MAX - layer_idx;
             for (pos, ov) in set.iter().enumerate() {
                 let candidate = Candidate {
                     ov,
                     layer_rank,
                     within_layer_pos: pos,
+                    origin: origin.clone(),
                 };
                 match winners.get(&ov.option_type_id) {
                     None => {
@@ -106,7 +125,7 @@ impl Resolver {
         }
 
         for (type_id, c) in winners {
-            out.insert_erased(type_id, c.ov.value.clone());
+            out.insert_erased_with_origin(type_id, c.ov.value.clone(), c.origin);
         }
     }
 
@@ -146,6 +165,10 @@ struct Candidate<'a> {
     /// Within-layer position; ties within a layer resolve to
     /// higher position (= last pushed).
     within_layer_pos: usize,
+    /// The layer this candidate came from; written to
+    /// [`ResolvedOptions`] alongside the value when this
+    /// candidate wins.
+    origin: OptionOrigin,
 }
 
 #[cfg(test)]

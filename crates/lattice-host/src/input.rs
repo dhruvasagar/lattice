@@ -365,7 +365,9 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // `KeymapLayer::MinorMode` layers managed by
         // `App::sync_keymap_overlays`. The drift test in
         // `keymap_insert::tests` is the regression net.
-        ModalState::Insert => dispatch_insert(ctx.keymap, &chord, ctx.partial_chord),
+        ModalState::Insert => {
+            dispatch_insert(ctx.keymap, &chord, ctx.partial_chord, ctx.active_minor_modes)
+        }
         ModalState::Normal => translate_normal(
             chord,
             ctx.builtins,
@@ -385,7 +387,25 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // pre-lookup in `dispatch_visual` until the architecture's
         // minor-mode-on-Visual layer push lands. The drift test
         // in `keymap_visual::tests` is the regression net.
-        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &chord, kind),
+        ModalState::Visual(kind) => {
+            dispatch_visual(ctx.keymap, &chord, kind, ctx.partial_chord)
+        }
+        // SN.3d.1: Select mode — Visual's sibling with inverted typing
+        // semantics. Genuinely new dispatch (a bare printable overtypes
+        // the selection); see `keymap_select::translate_select`.
+        // SN.3d.4: unlike Visual above, Select DOES consult active
+        // minor-mode keymaps (it takes `ctx.active_minor_modes`), so a
+        // mode that focuses a span — the snippet placeholder default —
+        // keeps its `<Tab>` / `<S-Tab>` / `<Esc>` bindings live in
+        // Select exactly as in Insert. Visual's minor-mode layer push
+        // is still outstanding (the comment above).
+        ModalState::Select(kind) => crate::keymap_select::translate_select(
+            ctx.keymap,
+            &chord,
+            kind,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`

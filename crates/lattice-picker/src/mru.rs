@@ -388,6 +388,10 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         RoutingPayload::PasteRegister { name } => Some(format!("reg:{name}")),
         RoutingPayload::JumpToMark { name } => Some(format!("mark:{name}")),
         RoutingPayload::ExpandSnippet { id } => Some(format!("snip:{id}")),
+        // T.12: theme names are stable identities, so the colorscheme
+        // picker gets MRU recency ranking (recently-applied themes
+        // float up).
+        RoutingPayload::Colorscheme { name } => Some(format!("colorscheme:{name}")),
         // No stable identity for these -- coordinates drift,
         // indices are per-request, LSP-instance entries are
         // ephemeral, and show-message-request actions key into

@@ -34,6 +34,11 @@
 
 pub mod cell;
 pub mod chunk;
+// Style types + ExcerptHighlighter trait. Defined here (not in
+// lattice-syntax) to break the lattice-syntax → lattice-mode →
+// lattice-runtime cycle that would block lattice-runtime's Document
+// trait from referencing them.
+pub mod style;
 // S2.4.b (2026-05-26): substrate-level edit delta consumed by the
 // cell-builder's incremental rebuild path.
 pub mod edit_delta;
@@ -45,6 +50,10 @@ pub mod version;
 // inlay / code-lens consumers. See
 // `docs/dev/architecture/virtual-rows.md`.
 pub mod virtual_rows;
+// Generic sticky headerline — the one mechanism for a buffer to pin a status
+// row above line 0. Tutor, multibuffer search, LSP status, VCS branch all use
+// this. See `docs/dev/architecture/headerline.md`.
+pub mod headerline;
 
 pub use cell::{flags as cell_flags, Cell};
 pub use chunk::CellChunk;
@@ -54,8 +63,10 @@ pub use matrix::{
 	DisplaySliceIter, CHUNK_SIZE_WHOLE_DOC,
 };
 pub use row::{CellRow, InlayOffset};
+pub use style::{ExcerptHighlight, ExcerptHighlighter, Style, StyledSpan};
 pub use version::MatrixVersion;
 pub use virtual_rows::{
 	AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowMatrix, VirtualRowProvider,
 	VirtualRowVersion,
 };
+pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};

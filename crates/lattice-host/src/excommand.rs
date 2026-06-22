@@ -52,6 +52,29 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
         return Err(ExCommandError::Empty);
     }
 
+    // Vim's Visual `:` prefills the cmdline with `'<,'>` (the visual
+    // range). Strip that prefix and mark the resulting invocation
+    // `Range::Selection`, which resolves from `last_visual` (captured when
+    // `:` left Visual — `resolve_grammar_range` + the narrow handler read
+    // it). Lets `:'<,'>narrow` and other range-honoring commands act on
+    // the selection. (General `%` / `1,5` line-range prefixes are a
+    // separate enhancement; substitute keeps its own scope model.)
+    if let Some(rest) = trimmed.strip_prefix("'<,'>") {
+        let inner = parse(rest, registry)?;
+        return Ok(inner.with_range(Range::Selection));
+    }
+
+    // Bare line number: `:42` → go to line 42 (same as `42G`).
+    // Checked before keyword parse; pure digits are not valid command
+    // names so there's no ambiguity. `:0` is treated as `:1`.
+    if let Ok(n) = trimmed.parse::<u32>() {
+        let id = registry
+            .id_by_name("motion:goto-last-line")
+            .ok_or_else(|| ExCommandError::Unknown(trimmed.to_string()))?;
+        return Ok(lattice_grammar::CommandInvocation::of(id)
+            .with_count(lattice_grammar::command::Count(n.max(1))));
+    }
+
     // Delimiter-syntax routes through the registry too -- the front-end
     // parses the body into Args::List.
     if let Some(inv) = try_parse_substitute(trimmed, registry)? {
@@ -354,6 +377,13 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("d", "ex:delete"),
     ("delete", "ex:delete"),
     ("set", "ex:set"),
+    // T.9.b (2026-06-18): `:colorscheme` + the vim short `:colo`.
+    ("colorscheme", "ex:colorscheme"),
+    ("colo", "ex:colorscheme"),
+    ("setlocal", "ex:setlocal"),
+    ("sl", "ex:setlocal"),
+    ("setglobal", "ex:setglobal"),
+    ("sg", "ex:setglobal"),
     ("e", "ex:edit"),
     ("edit", "ex:edit"),
     ("describe-command", "ex:describe-command"),
@@ -410,6 +440,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("FiletreeClose", "ex:filetree-close"),
     ("filetree-close", "ex:filetree-close"),
     ("describe-option", "ex:describe-option"),
+    // T.9.d (2026-06-18): theme-element / face introspection. Both the
+    // element-name and the emacs `face` framing route to the one
+    // command.
+    ("describe-element", "ex:describe-element"),
+    ("describe-face", "ex:describe-element"),
     ("options", "ex:options"),
     ("describe-events", "ex:describe-events"),
     ("describe-event", "ex:describe-event"),
@@ -433,6 +468,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("customize", "ex:customize"),
     ("tutor", "ex:tutor"),
     ("Tutor", "ex:tutor"),
+    ("tutor-next", "ex:tutor-next"),
+    ("tutor-prev", "ex:tutor-prev"),
     ("hover", "ex:hover"),
     ("HoverClose", "ex:hover-close"),
     ("h", "ex:help"),
@@ -873,6 +910,34 @@ mod tests {
         assert_eq!(invocation_name(&inv, &r), "ex:write");
         assert!(!inv.bang);
         assert_eq!(inv.args, Args::None);
+    }
+
+    #[test]
+    fn colorscheme_full_and_short_alias_route_to_registry() {
+        // T.9.b: both `:colorscheme <name>` and the vim short `:colo`
+        // resolve to `ex:colorscheme` carrying the name as a String arg.
+        let r = fixture();
+        let inv = parse("colorscheme catppuccin-macchiato", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:colorscheme");
+        assert_eq!(inv.args, Args::String("catppuccin-macchiato".to_string()));
+        let inv_short = parse("colo catppuccin-mocha", &r).unwrap();
+        assert_eq!(invocation_name(&inv_short, &r), "ex:colorscheme");
+        assert_eq!(inv_short.args, Args::String("catppuccin-mocha".to_string()));
+    }
+
+    #[test]
+    fn colorscheme_without_name_opens_picker() {
+        // T.12a: the no-arg form no longer errors — it parses to
+        // `ex:colorscheme` with `Args::None`. The host's
+        // `Effect::SetColorscheme("")` arm opens the live-preview
+        // theme picker (see dispatch.rs + the `theme_picker_*` tests).
+        let r = fixture();
+        let inv = parse("colorscheme", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:colorscheme");
+        assert_eq!(inv.args, Args::None);
+        let inv_short = parse("colo", &r).unwrap();
+        assert_eq!(invocation_name(&inv_short, &r), "ex:colorscheme");
+        assert_eq!(inv_short.args, Args::None);
     }
 
     #[test]
@@ -1387,5 +1452,22 @@ mod tests {
         let r = fixture();
         let inv = parse("g/foo/d", &r).unwrap();
         assert_eq!(invocation_name(&inv, &r), "ex:global");
+    }
+
+    #[test]
+    fn bare_integer_routes_to_goto_last_line_with_count() {
+        let r = fixture();
+        let inv = parse("42", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "motion:goto-last-line");
+        let count = inv.count.expect("bare integer must carry explicit count");
+        assert_eq!(count.get(), 42);
+    }
+
+    #[test]
+    fn bare_integer_one_routes_to_goto_last_line_with_count_one() {
+        let r = fixture();
+        let inv = parse("1", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "motion:goto-last-line");
+        assert_eq!(inv.count.unwrap().get(), 1);
     }
 }

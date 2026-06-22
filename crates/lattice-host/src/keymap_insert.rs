@@ -37,7 +37,12 @@
 //! - `<Tab>` -> `Action::Insert("\t")`
 //! - `<C-Space>` -> [`Action::CompletionTrigger`]
 //! - `[<C-x>, <C-o>]` -> [`Action::CompletionTrigger`] (omni-completion)
-//! - `[<C-x>, <C-s>]` -> [`Action::SnippetExpand`]
+//!
+//! SN.3c.1 (2026-06-14): `[<C-x>, <C-s>]` (snippet-expand) is no
+//! longer a Builtin binding — it lives on `snippet-mode`'s `keymap()`
+//! (`KeymapLayer::MinorMode("snippet-mode")`). `<C-x>` stays a partial
+//! prefix because that mode's layer (boot-pushed) provides the
+//! `<C-x><C-s>` terminal.
 //!
 //! `<C-x>` itself is a *partial* trie node (no terminal binding;
 //! children only). Lookup at `[<C-x>]` returns
@@ -125,13 +130,6 @@ pub fn completion_popup_mode_id() -> ModeId {
     ModeId::new("completion-popup-mode")
 }
 
-/// K.1.b (2026-05-30): canonical `ModeId` for the
-/// active-snippet minor-mode keymap layer. Same pattern as
-/// [`completion_popup_mode_id`].
-pub fn active_snippet_mode_id() -> ModeId {
-    ModeId::new("active-snippet-mode")
-}
-
 /// Register every chord the legacy `input::translate_insert`
 /// recognised into the supplied handle's `Builtin` layer under
 /// `BindingMode::Insert`. Called at App startup.
@@ -182,16 +180,14 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
     // `<C-Space>` is the sole popup-open trigger; per-source
     // filter chords live inside `completion-popup-mode` (CSM.K2).
-    // `<C-x><C-s>` (snippet-expand-at-cursor) is independent of
-    // the popup family and stays.
-    // <C-x><C-s> -- direct snippet expansion.
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('s'))],
-        CommandInvocation::of(actions.snippet_expand),
-        source(),
-    );
+    // SN.3c.1 (2026-06-14): `<C-x><C-s>` (snippet-expand) moved off
+    // Builtin onto `snippet-mode`'s `keymap()` at
+    // `KeymapLayer::MinorMode("snippet-mode")` — the chord choice now
+    // lives with the mode that owns the behavior
+    // (`feedback_mode_owns_its_surface`). `<C-x>` is no longer a live
+    // Builtin prefix; the merged trie still resolves it as a `Partial`
+    // through the (boot-pushed) snippet-mode layer, so the two-key
+    // chord still absorbs + dispatches via `dispatch_insert`.
 }
 
 /// Build the completion-popup minor-mode layer's binding set.
@@ -354,46 +350,6 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
     modes
 }
 
-/// Build the active-snippet minor-mode layer's binding set.
-/// Pushed by `App::push_snippet_layer` when an `ActiveSnippet`
-/// activates; popped on snippet exit.
-pub fn active_snippet_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
-    let mut trie = KeymapTrie::new();
-    // K.1.b: per-binding provenance tag — same ModeId the
-    // push site uses, so `:describe-key` shows the binding's
-    // layer correctly.
-    let layer = KeymapLayer::MinorMode(active_snippet_mode_id());
-
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit_special(SpecialKey::Tab)],
-        actions.snippet_next_placeholder,
-    );
-    // <S-Tab> -- chord (Tab, SHIFT). KeyChord::from_event
-    // canonicalises both `KeyCode::BackTab` and
-    // `KeyCode::Tab + SHIFT` to the same chord.
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit(KeyChord {
-            key: KeyKind::Special(SpecialKey::Tab),
-            mods: KeyMods::SHIFT,
-        })],
-        actions.snippet_prev_placeholder,
-    );
-    bind_invocation(
-        &mut trie,
-        layer,
-        &[lit_special(SpecialKey::Esc)],
-        actions.snippet_leave,
-    );
-
-    let mut modes = HashMap::new();
-    modes.insert(BindingMode::Insert, trie);
-    modes
-}
-
 /// Dispatch a key event in Insert mode through the layered
 /// keymap registry. Replaces the legacy
 /// `input::translate_insert` plus the
@@ -420,7 +376,19 @@ pub fn dispatch_insert(
     handle: &KeymapHandle,
     chord: &KeyChord,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[ModeId],
 ) -> Action {
+    // SN.3c.2a (2026-06-14): Insert-mode dispatch is now K.1.c-gated,
+    // mirroring `translate_normal`. Previously this used
+    // `handle.lookup`, which folds in EVERY registered minor-mode
+    // layer unconditionally (`registry.rs`: `lookup` treats all
+    // `minor_mode_tries` keys as active) — so an inactive minor mode's
+    // Insert bindings (e.g. `active-snippet-mode`'s `<Tab>` / `<Esc>`)
+    // shadowed base Insert in every buffer. Routing through
+    // `lookup_with_context` with the active buffer's minor set scopes
+    // those bindings to buffers where the mode is actually active, the
+    // same per-buffer guarantee Normal mode already had.
+    //
     // Slice 8.i.4: partial-chord dispatch wins when a previous
     // keystroke absorbed a prefix into `App::partial_chord`.
     // This drives the `<C-x>` family (`<C-x><C-o>` /
@@ -429,15 +397,20 @@ pub fn dispatch_insert(
         let chord = normalize_for_insert_lookup(*chord);
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
         path.push(chord);
-        return match handle.lookup(BindingMode::Insert, &path) {
-            LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
+        return match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
+            LookupResult::Bound { command, captured } => {
+                bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
+            }
             _ => Action::None,
         };
     }
 
     let chord = normalize_for_insert_lookup(*chord);
-    match handle.lookup(BindingMode::Insert, &[chord]) {
-        LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
+    let path = [chord];
+    match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
+        LookupResult::Bound { command, captured } => {
+            bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
+        }
         LookupResult::Partial => {
             // Slice 8.i.4.b: every trie `Partial` in Insert mode
             // (currently only `<C-x>`) absorbs into
@@ -451,8 +424,88 @@ pub fn dispatch_insert(
     }
 }
 
+/// SN.3c.2b: resolve a `Bound` result into an `Action`, honoring
+/// `fall_through`. When the bound binding is `fall_through` and lives on
+/// a `MinorMode(m)` layer, run its action AND THEN re-resolve the same
+/// chord with `m` peeled out of the active set, chaining the native
+/// binding's action after it. Bounded: each hop removes a layer, so the
+/// recursion terminates at `Builtin` — it cannot loop the way vim's
+/// `:map` can.
+fn bound_or_fall_through(
+    handle: &KeymapHandle,
+    path: &[KeyChord],
+    active_minor_modes: &[ModeId],
+    command: &Arc<BoundCommand>,
+    captured: &[char],
+) -> Action {
+    let action = action_from_bound(command, captured);
+    if !command.fall_through {
+        return action;
+    }
+    // Peel the binding's own mode out of the active set and re-resolve
+    // the same chord against the layers below — the native binding.
+    let peeled: Vec<ModeId> = match command.layer {
+        KeymapLayer::MinorMode(m) => {
+            active_minor_modes.iter().copied().filter(|x| *x != m).collect()
+        }
+        // A fall_through binding on a non-minor layer has nothing above
+        // it to peel; treat as no continuation (defensive — entries set
+        // fall_through only on mode layers).
+        _ => return action,
+    };
+    chain_actions(action, resolve_native_action(handle, path, &peeled))
+}
+
+/// SN.3c.2b: re-resolve a chord for a fall-through continuation,
+/// returning the native binding's `Action` (recursing if that binding
+/// is itself `fall_through`). `Unbound` / `Partial` → `Action::None`:
+/// the mode action already ran; there is simply nothing native to
+/// continue to (so we must NOT fall back to literal-text insertion
+/// here, which would type the chord's character).
+fn resolve_native_action(
+    handle: &KeymapHandle,
+    path: &[KeyChord],
+    active_minor_modes: &[ModeId],
+) -> Action {
+    match handle.lookup_with_context(BindingMode::Insert, path, active_minor_modes) {
+        LookupResult::Bound { command, captured } => {
+            bound_or_fall_through(handle, path, active_minor_modes, &command, &captured)
+        }
+        _ => Action::None,
+    }
+}
+
+/// SN.3c.2b: sequence two actions, flattening nested chains and
+/// dropping a `None` continuation so a single-action result stays a
+/// plain `Action` (no `Chain` wrapper unless there is genuinely a
+/// chain).
+///
+/// SN.3d.4: `pub(crate)` so Select-mode fall-through
+/// (`keymap_select::minor_select_action`) reuses the same chaining
+/// primitive — a `fall_through` minor binding sequences its mode
+/// action with the native continuation identically in both modes.
+pub(crate) fn chain_actions(first: Action, rest: Action) -> Action {
+    match rest {
+        Action::None => first,
+        Action::Chain(mut v) => {
+            let mut out = Vec::with_capacity(v.len() + 1);
+            out.push(first);
+            out.append(&mut v);
+            Action::Chain(out)
+        }
+        other => Action::Chain(vec![first, other]),
+    }
+}
+
 /// Mode-specific modifier strip. See module docstring's table.
-fn normalize_for_insert_lookup(chord: KeyChord) -> KeyChord {
+///
+/// SN.3d.4: `pub(crate)` so the Select-mode minor-binding lookup
+/// (`keymap_select::minor_select_action`) normalizes chords the SAME
+/// way — minor-mode bindings (e.g. the snippet `<Tab>` / `<S-Tab>` /
+/// `<Esc>`) are keyed identically regardless of the host modal, so
+/// `<S-Tab>` must keep SHIFT in Select too (the base-Select normalize
+/// strips it, which would collapse `<S-Tab>` into `<Tab>`).
+pub(crate) fn normalize_for_insert_lookup(chord: KeyChord) -> KeyChord {
     // Strip ALT and SUPER on every chord -- no Insert binding
     // (base or overlay) uses them. Keep CTRL and SHIFT to
     // distinguish `<C-y>` from `y` and `<S-Tab>` from `<Tab>`.

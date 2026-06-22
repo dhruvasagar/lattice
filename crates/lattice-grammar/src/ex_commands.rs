@@ -43,6 +43,12 @@ pub struct ExBuiltins {
     pub list_marks: ExCommandId,
     pub delete_line: ExCommandId,
     pub set_option: ExCommandId,
+    pub set_local_option: ExCommandId,
+    pub set_global_option: ExCommandId,
+    /// T.9.b (2026-06-18): `:colorscheme <name>` — swap the active
+    /// theme by name (`lattice-host` looks the name up in
+    /// `lattice_theme::builtin_themes()` and calls `set_theme`).
+    pub colorscheme: ExCommandId,
     pub edit: ExCommandId,
     pub substitute: ExCommandId,
     pub global: ExCommandId,
@@ -59,6 +65,9 @@ pub struct ExBuiltins {
     pub file_tree_close: ExCommandId,
     pub oil: ExCommandId,
     pub describe_option: ExCommandId,
+    /// T.9.d: `:describe-element` / `:describe-face` — theme-element
+    /// introspection (host `build_describe_element_content`).
+    pub describe_element: ExCommandId,
     pub list_options: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
@@ -104,6 +113,8 @@ pub struct ExBuiltins {
     pub describe_option_resolution: ExCommandId,
     pub customize: ExCommandId,
     pub tutor: ExCommandId,
+    pub tutor_next: ExCommandId,
+    pub tutor_prev: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -136,7 +147,9 @@ pub struct ExBuiltins {
     pub lsp_complete: ExCommandId,
     pub lsp_rename: ExCommandId,
     pub lsp_code_action: ExCommandId,
-    pub snippet_expand: ExCommandId,
+    // SN.3c.1 (2026-06-14): `:snippet-expand` removed (UX-useless;
+    // `<C-x><C-s>` is the live trigger, now mode-owned). The expand
+    // path no longer has an ex-command surface form.
     pub reload_snippets: ExCommandId,
 }
 
@@ -258,6 +271,72 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 prompt: "option:",
                 default: ArgDefault::Required,
                 completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let set_local_option = registry.register_ex_command(
+        "ex:setlocal",
+        "Set a buffer-local option override (`:setlocal <option>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_set_local),
+            args_schema: vec![ArgSpec {
+                name: "option",
+                kind: ArgKind::String,
+                doc: "Option name, `name=value`, `noname`, or `name&` to clear.",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let set_global_option = registry.register_ex_command(
+        "ex:setglobal",
+        "Set a global option (`:setglobal <option>`). Does not update buffer-local overrides.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_set_global),
+            args_schema: vec![ArgSpec {
+                name: "option",
+                kind: ArgKind::String,
+                doc: "Option name, `name=value`, `noname`, or `name?` to query global value.",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let colorscheme = registry.register_ex_command(
+        "ex:colorscheme",
+        "Swap the active theme by name (`:colorscheme <name>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            // T.12a: no-arg is now legal — it opens the live-preview
+            // theme picker host-side. `parse_optional_path` returns
+            // `Args::None` on empty input, `Args::String` otherwise.
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(apply_colorscheme),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`). Omit to open the live-preview picker.",
+                prompt: "colorscheme:",
+                // T.12a: optional — no-arg opens the picker.
+                default: ArgDefault::None,
+                // T.12 wires a `gen:colorschemes` completion generator;
+                // no name completion yet.
+                completion: None,
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -855,6 +934,40 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let describe_element = registry.register_ex_command(
+        "ex:describe-element",
+        "Open the help view for a theme element / face \
+         (`:describe-element NAME`, alias `:describe-face NAME`). \
+         Shows owner, doc, the authoring (reference-form) style spec \
+         (palette keys + inherit parent), and the concrete resolved \
+         style under the active theme.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeElement {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected element name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                // Completion: the theme registry is a host-side service
+                // the grammar crate's completion generators can't reach,
+                // so no `gen:elements` source here (T.9.d scope: the
+                // ex-command + handler; a completion generator is a
+                // follow-up).
+                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).",
+                prompt: "element:",
+                default: ArgDefault::Required,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let list_options = registry.register_ex_command(
         "ex:options",
         "List every registered option (`:options`).",
@@ -1249,6 +1362,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 default: ArgDefault::None,
                 completion: None,
             }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let tutor_next = registry.register_ex_command(
+        "ex:tutor-next",
+        "Advance to the next tutor exercise (or lesson). \
+         Equivalent to pressing `<CR>` in tutor-mode.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorAdvance))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let tutor_prev = registry.register_ex_command(
+        "ex:tutor-prev",
+        "Retreat to the previous tutor exercise.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorRetreat))),
+            args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1857,19 +1997,11 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
-    let snippet_expand = registry.register_ex_command(
-        "ex:snippet-expand",
-        "Expand the snippet whose prefix matches the word at the cursor (`:snippet-expand`, Phase 4.2.g.4). Surface-form alias of `<C-x><C-s>`. No-op when no snippet matches.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::SnippetExpand)),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
+    // SN.3c.1 (2026-06-14): `:snippet-expand` ex-command removed.
+    // The only live snippet-expand trigger is `<C-x><C-s>`, now
+    // mode-owned by `snippet-mode` (`keymap()` + `action_handlers()`
+    // → `Effect::ExpandSnippet`). An ex-command surface form was
+    // UX-useless, so it's gone rather than re-routed.
     let reload_snippets = registry.register_ex_command(
         "ex:reload-snippets",
         "Re-read every snippet file from disk and rebuild the per-language snippet registry (`:reload-snippets`, Phase 4.2.g.4).",
@@ -1918,6 +2050,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_marks,
         delete_line,
         set_option,
+        set_local_option,
+        set_global_option,
+        colorscheme,
         edit,
         substitute,
         global,
@@ -1934,6 +2069,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         file_tree_close,
         oil,
         describe_option,
+        describe_element,
         list_options,
         describe_events,
         describe_event,
@@ -1953,6 +2089,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_option_resolution,
         customize,
         tutor,
+        tutor_next,
+        tutor_prev,
         hover,
         hover_close,
         help,
@@ -1985,7 +2123,6 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_complete,
         lsp_rename,
         lsp_code_action,
-        snippet_expand,
         reload_snippets,
     }
 }
@@ -2229,6 +2366,35 @@ fn apply_set(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     match &ctx.args {
         Args::String(s) => Ok(Effect::SetOption { spec: s.clone() }),
         _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_set_local(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::SetLocalOption { spec: s.clone() }),
+        _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_set_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::SetGlobalOption { spec: s.clone() }),
+        _ => Err(CommandError::BadArgs("expected option string".into())),
+    }
+}
+
+fn apply_colorscheme(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    // T.9.b: `:colorscheme <name>` swaps the active theme directly.
+    // T.12a: `:colorscheme` with NO name opens the live-preview theme
+    // picker host-side. We encode the no-arg case as an EMPTY
+    // `SetColorscheme("")` — the host's `Effect::SetColorscheme` arm
+    // branches on the empty string and calls `open_picker("colorscheme")`.
+    match &ctx.args {
+        Args::String(s) if !s.trim().is_empty() => {
+            Ok(Effect::SetColorscheme(s.trim().to_string()))
+        }
+        // Args::None (no-arg) or empty/whitespace string → picker.
+        _ => Ok(Effect::SetColorscheme(String::new())),
     }
 }
 

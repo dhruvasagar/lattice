@@ -246,6 +246,7 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
                 // they're visual padding for side-by-side
                 // alignment, not deleted content.
                 kind: lattice_cells::VirtualRowKind::Filler,
+                bg: None,
             });
         }
     }

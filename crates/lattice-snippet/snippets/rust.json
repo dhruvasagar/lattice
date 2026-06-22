@@ -1,0 +1,92 @@
+{
+	"function": {
+		"prefix": "fn",
+		"body": ["fn ${1:name}(${2:args})${3: -> ${4:T}} {", "\t$0", "}"],
+		"description": "Define a function"
+	},
+	"public function": {
+		"prefix": ["pfn", "pub_fn"],
+		"body": ["pub fn ${1:name}(${2:args})${3: -> ${4:T}} {", "\t$0", "}"],
+		"description": "Define a public function"
+	},
+	"test function": {
+		"prefix": ["test", "tfn"],
+		"body": ["#[test]", "fn ${1:name}() {", "\t$0", "}"],
+		"description": "Define a unit test"
+	},
+	"for loop": {
+		"prefix": "for",
+		"body": ["for ${1:item} in ${2:iter} {", "\t$0", "}"],
+		"description": "for-in loop"
+	},
+	"while loop": {
+		"prefix": "while",
+		"body": ["while ${1:cond} {", "\t$0", "}"],
+		"description": "while loop"
+	},
+	"loop": {
+		"prefix": "loop",
+		"body": ["loop {", "\t$0", "}"],
+		"description": "infinite loop"
+	},
+	"if": {
+		"prefix": "if",
+		"body": ["if ${1:cond} {", "\t$0", "}"],
+		"description": "if block"
+	},
+	"if let": {
+		"prefix": ["ifl", "if_let"],
+		"body": ["if let ${1:Some(${2:val})} = ${3:expr} {", "\t$0", "}"],
+		"description": "if let binding"
+	},
+	"match": {
+		"prefix": "match",
+		"body": ["match ${1:expr} {", "\t${2:pattern} => ${3:expr},", "\t$0", "}"],
+		"description": "match expression"
+	},
+	"struct": {
+		"prefix": ["struct", "st"],
+		"body": ["struct ${1:Name} {", "\t${2:field}: ${3:Ty},", "\t$0", "}"],
+		"description": "Define a struct"
+	},
+	"enum": {
+		"prefix": "enum",
+		"body": ["enum ${1:Name} {", "\t${2:Variant},", "\t$0", "}"],
+		"description": "Define an enum"
+	},
+	"impl": {
+		"prefix": "impl",
+		"body": ["impl ${1:Type} {", "\t$0", "}"],
+		"description": "Inherent impl block"
+	},
+	"impl trait for": {
+		"prefix": ["impltrait", "implt"],
+		"body": ["impl ${1:Trait} for ${2:Type} {", "\t$0", "}"],
+		"description": "Trait impl block"
+	},
+	"trait": {
+		"prefix": "trait",
+		"body": ["trait ${1:Name} {", "\t$0", "}"],
+		"description": "Define a trait"
+	},
+	"module": {
+		"prefix": "mod",
+		"body": ["mod ${1:name} {", "\t$0", "}"],
+		"description": "Define a module"
+	},
+	"derive": {
+		"prefix": "derive",
+		"body": ["#[derive(${1:Debug, Clone})]"],
+		"description": "Derive attribute"
+	},
+	"println": {
+		"prefix": ["pln", "println"],
+		"body": ["println!(\"${1}\"${2:, ${3:arg}});"],
+		"description": "println! macro"
+	},
+	"test module": {
+		"prefix": "testmod",
+		"body": ["#[cfg(test)]", "mod tests {", "\tuse super::*;", "", "\t#[test]", "\tfn ${1:name}() {", "\t\t$0", "\t}", "}"],
+		"description": "Test module scaffold"
+	}
+}

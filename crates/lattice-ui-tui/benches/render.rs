@@ -33,9 +33,11 @@ fn rust_corpus(n_fns: usize) -> String {
     s
 }
 
-/// Build an App with Rust syntax wired up + a fresh highlight
-/// cache. Pre-warm by calling `refresh_highlights` so the bench
-/// measures the *frame* path, not the cold-cache path.
+/// Build an App with Rust syntax wired up. display-line B4.2: the
+/// `refresh_highlights` prime was removed with the overlay worker's
+/// dead span/row cache; syntax now flows through the cells /
+/// `DisplayMatrix` substrate (rebuilt on publish), so the frame
+/// bench exercises that path via `compose_visible_lines`.
 fn build_app(corpus: &str, viewport: u32) -> App {
     let mut a = App::new(Document::from_text(corpus));
     a.set_viewport_height(viewport);
@@ -49,7 +51,6 @@ fn build_app(corpus: &str, viewport: u32) -> App {
     syn.parse(&doc_text);
     let handle = lattice_syntax::SyntaxHandle::seeded(syn);
     a.mutate_editor(move |e| e.syntax = Some(handle));
-    a.refresh_highlights();
     a
 }
 
@@ -124,38 +125,11 @@ fn frame_render_120(c: &mut Criterion) {
     g.finish();
 }
 
-/// Slice B.3: highlight span cache hit cost. Measures the
-/// steady-state cost of `refresh_highlights` when the cache key
-/// matches -- i.e. cursor is blinking, no edit / scroll / fold
-/// change happened. Backs §8.2's "Highlight span cache hit
-/// (steady-state)" row -- floor ~10ns, target <50ns.
-///
-/// The cache-hit path is: Arc-clone the syntax snapshot
-/// (~16ns), compute the cache key (Arc::as_ptr + fold hash ~50ns
-/// for ~0 folds + struct ctor), compare keys (~5ns), early
-/// return. Pre-B.3 this same call ran a full QueryCursor walk
-/// at ~178µs.
-fn refresh_highlights_cache_hit(c: &mut Criterion) {
-    let mut g = c.benchmark_group("refresh_highlights_cache_hit");
-    for n in [10usize, 200, 2000] {
-        let corpus = rust_corpus(n);
-        let mut app = build_app(&corpus, 24);
-        // build_app already calls refresh_highlights so the
-        // cache is primed; subsequent calls hit the cache.
-        g.bench_with_input(BenchmarkId::from_parameter(n), &(), |bencher, _| {
-            bencher.iter(|| {
-                app.refresh_highlights();
-            });
-        });
-    }
-    g.finish();
-}
+// display-line B4.2: `refresh_highlights_cache_hit` was deleted. It
+// benched the steady-state cost of `App::refresh_highlights`, which
+// was removed with the overlay worker's dead span/row cache. The
+// equivalent worker-side cache-hit cost is now covered by
+// `lattice-host`'s `overlay_worker` bench (`overlay_worker_cache_hit`).
 
-criterion_group!(
-    render,
-    frame_render_24,
-    frame_render_60,
-    frame_render_120,
-    refresh_highlights_cache_hit,
-);
+criterion_group!(render, frame_render_24, frame_render_60, frame_render_120,);
 criterion_main!(render);

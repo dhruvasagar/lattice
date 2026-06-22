@@ -314,8 +314,13 @@ pub trait Mode: Send + Sync + 'static {
 	/// slot.
 	fn keymap(&self) -> &Keymap;
 
-	/// Typed event subscriptions. Filters + handlers.
-	fn subscriptions(&self) -> &[Subscription];
+	/// Default auto-activation policy (minor modes). The host's
+	/// minor-activation resolver reads this on `MajorEntered` to
+	/// decide whether to auto-activate (§7.4). Default: `Manual`.
+	/// (Reactive, while-active subscriptions are NOT declared here —
+	/// they are acquired in `on_activate` and held in the Guard;
+	/// `Mode::subscriptions()` was removed in MO.4.c.)
+	fn activation_policy(&self) -> ActivationPolicy;
 
 	/// Decoration providers (gutter / inline / overlay /
 	/// statusline). Polled by the renderer.
@@ -1612,6 +1617,138 @@ The protocol does **not** require a `tokio::sync::Mutex` per
 pair. The epoch counter resolves the race lock-free; the
 spawned task's `try_insert` is a single `std::sync::Mutex`
 acquisition (already needed for the store map).
+
+### 7.4 Activation triggers — what *fires* activation (no mode-set scan)
+
+§7.2 covers the activation *flow* once the dispatcher has decided to
+activate a mode. This section pins *what makes the decision*, and the
+load-bearing constraint behind it: **activation is never an O(modes)
+scan.** As the mode set grows (every language, every feature minor, every
+plugin), any scheme that polls every mode per buffer-lifecycle event ("do
+you apply here?") couples the host to all modes and, on the buffer-switch
+path, risks a dropped frame (paramount #1). Activation is driven by
+*subscriptions* — bounded by who subscribed to the firing event, not by the
+mode count. This is the §7 intro made concrete: lifecycle rides the event
+bus with the same filter machinery as any typed event.
+
+Two triggers, matching the two mode kinds (the emacs parallel — `auto-mode-alist`
+for major, hooks for minor):
+
+**Major mode — an ordered resolver on `DocumentOpened`.** A buffer has
+exactly one major mode (§3.1); a broadcast filter can't express
+first-match-wins, so major-mode selection is a thin ordered resolver
+subscribed to `Event::DocumentOpened`:
+
+	1. Run registered major-mode matchers in priority order; first wins.
+	2. Built-in language modes reuse `lattice_syntax::Lang::detect_from_path`;
+	   plugin majors supply a `path_glob` / content predicate -- the *same*
+	   glob util `EventFilter.path_glob` uses, one matcher not two.
+	3. Drive the winner's activation (§7.2); that emits `MajorEntered`.
+
+O(major-modes), on open only, declarative, async — the `auto-mode-alist`
+shape, and the one place a scan legitimately survives. Nothing per-keystroke.
+
+**Minor mode — a single host resolver over `MajorEntered` (decision B,
+2026-06-12).** Each minor declares a default `ActivationPolicy`
+(`Mode::activation_policy()`, §5.1) — `Manual` (the default: opt-in only),
+`Global`, or `Majors([..])` (an allowlist of major-mode ids). The host runs
+**one** resolver subscribed to `Event::MajorEntered`; on each entry it queries
+`ModeRegistry::auto_activatable_minors(major)` — which walks the registered
+minors and returns those whose (config-folded) policy admits the entered major
+— and calls `activate_minor` (§7.2) for each. A paired `MajorExiting` /
+`DocumentClosed` handler deactivates. This is O(registered minors) on a *rare*
+event (buffer open / major switch), never per-keystroke.
+
+`Global` is scoped to **real document buffers** (`BufferKind::Document`):
+"global" means every code/text buffer, not the synthetic UI buffers (file
+tree, help, `*messages*`, terminal, multibuffer). The resolver passes the
+buffer's kind to `auto_activatable_minors(major, kind)`, and
+`ActivationPolicy::admits` gates `Global` on `kind == Document`. A mode that
+genuinely wants to live inside a synthetic buffer names that buffer's major
+explicitly via `Majors([..])`, which is kind-independent — an explicit opt-in
+is honored anywhere. (MA.2; decided with the user 2026-06-12.)
+
+Why a single resolver rather than one bus subscription per minor (the shape an
+earlier draft of this section described): both are O(minors) per `MajorEntered`,
+but the per-mode subscription still needs a generic host driver to reach
+`activate_minor` (there is no `CommandInvocation` for "activate minor X"), so it
+buys no extra mode-ownership over the resolver — only N bus subscriptions and
+drain plumbing instead of one. The substrate-vs-mode rule (CLAUDE.md) puts an
+activation policy that *uniform host machinery reads across all minors* on a
+trait-method-as-data + generic resolver (the `dispatch_with_cancel` shape), not
+a per-mode subscription. The mode still owns its declared allowlist; the host
+owns the single resolver + the config fold.
+
+This is **not** a resurrection of the `Mode::subscriptions()` method removed in
+MO.4.c. That method was a *reactive, while-active* subscription mechanism
+(replaced by `on_activate` + a Guard-held RAII `Subscription`); the activation
+policy here is a *registration-time, while-inactive* trigger — a genuinely
+different lifecycle phase. The two coexist: a mode declares `activation_policy()`
+to be *turned on*, and subscribes inside `on_activate` to *react while on*.
+
+For the resolver's filter to work, the major lifecycle events must be
+filterable by major-mode id. MA.1 lands the **four observable lifecycle
+transitions** — `MajorEntered` / `MajorExiting` (carrying
+`{ buffer, major: String }`) and `MinorActivated` / `MinorDeactivated`
+(carrying `{ buffer, minor: String }`) — as `lattice_protocol::Event` enum
+variants (design.md §5.10.1's public catalog), migrating them off the typed
+`ModeEvent` bus so hooks and EF.1's `EventFilter` apply uniformly. Only the
+**internal** `ModeActivationFailed` / `OptionConflict` cascade-and-rollback
+signals stay on the typed `ModeEvent` bus — they carry richer payloads (a
+reason string, a conflicting-mode set) and have a single internal consumer,
+not open subscription.
+
+**`EventFilter` — implement the reserved fields, don't fork a matcher.**
+`lattice_runtime::EventFilter` honors `kinds` only today; `path_glob`,
+`major_modes`, and `predicate` are *reserved* in its own module doc
+("declared… stay TODO until callers need them"). Mode activation is that
+caller. Implement them — AND-combined, checked on the already-`kinds`-bucketed
+candidates so the publish scan never widens — rather than a parallel matcher
+type that would duplicate the filter the bus already dispatches on.
+`predicate` is the escape hatch; modes prefer the declarative fields so the
+bus can reason about them.
+
+**Resolver wired once, at host boot.** The host subscribes the single
+minor-activation resolver to `Event::MajorEntered` once, at boot. After that
+the bus does indexed O(subscribers-of-kind) dispatch to it; the resolver's
+per-entry `auto_activatable_minors(major)` walk is O(registered minors) on a
+rare event. Nothing re-scans the mode set per keystroke. (Mode *registration*
+no longer wires any bus subscription — `Mode::subscriptions()` was removed in
+MO.4.c; reactive subscriptions are `on_activate` + Guard, §5.1.)
+
+**Allowlist is explicit; a mode may default to none.** Activation criteria
+are never inferred from the runtime registry ("activate where snippets
+exist"). A mode declares a *default* `ActivationPolicy` via
+`activation_policy()`, which may be `Manual` / an empty `Majors([])` — then it
+activates nowhere until the user opts in. Leaving the onus on the user is a
+legitimate mode choice (some modes won't ship a sensible default and shouldn't
+guess). TOML carries the policy
+(`<mode>.activation = global | <allowlist> | off`); the host folds the option
+over the declared default before `auto_activatable_minors` consults it, and
+re-folds on an `OptionChanged` subscription so `:set` is live. `init.rs`
+(WASM, bus access) is the programmable override — force-global, disable, or a
+custom predicate via the resolver's `EventFilter`.
+
+**Async / off-UI-thread (paramount #1).** The resolver handler runs async
+(modes are tokio tasks, §7.1 / design §5.7); activation work never runs
+inline on a publish that originates on the render path. The bus drops its
+mutex before dispatch (audit M1); the handler must not block it.
+
+**Worked example — snippet.** `SnippetCompletionMode::activation_policy()`
+returns its config-driven, possibly-empty language allowlist
+(`ActivationPolicy::Majors([..])`); the host resolver activates it when a
+buffer enters one of those majors. Today's buffer-*kind* auto-activation
+(language-blind, via `auto_activated_minors_for_buffer_kind`) is replaced by
+this language-aware policy. `SnippetActiveMode` (the `<Tab>` placeholder-nav
+mode) is already correctly session-transient (activated by
+`sync_keymap_overlays` while `active_snippet.is_some()`) and is unchanged.
+
+**Rejected: `Mode::wants_buffer(ctx) -> bool` polled over all modes.**
+O(modes) per lifecycle event, host coupled to every mode, a sync scan on the
+buffer-switch path risks a frame block. Rejected on paramount #1 + heuristic
+#1; the resolver model is the merit win. This *was* the obvious option; the
+substrate's reserved `EventFilter` + a registry query is the third option that
+fits the goals and removes the duplication.
 
 ## 8. Crate placement
 
@@ -3349,10 +3486,11 @@ Concretely, for keymaps:
 
 The same logic applies to every Mode trait slot. The trait
 already provides `Mode::keymap()`, `Mode::options()`,
-`Mode::decorations()`, `Mode::subscriptions()`,
+`Mode::decorations()`, `Mode::activation_policy()` (MA.1),
 `Mode::completion_sources()`, `Mode::required_capabilities()`,
 `Mode::conflicts_with()` / `Mode::implies()`, and
-`Mode::on_activate()`.
+`Mode::on_activate()`. (Reactive subscriptions are not a trait
+slot — they live in `on_activate` + the Guard since MO.4.c.)
 
 **Current state (2026-06-01): modes are under-utilised — they
 declare a few slots but the host still owns lots of

@@ -44,8 +44,10 @@ same surface).
 | File tree & Oil (browse / edit the filesystem; oil-style writable directory listing; icons + colors)        | [filetree-oil.md](filetree-oil.md)  | ✅     |
 | Multibuffer views (excerpts composed into one editable buffer; the substrate behind search + project diff)  | [multibuffer.md](multibuffer.md)    | ✅     |
 | Project search (`:search`, streaming results multibuffer, `<CR>` jump-to-source, `gr` refresh)              | [project-search.md](project-search.md) | ✅  |
+| Narrow mode (`zn` operator, `:narrow` / `:widen`, edit-in-view → source, stacked one-hop, `znaf` in view)   | [narrow-mode.md](narrow-mode.md)    | ✅     |
 | Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
 | Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
+| Modeline (per-pane status row: zones, the modal tag + showmode echo, `ui.modeline.*` layout config)         | [modeline.md](modeline.md)          | ✅     |
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
 | Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
 | Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |
@@ -54,10 +56,10 @@ same surface).
 | Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
 | Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
 | Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
-| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                                     | _covered in ex-commands_            | 🟡     |
+| Help system (`:describe-*`, `:apropos`, `:keymap`, `<C-h>` map, mode-prefix syntax for `:describe-key`)    | [help.md](help.md)                  | ✅     |
 | Plugins (WASM Component Model, capabilities, fuel)                                                          | _planned (Phase 7+)_                | ⛔     |
 | Performance posture (latency budgets, what's safe in a hot loop)                                            | _planned_                           | ⛔     |
-| Tutor (vim-tutor-style interactive lesson sequence)                                                         | _planned_                           | ⛔     |
+| Tutor (interactive lesson sequence: modes, grammar, visual, registers, help, LSP)                           | [tutor/](tutor/)                    | ✅     |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

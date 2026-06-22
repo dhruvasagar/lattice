@@ -85,6 +85,14 @@ fn validate_scrolloff(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_modeline_padding(i: &i64) -> Result<(), String> {
+    if (0..=16).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("ui.modeline.padding out of range [0, 16]: {i}"))
+    }
+}
+
 fn validate_terminal_scrollback_lines(i: &i64) -> Result<(), String> {
     if *i < 0 {
         Err(format!(
@@ -220,9 +228,24 @@ crate::options! {
     #[aliases("cul", "cursorline")]
     #[name("current-line-highlight")]
     pub CursorLine: bool = false;
+
+    /// Synchronise scrolling across all panes that have
+    /// `scrollbind=true`. The option-change handler rebuilds the
+    /// singleton identity-mapper `PaneGroup` to contain exactly
+    /// the current panes with `scrollbind=true`. Vim's
+    /// `:set scrollbind` / `scb`. D.0b.
+    #[aliases("scb")]
+    #[name("scrollbind")]
+    pub Scrollbind: bool = false;
 }
 
 // ---- Completion group: insert-completion knobs ----
+
+/// SN.3g: single source for the `gen:snippet` source default priority,
+/// shared by `completion.source.snippet.priority`'s default (below) and
+/// `lattice-snippet`'s `SnippetCompletionMode` contribution, so the two
+/// can't drift. Above buffer-words, below LSP.
+pub const COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY: i64 = 150;
 
 crate::options! {
     group = crate::Completion;
@@ -247,11 +270,12 @@ crate::options! {
     pub CompletionSourceLspPriority: i64 = 200;
 
     /// Priority bucket for the `gen:snippet` insert-mode source.
-    /// Default 150 -- above buffer-words, below LSP. Per-language
-    /// overrides land in 4.2.g.5 (3/3); today the value is global.
+    /// Default [`COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY`] (150) --
+    /// above buffer-words, below LSP. Per-language overrides land in
+    /// 4.2.g.5 (3/3); today the value is global.
     #[name("completion.source.snippet.priority")]
     #[validate(validate_completion_priority)]
-    pub CompletionSourceSnippetPriority: i64 = 150;
+    pub CompletionSourceSnippetPriority: i64 = COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 
     /// Priority bucket for the `gen:buffer-words` insert-mode
     /// source. Default 100 -- baseline; LSP and snippets both
@@ -616,6 +640,78 @@ crate::options! {
     #[name("terminal.scrollback-lines")]
     #[validate(validate_terminal_scrollback_lines)]
     pub TerminalScrollbackLines: i64 = 10_000;
+}
+
+// ML.5 (2026-06-21): modeline group — per-zone element layout +
+// separator for the configurable element-system modeline
+// (`docs/dev/architecture/modeline.md` §11). The three zone options
+// hold a `ModelineZone` (the first list-valued option): `Auto` (the
+// default — descriptor-driven placement, so a newly-registered mode
+// element auto-appears) or an explicit ordered element-id list.
+// TOML uses Helix-shaped arrays (`left = ["core.mode", "core.path"]`);
+// `:set ui.modeline.left=core.mode,core.path` uses the comma form.
+crate::options! {
+    group = crate::Modeline;
+
+    /// Left-zone element layout — ordered element ids assigned to the
+    /// left (flush-left) zone, e.g. `["core.mode", "core.path"]`.
+    /// `auto` (the default) uses each registered element's own
+    /// descriptor placement. An explicit list shows exactly those ids,
+    /// in order; unknown ids are skipped + logged. An empty list
+    /// (`[]`) is an explicitly-blank zone.
+    #[name("ui.modeline.left")]
+    pub ModelineLeft: crate::ModelineZone = crate::ModelineZone::Auto;
+
+    /// Center-zone element layout (centered in the gap between Left and
+    /// Right). `auto` (default) is descriptor-driven; built-ins place
+    /// nothing here, so the effective default is empty. Custom / plugin
+    /// elements live here.
+    #[name("ui.modeline.center")]
+    pub ModelineCenter: crate::ModelineZone = crate::ModelineZone::Auto;
+
+    /// Right-zone element layout (the block is right-aligned, ids in
+    /// left→right order), e.g. `["lsp", "core.position", "core.lang"]`.
+    /// `auto` (default) is descriptor-driven.
+    #[name("ui.modeline.right")]
+    pub ModelineRight: crate::ModelineZone = crate::ModelineZone::Auto;
+
+    /// Separator inserted between elements within a zone. A non-blank
+    /// value is auto-padded with a space on each side at render time
+    /// (so `:set ui.modeline.separator=|` shows ` | ` — you give the
+    /// glyph, the renderer owns the spacing). Blank (the default) ⇒ a
+    /// single space between elements.
+    #[name("ui.modeline.separator")]
+    pub ModelineSeparator: String = " ".into();
+
+    /// Columns of blank margin at the start (before the Left zone) and
+    /// end (after the Right zone) of the modeline row — the row's
+    /// left/right breathing room. Default 1; `0` flushes content to the
+    /// pane edges.
+    #[name("ui.modeline.padding")]
+    #[validate(validate_modeline_padding)]
+    pub ModelinePadding: i64 = 1;
+}
+
+// L4 (2026-06-21): diagnostics group — inline end-of-line diagnostic
+// summary presentation (`lsp-architecture.md` §15). `inline` scopes the
+// summary (off / cursor-line / all); `inline-min-severity` filters which
+// diagnostics count. Both are read host-side to gate + compute the
+// cursor-line summary (L4a.2).
+crate::options! {
+    group = crate::Diagnostics;
+
+    /// Where the inline (end-of-line virtual-text) diagnostic summary
+    /// renders: `off`, `cursor-line` (the default — cursor line only,
+    /// idle-gated, Insert-suppressed), or `all` (every viewport line).
+    #[name("ui.diagnostics.inline")]
+    pub DiagnosticsInlineOption: crate::DiagnosticsInline = crate::DiagnosticsInline::CursorLine;
+
+    /// Least-severe diagnostic level included in the inline summary:
+    /// `error`, `warning`, `info`, or `hint` (the default — include
+    /// everything). A diagnostic shows when it is as-or-more severe.
+    #[name("ui.diagnostics.inline-min-severity")]
+    pub DiagnosticsMinSeverityOption: crate::DiagnosticsSeverity =
+        crate::DiagnosticsSeverity::Hint;
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

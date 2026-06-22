@@ -49,6 +49,35 @@ pub fn execute(
     invocation: CommandInvocation,
     cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
+    // Most callers (and any buffer with no tree-sitter parse / no
+    // comment syntax) dispatch with an empty env. The structural +
+    // comment text objects resolve nothing in that case; everything
+    // else is unaffected.
+    execute_with_env(
+        registry,
+        document,
+        buffer_id,
+        cursor,
+        invocation,
+        cancel,
+        crate::registry::TextObjectEnv::default(),
+    )
+}
+
+/// N.1.4a / N.1.6 (2026-06-10): `execute` plus the per-dispatch
+/// [`TextObjectEnv`](crate::registry::TextObjectEnv) — the tree-sitter
+/// `scope_resolver` (`af`/`ac`) and the `comment_syntax` (`aC`/`iC`).
+/// The host builds the env (N.1.4b / N.1.6) and threads it down to the
+/// `TextObjectContext`; the classic objects (`iw`, `ap`, `i{`) ignore it.
+pub fn execute_with_env(
+    registry: &CommandRegistry,
+    document: &mut Document,
+    buffer_id: BufferId,
+    cursor: Position,
+    invocation: CommandInvocation,
+    cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
+) -> GrammarResult<Effect> {
     // Honor any pre-existing cancellation request before we start.
     cancel.check()?;
 
@@ -59,10 +88,19 @@ pub fn execute(
     match entry.spec.kind {
         CommandKind::Motion => execute_motion(document, buffer_id, cursor, &invocation, entry, cancel),
         CommandKind::TextObject => {
-            execute_text_object(document, cursor, &invocation, entry, cancel)
+            execute_text_object(document, cursor, &invocation, entry, cancel, env)
         }
         CommandKind::Operator => {
-            execute_operator(registry, document, buffer_id, cursor, &invocation, entry, cancel)
+            execute_operator(
+                registry,
+                document,
+                buffer_id,
+                cursor,
+                &invocation,
+                entry,
+                cancel,
+                env,
+            )
         }
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => execute_action(&invocation, entry, cancel),
@@ -123,6 +161,7 @@ pub fn execute_motion_only(
         buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
+        has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
     };
@@ -161,6 +200,7 @@ fn execute_motion(
         buffer_id,
         from: cursor,
         count: invocation.count_or_default(),
+        has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
     };
@@ -182,6 +222,7 @@ fn execute_text_object(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let tobj = require_text_object(entry)?;
     let ctx = TextObjectContext {
@@ -190,12 +231,34 @@ fn execute_text_object(
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
         cancel,
+        scope_resolver: env.scope_resolver,
+        comment_syntax: env.comment_syntax,
     };
-    let _range = (tobj.apply)(&ctx)?;
-    // A text-object alone (no operator) is unusual; vim's behavior is to
-    // expand the visual selection. Phase 1 returns Effect::None until the
-    // visual-mode integration lands.
-    Ok(Effect::None)
+    let range = (tobj.apply)(&ctx)?;
+    // A bare text object (no operator) sets the selection to the object's
+    // span -- this is how Visual mode's `viw` / `vaf` / `vaC` work, and it
+    // is fully generic: the dispatcher does not branch on which object was
+    // resolved. The object returns a half-open `[start, end)`; charwise
+    // visual is inclusive of the head, so we place the head one byte before
+    // `end`. A later operator (`d` / `y` / `c`) re-extends to `end` via
+    // `resolve_grammar_range(Range::Selection)`, matching vim exactly.
+    if range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let buffer = document.buffer();
+    let head = buffer
+        .position_to_byte(range.end)
+        .ok()
+        .filter(|&b| b > 0)
+        .and_then(|b| buffer.byte_to_position(b - 1).ok())
+        .unwrap_or(range.start);
+    let mut selections = document.selections().clone();
+    selections.replace_primary(lattice_protocol::selection::Selection {
+        anchor: range.start,
+        head,
+        visual: None,
+    });
+    Ok(Effect::SelectionChange(selections))
 }
 
 fn execute_operator(
@@ -206,6 +269,7 @@ fn execute_operator(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
@@ -231,7 +295,16 @@ fn execute_operator(
             resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
         }
         (None, Some(target)) => {
-            resolve_target(registry, document, buffer_id, cursor, target, motion_count, cancel)?
+            resolve_target(
+                registry,
+                document,
+                buffer_id,
+                cursor,
+                target,
+                motion_count,
+                cancel,
+                env,
+            )?
         }
         (None, None) => return Err(CommandError::MissingTarget),
     };
@@ -523,6 +596,7 @@ fn resolve_target(
     target: &Target,
     count: crate::command::Count,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -535,6 +609,7 @@ fn resolve_target(
                 buffer_id,
                 from: cursor,
                 count,
+                has_explicit_count: false,
                 args: args.clone(),
                 cancel,
             };
@@ -552,6 +627,8 @@ fn resolve_target(
                 count,
                 args: args.clone(),
                 cancel,
+                scope_resolver: env.scope_resolver,
+                comment_syntax: env.comment_syntax,
             };
             (tobj.apply)(&ctx)
         }
@@ -708,5 +785,41 @@ mod tests {
             ),
             "unexpected error: {err:?}"
         );
+    }
+
+    /// Visual-foundation slice: a *bare* text object (no operator)
+    /// must set the selection to the object's span rather than
+    /// no-op. This is what drives Visual mode's `viw` / `vaw` /
+    /// `vaf`. The object returns a half-open `[start, end)`; the
+    /// resulting charwise selection is inclusive of the head, so
+    /// the head lands one byte before `end` and a later operator
+    /// re-extends via `resolve_grammar_range(Range::Selection)`.
+    #[test]
+    fn bare_text_object_sets_selection_to_object_span() {
+        let mut registry = CommandRegistry::new();
+        let builtins = crate::builtins::populate(&mut registry);
+        let mut doc = lattice_core::Document::from_text("foo bar baz");
+        // Cursor on the `b` of "bar" (line 0, byte 4).
+        let cursor = Position::new(0, 4);
+        let inv = CommandInvocation::of(builtins.inner_word.0);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::SelectionChange(set) => {
+                let p = set.primary();
+                // inner-word "bar" = bytes [4, 7); charwise head = 6.
+                assert_eq!(p.anchor, Position::new(0, 4), "anchor at word start");
+                assert_eq!(p.head, Position::new(0, 6), "head one byte before end");
+                assert!(p.visual.is_none(), "bare object leaves the kind to the host");
+            }
+            other => panic!("expected Effect::SelectionChange, got {other:?}"),
+        }
     }
 }

@@ -65,6 +65,7 @@
 pub mod actor;
 pub mod document;
 pub mod events;
+pub mod glob;
 pub mod handle;
 pub mod messages;
 pub mod messages_subscriber;
@@ -73,8 +74,9 @@ pub mod runtime;
 pub mod snapshot;
 
 pub use actor::DocumentActor;
-pub use document::{ActiveDocument, Document};
-pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
+pub use document::{ActiveDocument, DispatchEnv, Document, ScopeResolverHandle};
+pub use events::{EventBus, EventFilter, EventPredicate, SubscriptionId, SubscriptionTarget};
+pub use glob::compile_glob_set;
 pub use handle::{RopeDocumentHandle, spawn_document};
 // M.2.b.1 (2026-05-31): multibuffer types moved out to the
 // dedicated `lattice-multibuffer` crate. The Document trait

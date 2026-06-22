@@ -54,11 +54,28 @@ provenance so `:describe-key dd` can show "dd → delete-line
 (user, init.rs:42; previously vim default,
 keymap.rs:213)".
 
-The five layers are physically merged into ONE trie at
-layer-stack-mutation time (push minor mode, pop minor mode,
-load user config). Runtime lookup walks one structure. Layer
-mutations are infrequent (mode transitions, config reload);
-keystroke lookups are constant.
+The five layers live in **two physical structures**:
+
+- **`merged` (always-on)** — Builtin + MajorMode + User + Buffer
+  layers merged per `BindingMode` at write time. Fires
+  unconditionally on every keystroke. Rebuilt by
+  `build_always_on_merged` whenever any of those four layers
+  change.
+- **`minor_mode_tries` (per-buffer overlay)** — one
+  `HashMap<BindingMode, KeymapTrie>` per `MinorMode(id)`,
+  stored in a second `ArcSwap`. At lookup time,
+  `lookup_with_context` starts from the always-on trie and
+  folds in only the MinorMode tries whose `ModeId` is in
+  `active_modes` for the current buffer, in activation order
+  (last-activated minor wins).
+
+Layer mutations are infrequent (mode transitions, config
+reload, minor-mode push/pop). Keystroke lookups are fast: the
+no-minor path is one `ArcSwap::load` + trie walk (~17 ns
+single-chord); the minor-fold path overlays 0–3 tries over the
+base before walking (~44 ns typical). Both structures use
+`ArcSwap` for wait-free reads; the brief mutex covers only the
+source-of-truth layer stack used for rebuilds.
 
 ## 3. Data model
 
@@ -126,43 +143,69 @@ needs an enum to dispatch into App methods. After M3 the
 keymap returns `CommandInvocation`s; the App's apply loop
 already routes those.
 
-### 3.4 `KeymapRegistry`
+### 3.4 `KeymapRegistry` / `KeymapHandle`
 
-Public type the App holds.
+Lives in `crates/lattice-keymap` (extracted from `lattice-host`
+during the T1-T9 crate migration; see §13). The App holds a
+`KeymapHandle` (cheap `Arc` clone).
 
 ```rust
-pub struct KeymapRegistry {
-    /// Wait-free read cell. Built once per layer-stack
-    /// mutation; lookups walk this tree.
-    merged: Arc<ArcSwap<KeymapTrie>>,
-    /// One trie per layer. The layer stack is materialised
-    /// into `merged` on every push/pop.
-    layers: Mutex<LayerStack>,
+// crates/lattice-keymap/src/registry.rs
+pub struct KeymapHandle {
+    registry: Arc<KeymapRegistry>,
 }
 
-pub struct KeymapHandle {
-    inner: Arc<KeymapRegistry>,
+struct KeymapRegistry {
+    /// Always-on merged trie: Builtin + MajorMode + User + Buffer.
+    /// Wait-free read; rebuilt on writes to those four layer kinds.
+    merged: Arc<ArcSwap<MergedKeymap>>,
+    /// Per-ModeId MinorMode tries. Wait-free read; rebuilt on
+    /// push_layer / pop_layer for MinorMode layers.
+    minor_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
+    /// Source-of-truth layer list used for rebuilds and telemetry.
+    inner: Arc<Mutex<LayerStack>>,
 }
 ```
 
-The handle is what App, plugins, and tests see. Mirror of the
-`SupervisorSnapshot`/`DiagnosticsSnapshot` pattern from the
-audit slices: wait-free reads, mailbox-style writes (or just a
-brief lock for layer mutations, since they're infrequent).
+The two-`ArcSwap` split means write to Builtin/MajorMode/User/Buffer
+only rebuilds `merged`; push/pop of a MinorMode layer only rebuilds
+`minor_mode_tries`. Neither touches the other structure.
 
-Read API:
+**Keystroke read API:**
 
-- `lookup(&self, chord_seq: &[KeyChord], mode: BindingMode) -> LookupResult`
+- `lookup_with_context(&self, mode: BindingMode, chords: &[KeyChord], active_modes: &[ModeId]) -> LookupResult`
+  — hot path; wait-free (no mutex). Folds active MinorMode tries
+  over the always-on merged trie in activation order.
 
-Write API:
+**Telemetry / introspection API** (not on the hot path):
 
-- `bind(&self, layer: KeymapLayer, mode: BindingMode, chord_seq: &[KeyChord], cmd: CommandInvocation, source: SourceLocation)`
-- `unbind(&self, layer: KeymapLayer, mode: BindingMode, chord_seq: &[KeyChord])`
-- `push_layer(&self, layer: MinorModeLayer)`
-- `pop_layer(&self, layer_id: LayerId)`
+- `enumerate_chord_bindings(&self, mode: BindingMode, chords: &[KeyChord]) -> Vec<(KeymapLayer, Arc<BoundCommand>)>`
+  — walks the source `inner.layers` under mutex; returns every
+  registered binding for the chord regardless of active modes.
+- `resolve_trace(&self, mode: BindingMode, chords: &[KeyChord], active_modes: &[ModeId]) -> KeymapResolution`
+  — builds a full per-layer trace with `active` flags; used by
+  `:describe-key`. See §13.2 for semantics.
+- `resolve_trace_all_modes(&self, chords: &[KeyChord], active_modes: &[ModeId]) -> Vec<KeymapResolution>`
+  — runs `resolve_trace` for every `BindingMode`; returns only
+  modes that have at least one registered binding.
+- `layer_label_string(&self, layer: KeymapLayer) -> String`
+  — human-readable label from the layer's registered label string.
 
-After every write, the merged trie rebuilds (cheap — typically
-a few thousand entries; the Arc swap is one atomic store).
+**Write API:**
+
+- `bind(&self, layer: KeymapLayer, mode: BindingMode, path: &[ChordPattern], cmd: CommandInvocation, source: SourceLocation)`
+- `unbind(&self, layer: KeymapLayer, mode: BindingMode, path: &[ChordPattern])`
+- `push_layer(&self, kind: PushLayerKind, modes_and_bindings: ...) -> LayerId`
+- `pop_layer(&self, id: LayerId)`
+
+After every write the affected structure (`merged` or
+`minor_mode_tries`) rebuilds. Rebuild cost is typically
+sub-millisecond for the default catalog (~hundreds of bindings
+per layer, ~5 layers). The `ArcSwap::store` is one atomic.
+
+Capability-gated variants for plugin/user access:
+`try_bind`, `try_unbind`, `try_push_layer` — funnel through a
+`capability_allows` check before delegating. See §5.5.
 
 ### 3.5 `KeymapEntry` (existing; stays)
 
@@ -180,6 +223,20 @@ gives us:
 The drift test that catches descriptor / behaviour divergence
 becomes obsolete because the descriptor IS the behaviour.
 
+**Multi-mode entries (B-field).** A `KeymapEntry` carries
+`modes: &'static [BindingMode]`, not a single mode. The
+`keymap_entry!` macro accepts either a single mode (`mode: Normal`,
+which sugars to a one-element slice — existing call sites are
+unchanged) or a bracketed list (`mode: [Normal, Visual]`). The
+startup translation pass (`resolve_entries_into_bindings`) fans the
+slice out into one `KeymapBinding` per mode — the trie is per-mode,
+so a multi-mode entry is N bindings sharing chord / command /
+source. `:describe-key` shows one entry naming all its modes
+(`zn  (Normal, Visual)`); `:keymap` lists it under each mode group.
+This keeps a multi-mode mapping a single declarative entity instead
+of forcing the author to repeat the chord per mode. The two
+imperative / builder peers are in §5.6.
+
 ## 4. Lookup path (the keystroke hot path)
 
 ```
@@ -192,13 +249,24 @@ input.rs::translate
   │   yes → overlay layer's lookup
   │   no  → pending-state lookup
   ↓
-KeymapHandle::lookup(chord_seq, mode)    (ArcSwap::load + trie walk; ~200 ns)
+KeymapHandle::lookup_with_context(       (K.1.c; ArcSwap::load + trie fold + walk)
+    mode,                                 ~17 ns no-minor-modes fast path
+    &partial_chord,                       ~44 ns typical (0-3 active minors)
+    &active_modes_for_buffer,
+)
   ↓
 LookupResult
   ├─ Bound(cmd)   → dispatch via grammar's execute(cmd)
-  ├─ Partial      → set Pending, wait for next chord
+  ├─ Partial      → AbsorbPartialChord, wait for next chord
   └─ Unbound      → fall through to literal-text Insert / no-op Normal
 ```
+
+`active_modes_for_buffer` is read from `App::active_modes[active_buffer_id()]`
+— the `ActiveModes { major, minors }` for whichever pane is
+focused (Document, Multibuffer, Terminal, Help, …). Using
+`active_buffer_id()` rather than a document-specific field is
+important: non-Document panes have their own mode stacks and
+must not borrow another pane's minor-mode context (see §13.3).
 
 ### Performance commitments
 
@@ -322,6 +390,38 @@ keymap.bind(KeymapLayer::PluginA, BindingMode::Normal, "]f", motion.id)?;
 This is the architectural seam paramount goal #3 has been
 asking for since day one.
 
+### 5.6 Multi-mode bindings (one chord, several modes)
+
+A chord that means the same thing in several modes is declared
+ONCE, across all three registration paths. The trie stays per-mode;
+the multi-mode surface is sugar that fans out into per-mode inserts:
+
+- **Catalog (declarative):** the `keymap_entry!` `mode: [..]` form
+  (§3.5). `keymap_entry! { mode: [Normal, Visual], chord: "zn",
+  doc: "...", cmd: "operator:narrow" }` is one entry, fanned out by
+  `resolve_entries_into_bindings` into a binding per mode.
+- **Builder:** `Keymap::bind_chord_modes(&[BindingMode], chord,
+  command)` — the multi-mode peer of `bind_chord`; pushes one
+  `KeymapBinding` per mode. For a mode's `keymap()` contribution.
+- **Imperative:** `KeymapHandle::bind_modes(layer, &[BindingMode],
+  path, command, source)` — inserts into every named mode's trie
+  under one lock and rebuilds the merged trie + reverse cache ONCE
+  (not per mode). For `init.rs` / host helpers binding directly.
+
+There is deliberately NO `:map` / `:nmap` / `:vmap` ex-command
+family: `init.rs` and plugins use the typed API (or the WIT
+`bind`), so a separate string-command surface would be a redundant
+second way to do the same thing (heuristic #1). A single mode is
+just a one-element slice — the single-mode forms (`bind`,
+`bind_chord`, `mode: Normal`) stay the common case and are
+unchanged.
+
+Note this is distinct from an *operator* acting on the Visual
+selection (§7.2, upgrade 3): that is intrinsic to being an operator
+and is generated per-operator, NOT a multi-mode binding of the same
+`CommandInvocation` (the Normal op-pending and Visual forms carry
+different `Range` / target semantics).
+
 ## 6. Conflict resolution + provenance
 
 - **Cross-layer conflict**: top layer wins (priority order in
@@ -364,7 +464,7 @@ internal node with a child `w` (and `e`, `b`, `0`, `$`, `iw`,
 sets `Pending::Operator(d)` and waits for the next chord. On
 `w`, lookup of `[d, w]` returns `Bound(delete-with-target=word-forward)`.
 
-Two upgrades over today's hand-rolled state machine:
+Upgrades over today's hand-rolled state machine:
 
 1. **No special-case Pending branches** for each operator. `d`,
    `y`, `c`, `>`, `<`, `gU`, `gu`, `g~` all encode the same
@@ -373,6 +473,25 @@ Two upgrades over today's hand-rolled state machine:
    sub-trees for free.** A `sort-lines` operator registered
    by a plugin can register its bindings as `[s, l]` (or
    whatever); the dispatcher walks the trie identically.
+3. **Operators act on the Visual selection BY DESIGN — both
+   modes from one registration.** An operator is not merely an
+   op-pending prefix in Normal; in Visual the same trigger chord
+   applies the operator to the active selection
+   (`op.with_range(Range::Selection)`) and exits Visual. That is
+   intrinsic to *being* an operator, not a per-operator Visual
+   binding. `keymap_normal::register_operator_bindings` emits BOTH
+   surfaces from one call — the Normal op-pending family AND the
+   Visual selection-bind — uniformly for builtin
+   (`d`/`c`/`y`/`>`/`<`, `gU`/`gu`/`g~`) and contributed (narrow's
+   `zn`) operators alike. The grammar stays chord-agnostic
+   (`OperatorId`s, never keys), so this uniform generation lives at
+   the host keymap layer where chord→command already lives. It
+   subsumes the old hand-rolled Visual `operator_table`; the only
+   Visual operator entries NOT generated this way are the two
+   genuine Visual-only aliases `x`→delete and `s`→change (in Normal
+   `x`/`s` are different commands, so they cannot be derived from
+   the operator registration). A contributed operator reaches
+   Visual with zero host edits.
 
 ### 7.3 Marks, registers, find-char
 
@@ -1542,8 +1661,299 @@ mode-scope tests + docs.
   (commit `05c2e25`).
 - K.3.4 ✅ doc artefacts (this slice).
 
+## 13. `lattice-keymap` crate + layer-trace API (T1-T13, K.1.c / K.1.d)
+
+### 13.1 Crate extraction (T1-T9) ✅ landed
+
+All keymap types were extracted from `lattice-host` and
+`lattice-mode` into a dedicated `crates/lattice-keymap` crate.
+The extraction is a pure mechanical migration — same types, same
+behaviour, only module paths changed. Every test remained green
+throughout.
+
+**Post-extraction dependency graph:**
+
+```
+lattice-protocol
+      ↓
+lattice-grammar
+      ↓
+lattice-keymap          ← owns: ModeId, BindingMode, KeymapEntry, keymap_entry!,
+      ↓                           Keymap, KeymapBinding, KeymapTrie, KeymapLayer,
+lattice-mode            ←         BoundCommand, LookupResult, KeymapRegistry,
+      ↓                           KeymapHandle, KeymapCapability, KeymapResolution,
+lattice-host            ←         LayerHit, parse_describe_key_arg
+```
+
+Types that stayed in `lattice-host` (circular-dep barrier):
+
+| Type | Reason |
+|---|---|
+| `KeymapReverseLookupHandle` | Implements `lattice-completion::KeymapReverseLookup`; pulling `lattice-completion` into `lattice-keymap` would create a cycle. |
+| `keymap_mode_contributions.rs` | Needs both `ModeRegistry` (from `lattice-mode`) and `KeymapHandle` (from `lattice-keymap`); only `lattice-host` can see both. |
+
+`lattice-mode` re-exports all moved types from `lattice-keymap`
+for backward compatibility (callers that `use lattice_mode::ModeId`
+continue to work).
+
+### 13.2 Layer-trace API (T10-T13, K.1.d) ✅ landed
+
+`:describe-key` uses a **sparse layer-trace** model: instead of a
+combined static-catalog + runtime-lookup split, one API call walks
+every registered layer and marks each hit active or not.
+
+**Types** (`crates/lattice-keymap/src/resolution.rs`):
+
+```rust
+/// One registered layer's binding for the queried chord.
+pub struct LayerHit {
+    pub layer: KeymapLayer,
+    pub command: Arc<BoundCommand>,
+    /// `true` if this layer fires for the current buffer.
+    /// Always `true` for Builtin / MajorMode / User / Buffer;
+    /// set by cross-referencing MinorMode id against active_modes.
+    pub active: bool,
+}
+
+/// Full trace for one (chord, BindingMode) pair.
+/// `hits` ordered lowest → highest priority (Builtin first, Buffer last).
+pub struct KeymapResolution {
+    pub mode: BindingMode,
+    pub hits: Vec<LayerHit>,
+}
+
+impl KeymapResolution {
+    /// Last active hit (highest-priority active layer). None when
+    /// no active layer has a binding.
+    pub fn winner(&self) -> Option<&LayerHit> { ... }
+    pub fn is_bound(&self) -> bool { self.winner().is_some() }
+}
+```
+
+**Mode-prefix parser** (also in `resolution.rs`):
+
+```rust
+/// Parse a `:describe-key` argument with optional mode prefix.
+/// Returns (Some(mode), chord_without_prefix) or (None, original).
+///
+/// Prefix table: n_ Normal · i_ Insert · v_ Visual ·
+///               r_ Replace · c_ Command · s_ Search
+pub fn parse_describe_key_arg(s: &str) -> (Option<BindingMode>, &str)
+```
+
+**`KeymapHandle` methods** (in `registry.rs`):
+
+```rust
+// Full per-layer trace for one mode + chord sequence.
+pub fn resolve_trace(
+    &self,
+    mode: BindingMode,
+    chords: &[KeyChord],
+    active_modes: &[ModeId],
+) -> KeymapResolution
+
+// Run resolve_trace for every BindingMode; omit modes with no hits.
+pub fn resolve_trace_all_modes(
+    &self,
+    chords: &[KeyChord],
+    active_modes: &[ModeId],
+) -> Vec<KeymapResolution>
+```
+
+Both are telemetry paths; they take the `inner` mutex to walk the
+full layer list and are never called on the keystroke hot path.
+
+### 13.3 K.1.c — per-buffer minor-mode context filter ✅ landed
+
+The dispatch loop passes the active buffer's `MinorMode` ids into
+`lookup_with_context`; only those overlays fire. This is K.1.c:
+the per-keystroke minor-mode gate that prevents a minor mode
+active on buffer A from intercepting keystrokes while buffer B is
+focused.
+
+**Rule**: any context-sensitive keymap query — whether for dispatch
+(`lookup_with_context`) or for introspection (`resolve_trace`) —
+must read the active-mode set from `App::active_modes[active_buffer_id()]`,
+not from any document-specific field. Non-Document panes
+(Multibuffer, Terminal, etc.) have their own `ActiveModes` entries
+in `App::active_modes` and must not borrow a Document pane's state.
+
+**Two bugs found and fixed** during the T10-T13 implementation
+(commit `eb219c5`):
+
+1. **Wrong buffer id in `build_describe_key_content`**
+   (`crates/lattice-host/src/dispatch.rs`). The initial
+   implementation used `self.document_buffer_id` to build
+   `active_modes`. Non-Document panes (Multibuffer, Terminal,
+   Help) have a different `active_buffer_id()`; their minor
+   modes were silently excluded, making `:describe-key` show
+   all minor-mode bindings as inactive when focus was elsewhere.
+   Fix: use `self.active_buffer_id()`.
+
+2. **MajorMode treated as mode-gated in `resolve_trace`**
+   (`crates/lattice-keymap/src/registry.rs`). The initial
+   implementation checked `active_modes.contains(&id)` for
+   `KeymapLayer::MajorMode(id)`. But `lookup_with_context`
+   places MajorMode bindings in `build_always_on_merged`
+   — they fire unconditionally, like Builtin. So `resolve_trace`
+   must also mark `MajorMode(_)` as `active = true` regardless
+   of `active_modes`, to match hot-path semantics. Fix:
+   `MajorMode(_)` joins `Builtin | User | Buffer` in the
+   always-active match arm.
+
+**Invariant:** the `active` flag on a `LayerHit` must faithfully
+reflect what `lookup_with_context` would return for the same
+`(mode, chords, active_modes)` triple. Divergence between the
+two paths produces `:describe-key` output that contradicts actual
+dispatch behaviour.
+
+## 14. Fall-through bindings — augment-and-continue (SN.3c.2b)
+
+By default a binding **replaces** its chord: the highest-priority
+active layer wins (§4), and lower layers are shadowed. That is the
+right model for most overrides — `active-snippet-mode`'s `<Tab>` *means*
+next-placeholder while a snippet is live, fully replacing `insert-tab`.
+
+But some bindings want to **augment, not replace**: do something, then
+defer to whatever the chord natively does. The motivating case is
+`active-snippet-mode`'s `<Esc>` — leaving a live snippet should clear
+the session *and* exit insert, without the mode hardcoding what `<Esc>`
+means (the user may have rebound it). A mode that owns the binding
+should not have to own the native semantics it sits above.
+
+`fall_through` is that primitive. It is mode-agnostic and plugin-facing:
+any mode (today) or WASM plugin (§5.5) can layer behaviour onto a native
+chord without knowing — or breaking — the binding below it.
+
+### 14.1 Contract
+
+A binding declared `fall_through: true` resolves as: **run this
+binding's action, then re-resolve the same chord against the layers
+*below* this one (this binding's owning mode peeled out of the active
+set) and run the native binding too** — recursing if that binding is
+itself `fall_through`.
+
+- **Bounded, unlike vim's `:map`.** Each hop strictly removes a layer
+  from the active set (monotonically shrinking), so the chain always
+  terminates at `Builtin`. It cannot loop the way `:map a b` / `:map b
+  a` can. The boolean's "true" therefore means *chain-down* (compose
+  through lower layers); there is deliberately no `:noremap`-style
+  "skip intermediates, jump straight to builtin" variant — no caller
+  needs it, and adding it would be a speculative `enum Continuation`
+  lift to make only when a concrete second behaviour lands.
+- **Order is mode-effect-first, then native.** "Do something, then
+  follow through." For leave: clear the session, *then* exit insert.
+- **Mode owns the trigger + augmentation; host owns native
+  resolution.** The mode declares the flag on its `KeymapEntry` and
+  supplies the handler body; the dispatcher owns the peel-and-re-resolve
+  mechanism. This keeps the mode-ownership split intact — a mode never
+  reaches into "what `<Esc>` natively does".
+
+### 14.2 Data model
+
+`fall_through` is a property of the **binding**, not the handler. The
+handler (keyed by `CommandId` in the `ActionHandlerRegistry`) does not
+know which chord fired it, so it cannot re-resolve "the same chord below
+me" — the dispatcher can. So the flag rides the binding all the way
+down, defaulting `false` at every hop:
+
+```
+KeymapEntry.fall_through            (declared; `keymap_entry!{ …, fall_through: true }`)
+  → KeymapBinding.fall_through       (resolve_entries_into_bindings, .with_fall_through)
+  → BoundCommand.fall_through        (group_bindings_into_tries, .with_fall_through)
+  → LookupResult::Bound / LayerHit   (handed back by lookup_with_context / resolve_trace)
+```
+
+Every `from_invocation` / `KeymapBinding::new` call site stays
+source-compatible (the field defaults `false`); opt-in is a
+`.with_fall_through(true)` builder or the `fall_through:` macro form.
+
+### 14.3 Resolution mechanism (the keymap part)
+
+In `dispatch_insert`, a `Bound` result whose `command.fall_through` is
+set and whose `command.layer` is `MinorMode(m)`:
+
+1. produces the mode action via `action_from_bound`;
+2. re-runs `lookup_with_context(Insert, chord, active_modes − m)` — the
+   native binding for the same chord with this mode peeled out;
+3. returns the two folded into an `Action::Chain`.
+
+`resolve_native_action` performs step 2 and recurses on a further
+`fall_through`; `Unbound` / `Partial` there → `Action::None` (the mode
+action already ran, there is simply nothing native to continue to — it
+must *not* fall back to literal-text insertion). `chain_actions`
+flattens nested chains and drops a `None` tail, so a binding with no
+native below it stays a plain single action (no spurious `Chain`
+wrapper). The re-resolution **is** the mechanism — there is no
+snippet-specific or chord-specific branch anywhere in the dispatcher.
+
+### 14.4 Continuation execution — `Action::Chain`
+
+```rust
+// crates/lattice-host/src/action.rs
+Action::Chain(Vec<Action>),   // run each sub-action in order
+```
+
+`dispatch_insert` resolves a fall-through to `Chain([mode_action,
+native_action])`. The renderer applies the chain in order:
+
+- host `handle_action` loops the sub-actions (`Invoke(snippet-leave)`
+  then `Invoke(enter-normal)`, each routing through `run_invocation`);
+- the TUI `App::apply` loops `self.apply(a)` so renderer-level
+  sub-actions also route correctly;
+- the GPUI peer needs no special arm — `Chain` falls through its
+  `dispatch_action` intercept to `Editor::dispatch` → the host loop.
+
+`Chain` is general: any future binding (or the eventual ex-command /
+macro layers) that needs "run X, then Y" resolves to one.
+
+**Rejected — `next_actions` channel (option B).** Return the mode
+`Invoke` carrying the peeled chord + mode, and have the host re-resolve
+post-dispatch and push the native onto `DispatchOutcome.next_actions`.
+This avoids a new `Action` variant but smears re-resolution state
+(chord, mode-to-peel, keymap) through `CommandInvocation`, coupling the
+invocation to the lookup it should be independent of. `Chain` keeps the
+re-resolution where the keymap context lives (`dispatch_insert`) and
+makes the continuation a plain, inspectable action list. (Heuristic #1.)
+
+### 14.5 Introspection (`:describe-key`)
+
+The flag is visible — augment-and-continue is not hidden host magic
+(§5.11, design.md). `:describe-key <chord>` (which already renders the
+per-layer trace with `[active]` / `[inactive]` from §13.2) gains:
+
+- a winner tag — `→ action:snippet-leave  (fires now → falls through ↓)`;
+- the continuation chain — `↳ then: action:enter-mode-normal` lines,
+  walked from `resolution.hits` (the next active hit below each
+  `fall_through` one);
+- layer-trace tags — `[active · fall-through]` /
+  `[inactive · fall-through]`.
+
+So a user who hits `<Esc>` in a snippet and sees both the session clear
+and insert exit can run `:describe-key i_<Esc>` and read exactly why,
+layer by layer.
+
+### 14.6 Paramount-goal alignment
+
+- **#2 (extensibility).** `fall_through` is a first-class binding
+  primitive any mode/plugin uses to compose onto a native chord without
+  owning its meaning — capability-gated plugin keymaps (§5.5) inherit it
+  for free.
+- **#3 (extensible modal editing).** Augment-vs-replace is expressed
+  declaratively in the keymap; the grammar composes through layers
+  rather than each mode re-implementing native behaviour.
+- **Performance (#1).** The extra `lookup_with_context` runs *only* for
+  a `fall_through` winner (rare, keystroke-driven, off any render path).
+  Non-fall-through dispatch is byte-for-byte unchanged — one extra
+  branch on the already-resolved `BoundCommand`.
+
+See the slice plan
+([mode-activation](../operations/slice-plans/archive/mode-activation.md), SN.3c.2b)
+for sequencing and the landed commit.
+
 ## See also
 
+- [slice plan: lattice-keymap crate + layer-trace](../operations/slice-plans/keymap-impl-plan.md) -- T1-T13 sequencing.
 - [slice plan: keymap-substrate](../archive/keymap-substrate.md) -- K.2 sequencing.
 - [slice plan: help-prefix](../archive/help-prefix.md) -- K.3 sequencing.
 - [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.

@@ -92,6 +92,18 @@ pub trait OptionType: Sized + Clone + Send + Sync + 'static {
         false
     }
 
+    /// Whether this option's value is list-shaped — i.e. a TOML
+    /// **array** at config-load time should be joined into the
+    /// delimited string [`Self::parse`] accepts, rather than rejected
+    /// as "not applicable to a scalar option". `false` for every
+    /// scalar type (the default); `true` for list types like
+    /// [`crate::ModelineZone`]. Drives `loader::apply_array` (ML.5).
+    /// The `:set` cmdline path is unaffected — it always passes a
+    /// string and never sees a TOML array.
+    fn accepts_list() -> bool {
+        false
+    }
+
     /// Negation value (only meaningful for [`Self::is_bool`] true).
     /// Default: returns `Err` -- the registry guards by checking
     /// `is_bool()` first, so callers that respect the contract

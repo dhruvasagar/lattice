@@ -62,7 +62,7 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
 /// The concrete terminal backend type, now wrapped in the byte counter.
 type TermBackend = CrosstermBackend<CountingWriter<Stdout>>;
 
-pub fn run(document: Document) -> Result<()> {
+pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
     let mut app = App::new(document);
     // Load persistent config (TOML) before LSP attach work so
@@ -78,6 +78,14 @@ pub fn run(document: Document) -> Result<()> {
     let workspace_root = lattice_host::editor::Editor::workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     app.apply_per_language_toml_overrides();
+    // built-ins 2026-06-13: load embedded + user snippet packs once
+    // at startup (after config so `snippet_dirs` overrides apply).
+    // Quiet — logs, no echo.
+    app.load_snippets_at_startup();
+    // T.5: `--tutor [N]` opens the tutor buffer before the first draw.
+    if let Some(n) = startup_lesson {
+        app.open_tutor(n);
+    }
     // LSP attach is event-driven: `App::new` already
     // published `Event::DocumentOpened` for the initial
     // document (if path-bearing). The attach driver wired in
@@ -250,23 +258,31 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
 /// a tearing-down app. `Repaint` wakes apply nothing — they exist purely to
 /// trigger the single redraw at the loop top so an async republish (syntax
 /// recolour, LSP decoration) reaches the screen.
+///
+/// Returns `true` when the batch contained at least one `Repaint` and NO input
+/// events. The caller uses this to call `drain_async_pending` so idle LSP
+/// arrivals (hover, signature-help) reach the screen on the repaint itself
+/// rather than waiting for the next keystroke (X1b).
 fn drain_wakes(
     app: &mut App,
     rx: &mpsc::Receiver<Wake>,
     first: Wake,
     perf_input: bool,
     last_input_at: &mut Option<Instant>,
-) {
+) -> bool {
+    let mut had_input = false;
     let mut next = Some(first);
     while let Some(wake) = next.take() {
         if let Wake::Input(ev) = wake {
+            had_input = true;
             apply_event(app, ev, perf_input, last_input_at);
         }
         if app.render_state.load().lifecycle.should_quit {
-            return;
+            return false;
         }
         next = rx.try_recv().ok();
     }
+    !had_input
 }
 
 fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
@@ -407,9 +423,11 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
                     .map(|s| popup_height_for(s.candidates.len()))
                     .unwrap_or(0),
             );
+        // Option A: global modeline removed; each pane has its own
+        // 1-row status footer. Subtract only cmdline (1), not 2.
         let buffer_height = size
             .height
-            .saturating_sub(2)
+            .saturating_sub(1)
             .saturating_sub(extra_rows as u16) as u32;
         // Diff-then-push: only dispatch when the resolved viewport height
         // changed. Unconditional dispatch here was publishing (+ waking both
@@ -438,14 +456,12 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
             height: buffer_height as u16,
         };
         let rects = panes_arc.tree.compute_rects(area_for_panes);
-        let multi = rects.len() > 1;
         let current_leaves: Vec<_> = panes_arc.tree.leaves().to_vec();
         for (idx, prect) in &rects {
-            // Reserve a bottom row for the per-pane status line in
-            // multi-pane setups so the host's viewport matches
-            // what's actually drawn (the renderer carves the same
-            // row off in `draw_panes`).
-            let content_h = if multi && prect.height >= 2 {
+            // Every pane reserves a bottom row for its status line
+            // (Option A: global modeline removed). Mirror of
+            // draw_panes which unconditionally splits rect.height >= 2.
+            let content_h = if prect.height >= 2 {
                 prect.height - 1
             } else {
                 prect.height
@@ -487,20 +503,19 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         }
         // Phase 5.8.AF.5 / Slice X2.5: removed
         // `app.refresh_highlights()` from the per-frame body.
-        // Active-pane highlights now come from the background
-        // highlights worker (`lattice_host::highlights_worker`),
-        // which subscribes to `Editor::highlight_wake` and
-        // publishes results into
-        // `render_state.syntax.visible_spans`. `FrameView::from_app`
-        // reads through that cell. Pre-X2 cost: 200–600µs per
-        // frame on scroll cache miss (tree-sitter walk on UI
-        // thread); post-X2: zero UI-thread parse cost. Goal #1
-        // violation B1 closed for the TUI peer.
-        // B4: disabled. This per-frame UI-thread `highlight_lines` recompute
-        // (itself a goal-#1 violation) only fed inactive-pane `pane_highlights`;
-        // the active body now reads the canonical `DisplayMatrix`. B4 migrates
-        // the inactive-pane consumer onto DisplayMatrix, then deletes this.
-        // app.refresh_pane_highlights();
+        // display-line B4.2: active-pane syntax colour now flows
+        // through the cells / `DisplayMatrix` substrate (rebuilt off
+        // the UI thread by the cells worker), and overlay backgrounds
+        // through the `lattice_host::overlay_worker` (woken via
+        // `Editor::overlay_wake`). Both keep the per-frame body free
+        // of any tree-sitter walk. Pre-X2 cost: 200–600µs per frame
+        // on scroll cache miss (tree-sitter walk on UI thread);
+        // now zero UI-thread parse cost. Goal #1 violation B1 closed
+        // for the TUI peer.
+        // B4: the per-frame UI-thread `refresh_pane_highlights`
+        // recompute was disabled then deleted (it only fed the dead
+        // inactive-pane `pane_highlights` cache; inactive panes read
+        // their retained per-pane `DisplayMatrix`).
 
         // Push the cursor shape only when the inputs change --
         // terminals accept these every frame, but emitting on every
@@ -569,7 +584,17 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // state / mode stack that governs the next event's translation. See
         // docs/dev/architecture/input-pipeline.md.
         match wake_rx.recv() {
-            Ok(first) => drain_wakes(&mut app, &wake_rx, first, perf_input, &mut last_input_at),
+            Ok(first) => {
+                let repaint_only =
+                    drain_wakes(&mut app, &wake_rx, first, perf_input, &mut last_input_at);
+                // X1b: repaint-only wakes (hover response, syntax reparse,
+                // search excerpts) need a tick drain so the pending channel
+                // is read before the next draw. Keystrokes drain it already
+                // at the apply tail; this path covers the idle-arrival gap.
+                if repaint_only {
+                    app.drain_async_pending();
+                }
+            }
             // Both producer clones are gone (the reader thread died and the
             // paint bridge exited) — nothing can wake us again; leave the loop.
             Err(_) => break,
@@ -609,7 +634,7 @@ mod tests {
         tx.send(Wake::Input(key('X'))).unwrap();
         let first = rx.recv().unwrap();
         let mut last_input_at = None;
-        drain_wakes(&mut app, &rx, first, true, &mut last_input_at);
+        let _ = drain_wakes(&mut app, &rx, first, true, &mut last_input_at);
         // Whole burst drained in one batch — nothing left for a second draw.
         assert!(rx.try_recv().is_err(), "burst must coalesce into one drain");
         // Real input applied → perf timer armed + modal advanced to Insert.
@@ -630,7 +655,8 @@ mod tests {
         let mut app = App::new(Document::from_text("hello\n"));
         let (_tx, rx) = mpsc::channel::<Wake>();
         let mut last_input_at = None;
-        drain_wakes(&mut app, &rx, Wake::Repaint, true, &mut last_input_at);
+        let repaint_only = drain_wakes(&mut app, &rx, Wake::Repaint, true, &mut last_input_at);
+        assert!(repaint_only, "repaint batch must return repaint_only=true");
         assert!(last_input_at.is_none(), "repaint must not look like input");
         assert_eq!(
             app.ad().modal,

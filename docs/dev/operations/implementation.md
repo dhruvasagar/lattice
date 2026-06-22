@@ -179,9 +179,18 @@ LSP docs are comprehensive across audiences: design-doc readers
 users ([`../../user/lsp.md`](../../user/lsp.md) +
 [`../../user/lsp-mode.md`](../../user/lsp-mode.md)), per-feature
 trackers ([`../notes/lsp-features.md`](../notes/lsp-features.md) --
-every LSP 3.17 capability with status), and a manual verification
-checklist ([`verify.md`](verify.md) §17–18 covering all 15
-sub-modes + 4.4/4.5 features).
+every LSP 3.17 capability with status), slice plans
+([`slice-plans/lsp.md`](slice-plans/lsp.md) -- L1–L5 sequencing for the
+async-wake / lifecycle / status / diagnostics-presentation polish), and
+a manual verification checklist ([`verify.md`](verify.md) §17–18
+covering all 15 sub-modes + 4.4/4.5 features).
+
+The modeline redesign (configurable element system — Left/Center/Right
+zones, per-span theme roles, event-bus content updates, mode/plugin-
+registered + interactive elements) is specified in
+[`../architecture/modeline.md`](../architecture/modeline.md), with
+sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
+(ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
 
 Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
 4.2 navigation + completion → 4.3 edits (rename / format / code
@@ -1311,9 +1320,17 @@ shared with multibuffer-views and post-v1 inlay hints.
   document line count changes, merges rows from multiple
   providers. **419 unit tests green** in `lattice-host`
   overall after the slice landed (no regressions).
-- 🗒 **D.0b** — Scroll-binding pane-group primitive. Reusable
-  by side-by-side diff (D.4), vim `:set scrollbind`, future
-  `:windo`.
+- ✅ **D.0b** (2026-06-08) — `:set scrollbind` / `scb` typed
+  `BoolOption` in `lattice-config` + `OptionCache::scrollbind`
+  field + `Editor::scrollbind_group_id: Option<PaneGroupId>` +
+  `rebuild_scrollbind_group` helper (walks pane-tree leaves,
+  collects those with scrollbind=true, drops old group and
+  mints a fresh `IdentityRowMapper` group when ≥ 2 panes are
+  bound; no-ops below 2) + `"scrollbind"` arm in
+  `apply_option_cascade`. 4 new tests: single-pane no-group,
+  two-pane creates-group + propagation, toggle-off drops group,
+  idempotent double-rebuild. Reusable by side-by-side diff
+  (D.4), `:windo`, and any future scroll-coupled pane pair.
 - ✅ **D.1** (2026-05-28) — `lattice-diff` crate landed.
   Public surface: `Hunk` / `HunkKind` / `LineRange` /
   `HunkIndex` / `DiffAlgorithm` (Histogram / Myers /
@@ -1488,7 +1505,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   consumer lands and the paint pass joins the budget. Bench
   is annotated with the §3.4 paragraphs it backs so the
   design + bench stay coupled (heuristic #5).
-- 🚧 **D.3** — Inline overlay presentation. Carved during build
+- ✅ **D.3** — Inline overlay presentation. Carved during build
   into a series of sub-slices; D.3.a landed 2026-05-29 as the
   foundational wiring, follow-ons (D.3.a.1 / D.3.b / D.3.c /
   D.3.d / D.3.e) track the ex-command + content + motions +
@@ -1709,7 +1726,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     next walks forward + wraps to first, prev walks
     backward + wraps to last, empty-HunkIndex info message);
     **439 lattice-host unit tests green**.
-  - 🚧 **D.3.d** — Gutter sign rendering. Carved during build
+  - ✅ **D.3.d** — Gutter sign rendering. Carved during build
     into a data layer + per-renderer integration sub-slices.
     - ✅ **D.3.d.0** (2026-05-29) — Data layer. New
       `DiffSignKind { Add, Remove, Change }` enum (Conflict
@@ -1831,7 +1848,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     add/remove round-trip, same-id replace). Design lands
     in [`fold-architecture.md`](../architecture/fold-architecture.md)
     with the slice plan at
-    [`slice-plans/fold-architecture.md`](slice-plans/fold-architecture.md);
+    [`archive/fold-architecture.md`](../archive/fold-architecture.md);
     diff-system.md §6.5 still describes the consumer.
     **1461 workspace tests green** (regression sweep
     end-to-end).
@@ -1891,7 +1908,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     visual regression motivates an absolute ceiling — the
     headroom is large enough that bench-on-PR catches
     regressions. Closes D.3.f.
-- 🚧 **D.4** — Side-by-side two-way: `:diffsplit`,
+- ✅ **D.4** — Side-by-side two-way: `:diffsplit`,
   `:diffthis`, `:diffoff` extension; pane-group
   scroll-binding with hunk-correspondent row mapping +
   filler rows. Per-pane buffer mutability addressed by
@@ -1991,7 +2008,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     simultaneously, the worker needs per-document
     matrices. That upgrade lands in D.4.d alongside the
     `:diffsplit` wiring.
-  - 🚧 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
+  - ✅ **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
     Carved into four sub-slices to keep blast radius
     bounded:
     - ✅ **D.4.d.0** (2026-05-29) — Per-document cells-
@@ -2108,7 +2125,7 @@ shared with multibuffer-views and post-v1 inlay hints.
         `matrix_for_pane` returns the matching cell + None
         for unknown ids; non-Document leaves skipped).
         515 host tests green.
-    - 🚧 **D.4.d.2** — Same surface for virtual rows.
+    - ✅ **D.4.d.2** — Same surface for virtual rows.
       Mirror of D.4.d.0 + D.4.d.1 on
       `virtual_rows_matrix_cell`. Carved into four sub-
       slices for the same blast-radius bounding as
@@ -2533,7 +2550,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     Closes K.1; D.5's diff-mode dispatch wires into the
     new substrate without further keymap-architecture
     work.
-- 🚧 **D.5** — Hunk transfer operators `do` / `dp` via
+- ✅ **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`. After K.1: `do`/`dp` register in the
   diff-mode `MinorMode(ModeId)` layer, not globally.
   Carved into D.5.a (mode lifecycle), D.5.b (`do`),
@@ -2802,7 +2819,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   regions, `:diffput <bufnr>` / `:diffget <bufnr>`,
   `:diff-accept` / `:diff-reject`. Carved during build into
   eight sub-slices (D.6.a–h); see
-  [`slice-plans/diff-system.md`](slice-plans/diff-system.md)
+  [`archive/diff-system.md`](../archive/diff-system.md)
   for sequencing. **Three-way merge UX shipped end-to-end:**
   subsystem (D.6.a), pane-group + filler for 3 sides (D.6.b),
   `:diffsplit <base> <remote>` create (D.6.c), target-aware
@@ -3386,7 +3403,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     valid).
 - 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
-- 🚧 **D.8** — `:diffthis` as buffer-group membership +
+- ✅ **D.8** — `:diffthis` as buffer-group membership +
   arity-agnostic descriptor refactor. Design fragment:
   [`../architecture/n-way-diff-membership.md`](../architecture/n-way-diff-membership.md).
   Replaces the D.4.d.3.a `pending_diffthis:
@@ -4034,7 +4051,7 @@ diagnostics-as-buffer with one implementation.
 Design fragment:
 [`../architecture/kind-agnostic-buffers.md`](../architecture/kind-agnostic-buffers.md).
 Slice plan:
-[`slice-plans/kind-agnostic-buffers.md`](slice-plans/kind-agnostic-buffers.md).
+[`archive/kind-agnostic-buffers.md`](../archive/kind-agnostic-buffers.md).
 **Status: H-series closed after H.2.** H.1 + H.2 removed host's
 hardcoded coupling to specific buffer kinds for the in-tree
 extension-crate case (the only case that exists pre-v1). H.3
@@ -4295,7 +4312,9 @@ architecture §10 for the rationale.
 
   **K.2.4.A polish + unification sub-arc:**
   K.2.4.A.0.1 `keymap_entry!` + `KeymapEntry` substrate move
-  to `lattice-mode::keymap_entry` (commit `4f763d5`);
+  to `lattice-mode::keymap_entry` (commit `4f763d5`; later
+  superseded by `a7c7799b` — single definition back in
+  `lattice-keymap`, re-exported by lattice-mode, no duplicate);
   K.2.4.A.0.2 `Keymap::from_entries()` +
   `KeymapBinding.doc` (commit `6461f56`); K.2.4.A.0.3
   translation pass entry resolution
@@ -4392,7 +4411,7 @@ architecture §10 for the rationale.
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#12-help-prefix-bindings-c-h-map)
   §12; sequencing + commit refs at
   [`../archive/help-prefix.md`](../archive/help-prefix.md).
-- 🚧 **K.4** — Multibuffer-is-a-regular-buffer audit +
+- ✅ **K.4** — Multibuffer-is-a-regular-buffer audit +
   integration verification. Triggered by M.6 testing
   surfacing four latent failures (silent EventBus None,
   current_thread freeze, `contains_document` exclusion,
@@ -4408,40 +4427,40 @@ architecture §10 for the rationale.
   virtual-row pipeline — `ModeActivator::register_virtual_row_provider`
   + per-pane matrix renderer + search provider
   per-file excerpt collapse (`07acd33` + follow-ons);
-  K.4.8 `:ls` Multibuffer/Messages split (`6299564`);
-  K.4.9 audit-comment pass (`4c4631d`); K.4.10 convention
+  K.4.7 per-excerpt syntax highlighting — multibuffer
+  rides per-source syntax cells, shifting spans to
+  composed coordinates (`2026-06-08`); K.4.8 `:ls`
+  Multibuffer/Messages split (`6299564`); K.4.9
+  audit-comment pass (`4c4631d`); K.4.10 convention
   codification (`29ffec3`); K.4.11 `dispatch_with_cancel`
   proper impl — grammar dispatch owned by
   `MultibufferDocumentHandle`, kind-branch in host
-  deleted (`d05348d`, `f598a72`). **Pending:** K.4.7
-  per-excerpt syntax highlighting (design slice —
-  multibuffer rides per-source syntax cells, shifting
-  spans to composed coordinates). Design at
+  deleted (`d05348d`, `f598a72`). Design at
   [`../architecture/multibuffer-is-a-regular-buffer.md`](../architecture/multibuffer-is-a-regular-buffer.md);
-  sequencing at [`slice-plans/multibuffer-is-a-regular-buffer.md`](slice-plans/multibuffer-is-a-regular-buffer.md).
+  sequencing at [`slice-plans/archive/multibuffer-is-a-regular-buffer.md`](slice-plans/archive/multibuffer-is-a-regular-buffer.md).
   Convention codified in
   `feedback_buffers_no_special_case` memory.
-- 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
+- ✅ **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
   registers one fold range per excerpt's composed-row range
-  into the existing fold registry. **No new keymaps** — the
-  standard `z*` vocabulary (`za` / `zo` / `zc` / `zR` /
-  `zM`, `foldlevel=N`) covers excerpts identically to
-  syntactic / marker folds. `za` on a row inside an excerpt
-  collapses to the excerpt's M.2 header virtual row. Composes
+  into the existing fold registry via `FoldOverlayService`.
+  `MultibufferMode::on_activate` registers the provider and
+  holds it in `MultibufferModeGuard`; `Drop` deregisters on
+  mode exit. **No new keymaps** — the standard `z*` vocabulary
+  (`za` / `zo` / `zc` / `zR` / `zM`, `foldlevel=N`) covers
+  excerpts identically to syntactic / marker folds. Composes
   with diff-system D.3.f hunk folds via vim's "smallest
-  enclosing fold wins" on `za`. Depends on M.4 so fold ranges
-  stay current as source edits shift anchors. See
+  enclosing fold wins" on `za`. 3 tests: one-fold-per-excerpt,
+  namespace-distinct, empty-when-no-excerpts. See
   `multibuffer-views.md` §6.5.
-- 🗒 **M.8** — File-boundary fold provider. `FileBoundaryFoldProvider`
+- ✅ **M.8** — File-boundary fold provider. `FileBoundaryFoldProvider`
   registers one fold range per distinct `source: BufferId`
-  covering the union of that file's excerpts. **No new
-  keymaps** — same vocabulary as M.7. Essential for project-
-  wide diff (A.1) + AI multi-file diff (A.2) where a user
-  reviewing 50 files wants `za` on a file-header row to
-  collapse the whole file into one summary. Nesting: file
-  > excerpt > hunk on `za`. Depends on M.6 so provider-
-  driven excerpt sets are stable before fold ranges union
-  across them. See `multibuffer-views.md` §6.5.
+  covering the union of that file's excerpts. Registered
+  alongside `ExcerptFoldProvider` in `MultibufferMode::on_activate`.
+  **No new keymaps** — same vocabulary as M.7. Nesting:
+  file > excerpt > hunk on `za`. 3 tests:
+  one-fold-per-source-file (non-contiguous excerpts span
+  correctly), namespace-distinct, empty-when-no-excerpts.
+  See `multibuffer-views.md` §6.5.
 
 Follow-on consumers (post-M.6, each its own slice sequence,
 not yet committed): `ProjectDiffProvider` (composes with
@@ -5110,7 +5129,7 @@ are crossed out there. Items that influence active tasks:
 - §15:21 File watcher / auto-revert — unaddressed.
 - §15:22 Bookmarks / cross-file marks — current marks are buffer-local.
 - §15:23 Function rebinding / advice — unaddressed.
-- §15:24 Narrow-to-region — unaddressed.
+- §15:24 Narrow-to-region — **N.1 in design** (2026-06-10); see narrow-mode section below.
 - §15:25 Snippets / abbrev — unaddressed.
 - §15:26 Frames (multi-OS-window) — unaddressed.
 - §15:27 Session save / restore — unaddressed.
@@ -5119,25 +5138,181 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-Workspace tests as of the last commit. Coverage by crate:
+Coverage by crate. Crates marked `(2026-06-16)` were re-verified this
+session; the rest are from the prior snapshot and want a re-run.
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 39    |
 | lattice-core (incl. integration) | 128   |
 | lattice-grammar                  | 191   |
+| lattice-keymap                   | 99 (2026-06-16) |
 | lattice-completion               | 124   |
 | lattice-config                   | 118   |
 | lattice-syntax                   | 82    |
 | lattice-runtime                  | 43    |
 | lattice-lsp                      | 183   |
 | lattice-picker                   | 48    |
-| lattice-ui-tui                   | 1403  |
-| lattice-host                     | 263   |
+| lattice-ui-tui                   | 1475 (2026-06-16) |
+| lattice-host                     | 738 (2026-06-16) |
 | lattice-ui-gpui                  | 25    |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/benchmarks.md` for the latest numbers.
+
+---
+
+## buffer-local options (2026-06-08)
+
+Design fragment:
+[`../architecture/buffer-local-options.md`](../architecture/buffer-local-options.md).
+Slice plan:
+[`archive/buffer-local-options.md`](../archive/buffer-local-options.md).
+
+Every option is potentially buffer-local. `:setlocal foo=bar` writes
+layer 2 of the existing resolver stack (the `buffer_local_overrides`
+field already on `Editor`); `:set` continues to write the global layer.
+`OptionOrigin` tracks where each effective value came from (BL.2).
+
+- ✅ **BL.1** (2026-06-08) — Write path: `ErasedOption::parse_to_erased`
+  (parses without writing global storage) + `ConfigError::QueryNotAllowed` +
+  `ConfigRegistry::parse_for_buffer_local` (returns `(TypeId, Arc<dyn Any>,
+  canonical_name)`) + `ParsedSet::Reset` variant (`name&` / bare `&`) +
+  `Editor::do_set_local` + `Editor::do_set_local_write` (inner write path) +
+  `Effect::SetLocalOption` + `ex:setlocal` registered in grammar +
+  `ALIAS_TABLE` entries `setlocal` / `sl`. 4 tests green: write override for
+  active buffer, per-buffer independence, `name&` clears one override, `&`
+  clears all.
+- ✅ **BL.2** (2026-06-08) — `OptionOrigin` enum (`Default`, `GlobalConfig`,
+  `BufferLocal`, `ModeContribution { mode_id }`) in `lattice-config/origin.rs` +
+  parallel `origins` map in `ResolvedOptions` with `get_origin<T>()` /
+  `get_origin_for_typeid()` / `get_erased()` APIs + `insert_erased_with_origin` +
+  `Resolver::resolve_into_with_origins` (origin-tagged layer list; `resolve_into`
+  delegates) + `recompute_options_for_buffer` tags every layer with its origin +
+  `ErasedOption::format_erased_value` (formats an erased Arc) +
+  `ConfigRegistry::type_id_for_name` exposed `pub` + `:setlocal name?` fixed to
+  use TypeId matching via `type_id_for_name` + `format_erased_value` +
+  `Effect::SetGlobalOption` + `ex:setglobal` (`apply_set_global`) + aliases
+  `setglobal` / `sg` + `Editor::do_set_global` + OR-pattern arms in both
+  renderers. 3 tests: `set_global_writes_registry_not_local_overrides`,
+  `resolved_origin_is_buffer_local_after_set_local`,
+  `resolved_origin_is_global_config_without_local_override`.
+- ✅ **BL.3** (2026-06-08) — `build_describe_buffer_content` gains a
+  `## Buffer-local options (N overrides)` section: iterates
+  `buffer_local_overrides[active_buffer]`, resolves TypeId → name via
+  `OPTION_DECLS`, formats via `ErasedOption::format_erased_value`, sorted
+  alphabetically. `build_list_options_content` shows per-buffer effective
+  value + origin when the resolved value differs from global (buffer-local
+  or mode-contribution). 4 tests green.
+
+---
+
+## narrow-mode N.1 + tree-sitter text objects (✅ complete, 2026-06-10)
+
+Design fragments:
+[`../architecture/narrow-mode.md`](../architecture/narrow-mode.md) (the `zn`
+operator + the one-excerpt view) and
+[`../architecture/tree-sitter-text-objects.md`](../architecture/tree-sitter-text-objects.md)
+(the `af`/`ac`/`aC`/… objects). Slice plan:
+[`slice-plans/archive/narrow-mode.md`](slice-plans/archive/narrow-mode.md).
+
+Narrow mode renders a one-excerpt `MultibufferDocumentHandle` over an
+arbitrary line range. No new `BufferKind` — the narrow view IS a multibuffer
+and reuses every M-series primitive (M.3 edit propagation, M.4 live updates,
+M.10.1 `ActionHandlerRegistry`, K.4.7 syntax). The primary entry is a **`zn`
+narrow operator** (operator-pending; composes with any motion / text object),
+provider-owned, emitting the generic `Effect::Action(AppEffect)` — zero new
+host variants. Tree-sitter **text objects** (`af`/`if`, `ac`/`ic`, `aa`/`ia`,
+`al`/`il`, `aC`/`iC`) are a separate, universal grammar feature owned by
+`lattice-syntax`, registered through the existing `register_text_object` API
+plus one new `ScopeResolver` seam in `lattice-grammar`; they compose with every
+operator (`daf`, `vic`, `znaf`), not just narrow.
+
+All slices landed 2026-06-10 (statuses live in the slice plan; this table
+mirrors the final state):
+
+| Slice | Title | Status |
+|---|---|---|
+| **N.1.0** | `textobjects.scm` (`.outer`) + `scope_at_cursor` (lattice-syntax) | ✅ |
+| **N.1.1** | `create_narrow_view` + `NarrowMinorMode` + `:narrow {range}` + `:widen` | ✅ |
+| **N.1.2** | `:narrow` from Visual selection / cursor paragraph | ✅ |
+| **N.1.3** | The `zn` narrow operator (operator-pending; composes with any motion/object) | ✅ |
+| **N.1.4** | Tree-sitter text objects as first-class grammar objects (`ScopeResolver` seam + `af`/`ac`/`aa`/`al`/`aC` + `.inner`) | ✅ |
+| **N.1.5** | Transparent stacked narrow — one-hop invariant to `RopeDocumentHandle` | ✅ |
+| **N.1.6** | Comment text object (`aC`/`iC`) — commentstring-driven + `TextObjectEnv` seam | ✅ |
+
+**Follow-on keymap work (2026-06-16).** Surfacing `zn` in Visual mode led to
+three keymap-architecture landings (design in
+[`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)):
+
+- **Operators act on the Visual selection BY DESIGN** (`fa372b8f`). An
+  operator's selection-operability is intrinsic, generated once per operator
+  by `keymap_normal::register_operator_bindings` (Normal op-pending family +
+  Visual `op.with_range(Range::Selection)`), not a per-operator Visual
+  binding. The hand-rolled Visual `operator_table` is gone; builtin
+  `d`/`c`/`y`/`>`/`<`, case `gU`/`gu`/`g~`, and contributed `zn` all get it
+  uniformly — so a Visual selection + `zn` narrows the selection with zero
+  narrow-specific wiring (the `:'<,'>narrow` path from `852e95e1` still works
+  too). §7.2 upgrade 3.
+- **Multi-mode binding API (B-field)** (`9b79b9da`) for NON-operator chords
+  that mean the same thing across modes: `KeymapHandle::bind_modes`,
+  `Keymap::bind_chord_modes`, and `keymap_entry! { mode: [Normal, Visual] }`.
+  `KeymapEntry.mode` → `modes: &[BindingMode]` (single-mode sugars to a
+  one-element slice; existing call sites unchanged); the translation pass fans
+  one entry into one binding per mode. §3.5 + §5.6.
+- **Single `keymap_entry!` definition** (`a7c7799b`): the duplicate copy in
+  `lattice-mode` is gone — it re-exports the canonical lattice-keymap macro
+  (`pub use lattice_keymap::keymap_entry`). Supersedes K.2.4.A.0.1's
+  move-to-lattice-mode note. `$crate` resolves to `lattice_keymap`
+  transitively, so mode crates need no direct dep.
+
+See also:
+[`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md)
+for the remaining consumer providers (A.1–A.21 catalog, formerly archived in
+`multibuffer-views.md`, now active).
+
+---
+
+## host ↔ provider boundary + inversion (analysed, 🗒 DEFERRED to post-Phase-7, 2026-06-17)
+
+Design fragment:
+[`../architecture/host-provider-boundary.md`](../architecture/host-provider-boundary.md).
+Slice plan: [`slice-plans/host-provider-inversion.md`](slice-plans/host-provider-inversion.md).
+Motivation: the recurring-drift cost analysed in
+[`../architecture/comparison-zed.md`](../architecture/comparison-zed.md) §5.
+
+**The boundary decision (lasting).** Drawn on merit — *"can the editor be itself
+without this, and is it meant to be replaceable?"* — not a reflexive "everything
+is a provider":
+
+- **Core** (host owns, holds state directly, no indirection, no perf compromise):
+  text/grammar/rendering substrate + the registries, **LSP**, **diff**,
+  **terminal** (the `SyntheticDoc` seam), **snippet** (the `Editor` holds its
+  registry/policy/completion-meta), multibuffer-substrate, completion/picker,
+  syntax, folds, messages, help. Native-core like the grammar — the plugin
+  *seam* lets others add intelligence; the built-in stays native.
+- **Feature-buffers** (the only genuine extraction candidates): **oil**,
+  **file-tree** (zero `Editor`-struct coupling; pure `run_*_invocation`
+  dispatch). (narrow/search already live in `lattice-multibuffer/providers`.)
+
+**Why DEFERRED, not done.** The full dependency inversion was scoped and the
+extraction's cost surfaced via a primitive audit: relocating ~3 tiny first-party
+handlers requires exposing a **~10-method generic `ActionContext` facade** —
+several primitives substantial (`do_edit`, `do_goto_tab`). **That facade IS the
+plugin API**, which must be designed against real plugins at the WASM-host phase
+(Phase 7), not retrofitted from a file browser. The "host stays thin" drift it
+would remove is cosmetic: the load-bearing classes are already sealed by
+construction (the `keymap_entry!` macro carries no layer; `PushLayerKind` has no
+`Builtin`; kind-branching is aligned-by-fallback; provider behaviour routes via
+`ActionId`). A "sealed constructors" mechanism was also considered and dropped —
+it did not survive the code (sealing `Document` would be *anti-extensibility*,
+since providers/plugins must implement it). The HPI.1 `ActionContext` primitive
+inventory is captured in the slice plan as the Phase-7 starting point.
+
+**Net:** the boundary decision is recorded (the WASM host will need it); the
+execution waits for Phase 7 where the `ActionContext`/plugin API has real
+requirements. The `comparison-zed.md` "fragile drift" claim was corrected to the
+accurate bounded-and-structurally-sealed picture.
 
 ---
 

@@ -69,22 +69,28 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod guards;
-// K.3 (2026-06-07): `KeymapEntry` + `keymap_entry!` moved from
-// `lattice-mode::keymap_entry` to `lattice-keymap::keymap_entry`.
-// `lattice-mode::keymap_entry` is now a re-export shim.
-// The macro is re-exported here at the crate root so that
-// `lattice_mode::keymap_entry! { … }` continues to work for callers
-// in `lattice-multibuffer`, `lattice-host`, and `lattice-ui-tui`.
-pub mod keymap_entry;
+// K.3 (2026-06-07): `KeymapEntry` + `keymap_entry!` live in
+// `lattice-keymap::keymap_entry`. lattice-mode re-exports the MODULE and
+// the `#[macro_export]` macro with a single `pub use` — the name
+// `keymap_entry` resolves in both the type namespace (the module) and the
+// macro namespace, so `lattice_mode::keymap_entry! { … }` AND
+// `lattice_mode::keymap_entry::{KeymapEntry, default_keymap, …}` keep
+// working for callers in `lattice-multibuffer`, `lattice-host`, and
+// `lattice-ui-tui` WITHOUT duplicating the macro body. The macro's
+// `$crate` resolves to `lattice_keymap` regardless of the re-export path
+// (so callers need no direct `lattice-keymap` dep). See
+// `project_keymap_entry_macro_dual_copy` — the former duplicate is gone.
+pub use lattice_keymap::keymap_entry;
 pub mod locals;
 pub mod mode;
+pub mod modeline;
 pub mod modes;
 pub mod registry;
 pub mod services;
 
 pub use crate::action_handler_registry::{
-    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistry,
-    ActionHandlerRegistryHandle,
+    ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
+    ActionHandlerRegistry, ActionHandlerRegistryHandle,
 };
 pub use crate::active::ActiveModes;
 pub use crate::activator::ModeActivator;
@@ -92,18 +98,28 @@ pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
-pub use crate::contributions::{DecorationProvider, Keymap, KeymapBinding, Subscription};
-pub use crate::keymap_entry::KeymapEntry;
+pub use crate::contributions::{
+    DecorationCtx, DecorationProvider, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+    Keymap, KeymapBinding,
+    Subscription, // MO.4.c: real RAII type; use in mode Guards
+};
+pub use lattice_keymap::KeymapEntry;
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
-pub use crate::mode::{DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
+pub use crate::mode::{ActivationPolicy, DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::services::ServiceRegistry;
+// ML.0a: configurable-modeline element model + descriptor registry.
+pub use crate::modeline::{
+    ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,
+    ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,
+    ModelineSnapshot, Scope, Span, Zone,
+};
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.

@@ -25,6 +25,7 @@
 //! batches hits, publishes `ProjectSearchBatchReady` events.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lattice_config::OptionOverrideSet;
@@ -144,6 +145,12 @@ pub struct ProjectSearchState {
     pub status: SearchStatus,
     pub total_hits: usize,
     pub scan_task: Option<tokio::task::JoinHandle<()>>,
+    /// M.6.6 (2026-06-08): cooperative cancellation flag. Set to `true`
+    /// by the refresh handler before spawning a replacement task; the
+    /// blocking scan loop checks this at each file iteration and exits
+    /// early when it fires. `spawn_blocking` tasks ignore `JoinHandle`
+    /// abort — only this flag reaches the blocking thread.
+    pub cancel_token: Arc<AtomicBool>,
     /// M.6.1: source `BufferId` → on-disk path. Populated by the
     /// provider-minor's forwarder as it loads files into the
     /// view's source map. The mode's `<CR>` handler (M.10.3,
@@ -162,6 +169,7 @@ impl ProjectSearchState {
             total_hits: 0,
             scan_task: None,
             source_paths: std::collections::HashMap::new(),
+            cancel_token: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -347,6 +355,22 @@ lattice_protocol::register_event!(
     ProjectSearchProgressUpdated,
     "project-search.progress-updated",
     "Mid-scan progress update for headerline status.",
+    "lattice-multibuffer",
+);
+
+/// Fired by the forwarder task after `append_excerpts` so the
+/// cells worker rebuilds the display matrix without waiting for
+/// the next keystroke — fixes the blank-results-until-keypress
+/// symptom on `:search spawn`.
+#[derive(Debug, Clone)]
+pub struct MultibufferExcerptsReady {
+    pub view: BufferId,
+}
+
+lattice_protocol::register_event!(
+    MultibufferExcerptsReady,
+    "multibuffer.excerpts-ready",
+    "New excerpts appended to a multibuffer view.",
     "lattice-multibuffer",
 );
 
@@ -637,6 +661,12 @@ impl Mode for ProjectSearchMultibufferMode {
                                 (s.query.clone(), s.options.clone())
                             };
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
+                            // M.6.6: cancel the prior scan before replacing state.
+                            if let Some(old) = search_svc.state(view_id_for_refresh) {
+                                if let Ok(s) = old.read() {
+                                    s.cancel_token.store(true, Ordering::Relaxed);
+                                }
+                            }
                             // Clear + reset.
                             view.replace_excerpts(
                                 std::collections::HashMap::new(),
@@ -650,13 +680,18 @@ impl Mode for ProjectSearchMultibufferMode {
                                 view_id_for_refresh,
                                 ProjectSearchState::scanning(query.clone(), options.clone()),
                             );
-                            // Spawn fresh scan task.
+                            // Spawn fresh scan task with a fresh cancel token.
+                            let cancel = search_svc
+                                .state(view_id_for_refresh)
+                                .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+                                .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
                             let task = spawn_scan_task(
                                 view_id_for_refresh,
                                 query.clone(),
                                 options,
                                 search_svc.clone(),
                                 bus_for_refresh.clone(),
+                                cancel,
                             );
                             search_svc.attach_task(view_id_for_refresh, task);
                             // Publish refresh event so any
@@ -678,6 +713,7 @@ impl Mode for ProjectSearchMultibufferMode {
             let view_id_for_task = view_id;
             let search_svc_for_task: Option<ProjectSearchServiceHandle> =
                 search_svc_arc.as_ref().map(|s| (**s).clone());
+            let bus_for_task = bus.clone();
             let forwarder = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -717,7 +753,10 @@ impl Mode for ProjectSearchMultibufferMode {
                                     let Ok(text) = text_res else { continue; };
 
                                     let id = BufferId::next();
-                                    let document = lattice_core::Document::from_text(&text);
+                                    let document = lattice_core::DocumentBuilder::default()
+                                        .with_text(&text)
+                                        .with_path(path.clone())
+                                        .build();
                                     let registry = Arc::new(CommandRegistry::new());
                                     let handle = spawn_document(id, document, registry);
                                     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
@@ -756,15 +795,36 @@ impl Mode for ProjectSearchMultibufferMode {
                                 //   when ranges overlap or touch.
                                 //   Mirrors grep `-C N`.
                                 let context_lines = batch.context_lines;
+                                // MH.A4: the per-file hit count for the
+                                // `· N matches` badge. `scan_file`
+                                // collects every matched row for a file
+                                // in ONE call and emits exactly one
+                                // `FileHits` per file per scan, so a
+                                // file's hits never split across batches
+                                // — `fh.rows.len()` is the file's
+                                // complete count. (The M.6.2 dedup only
+                                // reuses an already-loaded source on a
+                                // re-scan; within a single scan each
+                                // file appears once.)
+                                let match_count = u32::try_from(fh.rows.len()).ok();
+                                // MH.A4: build the header carrying path +
+                                // match_count. `compose_header_rows`
+                                // dedups consecutive same-source excerpts
+                                // and renders the FIRST excerpt's header,
+                                // so attach the rich header to every
+                                // excerpt of this file — the first one
+                                // (which carries the badge) is the one
+                                // rendered.
+                                let make_header =
+                                    || search_excerpt_header(&path, match_count);
                                 let excerpts: Vec<Excerpt> = if fh.rows.is_empty() {
                                     Vec::new()
                                 } else if context_lines == 0 {
                                     fh.rows
                                         .iter()
                                         .map(|&row| {
-                                            Excerpt::new(source_id, row, row).with_header(
-                                                ExcerptHeader::new(format!("{}", path.display())),
-                                            )
+                                            Excerpt::new(source_id, row, row)
+                                                .with_header(make_header())
                                         })
                                         .collect()
                                 } else {
@@ -789,15 +849,17 @@ impl Mode for ProjectSearchMultibufferMode {
                                     clusters
                                         .into_iter()
                                         .map(|(start, end)| {
-                                            Excerpt::new(source_id, start, end).with_header(
-                                                ExcerptHeader::new(format!("{}", path.display())),
-                                            )
+                                            Excerpt::new(source_id, start, end)
+                                                .with_header(make_header())
                                         })
                                         .collect()
                                 };
                                 hit_count_in_batch += fh.rows.len();
                                 view.append_excerpts(excerpts);
                             }
+                            bus_for_task.publish_typed(MultibufferExcerptsReady {
+                                view: view_id_for_task,
+                            });
 
                             view.set_headerline(HeaderlineStatus::InProgress {
                                 label: "Searching".into(),
@@ -871,6 +933,10 @@ pub fn project_search(
     query: String,
     options: ProjectSearchOptions,
     registry: Arc<lattice_grammar::CommandRegistry>,
+    // K.4.7 (2026-06-07): when `Some`, passed to
+    // `create_multibuffer_view` so per-source SyntaxHandles are
+    // created as hits arrive via `add_source`.
+    lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
 ) -> Option<BufferId> {
     let services = activator.services();
     // `services.get::<T>()` wraps the registered value in an
@@ -896,6 +962,7 @@ pub fn project_search(
         Some(format!("*search:{query}*")),
         BufferFlags::default(),
         registry,
+        lang_registry,
     );
 
     search_svc.set_state(
@@ -914,7 +981,11 @@ pub fn project_search(
 
     activator.activate_minor_by_id(view_id, ProjectSearchMultibufferMode::mode_id());
 
-    let task = spawn_scan_task(view_id, query, options, search_svc.clone(), events.clone());
+    let cancel = search_svc
+        .state(view_id)
+        .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let task = spawn_scan_task(view_id, query, options, search_svc.clone(), events.clone(), cancel);
     search_svc.attach_task(view_id, task);
 
     Some(view_id)
@@ -929,9 +1000,10 @@ pub fn spawn_scan_task(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        run_scan(view, query, options, service, events).await;
+        run_scan(view, query, options, service, events, cancel).await;
     })
 }
 
@@ -941,6 +1013,7 @@ async fn run_scan(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) {
     // M.6.3: compile the matcher up-front. Literal mode stores
     // the (possibly lowercased) needle; regex mode compiles a
@@ -989,6 +1062,7 @@ async fn run_scan(
     let view_for_task = view;
     let service_for_task = service.clone();
     let events_for_task = events.clone();
+    let cancel_for_task = cancel;
     let _ = tokio::task::spawn_blocking(move || {
         run_scan_blocking(
             view_for_task,
@@ -996,6 +1070,7 @@ async fn run_scan(
             options,
             service_for_task,
             events_for_task,
+            cancel_for_task,
         );
     })
     .await;
@@ -1010,6 +1085,7 @@ fn run_scan_blocking(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
+    cancel: Arc<AtomicBool>,
 ) {
     let mut walker = ignore::Walk::new(&options.root);
     let mut files_scanned: usize = 0;
@@ -1020,6 +1096,9 @@ fn run_scan_blocking(
     let max_files = options.max_files.unwrap_or(usize::MAX);
 
     while let Some(entry) = walker.next() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let Ok(entry) = entry else { continue; };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -1093,6 +1172,25 @@ impl Matcher {
             Matcher::Regex(re) => re.is_match(line).unwrap_or(false),
         }
     }
+}
+
+/// MH.A4: build the rich [`ExcerptHeader`] the search provider attaches
+/// to each excerpt of a matched file. Carries:
+/// - `title`  — the full path string (display fallback when `path` is
+///   `None`; the title format is unchanged from M.6).
+/// - `path`   — drives the leading file-type icon + basename/dir split
+///   in `header_cells`.
+/// - `match_count` — the `· N matches` badge count.
+///
+/// Extracted so the forwarder's excerpt construction and the test
+/// share one definition. `compose_header_rows` renders only the FIRST
+/// excerpt of each consecutive same-source run, so every excerpt of a
+/// file gets the same header (the first is the one shown).
+fn search_excerpt_header(path: &Path, match_count: Option<u32>) -> ExcerptHeader {
+    let mut header = ExcerptHeader::new(format!("{}", path.display()));
+    header.path = Some(path.to_path_buf());
+    header.match_count = match_count;
+    header
 }
 
 fn build_matcher(query: &str, options: &ProjectSearchOptions) -> Result<Matcher, String> {
@@ -1201,7 +1299,11 @@ pub fn register_search_ex_command(registry: &mut CommandRegistry) {
                 };
                 Ok(Effect::AppAction(AppEffect::SearchTrigger { query }))
             }),
-            args_schema: Vec::<ArgSpec>::new(),
+            args_schema: vec![ArgSpec::required(
+                "query",
+                lattice_grammar::args::ArgKind::String,
+                "search query",
+            )],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1385,5 +1487,175 @@ mod tests {
                 .as_nanos()
         ));
         p
+    }
+
+    // ── M.6.6: cooperative cancellation ──────────────────────────
+
+    /// A cancelled scan must exit without publishing
+    /// `ProjectSearchCompleted`. Verifies the token-check at
+    /// the top of each `walker.next()` iteration fires before
+    /// any file is processed when the token is pre-set.
+    #[test]
+    fn cancelled_scan_exits_without_publishing_completed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let events = Arc::new(lattice_runtime::EventBus::new());
+        let view = BufferId(77);
+
+        // Track completions via an mpsc channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProjectSearchCompleted>();
+        events.subscribe_typed(tx);
+
+        let svc = InMemoryProjectSearchService::handle();
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        // Pre-cancel before the task can process any files.
+        cancel.store(true, Ordering::Relaxed);
+
+        rt.block_on(async move {
+            let handle = spawn_scan_task(
+                view,
+                "x".into(),
+                ProjectSearchOptions::default(),
+                svc,
+                events,
+                cancel,
+            );
+            handle.await.unwrap();
+        });
+
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled scan must not publish ProjectSearchCompleted"
+        );
+    }
+
+    /// Refreshing a running scan: the old token fires, the new
+    /// task gets a fresh (unset) token and runs to completion.
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_cancels_old_token_and_issues_fresh_one() {
+        let svc = InMemoryProjectSearchService::handle();
+        let view = BufferId(88);
+
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let old_cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        // Simulate the refresh: flip old token, install fresh state.
+        old_cancel.store(true, Ordering::Relaxed);
+        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        let new_cancel = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
+            .unwrap();
+
+        assert!(old_cancel.load(Ordering::Relaxed), "old token must be set");
+        assert!(!new_cancel.load(Ordering::Relaxed), "fresh token must start unset");
+        assert!(
+            !Arc::ptr_eq(&old_cancel, &new_cancel),
+            "refresh must allocate a distinct cancel token"
+        );
+    }
+
+    // ── MH.A4: search header carries path + match_count ──────────
+
+    #[test]
+    fn search_excerpt_header_sets_path_and_match_count() {
+        // The provider attaches a header carrying `path` + the
+        // per-file hit count (`fh.rows.len()`). A file with 3 hits
+        // yields `path = Some` and `match_count = Some(3)`.
+        let path = PathBuf::from("src/foo/bar.rs");
+        let header = search_excerpt_header(&path, Some(3));
+        assert_eq!(header.path.as_deref(), Some(path.as_path()));
+        assert_eq!(header.match_count, Some(3));
+        // Title format unchanged (full path display string).
+        assert_eq!(header.title, format!("{}", path.display()));
+    }
+
+    #[test]
+    fn search_header_renders_n_matches_badge() {
+        // End-to-end: the header the provider builds, run through the
+        // shared `header_cells` renderer, contains the `N matches`
+        // badge — proving MH.A2's fields drive MH.A3's already-shipped
+        // rendering.
+        let path = PathBuf::from("src/foo/bar.rs");
+        let header = search_excerpt_header(&path, Some(7));
+        let cells = crate::header_cells(&header, false, 0xAA, 0xBB, 0xCC);
+        let rendered: String = cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
+        assert!(
+            rendered.contains("7 matches"),
+            "rendered header must carry the badge; got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("bar.rs"),
+            "rendered header must carry the basename; got {rendered:?}"
+        );
+    }
+
+    /// Drive a REAL scan against a temp corpus and assert the batch's
+    /// per-file count (`fh.rows.len()`) — the value the provider feeds
+    /// into `search_excerpt_header`'s `match_count` — matches the
+    /// file's actual hits. Confirms the per-file-count decision (no
+    /// split across batches within one scan) on the production path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_batch_per_file_count_matches_file_hits() {
+        // One temp file with exactly 3 matching lines.
+        let dir = tempfile_path();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hits.txt");
+        std::fs::write(&file, "needle a\nno match\nneedle b\nneedle c\nplain\n").unwrap();
+
+        let events = Arc::new(lattice_runtime::EventBus::new());
+        let (tx, mut rx) = mpsc::unbounded_channel::<ProjectSearchBatchReady>();
+        events.subscribe_typed(tx);
+
+        let view = BufferId(909);
+        let options = ProjectSearchOptions {
+            root: dir.clone(),
+            case_sensitive: true,
+            max_files: None,
+            max_hits_per_file: 100,
+            regex: false,
+            context_lines: 0,
+        };
+        let svc = InMemoryProjectSearchService::handle();
+        svc.set_state(view, ProjectSearchState::scanning("needle".into(), options.clone()));
+
+        let handle = spawn_scan_task(
+            view,
+            "needle".into(),
+            options,
+            svc,
+            events,
+            Arc::new(AtomicBool::new(false)),
+        );
+        handle.await.unwrap();
+
+        let batch = rx.try_recv().expect("a batch with hits was published");
+        let fh = batch
+            .files
+            .iter()
+            .find(|f| f.path == file)
+            .expect("the matched file is in the batch");
+        assert_eq!(fh.rows.len(), 3, "file's complete hit count in one batch");
+
+        // The header the provider would build for this file carries the
+        // count.
+        let header = search_excerpt_header(&fh.path, u32::try_from(fh.rows.len()).ok());
+        assert_eq!(header.match_count, Some(3));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

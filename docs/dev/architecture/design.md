@@ -325,6 +325,13 @@ A buffer-level state machine in front of the buffer. **Vim semantics, with one d
 - **Normal** -- default; keys parse as commands.
 - **Insert** -- text input; only a small set of editing keys are special.
 - **Visual** -- charwise (`v`), linewise (`V`), blockwise (`<C-v>`) extension of selection.
+- **Select** -- vim Select mode: same charwise / linewise / blockwise extent as
+  Visual, but a printable key replaces the whole selection and drops into
+  Insert. Entered via `gh` / `gH` / `g<C-h>`, toggled from Visual with
+  `<C-g>`, or programmatically (`Effect::EnterMode(Select(_))` + a selection).
+  A reusable primitive for select-and-overtype (snippet placeholders,
+  rename, template fields) — built decoupled from any consumer. See
+  [select-mode.md](select-mode.md).
 - **Operator-Pending** -- entered automatically after an operator; awaits a motion or text object.
 - **Command** -- `:` ex-command line.
 - **Search** -- `/` and `?` incremental search.

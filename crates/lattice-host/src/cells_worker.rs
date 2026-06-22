@@ -30,7 +30,7 @@
 //! switch to chunked mode once the input is above `4 × viewport_height`
 //! lines.
 //!
-//! ## Design (mirrors `highlights_worker`)
+//! ## Design (mirrors `overlay_worker`)
 //!
 //! - Dispatch's `publish_render_state` populates
 //!   [`crate::render_state::CellsRenderState`] inputs (`snapshot`,
@@ -173,7 +173,7 @@ pub enum WorkerDecision {
 /// ## `paint_request` semantics
 ///
 /// `paint_request` is a shared `Notify` consumed by the renderer
-/// peer. Both this worker and `highlights_worker` fire
+/// peer. Both this worker and `overlay_worker` fire
 /// `notify_one()` on content-changing decisions. The renderer
 /// observes one wake per coalesced burst across both workers and
 /// schedules a single paint — matrix + spans are read together
@@ -252,8 +252,12 @@ pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
     let mut any_recomputed = false;
     let mut any_incremental = false;
     let mut any_cleared = false;
+    let ct = CellTheme {
+        resolved: &cells.resolved_theme,
+        ids: &cells.theme_ids,
+    };
     for pane in cells.panes.iter() {
-        match recompute_pane(pane, &cells.theme, &cells.whitespace) {
+        match recompute_pane(pane, ct, &cells.whitespace) {
             WorkerDecision::CacheHit => {}
             WorkerDecision::Clear => any_cleared = true,
             WorkerDecision::Recomputed => any_recomputed = true,
@@ -271,6 +275,48 @@ pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
     }
 }
 
+/// K.4.7 (2026-06-07): assemble per-excerpt tree-sitter highlights for
+/// a multibuffer composed row range `[lo, hi)` (exclusive `hi`).
+///
+/// Returns a `Vec` indexed relative to `lo` (row 0 = composed row `lo`).
+/// Each inner `Vec` is the `StyledSpan` list for that row — empty when
+/// no excerpt covers it or the excerpt's parse hasn't landed yet.
+/// Returns `None` only when the `excerpt_syntax` slice is empty (caller
+/// falls back to the standard single-document path).
+fn highlight_range_multibuffer(
+    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
+    lo: u32,
+    hi: u32,
+) -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+    if excerpt_syntax.is_empty() {
+        return None;
+    }
+    if hi <= lo {
+        return Some(Vec::new());
+    }
+    let row_count = (hi - lo) as usize;
+    let mut result: Vec<Vec<lattice_syntax::StyledSpan>> = vec![Vec::new(); row_count];
+    for ex in excerpt_syntax {
+        if ex.composed_start >= hi || ex.composed_end < lo {
+            continue;
+        }
+        let composed_lo = ex.composed_start.max(lo);
+        let composed_hi = (ex.composed_end + 1).min(hi);
+        let src_lo = ex.source_start + (composed_lo - ex.composed_start);
+        let src_hi = src_lo + (composed_hi - composed_lo);
+        let Some(spans) = ex.handle.highlight_lines(src_lo, src_hi) else {
+            continue;
+        };
+        for (i, span_row) in spans.into_iter().enumerate() {
+            let dest = (composed_lo - lo) as usize + i;
+            if dest < row_count {
+                result[dest] = span_row;
+            }
+        }
+    }
+    Some(result)
+}
+
 /// D.4.d.1.b (2026-05-29): per-pane recompute. Same algorithm
 /// the pre-d.1.b `recompute` ran against the top-level
 /// active-doc fields, now keyed off a single
@@ -284,7 +330,7 @@ pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
 /// the first one already published.
 pub fn recompute_pane(
     pane: &crate::render_state::PaneCellsInputs,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     whitespace: &WhitespaceConfig,
 ) -> WorkerDecision {
     let Some(snapshot) = pane.snapshot.as_ref() else {
@@ -380,7 +426,7 @@ pub fn recompute_pane(
         if cells_current {
             return WorkerDecision::CacheHit;
         }
-        let cells = display_matrix_to_cell_matrix(&existing, theme);
+        let cells = display_matrix_to_cell_matrix(&existing, ct);
         pane.matrix.store(Arc::new(cells));
         return WorkerDecision::Recomputed;
     }
@@ -390,7 +436,7 @@ pub fn recompute_pane(
     // `None` falls through to a full windowed rebuild. The worker path
     // keeps full syntax colour (`allow_highlight: true`); the sync edit
     // path forces it off.
-    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, true)
+    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, true)
         .and_then(|mut dm| {
             dm.wrap_width = effective_wrap;
             // H.3: accept the incremental result only if it still
@@ -408,7 +454,8 @@ pub fn recompute_pane(
             let mut dm = build_display_matrix(
                 snapshot.as_ref(),
                 pane.syntax_handle.as_deref(),
-                theme,
+                &pane.excerpt_syntax,
+                ct,
                 &pane.inlay_hints,
                 &pane.folds,
                 pane.foldenable,
@@ -426,7 +473,7 @@ pub fn recompute_pane(
     // B2→B4 bridge), then publish both. Store the cell projection
     // first so a renderer reading `pane.matrix` after seeing the new
     // `pane.display_matrix` never observes a stale cell grid.
-    let cells = display_matrix_to_cell_matrix(&matrix, theme);
+    let cells = display_matrix_to_cell_matrix(&matrix, ct);
     pane.matrix.store(Arc::new(cells));
     pane.display_matrix.store(Arc::new(matrix));
     decision
@@ -465,7 +512,7 @@ pub fn recompute_pane(
 /// `DisplayMatrix` (TUI B2.4, GPU B3) and the cell path is deleted (B4).
 pub fn sync_rebuild_pane_on_edit(
     pane: &crate::render_state::PaneCellsInputs,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     whitespace: &WhitespaceConfig,
 ) -> bool {
     let Some(snapshot) = pane.snapshot.as_ref() else {
@@ -484,7 +531,7 @@ pub fn sync_rebuild_pane_on_edit(
 
     let existing = pane.display_matrix.load_full();
     let result =
-        try_incremental_display_build(&existing, snapshot.as_ref(), pane, theme, whitespace, false);
+        try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, false);
     let Some(mut matrix) = result else {
         return false;
     };
@@ -542,7 +589,7 @@ fn try_incremental_build(
     published: &CellMatrix,
     snapshot: &lattice_runtime::DocumentSnapshot,
     pane: &crate::render_state::PaneCellsInputs,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     whitespace: &WhitespaceConfig,
 ) -> Option<CellMatrix> {
     let edit = pane.last_edit?;
@@ -598,7 +645,7 @@ fn try_incremental_build(
     let pre_hi = edit.pre_edit_end_line();
     let net = edit.net_delta();
 
-    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
@@ -609,6 +656,11 @@ fn try_incremental_build(
     // per-keystroke highlight O(edit) instead of O(file) — and collapses the
     // compose `cells_stale` plain-text window that read as a flicker.
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        // K.4.7: multibuffer panes carry per-excerpt handles; use them
+        // when present. Falls back to the single-doc path when empty.
+        if let Some(spans) = highlight_range_multibuffer(&pane.excerpt_syntax, lo, hi) {
+            return Some(spans);
+        }
         if hi <= lo {
             return Some(Vec::new());
         }
@@ -643,7 +695,7 @@ fn try_incremental_build(
                 spans_base: 0,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -683,7 +735,7 @@ fn try_incremental_build(
             spans_base: edit_lo,
             inlays_by_line: &inlays_by_line,
             fold_index: &fold_index,
-            theme,
+            ct,
             default_fg,
             default_flags,
             inlay_fg,
@@ -775,7 +827,7 @@ fn try_incremental_build(
         spans_base: rebuild_lo,
         inlays_by_line: &inlays_by_line,
         fold_index: &fold_index,
-        theme,
+        ct,
         default_fg,
         default_flags,
         inlay_fg,
@@ -844,7 +896,7 @@ fn try_incremental_build(
 fn build_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
     foldenable: bool,
@@ -858,7 +910,7 @@ fn build_matrix(
         return CellMatrix::empty();
     }
 
-    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
 
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
@@ -895,7 +947,7 @@ fn build_matrix(
                 spans_base: 0,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -922,7 +974,7 @@ fn build_matrix(
                 spans_base: win_lo,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -1053,7 +1105,7 @@ struct ChunkInputs<'a> {
     spans_base: u32,
     inlays_by_line: &'a std::collections::HashMap<u32, Vec<(u32, &'a str)>>,
     fold_index: &'a crate::folds::FoldIndex,
-    theme: &'a crate::ui::theme::Theme,
+    ct: CellTheme<'a>,
     default_fg: u32,
     /// S3.a: modifier flags from `theme.syntax_style(Default)` so
     /// cells outside any styled span pick up the theme's default
@@ -1097,7 +1149,7 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
             &text,
             line_spans,
             line_inlays,
-            inputs.theme,
+            inputs.ct,
             inputs.default_fg,
             inputs.default_flags,
             inputs.inlay_fg,
@@ -1116,8 +1168,9 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
 /// Splice points are inclusive at byte position (inlays whose
 /// `orig_byte <= char_byte_start` splice in *before* that char).
 /// Trailing inlays at or past EOL splice at end-of-line — matches
-/// the existing `highlights_worker::weave_row` contract so S3
-/// renderers can switch substrates without semantic drift.
+/// the historical inlay-weave contract (originally in the deleted
+/// `highlights_worker::weave_row`) so S3 renderers can switch
+/// substrates without semantic drift.
 // B2.2: cell-path per-row builder; superseded by `build_display_row`
 // (+ `display_line_to_cell_row`). Kept as the parity oracle the
 // `display_build_parity_*` tests compare against; deleted in B4.
@@ -1126,7 +1179,7 @@ fn build_row_cells(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
     line_inlays: &[(u32, &str)],
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     default_fg: u32,
     default_flags: u16,
     inlay_fg: u32,
@@ -1146,7 +1199,7 @@ fn build_row_cells(
         if matches!(style, lattice_syntax::Style::Default) {
             (default_fg, default_flags)
         } else {
-            resolve_style(theme, style)
+            resolve_style(ct, style)
         }
     };
 
@@ -1174,8 +1227,9 @@ fn build_row_cells(
     }
     // Trailing-style fg (red) when emitting trailing-space markers.
     // Matches TUI's theme.whitespace_trailing_style.
-    let trailing_fg = theme
-        .whitespace_trailing_style
+    let trailing_fg = ct
+        .resolved
+        .get(ct.ids.whitespace_trailing)
         .fg
         .map(|c| c.to_rgb_u32(default_fg))
         .unwrap_or(default_fg);
@@ -1501,7 +1555,8 @@ fn build_display_rows(
 fn build_display_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
-    theme: &crate::ui::theme::Theme,
+    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
+    ct: CellTheme<'_>,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
     foldenable: bool,
@@ -1519,12 +1574,16 @@ fn build_display_matrix(
     // `default_*` / `inlay_fg` are required to construct `ChunkInputs`
     // (shared with the cell path) even though `build_display_rows` reads
     // only the snapshot / spans / inlays / folds / whitespace fields.
-    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+        // K.4.7: multibuffer panes use per-excerpt handles.
+        if let Some(spans) = highlight_range_multibuffer(excerpt_syntax, lo, hi) {
+            return Some(spans);
+        }
         if hi <= lo {
             return Some(Vec::new());
         }
@@ -1546,7 +1605,7 @@ fn build_display_matrix(
                 spans_base: 0,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -1565,7 +1624,7 @@ fn build_display_matrix(
                 spans_base: win_lo,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -1607,7 +1666,7 @@ fn try_incremental_display_build(
     published: &crate::display_matrix::DisplayMatrix,
     snapshot: &lattice_runtime::DocumentSnapshot,
     pane: &crate::render_state::PaneCellsInputs,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     whitespace: &WhitespaceConfig,
     allow_highlight: bool,
 ) -> Option<crate::display_matrix::DisplayMatrix> {
@@ -1674,7 +1733,7 @@ fn try_incremental_display_build(
     };
     let net = edit.net_delta();
 
-    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
@@ -1683,6 +1742,10 @@ fn try_incremental_display_build(
         // call ever lands on the edit-critical actor thread.
         if !allow_highlight {
             return None;
+        }
+        // K.4.7: multibuffer panes use per-excerpt handles.
+        if let Some(spans) = highlight_range_multibuffer(&pane.excerpt_syntax, lo, hi) {
+            return Some(spans);
         }
         if hi <= lo {
             return Some(Vec::new());
@@ -1705,7 +1768,7 @@ fn try_incremental_display_build(
                 spans_base: 0,
                 inlays_by_line: &inlays_by_line,
                 fold_index: &fold_index,
-                theme,
+                ct,
                 default_fg,
                 default_flags,
                 inlay_fg,
@@ -1737,7 +1800,7 @@ fn try_incremental_display_build(
             spans_base: edit_lo,
             inlays_by_line: &inlays_by_line,
             fold_index: &fold_index,
-            theme,
+            ct,
             default_fg,
             default_flags,
             inlay_fg,
@@ -1841,7 +1904,7 @@ fn try_incremental_display_build(
         spans_base: edit_lo,
         inlays_by_line: &inlays_by_line,
         fold_index: &fold_index,
-        theme,
+        ct,
         default_fg,
         default_flags,
         inlay_fg,
@@ -1910,14 +1973,15 @@ fn try_incremental_display_build(
 /// cell path in B4.
 fn display_line_to_cell_row(
     line: &crate::display_matrix::DisplayLine,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
     default_fg: u32,
     default_flags: u16,
     inlay_fg: u32,
 ) -> CellRow {
     use lattice_cells::cell_flags;
-    let trailing_fg = theme
-        .whitespace_trailing_style
+    let trailing_fg = ct
+        .resolved
+        .get(ct.ids.whitespace_trailing)
         .fg
         .map(|c| c.to_rgb_u32(default_fg))
         .unwrap_or(default_fg);
@@ -1933,7 +1997,7 @@ fn display_line_to_cell_row(
         let (style_fg, mods) = if matches!(run.style, lattice_syntax::Style::Default) {
             (default_fg, default_flags)
         } else {
-            resolve_style(theme, run.style)
+            resolve_style(ct, run.style)
         };
         let (fg, flags) = if is_inlay {
             (inlay_fg, cell_flags::INLAY)
@@ -1956,9 +2020,9 @@ fn display_line_to_cell_row(
 /// cell renderers until their cutover (B2.4 TUI, B3 GPU); deleted in B4.
 fn display_matrix_to_cell_matrix(
     dm: &crate::display_matrix::DisplayMatrix,
-    theme: &crate::ui::theme::Theme,
+    ct: CellTheme<'_>,
 ) -> CellMatrix {
-    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     if dm.chunks.is_empty() {
         return CellMatrix::empty();
@@ -1970,7 +2034,7 @@ fn display_matrix_to_cell_matrix(
             let rows: Vec<CellRow> = dc
                 .rows
                 .iter()
-                .map(|dl| display_line_to_cell_row(dl, theme, default_fg, default_flags, inlay_fg))
+                .map(|dl| display_line_to_cell_row(dl, ct, default_fg, default_flags, inlay_fg))
                 .collect();
             Arc::new(CellChunk::new(dc.start_source_line, rows, dc.version))
         })
@@ -2038,18 +2102,28 @@ fn inlay_hint_fg() -> u32 {
 /// switched to [`resolve_style`] (returns `(fg, flags)` together).
 /// Tests that only assert fg keep the simpler one-value helper.
 #[cfg(test)]
-fn resolve_fg(theme: &crate::ui::theme::Theme, style: lattice_syntax::Style) -> u32 {
-    resolve_style(theme, style).0
+fn resolve_fg(ct: CellTheme<'_>, style: lattice_syntax::Style) -> u32 {
+    resolve_style(ct, style).0
 }
 
-/// S3.a: resolve a syntax style to `(fg, flags)` via the host
-/// theme. The returned `flags` is the OR of `Cell::flags` modifier
-/// bits ([`flags::BOLD`] etc.) matching the host theme's
-/// [`crate::ui::theme::Modifiers`] for this style. Splice-flags
-/// like `INLAY` / `WS_MARKER` are NOT set here — callers OR those
-/// in separately when emitting an inlay or whitespace cell.
-fn resolve_style(theme: &crate::ui::theme::Theme, style: lattice_syntax::Style) -> (u32, u16) {
-    let s = theme.syntax_style(style);
+/// T.5 (theme-system): the resolved theme read table + builtin ids the
+/// cell builder threads in place of the old `&Theme`. `Copy` (two
+/// refs), so it passes through the build chain for free. The builder
+/// uses it only for syntax-category + whitespace-marker styling.
+#[derive(Clone, Copy)]
+pub struct CellTheme<'a> {
+    pub resolved: &'a crate::ui::theme::ResolvedTheme,
+    pub ids: &'a crate::ui::theme::BuiltinElementIds,
+}
+
+/// S3.a / T.5: resolve a syntax style to `(fg, flags)` via the shared
+/// host `resolve_syntax_style` (resolved table). The returned `flags`
+/// is the OR of `Cell::flags` modifier bits ([`flags::BOLD`] etc.)
+/// matching the resolved style's [`crate::ui::theme::Modifiers`].
+/// Splice-flags like `INLAY` / `WS_MARKER` are NOT set here — callers
+/// OR those in separately when emitting an inlay or whitespace cell.
+fn resolve_style(ct: CellTheme<'_>, style: lattice_syntax::Style) -> (u32, u16) {
+    let s = crate::ui::theme::resolve_syntax_style(ct.resolved, ct.ids, style);
     let fg = s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
     let flags = modifiers_to_flags(&s.modifiers);
     (fg, flags)
@@ -2084,8 +2158,9 @@ fn modifiers_to_flags(m: &crate::ui::theme::Modifiers) -> u16 {
 }
 
 /// Resolve the highlight style at a given utf-8 byte offset inside
-/// `line_spans`. Mirrors `highlights_worker::style_at_byte` —
-/// bytes outside every span fall through to `Style::Default`.
+/// `line_spans`. Mirrors the historical `style_at_byte` contract
+/// (originally in the deleted `highlights_worker`) — bytes outside
+/// every span fall through to `Style::Default`.
 fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> lattice_syntax::Style {
     for s in line_spans {
         if byte >= s.start && byte < s.end {
@@ -2102,6 +2177,22 @@ mod tests {
     use lattice_core::Document;
     use lattice_runtime::DocumentSnapshot;
 
+    /// T.5: a real resolved theme read-table + builtin ids for tests
+    /// that thread a [`CellTheme`] into the builder. The default
+    /// registry reproduces the legacy `Theme::default()` syntax colours
+    /// exactly, so colour-asserting tests keep their expected values.
+    fn test_cell_theme() -> (
+        std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+        crate::ui::theme::BuiltinElementIds,
+    ) {
+        use crate::ui::theme::ThemeRegistry as _;
+        let reg = crate::ui::theme::InMemoryThemeRegistry::with_defaults();
+        (
+            reg.resolved(),
+            crate::ui::theme::BuiltinElementIds::capture(&reg),
+        )
+    }
+
     /// Helper: build a `RenderState` whose `cells` substate carries
     /// `snapshot` + `version` and shares `matrix_cell` with the
     /// caller.
@@ -2110,30 +2201,25 @@ mod tests {
         version: MatrixVersion,
         matrix_cell: Arc<ArcSwap<CellMatrix>>,
     ) -> ArcSwap<RenderState> {
-        rs_with_snapshot_themed(
-            snapshot,
-            version,
-            matrix_cell,
-            None,
-            crate::ui::theme::Theme::default(),
-        )
+        rs_with_snapshot_themed(snapshot, version, matrix_cell, None)
     }
 
     /// Themed variant used by S2.3.a tests that need a non-default
-    /// syntax handle or a tweaked theme palette.
+    /// syntax handle. T.6.t dropped the `theme: Theme` param — the host
+    /// `Theme` struct is gone; the cell builder resolves styles through
+    /// the resolved table built by `test_cell_theme()` inside
+    /// `rs_with_everything`.
     fn rs_with_snapshot_themed(
         snapshot: Option<Arc<DocumentSnapshot>>,
         version: MatrixVersion,
         matrix_cell: Arc<ArcSwap<CellMatrix>>,
         syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
-        theme: crate::ui::theme::Theme,
     ) -> ArcSwap<RenderState> {
         rs_with_snapshot_full(
             snapshot,
             version,
             matrix_cell,
             syntax_handle,
-            theme,
             Vec::<crate::render_state::InlayHintRow>::new(),
         )
     }
@@ -2145,7 +2231,6 @@ mod tests {
         version: MatrixVersion,
         matrix_cell: Arc<ArcSwap<CellMatrix>>,
         syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
-        theme: crate::ui::theme::Theme,
         inlay_hints: Vec<crate::render_state::InlayHintRow>,
     ) -> ArcSwap<RenderState> {
         rs_with_snapshot_full_folded(
@@ -2153,7 +2238,6 @@ mod tests {
             version,
             matrix_cell,
             syntax_handle,
-            theme,
             inlay_hints,
             Vec::new(),
             true,
@@ -2167,7 +2251,6 @@ mod tests {
         version: MatrixVersion,
         matrix_cell: Arc<ArcSwap<CellMatrix>>,
         syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
-        theme: crate::ui::theme::Theme,
         inlay_hints: Vec<crate::render_state::InlayHintRow>,
         folds: Vec<lattice_core::Fold>,
         foldenable: bool,
@@ -2177,7 +2260,6 @@ mod tests {
             version,
             matrix_cell,
             syntax_handle,
-            theme,
             inlay_hints,
             folds,
             foldenable,
@@ -2243,7 +2325,6 @@ mod tests {
         version: MatrixVersion,
         matrix_cell: Arc<ArcSwap<CellMatrix>>,
         syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
-        theme: crate::ui::theme::Theme,
         inlay_hints: Vec<crate::render_state::InlayHintRow>,
         folds: Vec<lattice_core::Fold>,
         foldenable: bool,
@@ -2275,6 +2356,7 @@ mod tests {
             wrap: false,
             foldenable,
             last_edit,
+            excerpt_syntax: Arc::from([]),
         };
         let pane_matrices = {
             let mut m = std::collections::HashMap::new();
@@ -2286,6 +2368,7 @@ mod tests {
             m.insert(pane_entry.pane_id, pane_entry.display_matrix.clone());
             Arc::new(m)
         };
+        let (resolved_theme, theme_ids) = test_cell_theme();
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
@@ -2296,7 +2379,8 @@ mod tests {
             viewport_height,
             foldenable,
             last_edit,
-            theme,
+            resolved_theme,
+            theme_ids,
             whitespace: WhitespaceConfig::default(),
             panes: Arc::from(vec![pane_entry].into_boxed_slice()),
             pane_matrices,
@@ -2470,7 +2554,6 @@ mod tests {
     /// (`0x6c7086`); plain text takes the default fg (`0xcdd6f4`).
     #[test]
     fn syntax_handle_resolves_keyword_string_comment_fg() {
-        let theme = crate::ui::theme::Theme::default();
         // Line 0: `fn` keyword + identifier + paren punctuation.
         // Line 1: line comment.
         // Line 2: plain whitespace / EOF.
@@ -2479,7 +2562,7 @@ mod tests {
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
@@ -2488,9 +2571,14 @@ mod tests {
 
         // Default fg for the theme is Catppuccin Mocha "Text"
         // (0xcdd6f4) and the keyword fg is Mauve (0xcba6f7).
-        let expected_default = resolve_fg(&theme, lattice_syntax::Style::Default);
-        let expected_keyword = resolve_fg(&theme, lattice_syntax::Style::Keyword);
-        let expected_comment = resolve_fg(&theme, lattice_syntax::Style::LineComment);
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let expected_default = resolve_fg(ct, lattice_syntax::Style::Default);
+        let expected_keyword = resolve_fg(ct, lattice_syntax::Style::Keyword);
+        let expected_comment = resolve_fg(ct, lattice_syntax::Style::LineComment);
         assert_eq!(expected_keyword, 0x00cb_a6f7);
         assert_ne!(expected_default, expected_keyword);
 
@@ -2517,12 +2605,16 @@ mod tests {
     /// doesn't accidentally use a different colour.
     #[test]
     fn no_syntax_handle_yields_default_fg_everywhere() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of("ab\ncd");
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), None, theme);
+        let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), None);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
-        let default_fg = resolve_fg(&theme, lattice_syntax::Style::Default);
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let default_fg = resolve_fg(ct, lattice_syntax::Style::Default);
         let m = matrix_cell.load();
         for row in m.slice(0, 10).iter() {
             for c in row.cells.iter() {
@@ -2534,10 +2626,9 @@ mod tests {
     /// A syntax snapshot whose `text_version` lags the document's
     /// `text_version` is treated as stale: the worker falls back
     /// to default fg rather than painting against mismatched byte
-    /// offsets. Mirrors `highlights_worker`'s stale-hold contract.
+    /// offsets. Mirrors `overlay_worker`'s stale-hold contract.
     #[test]
     fn stale_syntax_falls_back_to_default_fg() {
-        let theme = crate::ui::theme::Theme::default();
         // Snapshot parsed against version 1; document advanced
         // to version 2 (mid-edit, syntax hasn't reparsed yet).
         let text = "fn x() {}";
@@ -2545,10 +2636,15 @@ mod tests {
         let snap = snap_of_versioned(text, 2);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
-        let default_fg = resolve_fg(&theme, lattice_syntax::Style::Default);
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let default_fg = resolve_fg(ct, lattice_syntax::Style::Default);
         let m = matrix_cell.load();
         for row in m.slice(0, 10).iter() {
             for c in row.cells.iter() {
@@ -2585,11 +2681,10 @@ mod tests {
     /// later bytes.
     #[test]
     fn single_inlay_splices_into_row_and_sets_flags() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("hello", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 2, ": ")];
-        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         let row = m.slice(0, 1).iter().next().cloned().unwrap();
@@ -2618,12 +2713,11 @@ mod tests {
     /// the worker's per-line `sort_by_key`.
     #[test]
     fn multiple_inlays_splice_in_byte_order() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("abc", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // Insert out of order on purpose.
         let hints = vec![inlay(0, 2, "[2]"), inlay(0, 1, "[1]")];
-        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell
             .load()
@@ -2645,11 +2739,10 @@ mod tests {
     /// inequality is meant to handle.
     #[test]
     fn inlay_at_line_start_splices_before_first_char() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("xyz", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 0, "?")];
-        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell
             .load()
@@ -2664,16 +2757,15 @@ mod tests {
     }
 
     /// A trailing inlay (orig_byte == line_len) splices at EOL.
-    /// Matches the highlights_worker contract so future renderer
-    /// cutovers don't surprise the user with disappearing
-    /// end-of-line hints.
+    /// Matches the historical inlay-weave contract (from the deleted
+    /// `highlights_worker`) so future renderer cutovers don't
+    /// surprise the user with disappearing end-of-line hints.
     #[test]
     fn trailing_inlay_splices_at_end_of_line() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("ab", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let hints = vec![inlay(0, 2, ";")];
-        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, theme, hints);
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell
             .load()
@@ -2692,7 +2784,6 @@ mod tests {
     /// inlay_hints field participates in the version axes.
     #[test]
     fn inlay_version_bump_triggers_rebuild() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("a", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let v_a = MatrixVersion {
@@ -2713,7 +2804,6 @@ mod tests {
             v_a,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
         );
         assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
@@ -2725,7 +2815,6 @@ mod tests {
             v_b,
             matrix_cell.clone(),
             None,
-            theme,
             vec![inlay(0, 0, "!")],
         );
         assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
@@ -2794,7 +2883,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            crate::ui::theme::Theme::default(),
             Vec::new(),
             Vec::new(),
             true,
@@ -2827,7 +2915,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            crate::ui::theme::Theme::default(),
             Vec::new(),
             Vec::new(),
             true,
@@ -2875,7 +2962,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            crate::ui::theme::Theme::default(),
             Vec::new(),
             folds,
             true,
@@ -2903,7 +2989,6 @@ mod tests {
     /// resize-induced republish.
     #[test]
     fn viewport_shrink_can_promote_to_chunked() {
-        let theme = crate::ui::theme::Theme::default();
         let text: String = (0..25)
             .map(|i| format!("l{}", i))
             .collect::<Vec<_>>()
@@ -2917,7 +3002,6 @@ mod tests {
                 version,
                 matrix_cell.clone(),
                 None,
-                theme,
                 Vec::new(),
                 Vec::new(),
                 true,
@@ -2984,11 +3068,15 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
         pane.scroll = 2500;
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
         let ws = WhitespaceConfig::default();
 
         assert_eq!(
-            recompute_pane(&pane, &theme, &ws),
+            recompute_pane(&pane, ct, &ws),
             WorkerDecision::Recomputed
         );
         let m = matrix_cell.load();
@@ -3023,14 +3111,18 @@ mod tests {
     #[test]
     fn scroll_past_window_triggers_rebuild() {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
         let ws = WhitespaceConfig::default();
 
         // First build at the top.
         let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
         pane.scroll = 0;
         assert_eq!(
-            recompute_pane(&pane, &theme, &ws),
+            recompute_pane(&pane, ct, &ws),
             WorkerDecision::Recomputed
         );
         assert!(matrix_cell.load().row_at_source_line(0).is_some());
@@ -3039,7 +3131,7 @@ mod tests {
         // rebuild (not CacheHit) and recentre.
         pane.scroll = 3000;
         assert_eq!(
-            recompute_pane(&pane, &theme, &ws),
+            recompute_pane(&pane, ct, &ws),
             WorkerDecision::Recomputed,
             "scroll past window rebuilds despite unchanged version"
         );
@@ -3057,19 +3149,23 @@ mod tests {
     #[test]
     fn in_window_scroll_is_cache_hit() {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
         let ws = WhitespaceConfig::default();
 
         let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
         pane.scroll = 2500;
         assert_eq!(
-            recompute_pane(&pane, &theme, &ws),
+            recompute_pane(&pane, ct, &ws),
             WorkerDecision::Recomputed
         );
         // A few lines of scroll stays inside the overscan window.
         pane.scroll = 2510;
         assert_eq!(
-            recompute_pane(&pane, &theme, &ws),
+            recompute_pane(&pane, ct, &ws),
             WorkerDecision::CacheHit,
             "small in-window scroll does not rebuild"
         );
@@ -3085,8 +3181,12 @@ mod tests {
     #[test]
     fn display_build_parity_with_cells_ws_off() {
         use lattice_cells::cell_flags;
-        let theme = crate::ui::theme::Theme::default();
-        let (default_fg, default_flags) = resolve_style(&theme, lattice_syntax::Style::Default);
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
         let inlay_fg = inlay_hint_fg();
         let ws = WhitespaceConfig::default(); // show: false
 
@@ -3104,7 +3204,7 @@ mod tests {
             text,
             &spans,
             &inlays,
-            &theme,
+            ct,
             default_fg,
             default_flags,
             inlay_fg,
@@ -3123,7 +3223,7 @@ mod tests {
                 } else if matches!(run.style, lattice_syntax::Style::Default) {
                     (default_fg, default_flags)
                 } else {
-                    resolve_style(&theme, run.style)
+                    resolve_style(ct, run.style)
                 };
                 projected.push(Cell::new(ch as u32, fg, 0, flags));
             }
@@ -3163,12 +3263,19 @@ mod tests {
     /// cells diverge from `build_matrix` and fails here.
     #[test]
     fn projection_parity_ws_on_trailing_tab_inlay() {
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
         // The default theme paints trailing whitespace red — assert that
         // so the parity check below genuinely exercises `WS_TRAILING`.
-        let (default_fg, _) = resolve_style(&theme, lattice_syntax::Style::Default);
-        let trailing_fg = theme
-            .whitespace_trailing_style
+        // T.5: the trailing-whitespace style resolves through the
+        // `whitespace.trailing` element (the old `Theme` style field is
+        // gone), mirroring the production read at the `WS_TRAILING` site.
+        let (default_fg, _) = resolve_style(ct, lattice_syntax::Style::Default);
+        let trailing_fg = resolved
+            .get(ids.whitespace_trailing)
             .fg
             .map(|c| c.to_rgb_u32(default_fg))
             .unwrap_or(default_fg);
@@ -3195,7 +3302,7 @@ mod tests {
         let cm = build_matrix(
             snap.as_ref(),
             None,
-            &theme,
+            ct,
             &inlays,
             &[],
             true,
@@ -3207,7 +3314,8 @@ mod tests {
         let dm = build_display_matrix(
             snap.as_ref(),
             None,
-            &theme,
+            &[],
+            ct,
             &inlays,
             &[],
             true,
@@ -3216,7 +3324,7 @@ mod tests {
             v(1),
             &ws,
         );
-        let projected = display_matrix_to_cell_matrix(&dm, &theme);
+        let projected = display_matrix_to_cell_matrix(&dm, ct);
 
         assert_eq!(projected.source_line_count, cm.source_line_count);
         assert_eq!(projected.is_whole_doc(), cm.is_whole_doc());
@@ -3267,7 +3375,6 @@ mod tests {
     /// the click-target back to the source).
     #[test]
     fn closed_fold_elides_interior_lines() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("a\nb\nc\nd\ne", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // Fold lines 1..3 — interior lines 2, 3 are elided; line
@@ -3278,7 +3385,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             folds,
             true,
@@ -3299,7 +3405,6 @@ mod tests {
     /// participates.
     #[test]
     fn open_fold_does_not_elide() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("a\nb\nc", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let folds = vec![open_fold(0, 2)];
@@ -3308,7 +3413,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             folds,
             true,
@@ -3325,7 +3429,6 @@ mod tests {
     /// from the same payload without re-touching the fold list.
     #[test]
     fn foldenable_off_disables_elision() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("a\nb\nc", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let folds = vec![closed_fold(0, 2)];
@@ -3334,7 +3437,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             folds,
             false,
@@ -3350,7 +3452,6 @@ mod tests {
     /// `line_inside_closed_fold` per line).
     #[test]
     fn multiple_closed_folds_elide_independently() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("a\nb\nc\nd\ne\nf\ng", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // Fold lines 0..2 + 4..6. Visible: 0, 3, 4 (start of 2nd
@@ -3361,7 +3462,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             folds,
             true,
@@ -3377,7 +3477,6 @@ mod tests {
     /// participates in `differs_from`.
     #[test]
     fn theme_version_bump_triggers_rebuild() {
-        let theme = crate::ui::theme::Theme::default();
         let snap = snap_of_versioned("ab", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let v_a = MatrixVersion {
@@ -3391,7 +3490,7 @@ mod tests {
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
         let rs1 =
-            rs_with_snapshot_themed(Some(snap.clone()), v_a, matrix_cell.clone(), None, theme);
+            rs_with_snapshot_themed(Some(snap.clone()), v_a, matrix_cell.clone(), None);
         assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
 
@@ -3400,7 +3499,7 @@ mod tests {
         assert_eq!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
 
         // Bump only the theme axis: must rebuild.
-        let rs2 = rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None, theme);
+        let rs2 = rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None);
         assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
     }
@@ -3421,7 +3520,6 @@ mod tests {
     /// branch produces a correct matrix.
     #[test]
     fn whole_doc_with_edit_takes_incremental_branch() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // First publish: 3-line doc at text_version 1, no edit.
@@ -3436,7 +3534,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3459,7 +3556,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3499,7 +3595,6 @@ mod tests {
     /// the fix is gated on `removed == added == 0`.
     #[test]
     fn whole_doc_incremental_rebuilds_intra_line_edited_row() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         let snap1 = snap_of_versioned("word\nbb\ncc", 1);
@@ -3513,7 +3608,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3542,7 +3636,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3581,7 +3674,6 @@ mod tests {
     /// re-projected each rebuild) to the canonical `DisplayMatrix`.
     #[test]
     fn whole_doc_incremental_reuses_unchanged_rows() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
@@ -3595,7 +3687,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3627,7 +3718,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3656,7 +3746,6 @@ mod tests {
     /// `DisplayLine` (keeping whatever colour they had).
     #[tokio::test]
     async fn sync_rebuild_on_edit_is_text_current_and_unhighlighted() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // v1: plain seed (no handle) → prior whole-doc display matrix.
@@ -3671,7 +3760,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3707,7 +3795,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             Some(handle),
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3718,7 +3805,14 @@ mod tests {
         let cells = loaded.cells.load();
         let pane = &cells.panes[0];
         assert!(
-            sync_rebuild_pane_on_edit(pane, &cells.theme, &cells.whitespace),
+            sync_rebuild_pane_on_edit(
+                pane,
+                CellTheme {
+                    resolved: &cells.resolved_theme,
+                    ids: &cells.theme_ids,
+                },
+                &cells.whitespace
+            ),
             "single in-place edit is eligible for the sync rebuild"
         );
 
@@ -3746,7 +3840,6 @@ mod tests {
     /// untouched, deferring to the async worker's full/highlighted build.
     #[test]
     fn sync_rebuild_skips_non_edit_publish() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
         let v1 = MatrixVersion {
@@ -3759,7 +3852,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3784,7 +3876,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3795,7 +3886,14 @@ mod tests {
         let cells = loaded.cells.load();
         let pane = &cells.panes[0];
         assert!(
-            !sync_rebuild_pane_on_edit(pane, &cells.theme, &cells.whitespace),
+            !sync_rebuild_pane_on_edit(
+                pane,
+                CellTheme {
+                    resolved: &cells.resolved_theme,
+                    ids: &cells.theme_ids,
+                },
+                &cells.whitespace
+            ),
             "non-edit publish is ineligible for the sync rebuild"
         );
         assert_eq!(
@@ -3813,7 +3911,6 @@ mod tests {
     /// reporting `Recomputed` so the cell renderers repaint current content.
     #[test]
     fn worker_projects_lagging_cells_after_sync_rebuild() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
         let v1 = MatrixVersion {
@@ -3826,7 +3923,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3852,7 +3948,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3865,7 +3960,10 @@ mod tests {
             let pane = &cells.panes[0];
             assert!(sync_rebuild_pane_on_edit(
                 pane,
-                &cells.theme,
+                CellTheme {
+                    resolved: &cells.resolved_theme,
+                    ids: &cells.theme_ids,
+                },
                 &cells.whitespace
             ));
         }
@@ -3909,9 +4007,13 @@ mod tests {
     /// would either miscolour or skip the keyword.
     #[tokio::test]
     async fn h1_scoped_highlight_colours_the_edited_line() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let keyword_fg = resolve_style(&theme, lattice_syntax::Style::Keyword).0;
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let keyword_fg = resolve_style(ct, lattice_syntax::Style::Keyword).0;
 
         // v1: plain seed (no syntax handle) → prior whole-doc matrix.
         let snap1 = snap_of_versioned("let a = 1;\nlet b = 2;\nlet c = 3;\n", 1);
@@ -3925,7 +4027,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme.clone(),
             Vec::new(),
             Vec::new(),
             true,
@@ -3958,7 +4059,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             Some(handle),
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -3983,7 +4083,6 @@ mod tests {
     /// start at 17.
     #[test]
     fn chunked_incremental_reuses_prefix_and_shifts_suffix() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // 25 lines: "l0\nl1\n...\nl24".
@@ -4002,7 +4101,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4043,7 +4141,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4119,7 +4216,6 @@ mod tests {
     /// the missing chunked-mode guarantee. (feedback_decorations_update_in_place)
     #[test]
     fn chunked_incremental_reuses_rows_in_rebuild_zone() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // 25 lines → viewport 5 ⇒ chunked, chunk_size 16, chunks [0,16)+[16,25).
@@ -4138,7 +4234,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4181,7 +4276,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4226,7 +4320,6 @@ mod tests {
     /// undo/redo/multi-edit batch).
     #[test]
     fn no_last_edit_falls_back_to_full_rebuild() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb", 1);
         let v1 = MatrixVersion {
@@ -4239,7 +4332,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4261,7 +4353,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4276,7 +4367,6 @@ mod tests {
     /// reuse cell colours.
     #[test]
     fn theme_axis_change_disables_incremental() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb", 1);
         let v1 = MatrixVersion {
@@ -4290,7 +4380,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4313,7 +4402,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4332,7 +4420,6 @@ mod tests {
     /// versions coincidentally line up).
     #[test]
     fn line_count_mismatch_disables_incremental() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of_versioned("aa\nbb", 1);
         let v1 = MatrixVersion {
@@ -4345,7 +4432,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4369,7 +4455,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4384,7 +4469,6 @@ mod tests {
     /// after adding enough lines).
     #[test]
     fn mode_change_disables_incremental() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         // 5 lines + viewport 5 → whole-doc (5 <= 20).
         let snap1 = snap_of_versioned("a\nb\nc\nd\ne", 1);
@@ -4398,7 +4482,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4427,7 +4510,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4443,7 +4525,6 @@ mod tests {
     /// branch; downstream chunks shift by the negative delta.
     #[test]
     fn chunked_incremental_handles_deletion() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // 30 lines so we land squarely in chunked mode at viewport
@@ -4463,7 +4544,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4493,7 +4573,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4521,7 +4600,6 @@ mod tests {
     /// processes stale intermediate states.
     #[test]
     fn coalescing_walks_decision_state_machine() {
-        let theme = crate::ui::theme::Theme::default();
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         // Tick 1: initial publish, no prior matrix → full Recomputed.
@@ -4536,7 +4614,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4563,7 +4640,6 @@ mod tests {
             v2,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4587,7 +4663,6 @@ mod tests {
             v3,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4597,35 +4672,35 @@ mod tests {
         assert_eq!(recompute(&rs3), WorkerDecision::Recomputed);
     }
 
-    /// Cells worker and highlights worker write to independent
+    /// Cells worker and overlay worker write to independent
     /// `ArcSwap` cells. Driving cells `recompute` does NOT touch
-    /// the spans cell, and (vice versa) driving the highlights
-    /// worker does not corrupt the matrix cell. The shared
-    /// `RenderState` substrate stays consistent across both.
+    /// the overlay quads cell (the overlay worker's output). The
+    /// shared `RenderState` substrate stays consistent across both.
+    ///
+    /// display-line B4.2: the dead `VisibleSpans` / `VisibleRows`
+    /// sentinel cells this test used were deleted; the surviving
+    /// sibling cell is `static_overlay_quads`, so the independence
+    /// invariant is now asserted against it.
     #[test]
-    fn cells_worker_does_not_corrupt_spans_cell() {
-        let theme = crate::ui::theme::Theme::default();
+    fn cells_worker_does_not_corrupt_overlay_cell() {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let spans_cell: Arc<ArcSwap<crate::render_state::VisibleSpans>> = Arc::default();
-        let rows_cell: Arc<ArcSwap<crate::render_state::VisibleRows>> = Arc::default();
         let overlay_cell: Arc<ArcSwap<crate::render_state::StaticOverlayQuads>> = Arc::default();
 
-        // Seed a sentinel value into the spans cell so we can
+        // Seed a sentinel value into the overlay cell so we can
         // detect any unintended mutation.
         let sentinel_key = crate::render_state::VisibleHighlightsKey {
             snapshot_ptr: 0xdead_beef,
             ..Default::default()
         };
-        spans_cell.store(Arc::new(crate::render_state::VisibleSpans {
-            spans: Arc::from(Vec::new().into_boxed_slice()),
+        overlay_cell.store(Arc::new(crate::render_state::StaticOverlayQuads {
+            quads: Arc::from(Vec::new().into_boxed_slice()),
             computed_for_key: sentinel_key,
         }));
-        let pre_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+        let pre_overlay_ptr = Arc::as_ptr(&overlay_cell.load_full());
 
         // Run a cells recompute against a RenderState that
         // happens to share the same `render_state` Arc shape. The
-        // cells path must not touch spans_cell / rows_cell /
-        // overlay_cell.
+        // cells path must not touch overlay_cell.
         let snap = snap_of_versioned("aa\nbb", 1);
         let v1 = MatrixVersion {
             text: 1,
@@ -4637,7 +4712,6 @@ mod tests {
             v1,
             matrix_cell.clone(),
             None,
-            theme,
             Vec::new(),
             Vec::new(),
             true,
@@ -4646,19 +4720,16 @@ mod tests {
         );
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
-        // Spans cell remains at the sentinel — Arc identity
+        // Overlay cell remains at the sentinel — Arc identity
         // unchanged.
-        let post_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+        let post_overlay_ptr = Arc::as_ptr(&overlay_cell.load_full());
         assert_eq!(
-            pre_spans_ptr, post_spans_ptr,
-            "cells recompute must not touch the spans cell"
+            pre_overlay_ptr, post_overlay_ptr,
+            "cells recompute must not touch the overlay quads cell"
         );
 
         // Matrix cell has been updated.
         assert!(!matrix_cell.load().is_empty());
-
-        // Hold the cells unused so they're not optimised away.
-        let _ = (rows_cell, overlay_cell);
     }
 
     /// End-to-end smoke test through the actual `run` loop in a
@@ -4681,7 +4752,6 @@ mod tests {
         runtime.block_on(async move {
             use tokio::time::{Duration, timeout};
 
-            let theme = crate::ui::theme::Theme::default();
             let render_state: Arc<ArcSwap<RenderState>> =
                 Arc::new(ArcSwap::from_pointee(RenderState::default()));
             let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
@@ -4728,6 +4798,7 @@ mod tests {
                         wrap: false,
                         foldenable: true,
                         last_edit,
+                        excerpt_syntax: Arc::from([]),
                     };
                     let cells = CellsRenderState {
                         matrix: matrix_cell.clone(),
@@ -4741,7 +4812,10 @@ mod tests {
                         viewport_height: 5,
                         foldenable: true,
                         last_edit,
-                        theme,
+                        resolved_theme: std::sync::Arc::new(
+                            crate::ui::theme::ResolvedTheme::default(),
+                        ),
+                        theme_ids: crate::ui::theme::BuiltinElementIds::default(),
                         whitespace: WhitespaceConfig::default(),
                         panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
                         pane_matrices: {
@@ -4831,7 +4905,6 @@ mod tests {
         runtime.block_on(async move {
             use tokio::time::{Duration, timeout};
 
-            let theme = crate::ui::theme::Theme::default();
             let render_state: Arc<ArcSwap<RenderState>> =
                 Arc::new(ArcSwap::from_pointee(RenderState::default()));
             let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
@@ -4876,6 +4949,7 @@ mod tests {
                 wrap: false,
                 foldenable: true,
                 last_edit: None,
+                excerpt_syntax: Arc::from([]),
             };
             let cells = CellsRenderState {
                 matrix: matrix_cell.clone(),
@@ -4889,7 +4963,8 @@ mod tests {
                 viewport_height: 5,
                 foldenable: true,
                 last_edit: None,
-                theme,
+                resolved_theme: std::sync::Arc::new(crate::ui::theme::ResolvedTheme::default()),
+                theme_ids: crate::ui::theme::BuiltinElementIds::default(),
                 whitespace: WhitespaceConfig::default(),
                 panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
                 pane_matrices: {
@@ -4963,6 +5038,7 @@ mod tests {
             wrap: false,
             foldenable: true,
             last_edit: None,
+            excerpt_syntax: Arc::from([]),
         }
     }
 
@@ -4987,12 +5063,16 @@ mod tests {
     fn recompute_pane_stamps_wrap_width_and_invalidates_on_toggle() {
         let snap = snap_of("a line that is clearly wider than the wrap width\n");
         let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
         let ws = WhitespaceConfig::default();
 
         // Wrap off ⇒ stamped width 0 (one display row per line).
         let mut p = pane_inputs(matrix_cell.clone(), Some(snap), v(1), 10);
-        let _ = recompute_pane(&p, &theme, &ws);
+        let _ = recompute_pane(&p, ct, &ws);
         assert_eq!(matrix_cell.load().wrap_width, 0);
         assert_eq!(matrix_cell.load().segment_count(0), 1);
 
@@ -5002,7 +5082,7 @@ mod tests {
         // long line now spans multiple display segments.
         p.wrap = true;
         p.viewport_width = 8;
-        let decision = recompute_pane(&p, &theme, &ws);
+        let decision = recompute_pane(&p, ct, &ws);
         assert!(
             matches!(
                 decision,
@@ -5023,7 +5103,11 @@ mod tests {
     #[test]
     fn recompute_pane_expands_tabs_to_tabstop_width() {
         let snap = snap_of("\tab");
-        let theme = crate::ui::theme::Theme::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
 
         // Whitespace off, tabstop 4 ⇒ leading tab → 4 space cells,
         // then `ab` ⇒ col_count 6. No WS_MARKER, no literal `\t`.
@@ -5033,7 +5117,7 @@ mod tests {
         };
         let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
         let p = pane_inputs(matrix_cell.clone(), Some(snap.clone()), v(1), 10);
-        let _ = recompute_pane(&p, &theme, &plain);
+        let _ = recompute_pane(&p, ct, &plain);
         let m = matrix_cell.load();
         let row = m.row_at_source_line(0).expect("row 0");
         assert_eq!(row.col_count(), 6, "tab(4) + 'ab'(2)");
@@ -5058,7 +5142,7 @@ mod tests {
         };
         let matrix_cell2 = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
         let p2 = pane_inputs(matrix_cell2.clone(), Some(snap), v(1), 10);
-        let _ = recompute_pane(&p2, &theme, &marked);
+        let _ = recompute_pane(&p2, ct, &marked);
         let m2 = matrix_cell2.load();
         let row2 = m2.row_at_source_line(0).expect("row 0");
         assert_eq!(row2.col_count(), 6);
@@ -5253,13 +5337,12 @@ mod tests {
     /// `main`, the paren punctuation) do NOT carry either bit.
     #[test]
     fn keyword_cells_carry_bold_comment_cells_carry_italic() {
-        let theme = crate::ui::theme::Theme::default();
         let text = "fn main() {}\n// comment\n";
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle), theme);
+            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
@@ -5301,7 +5384,6 @@ mod tests {
     /// dedicated inlay path, not from `theme.syntax_style(...)`.
     #[test]
     fn inlay_cells_do_not_inherit_syntax_modifiers() {
-        let theme = crate::ui::theme::Theme::default();
         let text = "fn x";
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
@@ -5315,7 +5397,6 @@ mod tests {
             v(1),
             matrix_cell.clone(),
             Some(handle),
-            theme,
             hints,
         );
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);

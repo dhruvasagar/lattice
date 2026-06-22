@@ -79,6 +79,42 @@ pub type ActionHandler = Arc<
     dyn Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static,
 >;
 
+/// SN.3c.0: a *global* (buffer-agnostic) action-handler
+/// contribution declared by a mode via
+/// [`Mode::action_handlers`](crate::Mode::action_handlers).
+///
+/// Use this for handlers whose body reads the active buffer /
+/// cursor / services from the [`ActionContext`] at call time and
+/// closes over no per-buffer state — they are registered ONCE at
+/// boot (the host walks every mode's `action_handlers()`,
+/// resolves `action_name` → `CommandId`, and registers the
+/// handler), and live for the app's lifetime. The owning chord's
+/// per-keystroke mode gating (K.1.c) still scopes *where the
+/// chord fires*; the handler itself is global.
+///
+/// Per-buffer handlers (tied to a live session / per-activation
+/// state) must NOT use this — they register in
+/// [`Mode::on_activate`](crate::Mode::on_activate) so their
+/// `ActionHandlerRegistration` token drops with the mode's Guard.
+/// See `feedback_effect_vocabulary_is_host_boundary`.
+#[derive(Clone)]
+pub struct ActionHandlerContribution {
+    /// Canonical command name (e.g. `"action:snippet-expand"`).
+    /// The host resolves this to a `CommandId` via the command
+    /// registry at registration time.
+    pub action_name: &'static str,
+    /// The handler closure registered for `action_name`.
+    pub handler: ActionHandler,
+}
+
+impl std::fmt::Debug for ActionHandlerContribution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionHandlerContribution")
+            .field("action_name", &self.action_name)
+            .finish_non_exhaustive()
+    }
+}
+
 /// M.10.1.b (2026-06-03): typed handle for `ServiceRegistry`
 /// lookup. Boot registers a fresh `ActionHandlerRegistry` under
 /// this alias; modes pull it from `on_activate` via

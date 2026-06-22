@@ -41,30 +41,22 @@ use super::SnippetCandidateMeta;
 use lattice_host::dispatch::EffectiveCompletionConfig;
 
 impl App {
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
-    /// 5.5.SNIPPET.1: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_expand_at_cursor`].
-    /// Delegate retained for direct test callers in this file and
-    /// for the `Effect::SnippetExpand` route through `App::apply`.
-    pub fn do_snippet_expand_at_cursor(&mut self) {
-        // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(|e| e.do_snippet_expand_at_cursor());
-    }
+    // SN.3c.1 (2026-06-14): the `do_snippet_expand_at_cursor` App
+    // delegate is gone. `<C-x><C-s>` is mode-owned now — `snippet-mode`
+    // contributes the chord (`keymap()`) + a global handler
+    // (`action_handlers()`) that emits `Effect::ExpandSnippet`; the
+    // host resolves + expands via `Editor::expand_snippet_from_range`,
+    // which the `Effect::ExpandSnippet` apply arm calls directly.
 
-    /// `<Tab>` while a snippet is active -- jump to the next
-    /// placeholder. Exits the snippet on `$0`.
-    /// 5.5.G.8: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_next_placeholder`].
-    /// Delegate retained for direct test callers in this file.
-    pub fn do_snippet_next_placeholder(&mut self) {
-        self.mutate_editor(|e| e.do_snippet_next_placeholder());
-    }
-
-    /// 5.5.G.8: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_snippet_prev_placeholder`].
-    pub fn do_snippet_prev_placeholder(&mut self) {
-        self.mutate_editor(|e| e.do_snippet_prev_placeholder());
-    }
+    // SN.2b (2026-06-12): the `do_snippet_next/prev_placeholder`
+    // App delegates are gone. `<Tab>` / `<S-Tab>` placeholder
+    // navigation is mode-owned — `active-snippet-mode` registers
+    // `ActionContext -> Effect` closures on the
+    // `ActionHandlerRegistry`, and the real chord flows through
+    // the host's generic dispatch → registry-lookup path (the
+    // same path the project-search `<CR>` / `gr` chords use). The
+    // authoritative handler-level test lives in
+    // `lattice_snippet::modes`.
 
     /// `:reload-snippets` -- 5.8.AF.3: body migrated to
     /// [`lattice_host::dispatch::Editor::do_reload_snippets`].
@@ -305,7 +297,7 @@ mod tests {
     use crate::app::completion_kind_glyph;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, app_with_path, fresh_path_workspace, install_snippet,
-        open_popup_with_top_text, set_rust_syntax,
+        open_popup_with_top_text, press, set_rust_syntax,
     };
     use crate::app::*;
 
@@ -424,12 +416,21 @@ mod tests {
         assert_ne!(f, v);
     }
 
+    // SN.3c.1 (2026-06-14): the expand path is now driven by the
+    // host's `Editor::expand_snippet_from_range(replace_range)` — the
+    // mode-owned `<C-x><C-s>` handler scans the word prefix and emits
+    // `Effect::ExpandSnippet { replace_range }`; these tests exercise
+    // the host's resolution + expansion mechanics by calling it with
+    // the range the scan would produce (`token-start..cursor`). The
+    // scan itself (range computation) is covered in
+    // `lattice_snippet::modes` (`trigger_range_*`).
+
     #[test]
-    fn snippet_expand_at_cursor_splices_body_and_focuses_first_tabstop() {
-        // Buffer: `for `; cursor sits past the prefix `for`
-        // so the lookup picks it up. After expansion we
-        // expect the snippet's literal text in the buffer
-        // and an active snippet pointing at $1.
+    fn snippet_expand_from_range_splices_body_and_focuses_first_tabstop() {
+        // Buffer: `for`; the trigger range covers the prefix `for`
+        // (token-start..cursor = (0,0)..(0,3)). After expansion we
+        // expect the snippet's literal text in the buffer and an
+        // active snippet pointing at $1.
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
@@ -440,91 +441,210 @@ mod tests {
             "for",
             "for ${1:i} in ${2:iter} { $0 }",
         );
-        a.do_snippet_expand_at_cursor();
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
         // Buffer text should be the rendered snippet.
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
         // Active snippet present, focused on $1.
-        let active = a.editor.active_snippet.as_ref().expect("snippet active");
-        assert_eq!(active.current_index(), Some(1));
+        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("snippet active").current_index());
+        assert_eq!(snippet_index, Some(1));
         // Cursor at start of `i`.
         assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
+    /// SN.3d.3: expanding a snippet whose first placeholder has a
+    /// MULTI-char default selects the default in Select mode, so the
+    /// next printable key overtypes the whole thing and drops to Insert
+    /// — the conventional "type-to-replace-placeholder" snippet UX.
     #[test]
-    fn snippet_next_placeholder_walks_through_groups_and_drops_on_zero() {
+    fn snippet_expand_selects_multichar_default_then_overtypes() {
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        install_snippet(
-            &mut a,
-            "*",
-            "for-loop",
-            "for",
-            "for ${1:i} in ${2:iter} { $0 }",
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:iter} {}");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        // Rendered with the default; "iter" (bytes 4..8) is SELECTED and
+        // the buffer is in Select mode.
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for iter {}");
+        assert!(
+            matches!(a.editor.modal, ModalState::Select(lattice_grammar::VisualKind::Charwise)),
+            "first multi-char placeholder focuses in Select, got {:?}",
+            a.editor.modal
         );
-        a.do_snippet_expand_at_cursor();
-        // Now at $1.
-        assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
-            Some(1)
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 4), "anchor at default start");
+        assert_eq!(sel.head, Position::new(0, 7), "head on the default's last byte");
+
+        // A printable key overtypes the whole default and lands in Insert.
+        a.apply(Action::SelectOvertype('x'));
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for x {}");
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "overtype drops to Insert, got {:?}",
+            a.editor.modal
         );
-        a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
-            Some(2)
-        );
-        a.do_snippet_next_placeholder();
-        // $0 is the exit; at this point we're focused on it.
-        assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
-            Some(0)
-        );
-        a.do_snippet_next_placeholder();
-        // Past $0 -> snippet dropped.
-        assert!(a.editor.active_snippet.is_none());
     }
 
+    /// SN.3d.3: an EMPTY first tabstop (`$1`) keeps the bare Insert
+    /// cursor — there is nothing to overtype, so we do NOT enter Select.
     #[test]
-    fn snippet_prev_placeholder_walks_back() {
+    fn snippet_expand_empty_tabstop_stays_in_insert() {
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
-        a.do_snippet_expand_at_cursor();
-        a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
-            Some(2)
+        install_snippet(&mut a, "*", "call", "for", "foo($1)");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo()");
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "empty tabstop keeps Insert, got {:?}",
+            a.editor.modal
         );
-        a.do_snippet_prev_placeholder();
+        assert_eq!(a.editor.cursor, Position::new(0, 4), "cursor inside the parens");
+    }
+
+    // SN.2b (2026-06-12): the placeholder-navigation tests
+    // (`snippet_next_placeholder_walks_through_groups_and_drops_on_zero`,
+    // `snippet_prev_placeholder_walks_back`) moved to
+    // `lattice_snippet::modes` as a handler-level dispatch test —
+    // the `<Tab>` / `<S-Tab>` bodies are now `active-snippet-mode`
+    // `ActionHandlerRegistry` closures, so the session-transition
+    // coverage belongs where the handlers live.
+
+    /// SN.3c.2b: end-to-end keystroke proof of the `<Esc>` fall-through.
+    /// Expand a snippet (session live), reconcile so
+    /// `active-snippet-mode` activates, then drive `<Esc>` through the
+    /// full `translate` → `App::apply` path. The mode's `<Esc>` is
+    /// `fall_through: true`, so `dispatch_insert` resolves it to a
+    /// `Chain([snippet-leave, enter-normal])`; `App::apply` runs both —
+    /// the leave handler clears the session AND the native `<Esc>` exits
+    /// insert. Exercises the whole pipeline the unit tests cover in
+    /// pieces (gating → fall-through resolution → Chain apply).
+    #[test]
+    fn snippet_esc_clears_session_and_exits_insert_end_to_end() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        // Reconcile session-backed minors so `active-snippet-mode`
+        // activates on the buffer (mirrors the per-apply reconcile).
+        a.sync_keymap_overlays();
+        assert!(
+            a.editor.snippet_session.is_active(a.editor.document_buffer_id),
+            "snippet session live after expand"
+        );
+        let minors = a
+            .editor
+            .active_modes
+            .get(&a.editor.document_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+        assert!(
+            minors.contains(&lattice_snippet::modes::SnippetActiveMode::mode_id()),
+            "active-snippet-mode must be active so <Esc> resolves to the fall_through binding, got {minors:?}"
+        );
+
+        // The real keystroke: <Esc> through translate + apply.
+        press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(
+            !a.editor.snippet_session.is_active(a.editor.document_buffer_id),
+            "leave handler cleared the session"
+        );
         assert_eq!(
-            a.editor.active_snippet.as_ref().unwrap().current_index(),
-            Some(1)
+            a.editor.modal,
+            ModalState::Normal,
+            "fall-through continued to the native <Esc> → exit insert"
         );
     }
 
+    /// SN.3d.4: `<Tab>` navigates between placeholders WHILE a
+    /// default-bearing placeholder is focused in Select — proving the
+    /// snippet minor-mode bindings are live in Select, not just Insert.
+    /// Tabbing past a default keeps it (no overtype), landing on the
+    /// next placeholder, still in Select.
     #[test]
-    fn snippet_expand_with_no_match_is_a_no_op() {
+    fn snippet_tab_navigates_between_placeholders_in_select_mode() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        a.sync_keymap_overlays();
+        assert_eq!(
+            a.editor.document.snapshot().buffer.as_string(),
+            "for i in iter {  }"
+        );
+        // First placeholder `i` (bytes 4..5) selected in Select.
+        assert!(matches!(
+            a.editor.modal,
+            ModalState::Select(lattice_grammar::VisualKind::Charwise)
+        ));
+
+        // <Tab> through translate + apply: navigate to placeholder 2
+        // WITHOUT overtyping `i`.
+        press(&mut a, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        // `i` is untouched; we're on `iter` (bytes 9..13), still Select.
+        assert_eq!(
+            a.editor.document.snapshot().buffer.as_string(),
+            "for i in iter {  }",
+            "tabbing past a default keeps it"
+        );
+        assert!(
+            matches!(
+                a.editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
+            "next placeholder is focused in Select, got {:?}",
+            a.editor.modal
+        );
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 9), "anchor at `iter` start");
+        assert_eq!(sel.head, Position::new(0, 12), "head on `iter` last byte");
+    }
+
+    #[test]
+    fn snippet_expand_from_range_with_no_match_is_a_no_op() {
         let mut a = app_with("xyz", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        a.do_snippet_expand_at_cursor();
-        assert!(a.editor.active_snippet.is_none());
+        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        assert!(!a.editor.snippet_session.is_active(a.editor.document_buffer_id));
         // Buffer unchanged.
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
 
-    #[test]
-    fn snippet_expand_outside_insert_mode_is_a_no_op() {
-        let mut a = app_with("for", 10);
-        a.editor.cursor = Position::new(0, 3);
-        // Stay in Normal -- guard inside `do_snippet_expand_at_cursor`.
-        install_snippet(&mut a, "*", "for-loop", "for", "for $1 {}");
-        a.do_snippet_expand_at_cursor();
-        assert!(a.editor.active_snippet.is_none());
-        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for");
-    }
+    // SN.3c.1 (2026-06-14): the old `snippet_expand_outside_insert_mode_is_a_no_op`
+    // test is retired. The Insert-mode guard moved off the host method
+    // onto the keymap layer — `<C-x><C-s>` is an Insert-only entry on
+    // `snippet-mode`'s `keymap()`, so the chord cannot fire in Normal
+    // mode and `expand_snippet_from_range` no longer carries a modal
+    // check. Modal scoping is now a keymap concern, not a host-method
+    // concern.
 
     #[test]
     fn completion_trigger_includes_snippet_candidate_for_matching_prefix() {
@@ -575,8 +695,8 @@ mod tests {
         // Popup closed; active snippet is in flight focused on
         // $1; buffer reflects expansion.
         assert!(a.editor.insert_completion.is_none());
-        let active = a.editor.active_snippet.as_ref().expect("active snippet");
-        assert_eq!(active.current_index(), Some(1));
+        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("active snippet").current_index());
+        assert_eq!(snippet_index, Some(1));
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");
     }

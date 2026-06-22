@@ -87,6 +87,18 @@ pub enum Action {
     EnterMode(ModalState),
     /// Vim's `a`: move cursor one byte right (clamped) and enter Insert.
     EnterAppend,
+    /// Vim's `I`: move to first non-blank of line and enter Insert.
+    EnterInsertFirstNonBlank,
+    /// Vim's `A`: move to end of line and enter Insert.
+    EnterAppendEndOfLine,
+    /// Vim's `gj`: move down one display line (wrap segment).
+    DisplayLineDown,
+    /// Vim's `gk`: move up one display line (wrap segment).
+    DisplayLineUp,
+    /// Vim's `g0`: move to the first byte of the current display segment.
+    DisplayLineStart,
+    /// Vim's `g$`: move to the last byte of the current display segment.
+    DisplayLineEnd,
     /// Vim's blockwise-visual `I`: move cursor to the leftmost
     /// column of the block on the top line, enter Insert, and on
     /// Esc replicate the typed text to every other line in the
@@ -112,6 +124,27 @@ pub enum Action {
     /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
     /// as the most recently exited Visual selection.
     ReselectLastVisual,
+    /// SN.3d Select-mode entry (`gh` / `gH` / `g<C-h>`) — anchor a
+    /// zero-width Select selection of the named kind at the cursor,
+    /// mirroring [`Self::EnterVisual`]. Typing then overtypes it.
+    EnterSelect(VisualKind),
+    /// SN.3d Select mode — a bare printable key replaces the whole
+    /// selection with this char and drops into Insert (one undo step).
+    /// The load-bearing new behaviour: see
+    /// `docs/dev/architecture/select-mode.md` §3. Emitted only by
+    /// `translate_select`'s printable fallthrough; the host handler
+    /// (`do_select_overtype`) lands it as a single `Edit::replace`.
+    SelectOvertype(char),
+    /// SN.3d Select-mode `<Esc>` — collapse the selection to a cursor
+    /// and drop to Normal (the Select analogue of [`Self::ExitVisual`]).
+    ExitSelect,
+    /// SN.3d `<C-g>` — toggle between `Visual(k)` and `Select(k)`,
+    /// preserving the selection geometry (reserved in both modes for
+    /// this toggle). One handler flips whichever of the two is active.
+    ToggleVisualSelect,
+    /// Vim's `o` in Visual -- swap the cursor to the other end of the
+    /// selection so motions / text objects act on that end.
+    SwapVisualEnds,
     /// Vim's `*` (Forward) and `#` (Backward) -- search for the word under
     /// the cursor in the given direction.
     SearchWordUnderCursor(SearchDirection),
@@ -282,23 +315,20 @@ pub enum Action {
     /// action keeps the input layer ignorant of commit-char
     /// state -- the App reads it once at apply time.
     CompletionAcceptThenInsert(char),
-    /// `<C-x><C-s>` -- direct snippet expansion (Phase
-    /// 4.2.g.4). Looks up the word at the cursor in the
-    /// per-language snippet registry; expands the matching
-    /// snippet directly without surfacing the popup. No-op
-    /// when no snippet matches.
-    SnippetExpand,
-    /// `<Tab>` inside the active-snippet minor mode -- jump
-    /// to the next placeholder. Returns to no-op when at
-    /// `$0`; the minor mode then deactivates.
-    SnippetNextPlaceholder,
-    /// `<S-Tab>` inside the active-snippet minor mode --
-    /// jump to the previous placeholder.
-    SnippetPrevPlaceholder,
-    /// `<Esc>` while a snippet is active -- exit the snippet
-    /// (placeholders become plain text); also exits Insert
-    /// per vim convention.
-    SnippetLeave,
+    // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
+    // `<C-x><C-s>` is mode-owned now (`snippet-mode`'s `keymap()` +
+    // `action_handlers()` emit `Effect::ExpandSnippet`); no host
+    // `Action` round-trip. (`feedback_mode_owns_its_surface`.)
+    // SN.2b (2026-06-12): `SnippetNextPlaceholder` /
+    // `SnippetPrevPlaceholder` removed — `<Tab>` / `<S-Tab>`
+    // placeholder navigation is mode-owned
+    // (`active-snippet-mode`'s `ActionHandlerRegistry` closures),
+    // not a host `Action`.
+    // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed.
+    // `<Esc>` while a snippet is active is mode-owned now
+    // (`active-snippet-mode`'s per-buffer handler clears the
+    // session + returns `Effect::EnterMode(Normal)`); no host
+    // `Action` round-trip. (`feedback_mode_owns_its_surface`.)
     /// D.5.b (2026-05-30): diff-mode `do` operator. Resolves
     /// the hunk under the cursor on the current side of the
     /// active `DiffSession` for the current buffer and
@@ -398,6 +428,10 @@ pub enum Action {
     JumpToMarkExact(char),
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
+    /// Open the command picker (`:`/`M-x`). On accept: if the
+    /// chosen command needs a required arg, arm the cmdline;
+    /// otherwise execute immediately.
+    OpenCommandPicker,
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
     EnterCommandLine,
     /// Append a character to the in-progress command line.
@@ -663,4 +697,13 @@ pub enum Action {
     /// Clear `pending_redraw` after the renderer has cleared the
     /// terminal buffer in response to `<C-l>` (`RedrawScreen`).
     AcknowledgeRedraw,
+    /// SN.3c.2b: run a sequence of actions in order. Produced by
+    /// `dispatch_insert` for a `fall_through` binding —
+    /// `[mode_action, native_action]` — where the mode's chord
+    /// augments a native chord (`active-snippet-mode`'s `<Esc>` clears
+    /// the session, then continues to the builtin `<Esc>` → exit
+    /// insert). The renderer's `apply` applies each in order. General
+    /// (not snippet-specific): any future binding that wants to run +
+    /// continue resolves to a `Chain`.
+    Chain(Vec<Action>),
 }

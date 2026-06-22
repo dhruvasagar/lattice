@@ -76,7 +76,6 @@ use crate::state::{
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
-use crate::ui::theme::Theme as HostTheme;
 use crate::versioned::Versioned;
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
@@ -149,7 +148,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `help_topics`, `host_theme`).
 /// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
 ///   `registry`, `event_bus`, `builtins`, `action_ids`,
-///   `keymap`, `completion_popup_layer`, `snippet_layer`).
+///   `keymap`, `completion_popup_layer`).
 /// - 5.B.16 -- active-pane state (subset) (`cursor`,
 ///   `scroll`, `should_quit`, `viewport_height`,
 ///   `terminal_width`, `active_buffer`,
@@ -217,7 +216,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `App` are the renderer-specific caches (`theme`,
 ///   `pane_render_registry`) plus the `LspFileWatcher`
 ///   wrapper -- `App` becomes a thin renderer wrapper.
-/// Cross-thread wake signal for the highlights worker.
+/// Cross-thread wake signal for the overlay worker.
 ///
 /// Wraps `Arc<tokio::sync::Notify>` so `Editor` can keep its
 /// `#[derive(Default)]` (Notify itself doesn't impl Default).
@@ -226,9 +225,10 @@ use lattice_protocol::position::Position as ProtoPosition;
 /// `publish_render_state` so the worker re-evaluates inputs after
 /// every state change without polling.
 ///
-/// Phase 5.8.AF.5 / Slice X2.
+/// Phase 5.8.AF.5 / Slice X2; renamed from `HighlightWake` in
+/// display-line B4.2 (the worker no longer makes highlights).
 #[derive(Clone)]
-pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
+pub struct OverlayWake(pub Arc<tokio::sync::Notify>);
 
 /// 2026-05-26: invocation-runner function pointer. The host
 /// registers one per [`lattice_mode::Mode`] whose
@@ -239,20 +239,20 @@ pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
 /// central dispatch.
 pub type InvocationRunnerFn = fn(&mut Editor, lattice_grammar::CommandInvocation) -> bool;
 
-impl Default for HighlightWake {
+impl Default for OverlayWake {
     fn default() -> Self {
         Self(Arc::new(tokio::sync::Notify::new()))
     }
 }
 
-impl std::fmt::Debug for HighlightWake {
+impl std::fmt::Debug for OverlayWake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HighlightWake").finish_non_exhaustive()
+        f.debug_struct("OverlayWake").finish_non_exhaustive()
     }
 }
 
 /// S2.1 (2026-05-26): wake signal for the cell-builder worker
-/// (S2.2+). Same shape as [`HighlightWake`]: a `Notify` cloned
+/// (S2.2+). Same shape as [`OverlayWake`]: a `Notify` cloned
 /// into [`Editor::cells_wake`] and a sibling clone held by the
 /// worker task. `publish_render_state` fires `notify_one()`
 /// after every dispatch tick so the worker re-evaluates inputs
@@ -291,6 +291,36 @@ impl Default for CellsWake {
 impl std::fmt::Debug for CellsWake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CellsWake").finish_non_exhaustive()
+    }
+}
+
+/// A minor mode whose active/inactive state is driven by a
+/// predicate reading a shared, mode-owned session service —
+/// reconciled on the active buffer each `sync_keymap_overlays`
+/// cycle. Modes contribute these at boot so the generic
+/// overlay-sync carries no subsystem-specific knowledge:
+/// `active-snippet-mode` keys off the shared `SnippetSession`
+/// (`lattice_snippet::snippet_active_predicate`). See
+/// `feedback_mode_owns_its_surface`.
+#[derive(Clone)]
+pub struct SessionBackedMinor {
+    /// `true` ⇒ the mode should be active on the **given buffer**.
+    /// SN.3e: the predicate is buffer-scoped so a session live in one
+    /// buffer never activates the mode in another; `sync_keymap_overlays`
+    /// passes the buffer it is reconciling.
+    pub active: std::sync::Arc<dyn Fn(lattice_core::BufferId) -> bool + Send + Sync>,
+    /// The minor mode toggled by `active`.
+    pub mode_id: lattice_mode::ModeId,
+}
+
+impl std::fmt::Debug for SessionBackedMinor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The predicate closure isn't Debug and is now buffer-scoped
+        // (no buffer to evaluate against here); report the mode it
+        // drives instead.
+        f.debug_struct("SessionBackedMinor")
+            .field("mode_id", &self.mode_id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -611,6 +641,16 @@ pub struct Editor {
     /// shows the original buffer afterwards.
     pub pending_picker_preview_origin: Option<lattice_core::BufferId>,
 
+    /// T.12a: the theme to restore if the colorscheme picker is
+    /// dismissed (`<Esc>`). Captured on the FIRST live preview as a
+    /// `(palette, overrides)` snapshot of the theme active when the
+    /// picker opened. `<Esc>` calls `ThemeRegistry::set_theme` with
+    /// these to undo the preview; `<CR>` clears it (keeps the
+    /// previewed theme). Mirrors `pending_picker_preview_origin` —
+    /// `None` when no colorscheme preview is in flight.
+    pub pending_theme_preview_restore:
+        Option<(lattice_theme::Palette, Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>)>,
+
     /// Handle to the per-document actor (or, in M.1+, a
     /// composing multibuffer handle) and its snapshot cache.
     /// M.0: typed as the [`ActiveDocument`] newtype around
@@ -641,7 +681,10 @@ pub struct Editor {
     /// `Overlay` providers (HunkFoldProvider lands in D.3.f.1;
     /// excerpt + file-boundary providers land in M.7 / M.8).
     /// See `docs/dev/architecture/fold-architecture.md`.
-    pub fold_registry: crate::fold_provider::FoldRegistry,
+    /// M.7: shared behind `Arc<Mutex>` so `FoldOverlayServiceImpl`
+    /// can call `add_overlay`/`remove_overlay` from mode-activation
+    /// context (outside `&mut Editor`) without blocking the UI thread.
+    pub fold_registry: std::sync::Arc<std::sync::Mutex<crate::fold_provider::FoldRegistry>>,
     /// D.4.a (2026-05-29): scroll-binding pane groups. Each
     /// entry binds a set of `(pane, buffer)` pairs through a
     /// pluggable `RowMapper`; propagation runs at
@@ -670,6 +713,13 @@ pub struct Editor {
     ///   `remove_participant_buffer`; if arity drops to 0 the
     ///   subsystem auto-drops the session and this clears
     ///   back to `None`.
+    /// D.0b (2026-06-08): id of the singleton identity-mapper
+    /// pane group that backs `:set scrollbind`. `None` when no
+    /// panes currently have `scrollbind=true` (the group is
+    /// dropped when the last member opts out). Rebuilt by
+    /// `rebuild_scrollbind_group` on every `scrollbind`
+    /// option-change cascade.
+    pub scrollbind_group_id: Option<lattice_core::ui::pane::PaneGroupId>,
     pub diffthis_group: Option<lattice_core::BufferId>,
     /// D.8.e (2026-05-31): pane members corresponding to each
     /// participant of the diffthis group, in `:diffthis`-call
@@ -780,11 +830,15 @@ pub struct Editor {
     /// integrations register additional topics through the
     /// same registry.
     pub help_topics: Arc<HelpTopicRegistry>,
-    /// Renderer-neutral canonical theme. `:set ui.*` writes
-    /// this; the renderer's cached adapter (e.g.
-    /// `lattice_ui_tui::App.theme`) is rebuilt from this on
-    /// every successful cascade.
-    pub host_theme: HostTheme,
+    /// T.4: builtin element ids interned once at boot from the
+    /// `ThemeRegistryHandle` (looked up from [`Self::services`]).
+    /// Snapshotted (Copy) into `RenderState` so a renderer read is
+    /// `resolved.get(ids.<elem>)`. The registry handle itself lives
+    /// only in `services` (it is `Arc<dyn ThemeRegistry>`, which has no
+    /// `Default`, so it cannot be a field on this `derive(Default)`
+    /// struct); `build_render_state` looks it up to snapshot
+    /// `resolved()`.
+    pub builtin_element_ids: crate::ui::theme::BuiltinElementIds,
     /// Buffer-level modal state machine (DESIGN.md §5.2).
     /// One of Normal / Insert / Visual / Op-pending /
     /// Command / Search / Replace.
@@ -828,11 +882,6 @@ pub struct Editor {
     /// layer when the popup is open; `None` otherwise.
     /// Pushed / popped in lockstep with `insert_completion`.
     pub completion_popup_layer: Option<LayerId>,
-    /// `LayerId` of the active-snippet minor-mode layer
-    /// when a snippet is in flight; `None` otherwise. Same
-    /// lockstep pattern as
-    /// [`Self::completion_popup_layer`].
-    pub snippet_layer: Option<LayerId>,
     /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
     /// the host editor.
     pub completion_registry: lattice_completion::CompletionRegistry,
@@ -857,6 +906,21 @@ pub struct Editor {
     /// reload path swaps the inner via `.store()` so the mode's
     /// next produce sees the fresh data.
     pub snippet_registry: Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
+    /// SN.3b: shared cell holding the folded `snippet-mode`
+    /// [`ActivationPolicy`](lattice_mode::ActivationPolicy).
+    /// `register_snippet_modes` creates it (default `Global`) and the
+    /// `snippet-mode` gate reads it on every `MajorEntered`; boot +
+    /// the `snippet.activation` / `snippet.languages`
+    /// `apply_option_cascade` arm fold config into it via
+    /// `lattice_snippet::fold_activation_policy`.
+    pub snippet_activation_policy: lattice_snippet::SnippetActivationPolicyHandle,
+    /// SN.3c.0: app-lifetime registration tokens for modes'
+    /// declarative *global* action handlers (`Mode::action_handlers()`,
+    /// registered once at boot by
+    /// [`crate::mode_action_handlers::register_mode_action_handlers`]).
+    /// Held here so the handlers stay registered for the editor's
+    /// whole lifetime; dropped at shutdown when `Editor` drops.
+    pub global_action_handler_regs: Vec<lattice_mode::ActionHandlerRegistration>,
     /// Sidecar metadata for snippet candidates in the active
     /// insert-completion popup.
     /// CSM.5: retired. Snippet candidates now carry their stable
@@ -887,11 +951,23 @@ pub struct Editor {
     /// `true` while the active insert-completion popup is in
     /// path-completion mode (Phase 4.2.g.6 (2/2)).
     pub completion_in_path_context: bool,
-    /// Live snippet expansion. `Some` while a snippet is
-    /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
-    /// Dropped on `$0` consumption / `<Esc>` / cursor moving
-    /// outside the snippet's tabstop ranges.
-    pub active_snippet: Option<lattice_snippet::ActiveSnippet>,
+    /// Live snippet expansion (SN.2: relocated to a shared
+    /// `SnippetSession` service so the `SnippetActiveMode`-owned
+    /// `<Tab>` / `<S-Tab>` handlers can reach it). Active while a
+    /// snippet is expanding; the session ends on `$0` consumption /
+    /// `<Esc>` / cursor leaving the tabstop ranges. The same `Arc` is
+    /// registered in `ServiceRegistry` under `SnippetSessionHandle`.
+    pub snippet_session: lattice_snippet::SnippetSessionHandle,
+    /// Session-backed minor modes reconciled on the active buffer
+    /// each `sync_keymap_overlays` cycle (one entry per
+    /// service-driven minor). Each pairs a predicate — reading a
+    /// shared, mode-owned session service — with the minor's
+    /// `ModeId`; the mode is active iff its predicate is true. Modes
+    /// contribute these at boot (`active-snippet-mode` keys off the
+    /// shared `SnippetSession`), so the generic overlay-sync carries
+    /// no subsystem-specific `is_active()` literal
+    /// (`feedback_mode_owns_its_surface`).
+    pub session_backed_minors: Vec<SessionBackedMinor>,
     /// Per-language directories from which snippet packs are
     /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
     pub snippet_dirs: Vec<PathBuf>,
@@ -908,6 +984,11 @@ pub struct Editor {
     /// in lockstep with the active pane's stash so cross-
     /// pane jumps restore the right position.
     pub cursor: ProtoPosition,
+    /// Sticky display-column target for `gj`/`gk` (vim's `w_curswant`).
+    /// Stores the byte offset within the current wrap segment so
+    /// consecutive display-line moves try to land at the same column.
+    /// `None` between any non-display-line motion.
+    pub goal_col: Option<u32>,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
     /// Quit flag. The main loop reads this and tears down
@@ -937,16 +1018,24 @@ pub struct Editor {
     /// every open buffer regardless of kind -- documents,
     /// file trees, future outline / diagnostics views.
     pub buffers: BufferRegistry,
-    /// Accumulated `$/progress` state keyed by
-    /// `(server_id, token)`. `Begin` inserts; `Report`
-    /// updates; `End` removes. The modeline picks the most
-    /// recent active entry to surface.
-    /// Perf plan B.4: wrapped in [`Versioned`]. `$/progress` events
-    /// fire at a moderate cadence (~10/s during compile bursts),
-    /// but most publish ticks don't see any change; the inner
-    /// HashMap clone in `build_render_state` can be elided via
-    /// the lsp.progress sub-state cache.
-    pub lsp_progress: Versioned<HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>>,
+    /// ML.0b-2: shared modeline element service (descriptor registry +
+    /// content store, ArcSwap-backed). The SAME `Arc` is registered into
+    /// `services` at boot so modes reach it via
+    /// `ctx.service::<ModelineServiceHandle>()`; the host reads
+    /// `modeline.snapshot()` each `build_render_state` into
+    /// `RenderState.modeline_elements`. `Arc<ModelineService>` is
+    /// `Default`, so `#[derive(Default)]` on `Editor` still holds (the
+    /// boot literal overrides it with the registered instance).
+    pub modeline: lattice_mode::ModelineServiceHandle,
+    /// ML.3: actor-thread drain channel for [`lattice_mode::ModelineElementUpdate`]
+    /// events pushed by modes/plugins over the event bus. Boot subscribes
+    /// a sender; `drain_modeline_element_updates` (in `run_tick_pending`)
+    /// applies each into `modeline`'s content store (single-writer). A
+    /// separate boot subscription fires `async_landed` so a pushed update
+    /// repaints off-keystroke (§12 wake). `Option` is `Default` (None), so
+    /// `#[derive(Default)]` on `Editor` still holds.
+    pub modeline_update_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModelineElementUpdate>>,
     /// Cached `textDocument/selectionRange` chain for the
     /// smart-expansion operator.
     pub lsp_selection_chain: Option<LspSelectionChain>,
@@ -1023,7 +1112,28 @@ pub struct Editor {
         crate::per_buffer_cache::PerBufferCache<LspPullDiagnosticsCache>,
     // ---- LSP subsystem handles + log/progress channels ----
     pub lsp: LspSupervisorHandle,
+    /// ML.3c: handle to the `lattice-lsp`-owned progress/status store
+    /// (decision A — the accumulator relocated out of the host). The
+    /// modeline forwarder writes it; the host reads it here only for
+    /// `:lsp-progress-cancel` (in-flight cancellable tokens). `Arc<…>` is
+    /// `Default`, so `#[derive(Default)]` on `Editor` still holds.
+    pub lsp_progress_store: lattice_lsp::modeline::LspProgressStoreHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
+    /// L4a.2 (lsp-architecture.md §15): inline cursor-line
+    /// diagnostic-summary idle gate. `inline_diag_line` is the line
+    /// the gate is currently timing (the cursor line at arm time);
+    /// `inline_diag_deadline` is the [`tokio::time::Instant`] at which
+    /// its summary becomes visible (the actor's pinned sleep targets
+    /// it); `inline_diag_visible` flips true when that deadline passes
+    /// and back to false on re-arm (new cursor line) / Insert mode /
+    /// `ui.diagnostics.inline = off`. The published summary in
+    /// `DiagnosticsRenderState::inline_summary` is recomputed each
+    /// `build_render_state` while visible, so diagnostics landing on
+    /// the line after the gate fires refresh it for free. See
+    /// `update_inline_diag_gate` / `fire_inline_diag_gate`.
+    pub inline_diag_line: Option<u32>,
+    pub inline_diag_deadline: Option<tokio::time::Instant>,
+    pub inline_diag_visible: bool,
     pub lsp_logger: LspLogger,
     /// 4.4.l.2 / 5.8.AA.o / 5.8.AF.5: file-watcher service handle.
     /// `None` until the first actor with `workspace/didChangeWatchedFiles`
@@ -1053,52 +1163,30 @@ pub struct Editor {
     /// `editor.render_state.load_full()` once per frame and read
     /// every per-frame field through the returned snapshot.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>>,
-    /// Phase 5.8.AF.5 / Slice X2: wake signal for the
-    /// highlights worker. `publish_render_state` fires
-    /// `highlight_wake.0.notify_one()` at its tail so the worker
+    /// Phase 5.8.AF.5 / Slice X2: wake signal for the overlay
+    /// worker. `publish_render_state` fires
+    /// `overlay_wake.0.notify_one()` at its tail so the worker
     /// re-evaluates the syntax inputs published into
-    /// `RenderState.syntax` and recomputes spans on a cache miss.
-    /// `Notify` coalesces — a burst of publishes wakes the worker
-    /// once, which is what we want (it always reads the latest
-    /// published inputs anyway).
-    pub highlight_wake: HighlightWake,
-    /// Phase 5.8.AF.5 / Slice X2: durable spans cell shared with
-    /// the highlights worker. The worker stores fresh
-    /// `VisibleSpans` into this cell whenever the cache key
-    /// changes; renderers read it via
-    /// `render_state.syntax.visible_spans.load()`.
+    /// `RenderState.syntax` and re-buckets overlay quads on a cache
+    /// miss. `Notify` coalesces — a burst of publishes wakes the
+    /// worker once, which is what we want (it always reads the
+    /// latest published inputs anyway).
     ///
-    /// Lives on `Editor` (not just inside `SyntaxRenderState`) so
-    /// the `Arc` identity stays stable across every
-    /// `publish_render_state` call — `build_render_state` clones
-    /// this Arc into the new snapshot. The worker holds its own
-    /// clone of the same Arc, so its writes survive subsequent
-    /// publishes.
-    pub syntax_visible_spans_cell:
-        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleSpans>>,
-    /// Perf plan A.2 slice A.2a: parallel cell carrying the worker's
-    /// pre-painted [`crate::render_state::VisibleRows`] output for
-    /// the GPUI peer's per-frame consumption. Same stability
-    /// rationale as `syntax_visible_spans_cell`: the Arc identity
-    /// lives on `Editor` so `build_render_state` clones it into
-    /// every snapshot; the worker holds a sibling clone and writes
-    /// directly. TUI keeps reading `visible_spans`; migration of
-    /// the TUI compose loop to `visible_rows` is a follow-up.
-    pub syntax_visible_rows_cell:
-        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleRows>>,
+    /// display-line B4.2: renamed from `highlight_wake`; the dead
+    /// span/row prepaint cache the worker also fed was deleted.
+    pub overlay_wake: OverlayWake,
     /// Perf plan B.2 slice B.2.a: parallel cell carrying the
     /// worker's per-row pre-bucketed static-overlay quads
     /// (doc_highlight / all_matches / substitute) for the active
-    /// pane's visible window. Same stability rationale as
-    /// `syntax_visible_rows_cell`: the Arc identity lives on
-    /// `Editor` so `build_render_state` clones it into every
-    /// snapshot; the worker writes directly and renderer peers
-    /// read the latest write via the published Arc without a
-    /// republish round-trip.
+    /// pane's visible window. The Arc identity lives on `Editor` so
+    /// `build_render_state` clones it into every snapshot; the
+    /// overlay worker writes directly and renderer peers read the
+    /// latest write via the published Arc without a republish
+    /// round-trip.
     pub syntax_static_overlay_quads_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>>,
     /// S2.1 (2026-05-26): cell-grid renderer output cell. Same
-    /// stability pattern as `syntax_visible_spans_cell`: the Arc
+    /// stability pattern as `syntax_static_overlay_quads_cell`: the Arc
     /// identity lives on `Editor` so `build_render_state` clones
     /// it into every snapshot; the cell-builder worker (S2.2+)
     /// holds a sibling clone and writes directly via
@@ -1289,8 +1377,6 @@ pub struct Editor {
     /// downstream UI-redraw signal fired after a worker publishes.
     pub async_landed: std::sync::Arc<tokio::sync::Notify>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
-    pub lsp_progress_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
     pub lsp_config_tree: toml::Table,
     /// Perf plan B.4.b: wrapped in [`Versioned`] so the buffers
     /// sub-state cache can elide the per-publish HashMap clone.
@@ -1416,6 +1502,12 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::events::LspBufferDetached>>,
     pub pending_mode_lifecycle_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
+    /// MA.2: receives `Event::MajorEntered` so the per-tick
+    /// minor-activation resolver (`drain_minor_activation`) can
+    /// auto-activate minors whose `ActivationPolicy` admits the
+    /// just-entered major on this buffer's kind.
+    pub pending_major_entered_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     pub pending_insert_completion_lsp_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
     pub pending_insert_completion_lsp_token: Option<CancellationToken>,

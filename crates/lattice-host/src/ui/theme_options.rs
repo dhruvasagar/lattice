@@ -103,6 +103,40 @@ lattice_config::options! {
     #[validate(validate_separator)]
     pub UiSeparator: String = String::from("│");
 
+    /// Character drawn in the row separating stacked (horizontal-
+    /// split) panes (default `─`, U+2500). Currently used only by
+    /// layouts that disable per-pane status lines; the per-pane
+    /// status line otherwise delimits horizontal splits.
+    #[name("ui.separator-horizontal")]
+    #[validate(validate_separator)]
+    pub UiSeparatorHorizontal: String = String::from("─");
+
+    /// Glyph drawn in the gutter severity column for an
+    /// Error-severity diagnostic (default `■`). One character; the
+    /// *colour* resolves through the `diagnostic.error` theme
+    /// element, not this option.
+    #[name("ui.diagnostic-error-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticErrorGlyph: String = String::from("■");
+
+    /// Glyph drawn in the gutter severity column for a
+    /// Warning-severity diagnostic (default `▲`).
+    #[name("ui.diagnostic-warning-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticWarningGlyph: String = String::from("▲");
+
+    /// Glyph drawn in the gutter severity column for an
+    /// Information-severity diagnostic (default `●`).
+    #[name("ui.diagnostic-info-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticInfoGlyph: String = String::from("●");
+
+    /// Glyph drawn in the gutter severity column for a
+    /// Hint-severity diagnostic (default `·`).
+    #[name("ui.diagnostic-hint-glyph")]
+    #[validate(validate_separator)]
+    pub UiDiagnosticHintGlyph: String = String::from("·");
+
     /// Foreground color of the pane separator. Accepts named ANSI
     /// colors (red, blue, darkgray, ...) and `default` for the
     /// terminal default.
@@ -131,6 +165,22 @@ lattice_config::options! {
     /// Pick this if you see `?` boxes in the file tree / oil.
     #[name("ui.nerd_fonts")]
     pub UiNerdFonts: bool = false;
+
+    /// Whether to enable OpenType ligatures in the GPUI renderer.
+    ///
+    /// `true` (default) -- shaper defaults apply (`calt`/`liga` active).
+    /// Ligature-capable fonts (Fira Code, JetBrains Mono, Cascadia
+    /// Code, Iosevka) will substitute multi-char sequences like
+    /// `->` / `!=` / `=>` with a single presentation glyph.
+    ///
+    /// `false` -- calls `FontFeatures::disable_ligatures()` before
+    /// shaping; all sequences render as individual glyphs.
+    ///
+    /// The TUI renderer ignores this option — ligatures in the
+    /// terminal are controlled by the terminal emulator's font
+    /// settings.
+    #[name("ui.ligatures")]
+    pub UiLigatures: bool = true;
 
     /// Font family used by the GPUI (native window) renderer.
     /// Accepts a single font family name. The font MUST be a
@@ -181,6 +231,59 @@ mod tests {
         // BMP fallback is the default so the first frame renders
         // in any terminal font.
         assert!(!*r.get_typed::<UiNerdFonts>().unwrap());
+        // T.6.t: the non-style chrome chars + diagnostic glyphs
+        // migrated off the host `Theme` struct to `ui.*` options.
+        // Defaults must match the deleted struct's literals exactly.
+        assert_eq!(
+            r.get_typed::<UiSeparatorHorizontal>().unwrap().as_str(),
+            "─"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticErrorGlyph>().unwrap().as_str(),
+            "■"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticWarningGlyph>().unwrap().as_str(),
+            "▲"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticInfoGlyph>().unwrap().as_str(),
+            "●"
+        );
+        assert_eq!(
+            r.get_typed::<UiDiagnosticHintGlyph>().unwrap().as_str(),
+            "·"
+        );
+    }
+
+    #[test]
+    fn diagnostic_glyph_options_accept_single_char_overrides() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("ui.diagnostic-error-glyph=E").unwrap();
+        assert_eq!(
+            r.get_typed::<UiDiagnosticErrorGlyph>().unwrap().as_str(),
+            "E"
+        );
+        // Multi-char rejected by the shared single-char validator.
+        let err = r
+            .parse_and_set_command("ui.diagnostic-hint-glyph=hi")
+            .unwrap_err();
+        assert!(format!("{err}").contains("must be one character"));
+    }
+
+    #[test]
+    fn ui_ligatures_option_parses_and_default_is_true() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(
+            *r.get_typed::<UiLigatures>().unwrap(),
+            "ui.ligatures should default to true"
+        );
+        r.parse_and_set_command("ui.ligatures=off").unwrap();
+        assert!(!*r.get_typed::<UiLigatures>().unwrap());
+        r.parse_and_set_command("ui.ligatures=on").unwrap();
+        assert!(*r.get_typed::<UiLigatures>().unwrap());
     }
 
     #[test]

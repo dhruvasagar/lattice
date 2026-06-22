@@ -177,32 +177,12 @@ impl App {
     }
 
     pub fn modal_label(&self) -> &'static str {
-        // 3c.atomic.E: renderer-side modal read through the
-        // published `ActiveDocumentRenderState` cell. The modeline
-        // and other status renderers call this once per frame.
-        let ad = self.ad();
-        // Terminal-mode T2.a (2026-05-25): when the active buffer
-        // is a Terminal, the label reflects the terminal sub-state
-        // rather than the underlying modal state (which stays
-        // `Normal` while `terminal-insert-mode` is the discriminator).
-        if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
-            return if ad.terminal_insert_active {
-                "TERMINAL-INSERT"
-            } else if ad.terminal_visual_active {
-                "TERMINAL-VISUAL"
-            } else {
-                "TERMINAL"
-            };
-        }
-        match ad.modal {
-            ModalState::Normal => "NORMAL",
-            ModalState::Insert => "INSERT",
-            ModalState::Visual(_) => "VISUAL",
-            ModalState::OperatorPending => "O-PEND",
-            ModalState::Command => "CMD",
-            ModalState::Search(_) => "SEARCH",
-            ModalState::Replace => "REPLACE",
-        }
+        // ML.1a-render: the modal-label vocabulary is defined once,
+        // host-side (`lattice_host::modeline::modal_label`), so the
+        // modeline's `core.mode` content and this accessor never drift.
+        // Reads the published `ActiveDocumentRenderState` cell (no actor
+        // crossing); called once per pane per frame.
+        lattice_host::modeline::modal_label(&self.render_state.load())
     }
 
     /// 5.5.G.17: body migrated to

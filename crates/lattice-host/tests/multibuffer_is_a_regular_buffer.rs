@@ -105,6 +105,7 @@ fn boot_with_multibuffer() -> (Editor, BufferId) {
         Some("*test:multibuffer*".into()),
         BufferFlags::default(),
         registry_for_view,
+        None,
     );
 
     (editor, view_id)
@@ -524,23 +525,33 @@ fn virtual_row_matrix_carries_excerpt_headers() {
     let (mut editor, view_id) = boot_with_multibuffer();
     activate_pane(&mut editor, view_id);
 
-    // After create_multibuffer_view, the header provider
+    // After create_multibuffer_view, the excerpt-header provider
     // should be registered against view_id. Confirm via the
     // public snapshot API.
+    //
+    // M.6.5 (2026-06-08): create_multibuffer_view also registers a
+    // view-status headerline provider, so there are two providers
+    // against the view now. Select the K.4.6 excerpt-header provider
+    // by its deterministic id rather than asserting a single
+    // registration.
     let providers = editor.virtual_row_providers.snapshot(view_id);
     assert_eq!(
         providers.len(),
-        1,
-        "create_multibuffer_view should have registered \
-         exactly one virtual-row provider (the multibuffer \
-         header provider) — got {}",
+        2,
+        "create_multibuffer_view should register the excerpt-header \
+         provider + the view-status headerline provider — got {}",
         providers.len()
     );
+    let header_id = lattice_multibuffer::multibuffer_excerpt_header_provider_id(view_id);
+    let header_provider = providers
+        .iter()
+        .find(|p| p.id() == header_id)
+        .expect("the excerpt-header provider must be registered against the view");
 
     // The provider's collect() emits one VirtualRow per excerpt.
     // The test's synthetic multibuffer has two excerpts so
     // exactly two header rows should land in the matrix.
-    let rows = providers[0].collect();
+    let rows = header_provider.collect();
     assert_eq!(
         rows.len(),
         2,
@@ -560,15 +571,159 @@ fn virtual_row_matrix_carries_excerpt_headers() {
     assert!(matches!(rows[1].position, AnchorPosition::Above));
 }
 
+/// K.4.7: per-excerpt syntax highlighting uses the source language,
+/// not the composed view's name (`*test:multibuffer*` → Plain).
+///
+/// Contracts tested:
+/// 1. When `lang_registry` is wired, `excerpt_syntax_entries()` on the
+///    handle returns one entry per source that has a detectable language.
+/// 2. A `recompute_pane` call with those entries produces at least one
+///    row whose `StyledSpan` list is non-empty — meaning the worker
+///    applied source-language highlights, not the plain fallback.
 #[test]
-#[ignore = "K.4.7 dependency — per-excerpt syntax highlighting not yet wired"]
 fn syntax_highlights_per_excerpt_use_source_language() {
-    // K.4.7 contract: an excerpt sourced from a `.rs` buffer
-    // should carry rust tree-sitter spans on its rows; an
-    // excerpt from a `.md` buffer should carry markdown spans.
-    // Today every row in a multibuffer view falls back to
-    // `Lang::Plain` and renders unstyled because the composed
-    // snapshot's filename is `*test:multibuffer*` which
-    // detects as Plain.
-    panic!("K.4.7 unimplemented — per-excerpt syntax not in place");
+    use std::sync::Arc;
+    use arc_swap::ArcSwap;
+    use lattice_cells::{CellMatrix, MatrixVersion, VirtualRowMatrix};
+    use lattice_core::{Document as CoreDocument, DocumentBuilder};
+    use lattice_host::cells_worker::recompute_pane;
+    use lattice_host::render_state::{ExcerptSyntax, PaneCellsInputs};
+    use lattice_multibuffer::{Excerpt, MultibufferRegistryHandle, create_multibuffer_view};
+    use lattice_runtime::{Document as RtDocument, spawn_document};
+
+    let mut editor = lattice_host::editor::Editor::boot(CoreDocument::from_text("scratch\n"));
+    let lr = editor.lang_registry.clone();
+
+    // Source A: Rust file — lang_registry will detect Lang::Rust from the path.
+    let rust_text = "fn main() {\n    let x = 1;\n}\n";
+    let src_a_doc = DocumentBuilder::default()
+        .with_text(rust_text)
+        .with_path("src/main.rs")
+        .build();
+    let src_a = spawn_document(BufferId(201), src_a_doc, editor.registry.clone());
+
+    let mut sources: HashMap<BufferId, Arc<dyn lattice_runtime::Document>> = HashMap::new();
+    sources.insert(
+        BufferId(201),
+        Arc::new(src_a) as Arc<dyn lattice_runtime::Document>,
+    );
+
+    let excerpts = vec![Excerpt::new(BufferId(201), 0, 3)];
+    let registry_for_view = editor.registry.clone();
+
+    let view_id = create_multibuffer_view(
+        &mut editor,
+        sources,
+        excerpts,
+        Some("*test:syntax-k47*".into()),
+        BufferFlags::default(),
+        registry_for_view,
+        Some(lr),
+    );
+
+    // 1. The typed handle must report at least one excerpt syntax entry
+    //    (Rust was detected → SyntaxHandle created for BufferId(201)).
+    let mb_reg = editor
+        .services
+        .get::<MultibufferRegistryHandle>()
+        .expect("MultibufferRegistryHandle must be registered");
+    let mb = mb_reg
+        .handle(view_id)
+        .expect("multibuffer view must be in registry");
+
+    // Give the seeded parse a moment to propagate through ArcSwap.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let entries = mb.excerpt_syntax_entries();
+    assert!(
+        !entries.is_empty(),
+        "K.4.7: excerpt_syntax_entries() is empty — SyntaxHandle was not created \
+         for the Rust source. Check lang_registry wiring in add_source."
+    );
+    // Validate tuple field ordering: (composed_start, composed_end, source_start, handle).
+    // Before the K.4.7 bug-fix the tuple was (composed_start, source_start, source_end, _),
+    // which produced composed_end < composed_start and wildly wrong src_lo in the highlighter.
+    let (cs0, ce0, ss0, _) = &entries[0];
+    assert_eq!(*cs0, 0, "K.4.7: first excerpt must start at composed row 0");
+    assert!(
+        *ce0 > *cs0,
+        "K.4.7: composed_end ({ce0}) must exceed composed_start ({cs0}) for a multi-line excerpt \
+         — likely tuple field ordering bug in excerpt_syntax_entries()"
+    );
+    assert_eq!(
+        *ss0, 0,
+        "K.4.7: source_start must be 0 for a full-file excerpt starting at line 0 \
+         (got {ss0}) — likely tuple field ordering bug in excerpt_syntax_entries()"
+    );
+
+    // 2. Build a minimal PaneCellsInputs with the excerpt handles and
+    //    run recompute_pane; at least one row should have non-empty spans.
+    let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+    let snap = mb.snapshot();
+    let text_v = snap.text_version;
+    let excerpt_syntax_arc: Arc<[ExcerptSyntax]> = entries
+        .into_iter()
+        .map(|(cs, ce, ss, h)| ExcerptSyntax {
+            composed_start: cs,
+            composed_end: ce,
+            source_start: ss,
+            handle: h,
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+        .into();
+
+    let pane = PaneCellsInputs {
+        pane_id: lattice_core::ui::pane::PaneId::default(),
+        buffer_id: view_id,
+        matrix: matrix_cell,
+        display_matrix: Arc::new(ArcSwap::from_pointee(
+            lattice_host::display_matrix::DisplayMatrix::empty(),
+        )),
+        virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty())),
+        version: MatrixVersion {
+            text: text_v,
+            syntax: text_v,
+            ..MatrixVersion::ZERO
+        },
+        snapshot: Some(snap),
+        syntax_handle: None,
+        inlay_hints: Arc::from([]),
+        folds: Arc::from([]),
+        viewport_height: 10,
+        scroll: 0,
+        viewport_width: 0,
+        wrap: false,
+        foldenable: false,
+        last_edit: None,
+        excerpt_syntax: excerpt_syntax_arc,
+    };
+
+    // T.6.t: the host `Theme` struct is gone; `recompute_pane` reads
+    // syntax styles through a `CellTheme { resolved, ids }` (T.5). Build
+    // one from the default theme registry — the same construction the
+    // renderers use at boot.
+    use lattice_host::ui::theme::ThemeRegistry as _;
+    let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+    let resolved = reg.resolved();
+    let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+    let ct = lattice_host::cells_worker::CellTheme {
+        resolved: &resolved,
+        ids: &ids,
+    };
+    let ws = lattice_host::cells_worker::WhitespaceConfig::default();
+    recompute_pane(&pane, ct, &ws);
+
+    let matrix = pane.matrix.load();
+    let has_spans = matrix.chunks.iter().any(|chunk| {
+        chunk
+            .rows
+            .iter()
+            .any(|row| row.cells.iter().any(|c| c.fg != 0))
+    });
+    assert!(
+        has_spans,
+        "K.4.7: all rows rendered with default fg — excerpt syntax highlighting \
+         did not apply. Check highlight_range_multibuffer wiring in recompute_pane."
+    );
 }

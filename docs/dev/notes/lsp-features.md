@@ -4,6 +4,15 @@ Single source of truth for which LSP 3.17 capabilities `lattice`
 implements and which are planned. Updated every commit that
 moves a row.
 
+Sequencing for the in-flight polish work (the async-result render-wake
+fix, server lifecycle state, status surfaces, diagnostics inline/popup)
+lives in the [LSP slice plan](../operations/slice-plans/lsp.md); the
+design contracts are in
+[lsp-architecture.md](../architecture/lsp-architecture.md) §12–§15.
+Note: rows below marked ✅ for `$/progress`, `semanticTokens`, and
+`inlayHint` cover wire + cache; they only repaint off-keystroke once
+slice **L1** lands.
+
 Status legend:
 
 | Status | Meaning                                        |

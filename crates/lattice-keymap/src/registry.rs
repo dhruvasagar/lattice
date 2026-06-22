@@ -525,6 +525,50 @@ impl KeymapHandle {
         self.bind_bound(layer, mode, path, bound);
     }
 
+    /// Register one binding across SEVERAL modes in a single call.
+    /// Equivalent to calling [`Self::bind`] once per mode, but inserts
+    /// into every mode's trie under one lock and rebuilds the merged
+    /// trie + reverse cache ONCE (not per mode). The same
+    /// `Arc<BoundCommand>` is shared across the modes' tries.
+    ///
+    /// This is the imperative multi-mode primitive `init.rs` / plugins /
+    /// host helpers use directly (the declarative peer is
+    /// [`crate::Keymap::bind_chord_modes`] and the `keymap_entry!`
+    /// `mode: [..]` form). `modes` must be non-empty; an empty slice is
+    /// a no-op.
+    pub fn bind_modes(
+        &self,
+        layer: KeymapLayer,
+        modes: &[BindingMode],
+        path: &[ChordPattern],
+        command: CommandInvocation,
+        source: SourceLocation,
+    ) {
+        if modes.is_empty() {
+            return;
+        }
+        let bound = Arc::new(BoundCommand::from_invocation(command, source, layer));
+        let label = default_label(layer);
+        let (merged, minors) = {
+            let mut inner = self.registry.inner.lock().expect("registry mutex");
+            let layer_ref = inner.layer_mut(layer, &label);
+            for &mode in modes {
+                layer_ref
+                    .modes
+                    .entry(mode)
+                    .or_default()
+                    .insert(path, bound.clone());
+            }
+            (
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
+        };
+        self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.rebuild_reverse_cache();
+    }
+
     /// Lower-level binder: register a pre-built
     /// `Arc<BoundCommand>` directly. Used by the per-mode
     /// migration helpers (`keymap_replace::register_replace_bindings`
@@ -757,10 +801,14 @@ impl KeymapHandle {
             .into_iter()
             .map(|(layer, command)| {
                 let active = match layer {
-                    KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
-                    KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => {
-                        active_modes.contains(&id)
-                    }
+                    // MajorMode is always-on: it lives in the always_on
+                    // merged trie used by lookup_with_context, so its
+                    // bindings fire regardless of which modes are active.
+                    KeymapLayer::Builtin
+                    | KeymapLayer::MajorMode(_)
+                    | KeymapLayer::User
+                    | KeymapLayer::Buffer => true,
+                    KeymapLayer::MinorMode(id) => active_modes.contains(&id),
                 };
                 LayerHit { layer, command, active }
             })
@@ -977,16 +1025,14 @@ pub enum PushLayerKind {
 
 fn default_label(layer: KeymapLayer) -> String {
     match layer {
-        KeymapLayer::Builtin => "builtin".into(),
-        KeymapLayer::MajorMode(mode_id) => format!("major-mode:{mode_id}"),
-        // K.1.b: layer label derives from the ModeId's canonical
-        // name, so `:describe-key` provenance reads
-        // `minor-mode:diff-mode` directly from the typed id —
-        // no label-string indirection that could drift from the
-        // mode's actual name.
-        KeymapLayer::MinorMode(mode_id) => format!("minor-mode:{mode_id}"),
-        KeymapLayer::User => "user".into(),
-        KeymapLayer::Buffer => "buffer".into(),
+        // K.2.4.A.2: user-facing friendly labels, not Debug slugs.
+        KeymapLayer::Builtin => "Built-in".into(),
+        KeymapLayer::MajorMode(mode_id) => format!("Major mode: {mode_id}"),
+        // K.1.b: label derives from ModeId so `:describe-key`
+        // provenance reads `Minor mode: diff-mode` without drift.
+        KeymapLayer::MinorMode(mode_id) => format!("Minor mode: {mode_id}"),
+        KeymapLayer::User => "User config".into(),
+        KeymapLayer::Buffer => "Buffer".into(),
     }
 }
 
@@ -1031,6 +1077,47 @@ mod tests {
             }
             other => panic!("expected Bound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bind_modes_registers_in_every_named_mode() {
+        let h = KeymapHandle::new();
+        h.bind_modes(
+            KeymapLayer::Builtin,
+            &[BindingMode::Normal, BindingMode::Visual],
+            &[lit('z'), lit('n')],
+            invocation(7),
+            src("zn"),
+        );
+        for mode in [BindingMode::Normal, BindingMode::Visual] {
+            match h.lookup(mode, &[pressed('z'), pressed('n')]) {
+                LookupResult::Bound { command, .. } => {
+                    assert_eq!(command.command.command, CommandId::new(7));
+                }
+                other => panic!("expected Bound in {mode:?}, got {other:?}"),
+            }
+        }
+        // A mode that was NOT named stays unbound.
+        assert!(matches!(
+            h.lookup(BindingMode::Insert, &[pressed('z'), pressed('n')]),
+            LookupResult::Unbound
+        ));
+    }
+
+    #[test]
+    fn bind_modes_empty_slice_is_a_noop() {
+        let h = KeymapHandle::new();
+        h.bind_modes(
+            KeymapLayer::Builtin,
+            &[],
+            &[lit('x')],
+            invocation(1),
+            src("x"),
+        );
+        assert!(matches!(
+            h.lookup(BindingMode::Normal, &[pressed('x')]),
+            LookupResult::Unbound
+        ));
     }
 
     #[test]

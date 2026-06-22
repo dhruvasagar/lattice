@@ -458,11 +458,12 @@ fn production_keymap() -> (
     let b = lattice_grammar::builtins::populate(&mut r);
     let _ex = lattice_grammar::ex_commands::populate(&mut r);
     let a = lattice_ui_tui::actions::populate(&mut r, &b);
+    let so = lattice_syntax::register_syntax_text_objects(&mut r);
     let h = KeymapHandle::new();
     lattice_ui_tui::keymap_replace::register_replace_bindings(&h, &a);
-    lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a);
+    lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a, &so);
     lattice_ui_tui::keymap_insert::register_insert_bindings(&h, &a);
-    lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a);
+    lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a, &so);
     (h, b, a)
 }
 

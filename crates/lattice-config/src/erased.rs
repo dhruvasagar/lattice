@@ -32,6 +32,17 @@ pub trait ErasedOption: Send + Sync {
     /// concatenated error if either stage fails.
     fn parse_and_set(&self, value: &str) -> Result<(), String>;
 
+    /// Parse `value` against the option's [`OptionType`] and run the
+    /// validator, but **do not write to the option's storage**. Returns
+    /// the typed value erased as `Arc<dyn Any + Send + Sync>`. Used by
+    /// `ConfigRegistry::parse_for_buffer_local` to produce an
+    /// `OptionOverride` for the buffer-local layer (BL.1) without
+    /// touching the global registry.
+    fn parse_to_erased(
+        &self,
+        value: &str,
+    ) -> Result<Arc<dyn Any + Send + Sync>, String>;
+
     /// Render the current value (`:set foo?` echo, customize
     /// buffer view).
     fn get_formatted(&self) -> String;
@@ -63,13 +74,28 @@ pub trait ErasedOption: Send + Sync {
     /// everything else false.
     fn is_bool(&self) -> bool;
 
+    /// Whether this option's value is list-shaped (ML.5). The config
+    /// loader consults this to decide whether a TOML **array** for this
+    /// key should be joined into the option's delimited parse form
+    /// (`true`) or rejected as a scalar/array mismatch (`false`).
+    /// Forwards to [`OptionType::accepts_list`].
+    fn accepts_list(&self) -> bool;
+
     /// Set the option to its negation value (only meaningful when
     /// [`Self::is_bool`] is true). Used by the `:set noNAME` path.
     /// Returns `Err` if called on a non-bool option (registry
     /// guards this; this is defense in depth).
     fn negate(&self) -> Result<(), String>;
 
+    /// Format an already-erased value of this option's type. Used by
+    /// the query echo path (`:set name?`) to display the resolved value
+    /// when the concrete type isn't known at the call site. Returns
+    /// `None` if `value` doesn't downcast to this option's `Value` type
+    /// (caller falls back to `get_formatted()` in that case).
+    fn format_erased_value(&self, value: &std::sync::Arc<dyn std::any::Any + Send + Sync>) -> std::option::Option<String>;
+
     /// Project back to the concrete type for typed-handle reads.
+
     /// Implementors return `self`. Crate-private trait methods
     /// can't be expressed cleanly across the boundary, so we keep
     /// this in the public surface but document it as
@@ -107,6 +133,20 @@ impl<T: OptionType> ErasedOption for Option<T> {
         self.set(parsed)
     }
 
+    fn parse_to_erased(
+        &self,
+        value: &str,
+    ) -> Result<Arc<dyn Any + Send + Sync>, String> {
+        let parsed = T::parse(value)?;
+        // Run the validator (if any) without writing to storage.
+        if let Some(v) = self.validate
+            && let Err(e) = v(&parsed)
+        {
+            return Err(e);
+        }
+        Ok(Arc::new(parsed) as Arc<dyn Any + Send + Sync>)
+    }
+
     fn get_formatted(&self) -> String {
         self.with(|v| v.format())
     }
@@ -133,10 +173,18 @@ impl<T: OptionType> ErasedOption for Option<T> {
         T::is_bool()
     }
 
+    fn accepts_list(&self) -> bool {
+        T::accepts_list()
+    }
+
     fn negate(&self) -> Result<(), String> {
         let neg = T::try_negation_value()
             .map_err(|e| format!("option `{}` does not support `:set noNAME`: {e}", self.name))?;
         self.set(neg)
+    }
+
+    fn format_erased_value(&self, value: &std::sync::Arc<dyn std::any::Any + Send + Sync>) -> std::option::Option<String> {
+        value.clone().downcast::<T>().ok().map(|v| v.format())
     }
 
     fn as_any(&self) -> &dyn Any {

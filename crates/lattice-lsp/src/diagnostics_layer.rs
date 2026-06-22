@@ -117,6 +117,15 @@ pub struct DiagnosticsLayer {
     /// I/O.
     write: Arc<Mutex<()>>,
     logger: LspLogger,
+    /// Render-wake fired after every `apply` (a server
+    /// `publishDiagnostics` push) so diagnostic CHANGES — including the
+    /// CLEAR when an error is fixed — repaint off-keystroke instead of
+    /// waiting for the next cursor-driven publish (the gutter,
+    /// underline, and inline summary all read this layer at render
+    /// time). `None` in tests / pre-boot; boot stores the editor's
+    /// `async_landed` via `set_wake`. Shared across clones (Arc), so
+    /// any actor pump's `apply` wakes the one render loop.
+    wake: Arc<arc_swap::ArcSwapOption<tokio::sync::Notify>>,
 }
 
 impl DiagnosticsLayer {
@@ -127,7 +136,34 @@ impl DiagnosticsLayer {
             snapshot: Arc::new(ArcSwap::from(Arc::new(DiagnosticsSnapshot::default()))),
             write: Arc::new(Mutex::new(())),
             logger,
+            wake: Arc::default(),
         }
+    }
+
+    /// Install the render-wake `Notify` (the editor's `async_landed`).
+    /// Boot calls this once after the layer is built; every subsequent
+    /// `apply` fires it so a pushed diagnostic change repaints
+    /// off-keystroke. Idempotent (last wins); shared across all clones.
+    pub fn set_wake(&self, wake: Arc<tokio::sync::Notify>) {
+        self.wake.store(Some(wake));
+    }
+
+    /// §12 paint gate: a cheap change-token for the current snapshot.
+    ///
+    /// Every [`Self::apply`] swaps a fresh `Arc<DiagnosticsSnapshot>`
+    /// into the cell, so the snapshot's pointer address is a precise,
+    /// allocation-free "did the diagnostics change" signal — stable
+    /// while unchanged, distinct after any push (including the CLEAR
+    /// when an error is fixed). `build_render_state` folds this into
+    /// `RenderState::paint_revision` so a pushed diagnostics change
+    /// (which is an *overlay*, deliberately excluded from the cells
+    /// `MatrixVersion` — see `lattice-cells/src/version.rs`) still
+    /// requests an off-keystroke paint. Without it, the gutter /
+    /// underline / inline-summary would update in the snapshot but not
+    /// repaint until the next keypress (the "undo → diagnostic
+    /// disappears" report).
+    pub fn snapshot_revision(&self) -> usize {
+        Arc::as_ptr(&self.snapshot.load_full()) as *const () as usize
     }
 
     /// Apply one [`DiagnosticEvent`]. Drops stale events; clears
@@ -185,6 +221,14 @@ impl DiagnosticsLayer {
         }
         rebuild_by_uri(&mut next, &key.0);
         self.snapshot.store(Arc::new(next));
+        // Drop the write guard before the render-wake (notify_one is a
+        // bare atomic + doesn't re-enter the layer, but keep the lock
+        // window minimal). Wakes the render loop so this push — a new
+        // error OR the clear of a fixed one — repaints off-keystroke.
+        drop(_g);
+        if let Some(n) = self.wake.load_full() {
+            n.notify_one();
+        }
     }
 
     /// All diagnostics for a URI, merged across every server
@@ -238,6 +282,60 @@ impl DiagnosticsLayer {
             .filter(|d| d.range.start.line <= line && line <= d.range.end.line)
             .filter_map(|d| d.severity)
             .min_by_key(severity_rank)
+    }
+
+    /// L4a (lsp-architecture.md §15): a one-line end-of-line summary
+    /// of the qualifying diagnostics on `line` of `uri`, for the
+    /// inline cursor-line presentation. A diagnostic **qualifies**
+    /// when its severity rank is `<= min_rank` (as severe or more
+    /// severe than the configured floor); unknown-severity
+    /// diagnostics map to rank 4 and so only qualify when `min_rank`
+    /// is itself 4. Returns `None` when nothing on the line qualifies.
+    ///
+    /// The text is the **most-severe** qualifying diagnostic's message
+    /// (first line only, truncated to [`INLINE_SUMMARY_MAX_CHARS`] with
+    /// an ellipsis) plus ` +N` when `N` further qualifying diagnostics
+    /// share the line. Most-severe = lowest rank; ties resolve to the
+    /// earliest by `(line, character)` (the merged list is already so
+    /// ordered). Wait-free: one snapshot load + a single pass over the
+    /// URI's diagnostics, so it stays on the cheap side of the actor
+    /// thread's publish path.
+    pub fn inline_line_summary(
+        &self,
+        uri: &Uri,
+        line: u32,
+        min_rank: u8,
+    ) -> Option<InlineDiagnosticSummary> {
+        let snap = self.snapshot.load();
+        let arr = snap.by_uri.get(uri)?;
+        let mut best: Option<(u8, &Diagnostic)> = None;
+        let mut qualifying = 0usize;
+        for d in arr.iter() {
+            if d.range.start.line > line || line > d.range.end.line {
+                continue;
+            }
+            let rank = d.severity.as_ref().map(severity_rank).unwrap_or(4);
+            if rank > min_rank {
+                continue;
+            }
+            qualifying += 1;
+            // Replace only on a strictly-more-severe rank so ties keep
+            // the earlier (already (line, character)-ordered) entry.
+            if best.is_none_or(|(br, _)| rank < br) {
+                best = Some((rank, d));
+            }
+        }
+        let (rank, d) = best?;
+        let mut text = truncate_inline_message(&d.message);
+        let extra = qualifying - 1;
+        if extra > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(text, " +{extra}");
+        }
+        Some(InlineDiagnosticSummary {
+            severity_rank: rank,
+            text,
+        })
     }
 
     /// Every URI with at least one stored diagnostic. Sorted
@@ -413,6 +511,41 @@ fn severity_rank(s: &DiagnosticSeverity) -> u8 {
     }
 }
 
+/// Char budget for the inline summary message before it is cut and
+/// an ellipsis appended. Counted on `char` boundaries so multibyte
+/// text is never split mid-codepoint.
+const INLINE_SUMMARY_MAX_CHARS: usize = 80;
+
+/// First line of `msg`, trimmed and truncated to
+/// [`INLINE_SUMMARY_MAX_CHARS`] with a trailing `…`. Multi-line
+/// diagnostic messages (e.g. rustc with notes) collapse to their
+/// first line for the one-line inline summary.
+fn truncate_inline_message(msg: &str) -> String {
+    let first = msg.lines().next().unwrap_or("").trim();
+    if first.chars().count() <= INLINE_SUMMARY_MAX_CHARS {
+        return first.to_string();
+    }
+    let truncated: String = first.chars().take(INLINE_SUMMARY_MAX_CHARS).collect();
+    format!("{truncated}…")
+}
+
+/// L4a (lsp-architecture.md §15): a one-line end-of-line summary of
+/// the diagnostics on a single line, produced by
+/// [`DiagnosticsLayer::inline_line_summary`] for the inline
+/// cursor-line presentation. The renderer (L4a.3) splices `text` as
+/// trailing virtual text and themes it by `severity_rank`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineDiagnosticSummary {
+    /// Severity rank of the most-severe diagnostic on the line
+    /// (Error = 0 … Hint = 3, unknown = 4), matching
+    /// [`severity_rank`]. The renderer maps this to the themed
+    /// severity colour.
+    pub severity_rank: u8,
+    /// Pre-formatted summary text: the most-severe message (first
+    /// line, truncated) plus ` +N` when more diagnostics qualify.
+    pub text: String,
+}
+
 /// Drain a `DiagnosticEvent` broadcast receiver into the layer
 /// in a tokio task. Returns when the bus closes (the server is
 /// gone). Lagging consumers (`Lagged(n)`) are tolerated --
@@ -495,6 +628,57 @@ mod tests {
         let d = l.diagnostics_for(&uri);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].message, "boom");
+    }
+
+    /// §12 paint gate: `snapshot_revision` is stable while unchanged and
+    /// moves on every push (including the CLEAR). `build_render_state`
+    /// folds it into `RenderState::paint_revision`, so an off-keystroke
+    /// diagnostics change — an OVERLAY, excluded from the cells
+    /// `MatrixVersion` — still requests a paint. This is the
+    /// "undo → diagnostic disappears" fix: the server re-publishes after
+    /// the undo's didChange and the gutter/underline/summary repaint
+    /// without a keypress.
+    #[test]
+    fn snapshot_revision_changes_on_apply_stable_otherwise() {
+        let l = layer();
+        let r0 = l.snapshot_revision();
+        // No push → identical revision → a no-op publish won't paint.
+        assert_eq!(r0, l.snapshot_revision(), "revision must be stable while unchanged");
+        // A server push swaps the snapshot Arc → revision moves.
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            Some(1),
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        let r1 = l.snapshot_revision();
+        assert_ne!(r0, r1, "a diagnostics push must change the snapshot revision");
+        // The CLEAR (error fixed) is also a change.
+        l.apply(ev("rust", "file:///x.rs", Some(2), vec![]));
+        assert_ne!(
+            r1,
+            l.snapshot_revision(),
+            "clearing diagnostics must change the snapshot revision"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_fires_the_render_wake() {
+        let l = layer();
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        l.set_wake(notify.clone());
+        // `apply` (a server push) must wake the render loop so the
+        // change repaints off-keystroke. notify_one before notified()
+        // stores a permit, so the await resolves.
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            Some(1),
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        tokio::time::timeout(std::time::Duration::from_millis(200), notify.notified())
+            .await
+            .expect("apply should fire the render-wake");
     }
 
     #[test]
@@ -650,6 +834,98 @@ mod tests {
         ));
         let uri = Uri::from_str("file:///x.rs").unwrap();
         assert_eq!(l.line_severity(&uri, 5), None);
+    }
+
+    #[test]
+    fn inline_summary_picks_most_severe_and_counts_extras() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(2, DiagnosticSeverity::WARNING, "warn"),
+                diag(2, DiagnosticSeverity::ERROR, "the error"),
+                diag(2, DiagnosticSeverity::HINT, "hint"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        // min_rank = 3 (hint floor) → all three qualify; most-severe
+        // is the error, with two further diagnostics on the line.
+        let s = l.inline_line_summary(&uri, 2, 3).unwrap();
+        assert_eq!(s.severity_rank, 0);
+        assert_eq!(s.text, "the error +2");
+    }
+
+    #[test]
+    fn inline_summary_filters_by_min_severity() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(2, DiagnosticSeverity::WARNING, "warn"),
+                diag(2, DiagnosticSeverity::HINT, "hint"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        // min_rank = 1 (warning floor) → only the warning qualifies;
+        // the hint is excluded, so no `+N` suffix.
+        let s = l.inline_line_summary(&uri, 2, 1).unwrap();
+        assert_eq!(s.severity_rank, 1);
+        assert_eq!(s.text, "warn");
+        // min_rank = 0 (error floor) → nothing on the line qualifies.
+        assert!(l.inline_line_summary(&uri, 2, 0).is_none());
+    }
+
+    #[test]
+    fn inline_summary_none_on_clean_line() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        assert!(l.inline_line_summary(&uri, 5, 3).is_none());
+    }
+
+    #[test]
+    fn inline_summary_truncates_long_first_line() {
+        let long = "x".repeat(INLINE_SUMMARY_MAX_CHARS + 40);
+        let multi = format!("{long}\nsecond line that must be dropped");
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![diag(1, DiagnosticSeverity::ERROR, &multi)],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        let s = l.inline_line_summary(&uri, 1, 3).unwrap();
+        // First line only, cut to the budget + an ellipsis.
+        assert_eq!(s.text.chars().count(), INLINE_SUMMARY_MAX_CHARS + 1);
+        assert!(s.text.ends_with('…'));
+        assert!(!s.text.contains("second line"));
+    }
+
+    #[test]
+    fn inline_summary_tie_keeps_earliest() {
+        let l = layer();
+        l.apply(ev(
+            "rust",
+            "file:///x.rs",
+            None,
+            vec![
+                diag(3, DiagnosticSeverity::ERROR, "first error"),
+                diag(3, DiagnosticSeverity::ERROR, "second error"),
+            ],
+        ));
+        let uri = Uri::from_str("file:///x.rs").unwrap();
+        let s = l.inline_line_summary(&uri, 3, 3).unwrap();
+        assert_eq!(s.text, "first error +1");
     }
 
     #[test]

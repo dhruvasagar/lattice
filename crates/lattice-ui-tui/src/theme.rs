@@ -49,6 +49,26 @@ pub struct Theme {
     /// that disable per-pane status lines.
     pub pane_separator_horizontal: char,
 
+    // ---- Modeline (ML.1b): per-role segments + active/inactive bar ----
+    // Pre-adapted from the resolved table (rebuilt at theme-change rate,
+    // never per frame). [`Theme::modeline_style`] composes a per-role fg
+    // over the active bar bg, or returns the muted inactive bar.
+    /// Active pane's modeline bar base (background only).
+    pub modeline_active: Style,
+    /// Inactive pane's modeline bar (uniform muted; applied to every
+    /// span on an inactive pane, no per-role colour).
+    pub modeline_inactive: Style,
+    /// Active-pane foreground for the modal-state label (`[NORMAL]`).
+    pub modeline_mode: Style,
+    /// Active-pane foreground for the buffer-path segment.
+    pub modeline_path: Style,
+    /// Active-pane foreground for the cursor line:column segment.
+    pub modeline_position: Style,
+    /// Active-pane foreground for the language-label segment.
+    pub modeline_lang: Style,
+    /// Active-pane foreground for mode-contributed items (LSP / diff).
+    pub modeline_mode_item: Style,
+
     /// Style for directory entries in file-tree and oil buffers.
     pub file_tree_dir_style: Style,
     /// Style for hidden files (names starting with `.`).
@@ -166,6 +186,20 @@ impl Default for Theme {
             pane_separator: Style::new().fg(Color::DarkGray),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
+            // ML.1b: defaults mirror the resolved `modeline.*` elements
+            // under the default (Catppuccin Mocha) palette — surface1 bar,
+            // blue/text/subtext/teal per-role fg, surface0+overlay muted.
+            modeline_active: Style::new().bg(Color::Rgb(0x45, 0x47, 0x5a)),
+            modeline_inactive: Style::new()
+                .bg(Color::Rgb(0x31, 0x32, 0x44))
+                .fg(Color::Rgb(0x6c, 0x70, 0x86)),
+            modeline_mode: Style::new()
+                .fg(Color::Rgb(0x89, 0xb4, 0xfa))
+                .add_modifier(Modifier::BOLD),
+            modeline_path: Style::new().fg(Color::Rgb(0xcd, 0xd6, 0xf4)),
+            modeline_position: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
+            modeline_lang: Style::new().fg(Color::Rgb(0x94, 0xe2, 0xd5)),
+            modeline_mode_item: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
             // Severity glyphs: solid square / triangle / circle /
             // dot. Same shapes vim's nvim-lsp / VS Code use --
             // immediately readable, terminal-safe.
@@ -210,6 +244,30 @@ impl Default for Theme {
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
             diff_conflict_line_bg: Color::Rgb(60, 0, 60),
         }
+    }
+}
+
+impl Theme {
+    /// Resolve a modeline span's style from its `ModelineRole` and the
+    /// pane's active state (ML.1b). Inactive panes render uniformly muted
+    /// (the `modeline.inactive` bar); active panes compose the per-role
+    /// foreground over the `modeline.active` bar background. Unknown roles
+    /// and padding (`None`) get the bar base only — so a plugin's
+    /// not-yet-themed role still sits on the bar rather than vanishing.
+    pub fn modeline_style(&self, role: Option<&str>, is_active: bool) -> Style {
+        use lattice_host::modeline as ml;
+        if !is_active {
+            return self.modeline_inactive;
+        }
+        let fg = match role {
+            Some(ml::ROLE_MODE) => self.modeline_mode,
+            Some(ml::ROLE_PATH) => self.modeline_path,
+            Some(ml::ROLE_POSITION) => self.modeline_position,
+            Some(ml::ROLE_LANG) => self.modeline_lang,
+            Some(ml::ROLE_MODE_ITEM) => self.modeline_mode_item,
+            _ => Style::default(),
+        };
+        self.modeline_active.patch(fg)
     }
 }
 
@@ -291,7 +349,23 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
     if let Some(bg) = s.bg {
         style = style.bg(host_color_to_ratatui(bg));
     }
-    if s.modifiers.bold {
+    // T.10: degrade the rich-vocabulary `weight` on the fixed grid. A
+    // SemiBold-or-heavier weight maps to ratatui's bold attribute, so an
+    // element that sets `weight` but NOT the bold bool still renders bold
+    // on the TUI. (Builtin headings set both, so this is a no-op for
+    // them; it makes weight degrade correctly in general.) `scale` /
+    // `family` are no-ops on the TUI (single grid font) — correct, not a
+    // defect.
+    let heavy_weight = matches!(
+        s.weight,
+        Some(
+            host_theme::Weight::SemiBold
+                | host_theme::Weight::Bold
+                | host_theme::Weight::ExtraBold
+                | host_theme::Weight::Black
+        )
+    );
+    if s.modifiers.bold || heavy_weight {
         style = style.add_modifier(Modifier::BOLD);
     }
     if s.modifiers.italic {
@@ -309,54 +383,122 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
     style
 }
 
-/// Adapter: build the ratatui-typed [`Theme`] from the canonical
-/// host [`host_theme::Theme`]. The TUI's `App.theme` cache is
-/// rebuilt via this conversion every time the option cascade
-/// writes `App.editor.host_theme`. Cheap (every field is `Copy`); the
-/// rebuild fires at mode-transition / option-set rate, not per
-/// frame.
-impl From<&host_theme::Theme> for Theme {
-    fn from(h: &host_theme::Theme) -> Self {
-        Self {
-            pane_status_active: host_style_to_ratatui(h.pane_status_active),
-            pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
-            inactive_pane_overlay: host_style_to_ratatui(h.inactive_pane_overlay),
-            dim_inactive_panes: h.dim_inactive_panes,
-            pane_separator: host_style_to_ratatui(h.pane_separator),
-            pane_separator_vertical: h.pane_separator_vertical,
-            pane_separator_horizontal: h.pane_separator_horizontal,
-            file_tree_dir_style: host_style_to_ratatui(h.file_tree_dir_style),
-            file_tree_hidden_style: host_style_to_ratatui(h.file_tree_hidden_style),
-            file_tree_file_style: host_style_to_ratatui(h.file_tree_file_style),
-            nerd_fonts: h.nerd_fonts,
-            diagnostic_error_glyph: h.diagnostic_error_glyph,
-            diagnostic_error_style: host_style_to_ratatui(h.diagnostic_error_style),
-            diagnostic_warning_glyph: h.diagnostic_warning_glyph,
-            diagnostic_warning_style: host_style_to_ratatui(h.diagnostic_warning_style),
-            diagnostic_info_glyph: h.diagnostic_info_glyph,
-            diagnostic_info_style: host_style_to_ratatui(h.diagnostic_info_style),
-            diagnostic_hint_glyph: h.diagnostic_hint_glyph,
-            diagnostic_hint_style: host_style_to_ratatui(h.diagnostic_hint_style),
-            whitespace_style: host_style_to_ratatui(h.whitespace_style),
-            whitespace_trailing_style: host_style_to_ratatui(h.whitespace_trailing_style),
-            cursor_line_bg: host_color_to_ratatui(h.cursor_line_bg),
-            messages_timestamp_style: host_style_to_ratatui(h.messages_timestamp_style),
-            messages_trace_style: host_style_to_ratatui(h.messages_trace_style),
-            messages_debug_style: host_style_to_ratatui(h.messages_debug_style),
-            messages_info_style: host_style_to_ratatui(h.messages_info_style),
-            messages_warn_style: host_style_to_ratatui(h.messages_warn_style),
-            messages_error_style: host_style_to_ratatui(h.messages_error_style),
-            // D.3.b.3 (2026-05-29): diff entries adapt through
-            // the standard host→tui converters.
-            diff_add_sign_style: host_style_to_ratatui(h.diff_add_sign_style),
-            diff_change_sign_style: host_style_to_ratatui(h.diff_change_sign_style),
-            diff_remove_sign_style: host_style_to_ratatui(h.diff_remove_sign_style),
-            diff_conflict_sign_style: host_style_to_ratatui(h.diff_conflict_sign_style),
-            diff_add_line_bg: host_color_to_ratatui(h.diff_add_line_bg),
-            diff_change_line_bg: host_color_to_ratatui(h.diff_change_line_bg),
-            diff_deletion_block_bg: host_color_to_ratatui(h.diff_deletion_block_bg),
-            diff_conflict_line_bg: host_color_to_ratatui(h.diff_conflict_line_bg),
-        }
+/// Build the ratatui-typed [`Theme`] cache from the resolved theme
+/// table **plus** the non-style `ui.*` typed options. The TUI's
+/// `App.theme` cache is the renderer's hot-path adapted view; it is
+/// rebuilt at theme-change / option-set rate, never per frame.
+///
+/// T.4 (theme-system): the *style* elements source from the
+/// [`host_theme::ResolvedTheme`] table (the single source of truth) via
+/// the captured [`host_theme::BuiltinElementIds`]. The cache itself
+/// stays — it is the safeguard that keeps per-line decoration painting
+/// free of per-frame style adaptation (design §10.1;
+/// `feedback_renderer_cache_protects_ux`).
+///
+/// T.6.t: the host `Theme` struct is deleted; the 8 non-style fields
+/// (`dim_inactive_panes`, `pane_separator_{vertical,horizontal}`,
+/// `nerd_fonts`, the four `diagnostic_*_glyph` chars) now source from
+/// the typed-options registry via `config` (default-fallback matches
+/// the deleted struct's literals exactly). Style fields keep sourcing
+/// from `resolved` / `ids`.
+pub fn build_tui_theme(
+    config: &lattice_config::ConfigRegistry,
+    resolved: &host_theme::ResolvedTheme,
+    ids: &host_theme::BuiltinElementIds,
+) -> Theme {
+    use lattice_host::ui::theme_options::{
+        UiDiagnosticErrorGlyph, UiDiagnosticHintGlyph, UiDiagnosticInfoGlyph,
+        UiDiagnosticWarningGlyph, UiDimInactive, UiNerdFonts, UiSeparator,
+        UiSeparatorHorizontal,
+    };
+    // Read a single-char `ui.*` glyph option, falling back to `dflt`
+    // (matches the deleted host `Theme::default()` literals).
+    let glyph = |opt: Option<std::sync::Arc<String>>, dflt: char| -> char {
+        opt.and_then(|s| s.chars().next()).unwrap_or(dflt)
+    };
+    let dim_inactive_panes = config
+        .get_typed::<UiDimInactive>()
+        .map(|v| *v)
+        .unwrap_or(true);
+    let nerd_fonts = config.get_typed::<UiNerdFonts>().map(|v| *v).unwrap_or(false);
+    let pane_separator_vertical = glyph(config.get_typed::<UiSeparator>(), '│');
+    let pane_separator_horizontal = glyph(config.get_typed::<UiSeparatorHorizontal>(), '─');
+    let diagnostic_error_glyph = glyph(config.get_typed::<UiDiagnosticErrorGlyph>(), '■');
+    let diagnostic_warning_glyph = glyph(config.get_typed::<UiDiagnosticWarningGlyph>(), '▲');
+    let diagnostic_info_glyph = glyph(config.get_typed::<UiDiagnosticInfoGlyph>(), '●');
+    let diagnostic_hint_glyph = glyph(config.get_typed::<UiDiagnosticHintGlyph>(), '·');
+    let resolved_style = |id| host_style_to_ratatui(resolved.get(id));
+    // Background tint from an element's resolved `bg` channel (the diff
+    // tint elements set `bg`); `Reset` = no tint if unresolved.
+    let resolved_bg = |id| {
+        resolved
+            .get(id)
+            .bg
+            .map(host_color_to_ratatui)
+            .unwrap_or(Color::Reset)
+    };
+    Theme {
+            // T.9: pane chrome styles resolve through the elements;
+            // `:set ui.statusline_*_fg`/`separator_color` now write
+            // registry overrides (not host `Theme`).
+            pane_status_active: resolved_style(ids.pane_status_active),
+            pane_status_inactive: resolved_style(ids.pane_status_inactive),
+            // ML.1b: modeline per-role + bar styles from the resolved
+            // `modeline.*` elements (palette-driven across all themes).
+            modeline_active: resolved_style(ids.modeline_active),
+            modeline_inactive: resolved_style(ids.modeline_inactive),
+            modeline_mode: resolved_style(ids.modeline_mode),
+            modeline_path: resolved_style(ids.modeline_path),
+            modeline_position: resolved_style(ids.modeline_position),
+            modeline_lang: resolved_style(ids.modeline_lang),
+            modeline_mode_item: resolved_style(ids.modeline_mode_item),
+            // T.4.c: inactive-pane overlay + file-tree styles source
+            // from the resolved table. Separator chars + `dim`/
+            // `nerd_fonts` flags stay on `h` (non-style → T.6.t).
+            inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
+            // T.6.t: non-style chrome from typed options (see locals above).
+            dim_inactive_panes,
+            pane_separator: resolved_style(ids.pane_separator),
+            pane_separator_vertical,
+            pane_separator_horizontal,
+            file_tree_dir_style: resolved_style(ids.file_tree_dir),
+            file_tree_hidden_style: resolved_style(ids.file_tree_hidden),
+            file_tree_file_style: resolved_style(ids.file_tree_file),
+            nerd_fonts,
+            // T.4.a: diagnostic styles source from the resolved table
+            // (`diagnostic.{error,warning,info,hint}`); T.6.t: glyphs
+            // from the `ui.diagnostic-*-glyph` typed options.
+            diagnostic_error_glyph,
+            diagnostic_error_style: resolved_style(ids.diagnostic_error),
+            diagnostic_warning_glyph,
+            diagnostic_warning_style: resolved_style(ids.diagnostic_warning),
+            diagnostic_info_glyph,
+            diagnostic_info_style: resolved_style(ids.diagnostic_info),
+            diagnostic_hint_glyph,
+            diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
+            // T.4.d: whitespace stays on `h` (cell-path → T.5);
+            // current-line tint + *messages* levels source from the
+            // resolved table.
+            // T.5.c: whitespace markers source from the resolved table.
+            whitespace_style: resolved_style(ids.whitespace),
+            whitespace_trailing_style: resolved_style(ids.whitespace_trailing),
+            cursor_line_bg: resolved_bg(ids.editor_cursor_line),
+            messages_timestamp_style: resolved_style(ids.messages_timestamp),
+            messages_trace_style: resolved_style(ids.messages_trace),
+            messages_debug_style: resolved_style(ids.messages_debug),
+            messages_info_style: resolved_style(ids.messages_info),
+            messages_warn_style: resolved_style(ids.messages_warn),
+            messages_error_style: resolved_style(ids.messages_error),
+            // T.4.b: diff signs (fg) + line/block tints (bg) source
+            // from the resolved table (`diff.*`).
+            diff_add_sign_style: resolved_style(ids.diff_add_sign),
+            diff_change_sign_style: resolved_style(ids.diff_change_sign),
+            diff_remove_sign_style: resolved_style(ids.diff_remove_sign),
+            diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
+            diff_add_line_bg: resolved_bg(ids.diff_add_line),
+            diff_change_line_bg: resolved_bg(ids.diff_change_line),
+            diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
+            diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
     }
 }
 
@@ -389,19 +531,49 @@ mod tests {
     }
 
     #[test]
-    fn host_theme_default_adapts_to_tui_theme_default() {
-        // Phase 5.3 contract: the host-side `Theme::default()`
-        // adapts (via `From<&host::Theme>`) to the same ratatui
-        // `Theme::default()` the TUI hand-rolls. If either default
-        // impl drifts, this test fails immediately -- we want a
-        // single source of truth for the default theme; the
-        // duplication is transitional, not load-bearing.
-        let host: super::host_theme::Theme = super::host_theme::Theme::default();
-        let adapted: Theme = (&host).into();
+    fn default_options_adapt_to_tui_theme_default() {
+        // T.6.t: the host `Theme` struct is gone. The cache builder now
+        // sources style fields from the resolved default table and the 8
+        // non-style fields from the `ui.*` typed options at their
+        // defaults. The result must equal the ratatui `Theme::default()`
+        // the TUI hand-rolls — proving the migration is byte-identical
+        // (default glyphs `■▲●·`, separators `│`/`─`, dim on, nerd-fonts
+        // off).
+        use host_theme::ThemeRegistry as _;
+        let reg = host_theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = host_theme::BuiltinElementIds::capture(&reg);
+        let config = lattice_config::ConfigRegistry::new();
+        config.init_from_linkme();
+        let built = build_tui_theme(&config, &resolved, &ids);
         let tui: Theme = Theme::default();
         assert_eq!(
-            adapted, tui,
-            "host theme default must adapt to TUI theme default"
+            built, tui,
+            "default ui.* options + resolved table must build the TUI theme default"
+        );
+    }
+
+    #[test]
+    fn host_weight_degrades_to_bold_without_bold_bool() {
+        // T.10: a host style that sets a heavy `weight` but NOT the bold
+        // bool still renders bold on the fixed-grid TUI (degrade path).
+        let s = host_theme::Style::empty().weight(host_theme::Weight::Bold);
+        assert!(!s.modifiers.bold, "no bold bool on the source style");
+        let r = host_style_to_ratatui(s);
+        assert!(
+            r.add_modifier.contains(Modifier::BOLD),
+            "heavy weight degrades to ratatui bold"
+        );
+    }
+
+    #[test]
+    fn host_light_weight_does_not_force_bold() {
+        // A weight lighter than SemiBold must NOT spuriously bold the TUI.
+        let s = host_theme::Style::empty().weight(host_theme::Weight::Light);
+        let r = host_style_to_ratatui(s);
+        assert!(
+            !r.add_modifier.contains(Modifier::BOLD),
+            "sub-SemiBold weight stays non-bold on the TUI"
         );
     }
 

@@ -194,6 +194,11 @@ pub enum AppEffect {
     /// Vim's `<C-l>`. Force a full screen redraw. Promoted from
     /// `Action::RedrawScreen` in slice 8.i.1.e.
     RedrawScreen,
+    /// Vim's `:` / Emacs' `M-x`. Open the command picker over
+    /// all registered ex-commands. If the chosen command has a
+    /// required first argument the picker arms the cmdline so
+    /// the user can supply it; otherwise executes immediately.
+    OpenCommandPicker,
     /// Vim's `:`. Enter the command-line minibuffer. Promoted
     /// from `Action::EnterCommandLine` in slice 8.i.1.e.
     EnterCommandLine,
@@ -205,6 +210,11 @@ pub enum AppEffect {
     /// kind, anchor, head). Promoted from
     /// `Action::ReselectLastVisual` in slice 8.i.1.e.
     ReselectLastVisual,
+    /// Vim's `o` in Visual mode -- swap the cursor (head) to the
+    /// other end of the selection (and back). Anchor and head trade
+    /// places so subsequent motions / text objects grow or shrink the
+    /// selection at the end the cursor now sits on.
+    SwapVisualEnds,
     /// Vim's `p`. Paste the unnamed register's contents after
     /// the cursor. Promoted from `Action::PasteAfter` in slice
     /// 8.i.1.e.
@@ -244,6 +254,24 @@ pub enum AppEffect {
     /// Insert. Promoted from `Action::EnterAppend` in slice
     /// 8.i.1.g.
     EnterAppend,
+    /// Vim's `I`: move cursor to first non-blank column of the
+    /// current line and enter Insert.
+    EnterInsertFirstNonBlank,
+    /// Vim's `A`: move cursor to end of the current line and enter
+    /// Insert.
+    EnterAppendEndOfLine,
+    /// Vim's `gj`: move down one display line (wrap segment).
+    /// Degrades to `j` when wrapping is off.
+    DisplayLineDown,
+    /// Vim's `gk`: move up one display line (wrap segment).
+    /// Degrades to `k` when wrapping is off.
+    DisplayLineUp,
+    /// Vim's `g0`: move to the first byte of the current display segment.
+    /// Degrades to `0` when wrapping is off.
+    DisplayLineStart,
+    /// Vim's `g$`: move to the last byte of the current display segment.
+    /// Degrades to `$` when wrapping is off.
+    DisplayLineEnd,
     /// Vim's `zf`. Create a fold from the most recent Visual
     /// selection. Promoted from `Action::CreateFoldFromVisual`
     /// in slice 8.i.1.g.
@@ -259,11 +287,11 @@ pub enum AppEffect {
     /// keeps its legacy `bind_action` registration until that
     /// helper picks up `CommandInvocation` (separate scope).
     CompletionTrigger,
-    /// Insert mode's `<C-x><C-s>`. Direct snippet expansion at
-    /// the cursor (matches the longest snippet prefix without
-    /// surfacing the completion popup). Promoted from
-    /// `Action::SnippetExpand` in slice 8.i.1.g.
-    SnippetExpand,
+    // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed.
+    // `<C-x><C-s>` is now mode-owned (`snippet-mode`'s `keymap()` +
+    // `action_handlers()`): the handler scans the word prefix and
+    // emits `Effect::ExpandSnippet { replace_range }`, which the host
+    // resolves + expands. No host `Action` / `AppEffect` round-trip.
     /// Visual mode's `<Esc>` / `v` / `V`. Exit Visual to Normal,
     /// collapsing the selection. Promoted from `Action::ExitVisual`
     /// in slice 8.i.1.h.
@@ -287,6 +315,15 @@ pub enum AppEffect {
     /// as [`Self::EnterMode`]: distinct `CommandId` per kind,
     /// payload rides in the AppEffect.
     EnterVisual(VisualKind),
+    /// Vim's `gh` / `gH` / `g<C-h>` -- enter Select mode (SN.3d) with
+    /// the named kind, anchored at the current cursor. Same encoding as
+    /// [`Self::EnterVisual`]: distinct `CommandId` per kind, payload
+    /// rides in the AppEffect. The host handler (`do_enter_select`)
+    /// anchors a zero-width selection like `do_enter_visual` does —
+    /// typing then overtypes it. Programmatic entry (snippets) instead
+    /// uses `EnterMode(Select(k))` with an explicit selection already
+    /// set; see `docs/dev/architecture/select-mode.md` §3.
+    EnterSelect(VisualKind),
     /// Vim's `/` / `?` -- enter the Search minibuffer in the
     /// named direction. Promoted from `Action::EnterSearch(_)`
     /// in slice 8.i.2.b. Same encoding as [`Self::EnterMode`]:
@@ -504,9 +541,14 @@ pub enum AppEffect {
     /// (`<S-Tab>`). Promoted from
     /// `Action::SnippetPrevPlaceholder` in slice 8.i.4.e.
     SnippetPrevPlaceholder,
-    /// Active-snippet overlay: exit the snippet (`<Esc>`).
-    /// Promoted from `Action::SnippetLeave` in slice 8.i.4.e.
-    SnippetLeave,
+    // SN.3c.2 (2026-06-14): `AppEffect::SnippetLeave` removed.
+    // `<Esc>` is mode-owned now (`active-snippet-mode`'s
+    // `keymap()` binds it + a per-buffer closure in `on_activate`
+    // clears the session + returns `Effect::EnterMode(Normal)`);
+    // no host `Action` / `AppEffect` round-trip. (Unlike the nav
+    // placeholders, which keep their `register_simple`-produced
+    // AppEffect variants as no-ops, leave switched to
+    // `register_action`, so this variant had no producer left.)
     /// Completion-popup overlay: restrict candidates to a single
     /// source. The string is the `SourceId` (e.g.
     /// `"gen:buffer-words"`, `"gen:lsp-completion"`). Bound to
@@ -533,6 +575,14 @@ pub enum AppEffect {
     /// the dispatch handler emits "dp: baseline is not a
     /// buffer; use :write" rather than silently no-op'ing.
     DiffPut,
+    /// T.3: tutor-mode `<CR>` / `:tutor-next`. Advance to the
+    /// next exercise; advance to the next lesson when the
+    /// current one is complete. No-op when tutor-mode is not
+    /// active on the current buffer.
+    TutorAdvance,
+    /// T.3: tutor-mode `:tutor-prev`. Retreat to the previous
+    /// exercise. No-op at exercise 0.
+    TutorRetreat,
     /// M.5 (2026-06-01): `:multibuffer-expand [n]` /
     /// `:multibuffer-contract [n]` ex-commands. `delta` is the
     /// signed row count (positive expands, negative contracts).
@@ -540,6 +590,32 @@ pub enum AppEffect {
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
     MultibufferExpand { delta: i32 },
+    /// N.1.1 (2026-06-10): `:narrow [{range}]` ex-command. The host
+    /// arm resolves `range` against the active document to a line
+    /// span, fetches the active buffer's `Arc<dyn Document>`, and
+    /// calls `lattice_multibuffer::providers::narrow::create_narrow_view`
+    /// — opening a one-excerpt multibuffer focused on that region.
+    /// `range == None` (bare `:narrow`) narrows the current line in
+    /// N.1.1 (N.1.2 widens this to the current paragraph / Visual
+    /// selection).
+    NarrowTrigger {
+        range: Option<crate::range::Range>,
+    },
+    /// N.1.1 (2026-06-10): `:widen` ex-command. The host arm closes
+    /// the active narrow view (an editable one-excerpt multibuffer),
+    /// restoring the full source buffer. No-op + echo when the
+    /// active buffer isn't a narrow view.
+    NarrowWiden,
+    /// N.1.3 (2026-06-10): the `zn` narrow operator emits this once
+    /// the operator-pending machinery has resolved its motion / text
+    /// object to a line span. Carries pre-resolved inclusive 0-based
+    /// `[start_line, end_line]` (unlike `NarrowTrigger`, which carries
+    /// an unresolved `Range`); the host arm narrows the active buffer
+    /// to that span via the same `create_narrow_view` sink.
+    NarrowLines {
+        start_line: u32,
+        end_line: u32,
+    },
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
     /// (2026-06-03) inlined the work into the host's
     /// apply_effect arm — it calls

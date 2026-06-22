@@ -66,7 +66,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
 use lattice_core::Buffer;
 use lattice_protocol::edit::EditDelta;
@@ -181,17 +181,16 @@ impl SyntaxHandle {
     /// symptom is "syntax highlighting is stuck to byte positions and
     /// never tracks document edits" -- which was the bug originally
     /// reported against indent (`>>`) and backspace flows.
-    /// `on_publish`, when `Some`, is fired (`notify_one`) after every
-    /// snapshot publish (both the intermediate edit-shift and the final
-    /// reparse). Production passes the host's `async_landed` Notify so
-    /// the editor actor wakes and re-publishes render state when a
-    /// reparse lands with no keystroke in flight — otherwise idle
-    /// reparses (e.g. markdown, whose parse loses the race against the
-    /// edit) never repaint until the next key. Tests pass `None`.
+    /// `on_publish`, when `Some`, is called after every snapshot publish
+    /// (both the intermediate edit-shift and the final reparse).
+    /// Production passes a closure that fires the host's `async_landed`
+    /// Notify (waking the actor) and publishes a `SyntaxReparsed` event
+    /// on the event bus; the event subscriber then fires `cells_wake` so
+    /// idle reparses repaint without a keystroke. Tests pass `None`.
     pub fn seeded_with_runtime(
         syntax: Syntax,
         runtime: &tokio::runtime::Handle,
-        on_publish: Option<Arc<Notify>>,
+        on_publish: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ) -> Self {
         let snapshot = Arc::new(ArcSwap::from_pointee(syntax.snapshot_owned()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ReparseRequest>();
@@ -272,6 +271,19 @@ impl std::fmt::Debug for SyntaxHandle {
     }
 }
 
+// K.4.7 (2026-06-08): `ExcerptHighlighter` impl so `MultibufferDocumentHandle`
+// can return `Arc<dyn ExcerptHighlighter>` without exposing `SyntaxHandle`
+// to `lattice-runtime` (which would create a dep cycle).
+impl lattice_cells::ExcerptHighlighter for SyntaxHandle {
+    fn highlight_lines(&self, lo: u32, hi: u32) -> Option<Vec<Vec<lattice_cells::StyledSpan>>> {
+        self.snapshot().highlight_lines(lo, hi).ok()
+    }
+
+    fn highlight_version(&self) -> u64 {
+        self.snapshot().text_version()
+    }
+}
+
 /// Worker loop. Owns the `Syntax` exclusively; processes
 /// reparse requests in FIFO order, coalescing newer requests on
 /// top of older ones before running each parse on a blocking
@@ -296,7 +308,7 @@ async fn worker_main(
     mut syntax: Syntax,
     mut cmd_rx: mpsc::UnboundedReceiver<ReparseRequest>,
     snapshot: Arc<ArcSwap<SyntaxSnapshot>>,
-    on_publish: Option<Arc<Notify>>,
+    on_publish: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
 ) {
     while let Some(mut req) = cmd_rx.recv().await {
         // Coalesce queued requests: accumulate edits in order,
@@ -407,8 +419,8 @@ async fn worker_main(
         // the incremental and full-reparse paths (single fire point).
         // The intermediate publish above already advanced the snapshot
         // version, so one wake here suffices.
-        if let Some(wake) = on_publish.as_ref() {
-            wake.notify_one();
+        if let Some(cb) = on_publish.as_ref() {
+            cb();
         }
     }
 }
@@ -419,6 +431,7 @@ mod tests {
     use crate::lang::Lang;
     use crate::syntax::Syntax;
     use std::time::Duration;
+    use tokio::sync::Notify;
 
     /// Slice B.1 (2026-06-03): a reparse publish must fire the
     /// `on_publish` wake so the editor actor can re-publish render
@@ -430,10 +443,11 @@ mod tests {
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse_at("fn main() {}\n", 1);
         let wake = Arc::new(Notify::new());
+        let wake_cb = wake.clone();
         let handle = SyntaxHandle::seeded_with_runtime(
             s,
             &tokio::runtime::Handle::current(),
-            Some(wake.clone()),
+            Some(Arc::new(move || wake_cb.notify_one())),
         );
 
         // Full reparse (empty edits) to version 2.

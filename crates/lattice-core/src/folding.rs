@@ -1,5 +1,10 @@
 //! Buffer-level folding semantics.
 //!
+//! M.7 adds `FoldSource` + `FoldOverlayService` — a dep-safe
+//! bridge that lets subsystems below `lattice-host` (e.g.
+//! `lattice-multibuffer`) register overlay fold providers
+//! without depending on `FoldContext` or `FoldProvider`.
+//!
 //! [`FoldMethod`] decides which provider feeds the per-buffer fold
 //! list. [`Fold`] is the per-range entry the list holds. Both are
 //! renderer-agnostic: a fold is just `(start_line, end_line,
@@ -87,6 +92,41 @@ pub enum ProviderKind {
 /// a fold back to its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderId(pub u64);
+
+/// M.7: data-only fold source for subsystems that live below
+/// `lattice-host` (e.g. `ExcerptFoldProvider` in
+/// `lattice-multibuffer`). Implementors cannot depend on
+/// `FoldContext` or `FoldProvider` (both defined in `lattice-host`).
+/// `FoldSourceAdapter` in `lattice-host::fold_provider` wraps any
+/// `FoldSource` as a `FoldProvider` by delegating `compute()` to
+/// `compute_folds` and ignoring `FoldContext`.
+pub trait FoldSource: Send + Sync {
+    fn id(&self) -> ProviderId;
+    fn compute_folds(&self) -> Vec<Fold>;
+}
+
+/// M.7: service for registering / deregistering overlay fold sources.
+/// Implemented by `FoldOverlayServiceImpl` in `lattice-host` (which
+/// wraps `Arc<Mutex<FoldRegistry>>`). Registered in the
+/// `ServiceRegistry` at boot so `MultibufferMode::on_activate` can
+/// call `add_source` without depending on `lattice-host`.
+///
+/// `buffer_id` scopes the overlay: `FoldSourceAdapter` in
+/// `lattice-host` only calls `compute_folds` when
+/// `FoldContext::buffer_id` matches, so providers from multiple
+/// simultaneous multibuffers don't bleed into each other's views.
+pub trait FoldOverlayService: Send + Sync {
+    fn add_source(
+        &self,
+        source: std::sync::Arc<dyn FoldSource>,
+        buffer_id: crate::BufferId,
+    ) -> ProviderId;
+    fn remove_source(&self, id: ProviderId);
+}
+
+/// Cheap-clone handle for the fold-overlay service. Mode guards hold
+/// one Arc so they can call `remove_source` on Drop.
+pub type FoldOverlayServiceHandle = std::sync::Arc<dyn FoldOverlayService>;
 
 #[cfg(test)]
 mod tests {

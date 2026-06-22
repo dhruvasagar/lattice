@@ -113,9 +113,19 @@ fn bench_translation_rebuild(c: &mut Criterion) {
 /// Measures one batch-append of 10 excerpts onto a view with
 /// `n` already-present excerpts. Heavy real-world path for
 /// project-search style providers.
+///
+/// MH.B1 (2026-06-19): `append_excerpts` is now O(batch), not
+/// O(total) — it composes + translates ONLY the appended batch
+/// and inserts the batch text at the END of composed_doc rather
+/// than rebuilding the whole rope from sources. The per-batch
+/// cost should therefore be ~FLAT as the baseline `n` grows
+/// (the curve was previously linear-in-`n` because every call
+/// recomposed all `n` excerpts). The widened `n` range below
+/// (50 → 5000) makes the flat-vs-linear contrast visible across
+/// two orders of magnitude.
 fn bench_append_excerpts(c: &mut Criterion) {
     let mut group = c.benchmark_group("multibuffer_append_excerpts");
-    for &n in &[50usize, 500] {
+    for &n in &[50usize, 500, 5_000] {
         group.bench_with_input(BenchmarkId::new("baseline_excerpts", n), &n, |b, &n| {
             b.iter_batched(
                 || {

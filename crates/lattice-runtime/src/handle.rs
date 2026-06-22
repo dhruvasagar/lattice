@@ -256,12 +256,33 @@ impl RopeDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
+        self.dispatch_with_env(invocation, cursor, cancel, crate::document::DispatchEnv::default())
+    }
+
+    /// N.1.4b / N.1.6 (2026-06-10): the env-carrying dispatch entry.
+    /// Threads the [`DispatchEnv`](crate::document::DispatchEnv) (the
+    /// tree-sitter `scope_resolver` for af/ac/aa/al + the `comment_syntax`
+    /// for aC/iC) into [`ActorMsg::Dispatch`] so the actor hands it to
+    /// `execute_with_env`. The env's Arc fields cross the actor channel
+    /// as Arc bumps; the snapshot is immutable so the actor reads it
+    /// wait-free. Staleness note: the resolver reflects the
+    /// last-published syntax tree, which may trail the actor's rope by an
+    /// in-flight edit -- acceptable eventual consistency (CLAUDE.md),
+    /// never a blocking reparse on the hot path (paramount #1).
+    pub fn dispatch_with_env(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        env: crate::document::DispatchEnv,
+    ) -> Pending<Effect> {
         let buffer_id = self.buffer_id;
         self.send(|reply| ActorMsg::Dispatch {
             buffer_id,
             invocation,
             cursor,
             cancel,
+            env,
             reply,
         })
     }
@@ -376,6 +397,16 @@ impl crate::document::Document for RopeDocumentHandle {
         cancel: CancellationToken,
     ) -> Pending<Effect> {
         RopeDocumentHandle::dispatch_with_cancel(self, invocation, cursor, cancel)
+    }
+
+    fn dispatch_with_env(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        env: crate::document::DispatchEnv,
+    ) -> Pending<Effect> {
+        RopeDocumentHandle::dispatch_with_env(self, invocation, cursor, cancel, env)
     }
 }
 

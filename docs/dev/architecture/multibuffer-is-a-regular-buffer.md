@@ -178,7 +178,7 @@ exists but the renderer paths never look at it, so the
 
 ## 4. Required artefacts (K.4 slice plan)
 
-See [slice plan: multibuffer-is-a-regular-buffer](../operations/slice-plans/multibuffer-is-a-regular-buffer.md).
+See [slice plan: multibuffer-is-a-regular-buffer](../operations/slice-plans/archive/multibuffer-is-a-regular-buffer.md).
 
 - **K.4.0** Audit doc (this file).
 - **K.4.1** Integration test that drives a multibuffer

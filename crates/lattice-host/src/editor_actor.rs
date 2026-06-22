@@ -595,7 +595,24 @@ async fn run_actor(
     // reparse repaints without waiting for the next key. Runs on the
     // single-writer actor thread, not the UI thread (paramount #1).
     let async_landed = editor.async_landed.clone();
+    // L4a.2 (lsp-architecture.md §15): the inline cursor-line
+    // diagnostic-summary idle gate. A pinned sleep, seeded far in the
+    // future and retargeted each iteration to `editor`'s armed
+    // deadline (set in `update_inline_diag_gate` during publish). The
+    // guarded select! arm fires only for a live arm; on fire it makes
+    // the summary visible + republishes, all on the actor thread
+    // (paramount #1 — never the UI thread).
+    let inline_diag_sleep = tokio::time::sleep(std::time::Duration::from_secs(60 * 60));
+    tokio::pin!(inline_diag_sleep);
     loop {
+        // Retarget the idle-gate sleep to the current deadline. Cheap;
+        // when disarmed we point it an hour out and the `is_some()`
+        // guard keeps the arm dormant.
+        inline_diag_sleep.as_mut().reset(
+            editor.inline_diag_deadline.unwrap_or_else(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(60 * 60)
+            }),
+        );
         let cmd = tokio::select! {
             maybe_cmd = cmd_rx.recv() => match maybe_cmd {
                 Some(cmd) => cmd,
@@ -603,10 +620,48 @@ async fn run_actor(
             },
             _ = async_landed.notified() => {
                 let signals = editor.run_tick_pending();
-                editor.publish_render_state();
+                // §12 paint gate: an async arrival that moved a non-cell
+                // render-visible surface (LSP readiness badge, diagnostics
+                // overlay, popup, …) must reach a frame WITHOUT a keystroke
+                // — the cells / virtual-rows workers only paint on their
+                // own content change. `publish_render_state` reports
+                // whether `paint_revision` moved; fire `paint_request`
+                // when it did. Gated so a no-op publish doesn't spin the
+                // GPUI paint bridge.
+                let painted = editor.publish_render_state();
+                if painted {
+                    editor.paint_request.notify_one();
+                }
+                // Notify cells via the event bus so the wake is
+                // sequenced after the ArcSwap store in
+                // publish_render_state. Cells wakes via the
+                // AsyncRenderStatePublished bridge in editor_boot.rs.
+                editor.event_bus.publish_typed(
+                    crate::events::AsyncRenderStatePublished,
+                );
                 for sig in signals {
                     let _ = signal_tx.send(sig);
                 }
+                continue;
+            }
+            // L4a.2: the inline-diagnostic idle deadline elapsed.
+            // Flip the gate visible, republish (so `build_render_state`
+            // emits the cursor-line summary), and wake cells via the
+            // same `AsyncRenderStatePublished` bridge the async_landed
+            // arm uses. No `run_tick_pending` — the gate only changes
+            // presentation, not pending async work.
+            _ = &mut inline_diag_sleep, if editor.inline_diag_deadline.is_some() => {
+                editor.fire_inline_diag_gate();
+                // §12 paint gate: the idle gate flips the inline summary
+                // visible — a non-cell surface — so fire `paint_request`
+                // when the publish reports the change.
+                let painted = editor.publish_render_state();
+                if painted {
+                    editor.paint_request.notify_one();
+                }
+                editor.event_bus.publish_typed(
+                    crate::events::AsyncRenderStatePublished,
+                );
                 continue;
             }
         };

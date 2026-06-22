@@ -307,5 +307,5 @@ doesn't block). Two legitimate shapes:
 - Slice plan + status: `docs/dev/operations/slice-plans/input-latency.md`.
 - Binding→action keymap structure: `keymap-architecture.md`.
 - Synchronous char availability: display-line slice plan, B2.3
-  (`docs/dev/operations/slice-plans/display-line.md`).
+  (`docs/dev/operations/slice-plans/archive/display-line.md`).
 - Actor model: `crates/lattice-host/src/editor_actor.rs`.

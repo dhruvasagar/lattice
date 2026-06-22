@@ -1,9 +1,44 @@
 # Display-line model (retiring the per-character cell grid)
 
-Status: design fragment (2026-06-04). Slice plan: `../operations/slice-plans/display-line.md`.
+Status: design fragment (2026-06-04). Slice plan: `../operations/slice-plans/archive/display-line.md`.
 Supersedes the per-character `CellMatrix` substrate (`cell-grid-renderer.md`)
 and the legacy scroll-windowed highlight cache (`highlights_worker` /
 `VisibleSpans` / `VisibleRows`).
+
+> **Amendment (2026-06-20) — the cell grid is RETAINED as GPUI's per-glyph
+> projection (approach A).** B0–B3 + B2.5 landed: `DisplayMatrix` is the
+> canonical, always-current cache and the flicker is gone. A pre-B4 deletion
+> audit then found the GPU peer re-adopted the cell grid as its **production**
+> per-glyph painter: `paint_cells_row` is the default active-pane glyph path
+> (`editor_element.rs` `use_paint_cells = cell_matrix.is_some()`, S4.final.f;
+> the `LATTICE_PAINT_CELLS` env-gate is now a no-op), and the Thread-F heading
+> scale / variable-row-height work is built on it. So the original goal of
+> *deleting* the cell grid is **descoped**: the `CellMatrix` lives on, but only
+> as a **derived projection** of the canonical `DisplayMatrix`
+> (`display_matrix_to_cell_matrix`) — not a second source of truth, so the
+> two-cache fragmentation this design fixed does **not** return. What B4 still
+> deletes is the redundant legacy *highlight cache* (`highlights_worker` /
+> `VisibleSpans` / `VisibleRows` / `RowPrepaint` / `pane_highlights`), after
+> migrating the last two consumers (TUI `draw_inactive_document`, GPUI
+> `build_line_with_inlays` fallback) onto `DisplayMatrix`. Full cell-grid
+> retirement (re-homing GPUI per-glyph painting onto a `DisplayLine` painter)
+> is a separate future initiative, deferred on merit. See the slice plan's B4
+> re-slice. `lattice_cells::Cell` + `cell_flags` are shared payload
+> (virtual rows, multibuffer headers, file-tree) and were never in scope to
+> delete.
+
+> **Amendment (2026-06-20) — `highlights_worker` survives as `overlay_worker`
+> (B4.2, approach B).** The worker had two jobs: the dead span/row highlight
+> cache (`VisibleSpans`/`VisibleRows`/`RowPrepaint`) AND the **live**
+> `static_overlay_quads` producer (`bucket_static_overlays` — search-match /
+> substitute / doc-highlight backgrounds, consumed every frame by both
+> renderers). B4.2 deleted only the dead cache and **kept** the overlay
+> producer, renaming the worker → `overlay_worker` (`HighlightWake` →
+> `OverlayWake`) to match its remaining job. Deleting the module wholesale would
+> have silently dropped those highlight backgrounds — a UX regression caught
+> before execution. So the legacy *highlight* cache is gone; the live *overlay*
+> decoration path stays. Consolidating overlay bucketing into `cells_worker`
+> (one worker) is a possible future slice, not pursued now. **B0–B4 COMPLETE.**
 
 ## Why this exists
 
@@ -135,5 +170,5 @@ once in the substrate.
 
 ## Slice plan
 
-See `../operations/slice-plans/display-line.md` (B0 design → B1 type + machinery
+See `../operations/slice-plans/archive/display-line.md` (B0 design → B1 type + machinery
 → B2 always-current + TUI cutover → B3 GPU cutover → B4 delete legacy).

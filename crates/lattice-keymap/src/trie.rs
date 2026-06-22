@@ -113,11 +113,23 @@ pub struct BoundCommand {
     pub command: CommandInvocation,
     pub source: SourceLocation,
     pub layer: KeymapLayer,
+    /// SN.3c.2b: `:map`-style augment-and-continue. When `true`, the
+    /// dispatcher runs this binding's action AND THEN re-resolves the
+    /// same chord against the layers below this one (this binding's
+    /// `layer` mode peeled out of the active set), running the native
+    /// binding too. `false` (default) = the binding fully handles the
+    /// chord and stops, the normal shadowing behavior. Unlike vim's
+    /// `:map` recursion this is structurally bounded — each hop peels a
+    /// layer, terminating at `Builtin`, so it cannot loop. Declared on
+    /// the owning `KeymapEntry`; the host owns the re-resolution.
+    pub fall_through: bool,
 }
 
 impl BoundCommand {
     /// Construct a binding that dispatches via the
-    /// `CommandInvocation`.
+    /// `CommandInvocation`. `fall_through` defaults to `false` (the
+    /// binding fully handles its chord); use [`Self::with_fall_through`]
+    /// to opt into augment-and-continue.
     pub fn from_invocation(
         command: CommandInvocation,
         source: SourceLocation,
@@ -127,7 +139,16 @@ impl BoundCommand {
             command,
             source,
             layer,
+            fall_through: false,
         }
+    }
+
+    /// SN.3c.2b: set the augment-and-continue flag (see
+    /// [`BoundCommand::fall_through`]). Builder form so the many
+    /// existing `from_invocation` call sites stay source-compatible.
+    pub fn with_fall_through(mut self, fall_through: bool) -> Self {
+        self.fall_through = fall_through;
+        self
     }
 }
 

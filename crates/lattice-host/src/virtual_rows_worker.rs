@@ -461,6 +461,7 @@ mod tests {
             cells: Arc::from([] as [lattice_cells::Cell; 0]),
             height: 1,
             kind: lattice_cells::VirtualRowKind::Generic,
+            bg: None,
         }
     }
 
@@ -495,6 +496,7 @@ mod tests {
             wrap: false,
             foldenable: false,
             last_edit: None,
+            excerpt_syntax: Arc::from([]),
         }
     }
 

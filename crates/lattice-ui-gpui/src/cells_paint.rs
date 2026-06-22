@@ -65,6 +65,7 @@
 use gpui::{Font, FontStyle, FontWeight, TextRun, UnderlineStyle, px, rgb};
 use lattice_cells::{Cell, CellRow, cell_flags};
 use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+use lattice_host::ui::theme::Weight;
 
 /// Bits in [`Cell::flags`] that drive run grouping + styling.
 /// `INLAY` and `WS_MARKER` are intentionally excluded — they
@@ -160,16 +161,17 @@ pub fn cell_row_to_text_runs(
 /// drops them); `inlay_offsets` is `line.col_map` verbatim.
 pub fn display_line_to_text_runs(
     line: &DisplayLine,
-    theme: &lattice_host::ui::theme::Theme,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     font: &Font,
 ) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
-    let default_fg = theme
-        .syntax_style(lattice_syntax::Style::Default)
+    use lattice_host::ui::theme::resolve_syntax_style;
+    let default_fg = resolve_syntax_style(resolved, ids, lattice_syntax::Style::Default)
         .fg
         .map(|c| c.to_rgb_u32(0))
         .unwrap_or(0);
-    let trailing_fg = theme
-        .whitespace_trailing_style
+    let trailing_fg = resolved
+        .get(ids.whitespace_trailing)
         .fg
         .map(|c| c.to_rgb_u32(default_fg))
         .unwrap_or(default_fg);
@@ -183,41 +185,128 @@ pub fn display_line_to_text_runs(
     .to_rgb_u32(0);
 
     let mut runs: Vec<TextRun> = Vec::new();
-    let mut current: Option<(Cell, usize)> = None;
+    // T.10: each run group carries the synthetic [`Cell`] (fg/bg/flags,
+    // the same payload as pre-T.10) PLUS the resolved rich attributes
+    // ([`Weight`] / [`FontScale`]) the synthetic Cell can't hold —
+    // `Cell` stays fg+flags by design (decided scope). The rich attrs
+    // fold into the grouping signature ([`rich_key`]) so two runs with
+    // identical fg/flags but different weight (a heading next to body
+    // text) don't wrongly merge.
+    let mut current: Option<(Cell, RichAttrs, usize)> = None;
     for run in line.runs.iter() {
         let run_len = run.len as usize;
-        let cell = display_run_to_synthetic_cell(run, theme, trailing_fg, inlay_fg);
+        let (cell, rich) =
+            display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, inlay_fg);
         match &mut current {
-            Some((sample, len)) if style_key(sample) == style_key(&cell) => {
+            Some((sample, sample_rich, len))
+                if style_key(sample) == style_key(&cell)
+                    && rich_key(sample_rich) == rich_key(&rich) =>
+            {
                 *len += run_len;
             }
             _ => {
-                if let Some((sample, len)) = current.take() {
-                    runs.push(cell_to_text_run(&sample, len, font));
+                if let Some((sample, sample_rich, len)) = current.take() {
+                    runs.push(rich_cell_to_text_run(&sample, &sample_rich, len, font));
                 }
-                current = Some((cell, run_len));
+                current = Some((cell, rich, run_len));
             }
         }
     }
-    if let Some((sample, len)) = current {
-        runs.push(cell_to_text_run(&sample, len, font));
+    if let Some((sample, sample_rich, len)) = current {
+        runs.push(rich_cell_to_text_run(&sample, &sample_rich, len, font));
     }
 
     let inlay_offsets: Vec<(u32, u32)> = line.col_map.iter().copied().collect();
     (line.text.to_string(), runs, inlay_offsets)
 }
 
+/// F.2 (Thread F): split a display line into a base-size leading prefix
+/// and a scaled remainder, for the emacs heading model — only the
+/// heading *title* scales, the leading `#`/`##` markers stay base size
+/// (`markdown-header-delimiter-face`). Returns `Some((prefix_cols,
+/// title_scale))` where `prefix_cols` is the number of leading display
+/// columns (chars) before the first run carrying a rich `scale > 1.0`
+/// (the `# ` markers, resolved to `1.0`), and `title_scale` is that
+/// run's scale; returns `None` for ordinary lines (no scaled run).
+///
+/// The GPUI peer renders a scaled row in two pieces sharing one baseline
+/// — the prefix at base size, the title at `font_size * title_scale` —
+/// and grows the row height by `title_scale` (variable row height). The
+/// TUI peer has no analogue (a cell grid cannot vary font size); it
+/// degrades to the resolved bold/weight/underline.
+///
+/// O(runs). Inlay / whitespace-marker runs carry no syntax scale and are
+/// treated as base (mirrors [`display_run_to_synthetic_cell`]). Multi-
+/// scale titles (e.g. inline code inside a heading) collapse to the
+/// first scaled run's scale from `prefix_cols` onward — a deliberate
+/// simplification (the common case is `[markers][title]`).
+pub fn heading_scale_split(
+    line: &DisplayLine,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> Option<(u32, f32)> {
+    let text = line.text.as_ref();
+    let mut byte = 0usize;
+    let mut col = 0u32;
+    for run in line.runs.iter() {
+        let run_bytes = run.len as usize;
+        let scale = if run.flags & (cell_flags::INLAY | cell_flags::WS_MARKER) != 0 {
+            1.0
+        } else {
+            lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style)
+                .scale
+                .map(|s| s.as_ratio())
+                .unwrap_or(1.0)
+        };
+        if scale > 1.0 {
+            return Some((col, scale));
+        }
+        let end = (byte + run_bytes).min(text.len());
+        col += text.get(byte..end).map(|s| s.chars().count() as u32).unwrap_or(0);
+        byte = end;
+    }
+    None
+}
+
+/// T.10: the rich-vocabulary attributes a [`DisplayRun`]'s resolved
+/// host [`Style`] carries that the fg+flags [`Cell`] cannot. `weight`
+/// is the visible deliverable (GPUI honors it via `TextRun.font.weight`);
+/// `scale` is wired through to the apply site but no builtin element
+/// sets it (a larger run would grow the line and break the uniform
+/// row-height scroll model — Layer 2, deferred). `family` is read at
+/// the synthetic-cell step but deferred (no renderer font table yet).
+#[derive(Clone, Copy, Default)]
+struct RichAttrs {
+    weight: Option<Weight>,
+    scale: Option<lattice_host::ui::theme::FontScale>,
+}
+
+/// Grouping signature for the rich attributes. Folded into the run
+/// merge alongside [`style_key`] so a weight (or scale) change flushes
+/// the in-progress run. `FontScale` is `u16` hundredths and `Weight`
+/// is a small enum, so this is `Copy` + cheap to compare.
+fn rich_key(r: &RichAttrs) -> (Option<Weight>, Option<u16>) {
+    (r.weight, r.scale.map(|s| s.0))
+}
+
 /// Resolve one [`DisplayRun`] to the synthetic [`Cell`] the worker's
 /// `display_line_to_cell_row` projection would have produced — same
 /// fg/flag rules — so [`cell_to_text_run`] yields identical styling. The
 /// codepoint is irrelevant (`cell_to_text_run` reads only fg/bg/flags).
+///
+/// T.10: also returns the resolved rich attributes ([`RichAttrs`]) the
+/// fg+flags `Cell` can't carry — `weight` (honored on GPUI),
+/// `scale`/`family` (threaded but deferred). Inlay / whitespace-marker
+/// runs take NO rich attrs (they're synthetic decoration, not syntax
+/// text), mirroring how they take no syntax modifiers.
 fn display_run_to_synthetic_cell(
     run: &DisplayRun,
-    theme: &lattice_host::ui::theme::Theme,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
     trailing_fg: u32,
     inlay_fg: u32,
-) -> Cell {
-    let host = theme.syntax_style(run.style);
+) -> (Cell, RichAttrs) {
+    let host = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style);
     let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
     let mut mods: u16 = 0;
     let m = &host.modifiers;
@@ -236,18 +325,26 @@ fn display_run_to_synthetic_cell(
     if m.reverse {
         mods |= cell_flags::REVERSE;
     }
+    // T.10: capture the rich attrs from the resolved host style. `family`
+    // is resolved but DEFERRED — there's no renderer font table to map a
+    // `FamilyId` to a `Font` yet, so we don't carry it (TODO: wire when a
+    // font-family table lands).
+    let rich = RichAttrs {
+        weight: host.weight,
+        scale: host.scale,
+    };
     let is_inlay = run.flags & cell_flags::INLAY != 0;
     let is_ws = run.flags & cell_flags::WS_MARKER != 0;
     let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
     if is_inlay {
         // Inlay runs take the inlay fg with NO syntax modifiers — exactly
-        // what `display_line_to_cell_row` emits.
-        Cell::new(0, inlay_fg, 0, cell_flags::INLAY)
+        // what `display_line_to_cell_row` emits. No rich attrs either.
+        (Cell::new(0, inlay_fg, 0, cell_flags::INLAY), RichAttrs::default())
     } else if is_ws {
         let fg = if is_trailing { trailing_fg } else { style_fg };
-        Cell::new(0, fg, 0, mods | cell_flags::WS_MARKER)
+        (Cell::new(0, fg, 0, mods | cell_flags::WS_MARKER), RichAttrs::default())
     } else {
-        Cell::new(0, style_fg, 0, mods)
+        (Cell::new(0, style_fg, 0, mods), rich)
     }
 }
 
@@ -257,6 +354,24 @@ fn display_run_to_synthetic_cell(
 /// are considered style-significant.
 fn style_key(cell: &Cell) -> (u32, u32, u16) {
     (cell.fg, cell.bg, cell.flags & STYLE_FLAGS_MASK)
+}
+
+/// T.10: map the rich-vocabulary [`Weight`] onto GPUI's
+/// [`FontWeight`] axis. A resolved [`Weight`] is finer than the
+/// `bold` modifier (which only ever sets `BOLD` = 700) and wins
+/// over it when present on a run's style.
+fn weight_to_font_weight(weight: Weight) -> FontWeight {
+    match weight {
+        Weight::Thin => FontWeight::THIN,
+        Weight::ExtraLight => FontWeight::EXTRA_LIGHT,
+        Weight::Light => FontWeight::LIGHT,
+        Weight::Normal => FontWeight::NORMAL,
+        Weight::Medium => FontWeight::MEDIUM,
+        Weight::SemiBold => FontWeight::SEMIBOLD,
+        Weight::Bold => FontWeight::BOLD,
+        Weight::ExtraBold => FontWeight::EXTRA_BOLD,
+        Weight::Black => FontWeight::BLACK,
+    }
 }
 
 /// Build a fully-styled [`TextRun`] for `len` utf-8 bytes worth
@@ -303,6 +418,45 @@ fn cell_to_text_run(cell: &Cell, len: usize, font_base: &Font) -> TextRun {
         underline,
         strikethrough: None,
     }
+}
+
+/// T.10: build a [`TextRun`] from a synthetic [`Cell`] plus the
+/// resolved rich attributes the `Cell` can't carry. Delegates to
+/// [`cell_to_text_run`] for fg/bg/underline/italic/bold-bool styling
+/// (identical to pre-T.10), then layers the rich vocabulary on top:
+///
+/// - `weight` → OVERRIDE `font.weight` via [`weight_to_font_weight`].
+///   A resolved [`Weight`] is finer than the bold-bool's 700 and wins
+///   over it when present (e.g. `syntax.heading.1` resolves to
+///   `ExtraBold`, not just bold).
+/// - `scale` → wired here but applied to nothing: a [`TextRun`] has no
+///   per-run font-size field in this gpui version (the single
+///   `font_size` passed to `shape_line` sizes the whole line), and no
+///   builtin element sets `scale`, so there is nothing to grow. See the
+///   apply note below.
+fn rich_cell_to_text_run(
+    cell: &Cell,
+    rich: &RichAttrs,
+    len: usize,
+    font_base: &Font,
+) -> TextRun {
+    let mut run = cell_to_text_run(cell, len, font_base);
+    // A resolved `Weight` wins over the bold-bool's `FontWeight::BOLD`.
+    if let Some(weight) = rich.weight {
+        run.font.weight = weight_to_font_weight(weight);
+    }
+    // F.2 (Thread F): scale is honored at the row level, not per-run.
+    // This gpui's `TextRun` has no per-run font size (the whole shaped
+    // line takes one `font_size`), so `editor_element` reads
+    // [`heading_scale_split`] and renders a scaled row in two pieces
+    // sharing a baseline — the base-size marker prefix + the scaled
+    // title — each shaped at its own `font_size`, with a matching row
+    // height (variable row height). The per-run `scale` read here stays
+    // inert by design — it only feeds [`rich_key`] so a scale change
+    // still flushes the in-progress run group. `family` is still
+    // deferred (no renderer font table).
+    let _scale_ratio = rich.scale.map(|s| s.as_ratio()).unwrap_or(1.0);
+    run
 }
 
 /// Multiply each RGB channel by [`DIM_FACTOR`]. Saturates to 0
@@ -364,10 +518,15 @@ mod tests {
     #[test]
     fn display_line_resolves_keyword_and_inlay_runs() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
-        use lattice_host::ui::theme::{Color, NamedColor, Theme};
-        let theme = Theme::default();
-        let kw_fg = theme
-            .syntax_style(lattice_syntax::Style::Keyword)
+        use lattice_host::ui::theme::{
+            resolve_syntax_style, BuiltinElementIds, Color, InMemoryThemeRegistry, NamedColor,
+            ThemeRegistry as _,
+        };
+        // T.5.b: resolve through the default registry's resolved table.
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let kw_fg = resolve_syntax_style(&resolved, &ids, lattice_syntax::Style::Keyword)
             .fg
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
@@ -397,7 +556,7 @@ mod tests {
             fold: None,
         };
         let (combined, runs, offsets) =
-            display_line_to_text_runs(&line, &theme, &font("monospace"));
+            display_line_to_text_runs(&line, &resolved, &ids, &font("monospace"));
         assert_eq!(combined, "fn: i32");
         assert_eq!(runs.len(), 2, "keyword + inlay → two runs");
         assert_eq!(runs[0].len, 2);
@@ -405,6 +564,160 @@ mod tests {
         assert_eq!(runs[1].len, 5);
         assert_eq!(runs[1].color, rgb(inlay_fg).into(), "inlay run takes the inlay-hint fg");
         assert_eq!(offsets, vec![(2, 5)], "col_map transfers as inlay_offsets");
+    }
+
+    /// T.10: a `syntax.heading.1` run resolves to the rich-vocabulary
+    /// `ExtraBold` weight, and the display path threads it onto the
+    /// run's `TextRun.font.weight` (overriding the bold-bool's 700).
+    /// The demo deliverable: headings render heavier on GPUI.
+    #[test]
+    fn display_line_heading_run_takes_extrabold_weight() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let text = "# Title";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![DisplayRun {
+                    len: text.len() as u32,
+                    style: lattice_syntax::Style::Heading1,
+                    flags: 0,
+                }]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (_, runs, _) = display_line_to_text_runs(&line, &resolved, &ids, &font("monospace"));
+        assert_eq!(runs.len(), 1, "single heading run");
+        assert_eq!(
+            runs[0].font.weight,
+            FontWeight::EXTRA_BOLD,
+            "syntax.heading.1 resolves to ExtraBold and the run takes it"
+        );
+    }
+
+    /// F.2 (Thread F): `heading_scale_split` returns the leading base-
+    /// size marker width + the title scale. For `## Title` the markers
+    /// run (`## `, 3 cols, base) precedes the scaled title run, so the
+    /// split is `(3, 1.4)`. Plain body text returns `None`.
+    #[test]
+    fn heading_scale_split_reports_prefix_and_title_scale() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        // "## " markers (Default, base) + "Title" (Heading2, 1.4x).
+        let text = "## Title";
+        let heading = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun { len: 3, style: lattice_syntax::Style::Default, flags: 0 },
+                    DisplayRun { len: 5, style: lattice_syntax::Style::Heading2, flags: 0 },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (prefix_cols, title_scale) =
+            heading_scale_split(&heading, &resolved, &ids).expect("heading splits");
+        assert_eq!(prefix_cols, 3, "the '## ' markers are the base-size prefix");
+        assert!((title_scale - 1.4).abs() < 1e-3, "title scales at heading.2's 1.4x");
+
+        let body = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from("plain"),
+            runs: std::sync::Arc::from(
+                vec![DisplayRun { len: 5, style: lattice_syntax::Style::Default, flags: 0 }]
+                    .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: 5,
+            fold: None,
+        };
+        assert_eq!(
+            heading_scale_split(&body, &resolved, &ids),
+            None,
+            "plain body text has no scaled run"
+        );
+    }
+
+    /// F.2: a leading inlay/whitespace run carries no syntax scale, so it
+    /// counts toward the base-size prefix; the first genuinely-scaled run
+    /// (the heading title) sets `title_scale`.
+    #[test]
+    fn heading_scale_split_counts_inlay_prefix_as_base() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let text = "# H1";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun { len: 2, style: lattice_syntax::Style::Default, flags: 0 },
+                    DisplayRun { len: 2, style: lattice_syntax::Style::Heading1, flags: 0 },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let (prefix_cols, title_scale) =
+            heading_scale_split(&line, &resolved, &ids).expect("splits");
+        assert_eq!(prefix_cols, 2, "'# ' is the 2-col base prefix");
+        assert!((title_scale - 1.6).abs() < 1e-3, "heading.1 title at 1.6x");
+    }
+
+    /// T.10: two runs that share fg/flags but differ in resolved weight
+    /// must NOT merge — the rich grouping signature breaks the run.
+    /// (heading.1 = ExtraBold next to heading.2 = Bold.)
+    #[test]
+    fn display_line_different_weight_breaks_runs() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        // Force identical fg by overriding both headings to the same fg;
+        // they differ only in weight (ExtraBold vs Bold) after T.10.
+        let text = "ab";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun { len: 1, style: lattice_syntax::Style::Heading1, flags: 0 },
+                    DisplayRun { len: 1, style: lattice_syntax::Style::Heading2, flags: 0 },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: 2,
+            fold: None,
+        };
+        let (_, runs, _) = display_line_to_text_runs(&line, &resolved, &ids, &font("monospace"));
+        assert_eq!(runs.len(), 2, "ExtraBold heading.1 and Bold heading.2 do not merge");
+        assert_eq!(runs[0].font.weight, FontWeight::EXTRA_BOLD);
+        assert_eq!(runs[1].font.weight, FontWeight::BOLD);
     }
 
     /// Adjacent same-fg cells merge into one run — the collapse

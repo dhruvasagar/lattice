@@ -40,6 +40,7 @@ fn build_virtual_rows(count: u32, source_line_count: u32) -> Vec<VirtualRow> {
 			cells: Arc::from([] as [Cell; 0]),
 			height: 1,
 			kind: VirtualRowKind::Generic,
+			bg: None,
 		})
 		.collect()
 }

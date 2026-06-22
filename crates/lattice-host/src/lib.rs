@@ -32,11 +32,13 @@
 
 pub mod action;
 pub mod actions;
+pub(crate) mod events;
 pub mod activator;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
 pub mod cursor_shape;
+pub mod diagnostics_query;
 pub mod dispatch;
 pub mod editor;
 pub mod visual;
@@ -72,10 +74,14 @@ pub mod diff;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;
-pub mod highlights_worker;
+// display-line B4.2 (gut + rename): formerly `highlights_worker`.
+// The dead span/row prepaint cache was deleted; only the live
+// static-overlay bucketing remains, so the module was renamed to
+// reflect that it no longer produces highlights.
+pub mod overlay_worker;
 pub mod pane_group;
 // S2.2 (2026-05-26): cell-grid renderer's cell-builder worker.
-// Sibling of `highlights_worker`; consumes `RenderState.cells`
+// Sibling of `overlay_worker`; consumes `RenderState.cells`
 // inputs, builds a whole-doc `CellMatrix`, publishes via
 // `Editor::cells_matrix_cell`. See
 // `docs/dev/architecture/cell-grid-renderer.md`.
@@ -110,6 +116,7 @@ pub mod keymap_registry;
 pub mod keymap_replace;
 // Terminal-mode T2.a (2026-05-25): keystroke → ANSI byte
 // encoder consumed by the Terminal-Insert translate branch.
+pub mod keymap_select;
 pub mod keymap_terminal;
 pub mod keymap_trie;
 pub mod keymap_visual;
@@ -124,6 +131,8 @@ pub mod keymap_visual;
 // contributions and inserts them into the matcher trie.
 pub mod lsp_helpers;
 pub mod lsp_watcher;
+pub mod mode_action_handlers;
+pub mod modeline;
 pub mod modes;
 pub mod oil;
 pub mod pane;
@@ -147,6 +156,7 @@ pub mod state;
 // renderer peers seed `*lsp*` + `*messages*` eagerly.
 pub mod messages;
 pub mod synthetic_buffers;
+pub mod tutor;
 pub mod ui;
 
 // Perf plan B.4: tiny newtype wrapper that bumps a `u64` version

@@ -84,6 +84,12 @@ pub struct RenderState {
     pub popup: Arc<PopupRenderState>,
     pub messages: Arc<MessagesRenderState>,
     pub modeline: Arc<ModelineRenderState>,
+    /// ML.0b-2: published snapshot of the configurable-modeline element
+    /// system (descriptors + content, both `Arc`-backed so this clone is
+    /// cheap). The renderers lay out Left/Center/Right zones from this
+    /// (ML.1/ML.2). Distinct from `modeline` above, which is the legacy
+    /// cmdline/search sub-state — different surface, kept separate.
+    pub modeline_elements: lattice_mode::ModelineSnapshot,
     /// Slice 3c.final.B.10: typed-options registry published as a
     /// wait-free Arc clone so the renderer's
     /// `picker_display_is_minibuffer` (and any future per-frame
@@ -114,11 +120,21 @@ pub struct RenderState {
     /// notice this" signals that the main loop reads before
     /// composing the next frame.
     pub lifecycle: Arc<LifecycleRenderState>,
-    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 6): resolved
-    /// host theme. `Theme` is `Copy` (every field is `Copy`),
-    /// so the publish is a plain struct move — no `Arc`
-    /// indirection needed.
-    pub theme: crate::ui::theme::Theme,
+    /// T.4 (theme-system): the resolved theme read table, snapshotted
+    /// from the `ThemeRegistryHandle` at publish. Renderers read
+    /// `resolved_theme.get(theme_ids.<elem>)` — an O(1) array index
+    /// (design §7). T.6.t deleted the flat host `Theme` field that
+    /// used to ride alongside this; all style reads now go through the
+    /// resolved table, and non-style chrome (glyphs, separator chars,
+    /// dim/nerd-fonts flags) through the typed-options registry. The
+    /// TUI rebuilds its ratatui cache from this only when
+    /// `ResolvedTheme::version()` changes (no per-frame adaptation);
+    /// GPUI adapts inline.
+    pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    /// T.4: builtin element ids (Copy), interned once at boot. Paired
+    /// with [`Self::resolved_theme`] so a read is
+    /// `resolved_theme.get(theme_ids.x)`.
+    pub theme_ids: crate::ui::theme::BuiltinElementIds,
     /// S2.1 (2026-05-26): cell-grid renderer substrate state.
     /// Carries the published `CellMatrix` cell + the inputs the
     /// cell-builder worker (S2.2+) reads to rebuild. See
@@ -144,6 +160,23 @@ pub struct RenderState {
     /// in `build_render_state` from
     /// `editor.virtual_rows_matrix_cell.load_full()`.
     pub virtual_rows: Arc<VirtualRowsRenderState>,
+    /// §12 async-result render-wake — the off-keystroke paint gate.
+    ///
+    /// A content hash over every render-visible surface that is NOT
+    /// owned by the cells / virtual-rows workers (those fire
+    /// `paint_request` on their own content change). The actor's
+    /// off-keystroke arms (`async_landed` / inline-diag) compare this
+    /// against the previously-published value and fire `paint_request`
+    /// only when it moved, so an async arrival that changes the modeline
+    /// badge, a diagnostics overlay, a popup, etc. reaches a frame
+    /// without a keystroke — and a no-op publish does NOT (which also
+    /// keeps the GPUI paint-bridge's `run_tick_pending` → re-publish
+    /// loop from spinning). Stamped by
+    /// [`Editor::compute_paint_revision`](crate::dispatch::Editor::compute_paint_revision)
+    /// in `build_render_state`. The cells `MatrixVersion` axis is the
+    /// dual: it gates cell rebuilds; this gates everything else
+    /// (`lattice-cells/src/version.rs` enumerates the overlay set).
+    pub paint_revision: u64,
 }
 
 impl Default for RenderState {
@@ -161,6 +194,7 @@ impl Default for RenderState {
             popup: Arc::new(PopupRenderState::default()),
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
+            modeline_elements: lattice_mode::ModelineSnapshot::default(),
             options: Arc::new(OptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),
             buffer_locals: Arc::new(BufferLocalsRenderState::default()),
@@ -168,12 +202,14 @@ impl Default for RenderState {
             tabs: Arc::new(TabsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
-            theme: crate::ui::theme::Theme::default(),
+            resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
+            theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             cells: Arc::new(arc_swap::ArcSwap::from_pointee(
                 CellsRenderState::default(),
             )),
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
+            paint_revision: 0,
         }
     }
 }
@@ -663,15 +699,9 @@ pub struct LspRenderState {
     /// the `previousResultId` short-circuit.
     pub pull_diagnostics:
         crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspPullDiagnosticsCache>,
-    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 4): LSP `$/progress`
-    /// updates keyed by `(server_name, token)`. Published as a fresh
-    /// `Arc<HashMap<...>>` per tick — typical concurrent progress
-    /// items < 10 so the clone is sub-µs. Renderers read
-    /// `rs.lsp.progress.iter()` to populate the modeline progress
-    /// strip instead of `app.editor.lsp_progress.iter()`.
-    pub progress: std::sync::Arc<
-        std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
-    >,
+    // ML.3c: `progress` + `server_status` removed. The modeline badge
+    // they fed is produced by `lattice_lsp::modeline` from its own
+    // `LspProgressStore` (decision A); no renderer reads them.
     /// Slice 3c.final.B (group 4): LSP supervisor handle clone.
     /// The handle is internally `Arc<ArcSwap<SupervisorSnapshot>>`-
     /// backed so `Clone` is one Arc bump and `servers_for(uri)`
@@ -681,25 +711,32 @@ pub struct LspRenderState {
     pub supervisor: lattice_lsp::LspSupervisorHandle,
 }
 
-/// Tree-sitter highlights + visible-range cache.
+/// Tree-sitter syntax inputs + static-overlay bucket cache.
 ///
 /// Phase 5.8.AF.5 / Slice X2: split into two halves.
 ///
 /// **Inputs** (`syntax_handle`, `scroll`, `viewport_height`,
-/// `fold_hash`, `text_version`) are written by dispatch's
+/// `fold_hash`, `text_version`, `doc_highlights`,
+/// `static_overlay_version`) are written by dispatch's
 /// `publish_render_state` from current `Editor` state. The
-/// background highlights worker reads them via the published
-/// `RenderState` snapshot to decide whether to recompute.
+/// background overlay worker reads them via the published
+/// `RenderState` snapshot to decide whether to re-bucket.
 ///
-/// **Output** (`visible_spans`) is a nested `Arc<ArcSwap<...>>`
-/// so the worker can publish a fresh `VisibleSpans` *without*
-/// going through `publish_render_state`. The outer `RenderState`
-/// `Arc` stays stable across a frame; the inner spans cell can
-/// be swapped at any time. Renderers read with
-/// `render_state.syntax.visible_spans.load()` — wait-free.
+/// **Output** (`static_overlay_quads`) is a nested
+/// `Arc<ArcSwap<...>>` so the worker can publish a fresh
+/// `StaticOverlayQuads` *without* going through
+/// `publish_render_state`. The outer `RenderState` `Arc` stays
+/// stable across a frame; the inner cell can be swapped at any
+/// time. Renderers read with
+/// `render_state.syntax.static_overlay_quads.load()` — wait-free.
+///
+/// display-line B4.2 (gut + rename): the dead `visible_spans` /
+/// `visible_rows` prepaint output cells were deleted; syntax colour
+/// now flows through the cells / `DisplayMatrix` substrate, and only
+/// the static-overlay bucket remains as a worker output here.
 ///
 /// Goal #1 ("no parsing on the UI thread") is enforced by this
-/// split: the tree-sitter walk runs on the worker, not in any
+/// split: the overlay bucketing runs on the worker, not in any
 /// renderer's per-frame body.
 #[derive(Debug, Clone)]
 pub struct SyntaxRenderState {
@@ -738,26 +775,12 @@ pub struct SyntaxRenderState {
     /// against the snapshot's `text_version()` to decide whether
     /// the snapshot is still current or has fallen behind.
     pub text_version: u64,
-    /// Worker-published output cell. Nested `Arc<ArcSwap<...>>`
-    /// so the worker can store a fresh result without rebuilding
-    /// the outer `RenderState`. The same `Arc` identity is
-    /// carried across every `publish_render_state` call (cloned
-    /// from `Editor::syntax_visible_spans_cell`), so the worker's
-    /// writes survive subsequent publishes.
-    pub visible_spans: Arc<arc_swap::ArcSwap<VisibleSpans>>,
-    /// Perf plan A.2 slice A.2a: parallel cell publishing pre-painted
-    /// rows for the active pane. Same nested `Arc<ArcSwap<...>>`
-    /// shape as `visible_spans` so the worker can swap a fresh
-    /// `VisibleRows` without rebuilding the outer `RenderState`.
-    /// Inner `Arc` identity is the same per-cell handle cloned from
-    /// `Editor::syntax_visible_rows_cell` at every publish.
-    ///
-    /// GPUI's `editor_element` consumes this via
-    /// `rs.syntax.visible_rows.load()` — the prepainted rows save
-    /// per-frame composition on the UI thread (paramount goal #1).
-    /// The TUI peer still reads `visible_spans` until its compose
-    /// loop migrates; both cells are populated on every recompute.
-    pub visible_rows: Arc<arc_swap::ArcSwap<VisibleRows>>,
+    // display-line B4.2 (gut + rename): the worker-published
+    // `visible_spans` + `visible_rows` prepaint output cells were
+    // deleted. Their consumers (TUI compose loop, GPUI active-pane
+    // shaping) migrated to the cells / `DisplayMatrix` substrate in
+    // the B-series, leaving these cells with zero readers. The
+    // surviving worker output is `static_overlay_quads` below.
     /// Perf plan A.2 slice A.2b.1: active document's flattened
     /// inlay-hint list, pre-gated by the buffer's
     /// `lsp-inlay-hint-mode` enable-flag. Populated once per
@@ -766,12 +789,14 @@ pub struct SyntaxRenderState {
     /// have arrived yet.
     ///
     /// Why on `SyntaxRenderState` and not `LspRenderState`:
-    /// inlays are an INPUT to the syntax worker's row composition
-    /// (A.2b.2). The worker walks this list to splice inlay text
-    /// into `RowPrepaint.combined`; downstream readers (GPUI's
-    /// active-pane prepaint) consume the woven rows. The raw
+    /// inlays are an INPUT to the cells / `DisplayMatrix` worker's
+    /// row composition (A.2b.2). The cells worker walks this list to
+    /// splice inlay text into each composed row; downstream readers
+    /// (GPUI's active-pane prepaint) consume the woven rows. The raw
     /// per-buffer LSP cache stays on `lsp.inlay_hints` for the
     /// inactive-pane fallback path that flattens its own list.
+    /// (display-line B4.2: the dead `RowPrepaint` cell that
+    /// previously consumed this is gone.)
     ///
     /// Coordinates: `byte` is a utf-8 offset against the active
     /// document's line text; `text` already has `padding_left`
@@ -840,8 +865,6 @@ impl Default for SyntaxRenderState {
             end_line_override: None,
             fold_hash: 0,
             text_version: 0,
-            visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
-            visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             inlay_version: 0,
             static_overlay_quads: Arc::new(arc_swap::ArcSwap::from_pointee(
@@ -933,15 +956,16 @@ pub struct CellsRenderState {
     /// publishes without further edits see `None`.
     pub last_edit: Option<lattice_cells::EditDelta>,
 
-    /// Renderer-neutral host theme. The cell-builder resolves each
-    /// styled span's `lattice_syntax::Style` to an `0xRRGGBB`
-    /// `cell.fg` via [`crate::ui::theme::Theme::syntax_style`]. A
-    /// content-hash of the theme is folded into
-    /// [`lattice_cells::MatrixVersion::theme`] at publish time so
-    /// any palette change invalidates the matrix and rebuilds with
-    /// the new colours. Per the design doc, theme changes are rare
-    /// — a whole-doc rebuild is an acceptable invalidation cost.
-    pub theme: crate::ui::theme::Theme,
+    /// T.5 (theme-system): the resolved read table + builtin ids the
+    /// cell-builder uses to resolve each span's `lattice_syntax::Style`
+    /// → `resolved.get(syntax_element_id(ids, s))` (O(1) array index).
+    /// Snapshotted at publish. T.6.t deleted the flat host `Theme` field
+    /// that used to ride alongside it; the matrix invalidation key
+    /// (`MatrixVersion::theme`) is now `ResolvedTheme::version()`, set at
+    /// `build_render_state` time, so a palette change still rebuilds the
+    /// matrix with fresh colours.
+    pub resolved_theme: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    pub theme_ids: crate::ui::theme::BuiltinElementIds,
 
     /// 2026-05-27: `display.whitespace.*` snapshot. Worker
     /// substitutes whitespace bytes with marker glyphs +
@@ -1038,6 +1062,35 @@ impl CellsRenderState {
 /// [`crate::editor::Editor::cells_matrix_for`] at publish
 /// time and rebuild per visible buffer.
 ///
+/// K.4.7 (2026-06-07): per-excerpt syntax entry for multibuffer
+/// panes. The cells worker reads `excerpt_syntax` to apply
+/// per-source tree-sitter highlights across composed rows.
+///
+/// - `composed_start` / `composed_end`: inclusive row range in the
+///   multibuffer's composed coordinate space.
+/// - `source_start`: the first source-buffer row that maps to
+///   `composed_start` (used to translate highlight results back).
+/// - `handle`: per-excerpt highlight provider (impl `ExcerptHighlighter`).
+///   Owned by `MultibufferState`; accessed via trait object so the host
+///   never depends on the concrete `SyntaxHandle` type.
+#[derive(Clone)]
+pub struct ExcerptSyntax {
+    pub composed_start: u32,
+    pub composed_end: u32,
+    pub source_start: u32,
+    pub handle: std::sync::Arc<dyn lattice_cells::ExcerptHighlighter>,
+}
+
+impl std::fmt::Debug for ExcerptSyntax {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExcerptSyntax")
+            .field("composed_start", &self.composed_start)
+            .field("composed_end", &self.composed_end)
+            .field("source_start", &self.source_start)
+            .finish_non_exhaustive()
+    }
+}
+
 /// `last_edit` is `Some(delta)` only for the active pane
 /// (edits land on the active document; the publish path
 /// `take()`s `Editor::last_edit_for_cells` exactly once);
@@ -1138,6 +1191,9 @@ pub struct PaneCellsInputs {
     /// cycle when exactly one edit was applied; `None`
     /// otherwise. See struct-level docstring.
     pub last_edit: Option<lattice_cells::EditDelta>,
+    /// K.4.7 (2026-06-07): per-excerpt syntax entries for multibuffer
+    /// panes. Empty for ordinary single-document panes.
+    pub excerpt_syntax: Arc<[ExcerptSyntax]>,
 }
 
 impl Default for CellsRenderState {
@@ -1154,7 +1210,8 @@ impl Default for CellsRenderState {
             viewport_height: 0,
             foldenable: true,
             last_edit: None,
-            theme: crate::ui::theme::Theme::default(),
+            resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
+            theme_ids: crate::ui::theme::BuiltinElementIds::default(),
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
             panes: Arc::from(Vec::<PaneCellsInputs>::new().into_boxed_slice()),
             pane_matrices: Arc::new(std::collections::HashMap::new()),
@@ -1167,13 +1224,14 @@ impl Default for CellsRenderState {
 }
 
 /// Cache key identifying the inputs that produced a particular
-/// `VisibleSpans`. Worker compares the *current* inputs against
-/// `VisibleSpans::computed_for_key` to short-circuit recompute on
-/// a no-op tick (cursor blink, unchanged scroll/viewport/folds).
+/// [`StaticOverlayQuads`]. The overlay worker compares the *current*
+/// inputs against `StaticOverlayQuads::computed_for_key` to
+/// short-circuit re-bucketing on a no-op tick (cursor blink,
+/// unchanged scroll/viewport/folds).
 ///
-/// `snapshot_ptr` is the `Arc::as_ptr` of the snapshot the spans
-/// were computed against — distinct snapshots produce distinct
-/// keys even if `text_version` happens to match.
+/// `snapshot_ptr` is the `Arc::as_ptr` of the snapshot the bucket
+/// was computed against — distinct snapshots produce distinct keys
+/// even if `text_version` happens to match.
 ///
 /// Migrated from `crates/lattice-host/src/highlights.rs` in X2;
 /// the renderer's read contract is now the canonical owner.
@@ -1203,73 +1261,47 @@ pub struct VisibleHighlightsKey {
     pub static_overlay_version: u64,
 }
 
-/// Worker-published syntax highlight spans for the active
-/// document's visible window.
-///
-/// `spans[i]` covers visible line `i` (i.e. document line
-/// `scroll + i`). Empty `spans` (the `Default`) means no
-/// highlights yet — renderer paints plain text until the first
-/// worker tick lands.
-///
-/// `computed_for_key` carries the inputs that produced these
-/// spans so the worker can skip recompute on identical keys.
-#[derive(Debug, Clone)]
-pub struct VisibleSpans {
-    /// Perf plan D.1: `Arc<[T]>` instead of `Vec<T>` so the HOLD
-    /// path's clone collapses to a single Arc bump instead of
-    /// allocating a fresh `Vec<Vec<StyledSpan>>` per stale-snapshot
-    /// wake. Held-key bursts can hit HOLD on every wake while the
-    /// parser catches up; the previous `Vec` clone was measured at
-    /// +32-75% on `worker_stale_snapshot_hold` after A.2a/B.1
-    /// landed (rows + spans both cloned per HOLD).
-    pub spans: Arc<[Vec<lattice_syntax::StyledSpan>]>,
-    pub computed_for_key: VisibleHighlightsKey,
-}
+// display-line B4.2 (gut + rename): `VisibleSpans` (the worker's
+// per-line styled-span output) was deleted with its overlay worker.
+// Syntax colour now flows through the cells / `DisplayMatrix`
+// substrate; nothing reads a span-grid cell off `RenderState` any
+// more. `RowRun` (below) survives — it is the `DisplayLine` run
+// type, a separate live consumer.
 
-impl Default for VisibleSpans {
-    fn default() -> Self {
-        Self {
-            spans: Arc::from(Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice()),
-            computed_for_key: VisibleHighlightsKey::default(),
-        }
-    }
-}
-
-/// One coloured run within a [`RowPrepaint`]'s `combined` text.
+/// One coloured run within a display row's combined text.
 ///
 /// Perf plan A.2. Carries either a [`lattice_syntax::Style`] tag
 /// for source bytes or an `Inlay` discriminant for inlay-spliced
-/// bytes. Runs are NOT baked to RGB — the resolved palette lives
-/// on [`crate::ui::theme::Theme`] (published per-frame in
-/// [`RenderState::theme`]) and renderers map `style → Rgba` at
-/// paint time. Reasons for the tag, not the colour:
+/// bytes. Runs are NOT baked to RGB — renderers map `style → Rgba`
+/// at paint time against the resolved theme table. Reasons for the
+/// tag, not the colour:
 ///
-/// - A theme switch doesn't invalidate the worker's cache (only
+/// - A theme switch doesn't invalidate the producer's cache (only
 ///   the colour resolution at paint changes; the run topology
 ///   doesn't).
-/// - The worker stays theme-independent — no `Theme` reads, no
-///   `Theme::default()` fallback that silently breaks user themes.
-/// - The cache key on [`VisibleHighlightsKey`] doesn't need a
-///   theme hash; runs are stable across theme changes.
+/// - The producer stays theme-independent — no theme reads.
 ///
 /// Slice A.2b.2 promoted this from a struct to an enum so the
-/// worker can mark inlay-text bytes distinctly. Consumers map
-/// `Inlay` to their inlay-virtual-text colour (resolved from
-/// `RenderState.theme` on the GPUI side; a TuiStyle modifier on
-/// the TUI side) without having to track byte ranges separately.
+/// producer can mark inlay-text bytes distinctly. Consumers map
+/// `Inlay` to their inlay-virtual-text colour without having to
+/// track byte ranges separately.
+///
+/// display-line B-series: this is the `DisplayLine` run type, owned
+/// by the cells / `DisplayMatrix` substrate. (The deleted
+/// `RowPrepaint` was the original consumer; B4.2 removed it but
+/// `display_matrix.rs` keeps `RowRun` as its style-run type.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowRun {
     /// Source-text run carrying a tree-sitter style tag.
     Source {
-        /// Number of utf-8 bytes in this run inside `combined`.
+        /// Number of utf-8 bytes in this run inside the combined text.
         len: u32,
         /// Style tag from the highlight grammar. `Style::Default`
         /// for runs that fall outside any tree-sitter capture.
         style: lattice_syntax::Style,
     },
-    /// Inlay-virtual-text run inserted by the worker from
-    /// [`SyntaxRenderState::inlay_hints`]. Carries only the byte
-    /// length; the colour is consumer-resolved.
+    /// Inlay-virtual-text run. Carries only the byte length; the
+    /// colour is consumer-resolved.
     Inlay {
         /// Number of utf-8 bytes of inlay text in this run.
         len: u32,
@@ -1277,11 +1309,11 @@ pub enum RowRun {
 }
 
 impl RowRun {
-    /// Byte length of this run inside the row's `combined` text.
+    /// Byte length of this run inside the row's combined text.
     /// Convenience accessor so consumers don't need to match every
     /// time the partition is walked. (Clippy: paired enums often
     /// also expose `is_empty`, but `RowRun::Inlay { len: 0 }`
-    /// would be a worker bug — the partition is built with the
+    /// would be a producer bug — the partition is built with the
     /// invariant that every run is non-empty, so an `is_empty`
     /// would be misleading.)
     #[allow(clippy::len_without_is_empty)]
@@ -1292,77 +1324,12 @@ impl RowRun {
     }
 }
 
-/// One visible row pre-painted by the highlights worker for the
-/// active pane.
-///
-/// Perf plan A.2 slice A.2a. Carries the combined text the renderer
-/// shapes/paints plus the colour-run partition over it.
-///
-/// Slice A.2b.2: `combined` now includes inlay text spliced in at
-/// the byte boundaries published on
-/// [`SyntaxRenderState::inlay_hints`]. The partition `runs`
-/// distinguishes source bytes ([`RowRun::Source`]) from inlay
-/// bytes ([`RowRun::Inlay`]) so consumers can colour them
-/// independently. `inlay_offsets` records where the splices
-/// happened so cursor / decoration code can remap utf-8 byte
-/// offsets in the original line onto column positions in
-/// `combined` (the analogue of GPUI's `byte_to_combined_col`).
-///
-/// Storage choices:
-/// - `combined: Box<str>` — one heap allocation per row, sized to
-///   the line + inlays. `Box<str>` over `String` shaves the unused
-///   capacity word and signals immutability. Bounded by
-///   `viewport_height` (typically <200 rows × <200 chars = <40 kB
-///   per recompute).
-/// - `runs: Vec<RowRun>` — adjacent-equal Source runs merged at
-///   build time; Inlay runs always break the merge so the consumer
-///   can colour them distinctly.
-/// - `inlay_offsets: Arc<[(u32, u32)]>` — one entry per spliced
-///   inlay: `(orig_byte, char_width)`. `orig_byte` is the utf-8
-///   offset into the SOURCE line where the inlay was inserted
-///   (NOT into `combined`); `char_width` is the inlay text's
-///   character count. `Arc<[T]>` so the HOLD reuse path on the
-///   worker bumps an Arc instead of cloning the inner Vec.
-#[derive(Debug, Default, Clone)]
-pub struct RowPrepaint {
-    pub combined: Box<str>,
-    pub runs: Vec<RowRun>,
-    pub inlay_offsets: Arc<[(u32, u32)]>,
-}
-
-/// Worker-published pre-painted rows for the active pane's visible
-/// window.
-///
-/// Perf plan A.2 slice A.2a. `rows[i]` corresponds to buffer line
-/// `start + i` where `start` is the worker's recompute scroll input.
-/// Empty `rows` (the `Default`) means no rows yet — the renderer
-/// paints from its rope fallback path until the first worker tick
-/// lands.
-///
-/// Published in a second `ArcSwap` cell alongside [`VisibleSpans`]
-/// — the legacy cell stays so the TUI peer's existing `StyledSpan`
-/// grid path keeps working without an adapter slice. GPUI consumes
-/// `rows`; TUI keeps reading `spans` (migration deferred).
-#[derive(Debug, Clone)]
-pub struct VisibleRows {
-    /// Perf plan D.1: `Arc<[T]>` for the same reason as
-    /// [`VisibleSpans::spans`]. HOLD reuses the prior rows via one
-    /// Arc bump instead of cloning every `RowPrepaint` (each carries
-    /// a `Box<str>` + `Vec<RowRun>` — non-trivial allocs at 120
-    /// rows). The bench `worker_stale_snapshot_hold/120` measured
-    /// +75% with the per-element `Vec` clone; this collapses it.
-    pub rows: Arc<[RowPrepaint]>,
-    pub computed_for_key: VisibleHighlightsKey,
-}
-
-impl Default for VisibleRows {
-    fn default() -> Self {
-        Self {
-            rows: Arc::from(Vec::<RowPrepaint>::new().into_boxed_slice()),
-            computed_for_key: VisibleHighlightsKey::default(),
-        }
-    }
-}
+// display-line B4.2 (gut + rename): `RowPrepaint` (one pre-painted
+// visible row) and `VisibleRows` (the per-pane prepaint output cell)
+// were deleted with the overlay worker's dead span/row cache. Their
+// consumers migrated to the cells / `DisplayMatrix` substrate in the
+// B-series; nothing reads a prepaint-rows cell off `RenderState` any
+// more. `RowRun` (above) survives as the `DisplayLine` run type.
 
 /// Perf plan B.2: overlay layer tag carried on each per-row
 /// pre-bucketed quad in [`StaticOverlayQuads`]. The renderer uses
@@ -1393,7 +1360,7 @@ pub enum OverlayLayer {
 /// Perf plan B.2: one pre-bucketed static-overlay quad inside a
 /// row of [`StaticOverlayQuads`]. Coordinates are in
 /// **source utf-8 byte space** — the byte offsets into the SOURCE
-/// line text (NOT into `RowPrepaint.combined`).
+/// line text (not into any combined / inlay-spliced row text).
 ///
 /// Why source-byte and not combined-column: both renderer peers
 /// already do their own coordinate transforms (GPUI runs
@@ -1420,11 +1387,10 @@ pub struct RowOverlayQuad {
 /// the right precedence order at prepaint time.
 ///
 /// Active-pane only — inactive panes keep the legacy per-frame
-/// bucket path. The cell is published on every `recompute`
-/// alongside [`VisibleRows`] but invalidates on its own axis
+/// bucket path. The cell is published on every overlay-worker
+/// `recompute` and invalidates on its own axis
 /// ([`VisibleHighlightsKey::static_overlay_version`]) so a
-/// search-query bump doesn't force a row recompose, and vice
-/// versa.
+/// search-query bump re-buckets without touching unrelated state.
 #[derive(Debug, Clone)]
 pub struct StaticOverlayQuads {
     /// `Arc<[T]>` per the D.1 pattern — HOLD / partial-reuse
@@ -1550,11 +1516,9 @@ pub fn static_overlay_state_version(
 ///   `buffer_locals.entry(...).or_default()` / `.insert` / `.remove`
 ///   sites; otherwise stable. Largest savings because the per-entry
 ///   clone deep-walks the typed-map.
-/// - `lsp_progress` — INNER `Arc<HashMap<...>>` of the `lsp`
-///   sub-state. The outer `LspRenderState` Arc rebuilds every publish,
-///   but the inner progress map is reused; saves the HashMap clone
-///   when no `$/progress` event fired. (DR.2 retired the sibling
-///   `pane_highlights_map` inner-Arc cache.)
+/// (ML.3c retired the `lsp_progress` inner-Arc cache with
+/// `RenderState.lsp.progress`; DR.2 retired the sibling
+/// `pane_highlights_map` cache.)
 ///
 /// B.4.b (3 subs):
 ///
@@ -1576,16 +1540,8 @@ pub struct PublishCache {
     pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
     pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
     // DR.2 (decoration-retention): `pane_highlights_map` cache slot
-    // retired with the `pane_highlights` producer.
-    pub lsp_progress: Option<(
-        u64,
-        std::sync::Arc<
-            std::collections::HashMap<
-                (std::sync::Arc<str>, String),
-                lattice_lsp::LspProgressUpdate,
-            >,
-        >,
-    )>,
+    // retired with the `pane_highlights` producer. ML.3c: `lsp_progress`
+    // cache slot retired with `RenderState.lsp.progress`.
     /// Perf plan B.4.b: keyed on `buffer_uris.version()` only.
     pub buffers: Option<(u64, std::sync::Arc<BuffersRenderState>)>,
     /// Perf plan B.4.b: keyed on a composite of `tabs.version()`,
@@ -1608,6 +1564,17 @@ pub struct PublishCache {
     /// A suppressed publish occurred during the current batch; flushed
     /// once when the batch depth returns to 0.
     pub publish_pending: bool,
+    /// §12 paint gate: the `RenderState::paint_revision` of the last
+    /// real (un-suppressed) publish. `publish_render_state` compares the
+    /// freshly-built revision against this; a change means a
+    /// render-visible non-cell surface moved off-keystroke, so the actor
+    /// fires `paint_request`. Lives here (not on `Editor`) for the same
+    /// reason as the cache slots: `PublishCache` is `Default`-derived and
+    /// already the actor's single publish-side lock, so no `Editor`
+    /// construction churn. `u64::MAX` would be a valid revision, so this
+    /// starts at 0 and the first publish (revision rarely 0) paints — a
+    /// harmless extra first frame.
+    pub last_paint_revision: u64,
 }
 
 impl PublishCache {
@@ -1793,6 +1760,10 @@ pub struct ModesRenderState {
             std::sync::Arc<lattice_mode::ActiveModes>,
         >,
     >,
+    /// Read-only after boot — one Arc bump per `ModesRenderState`
+    /// publish. Lets the renderer call `mode.status_line_items()`
+    /// without an actor round-trip.
+    pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the
@@ -1925,6 +1896,16 @@ pub struct DiagnosticsRenderState {
     /// The diagnostics layer the renderer queries for per-line
     /// severity, per-buffer diagnostic lists, and counts.
     pub layer: lattice_lsp::DiagnosticsLayer,
+    /// L4a.2 (lsp-architecture.md §15): the active inline end-of-line
+    /// diagnostic summary, as `(line, summary)`, when the cursor-line
+    /// idle gate has fired. `None` whenever the gate is disarmed
+    /// (`ui.diagnostics.inline = off`, Insert/Replace, pre-idle, or
+    /// the line carries no qualifying diagnostic). The renderer
+    /// (L4a.3) splices `summary.text` as trailing virtual text on
+    /// `line`, themed by `summary.severity_rank`. Recomputed each
+    /// publish while the gate is visible, so diagnostics that land on
+    /// the line after the gate fires refresh it for free.
+    pub inline_summary: Option<(u32, lattice_lsp::InlineDiagnosticSummary)>,
 }
 
 #[cfg(test)]
@@ -2020,6 +2001,186 @@ mod tests {
             rs.diagnostics.layer.line_severity(&uri, 0),
             None,
             "lines without a diagnostic return None through the same path"
+        );
+    }
+
+    // --- L4a.2: inline cursor-line diagnostic-summary idle gate ---
+
+    /// Build an editor whose active buffer maps to `uri` with one
+    /// ERROR diagnostic on `line`, cursor parked there. Used by the
+    /// inline-summary gate tests.
+    fn editor_with_diag_on_line(uri: &Uri, line: u32, message: &str) -> Editor {
+        use lattice_protocol::position::Position as ProtoPos;
+        let mut editor = Editor::default();
+        editor
+            .buffer_uris
+            .insert(editor.document_buffer_id, uri.clone());
+        editor.cursor = ProtoPos::new(line, 0);
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 5 },
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: None,
+            message: message.to_string(),
+            related_information: None,
+            tags: None,
+            data: None,
+        };
+        editor.lsp_diagnostics.apply(DiagnosticEvent::from_lsp(
+            Arc::from("rust"),
+            PublishDiagnosticsParams {
+                uri: uri.clone(),
+                version: None,
+                diagnostics: vec![diag],
+            },
+        ));
+        editor
+    }
+
+    /// Landing on a new line arms the idle gate (deadline set,
+    /// summary not yet visible). The eol summary only appears once the
+    /// timer fires — never on the cursor-move publish itself.
+    #[test]
+    fn inline_summary_armed_but_hidden_until_idle_fires() {
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 4, "synthetic");
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(4));
+        assert!(editor.inline_diag_deadline.is_some(), "gate armed");
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none(),
+            "no summary before the idle deadline fires"
+        );
+
+        // Simulate the editor actor's timer arm firing.
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let (line, summary) = rs
+            .diagnostics
+            .inline_summary
+            .clone()
+            .expect("summary visible after fire");
+        assert_eq!(line, 4);
+        assert_eq!(summary.severity_rank, 0);
+        assert!(summary.text.contains("synthetic"));
+        // Firing cleared the deadline so the pinned sleep won't refire.
+        assert!(editor.inline_diag_deadline.is_none());
+    }
+
+    /// Insert (active text entry) suppresses the summary: entering
+    /// Insert hides any visible summary and disarms the gate, which
+    /// re-arms on return to Normal.
+    #[test]
+    fn inline_summary_suppressed_in_insert() {
+        use lattice_grammar::ModalState;
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 2, "boom");
+        editor.publish_render_state();
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_some()
+        );
+
+        editor.modal = ModalState::Insert;
+        editor.publish_render_state();
+        assert!(!editor.inline_diag_visible);
+        assert!(editor.inline_diag_deadline.is_none());
+        assert!(
+            editor.inline_diag_line.is_none(),
+            "armed line cleared so the gate re-arms on leaving Insert"
+        );
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
+        );
+
+        // Back to Normal re-arms (hidden again until idle).
+        editor.modal = ModalState::Normal;
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(2));
+        assert!(editor.inline_diag_deadline.is_some());
+        assert!(!editor.inline_diag_visible);
+    }
+
+    /// Moving the cursor to a new line re-arms the gate and hides the
+    /// previous line's summary immediately.
+    #[test]
+    fn inline_summary_hidden_when_cursor_leaves_line() {
+        use lattice_protocol::position::Position as ProtoPos;
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 3, "err here");
+        editor.publish_render_state();
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_some()
+        );
+
+        // Cursor moves to a clean line: re-arm, summary gone.
+        editor.cursor = ProtoPos::new(0, 0);
+        editor.publish_render_state();
+        assert_eq!(editor.inline_diag_line, Some(0));
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
+        );
+    }
+
+    /// `ui.diagnostics.inline = off` disarms the gate entirely — even
+    /// with the cursor on a diagnostic line and the timer force-fired,
+    /// no summary is published.
+    #[test]
+    fn inline_summary_off_option_disarms() {
+        let uri = Uri::from_str("file:///tmp/gate.rs").unwrap();
+        let mut editor = editor_with_diag_on_line(&uri, 1, "nope");
+        editor.config.init_from_linkme();
+        editor
+            .config
+            .parse_and_set_command("ui.diagnostics.inline=off")
+            .unwrap();
+        // Force-fire, then publish: `update_inline_diag_gate` clears it
+        // because the option is Off before `build_render_state` reads.
+        editor.fire_inline_diag_gate();
+        editor.publish_render_state();
+        assert!(!editor.inline_diag_visible);
+        assert!(
+            editor
+                .render_state
+                .load_full()
+                .diagnostics
+                .inline_summary
+                .is_none()
         );
     }
 
@@ -2300,14 +2461,8 @@ mod tests {
             std::sync::Arc::ptr_eq(&a.tabs, &b.tabs),
             "tabs sub-state should reuse its Arc when its composite key hasn't moved"
         );
-        // Inner-Arc cache (parent LspRenderState still rebuilds because
-        // its other fields churn per-frame). DR.2 retired the
-        // `syntax.pane_highlights` inner-Arc cache along with the
-        // per-pane span producer.
-        assert!(
-            std::sync::Arc::ptr_eq(&a.lsp.progress, &b.lsp.progress),
-            "lsp.progress inner Arc should be reused when lsp_progress.version() hasn't moved"
-        );
+        // ML.3c retired the `lsp.progress` inner-Arc cache assertion with
+        // the field; DR.2 retired the `syntax.pane_highlights` one.
     }
 
     /// Perf plan B.4.b: a registry-only mutation (no buffer_uris
@@ -2645,10 +2800,13 @@ mod tests {
         );
     }
 
-    /// Slice 3c.final.B (group 6): lifecycle flags + theme
-    /// round-trip through the published snapshot.
+    /// Slice 3c.final.B (group 6): lifecycle flags round-trip
+    /// through the published snapshot. (T.6.t removed the host
+    /// `Theme` field assertion — the resolved table now carries
+    /// all style state and `MatrixVersion::theme` carries its
+    /// version.)
     #[test]
-    fn lifecycle_and_theme_reflect_editor_state() {
+    fn lifecycle_reflects_editor_state() {
         let mut editor = Editor::default();
         editor.should_quit = true;
         editor.pending_redraw = true;
@@ -2658,34 +2816,11 @@ mod tests {
         assert!(rs.lifecycle.should_quit);
         assert!(rs.lifecycle.pending_redraw);
         assert_eq!(rs.lifecycle.terminal_width, Some(120));
-        // Theme is `Copy`; the field is the editor's current
-        // host_theme by value.
-        assert_eq!(rs.theme, editor.host_theme);
     }
 
-    #[test]
-    fn lsp_progress_reflects_published_map() {
-        use lattice_lsp::{LspProgressKind, LspProgressUpdate};
-        use std::sync::Arc;
-        let mut editor = Editor::default();
-        let key = (Arc::<str>::from("rust"), "token-1".to_string());
-        editor.lsp_progress.insert(
-            key.clone(),
-            LspProgressUpdate {
-                server_id: Arc::from("rust"),
-                token: "token-1".to_string(),
-                kind: LspProgressKind::Begin,
-                title: Some("indexing".to_string()),
-                message: None,
-                percentage: None,
-                cancellable: false,
-            },
-        );
-        editor.publish_render_state();
-        let rs = editor.render_state.load_full();
-        assert!(rs.lsp.progress.contains_key(&key));
-        assert_eq!(rs.lsp.progress.len(), 1);
-    }
+    // ML.3c: `lsp_progress_reflects_published_map` retired with the host
+    // accumulator + `RenderState.lsp.progress`. The progress fold + badge
+    // are now covered by `lattice_lsp::modeline`'s store tests.
 
     /// Slice 3c.final.B (group 4): popup_buffer / placement
     /// fields published into `PopupRenderState`. With no popup

@@ -1,0 +1,92 @@
+# Lesson 3 exercises — visual mode, registers, search, macros, marks.
+
+[[exercises]]
+id          = "3.1.1"
+description = "Delete a line in Visual-Line mode:  V  d"
+anchor      = "--->  Delete this line"
+success     = "text_changed"
+hint        = "Press V to select the line, then d to delete it"
+
+[[exercises]]
+id          = "3.1.2"
+description = "Uppercase a selection:  v  gU"
+anchor      = "--->  hello world"
+success     = { text_not_contains = "world" }
+hint        = "v to enter visual, select 'world', then gU to uppercase it"
+
+[[exercises]]
+id          = "3.1.3"
+description = "Block-insert  ##  before each item:  <C-v>  I"
+anchor      = "--->  item one"
+success     = { text_contains = "##" }
+hint        = "<C-v> to block-select, I to insert, type '## ', <Esc>"
+
+[[exercises]]
+id          = "3.2.1"
+description = "Yank to register a:  \"a y y"
+anchor      = "--->  Register a holds this line."
+success     = "manual_advance"
+hint        = "\"a then yy yanks the line into register a"
+
+[[exercises]]
+id          = "3.2.2"
+description = "Paste from register a:  \"a p"
+anchor      = "--->  (paste here)"
+success     = { text_contains = "Register a holds this line." }
+hint        = "\"a then p pastes from register a below the cursor"
+
+[[exercises]]
+id          = "3.2.3"
+description = "Copy to system clipboard:  \"+yy"
+anchor      = "--->  This line will go to the system clipboard."
+success     = "manual_advance"
+hint        = "\"+yy yanks to the system clipboard register"
+
+[[exercises]]
+id          = "3.2.4"
+description = "Delete to black hole register:  \"_ d i w"
+anchor      = "--->  There is a secret word here that should disappear silently."
+success     = { text_not_contains = "secret" }
+hint        = "\"_ sends the deletion to the black hole — nothing is yanked"
+
+[[exercises]]
+id          = "3.3.1"
+description = "Search for 'lazy' and navigate with  n  /  N"
+anchor      = "--->  The lazy dog jumped over the lazy fox near the lazy river."
+success     = "manual_advance"
+hint        = "/lazy <CR> to search; n jumps forward, N jumps back"
+
+[[exercises]]
+id          = "3.3.2"
+description = "Search for the word under cursor with  *"
+anchor      = "--->  This unique word is unique in a unique way."
+success     = "manual_advance"
+hint        = "Place cursor on 'unique', press * to search for it"
+
+[[exercises]]
+id          = "3.3.3"
+description = "Substitute first match per line:  :s/cat/dog/"
+anchor      = "--->  The cat sat on the cat mat."
+success     = { text_contains = "dog" }
+hint        = ":s/cat/dog/ replaces only the first 'cat' on this line"
+
+[[exercises]]
+id          = "3.3.4"
+description = "Substitute all matches:  :s/cat/dog/g"
+anchor      = "--->  The cat sat on the cat mat again."
+success     = { text_not_contains = "cat" }
+hint        = ":s/cat/dog/g replaces every 'cat' on the current line"
+
+[[exercises]]
+id          = "3.4.1"
+description = "Record and play a macro:  qa ... q  then  @a"
+anchor      = "--->  first line to fix"
+success     = "text_changed"
+hint        = "qa starts recording into a; make your change; q stops; @a replays"
+
+[[exercises]]
+id          = "3.5"
+description = "Set a mark and jump back:  ma  then  `a"
+anchor      = "--->  Mark this position."
+success     = "manual_advance"
+hint        = "ma sets mark a; move away; `a jumps back to the exact position"

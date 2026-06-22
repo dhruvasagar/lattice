@@ -254,6 +254,16 @@ impl App {
             .unwrap_or(false);
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
         match action {
+            // SN.3c.2b: a fall-through binding resolves to a sequence
+            // (mode action, then native). Apply each sub-action through
+            // the full apply path so renderer-level sub-actions
+            // (completion, etc.) and editor Invokes both route
+            // correctly.
+            Action::Chain(actions) => {
+                for a in actions {
+                    self.apply(a);
+                }
+            }
             // Phase 5.5.C: helper-free arms moved to
             // `Editor::dispatch`'s match. Grouped no-op here keeps
             // the exhaustiveness check satisfied without splitting
@@ -283,12 +293,21 @@ impl App {
             | Action::GotoPrevFold
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
-            | Action::SnippetLeave
+            // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed —
+            // `<Esc>` is mode-owned (`active-snippet-mode` handler).
             // 5.5.G.2: pure-editor visual + mark arms migrated to
             // `Editor::dispatch`.
             | Action::EnterVisual(_)
             | Action::ExitVisual
+            // SN.3d: Select-mode arms are pure-editor (handled in
+            // `Editor::dispatch`); grouped no-op here like their Visual
+            // peers.
+            | Action::EnterSelect(_)
+            | Action::SelectOvertype(_)
+            | Action::ExitSelect
+            | Action::ToggleVisualSelect
             | Action::ReselectLastVisual
+            | Action::SwapVisualEnds
             | Action::SetMark(_)
             // 5.5.G.3: pure-editor edit-cluster arms migrated to
             // `Editor::dispatch`.
@@ -358,9 +377,10 @@ impl App {
             | Action::JumpToMarkExact(_)
             | Action::JumpHistoryBack
             | Action::JumpHistoryForward
-            // 5.5.G.8: snippet placeholder navigation arms.
-            | Action::SnippetNextPlaceholder
-            | Action::SnippetPrevPlaceholder
+            // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
+            // navigation is mode-owned (`active-snippet-mode`'s
+            // `ActionHandlerRegistry` closures); the
+            // `Action::SnippetNext/PrevPlaceholder` variants are gone.
             // D.5.b (2026-05-30): diff-mode `do` is
             // host-resident — `Editor::do_diff_get` resolves
             // the hunk under cursor and replaces the
@@ -392,6 +412,7 @@ impl App {
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
             | Action::HelpDismiss
             // 5.5.G.13: pure-editor cmdline arms.
+            | Action::OpenCommandPicker
             | Action::EnterCommandLine
             | Action::CommandLineHistoryPrev
             | Action::CommandLineHistoryNext
@@ -431,8 +452,8 @@ impl App {
             // payload, so it lives in its own ignore-binding arm
             // below.)
             | Action::LspDocumentSymbolRequest
-            // 5.5.SNIPPET.1: `<C-x><C-s>` snippet expand migrated.
-            | Action::SnippetExpand
+            // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed —
+            // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // Phase 5.8.AF.5 / Slice 3c.final.C: renderer-side
             // non-dispatch mutation lifts. Bodies live in
             // `Editor::dispatch`'s match; the App wrapper just
@@ -443,7 +464,16 @@ impl App {
             | Action::EnsureCursorVisible
             | Action::DismissPopup
             | Action::SetTerminalWidth(_)
-            | Action::AcknowledgeRedraw => {}
+            | Action::AcknowledgeRedraw
+            // W.6 (2026-06-07): display-line motions (gj/gk/g0/g$)
+            // and insert-mode entry variants (I/A) — host-resident
+            // bodies in Editor::dispatch; no App-side work.
+            | Action::EnterInsertFirstNonBlank
+            | Action::EnterAppendEndOfLine
+            | Action::DisplayLineDown
+            | Action::DisplayLineUp
+            | Action::DisplayLineStart
+            | Action::DisplayLineEnd => {}
             // 5.5.LSP.5: workspace-symbol request migrated to
             // `Editor::dispatch`. Action carries the query string;
             // a data-bearing variant can't sit in the grouped
@@ -543,9 +573,8 @@ impl App {
             | Action::CompletionFilterToSource(_)
             | Action::CompletionFilterClear
             | Action::CompletionAcceptThenInsert(_) => {}
-            // 5.5.SNIPPET.1: `Action::SnippetExpand` migrated to
-            // `Editor::dispatch`; routed through the grouped no-op
-            // above.
+            // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed;
+            // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`
             // migrated to `Editor::dispatch`.
             // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
@@ -687,6 +716,19 @@ impl App {
         }
     }
 
+    /// Drain pending async results (hover, signature-help, etc.) without a
+    /// full keystroke apply. Called from the TUI main loop on `Wake::Repaint`
+    /// batches that contained no input events — the X1b gap: idle LSP
+    /// responses arrive, fire `paint_request`, the loop wakes and redraws,
+    /// but the pending channels are only drained at the apply tail so the
+    /// first repaint doesn't show the popup until the next keystroke.
+    pub fn drain_async_pending(&mut self) {
+        let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
+        for signal in tick_signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
     pub(super) fn execute_ex_line(&mut self, line: &str) {
         let reg = self.registry();
         match excommand::parse(line, &reg) {
@@ -712,7 +754,7 @@ impl App {
         // return it so the renderer can drain its effects/signals.
         let mut out = self.mutate_editor_with(move |e| {
             let mut out = lattice_host::dispatch::DispatchOutcome::default();
-            e.run_invocation(inv, &mut out);
+            e.dispatch_invocation(inv, &mut out);
             out
         });
         for effect in std::mem::take(&mut out.effects) {
@@ -843,12 +885,20 @@ impl App {
             Effect::None
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
+            | Effect::ShowDiagnosticsPopup { .. }
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::SetOption { .. }
+            | Effect::SetLocalOption { .. }
+            | Effect::SetGlobalOption { .. }
+            // T.9.b: `:colorscheme` swaps the registry host-side in
+            // `Editor::handle_effect` + emits `ThemeChanged`; the TUI
+            // rebuilds off that signal, so nothing to apply here
+            // (parity with `SetOption`'s `ui.*` path).
+            | Effect::SetColorscheme(_)
             | Effect::ListBuffers
             | Effect::DescribeBuffer
             | Effect::DescribeCommand { .. }
@@ -856,6 +906,7 @@ impl App {
             | Effect::DescribeKey { .. }
             | Effect::ListKeymap
             | Effect::DescribeOption { .. }
+            | Effect::DescribeElement { .. }
             | Effect::ListOptions
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
@@ -992,7 +1043,11 @@ impl App {
             Effect::LspComplete => self.mutate_editor_with(move |e| e.lsp_completion_request()),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
-            Effect::SnippetExpand => self.mutate_editor_with(move |e| e.do_snippet_expand_at_cursor()),
+            // SN.3c.1: mode-owned `<C-x><C-s>` emits the trigger range;
+            // the host resolves + expands (`expand_snippet_from_range`).
+            Effect::ExpandSnippet { replace_range } => {
+                self.mutate_editor_with(move |e| e.expand_snippet_from_range(replace_range))
+            }
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
             // 5.5.F.3: `DescribeEvents` / `DescribeEvent` /
@@ -1040,13 +1095,21 @@ impl App {
                 // the runtime loop polls it. Keep the arm for shape
                 // — a future GPUI renderer wires window-close here.
             }
-            // 5.5.E.6: `ui.nerd_fonts` cascade -- the host already
-            // updated `editor.host_theme.nerd_fonts`; the renderer
-            // walks every file-tree buffer and refreshes its rope
-            // so the icon-glyph cells re-render. Oil reads the
-            // toggle each frame and needs no rope work.
+            // 5.5.E.6: `ui.nerd_fonts` cascade -- the renderer walks
+            // every file-tree buffer and refreshes its rope so the
+            // icon-glyph cells re-render. Oil reads the toggle each
+            // frame and needs no rope work. T.6.t: read `nerd_fonts`
+            // from the published typed-options registry (was the
+            // deleted `host_theme.nerd_fonts`).
             RendererSignal::NerdFontsToggled => {
-                let nerd_fonts = self.render_state.load().theme.nerd_fonts;
+                let nerd_fonts = self
+                    .render_state
+                    .load()
+                    .options
+                    .config
+                    .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+                    .map(|v| *v)
+                    .unwrap_or(false);
                 for id in self.buffers().registry.file_tree_ids() {
                     self.set_file_tree_nerd_fonts(id, nerd_fonts);
                 }
@@ -1076,7 +1139,8 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
-            } // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+            }
+            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
               // `visible_highlights` / `pane_highlights` cache clear
               // lives on `Editor` as plain field writes, so the
               // post-activation tail (`activate_buffer_state`) runs
@@ -1111,6 +1175,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        // L4b: the diagnostics popup neither mutates nor yanks.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -1119,6 +1185,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -1138,6 +1207,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -1172,7 +1242,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -1206,6 +1276,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::Edits(_) => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
+        // L4b: the diagnostics popup is not a buffer mutation.
+        Effect::ShowDiagnosticsPopup { .. } => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
@@ -1215,6 +1287,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
         | Effect::SetOption { .. }
+        | Effect::SetLocalOption { .. }
+        | Effect::SetGlobalOption { .. }
+        | Effect::SetColorscheme(_)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
@@ -1234,6 +1309,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
+        | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
@@ -1268,7 +1344,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspComplete
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
-        | Effect::SnippetExpand
+        | Effect::ExpandSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

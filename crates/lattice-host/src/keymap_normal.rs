@@ -77,6 +77,7 @@ use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
+use lattice_syntax::SyntaxTextObjectIds;
 
 use crate::action::{Action, FindKind};
 use crate::actions::ActionIds;
@@ -96,42 +97,24 @@ use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, LookupResult};
 /// `bind(... CommandInvocation::of(actions.foo) ...)` as the
 /// per-batch slices land; the rest stay on the bridge until
 /// their batch's turn.
-pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, actions: &ActionIds) {
+pub fn register_normal_bindings(
+    handle: &KeymapHandle,
+    builtins: &Builtins,
+    actions: &ActionIds,
+    syntax_textobjects: &SyntaxTextObjectIds,
+) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
     // ---- Motions: typed CommandInvocation, no count baked in.
-    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
-        (lit_char('h'), builtins.char_left),
-        (lit_special(SpecialKey::Left), builtins.char_left),
-        (lit_char('j'), builtins.line_down),
-        (lit_special(SpecialKey::Down), builtins.line_down),
-        (lit_char('k'), builtins.line_up),
-        (lit_special(SpecialKey::Up), builtins.line_up),
-        (lit_char('l'), builtins.char_right),
-        (lit_special(SpecialKey::Right), builtins.char_right),
-        (lit_char('0'), builtins.line_start),
-        (lit_special(SpecialKey::Home), builtins.line_start),
-        (lit_char('$'), builtins.line_end),
-        (lit_special(SpecialKey::End), builtins.line_end),
-        (lit_char('^'), builtins.first_non_blank),
-        (lit_char('w'), builtins.word_forward),
-        (lit_char('b'), builtins.word_backward),
-        (lit_char('e'), builtins.word_end),
-        (lit_char('W'), builtins.big_word_forward),
-        (lit_char('B'), builtins.big_word_backward),
-        (lit_char('E'), builtins.big_word_end),
-        (lit_char('}'), builtins.paragraph_forward),
-        (lit_char('{'), builtins.paragraph_backward),
-        (lit_char(')'), builtins.sentence_forward),
-        (lit_char('('), builtins.sentence_backward),
-        (lit_char('G'), builtins.goto_last_line),
-    ];
-    for (chord, motion) in motion_table {
+    // Sourced from the shared `motion_rows` table so Normal /
+    // operator-pending / Visual never drift -- a motion added there
+    // lights up in all three surfaces.
+    for (chord, motion) in motion_rows(builtins) {
         handle.bind(
             layer,
             mode,
-            std::slice::from_ref(chord),
+            std::slice::from_ref(&chord),
             CommandInvocation::of(motion.0),
             source(),
         );
@@ -243,6 +226,20 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
     handle.bind(
         layer,
         mode,
+        &[lit_char('I')],
+        CommandInvocation::of(actions.enter_insert_first_non_blank),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('A')],
+        CommandInvocation::of(actions.enter_append_end_of_line),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
         &[lit_char('o')],
         CommandInvocation::of(actions.open_line_below),
         source(),
@@ -315,13 +312,6 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
     handle.bind(
         layer,
         mode,
-        &[lit_char('K')],
-        CommandInvocation::of(actions.lsp_hover_request),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
         &[lit_char('/')],
         CommandInvocation::of(actions.enter_search_forward),
         source(),
@@ -382,14 +372,6 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('-')],
-        CommandInvocation::of(actions.oil_navigate_up),
-        source(),
-    );
-
     // Specials.
     handle.bind(
         layer,
@@ -487,6 +469,31 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.reselect_last_visual),
         source(),
     );
+    // SN.3d Select-mode entry: `gh` charwise, `gH` linewise,
+    // `g<C-h>` blockwise — the Select analogues of `v` / `V` / `<C-v>`.
+    // CTRL is preserved by `normalize_for_normal_lookup`, so
+    // `g<C-h>` does not collide with `gh`.
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('h')],
+        CommandInvocation::of(actions.enter_select_charwise),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('H')],
+        CommandInvocation::of(actions.enter_select_linewise),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit(KeyChord::ctrl('h'))],
+        CommandInvocation::of(actions.enter_select_blockwise),
+        source(),
+    );
     // Issue #29 (2026-05-22): `gt` next tab, `gT` previous tab.
     // For `{N}gt` (absolute tab target), the count is picked
     // up via the existing chord-count prefix mechanism — the
@@ -528,47 +535,47 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.walk_mark_history_forward),
         source(),
     );
+    // W.6: display-line motions (soft-wrap aware).
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('d')],
-        CommandInvocation::of(actions.lsp_definition_request),
+        &[g.clone(), lit_char('j')],
+        CommandInvocation::of(actions.display_line_down),
         source(),
     );
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('D')],
-        CommandInvocation::of(actions.lsp_declaration_request),
+        &[g.clone(), lit_special(SpecialKey::Down)],
+        CommandInvocation::of(actions.display_line_down),
         source(),
     );
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('y')],
-        CommandInvocation::of(actions.lsp_type_definition_request),
+        &[g.clone(), lit_char('k')],
+        CommandInvocation::of(actions.display_line_up),
         source(),
     );
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('I')],
-        CommandInvocation::of(actions.lsp_implementation_request),
+        &[g.clone(), lit_special(SpecialKey::Up)],
+        CommandInvocation::of(actions.display_line_up),
         source(),
     );
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('r')],
-        CommandInvocation::of(actions.lsp_references_request),
+        &[g.clone(), lit_char('0')],
+        CommandInvocation::of(actions.display_line_start),
         source(),
     );
-    // 4.5.c: `gx` -> follow LSP documentLink at cursor.
     handle.bind(
         layer,
         mode,
-        &[g.clone(), lit_char('x')],
-        CommandInvocation::of(actions.lsp_follow_link_at_cursor),
+        &[g.clone(), lit_char('$')],
+        CommandInvocation::of(actions.display_line_end),
         source(),
     );
 
@@ -710,64 +717,72 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
     // so this slice just extends the path with depth-3 (motion /
     // doubled / text-object pending / find-char pending) and
     // depth-4 (text-object resolution) entries.
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('d')],
         builtins.delete,
         ChordPattern::Literal(KeyChord::char('d')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('c')],
         builtins.change,
         ChordPattern::Literal(KeyChord::char('c')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('y')],
         builtins.yank,
         ChordPattern::Literal(KeyChord::char('y')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('>')],
         builtins.indent_right,
         ChordPattern::Literal(KeyChord::char('>')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('<')],
         builtins.indent_left,
         ChordPattern::Literal(KeyChord::char('<')),
         builtins,
+        syntax_textobjects,
     );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
     // operate on the current line.
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('U')],
         builtins.upper,
         ChordPattern::Literal(KeyChord::char('U')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('u')],
         builtins.lower,
         ChordPattern::Literal(KeyChord::char('u')),
         builtins,
+        syntax_textobjects,
     );
-    register_operator_pending(
+    register_operator_bindings(
         handle,
         &[lit_char('g'), lit_char('~')],
         builtins.toggle_case,
         ChordPattern::Literal(KeyChord::char('~')),
         builtins,
+        syntax_textobjects,
     );
 
     // ---- Slice 8.g.v: mark / register / find-char / macro
@@ -1137,51 +1152,37 @@ fn lit(chord: KeyChord) -> ChordPattern {
 /// `doubled_self` is the chord that triggers the linewise form
 /// (e.g. `'d'` for `dd`, `'U'` for `gUU`). It's the trailing key
 /// of the doubled form, not the prefix.
-fn register_operator_pending(
+///
+/// N.1.3 (2026-06-10): `pub` so boot can wire a *provider-contributed*
+/// operator's chord (the narrow `zn`) into this universal
+/// operator-pending layer. The operator SPEC + `apply` are owned by
+/// the provider crate; only this chord-wiring lives here, because
+/// operator-pending composition needs the host-resolved `Builtins`.
+pub fn register_operator_bindings(
     handle: &KeymapHandle,
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
     doubled_self: ChordPattern,
     builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
     // ---- Motion targets. Each operator's `[op_prefix..., motion_chord]`
-    // ---- resolves to `Invoke(op, Target::Motion(motion))`.
-    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
-        (lit_char('h'), builtins.char_left),
-        (lit_special(SpecialKey::Left), builtins.char_left),
-        (lit_char('l'), builtins.char_right),
-        (lit_special(SpecialKey::Right), builtins.char_right),
-        (lit_char('j'), builtins.line_down),
-        (lit_special(SpecialKey::Down), builtins.line_down),
-        (lit_char('k'), builtins.line_up),
-        (lit_special(SpecialKey::Up), builtins.line_up),
-        (lit_char('0'), builtins.line_start),
-        (lit_special(SpecialKey::Home), builtins.line_start),
-        (lit_char('$'), builtins.line_end),
-        (lit_special(SpecialKey::End), builtins.line_end),
-        (lit_char('^'), builtins.first_non_blank),
-        (lit_char('w'), builtins.word_forward),
-        (lit_char('b'), builtins.word_backward),
-        (lit_char('e'), builtins.word_end),
-        (lit_char('W'), builtins.big_word_forward),
-        (lit_char('B'), builtins.big_word_backward),
-        (lit_char('E'), builtins.big_word_end),
-        (lit_char('}'), builtins.paragraph_forward),
-        (lit_char('{'), builtins.paragraph_backward),
-        (lit_char(')'), builtins.sentence_forward),
-        (lit_char('('), builtins.sentence_backward),
-    ];
-    for (chord, motion) in motion_table {
+    // ---- resolves to `Invoke(op, Target::Motion(motion))`. Sourced
+    // ---- from the shared `motion_rows` table so a new motion works
+    // ---- as `d<motion>` / `y<motion>` / ... automatically. (This is
+    // ---- also where `dG` / `cG` / `yG` come from now -- `G` was
+    // ---- previously absent from the operator-pending list.)
+    for (chord, motion) in motion_rows(builtins) {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
-        path.push(chord.clone());
+        path.push(chord);
         handle.bind(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0).with_target(Target::Motion(*motion, Args::None)),
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion, Args::None)),
             source(),
         );
     }
@@ -1212,7 +1213,14 @@ fn register_operator_pending(
         let around_chord: ChordPattern = if around { lit_char('a') } else { lit_char('i') };
         let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
         pending_path.push(around_chord.clone());
-        register_text_object_resolutions(handle, &pending_path, op, around, builtins);
+        register_text_object_resolutions(
+            handle,
+            &pending_path,
+            op,
+            around,
+            builtins,
+            syntax_textobjects,
+        );
     }
 
     // ---- Slice 8.g.v: find-char chained -- the depth-2
@@ -1221,6 +1229,28 @@ fn register_operator_pending(
     // ---- resolves to a typed `Invoke(op,
     // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
     register_find_char_paths(handle, op_prefix, Some(op), builtins);
+
+    // ---- Visual mode: an operator acts on the active selection BY
+    // ---- DESIGN. Pressing the operator's trigger chord in Visual
+    // ---- dispatches `op.with_range(Range::Selection)` (the same proven
+    // ---- path `d`/`c`/`y` already use; the dispatcher's `Selection`
+    // ---- walker resolves it against the live visual region and exits
+    // ---- Visual). This is intrinsic to *being* an operator, not a
+    // ---- per-operator Visual binding -- so EVERY operator registered
+    // ---- through this helper gets selection-operability uniformly:
+    // ---- builtin `d`/`c`/`y`/`>`/`<`, case `gU`/`gu`/`g~`, AND
+    // ---- contributed operators (narrow's `zn`). The old hand-rolled
+    // ---- Visual operator list in `keymap_visual` is gone; only the two
+    // ---- genuine Visual-only aliases (`x`->delete, `s`->change) remain
+    // ---- there, because in Normal `x`/`s` mean different commands and
+    // ---- so are not this operator's trigger chord.
+    handle.bind(
+        layer,
+        BindingMode::Visual,
+        op_prefix,
+        CommandInvocation::of(op.0).with_range(lattice_grammar::Range::Selection),
+        source(),
+    );
 }
 
 /// Register the four find-char chord paths under `prefix`. When
@@ -1285,85 +1315,198 @@ fn register_find_char_paths(
     }
 }
 
+/// The canonical chord -> motion table.
+///
+/// Single source of truth shared by all three motion surfaces so a
+/// new motion added here lights up everywhere with no per-surface
+/// wiring (the same single-source guarantee [`text_object_rows`]
+/// gives text objects):
+/// - Normal bare motions ([`register_normal_bindings`]) — `[chord]`
+///   -> `Invoke(motion)`.
+/// - Operator-pending targets ([`register_operator_bindings`]) —
+///   `[op..., chord]` -> `Invoke(op, Target::Motion(motion))`.
+/// - Visual motions ([`crate::keymap_visual::register_visual_bindings`])
+///   — `[chord]` -> `Invoke(motion)` (the host's `SelectionChange`
+///   arm extends the active selection's head).
+///
+/// Each consumer builds its own invocation SHAPE from the shared
+/// (chord, motion) pair, exactly as the text-object binders do.
+///
+/// Argument motions (`f` / `F` / `t` / `T` find-char) are NOT here —
+/// they ride a separate wildcard-capture path
+/// ([`register_find_char_paths`]). This table is the simple, no-arg
+/// motions only.
+///
+/// Note: operator targets are charwise for every motion (the engine
+/// has no linewise-motion-target expansion yet — `dj` / `dG` delete
+/// charwise, not by whole lines); sharing this table means `dG` /
+/// `cG` / `yG` now resolve (charwise to EOF), consistent with the
+/// pre-existing charwise `dj` / `dk`.
+pub(crate) fn motion_rows(
+    builtins: &Builtins,
+) -> Vec<(ChordPattern, lattice_grammar::registry::MotionId)> {
+    vec![
+        (lit_char('h'), builtins.char_left),
+        (lit_special(SpecialKey::Left), builtins.char_left),
+        (lit_char('j'), builtins.line_down),
+        (lit_special(SpecialKey::Down), builtins.line_down),
+        (lit_char('k'), builtins.line_up),
+        (lit_special(SpecialKey::Up), builtins.line_up),
+        (lit_char('l'), builtins.char_right),
+        (lit_special(SpecialKey::Right), builtins.char_right),
+        (lit_char('0'), builtins.line_start),
+        (lit_special(SpecialKey::Home), builtins.line_start),
+        (lit_char('$'), builtins.line_end),
+        (lit_special(SpecialKey::End), builtins.line_end),
+        (lit_char('^'), builtins.first_non_blank),
+        (lit_char('w'), builtins.word_forward),
+        (lit_char('b'), builtins.word_backward),
+        (lit_char('e'), builtins.word_end),
+        (lit_char('W'), builtins.big_word_forward),
+        (lit_char('B'), builtins.big_word_backward),
+        (lit_char('E'), builtins.big_word_end),
+        (lit_char('}'), builtins.paragraph_forward),
+        (lit_char('{'), builtins.paragraph_backward),
+        (lit_char(')'), builtins.sentence_forward),
+        (lit_char('('), builtins.sentence_backward),
+        (lit_char('G'), builtins.goto_last_line),
+    ]
+}
+
+/// The canonical chord -> (inner, around) text-object table.
+///
+/// Single source of truth shared by the Normal-mode operator-pending
+/// resolver ([`register_text_object_resolutions`]) and the Visual-mode
+/// binder ([`crate::keymap_visual::register_visual_bindings`]) so the
+/// two surfaces NEVER drift: a new object or alias added here is
+/// picked up by `daf` / `yiw` AND `vaf` / `viw` alike, with zero
+/// per-object code on either side.
+///
+/// Builtin objects (`w` / `W` / `p` / `s` / `t` / quotes / brackets /
+/// `C`) and the tree-sitter structural objects (`f` / `c` / `a` / `l`,
+/// N.1.4c) live in one list. The chord chars never collide: find-char
+/// (`df<c>`) rides a different post-operator path, so `daf` =
+/// d -> a(around) -> f(function) never clashes with `dfc`. Ownership
+/// of the structural ids stays with lattice-syntax (it minted them);
+/// the host only wires chord -> id, exactly as for the builtin objects.
+///
+/// Each row is `(chord aliases, inner id, around id)`.
+pub(crate) fn text_object_rows(
+    builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
+) -> Vec<(
+    Vec<ChordPattern>,
+    lattice_grammar::registry::TextObjectId,
+    lattice_grammar::registry::TextObjectId,
+)> {
+    vec![
+        (vec![lit_char('w')], builtins.inner_word, builtins.around_word),
+        (
+            vec![lit_char('W')],
+            builtins.inner_big_word,
+            builtins.around_big_word,
+        ),
+        (
+            vec![lit_char('p')],
+            builtins.inner_paragraph,
+            builtins.around_paragraph,
+        ),
+        (
+            vec![lit_char('s')],
+            builtins.inner_sentence,
+            builtins.around_sentence,
+        ),
+        (vec![lit_char('t')], builtins.inner_tag, builtins.around_tag),
+        (
+            vec![lit_char('"')],
+            builtins.inner_quote_double,
+            builtins.around_quote_double,
+        ),
+        (
+            vec![lit_char('\'')],
+            builtins.inner_quote_single,
+            builtins.around_quote_single,
+        ),
+        (
+            vec![lit_char('`')],
+            builtins.inner_quote_backtick,
+            builtins.around_quote_backtick,
+        ),
+        // Paren aliases: `(`, `)`, `b`.
+        (
+            vec![lit_char('('), lit_char(')'), lit_char('b')],
+            builtins.inner_paren,
+            builtins.around_paren,
+        ),
+        // Bracket aliases: `[`, `]`.
+        (
+            vec![lit_char('['), lit_char(']')],
+            builtins.inner_bracket,
+            builtins.around_bracket,
+        ),
+        // Brace aliases: `{`, `}`, `B`.
+        (
+            vec![lit_char('{'), lit_char('}'), lit_char('B')],
+            builtins.inner_brace,
+            builtins.around_brace,
+        ),
+        // Angle aliases: `<`, `>`.
+        (
+            vec![lit_char('<'), lit_char('>')],
+            builtins.inner_angle,
+            builtins.around_angle,
+        ),
+        // N.1.6: comment object -- capital `C` (lowercase `c` is class,
+        // N.1.4). `aC` = the comment block incl. markers; `iC` = its text.
+        (
+            vec![lit_char('C')],
+            builtins.inner_comment,
+            builtins.around_comment,
+        ),
+        // N.1.4c: tree-sitter structural objects.
+        (
+            vec![lit_char('f')],
+            syntax_textobjects.inner_function,
+            syntax_textobjects.around_function,
+        ),
+        (
+            vec![lit_char('c')],
+            syntax_textobjects.inner_class,
+            syntax_textobjects.around_class,
+        ),
+        (
+            vec![lit_char('a')],
+            syntax_textobjects.inner_parameter,
+            syntax_textobjects.around_parameter,
+        ),
+        (
+            vec![lit_char('l')],
+            syntax_textobjects.inner_loop,
+            syntax_textobjects.around_loop,
+        ),
+    ]
+}
+
 /// Register every text-object resolution path under
 /// `pending_prefix` (which already ends in `i` or `a`). For each
 /// text-object chord (with all its aliases), bind to the
-/// corresponding inner / around `TextObjectId`.
+/// corresponding inner / around `TextObjectId`. Rows come from the
+/// shared [`text_object_rows`] table -- the same table the Visual-mode
+/// binder consumes, so operator-pending and Visual never drift.
 fn register_text_object_resolutions(
     handle: &KeymapHandle,
     pending_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
     around: bool,
     builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
-    let textobj_table: &[(
-        &[ChordPattern],
-        lattice_grammar::registry::TextObjectId,
-        lattice_grammar::registry::TextObjectId,
-    )] = &[
-        (&[lit_char('w')], builtins.inner_word, builtins.around_word),
-        (
-            &[lit_char('W')],
-            builtins.inner_big_word,
-            builtins.around_big_word,
-        ),
-        (
-            &[lit_char('p')],
-            builtins.inner_paragraph,
-            builtins.around_paragraph,
-        ),
-        (
-            &[lit_char('s')],
-            builtins.inner_sentence,
-            builtins.around_sentence,
-        ),
-        (&[lit_char('t')], builtins.inner_tag, builtins.around_tag),
-        (
-            &[lit_char('"')],
-            builtins.inner_quote_double,
-            builtins.around_quote_double,
-        ),
-        (
-            &[lit_char('\'')],
-            builtins.inner_quote_single,
-            builtins.around_quote_single,
-        ),
-        (
-            &[lit_char('`')],
-            builtins.inner_quote_backtick,
-            builtins.around_quote_backtick,
-        ),
-        // Paren aliases: `(`, `)`, `b`.
-        (
-            &[lit_char('('), lit_char(')'), lit_char('b')],
-            builtins.inner_paren,
-            builtins.around_paren,
-        ),
-        // Bracket aliases: `[`, `]`.
-        (
-            &[lit_char('['), lit_char(']')],
-            builtins.inner_bracket,
-            builtins.around_bracket,
-        ),
-        // Brace aliases: `{`, `}`, `B`.
-        (
-            &[lit_char('{'), lit_char('}'), lit_char('B')],
-            builtins.inner_brace,
-            builtins.around_brace,
-        ),
-        // Angle aliases: `<`, `>`.
-        (
-            &[lit_char('<'), lit_char('>')],
-            builtins.inner_angle,
-            builtins.around_angle,
-        ),
-    ];
-    for (chord_aliases, inner_id, around_id) in textobj_table {
-        let tobj = if around { *around_id } else { *inner_id };
-        for chord in chord_aliases.iter() {
+    for (chord_aliases, inner_id, around_id) in text_object_rows(builtins, syntax_textobjects) {
+        let tobj = if around { around_id } else { inner_id };
+        for chord in &chord_aliases {
             let mut path: Vec<ChordPattern> = pending_prefix.to_vec();
             path.push(chord.clone());
             handle.bind(
@@ -1573,7 +1716,7 @@ fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
 /// `@X`, plus the operator-prefixed `dfX` etc.) capture the
 /// matched char; this helper applies it to the placeholder
 /// stashed in the bound action.
-fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
+pub(crate) fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
     // Fold any captured wildcard char into `Args::Char(c)` so the
     // bound `ActionSpec`'s apply closure can see it. Validation
     // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);

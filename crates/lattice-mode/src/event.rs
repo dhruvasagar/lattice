@@ -1,20 +1,22 @@
-//! Typed lifecycle event payloads.
+//! Typed internal mode-dispatch signals.
 //!
-//! These match the entries documented in DESIGN.md §5.10.1 ("Mode
-//! lifecycle"). M-async.2: published on the typed event bus from
-//! the dispatcher's spawned lifecycle task (`MajorEntered` /
-//! `MinorActivated` on success, `ModeActivationFailed` on
-//! lifecycle error). `MajorExiting` / `MinorDeactivated` fire
-//! synchronously from the App thread (deactivation is sync).
+//! MA.1 split the mode-event surface: the four **observable**
+//! lifecycle transitions (`MajorEntered` / `MajorExiting` /
+//! `MinorActivated` / `MinorDeactivated`, design.md §5.10.1) moved to
+//! the `lattice_protocol::Event` enum so hooks and the EF.1
+//! `EventFilter` apply to them uniformly (mode-architecture.md §7.4).
+//! What stays here is the dispatcher's **internal** signalling that
+//! isn't part of the public lifecycle catalog:
 //!
-//! Ordering contract per `mode-architecture.md` §7:
+//! - `ModeActivationFailed` — `on_activate` returned `Err`; the
+//!   App-side subscriber rolls back `active_modes` / `mode_guards`.
+//! - `OptionConflict` — two active minors disagree on an option
+//!   (M.2 emits this; reserved).
 //!
-//! - `MajorEntered` / `MinorActivated` fire *after* the trait's
-//!   `on_activate` resolves so subscribers see the buffer in a
-//!   consistent state.
-//! - `MajorExiting` / `MinorDeactivated` fire *before* the Guard
-//!   drops so subscribers can inspect what's about to be torn
-//!   down.
+//! Both ride the typed bus (`EventBus::publish_typed` /
+//! `subscribe_typed`) because they carry richer payloads (a reason
+//! string, a conflicting-mode set) and have a single internal
+//! consumer rather than open subscription.
 
 use lattice_protocol::ids::BufferId;
 use smallvec::SmallVec;
@@ -22,32 +24,15 @@ use smallvec::SmallVec;
 use crate::error::ModeActivationError;
 use crate::mode::ModeId;
 
-/// Mode lifecycle events. Published on the typed event bus by
-/// the dispatcher (`MajorEntered` / `MinorActivated` /
-/// `ModeActivationFailed` from the spawned lifecycle task;
-/// `MajorExiting` / `MinorDeactivated` synchronously from the
-/// App thread).
+/// Internal mode-dispatch signals on the typed event bus
+/// (`ModeActivationFailed` / `OptionConflict`). The observable
+/// lifecycle quartet lives on the [`lattice_protocol::Event`] enum
+/// (MA.1) — see the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModeEvent {
-    /// A new major mode is now the active major on `buffer`.
-    /// Published *after* `on_activate` resolved successfully.
-    MajorEntered { buffer: BufferId, mode: ModeId },
-
-    /// The current major mode is about to be deactivated.
-    /// Published *before* the Guard drops.
-    MajorExiting { buffer: BufferId, mode: ModeId },
-
-    /// A minor mode was activated on `buffer`. Published *after*
-    /// `on_activate` resolved successfully.
-    MinorActivated { buffer: BufferId, mode: ModeId },
-
-    /// A minor mode was deactivated on `buffer`. Published
-    /// *before* the Guard drops.
-    MinorDeactivated { buffer: BufferId, mode: ModeId },
-
     /// M-async.2: `on_activate` returned `Err`. Published from
-    /// the spawned lifecycle task instead of `MajorEntered` /
-    /// `MinorActivated`. `active_modes` was mutated
+    /// the spawned lifecycle task instead of the success lifecycle
+    /// event. `active_modes` was mutated
     /// synchronously by the dispatcher's sync prefix; M-async.3
     /// adds an App-side subscriber that rolls back on this
     /// event. `reason` is the boundary string of the original
@@ -104,8 +89,16 @@ mod tests {
     fn variants_are_orderable_for_test_assertions() {
         let buf = BufferId::new(1);
         let mode = ModeId::new("test-mode");
-        let a = ModeEvent::MinorActivated { buffer: buf, mode };
-        let b = ModeEvent::MinorActivated { buffer: buf, mode };
+        let a = ModeEvent::ModeActivationFailed {
+            buffer: buf,
+            mode,
+            reason: "boom".into(),
+        };
+        let b = ModeEvent::ModeActivationFailed {
+            buffer: buf,
+            mode,
+            reason: "boom".into(),
+        };
         assert_eq!(a, b);
         let c = a.clone();
         assert_eq!(a, c);

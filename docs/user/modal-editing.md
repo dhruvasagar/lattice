@@ -1,5 +1,5 @@
 ---
-summary: "Modal editing: Normal / Insert / Visual / Command / Search / Replace, the vim grammar (operators + motions + text objects + counts), and registers / marks / macros."
+summary: "Modal editing: Normal / Insert / Visual / Select / Command / Search / Replace, the vim grammar (operators + motions + text objects + counts), and registers / marks / macros."
 related: [operator:, motion:, text-object:, register, mark, macro]
 ---
 
@@ -25,6 +25,7 @@ edges around modes that you'll find familiar but cleaner.
 | **Insert**         | Bar (`|`)   | Type — keystrokes go into the buffer            |
 | **Replace**        | Underline   | Type — overwrites instead of inserting          |
 | **Visual** (3 sub) | Highlight   | Select a range; next operator acts on it        |
+| **Select** (3 sub) | Highlight   | Like Visual, but typing **replaces** the selection and drops to Insert |
 | **Operator-Pending** (transient) | Block | Awaiting motion / text-object after `d`/`y`/`c`/etc. |
 | **Command**        | Bar at `:` line | Typing an ex-command (`:w`, `:set`, ...)     |
 | **Search**         | Bar at `/` line | Typing a search pattern (`/foo`, `?bar`)     |
@@ -55,18 +56,29 @@ selection.
 | `v`                                     | Visual (charwise)                                   |
 | `V`                                     | Visual (linewise)                                   |
 | `<C-v>` (or `<C-q>`)                    | Visual (blockwise)                                  |
+| `gh`                                    | Select (charwise)                                   |
+| `gH`                                    | Select (linewise)                                   |
+| `g<C-h>`                                | Select (blockwise)                                  |
 | `:`                                     | Command                                             |
 | `/` / `?`                               | Search forward / backward                           |
 | `gv`                                    | Re-select the previous Visual selection             |
 
-| From Insert / Replace / Visual / Command / Search | To       |
-|---------------------------------------------------|----------|
-| `<Esc>`                                           | Normal   |
+| From Insert / Replace / Visual / Select / Command / Search | To       |
+|-----------------------------------------------------------|----------|
+| `<Esc>`                                                   | Normal   |
 
 | From Visual | To                                                                              |
 |-------------|---------------------------------------------------------------------------------|
 | `v`/`V`/`<C-v>` | Switch among Visual sub-modes (or drop to Normal if same kind)              |
 | `o`             | Swap selection anchor and cursor (extends to the *other* end)              |
+| `<C-g>`         | Toggle to Select (same selection, inverted typing)                         |
+| `<Esc>`         | Drop selection → Normal                                                     |
+
+| From Select | To                                                                              |
+|-------------|---------------------------------------------------------------------------------|
+| any printable key | Replace the selection with that char → Insert                             |
+| `o`             | Swap selection anchor and cursor                                            |
+| `<C-g>`         | Toggle back to Visual (same selection)                                      |
 | `<Esc>`         | Drop selection → Normal                                                     |
 
 ---
@@ -126,16 +138,19 @@ A motion moves the cursor. After an operator (`d`, `y`, `c`,
 
 | Key       | Motion                                        |
 |-----------|-----------------------------------------------|
-| `h` / `l` | Left / right one character                    |
-| `j` / `k` | Down / up one line                            |
-| `0`       | Start of line (column 0)                      |
-| `^`       | First non-blank of line                       |
-| `$`       | End of line                                   |
-| `g_`      | Last non-blank of line                        |
-| `gg`      | First line                                    |
-| `G`       | Last line                                     |
-| `42G`     | Line 42                                       |
-| `:42<CR>` | Same as `42G` (jump-by-line)                  |
+| `h` / `l`   | Left / right one character                       |
+| `j` / `k`   | Down / up one **logical** line                   |
+| `gj` / `gk` | Down / up one **display row** (wraps count)      |
+| `0`         | Start of line (column 0)                         |
+| `^`         | First non-blank of line                          |
+| `$`         | End of line                                      |
+| `g0`        | Start of current display row (under `:set wrap`) |
+| `g$`        | End of current display row (under `:set wrap`)   |
+| `g_`        | Last non-blank of line                           |
+| `gg`        | First line                                       |
+| `G`         | Last line                                        |
+| `42G`       | Line 42                                          |
+| `:42<CR>`   | Same as `42G` (jump-by-line)                     |
 
 ### Word / token
 
@@ -270,8 +285,81 @@ Combine with any operator: `daw` deletes a word + whitespace,
 yanks a brace block including the braces, `>>i{` indents
 inside a brace block (without the braces).
 
-In Visual mode, text objects extend the selection: `vi{`
-selects everything inside the surrounding `{...}`.
+In Visual mode, any text object sets the selection to its span:
+`vi{` selects everything inside the surrounding `{...}`, `vaw` a
+word with its whitespace, `vap` a paragraph. The structural and
+comment objects below work the same way (`vaf`, `vaC`, …). There
+is no per-object Visual handling — every object in the grammar
+selects uniformly.
+
+### Tree-sitter text objects
+
+> **Status: function / class / parameter / loop + comment objects landed
+> 2026-06-10 (N.1.4–N.1.6); Visual-mode selection (`viw` / `vaf` / `vaC`
+> / …) landed the same day in the visual-foundation slice.** The query
+> substrate (`textobjects.scm` + `scope_at_cursor`) landed in N.1.0; the
+> `zn` narrow operator in N.1.3.
+> Design:
+> [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
+
+The objects above are delimiter- and whitespace-based — they don't
+know what a *function* or a *type* is. Tree-sitter text objects add
+**structural** objects read from the syntax tree, registered as
+first-class grammar objects: each composes with **every** operator,
+exactly like `iw` or `ip`. `a` (outer) is the whole construct
+(signature → closing brace); `i` (inner) is the body without the
+delimiters.
+
+| Object | outer / inner | Selects |
+|--------|---------------|---------|
+| **Function** | `af` / `if` | a function, method, or closure |
+| **Class / type** | `ac` / `ic` | a `struct` / `enum` / `trait` / `impl` (Rust), `class` (Python/JS) |
+| **Parameter / arg** | `aa` / `ia` | one argument in a parameter / argument list |
+| **Loop** | `al` / `il` | a `for` / `while` / `loop` |
+| **Comment** | `aC` / `iC` | `aC` the comment block incl. markers; `iC` the comment text (first line's leader stripped). Commentstring-driven — any language with a known line-comment leader, no parse tree needed |
+
+Combine with any operator: `daf` deletes a function, `cic` changes
+a class body, `daa` deletes an argument, `yif` yanks a function
+body, `=af` reindents a function, and `znaf` narrows to a function
+(the `zn` narrow operator). They resolve against the live syntax
+tree, off the UI thread.
+
+**v1 notes.** Resolution is byte-precise — `daa` deletes exactly
+`x: i32`, not the whole signature line. Two rough edges for now:
+`if` / `ic` / `il` include the body's braces in brace languages
+(Python's brace-less suite is clean); and `aa` and `ia` resolve
+identically (the trailing comma isn't captured yet). The comment
+object scans line comments (`//`, `#`); block comments (`/* */`) and
+trailing comments are a follow-up. Visual-mode selection applies to
+*every* object uniformly (`vaf` / `vaC` / `viw` / …) — the Visual
+binder iterates the same grammar table the operators do, so there is
+no per-object code.
+
+**Why these keys.** `t` (tag) is already a classic object, so
+class/type takes `ac`/`ic` (the nvim-treesitter convention) rather
+than Helix's `t`. Comment takes capital `aC`/`iC` — preserving the
+inner-vs-outer distinction a single `gc` object can't express — and
+leaves `gc` free for a future comment *operator* (`gcc`). `call` /
+`conditional` / `block` have no dedicated key yet (their natural
+letters clash with the classic paren/brace objects); reach them via
+the classic `i(` / `i{` and via the narrow operator below.
+
+**Innermost wins.** With the cursor inside a closure nested in a
+function, `af` targets the **closure**; move to the function's
+signature line to target the whole function.
+
+**The narrow operator.** `zn` is a narrow operator that pairs with
+any motion or text object: `znaf` narrows a function, `znic` an
+inner class, `znip` a paragraph, `zni{` inside braces, `znG` to
+end-of-file. Edits in the narrow view save back to the source file;
+`:widen` (or `q`) closes it. See
+[`../dev/architecture/narrow-mode.md`](../dev/architecture/narrow-mode.md).
+
+**Language coverage today:** Rust, Python, JavaScript ship a
+`textobjects.scm`. A language with no query simply has no
+tree-sitter objects (the delimiter objects above still work).
+Adding a language's objects is one query file — see
+[languages.md](languages.md).
 
 ---
 
@@ -307,6 +395,44 @@ In blockwise Visual:
 
 The whole replicate session is one undo unit — `u` once
 reverts the entire block edit.
+
+---
+
+## Select mode
+
+Select is Visual's twin: identical selection geometry (same
+anchor/head, same three sub-modes, same motions and text
+objects extend it), but **inverted typing**. In Visual you
+press an operator (`d`, `c`, `y`); in Select you just type, and
+the typed character *replaces* the whole selection and drops
+you into Insert. It mirrors the "type-to-replace selection"
+behaviour of conventional editors, and it's the substrate vim
+snippet expansion uses to highlight an editable placeholder.
+
+| Mode      | Enter        | Selects                                         |
+|-----------|--------------|-------------------------------------------------|
+| Charwise  | `gh`         | Char-by-char from anchor to cursor              |
+| Linewise  | `gH`         | Whole lines from anchor's line to cursor's line |
+| Blockwise | `g<C-h>`     | Rectangle anchored at anchor, extending to cursor |
+
+Once in Select:
+
+- Any motion or text object extends the selection — exactly as
+  in Visual (`w`, `e`, `}`, `iw`, `af`, …).
+- Typing any **printable** character replaces the selection
+  with that character and switches to Insert. The replace +
+  insert is a **single undo unit** — one `u` restores the
+  original span.
+- `o` swaps anchor and cursor (extend from the other end).
+- `<C-g>` toggles back to Visual without losing the selection;
+  from Visual, `<C-g>` toggles *into* Select. The selection is
+  preserved across the toggle either way.
+- `<Esc>` drops the selection and returns to Normal (the
+  dropped selection is remembered, so `gv` re-selects it).
+
+Operators do **not** apply in Select — the keys that would be
+operators in Visual are printable characters, so they overtype.
+That's the whole point: Select is for "select, then type over."
 
 ---
 

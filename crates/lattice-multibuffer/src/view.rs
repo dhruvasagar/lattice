@@ -32,9 +32,13 @@ use std::sync::Arc;
 use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_mode::{BufferStoreHandle, ModeActivator};
 use lattice_runtime::{Document, EventBus};
+use lattice_syntax::LangRegistry;
 
 use crate::registry::MultibufferRegistryHandle;
-use crate::{Excerpt, MultibufferDocumentHandle, MultibufferHeaderProvider};
+use crate::{
+    Excerpt, MultibufferDocumentHandle, MultibufferExcerptHeaderProvider,
+    MultibufferStatusProvider,
+};
 
 /// Atomic insert + activate-major for a multibuffer view. Returns
 /// the freshly-allocated view `BufferId`. After this call:
@@ -69,6 +73,9 @@ pub fn create_multibuffer_view(
     name: Option<String>,
     flags: BufferFlags,
     registry: Arc<lattice_grammar::CommandRegistry>,
+    // K.4.7 (2026-06-07): when `Some`, wired into the handle so
+    // `add_source` creates a `SyntaxHandle` per source file.
+    lang_registry: Option<Arc<LangRegistry>>,
 ) -> BufferId {
     let services = activator.services();
 
@@ -105,6 +112,11 @@ pub fn create_multibuffer_view(
             return BufferId::next();
         }
     };
+    // K.4.7: wire lang_registry so subsequent add_source calls can
+    // create SyntaxHandles for per-excerpt syntax highlighting.
+    if let Some(lr) = lang_registry {
+        handle.set_lang_registry(lr);
+    }
     let buffer_id = handle.buffer_id();
 
     // Step 2.5 (M.4 2026-06-01): auto-subscribe to source events
@@ -137,22 +149,88 @@ pub fn create_multibuffer_view(
     let dyn_handle: Arc<dyn Document> = typed_handle.clone();
     buffer_store.insert_document_buffer(buffer_id, BufferKind::Multibuffer, dyn_handle, flags, name);
 
-    // K.4.6 (2026-06-02): register the excerpt-header provider so
-    // the virtual-rows worker emits one VirtualRow per excerpt
-    // (anchored Above the excerpt's first composed row, content
-    // = excerpt header label). MultibufferHeaderProvider holds a
-    // cheap clone of the typed handle and reads excerpts on each
-    // collect() call; the worker picks it up on its next wake.
-    // Default ModeActivator impl returns false (no-op test
-    // activators); Editor's override forwards to
-    // virtual_row_providers.register().
-    let header_provider =
-        Arc::new(MultibufferHeaderProvider::new((*typed_handle).clone()));
-    let registered = activator.register_virtual_row_provider(buffer_id, header_provider);
+    // K.4.6 (2026-06-02): excerpt-header provider — one VirtualRow per
+    // excerpt (anchored Above the excerpt's first composed row).
+    // M.6.5 (2026-06-08): renamed to MultibufferExcerptHeaderProvider.
+    //
+    // T.7 (2026-06-18): register the mode-owned excerpt-header theme
+    // elements + capture their ids, then wire the resolved theme
+    // handle into the provider so `collect()` bakes the registered
+    // backdrop / path colors into the header rows. Registration is
+    // idempotent by name; `MultibufferMode::on_activate` registers
+    // the same elements (mode-ownership contract) — both hit the same
+    // interned ids. Build the provider with theme only when the
+    // service is wired (production); test activators that don't
+    // register the service fall back to the no-theme provider.
+    // MH.A4: register the mode's theme elements ONCE (idempotent by
+    // name) and share the interned ids between the excerpt-header and
+    // status providers — both bake their colors from the same table.
+    let theme_handle = services
+        .get::<lattice_theme::ThemeRegistryHandle>()
+        .map(|outer| (*outer).clone());
+    let theme_elements = theme_handle.as_ref().map(|theme| {
+        let owner = lattice_theme::ElementOwner::Mode(
+            crate::MultibufferMode::mode_id().as_str().to_string().into(),
+        );
+        crate::register_multibuffer_theme_elements(theme.as_ref(), owner)
+    });
+    let excerpt_header_provider: Arc<MultibufferExcerptHeaderProvider> =
+        match (theme_handle.clone(), theme_elements) {
+            (Some(theme), Some(elements)) => {
+                // MH.A3 (2026-06-19): read the GLOBAL `ui.nerd_fonts`
+                // default via the ConfigRegistry service (registered at
+                // boot; read by name so we needn't import host's
+                // `UiNerdFonts` decl) to pick the icon palette. Defaults
+                // to `false` (BMP fallback) when the service or option is
+                // absent — matching the icon-palette rule's safe default.
+                //
+                // MH.A3 follow-on: live per-buffer `ui.nerd_fonts` toggle
+                // — captured once here, so a runtime toggle does not yet
+                // re-render the header. Needs the `FrameView::for_buffer`
+                // seam threaded into the provider.
+                let nerd_fonts = services
+                    .get::<Arc<lattice_config::ConfigRegistry>>()
+                    .and_then(|cfg| cfg.get_bool_by_name("ui.nerd_fonts"))
+                    .unwrap_or(false);
+                Arc::new(MultibufferExcerptHeaderProvider::with_theme(
+                    (*typed_handle).clone(),
+                    theme,
+                    elements,
+                    nerd_fonts,
+                ))
+            }
+            _ => Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone())),
+        };
+    let registered = activator.register_virtual_row_provider(buffer_id, excerpt_header_provider);
     if !registered {
         tracing::debug!(
             buffer = ?buffer_id,
-            "create_multibuffer_view: header provider not registered \
+            "create_multibuffer_view: excerpt header provider not registered \
+             (test activator with default impl, or duplicate ProviderId)"
+        );
+    }
+
+    // M.6.5 (2026-06-08): view-status sticky headerline — surfaces
+    // HeaderlineStatus (Idle / InProgress / Complete / Failed) as a
+    // pinned row above line 0. Hidden when status is Idle.
+    // MH.A4: thread the resolved theme + the shared status element ids
+    // into the status provider so its `render()` resolves the
+    // `multibuffer.status.*` foregrounds (falls back to the no-theme
+    // provider for test activators with no theme service).
+    let status_provider = match (theme_handle, theme_elements) {
+        (Some(theme), Some(elements)) => MultibufferStatusProvider::with_theme(
+            (*typed_handle).clone(),
+            theme,
+            elements,
+        ),
+        _ => MultibufferStatusProvider::new((*typed_handle).clone()),
+    }
+    .into_provider(buffer_id);
+    let registered = activator.register_virtual_row_provider(buffer_id, Arc::new(status_provider));
+    if !registered {
+        tracing::debug!(
+            buffer = ?buffer_id,
+            "create_multibuffer_view: status provider not registered \
              (test activator with default impl, or duplicate ProviderId)"
         );
     }

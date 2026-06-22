@@ -285,10 +285,14 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
             // Document; contributes the buffer-words source to
             // the popup's `ActiveCompletionSources` cache.
             lattice_mode::BufferWordsMode::mode_id(),
-            // CSM.5: snippet-completion-mode owns the snippet
-            // completion source; contributes through the same
-            // cache.
-            lattice_snippet::SnippetCompletionMode::mode_id(),
+            // SN.3a: `snippet-completion-mode` is no longer
+            // activated language-blind here. `snippet-mode` (the
+            // language-aware gate) `implies` it and auto-activates
+            // via the `MajorEntered` resolver (`ActivationPolicy`),
+            // so the source rides the gate. With the default
+            // `Global` policy this is behavior-preserving (the
+            // source still reaches every Document), but SN.3b's
+            // config can now restrict it per-language.
             // CSM.6: tree-sitter-completion-mode owns the
             // local-symbol source; produce-time is cheap (host
             // pre-walks `collect_symbols()` once per populate

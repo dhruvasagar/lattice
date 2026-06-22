@@ -3466,6 +3466,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "dirs 5.0.1",
  "fancy-regex",
  "globset",
  "ignore",
@@ -3488,9 +3489,11 @@ dependencies = [
  "lattice-snippet",
  "lattice-syntax",
  "lattice-terminal",
+ "lattice-theme",
  "memchr",
  "notify",
  "ropey",
+ "serde",
  "serde_json",
  "smallvec",
  "streaming-iterator",
@@ -3523,6 +3526,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-grammar",
  "lattice-help",
  "lattice-mode",
  "lattice-protocol",
@@ -3542,6 +3546,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bitflags 2.11.1",
+ "criterion",
  "internment",
  "lattice-cells",
  "lattice-completion",
@@ -3573,6 +3578,8 @@ dependencies = [
  "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-syntax",
+ "lattice-theme",
  "linkme",
  "thiserror 2.0.18",
  "tokio",
@@ -3621,8 +3628,11 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "globset",
+ "lattice-cells",
  "lattice-core",
  "lattice-grammar",
+ "lattice-keymap",
  "lattice-protocol",
  "linkme",
  "thiserror 2.0.18",
@@ -3639,12 +3649,15 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-grammar",
  "lattice-mode",
  "lattice-picker",
  "lattice-protocol",
+ "lattice-runtime",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -3653,8 +3666,10 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "lattice-cells",
  "lattice-completion",
  "lattice-core",
+ "lattice-grammar",
  "lattice-mode",
  "lattice-protocol",
  "streaming-iterator",
@@ -3685,6 +3700,14 @@ dependencies = [
  "portable-pty",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lattice-theme"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
  "tracing",
 ]
 

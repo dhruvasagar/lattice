@@ -307,12 +307,21 @@ fn apply_scalar(
     dotted: &str,
     value: &toml::Value,
 ) {
+    // ML.5: a TOML **array** for a list-typed option (e.g.
+    // `ui.modeline.left = ["core.mode", "core.path"]`) is joined into
+    // the delimited form the option's `parse` accepts. For a scalar
+    // option (or an unknown key) an array stays the "not applicable"
+    // warning it was before — never a panic.
+    if let toml::Value::Array(items) = value {
+        apply_array(registry, source, out, dotted, items);
+        return;
+    }
     let formatted = match format_scalar(value) {
         Some(s) => s,
         None => {
-            // Arrays at scalar position aren't a known option-
-            // value shape today; warn so the user notices their
-            // config didn't apply.
+            // Inline tables at scalar position aren't a known option-
+            // value shape; warn so the user notices their config
+            // didn't apply.
             out.messages.push(LoadMessage {
                 level: LoadMessageLevel::Warning,
                 source: source.to_path_buf(),
@@ -325,7 +334,74 @@ fn apply_scalar(
             return;
         }
     };
-    let assign = format!("{dotted}={formatted}");
+    apply_assignment(registry, source, out, dotted, &formatted);
+}
+
+/// Apply a TOML **array** leaf. Only list-typed options
+/// ([`crate::ErasedOption::accepts_list`], e.g. the `ui.modeline.*`
+/// zone options) accept arrays; the array's scalar elements are joined
+/// with `,` into the delimited string the option's
+/// [`crate::OptionType::parse`] consumes (ML.5). For a scalar option or
+/// an unknown key, an array stays the same "not applicable" warning as
+/// before — never a panic. A nested array / inline-table element also
+/// warns (list elements must be scalars in v1).
+fn apply_array(
+    registry: &ConfigRegistry,
+    source: &Path,
+    out: &mut LoadOutcome,
+    dotted: &str,
+    items: &[toml::Value],
+) {
+    let accepts_list = registry
+        .lookup(dotted)
+        .map(|opt| opt.accepts_list())
+        .unwrap_or(false);
+    if !accepts_list {
+        out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: source.to_path_buf(),
+            body: format!(
+                "`{dotted}`: list / inline-table values aren't \
+                 applicable to scalar options; move it under a \
+                 structural section",
+            ),
+        });
+        return;
+    }
+    let mut parts = Vec::with_capacity(items.len());
+    for item in items {
+        match format_scalar(item) {
+            Some(s) => parts.push(s),
+            None => {
+                out.messages.push(LoadMessage {
+                    level: LoadMessageLevel::Warning,
+                    source: source.to_path_buf(),
+                    body: format!(
+                        "`{dotted}`: nested list / table values aren't \
+                         valid list elements",
+                    ),
+                });
+                return;
+            }
+        }
+    }
+    // Element ids never contain commas/spaces, so a comma join is
+    // unambiguous and round-trips through the option's `parse`.
+    let joined = parts.join(",");
+    apply_assignment(registry, source, out, dotted, &joined);
+}
+
+/// Drive one `dotted=value` assignment against the registry, capturing
+/// every failure mode (unknown option, validation reject, parse error)
+/// as a warning. Shared by the scalar + array leaf paths.
+fn apply_assignment(
+    registry: &ConfigRegistry,
+    source: &Path,
+    out: &mut LoadOutcome,
+    dotted: &str,
+    value: &str,
+) {
+    let assign = format!("{dotted}={value}");
     if let Err(err) = registry.parse_and_set_command(&assign) {
         let body = match err {
             ConfigError::UnknownOption(name) => format!("unknown option `{name}`"),
@@ -474,6 +550,46 @@ mod tests {
         assert_eq!(out.messages.len(), 1);
         assert_eq!(out.messages[0].level, LoadMessageLevel::Warning);
         assert!(out.messages[0].body.contains("list"));
+    }
+
+    #[test]
+    fn toml_array_applies_to_a_list_typed_option() {
+        // ML.5: a TOML array reaches a list-typed option (ModelineZone),
+        // joined into the option's comma-delimited parse form. Helix
+        // shape: `[ui.modeline]\nleft = ["core.mode", "core.path"]`.
+        let r = registry_with_options();
+        r.register(ConfigOption::<crate::ModelineZone>::new(
+            "ui.modeline.left",
+            crate::ModelineZone::Auto,
+            "Left modeline zone.",
+        ));
+        let p = write_temp(
+            "modeline-array",
+            "[ui.modeline]\nleft = [\"core.mode\", \"core.path\"]\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert!(out.messages.is_empty(), "messages: {:?}", out.messages);
+        assert_eq!(
+            r.lookup("ui.modeline.left").unwrap().get_formatted(),
+            "core.mode,core.path",
+        );
+    }
+
+    #[test]
+    fn empty_toml_array_clears_a_list_typed_zone() {
+        // `left = []` is an explicitly-blank zone (distinct from the
+        // `auto` default) — applies as an empty id list.
+        let r = registry_with_options();
+        r.register(ConfigOption::<crate::ModelineZone>::new(
+            "ui.modeline.right",
+            crate::ModelineZone::Auto,
+            "Right modeline zone.",
+        ));
+        let p = write_temp("modeline-empty", "[ui.modeline]\nright = []\n");
+        let out = load_file(&r, &p, &[]);
+        assert!(out.messages.is_empty(), "messages: {:?}", out.messages);
+        // Empty id list formats back to the empty string.
+        assert_eq!(r.lookup("ui.modeline.right").unwrap().get_formatted(), "");
     }
 
     #[test]

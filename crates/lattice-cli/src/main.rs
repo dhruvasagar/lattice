@@ -94,6 +94,17 @@ struct Cli {
     /// write.
     #[arg(long = "stderr-logs")]
     stderr_logs: bool,
+
+    /// Open the interactive Lattice tutor at lesson N (1–5).
+    /// Omitting N defaults to lesson 1. Mutually exclusive with FILE.
+    #[arg(
+        long = "tutor",
+        value_name = "N",
+        default_missing_value = "1",
+        num_args = 0..=1,
+        conflicts_with = "file"
+    )]
+    tutor: Option<u32>,
 }
 
 /// Resolve the final log-level directive from CLI flags +
@@ -180,6 +191,8 @@ async fn main() -> Result<()> {
         Some(path) => {
             Document::open(&path).with_context(|| format!("opening {}", path.display()))?
         }
+        // `--tutor` conflicts_with = "file" so cli.file is None here too;
+        // do_tutor creates and opens the lesson buffer itself.
         None => Document::empty(),
     };
 
@@ -193,7 +206,7 @@ async fn main() -> Result<()> {
     if use_gui {
         run_gui(document)
     } else {
-        lattice_ui_tui::run(document)
+        lattice_ui_tui::run(document, cli.tutor)
     }
 }
 

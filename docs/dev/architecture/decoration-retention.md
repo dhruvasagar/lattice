@@ -1,7 +1,7 @@
 # Decoration retention across focus
 
 Design fragment — the *what* and *why*. Sequencing lives in the slice
-plan: [`../operations/slice-plans/decoration-retention.md`](../operations/slice-plans/decoration-retention.md).
+plan: [`../operations/slice-plans/archive/decoration-retention.md`](../operations/slice-plans/archive/decoration-retention.md).
 
 ## Intent
 
@@ -149,6 +149,6 @@ producer and no focus-keyed branch in decoration sourcing.
 
 ## Slice plan
 
-See [`../operations/slice-plans/decoration-retention.md`](../operations/slice-plans/decoration-retention.md)
+See [`../operations/slice-plans/archive/decoration-retention.md`](../operations/slice-plans/archive/decoration-retention.md)
 for sequencing (DR.1 retain + repaint → DR.2 per-buffer producer →
 DR.3 one render path → DR.4 four-artefact close).

@@ -57,6 +57,23 @@ impl Lang {
             Lang::Markdown => "markdown",
         }
     }
+
+    /// N.1.6: per-language comment-leader descriptor for the comment
+    /// text objects (`aC` / `iC`). Commentstring-driven — the line
+    /// leader is all v1 uses; block delimiters are carried for a
+    /// follow-up. Languages with no line comment (markdown, plain)
+    /// return `line: None`, so the comment objects no-op there.
+    pub fn comment_syntax(self) -> lattice_grammar::CommentSyntax {
+        let (line, block): (Option<&str>, Option<(&str, &str)>) = match self {
+            Lang::Rust | Lang::JavaScript => (Some("//"), Some(("/*", "*/"))),
+            Lang::Python => (Some("#"), None),
+            Lang::Markdown | Lang::Plain => (None, None),
+        };
+        lattice_grammar::CommentSyntax {
+            line: line.map(str::to_string),
+            block: block.map(|(s, e)| (s.to_string(), e.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]

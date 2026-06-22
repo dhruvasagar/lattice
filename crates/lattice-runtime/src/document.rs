@@ -52,6 +52,34 @@ use crate::handle::RopeDocumentHandle;
 use crate::pending::Pending;
 use crate::snapshot::{DocumentSnapshot, SnapshotCache};
 
+/// N.1.4b (2026-06-10): a sharable, thread-safe scope resolver
+/// handle threaded through grammar dispatch. The host wraps the
+/// active document's `Arc<SyntaxSnapshot>` (which impls
+/// `lattice_grammar::ScopeResolver`) in this alias, bundles it into a
+/// [`DispatchEnv`], and passes it to [`Document::dispatch_with_env`];
+/// the actor hands it to `execute_with_env` so tree-sitter text objects
+/// (af/ac/aa/al) resolve against the live tree. `Send + Sync`
+/// because the actor message crosses the dispatch channel onto the
+/// document-actor thread. The bare `ScopeResolver` trait lives in
+/// `lattice-grammar` (tree-sitter-agnostic); this threading-layer
+/// alias adds the `Arc + Send + Sync` shape per the handle
+/// convention (cf. `CommandRegistryHandle`).
+pub type ScopeResolverHandle = Arc<dyn lattice_grammar::ScopeResolver + Send + Sync>;
+
+/// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
+/// for text objects, carried across the actor channel. Bundles the
+/// inputs a text object's `apply` may read — the tree-sitter
+/// `scope_resolver` (`af`/`ac`, N.1.4) and the `comment_syntax`
+/// (`aC`/`iC`, N.1.6) — so the dispatch seam threads ONE value instead
+/// of a widening parameter list (the long-term-fit choice over parallel
+/// params). The actor borrows these into a `lattice_grammar::TextObjectEnv`
+/// at the `execute_with_env` call. `Default` is the no-input case.
+#[derive(Clone, Default)]
+pub struct DispatchEnv {
+    pub scope_resolver: Option<ScopeResolverHandle>,
+    pub comment_syntax: Option<Arc<lattice_grammar::CommentSyntax>>,
+}
+
 /// Handle-layer abstraction over a buffer. See module docs.
 ///
 /// `Debug` is a supertrait so containers holding `dyn Document`
@@ -130,6 +158,26 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
         cancel: CancellationToken,
     ) -> Pending<Effect>;
 
+    /// N.1.4b / N.1.6 (2026-06-10): dispatch carrying a [`DispatchEnv`]
+    /// (tree-sitter `scope_resolver` for af/ac/aa/al + `comment_syntax`
+    /// for aC/iC) so the grammar resolves those text objects against the
+    /// caller's live syntax + language. The default impl ignores the env
+    /// and delegates to [`Self::dispatch_with_cancel`] -- correct for
+    /// buffer kinds with no syntax / no leader (oil, terminal,
+    /// plain-language). `RopeDocumentHandle` overrides it to forward the
+    /// env into the actor's `execute_with_env` call; the multibuffer
+    /// overrides `dispatch_with_cancel` (N.1.5) and ignores this env.
+    fn dispatch_with_env(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        env: DispatchEnv,
+    ) -> Pending<Effect> {
+        let _ = env;
+        self.dispatch_with_cancel(invocation, cursor, cancel)
+    }
+
     /// Convenience: dispatch with a never-cancelled token.
     fn dispatch(&self, invocation: CommandInvocation, cursor: Position) -> Pending<Effect> {
         self.dispatch_with_cancel(invocation, cursor, CancellationToken::never())
@@ -156,6 +204,23 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     /// publish-side kind branch needed.
     fn display_line_numbers(&self) -> Option<Arc<[u32]>> {
         None
+    }
+
+    /// K.4.7: per-excerpt highlight entries for multibuffer panes.
+    /// Default returns empty — regular single-file documents carry
+    /// no excerpt structure.  `MultibufferDocumentHandle` overrides
+    /// to return one entry per excerpt that has a `SyntaxHandle`.
+    ///
+    /// The cells worker calls this uniformly on every pane's document;
+    /// no `BufferKind` branch needed in `publish_render_state`.
+    fn excerpt_highlights(&self) -> Vec<lattice_cells::ExcerptHighlight> {
+        Vec::new()
+    }
+
+    /// Monotonic counter that bumps whenever the excerpt highlight set
+    /// changes (new sources added, lang registry wired).  Default: 0.
+    fn excerpt_syntax_version(&self) -> u64 {
+        0
     }
 }
 

@@ -51,7 +51,7 @@ use lattice_host::cells_worker::WhitespaceConfig;
 use lattice_host::cells_worker::{recompute, sync_rebuild_pane_on_edit};
 use lattice_host::display_matrix::DisplayMatrix;
 use lattice_host::render_state::{CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState};
-use lattice_host::ui::theme::Theme;
+use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry};
 use lattice_runtime::DocumentSnapshot;
 
 /// A fresh empty display-matrix cell (boot / cold-start state).
@@ -116,6 +116,9 @@ fn rs_for(
         version,
         snapshot: Some(snapshot.clone()),
         syntax_handle: syntax.clone(),
+        // K.4.7 added per-excerpt syntax for multibuffer panes; a
+        // single-file bench pane has no excerpts, so an empty slice.
+        excerpt_syntax: Arc::from(Vec::new()),
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,
@@ -149,7 +152,16 @@ fn rs_for(
         viewport_height: VIEWPORT_HEIGHT,
         foldenable: false,
         last_edit,
-        theme: Theme::default(),
+        // T.6.t: the host `Theme` struct is gone; the cell builder reads
+        // styles through the resolved table + builtin ids.
+        resolved_theme: {
+            let reg = InMemoryThemeRegistry::with_defaults();
+            reg.resolved()
+        },
+        theme_ids: {
+            let reg = InMemoryThemeRegistry::with_defaults();
+            BuiltinElementIds::capture(&reg)
+        },
         whitespace: WhitespaceConfig::default(),
         panes: Arc::from(vec![pane_entry].into_boxed_slice()),
         pane_matrices,
@@ -512,11 +524,14 @@ fn bench_display_edit_path(c: &mut Criterion) {
                     let loaded = rs.load_full();
                     let cells_snap = loaded.cells.load();
                     let pane = &cells_snap.panes[0];
-                    let did = sync_rebuild_pane_on_edit(
-                        pane,
-                        &cells_snap.theme,
-                        &cells_snap.whitespace,
-                    );
+                    // T.6.t: the host `Theme` field is gone; build a
+                    // `CellTheme` from the resolved table + builtin ids
+                    // (mirrors `dispatch.rs`'s production `next_ct`).
+                    let ct = lattice_host::cells_worker::CellTheme {
+                        resolved: &cells_snap.resolved_theme,
+                        ids: &cells_snap.theme_ids,
+                    };
+                    let did = sync_rebuild_pane_on_edit(pane, ct, &cells_snap.whitespace);
                     black_box(did);
                 });
             },

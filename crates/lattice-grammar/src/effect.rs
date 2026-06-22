@@ -152,12 +152,45 @@ pub enum Effect {
     SetOption {
         spec: String,
     },
+    /// `:setlocal <option>` -- like `SetOption` but writes to the
+    /// buffer-local override layer for the active buffer only, without
+    /// touching the global config registry.
+    SetLocalOption {
+        spec: String,
+    },
+    /// `:setglobal <option>` -- like `SetOption` but only writes the
+    /// global config registry without updating any buffer-local override
+    /// layers. Reads back the global value on `:setglobal name?`.
+    SetGlobalOption {
+        spec: String,
+    },
     /// `:noh[lsearch]` -- clear the hlsearch overlay.
     ClearSearchHighlight,
+    /// `:colorscheme <name>` (T.9.b) -- swap the active theme by name.
+    /// The host looks `name` up in `lattice_theme::builtin_themes()`
+    /// and calls `ThemeRegistry::set_theme` (palette + override swap),
+    /// then emits `RendererSignal::ThemeChanged` so both renderers
+    /// rebuild their caches. An unknown name echoes a host-side error.
+    /// The closure only packages the name (it has no registry access).
+    SetColorscheme(String),
     /// Display a one-line message in the echo area.
     Echo {
         level: EchoLevel,
         text: String,
+    },
+    /// L4b (lsp-architecture.md §15): show a cursor-anchored popup with
+    /// the pre-formatted diagnostic lines for the cursor's line. The
+    /// owning mode (`lsp-diagnostics-mode`) formats `lines` in its
+    /// `gl` handler; the host renders them through the hover popup
+    /// pipeline (`HelpContent` → `DisplayBufferRequest`,
+    /// `PopupPlacement::CursorAnchored`). Empty `lines` → host echoes
+    /// "no diagnostics on line" instead of an empty popup. Each line is
+    /// `(text, severity_rank)` where rank is Error = 0 … Hint = 3
+    /// (matching `lattice_lsp`'s severity_rank); the host colours each
+    /// popup line by its severity via the matching `Style::Diagnostic*`
+    /// highlight.
+    ShowDiagnosticsPopup {
+        lines: Vec<(String, u8)>,
     },
     /// `:reg[isters]` -- the host formats and displays its own register
     /// state.
@@ -264,6 +297,17 @@ pub enum Effect {
     /// `:describe-option NAME` -- render the option's metadata in
     /// a help view.
     DescribeOption {
+        name: String,
+    },
+    /// `:describe-element NAME` / `:describe-face NAME` (T.9.d) --
+    /// render a registered theme element's metadata in a help view:
+    /// owner, doc, the authoring (reference-form) `StyleSpec` default
+    /// (palette keys + inherit parent), and the concrete resolved
+    /// `Style`. The introspection counterpart of `:describe-option` /
+    /// `:describe-mode` for theme elements. The host reads the
+    /// `ThemeRegistry::describe` snapshot; an unknown name echoes an
+    /// error.
+    DescribeElement {
         name: String,
     },
     /// `:options` -- list every registered option.
@@ -452,13 +496,21 @@ pub enum Effect {
     /// needed) and applies the action's WorkspaceEdit /
     /// command. Phase 4.3.
     LspCodeAction,
-    /// `:snippet-expand` -- direct snippet expansion at the
-    /// cursor (Phase 4.2.g.4). Looks up the word at the
-    /// cursor in the per-language snippet registry; expands
-    /// the first matching snippet without surfacing the
-    /// completion popup. No-op when no snippet matches.
-    /// Surface-form alias of the `<C-x><C-s>` chord.
-    SnippetExpand,
+    /// SN.3c.1: direct snippet expansion over a known trigger
+    /// range. The mode-owned `<C-x><C-s>` handler
+    /// (`snippet-mode`'s `action_handlers()`) does the word-prefix
+    /// scan and emits this with `replace_range = token-start..cursor`;
+    /// the **host** owns resolution + expansion (language detection,
+    /// registry lookup, variable render, buffer splice + session
+    /// install) via `Editor::expand_snippet_from_range`. A deliberate
+    /// first-party effect: the typed `Effect` enum stays a host-owned
+    /// vocabulary (`feedback_effect_vocabulary_is_host_boundary`) —
+    /// the mode owns the *trigger*, the host owns the *expansion
+    /// mechanics*. No-op (quiet info echo) when no snippet matches the
+    /// prefix.
+    ExpandSnippet {
+        replace_range: lattice_protocol::position::Range,
+    },
     /// `:reload-snippets` -- re-read every snippet file from
     /// disk and rebuild the per-language registry (Phase
     /// 4.2.g.4). Useful after editing a `.code-snippets` /

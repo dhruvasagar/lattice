@@ -71,9 +71,10 @@ mod tests {
     }
 
     fn populated_handle() -> (KeymapHandle, Builtins, ActionIds) {
-        let (_, b, a) = fixture();
+        let (mut r, b, a) = fixture();
+        let so = lattice_syntax::register_syntax_text_objects(&mut r);
         let h = KeymapHandle::new();
-        register_normal_bindings(&h, &b, &a);
+        register_normal_bindings(&h, &b, &a, &so);
         (h, b, a)
     }
 
@@ -251,6 +252,30 @@ mod tests {
                 ));
             }
             other => panic!("expected Invoke(delete, word_forward), got {other:?}"),
+        }
+    }
+
+    /// Motion-table unification: `G` is now in the shared `motion_rows`
+    /// table, so `dG` resolves as an operator target (previously the
+    /// operator-pending list omitted `G`). Charwise to EOF, consistent
+    /// with the pre-existing charwise `dj` / `dk`.
+    #[test]
+    fn d_uppercase_g_resolves_to_delete_with_goto_last_line_target() {
+        let (h, b, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('G'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::Motion(m, _)) if m == b.goto_last_line
+                ));
+            }
+            other => panic!("expected Invoke(delete, goto_last_line), got {other:?}"),
         }
     }
 
@@ -485,17 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn gd_resolves_to_lsp_definition_request() {
-        let (h, _, a) = populated_handle();
+    fn gd_without_lsp_mode_is_unresolved_at_builtin_layer() {
+        // MO.1: gd migrated to LspMode::keymap() (MinorMode layer).
+        // Builtin trie no longer has gd → Action::None without lsp-mode.
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
-        match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
-            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
-        }
+        assert!(matches!(r, Action::None), "expected Action::None, got {r:?}");
     }
 
     #[test]

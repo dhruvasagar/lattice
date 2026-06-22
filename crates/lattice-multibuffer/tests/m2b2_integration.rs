@@ -127,6 +127,7 @@ fn empty_view_creates_inserts_and_activates_major() {
         Some("*test:empty*".into()),
         BufferFlags::default(),
         Arc::new(CommandRegistry::new()),
+        None,
     );
 
     // Step 4: buffer-registry insert recorded the right kind.
@@ -161,6 +162,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         None,
         BufferFlags::default(),
         Arc::new(CommandRegistry::new()),
+        None,
     );
     let b = create_multibuffer_view(
         &mut activator,
@@ -169,6 +171,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         None,
         BufferFlags::default(),
         Arc::new(CommandRegistry::new()),
+        None,
     );
     assert_ne!(a, b);
     assert_eq!(activator.mb_registry.len(), 2);
@@ -189,6 +192,7 @@ async fn append_excerpts_after_create_extends_view() {
         None,
         BufferFlags::default(),
         Arc::new(CommandRegistry::new()),
+        None,
     );
     let handle = activator.mb_registry.handle(view_id).unwrap();
     assert_eq!(handle.excerpt_count(), 0);

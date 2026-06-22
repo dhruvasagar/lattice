@@ -83,6 +83,10 @@ pub struct OptionCache {
     /// the production semantics without panicking on an
     /// unregistered option lookup.
     pub terminal_esc_exits: bool,
+    /// D.0b: cached `scrollbind`. Triggers
+    /// `rebuild_scrollbind_group` via `apply_option_cascade`
+    /// when toggled.
+    pub scrollbind: bool,
 }
 
 impl Default for OptionCache {
@@ -105,6 +109,7 @@ impl Default for OptionCache {
             whitespace_space: None,
             whitespace_eol: None,
             terminal_esc_exits: true,
+            scrollbind: false,
         }
     }
 }

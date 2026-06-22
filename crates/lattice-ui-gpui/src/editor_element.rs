@@ -25,7 +25,9 @@
 //! ## Slice scope
 //!
 //! - **X3.full.1 ✅**: pane background quad, per-line shaped text,
-//!   syntax colouring from worker-published `VisibleSpans`.
+//!   syntax colouring. (display-line B-series: the colour source
+//!   migrated from the worker's `VisibleSpans` to the cells /
+//!   `DisplayMatrix` substrate; B4.2 deleted the dead span cache.)
 //! - **X3.full.2 (this slice)**: cursor (block / bar / underline
 //!   shapes painted via `paint_quad`); gutter (fold marker + severity
 //!   sign + line number, one ShapedLine per visible row); legacy
@@ -48,44 +50,46 @@
 //!
 //! ## Indexing contract
 //!
-//! `VisibleSpans.spans[i]` covers absolute buffer line
-//! `scroll_at_compute_time + i`, per
-//! `lattice-syntax::Syntax::highlight_lines`. The element reads
-//! with `spans.get(line_idx - scroll)`. If the worker hasn't
-//! caught up to the current `scroll` (X1b idle-wake gap), `get`
-//! returns `None` and the line paints in `SyntaxStyle::Default` —
-//! better visual fail-mode than a panic.
+//! display-line B4.2: the active-pane span-grid indexing contract
+//! (`VisibleSpans.spans[i]` ↔ absolute buffer line) was retired with
+//! the dead span cache. The element now sources per-row style runs
+//! from the `DisplayMatrix` (`display_matrix.row_at_source_line`),
+//! falling back to default-styled text for rows the cells worker
+//! hasn't built yet — a better visual fail-mode than a panic.
 //!
 //! See `docs/dev/operations/render-thread-discipline-remediation.md`
-//! §X3.full.
+//! §X3.full and `docs/dev/architecture/display-line.md`.
 
 #![cfg(feature = "window")]
 
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style, TextRun, Window, fill,
-    point, px, rgb, size,
+    App, Bounds, DefiniteLength, Element, ElementId, FontFeatures, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style,
+    TextRun, Window, fill, point, px, rgb, size,
 };
 use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
 use lattice_host::display_matrix::DisplayMatrix;
-use lattice_host::render_state::VisibleSpans;
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
 use crate::cells_paint::display_line_to_text_runs;
 use crate::glyph_resolver::GlyphResolver;
 
-/// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
-/// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: identical body to
-/// `window::syntax_color` because both renderer paths must read the
-/// same canonical mapping; once `EditorElement` absorbs the popup
-/// overlay too, the helpers merge.
-fn syntax_color(style: SyntaxStyle) -> u32 {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    let host_style = host_default.syntax_style(style);
+/// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
+/// T.5.b: resolves `style` through the active theme's resolved table
+/// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
+/// for the retired `Theme::syntax_style`. Threaded from the caller's
+/// render-state-derived theme handles so the legacy `build_line_with_inlays`
+/// fallback path renders identical colours to the display-line path.
+fn syntax_color(
+    style: SyntaxStyle,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
+    let host_style = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
     host_style
         .fg
         .map(|c| c.to_rgb_u32(0xcdd6f4))
@@ -182,6 +186,20 @@ pub(crate) struct DiagnosticUnderline {
     pub(crate) color: u32,
 }
 
+/// L4a.3 (lsp-architecture.md §15): the resolved inline cursor-line
+/// diagnostic summary for one pane. `line` is the absolute buffer
+/// line; `text` already carries the leading gap; `color` is
+/// `0xRRGGBB` from the severity's host-theme style. Resolved in
+/// `window.rs` from `render_state.diagnostics.inline_summary` on the
+/// ACTIVE pane only — it tracks the focused cursor, so it is painted
+/// per-frame (NOT spliced into the cells cache, which would churn on
+/// every cursor move).
+pub(crate) struct InlineDiagSummary {
+    pub(crate) line: u32,
+    pub(crate) text: String,
+    pub(crate) color: u32,
+}
+
 /// Pane element. One instance per pane per frame.
 ///
 /// Caller (`window::paint_pane`) extracts all referenced values up
@@ -198,14 +216,13 @@ pub(crate) struct EditorElement {
     /// `shape_line` panics on embedded newlines so the element
     /// splits on `\n` inside `prepaint`.
     pub(crate) text: Arc<String>,
-    /// Worker-published spans. `spans[i]` covers absolute buffer
-    /// line `scroll + i`. Fallback path — used when the cell
-    /// matrix doesn't have a row for the visible line (boot
-    /// frame before the cell-builder's first publish, folded
-    /// lines, or out-of-coverage / buffer-switch gaps) and for
-    /// inactive panes (which carry `cell_matrix == None` because
-    /// the cells worker publishes only for the active document).
-    pub(crate) visible_spans: Arc<VisibleSpans>,
+    // display-line B4.2: the dead `visible_spans` field was deleted.
+    // It carried the overlay worker's per-line styled-span output,
+    // which B4.1 already severed every read of (the `build_runs`
+    // else-branch renders default-styled now). The host-side
+    // `VisibleSpans` cache it cloned from was deleted in the same
+    // slice. Syntax colour flows through the cells / `DisplayMatrix`
+    // substrate (`cell_matrix` / `display_matrix` below).
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
     /// Visible viewport height in lines.
@@ -288,6 +305,12 @@ pub(crate) struct EditorElement {
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
     pub(crate) cursorline_bg: u32,
+    /// Whether the cursor-line tint is enabled for the active buffer
+    /// (`:set cursorline` / `current-line-highlight`, default off).
+    /// Mirrors the TUI's `option_cache.current_line_highlight` gate so
+    /// both renderers agree — without it the quad paints unconditionally
+    /// and `:set nocursorline` is a no-op in the GPUI peer.
+    pub(crate) cursorline_enabled: bool,
     /// D.3.b.3 (2026-05-29): backdrop colour for deletion-
     /// block virtual rows. Resolved at construction time
     /// from `host_theme.diff_deletion_block_bg.to_rgb_u32(0)`
@@ -306,10 +329,17 @@ pub(crate) struct EditorElement {
     /// `0xRRGGBB` for inlay virtual-text. `host_theme` resolved by
     /// the caller, Catppuccin overlay1 (0x7f849c) fallback.
     pub(crate) inlay_color: u32,
+    /// L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+    /// summary — trailing eol virtual text on the active pane's cursor
+    /// line. `None` on inactive panes / when the host idle gate is
+    /// disarmed. Painted per-frame at the row's end-of-content x by
+    /// `paint` (shaped in `prepaint`), NOT spliced into the cells
+    /// cache — it is cursor-transient, like the cursor / underline
+    /// overlays.
+    pub(crate) inline_diag_summary: Option<InlineDiagSummary>,
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
-    /// pane; `None` for inactive panes (mirrors the
-    /// `visible_spans` split, since the cells worker publishes
+    /// pane; `None` for inactive panes (the cells worker publishes
     /// only for the active document).
     ///
     /// When `Some` and the row's source line is covered by the
@@ -318,10 +348,9 @@ pub(crate) struct EditorElement {
     /// `build_line_with_inlays` walk. When `None` or the row is
     /// folded / out-of-matrix (boot frame, buffer-switch gap),
     /// dispatch falls through to `shape_row`. The intermediate
-    /// `shape_row_from_prepaint` branch (highlights worker's
-    /// `RowPrepaint`) retired in S4.3 — the worker still
-    /// publishes `visible_rows` for TUI markdown / help /
-    /// messages bodies in other render functions.
+    /// `shape_row_from_prepaint` branch (the overlay worker's old
+    /// `RowPrepaint`) retired in S4.3; display-line B4.2 then deleted
+    /// the `RowPrepaint` / `visible_rows` prepaint cache entirely.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
     /// B3 (2026-06-04): canonical `DisplayMatrix` snapshot — the GPU's
     /// primary shaping source. Populated from
@@ -332,20 +361,31 @@ pub(crate) struct EditorElement {
     /// `TextRun`s); folded / out-of-window / stale rows fall through to the
     /// legacy `shape_row`. B2.3 makes this text-current synchronously, so
     /// the stale guard no longer fires per keystroke — that retires the
-    /// GPU whole-viewport flicker. `cell_matrix` now feeds only the
-    /// experimental per-glyph `paint_cells` path until B4.
+    /// GPU whole-viewport flicker. `cell_matrix` is a DERIVED PROJECTION
+    /// of `display_matrix` (`display_matrix_to_cell_matrix`) and is the
+    /// PRODUCTION per-glyph source: `paint_cells_row` (the default
+    /// active-pane glyph path, S4.final.f) reads it. Per the display-line
+    /// B4 re-slice (approach A, 2026-06-20) it is RETAINED as that
+    /// projection — not deleted; B4 deletes only the legacy highlight
+    /// cache (`visible_spans` etc.). See architecture/display-line.md.
     pub(crate) display_matrix: Option<Arc<DisplayMatrix>>,
-    /// B3 (2026-06-04): host theme (a `Copy` struct) for resolving
-    /// `DisplayRun` syntax-style tags → `TextRun` colours at shape time
-    /// (`display_line_to_text_runs`). The cell path baked resolved colours
-    /// into cells; the display path resolves per-run here.
-    pub(crate) host_theme: lattice_host::ui::theme::Theme,
-    /// S4.final.b (2026-05-27): per-window glyph-id cache. When
-    /// the runtime toggle `LATTICE_PAINT_CELLS=1` is set,
+    /// T.5.b (theme-system): the resolved theme table + builtin
+    /// element ids the display-line path resolves `DisplayRun`
+    /// syntax-style tags through (`display_line_to_text_runs` →
+    /// `resolve_syntax_style`). Replaces the `host_theme.syntax_style`
+    /// read; populated in `window.rs` from the render-state's
+    /// `resolved_theme` / `theme_ids` (T.4) — the same locals the
+    /// editor element already binds.
+    pub(crate) resolved_theme: std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+    pub(crate) theme_ids: lattice_host::ui::theme::BuiltinElementIds,
+    /// S4.final.b (2026-05-27): per-window glyph-id cache.
     /// `EditorElement::paint`'s body loop uses
     /// `crate::paint_cells::paint_cells_row` (which consumes
-    /// this resolver) to emit per-cell `paint_glyph` calls
-    /// instead of `ShapedLine::paint`. Always populated from
+    /// this resolver) to emit per-cell `paint_glyph` calls — the
+    /// DEFAULT active-pane glyph path (S4.final.f; the old
+    /// `LATTICE_PAINT_CELLS` env-gate is now a no-op,
+    /// `paint_cells.rs`). The `ShapedLine::paint` path is the
+    /// fallback (inactive / folded / ligatures-on). Always populated from
     /// `EditorView.glyph_resolver` so the cache survives across
     /// paints + across panes within the same window. Mutex
     /// because the resolve path mutates the cache on miss and
@@ -355,6 +395,25 @@ pub(crate) struct EditorElement {
 
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
 pub(crate) struct EditorElementLayoutState;
+
+/// F.2 (Thread F): a heading row split into a base-size leading marker
+/// prefix (`# `/`## `) + a scaled title, so only the title scales
+/// (emacs `markdown-header-delimiter-face` keeps the markers base-size).
+/// Both paint paths read this for a scaled row: the active cell path
+/// paints the two column ranges at base / scaled advance sharing one
+/// baseline; the fallback (inactive / folded) path paints
+/// `prefix_shaped` + `title_shaped` side by side. `None` for ordinary
+/// rows (the untouched fast path).
+struct HeadingSplit {
+    /// Leading display columns rendered at base size (the markers).
+    prefix_cols: u32,
+    /// The title's scale (`> 1.0`).
+    title_scale: f32,
+    /// Prefix shaped at base size — fallback path.
+    prefix_shaped: ShapedLine,
+    /// Title shaped at `font_size * title_scale` — fallback path.
+    title_shaped: ShapedLine,
+}
 
 /// State produced in `prepaint`, consumed by `paint`.
 pub(crate) struct EditorElementPrepaintState {
@@ -455,6 +514,31 @@ pub(crate) struct EditorElementPrepaintState {
     /// `cell_matrix` so the renderer and the host scroll model
     /// (which counts `segment_count`) agree on segment geometry.
     wrap_width: u32,
+    /// F.2 (Thread F): per-display-row font-size / row-height multiplier
+    /// (`syntax.heading.N` → `scale`; `1.0` for body + virtual rows).
+    /// Length matches `shaped_text`. `paint` cumulative-sums it into
+    /// per-row tops (variable row height) and scales the per-row glyph
+    /// advance + font metrics, so a heading renders bigger AND wider on
+    /// GPUI. The TUI peer has no analogue (a cell grid cannot vary font
+    /// size); it degrades to the resolved bold/weight/underline.
+    row_scale: Vec<f32>,
+    /// F.2 (Thread F): per-row heading split (base marker prefix + scaled
+    /// title). `Some` only for scaled heading rows; `None` for ordinary
+    /// rows (1:1 with `shaped_text`). Drives the title-only scaling in
+    /// both paint paths so the leading `#` markers stay base-size.
+    row_split: Vec<Option<HeadingSplit>>,
+    /// L4a.3 (lsp-architecture.md §15): the inline cursor-line
+    /// diagnostic summary, pre-shaped, as `(viewport_row, shaped)`.
+    /// `Some` only when `self.inline_diag_summary` is set and its line
+    /// is a visible row, as `(row, end_col, shaped)`. `end_col` is the
+    /// source line's TRUE painted column count (source + inlay cells)
+    /// from the cell matrix — the same width the cursor uses at EOL —
+    /// when wrap is off; `None` for wrapped rows (paint falls back to
+    /// the row's shaped width, which is segment-local). `paint` puts
+    /// the summary at `text_origin_x + advance*end_col` (or the shaped
+    /// width). Using the cell column count avoids landing mid-line when
+    /// the cell + combined column models differ (inlay edge cases).
+    inline_diag_overlay: Option<(usize, Option<u32>, ShapedLine)>,
 }
 
 impl IntoElement for EditorElement {
@@ -506,7 +590,10 @@ impl Element for EditorElement {
         let raw_lines: Vec<&str> = self.text.split('\n').collect();
 
         let text_style = window.text_style();
-        let font = text_style.font();
+        let mut font = text_style.font();
+        if !self.theme.ligatures {
+            font.features = FontFeatures::disable_ligatures();
+        }
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height: Pixels = font_size * 1.3;
         // S4.final.b (2026-05-27): typographic ascent of the
@@ -555,6 +642,14 @@ impl Element for EditorElement {
         // `shaped_text`. `paint` reads it with `wrap_width` to paint
         // the right cell sub-slice for each display row.
         let mut row_segment: Vec<u32> = Vec::with_capacity(row_capacity);
+        // F.2 (Thread F): per-display-row font-size / row-height
+        // multiplier, 1:1 with `shaped_text`. `1.0` for body + virtual
+        // rows; `> 1.0` for scaled heading rows. `paint` cumulative-sums
+        // it into per-row tops (variable row height) + scales the per-row
+        // glyph advance / font metrics. The TUI peer has no analogue.
+        let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
+        // F.2: per-row heading split (None for ordinary rows).
+        let mut row_split: Vec<Option<HeadingSplit>> = Vec::with_capacity(row_capacity);
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
@@ -582,15 +677,16 @@ impl Element for EditorElement {
         // `DisplayMatrix` row (style-tagged runs resolved → `TextRun`s
         // via the host theme, replacing the retired
         // `shape_row_from_cells`); folded / out-of-window / stale rows
-        // fall through to the legacy `build_line_with_inlays` walk
-        // over `visible_spans` + LSP inlay hints. (For the active pane
+        // fall through to the `build_line_with_inlays` walk over
+        // default-styled spans + LSP inlay hints. (For the active pane
         // the body glyphs come from `paint_cells_row`; this shape is
         // the fallback for inactive panes / boot frames / folded
-        // rows. The `visible_rows` highlight publishing stays — it
-        // feeds TUI markdown / help / messages bodies elsewhere.)
+        // rows. display-line B4.2: the worker's `visible_spans` /
+        // `visible_rows` prepaint cache the fallback used to read was
+        // deleted — the fallback now renders default-styled text.)
         let build_runs =
             |line: &str,
-             rel: usize,
+             _rel: usize,
              line_idx: u32|
              -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
                 // 2026-06-02: parity with TUI cells-empty fallback. A
@@ -603,14 +699,18 @@ impl Element for EditorElement {
                     .and_then(|m| m.row_at_source_line(line_idx))
                     .filter(|dl| !dl.text.is_empty() || line.is_empty());
                 if let Some(dl) = display_row {
-                    display_line_to_text_runs(dl, &self.host_theme, &font)
+                    display_line_to_text_runs(dl, &self.resolved_theme, &self.theme_ids, &font)
                 } else {
-                    let line_spans: &[StyledSpan] = self
-                        .visible_spans
-                        .spans
-                        .get(rel)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
+                    // B4.1 (2026-06-20): rows the canonical `DisplayMatrix`
+                    // doesn't cover (boot / stale / out-of-window /
+                    // transient post-split) render DEFAULT-styled — empty
+                    // spans, mirroring the TUI's plain-text fallback (DR.3).
+                    // B4.1 severed the GPU peer's last `visible_spans` read;
+                    // B4.2 deleted the cache. Covered rows (the steady
+                    // state) get full syntax colour from `display_matrix`
+                    // above. (`build_line_with_inlays` still splices LSP
+                    // inlays; with empty spans the line text is default-fg.)
+                    let line_spans: &[StyledSpan] = &[];
                     let inlays_on_line: Vec<(usize, &str)> = sorted_inlays
                         .iter()
                         .filter(|h| h.line == line_idx)
@@ -622,6 +722,8 @@ impl Element for EditorElement {
                         &inlays_on_line,
                         &font,
                         self.inlay_color,
+                        &self.resolved_theme,
+                        &self.theme_ids,
                     )
                 }
             };
@@ -705,13 +807,48 @@ impl Element for EditorElement {
             self.worker_static_overlay_quads
                 .as_ref()
                 .map(|q| q.quads.as_ref());
+        // T.6: overlay layer colors resolve from the registered theme
+        // elements (shared with the TUI peer; closes the prior drift).
+        // `DocHighlight` maps to `doc_highlight.read`: the `OverlayLayer`
+        // enum carries no read/write/text distinction, so the worker-
+        // emitted single layer renders as read. TODO(T.6): OverlayLayer
+        // lacks doc-hl kind; renders as read — the worker-side kind
+        // split is out of scope (TUI keeps its 3-way via its own `kind`
+        // param on `document_highlight_style`).
+        let resolved_theme = &self.resolved_theme;
+        let theme_ids = self.theme_ids;
         let color_for_layer = |layer: lattice_host::render_state::OverlayLayer| -> u32 {
-            match layer {
-                lattice_host::render_state::OverlayLayer::DocHighlight => 0x585b70,
-                lattice_host::render_state::OverlayLayer::AllMatches => 0x6c7086,
-                lattice_host::render_state::OverlayLayer::Substitute => 0xf38ba8,
-            }
+            let (id, fallback) = match layer {
+                lattice_host::render_state::OverlayLayer::DocHighlight => {
+                    (theme_ids.doc_highlight_read, 0x585b70)
+                }
+                lattice_host::render_state::OverlayLayer::AllMatches => {
+                    (theme_ids.search_match, 0x6c7086)
+                }
+                lattice_host::render_state::OverlayLayer::Substitute => {
+                    (theme_ids.substitute_preview, 0xf38ba8)
+                }
+            };
+            resolved_theme
+                .get(id)
+                .bg
+                .map(|c| c.to_rgb_u32(fallback))
+                .unwrap_or(fallback)
         };
+        // T.6: cursor-coupled overlay colors resolve from the registered
+        // `search.current` / `selection` elements (shared with the TUI
+        // peer's `match_style` / `visual_style`). Resolved once here, not
+        // per row (paramount #1).
+        let current_match_color: u32 = resolved_theme
+            .get(theme_ids.search_current)
+            .bg
+            .map(|c| c.to_rgb_u32(0xf9e2af))
+            .unwrap_or(0xf9e2af);
+        let selection_color: u32 = resolved_theme
+            .get(theme_ids.selection)
+            .bg
+            .map(|c| c.to_rgb_u32(0x45475a))
+            .unwrap_or(0x45475a);
         let diff_tint_per_row = &self.diff_tint_per_row;
         let overlay_quads_for_row =
             |line_idx: u32,
@@ -804,7 +941,7 @@ impl Element for EditorElement {
                             line_idx,
                             line_text,
                             inlay_offsets,
-                            0xf9e2af,
+                            current_match_color,
                         );
                     }
                     // Blockwise visual: per-line column band
@@ -834,7 +971,7 @@ impl Element for EditorElement {
                                     inlay_offsets,
                                 ) as u32;
                                 if ce > cs {
-                                    quads.push((cs, ce, 0x45475a));
+                                    quads.push((cs, ce, selection_color));
                                 }
                             }
                         }
@@ -845,7 +982,7 @@ impl Element for EditorElement {
                             line_idx,
                             line_text,
                             inlay_offsets,
-                            0x45475a,
+                            selection_color,
                         );
                     }
                     // Push the deferred substitute layer last so it
@@ -954,6 +1091,19 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
+                // F.2: the heading split for this line (base marker
+                // prefix cols + title scale), or `None` for ordinary text.
+                let heading_scale = self
+                    .display_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(line_idx as u32))
+                    .and_then(|dl| {
+                        crate::cells_paint::heading_scale_split(
+                            dl,
+                            &self.resolved_theme,
+                            &self.theme_ids,
+                        )
+                    });
                 push_wrapped_doc_row(
                     line_idx as u32,
                     line,
@@ -968,12 +1118,15 @@ impl Element for EditorElement {
                     self.gutter_width,
                     &font,
                     font_size,
+                    heading_scale,
                     self.viewport_height,
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,
                     &mut row_meta,
                     &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
@@ -1002,6 +1155,31 @@ impl Element for EditorElement {
             // within this budget, so the cap only ever drops rows
             // below the cursor that wouldn't fit anyway. Parity
             // with the TUI peer per [[feedback_tui_gpui_parity]].
+            // Sticky pre-pass: render fixed-top rows before scrollable content.
+            // These are excluded from virtual_rows_at_gpui to avoid double-paint.
+            for vrow in self.virtual_rows.sticky_rows() {
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
+                }
+                push_virtual_row(
+                    vrow,
+                    self.gutter_width,
+                    &font,
+                    font_size,
+                    self.theme.foreground,
+                    vrow.bg.unwrap_or(0),
+                    window,
+                    &mut shaped_text,
+                    &mut shaped_gutter,
+                    &mut row_meta,
+                    &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
+                    &mut inlay_offsets_per_row,
+                    &mut diagnostic_segments_per_row,
+                    &mut overlay_quads_per_row,
+                );
+            }
             'rows: for meta in &self.gutter {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
@@ -1033,6 +1211,8 @@ impl Element for EditorElement {
                         &mut shaped_gutter,
                         &mut row_meta,
                         &mut row_segment,
+                        &mut row_scale,
+                        &mut row_split,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1083,6 +1263,19 @@ impl Element for EditorElement {
                     &gutter_runs,
                     None,
                 );
+                // F.2: the heading split for this line (base marker
+                // prefix cols + title scale), or `None` for ordinary text.
+                let heading_scale = self
+                    .display_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(meta.line_idx))
+                    .and_then(|dl| {
+                        crate::cells_paint::heading_scale_split(
+                            dl,
+                            &self.resolved_theme,
+                            &self.theme_ids,
+                        )
+                    });
                 let capped = push_wrapped_doc_row(
                     meta.line_idx,
                     line,
@@ -1097,12 +1290,15 @@ impl Element for EditorElement {
                     self.gutter_width,
                     &font,
                     font_size,
+                    heading_scale,
                     self.viewport_height,
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,
                     &mut row_meta,
                     &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
@@ -1133,6 +1329,8 @@ impl Element for EditorElement {
                         &mut shaped_gutter,
                         &mut row_meta,
                         &mut row_segment,
+                        &mut row_scale,
+                        &mut row_split,
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
@@ -1236,9 +1434,20 @@ impl Element for EditorElement {
                                     underline: None,
                                     strikethrough: None,
                                 }];
+                                // F.2: a block cursor on a heading row
+                                // shapes its covered char at that column's
+                                // scale — base over the markers, scaled
+                                // over the title — so the re-stamped glyph
+                                // matches the underlying text.
+                                let cur_scale = match row_split.get(cursor_row as usize) {
+                                    Some(Some(split)) if body_col >= split.prefix_cols => {
+                                        split.title_scale
+                                    }
+                                    _ => 1.0,
+                                };
                                 Some(window.text_system().shape_line(
                                     SharedString::from(ch.to_string()),
-                                    font_size,
+                                    font_size * cur_scale,
                                     &runs,
                                     None,
                                 ))
@@ -1251,6 +1460,47 @@ impl Element for EditorElement {
                 }
             }
         };
+
+        // L4a.3: shape the inline cursor-line diagnostic summary (when
+        // armed + its line is a visible row) into its own ShapedLine,
+        // painted at the row's end-of-content x in `paint`. Active pane
+        // only — `self.inline_diag_summary` is `None` on inactive panes.
+        // Italic + severity colour mirror the TUI peer's eol style.
+        let inline_diag_overlay = self.inline_diag_summary.as_ref().and_then(|sum| {
+            // LAST visible row for the source line (the only row when
+            // wrap is off; the final wrap segment otherwise) so the
+            // summary trails the whole line, not the first segment.
+            let row = row_meta.iter().rposition(|(l, _)| *l == sum.line)?;
+            // True painted end column (source + inlay cells) from the
+            // cell matrix — matches the cursor's EOL x. Only reliable
+            // with wrap off (one row per line); wrapped rows use the
+            // shaped width fallback in paint.
+            let end_col = if wrap_width == 0 {
+                self.cell_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(sum.line))
+                    .map(|r| r.col_count())
+            } else {
+                None
+            };
+            let mut italic = font.clone();
+            italic.style = gpui::FontStyle::Italic;
+            let runs = vec![TextRun {
+                len: sum.text.len(),
+                font: italic,
+                color: rgb(sum.color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let shaped = window.text_system().shape_line(
+                SharedString::from(sum.text.clone()),
+                font_size,
+                &runs,
+                None,
+            );
+            Some((row, end_col, shaped))
+        });
 
         EditorElementPrepaintState {
             shaped_text,
@@ -1269,6 +1519,9 @@ impl Element for EditorElement {
             font_size,
             text_ascent,
             wrap_width,
+            row_scale,
+            row_split,
+            inline_diag_overlay,
         }
     }
 
@@ -1288,6 +1541,66 @@ impl Element for EditorElement {
         let advance = prepaint.glyph_advance;
         let text_origin_x = bounds.origin.x + prepaint.gutter_width_px;
 
+        // F.2 (Thread F): per-display-row vertical metrics for variable
+        // row height. A row's height is `line_height * row_scale[i]`
+        // (1.0 for body + virtual rows; > 1.0 for scaled headings) and
+        // `row_top(i)` is its cumulative top y. Built once here, O(rows);
+        // every paint site below reads by index instead of the old
+        // uniform `bounds.origin.y + line_height * i`. With all-1.0
+        // scales this reduces to the prior arithmetic exactly.
+        let row_count = prepaint.shaped_text.len();
+        let mut row_tops: Vec<Pixels> = Vec::with_capacity(row_count);
+        let mut row_heights: Vec<Pixels> = Vec::with_capacity(row_count);
+        {
+            let mut y = bounds.origin.y;
+            for i in 0..row_count {
+                let s = prepaint.row_scale.get(i).copied().unwrap_or(1.0);
+                row_tops.push(y);
+                let h = line_height * s;
+                row_heights.push(h);
+                y += h;
+            }
+        }
+        // Index helpers with a uniform-height fallback for any row index
+        // beyond the built vecs (defensive; the loops below stay in range).
+        let row_top = |i: usize| -> Pixels {
+            row_tops
+                .get(i)
+                .copied()
+                .unwrap_or(bounds.origin.y + line_height * (i as f32))
+        };
+        let row_h = |i: usize| -> Pixels { row_heights.get(i).copied().unwrap_or(line_height) };
+        // F.2: title-only scaling makes the glyph advance NON-uniform
+        // within a heading row — base over the leading markers, scaled
+        // over the title. `col_x` maps a display column to its x pixel;
+        // `col_scale` gives that column's font scale. Ordinary rows (no
+        // split) reduce to the uniform `text_origin_x + advance * col`.
+        let row_split = &prepaint.row_split;
+        let col_scale = |i: usize, col: u32| -> f32 {
+            match row_split.get(i) {
+                Some(Some(split)) if col >= split.prefix_cols => split.title_scale,
+                _ => 1.0,
+            }
+        };
+        let col_x = |i: usize, col: u32| -> Pixels {
+            match row_split.get(i) {
+                Some(Some(split)) if col > split.prefix_cols => {
+                    text_origin_x
+                        + advance * (split.prefix_cols as f32)
+                        + advance * split.title_scale * ((col - split.prefix_cols) as f32)
+                }
+                _ => text_origin_x + advance * (col as f32),
+            }
+        };
+        // F.2: with variable row height the cumulative stack of
+        // `viewport_height` rows can exceed the pane (the host still
+        // estimates capacity at the uniform row height — see the deferred
+        // F.1 follow-on). Clip rows whose top is at/below the pane bottom
+        // so a tall heading never bleeds over the modeline below. With
+        // all-1.0 scales no row is ever clipped (exactly `viewport_height`
+        // uniform rows fit), so this is a no-op for ordinary buffers.
+        let pane_bottom = bounds.origin.y + bounds.size.height;
+
         // Slice X3.full.3: per-row decoration backgrounds. Layered
         // bottom -> top so the strongest signal wins visually:
         //   cursorline (full row) -> doc_highlight -> hlsearch ->
@@ -1300,13 +1613,18 @@ impl Element for EditorElement {
         // symbol relations.
         if self.is_active && !prepaint.row_meta.is_empty() {
             // Cursorline: paint a full-row quad on whichever
-            // visible row hosts the cursor.
-            if let Some((_, cur_row)) = prepaint.cursor_layout {
-                let row_y = bounds.origin.y + line_height * (cur_row as f32);
+            // visible row hosts the cursor — but only when
+            // `:set cursorline` is on (`current-line-highlight`).
+            // Mirrors the TUI gate so `:set nocursorline` works in
+            // both renderers; default-off means no quad until opt-in.
+            if self.cursorline_enabled
+                && let Some((_, cur_row)) = prepaint.cursor_layout
+            {
+                let row_y = row_top(cur_row as usize);
                 let pane_width = bounds.size.width;
                 let row_bounds = Bounds::new(
                     point(bounds.origin.x, row_y),
-                    gpui::size(pane_width, line_height),
+                    gpui::size(pane_width, row_h(cur_row as usize)),
                 );
                 window.paint_quad(fill(row_bounds, rgb(self.cursorline_bg)));
             }
@@ -1322,21 +1640,30 @@ impl Element for EditorElement {
             if quads.is_empty() {
                 continue;
             }
-            let row_y = bounds.origin.y + line_height * (row_idx as f32);
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
             for (col_start, col_end, color) in quads {
-                let quad_x = text_origin_x + advance * (*col_start as f32);
-                let quad_w = advance * ((*col_end - *col_start) as f32);
+                let quad_x = col_x(row_idx, *col_start);
+                let quad_w = col_x(row_idx, *col_end) - quad_x;
                 let quad_bounds =
-                    Bounds::new(point(quad_x, row_y), size(quad_w, line_height));
+                    Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
         }
 
         // Gutter.
         for (i, shaped_g) in prepaint.shaped_gutter.iter().enumerate() {
-            let line_y = bounds.origin.y + line_height * (i as f32);
+            // F.2: the gutter (line number) stays at the base font size,
+            // vertically centered within the (possibly taller) row by
+            // passing the row's height as the line box.
+            let line_y = row_top(i);
+            if line_y >= pane_bottom {
+                break;
+            }
             let origin = point(bounds.origin.x, line_y);
-            if let Err(err) = shaped_g.paint(origin, line_height, window, cx) {
+            if let Err(err) = shaped_g.paint(origin, row_h(i), window, cx) {
                 tracing::warn!(
                     target: "lattice_gpui::editor_element",
                     row = i,
@@ -1347,20 +1674,23 @@ impl Element for EditorElement {
             }
         }
 
-        // Text body. S4.final.f: `paint_cells_row` is now the
-        // default for active-pane document bodies — the env-var
-        // toggle retired this slice. When the active pane has a
-        // cell matrix AND the row's source line is covered,
-        // paint via `paint_cells_row` (per-cell `paint_glyph` +
-        // bg quads) and skip `ShapedLine::paint` for that row.
-        // Folded rows / boot frames / buffer-switch gaps /
-        // inactive panes (`cell_matrix == None`) fall through
-        // to `ShapedLine::paint` — the legacy path stays for
-        // those transient and inactive-pane cases until a
-        // future slice migrates inactive panes to cells as well.
+        // Text body. S4.final.f: `paint_cells_row` is the default
+        // for active-pane document bodies when `ui.ligatures=false`.
+        // When `ui.ligatures=true` (LG.1), bg quads still come from
+        // the cell matrix (for syntax-token backgrounds) but glyphs
+        // are emitted by `ShapedLine::paint` — which shapes the full
+        // multi-char TextRun so OpenType ligature sequences form.
+        // Folded rows / boot frames / buffer-switch gaps / inactive
+        // panes (`cell_matrix == None`) fall through to
+        // `ShapedLine::paint` — same behaviour regardless of the
+        // ligatures flag.
+        let ligatures = self.theme.ligatures;
         let use_paint_cells = self.cell_matrix.is_some();
         for (i, shaped_line) in prepaint.shaped_text.iter().enumerate() {
-            let line_y = bounds.origin.y + line_height * (i as f32);
+            let line_y = row_top(i);
+            if line_y >= pane_bottom {
+                break;
+            }
             let origin = point(text_origin_x, line_y);
             let painted_via_cells = if use_paint_cells {
                 let row_meta_entry = prepaint.row_meta.get(i);
@@ -1410,19 +1740,97 @@ impl Element for EditorElement {
                                 {
                                     false
                                 } else {
-                                    crate::paint_cells::paint_cells_row(
-                                        seg_cells,
-                                        origin,
-                                        prepaint.glyph_advance,
-                                        line_height,
-                                        prepaint.text_ascent,
-                                        &prepaint.font,
-                                        prepaint.font_size,
-                                        self.theme.foreground,
-                                        &self.glyph_resolver,
-                                        window,
-                                    );
-                                    true
+                                    // F.2 (Thread F): a heading row paints
+                                    // in two pieces sharing ONE baseline —
+                                    // the markers at base size, the title at
+                                    // `title_scale` — so only the title
+                                    // scales (emacs markdown convention).
+                                    // Ordinary rows paint once at base
+                                    // (byte-identical to pre-F.2). LG.1
+                                    // ligatures-on emits bg-only here +
+                                    // glyphs via the ShapedLine fallback.
+                                    match row_split.get(i) {
+                                        Some(Some(sp)) => {
+                                            // Shared baseline = the title's
+                                            // (taller) ascent, so the base
+                                            // markers sit on the title's
+                                            // baseline.
+                                            let shared_ascent =
+                                                prepaint.text_ascent * sp.title_scale;
+                                            let pn = (sp.prefix_cols as usize)
+                                                .min(seg_cells.len());
+                                            let (pre, title) = seg_cells.split_at(pn);
+                                            let title_origin = point(
+                                                origin.x + advance * (pn as f32),
+                                                line_y,
+                                            );
+                                            if ligatures {
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    pre, origin, advance, row_h(i), window,
+                                                );
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    title,
+                                                    title_origin,
+                                                    advance * sp.title_scale,
+                                                    row_h(i),
+                                                    window,
+                                                );
+                                                false
+                                            } else {
+                                                crate::paint_cells::paint_cells_row(
+                                                    pre,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    shared_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                crate::paint_cells::paint_cells_row(
+                                                    title,
+                                                    title_origin,
+                                                    advance * sp.title_scale,
+                                                    row_h(i),
+                                                    shared_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size * sp.title_scale,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                true
+                                            }
+                                        }
+                                        _ => {
+                                            if ligatures {
+                                                crate::paint_cells::paint_cells_row_bg_only(
+                                                    seg_cells,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    window,
+                                                );
+                                                false
+                                            } else {
+                                                crate::paint_cells::paint_cells_row(
+                                                    seg_cells,
+                                                    origin,
+                                                    advance,
+                                                    row_h(i),
+                                                    prepaint.text_ascent,
+                                                    &prepaint.font,
+                                                    prepaint.font_size,
+                                                    self.theme.foreground,
+                                                    &self.glyph_resolver,
+                                                    window,
+                                                );
+                                                true
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => false,
@@ -1434,14 +1842,44 @@ impl Element for EditorElement {
                 false
             };
             if !painted_via_cells {
-                if let Err(err) = shaped_line.paint(origin, line_height, window, cx) {
-                    tracing::warn!(
-                        target: "lattice_gpui::editor_element",
-                        line_index = self.scroll as usize + i,
-                        pane = self.pane_idx,
-                        error = ?err,
-                        "text ShapedLine::paint failed"
-                    );
+                // F.2: fallback (inactive / folded / ligatures-glyph) path.
+                // A heading row paints its pre-shaped marker prefix (base)
+                // + title (scaled) side by side, sharing one baseline so
+                // the markers stay base-size — kept consistent with the
+                // active cell path above so a focus change never resizes
+                // anything ([[feedback_decorations_update_in_place]]).
+                match row_split.get(i) {
+                    Some(Some(sp)) => {
+                        // Align baselines: gpui paints a line's baseline at
+                        // `origin.y + (line_height + ascent - descent)/2`
+                        // (text_system/line.rs). Shift the base prefix down
+                        // so its baseline matches the taller title's.
+                        let h = row_h(i);
+                        let prefix_y = line_y
+                            + ((sp.title_shaped.ascent - sp.title_shaped.descent)
+                                - (sp.prefix_shaped.ascent - sp.prefix_shaped.descent))
+                                * 0.5;
+                        let title_x =
+                            text_origin_x + advance * (sp.prefix_cols as f32);
+                        let _ = sp.prefix_shaped.paint(
+                            point(text_origin_x, prefix_y),
+                            h,
+                            window,
+                            cx,
+                        );
+                        let _ = sp.title_shaped.paint(point(title_x, line_y), h, window, cx);
+                    }
+                    _ => {
+                        if let Err(err) = shaped_line.paint(origin, row_h(i), window, cx) {
+                            tracing::warn!(
+                                target: "lattice_gpui::editor_element",
+                                line_index = self.scroll as usize + i,
+                                pane = self.pane_idx,
+                                error = ?err,
+                                "text ShapedLine::paint failed"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1455,33 +1893,75 @@ impl Element for EditorElement {
             if segs.is_empty() {
                 continue;
             }
-            let row_y = bounds.origin.y + line_height * (row_idx as f32);
-            let underline_y = row_y + line_height - px(2.0);
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
+            let underline_y = row_y + row_h(row_idx) - px(2.0);
             for (col_start, col_end, color) in segs {
                 if col_end <= col_start {
                     continue;
                 }
-                let quad_x = text_origin_x + advance * (*col_start as f32);
-                let quad_w = advance * ((*col_end - *col_start) as f32);
+                let quad_x = col_x(row_idx, *col_start);
+                let quad_w = col_x(row_idx, *col_end) - quad_x;
                 let quad_bounds =
                     Bounds::new(point(quad_x, underline_y), size(quad_w, px(2.0)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
         }
 
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. Painted at the row's end-of-content x (after inlays),
+        // per-frame — no cells-cache involvement (the summary is
+        // cursor-transient interaction state, like the cursor / underline
+        // overlays). Mirrors the TUI peer's `splice_virtual_text_into_spans`
+        // eol splice ([[feedback_tui_gpui_parity]]).
+        if let Some((row, end_col, shaped)) = &prepaint.inline_diag_overlay {
+            let line_y = row_top(*row);
+            if line_y < pane_bottom {
+                // Prefer the cell matrix's painted column count
+                // (source + inlay cells) × advance — the true end of
+                // the line, matching the cursor's EOL x. Fall back to
+                // the row's shaped width for wrapped (segment-local)
+                // rows where the column count isn't a flat line width.
+                let eol_x = match end_col {
+                    Some(c) => text_origin_x + advance * (*c as f32),
+                    None => text_origin_x + prepaint.shaped_text[*row].width,
+                };
+                if let Err(err) = shaped.paint(point(eol_x, line_y), row_h(*row), window, cx) {
+                    tracing::warn!(
+                        target: "lattice_gpui::editor_element",
+                        row = *row,
+                        pane = self.pane_idx,
+                        error = ?err,
+                        "inline diagnostic summary ShapedLine::paint failed"
+                    );
+                }
+            }
+        }
+
         // Cursor (painted on top for bar/underline; block re-stamps
         // the covered char in cursor_foreground via shaped_cursor_char).
         if let (Some(cursor), Some((char_col, row))) = (&self.cursor, prepaint.cursor_layout) {
-            let cursor_x = text_origin_x + prepaint.glyph_advance * (char_col as f32);
-            let cursor_y = bounds.origin.y + line_height * (row as f32);
+            // F.2: a cursor on a heading row uses that column's scale +
+            // the row height so the block/bar/underline matches the glyph
+            // it covers — base over the markers, scaled over the title.
+            let advance = prepaint.glyph_advance * col_scale(row as usize, char_col);
+            let row_height = row_h(row as usize);
+            let cursor_x = col_x(row as usize, char_col);
+            let cursor_y = row_top(row as usize);
+            // F.2: cursor clipped past the pane bottom (variable-height
+            // overflow) — nothing more to paint (this is the last block).
+            if cursor_y >= pane_bottom {
+                return;
+            }
             let origin = point(cursor_x, cursor_y);
-            let advance = prepaint.glyph_advance;
             match cursor.shape {
                 CursorShape::Block => {
-                    let cell = Bounds::new(origin, size(advance, line_height));
+                    let cell = Bounds::new(origin, size(advance, row_height));
                     window.paint_quad(fill(cell, rgb(self.theme.cursor_background)));
                     if let Some(shaped) = &prepaint.shaped_cursor_char {
-                        if let Err(err) = shaped.paint(origin, line_height, window, cx) {
+                        if let Err(err) = shaped.paint(origin, row_height, window, cx) {
                             tracing::warn!(
                                 target: "lattice_gpui::editor_element",
                                 pane = self.pane_idx,
@@ -1492,11 +1972,11 @@ impl Element for EditorElement {
                     }
                 }
                 CursorShape::Bar => {
-                    let bar = Bounds::new(origin, size(px(2.0), line_height));
+                    let bar = Bounds::new(origin, size(px(2.0), row_height));
                     window.paint_quad(fill(bar, rgb(self.theme.cursor_background)));
                 }
                 CursorShape::Underline => {
-                    let underline_origin = point(origin.x, origin.y + line_height - px(2.0));
+                    let underline_origin = point(origin.x, origin.y + row_height - px(2.0));
                     let underline = Bounds::new(underline_origin, size(advance, px(2.0)));
                     window.paint_quad(fill(underline, rgb(self.theme.cursor_background)));
                 }
@@ -1621,6 +2101,8 @@ pub fn build_line_with_inlays(
     inlays: &[(usize, &str)],
     font: &gpui::Font,
     inlay_color: u32,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
     let inlay_byte_total: usize = inlays.iter().map(|(_, t)| t.len()).sum();
     let mut b = LineRunBuilder::new(font, line.len() + inlay_byte_total);
@@ -1634,7 +2116,7 @@ pub fn build_line_with_inlays(
             b.emit(text, inlay_color);
             inlay_idx += 1;
         }
-        let color = syntax_color(style_at(spans, orig_byte));
+        let color = syntax_color(style_at(spans, orig_byte), resolved, ids);
         let mut buf = [0u8; 4];
         b.emit(ch.encode_utf8(&mut buf), color);
     }
@@ -1871,18 +2353,29 @@ fn push_wrapped_doc_row(
     gutter_width: usize,
     font: &gpui::Font,
     font_size: Pixels,
+    heading_scale: Option<(u32, f32)>,
     viewport_height: u32,
     window: &mut Window,
     shaped_text: &mut Vec<ShapedLine>,
     shaped_gutter: &mut Vec<ShapedLine>,
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
+    row_scale: &mut Vec<f32>,
+    row_split: &mut Vec<Option<HeadingSplit>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
 ) -> bool {
     let total_chars = combined.chars().count();
     let single = seg_count <= 1 || wrap_width == 0;
+    // F.2 (Thread F): only a SINGLE-segment row is eligible for the
+    // heading split (markers base-size + title scaled). A wrapped heading
+    // (rare — wrapping is usually off) renders at base size; the split is
+    // skipped. `shaped_text` is ALWAYS shaped at BASE size — the scaled
+    // rendering for a heading row comes from the `HeadingSplit` built
+    // below, read by both paint paths. Ordinary rows: byte-identical to
+    // pre-F.2.
+    let heading = if single { heading_scale } else { None };
     let has_gutter = gutter_seg0.is_some();
     let mut gutter_seg0 = gutter_seg0;
     for seg in 0..seg_count.max(1) {
@@ -1923,6 +2416,42 @@ fn push_wrapped_doc_row(
         }
         row_meta.push((line_idx, line_text.to_string()));
         row_segment.push(seg);
+        // F.2: build the heading split for an eligible (single-segment)
+        // scaled row — the markers shaped at base, the title at
+        // `font_size * title_scale`, both for the fallback paint path. The
+        // row's height multiplier (`row_scale`) is `title_scale`. Ordinary
+        // rows push `None` + `1.0` (fast path).
+        match heading {
+            Some((prefix_cols, title_scale)) => {
+                let (pre_text, pre_runs) =
+                    slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                let (title_text, title_runs) =
+                    slice_runs_to_char_range(combined, runs, prefix_cols as usize, total_chars);
+                let prefix_shaped = window.text_system().shape_line(
+                    SharedString::from(pre_text),
+                    font_size,
+                    &pre_runs,
+                    None,
+                );
+                let title_shaped = window.text_system().shape_line(
+                    SharedString::from(title_text),
+                    font_size * title_scale,
+                    &title_runs,
+                    None,
+                );
+                row_scale.push(title_scale);
+                row_split.push(Some(HeadingSplit {
+                    prefix_cols,
+                    title_scale,
+                    prefix_shaped,
+                    title_shaped,
+                }));
+            }
+            None => {
+                row_scale.push(1.0);
+                row_split.push(None);
+            }
+        }
         // The full inlay offsets live on segment 0 (the cursor
         // base-row lookup reads them there); continuations don't need
         // them (their overlay/diag quads are already pre-bucketed).
@@ -1960,6 +2489,9 @@ fn virtual_rows_at_gpui<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
+        // Sticky rows are rendered at the pane top in the pre-pass;
+        // skip them here so they don't double-paint in the content loop.
+        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
 }
 
 /// D.3.b.1.gpui (2026-05-29): shape a virtual row's content
@@ -1983,6 +2515,8 @@ fn push_virtual_row(
     shaped_gutter: &mut Vec<ShapedLine>,
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
+    row_scale: &mut Vec<f32>,
+    row_split: &mut Vec<Option<HeadingSplit>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -2084,7 +2618,23 @@ fn push_virtual_row(
         lattice_cells::VirtualRowKind::DeletionBlock
         | lattice_cells::VirtualRowKind::Generic => {
             let backdrop_width = content_cols.max(1);
-            vec![(0u32, backdrop_width, backdrop_color)]
+            // T.7 (2026-06-18): honor `vrow.bg` first, matching the TUI
+            // peer (render.rs `vrow.bg.map(...).or_else(kind default)`).
+            // A multibuffer excerpt header is a Generic row carrying a
+            // baked `bg`; without this it would paint the deletion-block
+            // red. `bg: None` Generic rows still fall back to the
+            // deletion-block backdrop (D.6.i back-compat).
+            let quad_color = vrow.bg.unwrap_or(backdrop_color);
+            vec![(0u32, backdrop_width, quad_color)]
+        }
+        lattice_cells::VirtualRowKind::Sticky => {
+            // backdrop_color is set to vrow.bg by the sticky pre-pass caller.
+            if backdrop_color != 0 {
+                let backdrop_width = content_cols.max(1);
+                vec![(0u32, backdrop_width, backdrop_color)]
+            } else {
+                Vec::new()
+            }
         }
         lattice_cells::VirtualRowKind::Filler => Vec::new(),
     };
@@ -2093,6 +2643,9 @@ fn push_virtual_row(
     row_meta.push((u32::MAX, String::new()));
     // W.5: virtual rows are a single display row each (segment 0).
     row_segment.push(0);
+    // F.2: virtual rows render at the base font size (no scaling / split).
+    row_scale.push(1.0);
+    row_split.push(None);
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);
@@ -2203,6 +2756,21 @@ fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec
 mod tests {
     use super::*;
 
+    /// T.5.b: the resolved table + builtin ids the
+    /// `build_line_with_inlays` / `syntax_color` tests resolve syntax
+    /// colours through — the default registry, same construction the
+    /// renderer uses at boot.
+    fn theme_defaults() -> (
+        std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+        lattice_host::ui::theme::BuiltinElementIds,
+    ) {
+        use lattice_host::ui::theme::ThemeRegistry as _;
+        let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+        (resolved, ids)
+    }
+
     // ----- W.5 soft-wrap segment helpers -----
 
     #[test]
@@ -2277,14 +2845,23 @@ mod tests {
 
     #[test]
     fn text_runs_no_spans_one_default_run() {
+        let (resolved, ids) = theme_defaults();
         let line = "let x = 1;";
-        let (combined, runs, offsets) =
-            build_line_with_inlays(line, &[], &[], &gpui::font("monospace"), 0x7f849c);
+        let (combined, runs, offsets) = build_line_with_inlays(
+            line,
+            &[],
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert!(offsets.is_empty());
         assert_eq!(combined, line);
         assert_eq!(runs.len(), 1, "no-span line collapses to a single run");
         assert_eq!(runs[0].len, line.len());
-        let expected: gpui::Hsla = rgb(syntax_color(SyntaxStyle::Default)).into();
+        let expected: gpui::Hsla =
+            rgb(syntax_color(SyntaxStyle::Default, &resolved, &ids)).into();
         assert_eq!(runs[0].color, expected);
     }
 
@@ -2308,8 +2885,16 @@ mod tests {
                 style: SyntaxStyle::Keyword,
             },
         ];
-        let (_, runs, _) =
-            build_line_with_inlays(line, &spans, &[], &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (_, runs, _) = build_line_with_inlays(
+            line,
+            &spans,
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert_eq!(runs.len(), 3);
         assert_eq!(runs[0].len, 2);
         assert_eq!(runs[1].len, 1);
@@ -2320,8 +2905,16 @@ mod tests {
 
     #[test]
     fn text_runs_empty_line_no_runs() {
-        let (combined, runs, offsets) =
-            build_line_with_inlays("", &[], &[], &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (combined, runs, offsets) = build_line_with_inlays(
+            "",
+            &[],
+            &[],
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert!(combined.is_empty());
         assert!(runs.is_empty());
         assert!(offsets.is_empty());
@@ -2417,8 +3010,9 @@ mod tests {
             style: SyntaxStyle::Keyword,
         }];
         let font = gpui::font("monospace");
+        let (resolved, ids) = theme_defaults();
         let (combined, runs, offsets) =
-            build_line_with_inlays(line, &spans, &[], &font, 0x7f849c);
+            build_line_with_inlays(line, &spans, &[], &font, 0x7f849c, &resolved, &ids);
         assert_eq!(combined, line, "no inlays => combined == line");
         assert!(offsets.is_empty(), "no inlays => no offsets");
         let total_len: usize = runs.iter().map(|r| r.len).sum();
@@ -2431,8 +3025,9 @@ mod tests {
         let spans: Vec<StyledSpan> = Vec::new();
         let inlays: Vec<(usize, &str)> = vec![(5, ": i32")];
         let font = gpui::font("monospace");
+        let (resolved, ids) = theme_defaults();
         let (combined, runs, offsets) =
-            build_line_with_inlays(line, &spans, &inlays, &font, 0x7f849c);
+            build_line_with_inlays(line, &spans, &inlays, &font, 0x7f849c, &resolved, &ids);
         assert_eq!(
             combined, "let x: i32 = 1;",
             "inlay text spliced before byte 5 of orig line"
@@ -2451,8 +3046,16 @@ mod tests {
     fn build_line_with_inlays_trailing_inlay_appended_at_eol() {
         let line = "fn foo()";
         let inlays: Vec<(usize, &str)> = vec![(line.len(), " -> i32")];
-        let (combined, _, offsets) =
-            build_line_with_inlays(line, &[], &inlays, &gpui::font("monospace"), 0x7f849c);
+        let (resolved, ids) = theme_defaults();
+        let (combined, _, offsets) = build_line_with_inlays(
+            line,
+            &[],
+            &inlays,
+            &gpui::font("monospace"),
+            0x7f849c,
+            &resolved,
+            &ids,
+        );
         assert_eq!(combined, "fn foo() -> i32");
         assert_eq!(offsets, vec![(line.len() as u32, 7)]);
     }

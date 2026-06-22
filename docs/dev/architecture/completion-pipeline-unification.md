@@ -809,7 +809,7 @@ which surface will actually pick them up.
 ## Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/completion-pipeline-unification.md`](../operations/slice-plans/completion-pipeline-unification.md);
+[`docs/dev/operations/slice-plans/archive/completion-pipeline-unification.md`](../operations/slice-plans/archive/completion-pipeline-unification.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

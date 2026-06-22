@@ -237,6 +237,41 @@ impl OptionGroup for Search {
         "Project-search options: `:search` clustering, context lines, scan limits.";
 }
 
+/// Snippet-engine options. SN.3b (2026-06-14): `snippet.activation`
+/// + `snippet.languages` are declared by `SnippetMode` in
+/// `lattice-snippet`; this group is the customize/listing umbrella
+/// (`:customize snippet`). Same shape as `Search` above — group
+/// here, options in the owning mode's crate.
+pub struct Snippet;
+impl OptionGroup for Snippet {
+    const NAME: &'static str = "snippet";
+    const DOC: &'static str =
+        "Snippet engine: activation policy + supported-language allowlist.";
+}
+
+/// Modeline (bottom per-pane status row) layout options. ML.5
+/// (2026-06-21): `ui.modeline.{left,center,right}` zone assignment +
+/// `ui.modeline.separator`. The `:customize modeline` umbrella for the
+/// configurable element-system modeline
+/// (`docs/dev/architecture/modeline.md` §11).
+pub struct Modeline;
+impl OptionGroup for Modeline {
+    const NAME: &'static str = "modeline";
+    const DOC: &'static str =
+        "Modeline (bottom per-pane status row): per-zone element layout + separator.";
+}
+
+/// Diagnostics presentation options. L4 (2026-06-21):
+/// `ui.diagnostics.inline` + `ui.diagnostics.inline-min-severity` drive
+/// the inline end-of-line diagnostic summary (`lsp-architecture.md`
+/// §15). The `:customize diagnostics` umbrella.
+pub struct Diagnostics;
+impl OptionGroup for Diagnostics {
+    const NAME: &'static str = "diagnostics";
+    const DOC: &'static str =
+        "Diagnostics presentation: inline end-of-line summary scope + min-severity.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -290,6 +325,16 @@ static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
 #[linkme::distributed_slice(GROUP_DECLS)]
 static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Search>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static SNIPPET_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Snippet>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static MODELINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Modeline>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =
+    &OptionGroupMetadata::for_group::<Diagnostics>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -309,6 +354,9 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Appearance::NAME));
     assert!(!ends_with_mode_suffix(Terminal::NAME));
     assert!(!ends_with_mode_suffix(Search::NAME));
+    assert!(!ends_with_mode_suffix(Snippet::NAME));
+    assert!(!ends_with_mode_suffix(Modeline::NAME));
+    assert!(!ends_with_mode_suffix(Diagnostics::NAME));
 };
 
 #[cfg(test)]

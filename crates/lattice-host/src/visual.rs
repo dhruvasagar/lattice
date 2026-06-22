@@ -33,6 +33,29 @@ pub struct BlockExtents {
     pub end_col: u32,
 }
 
+/// Byte range a selection spans, folding the stored `sel.visual`
+/// kind. **Visual and Select share this geometry verbatim** —
+/// select-mode.md §2 — so both modes resolve their span through this
+/// one helper (no drift). Charwise / Blockwise include the HEAD byte
+/// (vim semantics; end = `head.byte + 1`); Linewise covers full lines
+/// with a `u32::MAX` end byte the caller clamps to the line length.
+/// The `(anchor, head)` pair is normalised so `start <= end`.
+pub(crate) fn selection_extent(sel: &lattice_protocol::selection::Selection) -> Range {
+    let (a, b) = if sel.anchor <= sel.head {
+        (sel.anchor, sel.head)
+    } else {
+        (sel.head, sel.anchor)
+    };
+    match sel.visual {
+        Some(VisualMode::Linewise) => {
+            Range::new(Position::new(a.line, 0), Position::new(b.line, u32::MAX))
+        }
+        Some(VisualMode::Charwise) | Some(VisualMode::Blockwise) | None => {
+            Range::new(a, Position::new(b.line, b.byte.saturating_add(1)))
+        }
+    }
+}
+
 impl Editor {
     /// Half-open byte range covered by the active Visual selection,
     /// or `None` outside Visual mode. Spans the primary selection's
@@ -67,30 +90,15 @@ impl Editor {
         if matches!(self.active_buffer, BufferKind::Terminal) {
             return self.terminal_visual_selection_range();
         }
-        if !matches!(self.modal, ModalState::Visual(_)) {
+        // Select mode (SN.3d) reuses Visual's selection geometry
+        // verbatim — same anchor/head, same `selection_extent`. The
+        // only difference is the typing semantics, not the painted
+        // span, so the render publish surface fires for both.
+        if !matches!(self.modal, ModalState::Visual(_) | ModalState::Select(_)) {
             return None;
         }
         let sels = self.document.selections();
-        let sel = sels.primary();
-        let (a, b) = if sel.anchor <= sel.head {
-            (sel.anchor, sel.head)
-        } else {
-            (sel.head, sel.anchor)
-        };
-        match sel.visual {
-            Some(VisualMode::Linewise) => Some(Range::new(
-                Position::new(a.line, 0),
-                Position::new(b.line, u32::MAX),
-            )),
-            Some(VisualMode::Charwise) | None => Some(Range::new(
-                a,
-                Position::new(b.line, b.byte.saturating_add(1)),
-            )),
-            Some(VisualMode::Blockwise) => Some(Range::new(
-                a,
-                Position::new(b.line, b.byte.saturating_add(1)),
-            )),
-        }
+        Some(selection_extent(sels.primary()))
     }
 
     /// Rectangular block of the active Visual selection when
@@ -110,7 +118,10 @@ impl Editor {
         if matches!(self.active_buffer, BufferKind::Terminal) {
             return self.terminal_visual_block_extents();
         }
-        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+        if !matches!(
+            self.modal,
+            ModalState::Visual(VisualKind::Blockwise) | ModalState::Select(VisualKind::Blockwise)
+        ) {
             return None;
         }
         let sels = self.document.selections();

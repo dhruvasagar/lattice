@@ -117,15 +117,67 @@ Snippets are templates with **placeholders** you cycle
 through. The engine implements TextMate / LSP snippet syntax,
 so VS Code's `friendly-snippets` pack drops in unchanged.
 
+### Where snippets come from
+
+A small **built-in** set ships with the editor and is available
+from the first keystroke — no install step. It covers common
+Rust scaffolding (`fn`, `for`, `match`, `impl`, `struct`,
+`test`, …) plus a few language-agnostic ones (`todo`, `fixme`,
+`date`, `uuid`).
+
+To add your own, drop friendly-snippets-style `<language>.json`
+packs into **`~/.config/lattice/snippets/`** (`_global.json` →
+all languages) and run **`:reload-snippets`**. The reload always
+rebuilds from the built-ins first, then layers your packs on top
+— so your additions augment (or override, by reusing a prefix)
+the built-ins rather than replacing them. The echo reports the
+split, e.g. `reloaded 24 snippets (22 built-in + 2 user)`.
+
+### Where snippets activate
+
+Snippets are gated by a minor mode (`snippet-mode`) whose
+activation is controlled by two options:
+
+| Option | Values | Default | Meaning |
+|---|---|---|---|
+| `snippet.activation` | `global` · `supported-languages` · `off` | `global` | Which buffers get snippets. |
+| `snippet.languages` | comma-separated language ids | *(empty)* | Allowlist consulted only when `activation = supported-languages`. |
+
+With the default `global`, every document buffer has snippets
+enabled — but the source still self-filters by language, so a
+Rust buffer only ever sees Rust (+ `_global`) snippets. `global`
+means "each buffer sees *its own* language's snippets", not "all
+snippets everywhere".
+
+To restrict snippets to specific languages, set
+`snippet.activation = supported-languages` and list the
+languages:
+
+```toml
+[snippet]
+activation = "supported-languages"
+languages  = "rust,python"   # note: a string, not a TOML list
+```
+
+Each id `L` maps to the major mode `L-mode`, so only languages
+with a registered major mode match. `snippet.activation = off`
+disables auto-activation entirely.
+
+Both keys are live-settable (`:set snippet.activation=off`,
+`:set snippet.languages=rust,python`); `:set snippet.activation=`
+then `<Tab>` completes the three values. A change takes effect
+for buffers opened *afterward* — buffers already open keep their
+current snippet state until reopened.
+
 ### Two ways to expand
 
 - **Through the popup.** `gen:snippet` contributes candidates
   to the unified popup. Select one and `<C-y>` / `<Tab>` /
   `<CR>` expands the body and starts placeholder navigation.
-- **Direct chord.** `<C-x><C-s>` (or `:snippet-expand`) looks
-  up the word at the cursor in the per-language registry and
-  expands the first match without surfacing the popup. Quiet
-  no-op when no snippet matches.
+- **Direct chord.** `<C-x><C-s>` looks up the word at the
+  cursor in the per-language registry and expands the first
+  match without surfacing the popup. Quiet no-op when no
+  snippet matches.
 
 LSP-supplied items whose `insertTextFormat` is `Snippet` route
 through the same engine — the server's templated `insertText`
@@ -143,11 +195,16 @@ overrides three Insert-mode keys until the snippet exits:
 | `<S-Tab>` | Jump to previous placeholder | `:snippet-prev` |
 | `<Esc>` | Exit snippet (placeholders become plain text) and return to Normal | `:snippet-leave` |
 
-Other keys fall through to the regular Insert handlers, so you
-can keep typing inside a placeholder to overtype the default.
-The minor mode yields to the completion popup when both are
-open: `<Tab>` accepts a candidate first, then snippet
-navigation resumes.
+When you land on a placeholder that has a **default**
+(`${1:value}`), its text is **selected** (the buffer enters
+[Select mode](help:modal-editing)) — so the first character you
+type **replaces the whole default** and drops you into Insert,
+the conventional "type to replace the placeholder" behaviour. To
+keep the default instead, just start editing it: any motion or
+`<Tab>` leaves it untouched. An **empty** tabstop (`$1`) places a
+bare Insert cursor — there is nothing to overtype. The minor mode
+yields to the completion popup when both are open: `<Tab>`
+accepts a candidate first, then snippet navigation resumes.
 
 ### Snippet syntax (TextMate / LSP)
 
@@ -204,8 +261,10 @@ strings (joined with `\n`). Top-level keys are snippet names.
 
 | Command | What it does |
 |---|---|
-| `:snippet-expand` | Direct expansion at the cursor — alias of `<C-x><C-s>`. |
 | `:reload-snippets` | Re-read every configured snippet directory and rebuild the registry. |
+
+Direct expansion has no ex-command form — use the `<C-x><C-s>`
+chord (contributed by `snippet-mode`).
 
 ## Tree-sitter symbols (Phase 4.2.g.6)
 

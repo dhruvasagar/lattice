@@ -51,6 +51,11 @@ pub struct KeymapBinding {
     /// directly. Plugin and runtime `:bind` callers can attach
     /// docs via [`Self::with_doc`].
     pub doc: Option<&'static str>,
+    /// SN.3c.2b: `:map`-style augment-and-continue, carried from the
+    /// owning [`KeymapEntry::fall_through`] through to the
+    /// [`crate::BoundCommand`] the registry stores. `false` by default;
+    /// see [`crate::BoundCommand::fall_through`] for the semantics.
+    pub fall_through: bool,
 }
 
 impl KeymapBinding {
@@ -72,6 +77,7 @@ impl KeymapBinding {
             command,
             source,
             doc: None,
+            fall_through: false,
         }
     }
 
@@ -80,6 +86,14 @@ impl KeymapBinding {
     /// sites can chain `KeymapBinding::new(...).with_doc("...")`.
     pub fn with_doc(mut self, doc: &'static str) -> Self {
         self.doc = Some(doc);
+        self
+    }
+
+    /// SN.3c.2b: set the augment-and-continue flag (see
+    /// [`crate::BoundCommand::fall_through`]). Builder shape so the
+    /// table-form translation can chain it off the entry.
+    pub fn with_fall_through(mut self, fall_through: bool) -> Self {
+        self.fall_through = fall_through;
         self
     }
 }
@@ -239,6 +253,42 @@ impl Keymap {
         let source = SourceLocation::builtin_file(loc.file(), loc.line());
         self.bind(KeymapBinding::new(mode, chords, command, source))
     }
+
+    /// Bind one chord across SEVERAL modes — the declarative multi-mode
+    /// peer of [`Self::bind_chord`]. Pushes one [`KeymapBinding`] per
+    /// mode (the registry trie is per-mode), so `:describe-key` sees the
+    /// chord in each named mode. `modes` must be non-empty.
+    ///
+    /// The imperative peer is [`crate::KeymapHandle::bind_modes`]; the
+    /// `keymap_entry!` `mode: [..]` catalog form is the static-table peer.
+    /// Same parse-or-panic discipline + caller-location capture as
+    /// [`Self::bind_chord`].
+    #[track_caller]
+    pub fn bind_chord_modes(
+        mut self,
+        modes: &[BindingMode],
+        chord: &str,
+        command: CommandInvocation,
+    ) -> Self {
+        let chords: Vec<ChordPattern> = lattice_protocol::parse_chord_sequence(chord)
+            .unwrap_or_else(|e| {
+                panic!("bind_chord_modes: chord {chord:?} failed to parse: {e}")
+            })
+            .into_iter()
+            .map(ChordPattern::Literal)
+            .collect();
+        let loc = std::panic::Location::caller();
+        let source = SourceLocation::builtin_file(loc.file(), loc.line());
+        for &mode in modes {
+            self.bindings.push(KeymapBinding::new(
+                mode,
+                chords.clone(),
+                command.clone(),
+                source.clone(),
+            ));
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -278,6 +328,21 @@ mod tests {
         );
         let km = Keymap::new().bind(a.clone()).bind(b.clone());
         assert_eq!(km.bindings, vec![a, b]);
+    }
+
+    #[test]
+    fn bind_chord_modes_pushes_one_binding_per_mode() {
+        let km = Keymap::new().bind_chord_modes(
+            &[BindingMode::Normal, BindingMode::Visual],
+            "zn",
+            synthetic_invocation(),
+        );
+        assert_eq!(km.bindings.len(), 2, "one binding per named mode");
+        assert_eq!(km.bindings[0].mode, BindingMode::Normal);
+        assert_eq!(km.bindings[1].mode, BindingMode::Visual);
+        // Same parsed chord sequence + command in both.
+        assert_eq!(km.bindings[0].chords, km.bindings[1].chords);
+        assert_eq!(km.bindings[0].command, km.bindings[1].command);
     }
 
     #[test]

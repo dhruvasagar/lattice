@@ -1,0 +1,22 @@
+{
+	"todo comment": {
+		"prefix": "todo",
+		"body": ["TODO(${1:author}): ${0:description}"],
+		"description": "TODO marker comment"
+	},
+	"fixme comment": {
+		"prefix": "fixme",
+		"body": ["FIXME: ${0:description}"],
+		"description": "FIXME marker comment"
+	},
+	"current date": {
+		"prefix": "date",
+		"body": ["${CURRENT_YEAR}-${CURRENT_MONTH}-${CURRENT_DATE}"],
+		"description": "Insert the current ISO date"
+	},
+	"uuid": {
+		"prefix": "uuid",
+		"body": ["${UUID}"],
+		"description": "Insert a random UUID"
+	}
+}

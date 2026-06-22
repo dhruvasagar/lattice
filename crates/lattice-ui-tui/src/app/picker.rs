@@ -43,8 +43,11 @@ impl App {
     /// variant requires editing exactly this match.
     pub(super) fn apply_picker_outcome(&mut self, outcome: lattice_picker::PickerAcceptOutcome) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals = self.mutate_editor_with(move |e| e.apply_picker_outcome(outcome));
-        for s in signals {
+        let out = self.mutate_editor_with(move |e| e.apply_picker_outcome(outcome));
+        for effect in out.effects {
+            self.apply_effect_app_arms(effect);
+        }
+        for s in out.renderer_signals {
             self.handle_renderer_signal(s);
         }
     }
@@ -241,8 +244,14 @@ impl App {
     /// Apply `Action::PickerAccept`. Phase 5.8.AF: body migrated.
     pub(super) fn do_picker_accept(&mut self) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals = self.mutate_editor_with(|e| e.do_picker_accept());
-        for s in signals {
+        // `do_picker_accept` now returns a full `DispatchOutcome`;
+        // drain effects first (renderer-coupled App arms), then
+        // renderer signals — same order as the main dispatch loop.
+        let outcome = self.mutate_editor_with(|e| e.do_picker_accept());
+        for effect in outcome.effects {
+            self.apply_effect_app_arms(effect);
+        }
+        for s in outcome.renderer_signals {
             self.handle_renderer_signal(s);
         }
     }
@@ -580,6 +589,29 @@ mod tests {
         );
     }
 
+    /// The preview centres the selected line (vim `zz`) so its context
+    /// is visible above AND below, instead of landing at the viewport
+    /// bottom. Drives the same `JumpInBuffer` preview path `gr` /
+    /// references / grep previews use.
+    #[test]
+    fn lines_picker_preview_centers_the_selected_line() {
+        let text: String = (0..20).map(|i| format!("line{i}\n")).collect();
+        let mut app = app_with(&text, 5);
+        app.open_picker("lines".into(), Vec::new());
+        {
+            let picker = app.editor.picker.as_mut().expect("picker open");
+            picker.selected = 15;
+        }
+        let _ = app.editor.preview_picker_selection();
+        assert_eq!(app.editor.cursor.line, 15);
+        // viewport 5 → centred scroll = 15 - 5/2 = 13 (line 15 sits at
+        // the middle row), not 11 (bottom-anchored).
+        assert_eq!(
+            app.editor.scroll, 13,
+            "preview should centre the selected line, not bottom-anchor it"
+        );
+    }
+
     /// Slice 7d.1: engine-shape sources registered via
     /// `CompletionRegistry::register_source` open through
     /// `:picker <id>`. Verifies the dual-lookup branch in
@@ -709,6 +741,7 @@ mod tests {
             ids,
             vec![
                 "buffers",
+                "colorscheme",
                 "commands",
                 "files",
                 "grep",

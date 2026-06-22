@@ -1,6 +1,6 @@
 # Incremental highlight & viewport-scoped cells
 
-Status: design locked 2026-06-04. Slice plan: `docs/dev/operations/slice-plans/incremental-highlight.md`.
+Status: design locked 2026-06-04. Slice plan: `docs/dev/operations/slice-plans/archive/incremental-highlight.md`.
 
 ## Problem
 

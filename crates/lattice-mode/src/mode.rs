@@ -7,9 +7,10 @@ use std::pin::Pin;
 
 pub use lattice_keymap::ModeId;
 
+use crate::action_handler_registry::ActionHandlerContribution;
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
-use crate::contributions::{DecorationProvider, Keymap, Subscription};
+use crate::contributions::{DecorationCtx, DecorationProvider, GutterDecoration, Keymap};
 use crate::error::ModeActivationError;
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
@@ -21,6 +22,54 @@ use lattice_core::BufferKind;
 pub enum ModeKind {
     Major,
     Minor,
+}
+
+/// A minor mode's *default* auto-activation policy — the allowlist of
+/// major modes it activates inside, as the mode itself ships it
+/// (mode-architecture.md §7.4). The host's minor-activation resolver
+/// subscribes once to [`lattice_protocol::Event::MajorEntered`] and,
+/// for each registered minor whose policy [`admits`](Self::admits)
+/// the entered major, activates it.
+///
+/// This is the mode's *declared default*. Config
+/// (`<mode>.activation = global | <allowlist> | off`) folds over it;
+/// that fold is the host's job (SN.3), not the mode's. The default on
+/// the `Mode` trait is [`Manual`](Self::Manual): a mode auto-activates
+/// nowhere until it opts in or the user does. Leaving the onus on the
+/// user is a legitimate choice — some modes won't ship a sensible
+/// default and shouldn't guess.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ActivationPolicy {
+    /// Never auto-activate; only explicit (user / host / `:<mode>`)
+    /// activation turns the mode on. The trait default.
+    #[default]
+    Manual,
+    /// Auto-activate on every buffer that enters any major mode.
+    Global,
+    /// Auto-activate only when the entered major's id is in this
+    /// allowlist. An empty list behaves like [`Manual`](Self::Manual)
+    /// (matches no major).
+    Majors(Vec<ModeId>),
+}
+
+impl ActivationPolicy {
+    /// Does this policy auto-activate when a buffer of kind
+    /// `buffer_kind` enters the major mode named `major`?
+    ///
+    /// `Global` is scoped to **real document buffers**
+    /// ([`BufferKind::Document`]) — "global" means every code/text
+    /// buffer, not the synthetic UI buffers (file tree, help,
+    /// `*messages*`, terminal, …). A mode that genuinely wants to
+    /// activate inside a synthetic buffer names that buffer's major
+    /// explicitly via `Majors([..])`, which is kind-independent (an
+    /// explicit opt-in is honored anywhere).
+    pub fn admits(&self, major: &str, buffer_kind: BufferKind) -> bool {
+        match self {
+            Self::Manual => false,
+            Self::Global => buffer_kind == BufferKind::Document,
+            Self::Majors(allow) => allow.iter().any(|m| m.as_str() == major),
+        }
+    }
 }
 
 /// Pinned, boxed, send-able future for `Mode::on_activate`.
@@ -142,17 +191,27 @@ pub trait Mode: Send + Sync + 'static {
         Keymap::default()
     }
 
-    /// Typed event subscriptions registered alongside the mode;
-    /// deregistered on deactivation.
-    fn subscriptions(&self) -> Vec<Subscription> {
-        Vec::new()
-    }
-
     /// Decoration providers (gutter / inline / overlay /
-    /// statusline).
+    /// statusline). Stub — reserved for the WIT plugin path (M.10).
     fn decorations(&self) -> Vec<DecorationProvider> {
         Vec::new()
     }
+
+    /// Gutter sign decorations this mode contributes while active.
+    /// Called once per pane per frame with a [`DecorationCtx`]
+    /// carrying relevant render-state snapshots (diff sign map, LSP
+    /// diagnostics arc). Returns per-line `GutterDecoration` values;
+    /// the renderer partitions them by variant into the appropriate
+    /// gutter column. Default: empty (no contribution).
+    fn gutter_decorations(&self, _ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        Vec::new()
+    }
+
+    // ML.3: `status_line_items` retired. Modes contribute modeline
+    // content as registered elements pushed over the event bus
+    // (`lattice_mode::ModelineElementUpdate`, see modeline.rs §6), not via
+    // a render-path trait pull — a Rust trait can't cross the WASM plugin
+    // boundary, which is exactly the limitation the element model removes.
 
     /// Insert-mode completion sources this mode contributes while
     /// active on a buffer. Empty by default; minors that own a
@@ -161,6 +220,22 @@ pub trait Mode: Send + Sync + 'static {
     /// `tree-sitter-completion-mode`, `path-completion-mode`,
     /// plugin sources) override.
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        Vec::new()
+    }
+
+    /// SN.3c.0: *global* (buffer-agnostic) action handlers this
+    /// mode contributes. The host walks every registered mode's
+    /// `action_handlers()` once at boot, resolves each
+    /// `action_name` → `CommandId`, registers the handler in the
+    /// `ActionHandlerRegistry`, and holds the tokens for the app's
+    /// lifetime. Use this for handlers that read the active
+    /// buffer / cursor / services from the `ActionContext` at call
+    /// time and close over no per-buffer state (e.g. snippet
+    /// expand). Per-buffer, session-scoped handlers register in
+    /// [`on_activate`](Self::on_activate) instead, so their tokens
+    /// drop with the Guard. Default: none. See
+    /// `feedback_effect_vocabulary_is_host_boundary`.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
         Vec::new()
     }
 
@@ -215,6 +290,19 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// MA.1: a *minor* mode's default auto-activation policy
+    /// (mode-architecture.md §7.4). The host's minor-activation
+    /// resolver reads this for every registered minor when a buffer
+    /// enters a major mode, and activates those whose policy
+    /// [`admits`](ActivationPolicy::admits) the entered major. The
+    /// default is [`ActivationPolicy::Manual`] — auto-activate
+    /// nowhere until the mode or the user opts in. Ignored for major
+    /// modes (a buffer's major is chosen by the major resolver, not
+    /// this allowlist).
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::Manual
+    }
+
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative
     /// contributions. Returns an owned [`Guard`](Self::Guard)
@@ -262,14 +350,16 @@ pub trait DynMode: Send + Sync + 'static {
     fn target_buffer_kind(&self) -> Option<BufferKind>;
     fn options(&self) -> OptionOverrideSet;
     fn keymap(&self) -> Keymap;
-    fn subscriptions(&self) -> Vec<Subscription>;
     fn decorations(&self) -> Vec<DecorationProvider>;
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution>;
     fn required_capabilities(&self) -> CapabilitySet;
     fn conflicts_with(&self) -> &[ModeId];
     fn implies(&self) -> &[ModeId];
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
+    fn activation_policy(&self) -> ActivationPolicy;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
@@ -297,14 +387,17 @@ impl<M: Mode> DynMode for M {
     fn keymap(&self) -> Keymap {
         <M as Mode>::keymap(self)
     }
-    fn subscriptions(&self) -> Vec<Subscription> {
-        <M as Mode>::subscriptions(self)
-    }
     fn decorations(&self) -> Vec<DecorationProvider> {
         <M as Mode>::decorations(self)
     }
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        <M as Mode>::gutter_decorations(self, ctx)
+    }
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
         <M as Mode>::completion_sources(self)
+    }
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        <M as Mode>::action_handlers(self)
     }
     fn required_capabilities(&self) -> CapabilitySet {
         <M as Mode>::required_capabilities(self)
@@ -320,6 +413,9 @@ impl<M: Mode> DynMode for M {
     }
     fn invocation_runner(&self) -> Option<ModeId> {
         <M as Mode>::invocation_runner(self)
+    }
+    fn activation_policy(&self) -> ActivationPolicy {
+        <M as Mode>::activation_policy(self)
     }
 
     fn on_activate_dyn<'a>(

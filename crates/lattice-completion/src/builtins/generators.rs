@@ -41,19 +41,40 @@ impl CandidateGenerator for CommandsGenerator {
             .filter_map(|name| {
                 let id = ctx.registry.id_by_name(name)?;
                 let spec = ctx.registry.lookup(id)?;
-                // Filter delimiter-only commands -- they have no
-                // useful keyword-form completion target.
-                if let Some(ex) = ctx.registry.ex_command_spec(id)
-                    && matches!(
-                        ex.surface_form,
-                        lattice_grammar::SurfaceForm::Delimiter { .. }
-                    )
-                {
-                    return None;
+                // UD.2: include ex-commands AND motions. Both are
+                // invocable from the `:` line — `:w`, `:motion:line-down`
+                // — and now behave identically to a keystroke (the host
+                // dispatch is unified; see typed-motion-dispatch.md).
+                // Operators / text-objects / internal `action:*` entries
+                // are NOT actionable standalone via `:` (an operator
+                // needs a target) and stay filtered.
+                match spec.kind {
+                    lattice_grammar::CommandKind::ExCommand => {
+                        // Delimiter-only commands (`:s/.../`, `:g/.../`)
+                        // have no useful keyword-form completion target.
+                        let ex = ctx.registry.ex_command_spec(id)?;
+                        if matches!(
+                            ex.surface_form,
+                            lattice_grammar::SurfaceForm::Delimiter { .. }
+                        ) {
+                            return None;
+                        }
+                    }
+                    lattice_grammar::CommandKind::Motion => {}
+                    _ => return None,
                 }
+                // User-facing name: strip the `ex:` namespace prefix so
+                // ex-commands show `oil` not `ex:oil`. Motions keep their
+                // `motion:` prefix — that IS what the user types
+                // (`:motion:line-down`).
+                let display_name = spec
+                    .name
+                    .strip_prefix("ex:")
+                    .unwrap_or(&spec.name)
+                    .to_string();
                 Some(RawCandidate {
-                    text: spec.name.clone(),
-                    display: spec.name.clone(),
+                    text: display_name.clone(),
+                    display: display_name.clone(),
                     kind: CandidateKind::Command,
                     data: CandidateData::Command {
                         name: spec.name.clone(),
@@ -221,11 +242,21 @@ mod tests {
         let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let candidates = g.generate(&ctx_for("", &buffer, &registry));
-        assert!(candidates.len() > 50, "expected many built-in commands");
-        // Spot-check: ex:write should be in there.
-        assert!(candidates.iter().any(|c| c.text == "ex:write"));
-        // Spot-check: motion:line-down should be in there.
-        assert!(candidates.iter().any(|c| c.text == "motion:line-down"));
+        assert!(candidates.len() > 10, "expected multiple ex-commands");
+        // Spot-check: write should appear (it's an ex-command).
+        assert!(candidates.iter().any(|c| c.text == "write"));
+        // UD.2: motions ARE invocable via `:` (unified dispatch), so they
+        // appear with their `motion:` prefix.
+        assert!(
+            candidates.iter().any(|c| c.text == "motion:line-down"),
+            "motions are actionable via `:` and must be completable",
+        );
+        // Operators are NOT actionable standalone (they need a target) and
+        // stay filtered — the boundary the filter draws.
+        assert!(
+            !candidates.iter().any(|c| c.text.starts_with("operator:")),
+            "operators are not standalone-actionable and must be filtered out",
+        );
     }
 
     #[test]
@@ -250,7 +281,7 @@ mod tests {
             "ex:global is delimiter-form-only and must not appear",
         );
         // Other ex-commands stay present.
-        assert!(candidates.iter().any(|c| c.text == "ex:write"));
+        assert!(candidates.iter().any(|c| c.text == "write"));
     }
 
     #[test]
@@ -261,7 +292,7 @@ mod tests {
         let document = Document::empty();
         let buffer = document.buffer().clone();
         let candidates = CommandsGenerator.generate(&ctx_for("", &buffer, &registry));
-        let write = candidates.iter().find(|c| c.text == "ex:write").unwrap();
+        let write = candidates.iter().find(|c| c.text == "write").unwrap();
         match &write.data {
             CandidateData::Command {
                 doc, kind_label, ..

@@ -12,6 +12,7 @@
 //! | `<C-h> c` | `:describe-command` | Prompt for command name. |
 //! | `<C-h> o` | `:describe-option` | Prompt for option name. |
 //! | `<C-h> e` | `:describe-event` | Prompt for typed-event name. |
+//! | `<C-h> f` | `:describe-element` | Prompt for theme element / face name. |
 //! | `<C-h> m` | `:describe-mode` | Active majors + minors on the current buffer. |
 //! | `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, modes, …). |
 //! | `<C-h> a` | `:apropos` | Cross-cutting search. |
@@ -162,6 +163,16 @@ fn help_prefix_table() -> &'static [HelpPrefixEntry] {
             mods: KeyMods::NONE,
         }),
     ];
+    const C_H_F: &[ChordPattern; 2] = &[
+        ChordPattern::Literal(KeyChord {
+            key: KeyKind::Char('h'),
+            mods: KeyMods::CTRL,
+        }),
+        ChordPattern::Literal(KeyChord {
+            key: KeyKind::Char('f'),
+            mods: KeyMods::NONE,
+        }),
+    ];
     const C_H_M: &[ChordPattern; 2] = &[
         ChordPattern::Literal(KeyChord {
             key: KeyKind::Char('h'),
@@ -233,6 +244,11 @@ fn help_prefix_table() -> &'static [HelpPrefixEntry] {
             chord: C_H_E,
             command: "ex:describe-event",
             doc: "Prompt for a typed-event name and show its descriptor.",
+        },
+        HelpPrefixEntry {
+            chord: C_H_F,
+            command: "ex:describe-element",
+            doc: "Prompt for a theme element / face name and show its metadata + resolved style.",
         },
         HelpPrefixEntry {
             chord: C_H_M,

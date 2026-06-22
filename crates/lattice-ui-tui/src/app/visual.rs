@@ -126,6 +126,60 @@ mod tests {
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Linewise));
     }
 
+    // ---- `o` swap visual ends ----
+
+    #[test]
+    fn swap_visual_ends_trades_anchor_and_head() {
+        let mut a = app_with("hello world", 20);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
+        // anchor ZERO, head (0,6).
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::ZERO);
+        assert_eq!(sel.head, Position::new(0, 6));
+        // `o` swaps the ends; the cursor follows the head.
+        a.apply(Action::SwapVisualEnds);
+        let swapped = *a.editor.document.selections().primary();
+        assert_eq!(swapped.anchor, Position::new(0, 6));
+        assert_eq!(swapped.head, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
+        assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
+        // `o` again restores the original orientation.
+        a.apply(Action::SwapVisualEnds);
+        let back = *a.editor.document.selections().primary();
+        assert_eq!(back.anchor, Position::ZERO);
+        assert_eq!(back.head, Position::new(0, 6));
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
+    }
+
+    #[test]
+    fn after_swap_a_motion_alters_the_other_end() {
+        // The whole point of `o`: after swapping, a motion grows /
+        // shrinks the selection at the end the cursor moved to.
+        let mut a = app_with("hello world foo", 20);
+        // Park the cursor at the start of "world" in Normal, then
+        // select forward to the start of "foo".
+        a.apply(invoke_motion(a.editor.builtins.word_forward)); // cursor (0,6)
+        a.apply(Action::EnterVisual(VisualKind::Charwise)); // anchor (0,6)
+        a.apply(invoke_motion(a.editor.builtins.word_forward)); // head (0,12)
+        a.apply(Action::SwapVisualEnds); // head (0,6), anchor (0,12)
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
+        // A motion now moves the swapped head (the START end) leftward.
+        a.apply(invoke_motion(a.editor.builtins.word_backward)); // head (0,0)
+        let sel = *a.editor.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 12), "far end stays put");
+        assert_eq!(sel.head, Position::ZERO, "near end moved");
+    }
+
+    #[test]
+    fn swap_visual_ends_outside_visual_is_a_noop() {
+        let mut a = app_with("hello", 10);
+        assert_eq!(a.editor.modal, ModalState::Normal);
+        a.apply(Action::SwapVisualEnds);
+        assert_eq!(a.editor.modal, ModalState::Normal);
+        assert_eq!(a.editor.cursor, Position::ZERO);
+    }
+
     // ---- Visual mode end-to-end ----
 
     #[test]

@@ -509,13 +509,13 @@ mod tests {
 
     #[test]
     fn ui_set_cascade_keeps_host_theme_and_tui_theme_in_sync() {
-        // Phase 5.3 contract: `host_theme` is the canonical
-        // renderer-neutral state; `theme` is the cached
-        // ratatui-typed adapter. `sync_theme_from_config` MUST
-        // update both. We exercise a representative subset of
-        // user-tweakable fields (`dim_inactive`, `nerd_fonts`,
-        // separator glyph, separator color) and assert each
-        // mutation lands in BOTH places.
+        // T.6.t: the host `Theme` struct is deleted; the typed-options
+        // registry (`config`) is the canonical renderer-neutral state
+        // for the 8 non-style chrome fields, and `theme` is the cached
+        // ratatui-typed adapter rebuilt from config + the resolved table
+        // on `RendererSignal::ThemeChanged`. We exercise a representative
+        // subset (`dim_inactive`, `nerd_fonts`, separator glyph,
+        // separator color) and assert each mutation lands in the cache.
         let mut a = app_with("xx", 10);
         // Flip dim_inactive false.
         a.editor
@@ -523,10 +523,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
-        assert!(
-            !a.editor.host_theme.dim_inactive_panes,
-            "host: dim_inactive flipped"
-        );
         assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
         // Flip nerd_fonts on.
         a.editor
@@ -534,7 +530,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiNerdFonts>(true)
             .unwrap();
         a.drain_option_changes();
-        assert!(a.editor.host_theme.nerd_fonts);
         assert!(a.theme.nerd_fonts);
         // Change separator glyph.
         a.editor
@@ -542,7 +537,6 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiSeparator>("┃".to_string())
             .unwrap();
         a.drain_option_changes();
-        assert_eq!(a.editor.host_theme.pane_separator_vertical, '┃');
         assert_eq!(a.theme.pane_separator_vertical, '┃');
         // Change separator color (named).
         a.editor
@@ -550,12 +544,11 @@ mod tests {
             .set_typed::<lattice_host::ui::theme_options::UiSeparatorColor>("red".to_string())
             .unwrap();
         a.drain_option_changes();
-        use lattice_host::ui::theme as ht;
-        assert_eq!(
-            a.editor.host_theme.pane_separator.fg,
-            Some(ht::Color::Named(ht::NamedColor::Red)),
-            "host: separator fg=red",
-        );
+        // T.9: the separator STYLE no longer lives on the host `Theme`;
+        // `:set ui.separator_color=red` now applies a registry override on
+        // the `pane.separator` element, and the TUI native cache
+        // (`a.theme.pane_separator`) is rebuilt from the resolved table on
+        // `RendererSignal::ThemeChanged`. Assert the cache reflects it.
         assert_eq!(
             a.theme.pane_separator.fg,
             Some(ratatui::style::Color::Red),
@@ -947,18 +940,28 @@ mod tests {
         let mut a = app_in_command_mode("descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
         assert!(a.editor.completion_state.is_some());
+        // Opening the popup inserts the longest common prefix of the
+        // matches (vim-wildmenu style): every `describe-*` command
+        // shares `describe-`, so the cmdline extends to it. The
+        // `descr` the user typed is preserved as `original_line` for
+        // dismiss-restore; see `open_completion_popup`.
+        assert_eq!(a.editor.command_line, "describe-");
         let initial_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
 
-        a.apply(Action::CommandLineAppend('i'));
+        // Typing keeps the popup open and re-runs the pipeline against
+        // the longer prefix (no second LCP rewrite — refresh only
+        // refilters).
+        a.apply(Action::CommandLineAppend('k'));
         assert!(
             a.editor.completion_state.is_some(),
             "popup must stay open while filtering"
         );
-        assert_eq!(a.editor.command_line, "descri");
+        assert_eq!(a.editor.command_line, "describe-k");
         // Typing narrows the prefix -> candidate set should shrink
-        // or stay equal, never grow.
+        // or stay equal, never grow (only `describe-key` survives).
         let narrowed = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(narrowed <= initial_count);
+        assert!(narrowed >= 1, "describe-key still matches `describe-k`");
         // Selection resets to first match (the candidate set
         // changed; previous index would be meaningless).
         assert_eq!(a.editor.completion_state.as_ref().unwrap().selected, 0);
@@ -1073,11 +1076,19 @@ mod tests {
     }
 
     #[test]
-    fn reload_snippets_with_no_dirs_reports_empty() {
+    fn reload_snippets_with_no_user_dirs_loads_builtins_only() {
         let mut a = app_with("", 10);
+        // Isolate from the developer's real
+        // `~/.config/lattice/snippets` (the default dir) so the
+        // count is deterministic.
+        a.editor.snippet_dirs.clear();
         a.do_reload_snippets();
-        // Idle; registry stays empty. Message echoed at Info.
-        assert_eq!(a.editor.snippet_registry.load().len(), 0);
+        // Built-ins are always present; with no user dirs the
+        // registry is exactly the embedded built-in set (built-ins
+        // 2026-06-12: reload no longer wipes to empty).
+        let builtins = lattice_snippet::load_builtins().len();
+        assert!(builtins > 0, "built-in packs are non-empty");
+        assert_eq!(a.editor.snippet_registry.load().len(), builtins);
     }
 
     #[test]
@@ -1098,11 +1109,16 @@ mod tests {
             r#"{ "rust-for": { "prefix": "for", "body": "for $1 {}" } }"#,
         )
         .unwrap();
+        let builtins = lattice_snippet::load_builtins().len();
         let mut a = app_with("", 10);
+        // Isolate from the real user dir, then point only at the
+        // tempdir so the user-pack count is deterministic.
+        a.editor.snippet_dirs.clear();
         a.editor.snippet_dirs.push(dir.clone());
         a.do_reload_snippets();
-        // 2 snippets registered total (one per language).
-        assert_eq!(a.editor.snippet_registry.load().len(), 2);
+        // Built-ins + the 2 user snippets from the tempdir (one
+        // per language slot).
+        assert_eq!(a.editor.snippet_registry.load().len(), builtins + 2);
         assert!(
             !a.editor
                 .snippet_registry

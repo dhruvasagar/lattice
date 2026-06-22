@@ -60,24 +60,46 @@ mod tests {
     /// register against the same ids so trie-bound
     /// `CommandInvocation` ids stay in lockstep with what each
     /// test compares against.
-    fn shared_init() -> &'static (Builtins, crate::actions::ActionIds) {
+    fn shared_init() -> &'static (
+        CommandRegistry,
+        Builtins,
+        crate::actions::ActionIds,
+        lattice_syntax::SyntaxTextObjectIds,
+    ) {
         use std::sync::OnceLock;
-        static INIT: OnceLock<(Builtins, crate::actions::ActionIds)> = OnceLock::new();
+        static INIT: OnceLock<(
+            CommandRegistry,
+            Builtins,
+            crate::actions::ActionIds,
+            lattice_syntax::SyntaxTextObjectIds,
+        )> = OnceLock::new();
         INIT.get_or_init(|| {
             let mut r = CommandRegistry::new();
             let b = populate(&mut r);
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
             let a = crate::actions::populate(&mut r, &b);
-            (b, a)
+            let so = lattice_syntax::register_syntax_text_objects(&mut r);
+            // Keep `r`: the snippet mode-keymap layer must translate
+            // against the SAME registry that minted these ids
+            // (`CommandId`s are stable only within one registry).
+            (r, b, a, so)
         })
     }
 
-    fn shared_builtins() -> &'static Builtins {
+    fn shared_registry() -> &'static CommandRegistry {
         &shared_init().0
     }
 
-    fn shared_actions() -> &'static crate::actions::ActionIds {
+    fn shared_builtins() -> &'static Builtins {
         &shared_init().1
+    }
+
+    fn shared_actions() -> &'static crate::actions::ActionIds {
+        &shared_init().2
+    }
+
+    fn shared_syntax_textobjects() -> &'static lattice_syntax::SyntaxTextObjectIds {
+        &shared_init().3
     }
 
     /// Build a fresh `KeymapHandle` populated with every catalog
@@ -88,10 +110,11 @@ mod tests {
         let h = KeymapHandle::new();
         let b = shared_builtins();
         let a = shared_actions();
+        let so = shared_syntax_textobjects();
         crate::keymap_replace::register_replace_bindings(&h, a);
-        crate::keymap_visual::register_visual_bindings(&h, b, a);
+        crate::keymap_visual::register_visual_bindings(&h, b, a, so);
         crate::keymap_insert::register_insert_bindings(&h, a);
-        crate::keymap_normal::register_normal_bindings(&h, b, a);
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
         h
     }
 
@@ -101,6 +124,74 @@ mod tests {
         use std::sync::OnceLock;
         static H: OnceLock<KeymapHandle> = OnceLock::new();
         H.get_or_init(build_base_keymap)
+    }
+
+    /// SN.3c.1: base keymap + the *Global* `snippet-mode` layer only
+    /// (NOT `active-snippet-mode`). `snippet-mode` is active on every
+    /// document buffer (`ActivationPolicy::Global`), so a base Insert
+    /// keymap in a real document carries its single contributed chord
+    /// — the `<C-x><C-s>` expand prefix. Pushing only `snippet-mode`
+    /// (not the session-scoped `active-snippet-mode`) keeps `<Tab>` /
+    /// `<S-Tab>` resolving to their base Insert meanings, so this is
+    /// the faithful model for the catalog drift check's non-popup,
+    /// non-active-session Insert descriptors (notably `<C-x>`).
+    fn shared_keymap_base_with_snippet_mode() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            let mut mr = lattice_mode::ModeRegistry::new();
+            mr.register(lattice_snippet::modes::SnippetMode::new())
+                .expect("register snippet-mode");
+            lattice_host::keymap_mode_contributions::translate_mode_keymaps(
+                &h,
+                &mr,
+                shared_registry(),
+            );
+            h
+        })
+    }
+
+    // SN.3c.2a: per-fixture active-minor-mode sets, paired with the
+    // `shared_keymap_*` handles above. Insert dispatch is now K.1.c-gated
+    // (`dispatch_insert` threads `active_minor_modes`), so a test that
+    // pushes a minor layer must also name that mode as active — exactly
+    // the per-buffer gate production applies. `&'static` so they satisfy
+    // `TranslateContext.active_minor_modes: &'a [ModeId]`.
+    fn popup_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| vec![crate::keymap_insert::completion_popup_mode_id()])
+    }
+    /// The Global `snippet-mode` only — for base Insert in a document
+    /// buffer (carries the `<C-x><C-s>` expand prefix), no live session.
+    fn snippet_mode_only() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| vec![lattice_snippet::modes::SnippetMode::mode_id()])
+    }
+    /// `snippet-mode` + `active-snippet-mode` — a live snippet session.
+    fn snippet_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| {
+            vec![
+                lattice_snippet::modes::SnippetMode::mode_id(),
+                lattice_snippet::modes::SnippetActiveMode::mode_id(),
+            ]
+        })
+    }
+    /// Both overlays active: snippet session + completion popup.
+    fn both_minor_modes() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| {
+            vec![
+                lattice_snippet::modes::SnippetMode::mode_id(),
+                lattice_snippet::modes::SnippetActiveMode::mode_id(),
+                crate::keymap_insert::completion_popup_mode_id(),
+            ]
+        })
     }
 
     /// Base keymap + completion-popup minor-mode layer.
@@ -120,19 +211,29 @@ mod tests {
         })
     }
 
+    /// Push the `active-snippet-mode` layer via the K.2.4 translation path.
+    fn push_snippet_layer_via_k24(h: &KeymapHandle) {
+        // Translate against the SHARED registry so snippet bindings
+        // resolve `action:snippet-*` to the same `CommandId`s
+        // `shared_actions()` exposes (ids are per-registry-instance).
+        let mut mr = lattice_mode::ModeRegistry::new();
+        mr.register(lattice_snippet::modes::SnippetActiveMode)
+            .expect("register active-snippet-mode");
+        // SN.3c.1: `snippet-mode` owns the `<C-x><C-s>` expand chord
+        // (Insert). Register it so the translated layer carries the
+        // chord — `<C-x><C-s>` is no longer a Builtin binding.
+        mr.register(lattice_snippet::modes::SnippetMode::new())
+            .expect("register snippet-mode");
+        lattice_host::keymap_mode_contributions::translate_mode_keymaps(h, &mr, shared_registry());
+    }
+
     /// Base keymap + active-snippet minor-mode layer.
     fn shared_keymap_with_snippet() -> &'static KeymapHandle {
         use std::sync::OnceLock;
         static H: OnceLock<KeymapHandle> = OnceLock::new();
         H.get_or_init(|| {
             let h = build_base_keymap();
-            h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
-            );
+            push_snippet_layer_via_k24(&h);
             h
         })
     }
@@ -145,13 +246,7 @@ mod tests {
         static H: OnceLock<KeymapHandle> = OnceLock::new();
         H.get_or_init(|| {
             let h = build_base_keymap();
-            h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode(
-                    crate::keymap_insert::active_snippet_mode_id(),
-                ),
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
-            );
+            push_snippet_layer_via_k24(&h);
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode(
                     crate::keymap_insert::completion_popup_mode_id(),
@@ -1613,13 +1708,22 @@ mod tests {
         // onto the registry. Pick the scenario-matched shared
         // keymap so the descriptor's chord resolves through the
         // intended layer.
-        let keymap_for_mode: &'static KeymapHandle = if insert_completion_open {
-            shared_keymap_with_popup()
-        } else if snippet_active {
-            shared_keymap_with_snippet()
-        } else {
-            shared_keymap_base()
-        };
+        // SN.3c.2a: the keymap AND its active-minor set move together —
+        // Insert dispatch is K.1.c-gated now, so pushing a layer without
+        // naming its mode active would leave the chord unresolved.
+        let (keymap_for_mode, active_for_mode): (&'static KeymapHandle, &'static [lattice_mode::ModeId]) =
+            if insert_completion_open {
+                (shared_keymap_with_popup(), popup_minor_modes())
+            } else if snippet_active {
+                (shared_keymap_with_snippet(), snippet_minor_modes())
+            } else {
+                // SN.3c.1: snippet-mode is Global, so a document buffer's
+                // base Insert keymap carries its `<C-x><C-s>` expand prefix.
+                // Use the base + snippet-mode layer (mode named active) so
+                // descriptors like `<C-x>` resolve (the partial node moved
+                // off Builtin).
+                (shared_keymap_base_with_snippet_mode(), snippet_mode_only())
+            };
         let mut partial_chord: Vec<crate::chord::KeyChord> = Vec::new();
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -1642,7 +1746,7 @@ mod tests {
                 terminal_insert_exit_pending: false,
             terminal_visual_active: false,
                 partial_chord: &partial_chord,
-                active_minor_modes: &[],
+                active_minor_modes: active_for_mode,
             };
             last = translate(ctx, event);
             // Mirror `App::apply`'s partial_chord lifecycle
@@ -1675,15 +1779,18 @@ mod tests {
         // retires.
         let (_, b) = fixture();
         for entry in crate::keymap::default_keymap() {
-            let action = simulate_chord(entry.chord, entry.mode, &b);
-            assert!(
-                !matches!(action, Action::None),
-                "keymap descriptor `{}` ({}) doc=`{}` produced Action::None -- \
-                 binding may have been removed or moved",
-                entry.chord,
-                entry.mode.label(),
-                entry.doc,
-            );
+            // B-field: an entry may be live in several modes; check each.
+            for &mode in entry.modes {
+                let action = simulate_chord(entry.chord, mode, &b);
+                assert!(
+                    !matches!(action, Action::None),
+                    "keymap descriptor `{}` ({}) doc=`{}` produced Action::None -- \
+                     binding may have been removed or moved",
+                    entry.chord,
+                    mode.label(),
+                    entry.doc,
+                );
+            }
         }
     }
 
@@ -1716,7 +1823,7 @@ mod tests {
                  not found in CommandRegistry. Possible rename or \
                  typo; catalog is out of sync with the registry.",
                 entry.chord,
-                entry.mode.label(),
+                entry.modes_label(),
                 name,
             );
         }
@@ -1750,71 +1857,68 @@ mod tests {
         }
     }
 
-    // ---- LSP navigation (gd / gD / gy / gI) ----
+    // ---- LSP navigation (gd / gD / gy / gI / gr) ----
+    // MO.1: these bindings moved to LspMode::keymap() (MinorMode layer).
+    // Without lsp-mode active the Builtin layer has no entry → Action::None.
 
     #[test]
-    fn gd_after_g_emits_lsp_definition_request() {
+    fn gd_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('d')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
-            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('d')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn capital_g_d_after_g_emits_lsp_declaration_request() {
+    fn g_d_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('D')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_declaration_request),
-            other => panic!("expected Invoke(lsp_declaration_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('D')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn gy_after_g_emits_lsp_type_definition_request() {
+    fn gy_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('y')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_type_definition_request),
-            other => panic!("expected Invoke(lsp_type_definition_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('y')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn capital_g_i_after_g_emits_lsp_implementation_request() {
+    fn g_i_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('I')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_implementation_request),
-            other => panic!("expected Invoke(lsp_implementation_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('I')),
+            ),
+            Action::None
+        ));
     }
 
     #[test]
-    fn gr_after_g_emits_lsp_references_request() {
+    fn gr_without_lsp_mode_is_unresolved() {
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
-            key(KeyCode::Char('r')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_references_request),
-            other => panic!("expected Invoke(lsp_references_request), got {other:?}"),
-        }
+        assert!(matches!(
+            translate(
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
+                key(KeyCode::Char('r')),
+            ),
+            Action::None
+        ));
     }
 
     // ---- Insert-mode completion (Phase 4.2.g.1) ----
@@ -1844,7 +1948,8 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
-            active_minor_modes: &[],
+            // SN.3c.2a: popup layer is gated on this mode being active.
+            active_minor_modes: popup_minor_modes(),
         }
     }
 
@@ -1861,8 +1966,15 @@ mod tests {
     #[test]
     fn ctrl_x_in_insert_absorbs_partial_chord() {
         // Slice 8.i.4.b: `<C-x>` migrated to partial_chord.
+        // SN.3c.1: `<C-x>` is a partial prefix only because
+        // `snippet-mode`'s `<C-x><C-s>` layer provides the terminal
+        // (no longer Builtin) — dispatch against the snippet-layer
+        // keymap, matching boot where the layer is pushed.
         let (_, b) = fixture();
-        let action = translate(ctx(ModalState::Insert, &b), ctrl(KeyCode::Char('x')));
+        let mut cx = ctx(ModalState::Insert, &b);
+        cx.keymap = shared_keymap_with_snippet();
+        cx.active_minor_modes = snippet_minor_modes();
+        let action = translate(cx, ctrl(KeyCode::Char('x')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::ctrl('x')
@@ -2091,7 +2203,8 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
-            active_minor_modes: &[],
+            // SN.3c.2a: snippet layers gated on these modes being active.
+            active_minor_modes: snippet_minor_modes(),
         }
     }
 
@@ -2122,13 +2235,23 @@ mod tests {
     }
 
     #[test]
-    fn snippet_active_esc_leaves_snippet() {
+    fn snippet_active_esc_leaves_snippet_then_falls_through() {
+        // SN.3c.2b: `<Esc>` is `fall_through` — clear the snippet, then
+        // continue to the native `<Esc>` (enter-normal). The full
+        // `translate` path resolves it to a Chain.
         let (_, b) = fixture();
         let a = shared_actions();
         let r = translate(ctx_snippet_active(&b), key(KeyCode::Esc));
         match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_leave),
-            other => panic!("expected Invoke(snippet_leave), got {other:?}"),
+            Action::Chain(v) => match (v.first(), v.get(1)) {
+                (Some(Action::Invoke(leave)), Some(Action::Invoke(native))) => {
+                    assert_eq!(leave.command, a.snippet_leave);
+                    assert_eq!(native.command, a.enter_mode_normal);
+                    assert_eq!(v.len(), 2);
+                }
+                _ => panic!("expected Chain([snippet_leave, enter_mode_normal]), got {v:?}"),
+            },
+            other => panic!("expected Chain, got {other:?}"),
         }
     }
 
@@ -2158,6 +2281,7 @@ mod tests {
         let mut ctx = ctx_snippet_active(&b);
         ctx.insert_completion_open = true;
         ctx.keymap = shared_keymap_with_both_overlays();
+        ctx.active_minor_modes = both_minor_modes();
         let action = translate(ctx, key(KeyCode::Tab));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
@@ -2185,12 +2309,16 @@ mod tests {
 
     #[test]
     fn ctrl_x_ctrl_s_resolves_to_snippet_expand() {
+        // SN.3c.1: `<C-x><C-s>` is contributed by `snippet-mode`'s
+        // layer (not Builtin) — dispatch against the snippet-layer
+        // keymap the editor sees once boot pushes the layer.
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx_partial(ModalState::Insert, &[crate::chord::KeyChord::ctrl('x')], &b),
-            ctrl(KeyCode::Char('s')),
-        ) {
+        let partial = [crate::chord::KeyChord::ctrl('x')];
+        let mut cx = ctx_partial(ModalState::Insert, &partial, &b);
+        cx.keymap = shared_keymap_with_snippet();
+        cx.active_minor_modes = snippet_minor_modes();
+        match translate(cx, ctrl(KeyCode::Char('s'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
             other => panic!("expected Invoke(snippet_expand), got {other:?}"),
         }

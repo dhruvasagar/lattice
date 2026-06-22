@@ -8,7 +8,7 @@
 //! | gutter | buffer text                                           |
 //! | ...                                                            |
 //! +----------------------------------------------------------------+
-//! | mode line: \[NORMAL\]  path                line:col   lang     |
+//! | mode line: NOR  path                       line:col   lang     |
 //! +----------------------------------------------------------------+
 
 use std::sync::Arc;
@@ -26,7 +26,7 @@ use lattice_protocol::position::Range as ProtoRange;
 // `Editor::visual_selection_range`; this peer no longer references
 // the variants directly.
 use lattice_runtime::DocumentSnapshot;
-use lattice_syntax::{Lang, Style};
+use lattice_syntax::Style;
 
 use crate::app::{App, EchoLevel, Fold};
 
@@ -54,14 +54,6 @@ use crate::app::{App, EchoLevel, Fold};
 ///   directly through this borrowed reference.
 /// - `folds: Arc<[Fold]>` -- frozen snapshot. Replaces direct
 ///   `app.editor.folds.iter()` reads.
-/// - `visible_rows: Arc<VisibleRows>` -- frozen viewport pre-paint
-///   snapshot from the worker. Source spans for each visible row
-///   live inside `rows[i].runs` as `RowRun::Source` variants;
-///   inlay text is woven into `rows[i].combined` with `Inlay`
-///   runs marking each splice. Replaces the legacy
-///   `visible_highlights: Arc<[Vec<StyledSpan>]>` reader
-///   (perf-plan A.2b.2b: TUI peer drops the `visible_spans`
-///   reader for the active pane).
 /// - `show_line_numbers: bool` -- cached typed-options value.
 ///   The typed-options ArcSwap read is wait-free per call, but
 ///   caching once per chain keeps gutter computation
@@ -76,15 +68,11 @@ use crate::app::{App, EchoLevel, Fold};
 pub struct FrameView<'a> {
     pub app: &'a App,
     pub folds: Arc<[Fold]>,
-    /// Perf plan A.2 slice A.2b.2b: worker-published pre-paint
-    /// rows for the active document's viewport. `rows[i].runs`
-    /// carries source-text style runs (and inlay runs woven in
-    /// by the worker); the compose loop derives per-row
-    /// `StyledSpan`s from this via [`source_spans_from_runs`].
-    /// One Arc bump per `from_app` / `for_buffer` call; the
-    /// underlying `VisibleRows` is owned by the worker's
-    /// `ArcSwap` cell, so the snapshot read is wait-free.
-    pub visible_rows: Arc<lattice_host::render_state::VisibleRows>,
+    // display-line B4.2: the `visible_rows` field (worker-published
+    // pre-paint rows) was deleted. The TUI document body migrated to
+    // the canonical `DisplayMatrix` (B2.4); markdown / help / messages
+    // bodies read their own sources. Nothing in the compose chain read
+    // this field any more — it was constructed but never consumed.
     pub show_line_numbers: bool,
     /// M.4: resolved per-pane in `for_buffer`; tracks the active
     /// buffer's setting in `from_app`. Reading this through the
@@ -145,16 +133,12 @@ impl<'a> FrameView<'a> {
     /// lock; the App's main loop owns the underlying vecs and
     /// the snapshot is consistent at the moment `from_app` runs.
     pub fn from_app(app: &'a App) -> Self {
-        // Perf plan A.2 slice A.2b.2b: read the worker-published
-        // pre-paint rows instead of the legacy `visible_spans`
-        // cell. `RowPrepaint.runs` carries source-style runs
-        // (with inlay runs woven in at the same byte offsets the
-        // overlay code used to splice from `rs.syntax.inlay_hints`),
-        // so the compose loop derives per-row `StyledSpan`s from
-        // this single source of truth — the visible_spans reader
-        // is gone from the active-pane path.
+        // display-line B4.2: the worker-published pre-paint rows the
+        // `FrameView` used to snapshot here were deleted with the
+        // overlay worker's span/row cache. The TUI document body reads
+        // the canonical `DisplayMatrix` (B2.4) directly in the compose
+        // loop; nothing on `FrameView` consumed the prepaint rows.
         let rs = app.render_state.load_full();
-        let rows = rs.syntax.visible_rows.load_full();
         // Slice 3c.extension.fold-rs: pre-cache per-frame option +
         // mode-gate reads. One `read_editor` each at frame entry
         // (~7 RPCs total per frame) replaces N actor RPCs in the
@@ -175,9 +159,6 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.load().folds.clone(),
-            // A.2b.2b: one Arc bump; the worker owns the underlying
-            // `VisibleRows` (writes via `ArcSwap::store`).
-            visible_rows: rows,
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
             foldenable,
@@ -199,10 +180,9 @@ impl<'a> FrameView<'a> {
     /// DR.2: inactive panes now source decorations from their own
     /// per-pane `DisplayMatrix`; `pane_highlights` is retired.
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
-        // A.2b.2b: same migration as `from_app` — read pre-paint
-        // rows through the worker-published cell.
+        // display-line B4.2: same as `from_app` — the deleted
+        // prepaint-rows cell is no longer snapshotted here.
         let rs = app.render_state.load_full();
-        let rows = rs.syntax.visible_rows.load_full();
         let foldenable = app.foldenable();
         // Perf plan C: same one-per-frame index as `from_app`. The
         // fold snapshot is doc-scoped (`active_document.folds`); the
@@ -218,8 +198,6 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.load().folds.clone(),
-            // A.2b.2b: one Arc bump (worker owns the cell).
-            visible_rows: rows,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -355,11 +333,13 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     let tabline_visible = app.render_state.load().tabs.visible;
     let tabline_rows: u16 = if tabline_visible { 1 } else { 0 };
 
+    // MO.4.b / Option-A: global modeline removed. Each pane owns its
+    // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
+    // Layout: tabline (0/1) | panes (Min) | cmdline (1) | candidates (opt).
     let constraints: Vec<Constraint> = if extra_rows > 0 {
         vec![
             Constraint::Length(tabline_rows),      // tabline (0 or 1)
-            Constraint::Min(1),                    // buffer
-            Constraint::Length(1),                 // mode line
+            Constraint::Min(1),                    // panes (each carries its own status row)
             Constraint::Length(1),                 // cmdline / picker query
             Constraint::Length(extra_rows as u16), // candidate list (bottom)
         ]
@@ -368,7 +348,6 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
             Constraint::Length(tabline_rows),
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ]
     };
     let chunks = Layout::default()
@@ -376,21 +355,20 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         .constraints(constraints)
         .split(frame.area());
 
-    // Tabline at chunks[0] (length=0 when invisible draws
-    // nothing); panes/modeline/cmdline indices shift by one.
+    // chunks[0] = tabline (0-height when hidden),
+    // chunks[1] = pane area, chunks[2] = cmdline, chunks[3] = candidates.
     if tabline_visible {
         draw_tabline(frame, chunks[0], app);
     }
     draw_panes(frame, chunks[1], app, snap);
-    draw_mode_line(frame, chunks[2], app, snap);
     // Picker query claims the cmdline row only in minibuffer
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
     // instead.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
-        draw_picker_prompt(frame, chunks[3], app);
+        draw_picker_prompt(frame, chunks[2], app);
     } else {
-        draw_command_or_echo(frame, chunks[3], app);
+        draw_command_or_echo(frame, chunks[2], app);
     }
     // Help popup overlay -- painted whenever a popup_buffer is
     // set AND the active pane isn't already showing it as an
@@ -415,9 +393,9 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
     if picker_rows > 0 {
-        draw_picker_candidates(frame, chunks[4], app);
+        draw_picker_candidates(frame, chunks[3], app);
     } else if completion_rows > 0 {
-        draw_completion_popup(frame, chunks[4], app);
+        draw_completion_popup(frame, chunks[3], app);
     }
     // Picker popup overlay -- only drawn when `picker.display`
     // is `"popup"` and a picker is open. Floats centered over
@@ -1645,6 +1623,11 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // pane to the registered help buffer, where pane.buffer_id is
     // the right key.)
     let (highlights, _links) = help_render_data(app, popup_id, &help);
+    // T.5.b: resolve syntax styles through the active theme's
+    // resolved table (loaded once for the whole list).
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1654,7 +1637,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans);
+            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
             // Hlsearch / current_match overlays -- same painter
             // the document path and the in-pane help variant use,
             // so `/foo` in a focused popup shows highlights too.
@@ -1666,15 +1649,24 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
                     if let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                     {
-                        body =
-                            apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                        body = apply_match_overlay(
+                            body,
+                            overlay_start,
+                            overlay_end,
+                            hlsearch_style(&help_resolved, &help_ids),
+                        );
                     }
                 }
                 if let Some(range) = app.ad().current_match
                     && let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                 {
-                    body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        match_style(&help_resolved, &help_ids),
+                    );
                 }
             }
             Line::from(body)
@@ -2183,6 +2175,10 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Slice 3c.final.B (group 1): pane via `app.panes()`.
     let render_id = app.panes().tree.active().buffer_id;
     let (highlights, _links) = help_render_data(app, render_id, &help);
+    // T.5.b: resolve syntax styles through the resolved table.
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -2192,7 +2188,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans);
+            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
             let line_len = l.len();
             // Hlsearch overlay: every `app.editor.all_matches` range that
             // touches this line. Same painter the document path
@@ -2201,7 +2197,12 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
                 {
-                    body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        hlsearch_style(&help_resolved, &help_ids),
+                    );
                 }
             }
             // Current-match (the one the cursor is on after `/`
@@ -2210,7 +2211,12 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
                 && let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
             {
-                body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+                body = apply_match_overlay(
+                    body,
+                    overlay_start,
+                    overlay_end,
+                    match_style(&help_resolved, &help_ids),
+                );
             }
             Line::from(body)
         })
@@ -2252,6 +2258,10 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     // M.3.2.b.2: read help highlights via buffer-locals.
     // `pane.buffer_id` is the registered id (the locals key).
     let (highlights, _links) = help_render_data(app, pane.buffer_id, &help);
+    // T.5.b: resolve syntax styles through the resolved table.
+    let rs_help = app.render_state.load();
+    let help_resolved = rs_help.resolved_theme.clone();
+    let help_ids = rs_help.theme_ids;
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -2261,7 +2271,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            Line::from(render_help_line(l, &spans))
+            Line::from(render_help_line(l, &spans, &help_resolved, &help_ids))
         })
         .collect();
     frame.render_widget(Paragraph::new(visible), area);
@@ -2304,9 +2314,9 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // `app.editor.cursor` (which is help's). draw_inactive_document
         // already reads pane state, so we route there.
         let is_active = idx == active && pane_buffer_matches_active(app, idx);
-        // Reserve the bottom row for the per-pane status line, but
-        // only when there's more than one pane visible.
-        let (content_rect, status_rect) = if multi && rect.height >= 2 {
+        // Every pane reserves its bottom row for the per-pane status
+        // line (Option A: global modeline removed).
+        let (content_rect, status_rect) = if rect.height >= 2 {
             let content_h = rect.height - 1;
             (
                 Rect {
@@ -2825,9 +2835,18 @@ fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRec
 }
 
 /// One-row status line at the bottom of a pane (vim's "statusline"
-/// per-window). Active pane is reverse-videoed; inactive panes are
-/// dim. Format: `path  line:col  [+]` (path, position, dirty
-/// marker). Help and file-tree get their own labels.
+/// per-window). ML.1a-render: the row is laid out from the registered
+/// modeline elements (`RenderState.modeline_elements`) in three zones —
+/// Left (flush-left), Right (flush-right, the block right-aligned),
+/// Center (centered in the gap). Built-in (`core.*`) content is resolved
+/// per pane *host-side* (`lattice_host::modeline`), so the TUI and GPUI
+/// peers paint identical content; only this layout/paint is
+/// renderer-specific. The Center zone is fed by the temporary mode-items
+/// pull until ML.3 migrates LSP/diff to registered elements.
+///
+/// Active pane is reverse-videoed; inactive panes are dim — one
+/// `pane_status_*` style for the whole row until ML.1b's per-role
+/// theming resolves each span's `ModelineRole` through `ResolvedTheme`.
 fn draw_pane_status_line(
     frame: &mut Frame,
     area: Rect,
@@ -2835,30 +2854,222 @@ fn draw_pane_status_line(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    // M.4: status label resolves through `App::pane_status_label`,
-    // which folds the per-`BufferKind` formatting behind a single
-    // method. The renderer doesn't `match buffer.kind` -- the
-    // App-side dispatch can later route through mode-contributed
-    // status renderers without changing this call site.
-    let label = app.pane_status_label(pane);
-    let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
-    let style = if is_active {
-        app.theme.pane_status_active
-    } else {
-        app.theme.pane_status_inactive
-    };
-    // Compose: " label                pos "
     let width = area.width as usize;
-    let total_text_len = label.chars().count() + pos.chars().count() + 3; // 1 lead + 2 sep
-    let pad = if width > total_text_len {
-        width - total_text_len
-    } else {
-        1
+    if width == 0 {
+        return;
+    }
+    let spans = modeline_spans(app, pane, is_active, width);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// One styled run within the modeline: text + its theme role (`None` =
+/// neutral padding / separator, painted as the bar base only).
+type ModelineSeg = (String, Option<lattice_mode::ModelineRole>);
+
+/// Flatten an element's content into role-tagged runs, dropping empty
+/// spans.
+fn content_to_runs(content: lattice_mode::ElementContent) -> Vec<ModelineSeg> {
+    content
+        .spans
+        .into_iter()
+        .filter(|s| !s.text.is_empty())
+        .map(|s| (s.text, Some(s.role)))
+        .collect()
+}
+
+/// Build the per-Span modeline line for `pane` (ML.1b). Resolves each
+/// zone's content into role-tagged runs via the shared host resolver,
+/// lays them out into `width` columns, then maps each role → a ratatui
+/// style through the theme cache ([`crate::theme::Theme::modeline_style`]).
+/// Extracted from [`draw_pane_status_line`] so tests can assert span text
+/// + style without a frame. The whole row sits on the active/inactive
+/// bar; per-role foregrounds compose over it.
+fn modeline_spans(
+    app: &App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let rs = app.render_state.load();
+    let snap = &rs.modeline_elements;
+    // The file-tree / oil / help custom label (M.4 provider mechanism) is
+    // the one renderer-resolved content input; it overrides `core.path`.
+    // Resolved once and threaded into the shared host resolver so the
+    // assembly stays common across peers.
+    let provider_label = app
+        .pane_render_provider(pane.buffer_id)
+        .map(|p| (p.status)(app, pane));
+    let provider_ref = provider_label.as_deref();
+
+    // ML.5: the `ui.modeline.{left,center,right}` config drives zone
+    // membership + order; `resolve_layout` returns the per-zone
+    // descriptor lists (Auto = descriptor placement) + the configured
+    // separator. The renderer still resolves each descriptor's content
+    // itself (built-ins host-side, pushed from the snapshot).
+    let layout = lattice_host::modeline::resolve_layout(&snap.registry, &rs.options.config);
+    let sep = layout.separator.clone();
+    let resolve_zone = |els: &[&lattice_mode::ModelineElement]| -> Vec<ModelineSeg> {
+        let mut runs: Vec<ModelineSeg> = Vec::new();
+        for el in els {
+            // §7: Global-scope elements (e.g. the diff summary) render
+            // only on the active pane; PaneLocal is the default.
+            if matches!(el.scope, lattice_mode::Scope::Global) && !is_active {
+                continue;
+            }
+            let id = el.id.as_str();
+            let content = if id.starts_with("core.") {
+                lattice_host::modeline::resolve_builtin_content(
+                    id,
+                    pane,
+                    is_active,
+                    &rs,
+                    provider_ref,
+                )
+            } else {
+                // Pushed elements (modes / plugins, ML.3): content from
+                // the published store, resolved per the descriptor's
+                // scope against this pane's buffer (PaneLocal) or the
+                // global slot.
+                snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
+            };
+            if content.is_empty() {
+                continue;
+            }
+            // Configured separator between elements within a zone
+            // (`ui.modeline.separator`, default a single space).
+            if !runs.is_empty() && !sep.is_empty() {
+                runs.push((sep.clone(), None));
+            }
+            runs.extend(content_to_runs(content));
+        }
+        runs
     };
-    let line_text = format!(" {label}{}{pos} ", " ".repeat(pad));
-    let truncated: String = line_text.chars().take(width).collect();
-    let para = Paragraph::new(Line::from(Span::styled(truncated, style)));
-    frame.render_widget(para, area);
+
+    let left = resolve_zone(&layout.left);
+    let center = resolve_zone(&layout.center);
+    let right = resolve_zone(&layout.right);
+
+    let segments = compose_modeline_segments(width, layout.padding, left, center, right);
+    segments
+        .into_iter()
+        .map(|(text, role)| {
+            let style = app
+                .theme
+                .modeline_style(role.as_ref().map(|r| r.as_str()), is_active);
+            Span::styled(text, style)
+        })
+        .collect()
+}
+
+/// Truncate `s` to at most `max` display columns (char count), adding a
+/// `…` ellipsis when it overflows. `max == 0` ⇒ empty; `max == 1` ⇒ just
+/// the ellipsis. Never panics.
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    match max {
+        0 => String::new(),
+        1 => "…".to_string(),
+        _ => {
+            let mut out: String = s.chars().take(max - 1).collect();
+            out.push('…');
+            out
+        }
+    }
+}
+
+/// Total display width (char count) of a run list.
+fn runs_width(runs: &[ModelineSeg]) -> usize {
+    runs.iter().map(|(t, _)| t.chars().count()).sum()
+}
+
+/// Truncate a run list to at most `max` columns, ellipsising the run that
+/// straddles the boundary (preserving its role). Never panics.
+fn truncate_runs(runs: Vec<ModelineSeg>, max: usize) -> Vec<ModelineSeg> {
+    let mut out: Vec<ModelineSeg> = Vec::new();
+    let mut used = 0usize;
+    for (text, role) in runs {
+        let w = text.chars().count();
+        if used + w <= max {
+            used += w;
+            out.push((text, role));
+        } else {
+            let remaining = max - used;
+            if remaining > 0 {
+                out.push((truncate_to(&text, remaining), role));
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// Lay three role-tagged run lists into a `width`-wide row of styled
+/// segments: Left flush-left, Right flush-right (block right-aligned),
+/// Center centered in the gap. On overflow, sacrifice **Center first,
+/// then Right, then Left** (design §7) via greedy keep-priority
+/// Left > Right > Center, each block ellipsised to its remaining budget.
+/// Padding / separator segments carry no role (`None`) → the bar base.
+/// The returned segments sum to exactly `width` columns (empty when
+/// `width == 0`). Saturating throughout: never panics, blocks never
+/// overlap (≥1 column between any two non-empty blocks).
+fn compose_modeline_segments(
+    width: usize,
+    padding: usize,
+    left: Vec<ModelineSeg>,
+    center: Vec<ModelineSeg>,
+    right: Vec<ModelineSeg>,
+) -> Vec<ModelineSeg> {
+    if width == 0 {
+        return Vec::new();
+    }
+    // `ui.modeline.padding`: reserve a blank margin on each edge, lay the
+    // zones out into the inner width, then bookend with the margins so the
+    // total is still exactly `width`. Capped at half-width so a huge
+    // padding on a narrow pane can't underflow.
+    let pad = padding.min(width / 2);
+    if pad > 0 {
+        let inner = compose_modeline_segments(width - 2 * pad, 0, left, center, right);
+        let mut out: Vec<ModelineSeg> = Vec::with_capacity(inner.len() + 2);
+        out.push((" ".repeat(pad), None));
+        out.extend(inner);
+        out.push((" ".repeat(pad), None));
+        return out;
+    }
+    // Left is highest-priority: keep as much as fits.
+    let left = truncate_runs(left, width);
+    let used_l = runs_width(&left);
+    // Right gets the remainder after Left + a 1-col separator.
+    let sep_lr = if used_l > 0 { 1 } else { 0 };
+    let right = truncate_runs(right, width.saturating_sub(used_l + sep_lr));
+    let used_r = runs_width(&right);
+    // Center gets the gap minus a 1-col pad on each abutting side.
+    let pad_l = if used_l > 0 { 1 } else { 0 };
+    let pad_r = if used_r > 0 { 1 } else { 0 };
+    let center_budget = width.saturating_sub(used_l + used_r + pad_l + pad_r);
+    let center = truncate_runs(center, center_budget);
+    let used_c = runs_width(&center);
+
+    let mut out: Vec<ModelineSeg> = Vec::new();
+    out.extend(left);
+    // Region between the left block and the right block (≥ 0 by budget).
+    let region_w = width - used_l - used_r;
+    if used_c > 0 {
+        let offset = (region_w - used_c) / 2;
+        if offset > 0 {
+            out.push((" ".repeat(offset), None));
+        }
+        out.extend(center);
+        let after = region_w - used_c - offset;
+        if after > 0 {
+            out.push((" ".repeat(after), None));
+        }
+    } else if region_w > 0 {
+        out.push((" ".repeat(region_w), None));
+    }
+    out.extend(right);
+    out
 }
 
 /// DR.3 (decoration-retention): render a Document pane that isn't
@@ -3169,215 +3380,12 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
-/// Modeline segment listing the LSP servers attached to the active
-/// document buffer. Empty string when no servers are attached, when
-/// the active buffer has no URI yet. Reads are wait-free against
-/// the supervisor's `ArcSwap<SupervisorSnapshot>`; the previous
-/// `try_lock` fallback (would blank the modeline whenever an
-/// async path held the supervisor mutex) is gone. Multiple
-/// servers are joined with `+` (`[lsp:rust+typos]`); the §5.4
-/// multi-server merge model means more than one is legitimate.
-/// D.3.g (2026-05-29): modeline diff-mode indicator. Returns
-/// `[diff: N hunks]` when the active document has an open
-/// `DiffSession`, empty string otherwise. The baseline
-/// descriptor (on-disk path / git ref / sibling buffer) isn't
-/// surfaced here in v1 — the hunk count is the load-bearing
-/// signal that diff mode is active; a future D.3.h headerline
-/// carries the verbose baseline label. `0 hunks` still shows
-/// (the session is open but the buffer happens to match
-/// baseline) so the user has a clear "diff is on" signal even
-/// when no changes are visible yet.
-fn active_diff_segment(app: &App) -> String {
-    let rs = app.render_state.load();
-    let Some(n) = rs.diff.active_session_hunk_count else {
-        return String::new();
-    };
-    match n {
-        0 => "[diff: 0 hunks]".to_string(),
-        1 => "[diff: 1 hunk]".to_string(),
-        n => format!("[diff: {n} hunks]"),
-    }
-}
-
-fn active_lsp_segment(app: &App) -> String {
-    // M.5.6: hide the modeline LSP segment when `lsp-mode` is
-    // off. The supervisor may still hold attachments (other
-    // buffers can still be tracked); we don't surface this
-    // buffer's quiet state via a stale `[lsp:...]` indicator.
-    if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
-        return String::new();
-    }
-    // Slice 3c.final.B (group 1): URI lookup via `app.buffers()`.
-    let buffers = app.buffers();
-    let Some(uri) = buffers.uris.get(&app.ad().document_buffer_id) else {
-        return String::new();
-    };
-    // Slice 3c.final.B (group 4): supervisor handle via published
-    // substate; `servers_for` stays wait-free behind its own ArcSwap.
-    let rs = app.render_state.load();
-    let handles = rs.lsp.supervisor.servers_for(uri);
-    if handles.is_empty() {
-        return String::new();
-    }
-    let ids: Vec<&str> = handles.iter().map(|h| h.server_id()).collect();
-    let base = format!("[lsp:{}]", ids.join("+"));
-    // 4.4.c: append a progress segment when `lsp-progress-mode`
-    // is on and the supervisor has an active progress entry for
-    // one of the buffer's attached servers. The accumulator is
-    // keyed by (server_id, token); we pick the entry whose
-    // server is attached to this buffer. Stable selection: take
-    // the highest-percentage active entry, breaking ties by
-    // server-id then token so the modeline doesn't flicker
-    // between equal candidates frame-to-frame.
-    if !app.lsp_progress_mode_enabled_for(app.ad().document_buffer_id) {
-        return base;
-    }
-    let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
-    let mut best: Option<&lattice_lsp::LspProgressUpdate> = None;
-    // Slice 3c.final.B (group 4): progress via published substate.
-    for ((sid, _tok), update) in rs.lsp.progress.iter() {
-        if !attached.contains(sid.as_ref()) {
-            continue;
-        }
-        if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
-            continue;
-        }
-        best = match best {
-            None => Some(update),
-            Some(cur) => {
-                let cur_key = (
-                    cur.percentage.unwrap_or(0),
-                    cur.server_id.as_ref(),
-                    cur.token.as_str(),
-                );
-                let new_key = (
-                    update.percentage.unwrap_or(0),
-                    update.server_id.as_ref(),
-                    update.token.as_str(),
-                );
-                if new_key > cur_key {
-                    Some(update)
-                } else {
-                    Some(cur)
-                }
-            }
-        };
-    }
-    let Some(p) = best else {
-        return base;
-    };
-    let mut detail = String::new();
-    if let Some(title) = &p.title {
-        detail.push_str(title);
-    }
-    if let Some(msg) = &p.message {
-        if !detail.is_empty() {
-            detail.push_str(": ");
-        }
-        detail.push_str(msg);
-    }
-    if let Some(pct) = p.percentage {
-        if !detail.is_empty() {
-            detail.push(' ');
-        }
-        detail.push_str(&format!("{pct}%"));
-    }
-    if detail.is_empty() {
-        detail.push_str(&p.token);
-    }
-    format!("{base} [{detail}]")
-}
-
-/// Resolve the active buffer's modeline label.
-/// Path -> registry `name` -> "[no name]". Mirrors
-/// `pane_status_label`'s fallback so the global modeline and
-/// per-pane status line agree on synthetic-buffer labels.
-pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
-    let ad = app.ad();
-    snap.path()
-        .map(|p| p.display().to_string())
-        // Slice 3c.final.B (group 1): registry lookup via
-        // `app.buffers()`.
-        //
-        // 2026-05-25: try the active *pane* buffer first so
-        // non-Document panes (Terminal, FileTree, Oil, ...)
-        // surface their registered name ("[zsh]", "[oil]", ...)
-        // rather than falling back to the previously-active
-        // Document's id (which gives `[no name]` when the
-        // pane never had one). Documents land on the same
-        // path because their pane id == document id.
-        .or_else(|| app.buffers().registry.name_of(ad.active_pane_buffer_id))
-        .or_else(|| app.buffers().registry.name_of(ad.document_buffer_id))
-        .unwrap_or_else(|| "[no name]".to_string())
-}
-
-/// Whether the active buffer is a synthetic owner-streamed
-/// Document (`*lsp*`, `*messages*`, ...). Such buffers suppress
-/// the modified marker because the user can't "save" their
-/// streaming state.
-pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
-    // Slice 3c.final.E.swap: registry lookup via published
-    // `buffers()` sub-state.
-    app.buffers()
-        .registry
-        .name_of(app.ad().document_buffer_id)
-        .is_some()
-}
-
-fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
-    // §5.6.8: the renderer reads through a single arc-swap
-    // `Cache::load` per frame (loaded by the runtime) and reuses
-    // that snapshot for the entire frame -- never round-trips the
-    // actor.
-    let path = modeline_label(app, snap);
-    // Suppress the `[+]` marker for synthetic buffers (owner-
-    // streamed, no user-actionable save semantic) -- mirrors the
-    // dirty-flag-suppression slice for pane_status_label / :ls /
-    // picker.
-    let dirty = if !modeline_is_synthetic(app) && snap.dirty {
-        "[+]"
-    } else {
-        "   "
-    };
-    let pos = format!("{}:{}", app.ad().cursor.line + 1, app.ad().cursor.byte);
-    let lang = Lang::detect_from_path(snap.path()).label();
-    let mode_label = app.modal_label();
-    let lsp_segment = active_lsp_segment(app);
-    let diff_segment = active_diff_segment(app);
-
-    let left = if diff_segment.is_empty() {
-        format!("[{mode_label}] {dirty} {path}")
-    } else {
-        // D.3.g (2026-05-29): diff-mode indicator sits between
-        // the mode label and the path so it's adjacent to the
-        // modal-state badge — Vim's `:set statusline` puts
-        // `[diff]` similarly close to the mode flag.
-        format!("[{mode_label}] {diff_segment} {dirty} {path}")
-    };
-    let right = if lsp_segment.is_empty() {
-        format!("{pos}  {lang}")
-    } else {
-        format!("{pos}  {lang}  {lsp_segment}")
-    };
-
-    let total = (area.width as usize).max(left.len() + right.len() + 1);
-    let pad = total - left.len() - right.len();
-    let line = format!("{left}{:pad$}{right}", "", pad = pad);
-
-    let para = Paragraph::new(Line::from(vec![Span::styled(
-        line,
-        TuiStyle::default()
-            .fg(Color::Black)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    frame.render_widget(para, area);
-}
 
 /// Produce the visible buffer lines as `ratatui::text::Line`s, including
 /// gutter (line numbers), tab expansion, and styled spans pulled from
-/// `app.editor.visible_highlights` (populated by the runtime via
-/// `App::refresh_highlights`).
+/// the canonical `DisplayMatrix` (rebuilt off the UI thread by the
+/// cells worker). display-line B4.2: the old `app.editor.visible_highlights`
+/// span cache + `App::refresh_highlights` prime were deleted.
 ///
 /// Spans are owned (`Cow::Owned`) so the returned `Line`s outlive the
 /// document text we slice out of for this frame. One alloc per visible line
@@ -3577,6 +3585,13 @@ pub(crate) fn compose_pane_lines(
                 std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
             })
     };
+    // Sticky rows occupy the top of the pane; shrink the visible window
+    // so document line 0 (at scroll=0) always renders BELOW the header
+    // and the bottom of the viewport doesn't lose content silently.
+    let sticky_count = virtual_rows_matrix.sticky_rows().count();
+    if sticky_count > 0 {
+        visible.truncate(visible.len().saturating_sub(sticky_count));
+    }
     let body_col_width = buffer_w;
     // W.4 (soft-wrap): `:set wrap`. When on, the per-line body is
     // kept at full width (truncation below is skipped) so
@@ -3616,8 +3631,84 @@ pub(crate) fn compose_pane_lines(
         .unwrap_or_else(|| {
             std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
         });
-    let display_theme = &cells_rs.theme;
+    // T.5.b: the body-compose path resolves syntax styles through
+    // `cells_rs.resolved_theme` + `cells_rs.theme_ids` (the resolved
+    // table) rather than the retired `Theme::syntax_style`.
+    // T.6: the search / selection / doc-highlight / substitute / inlay
+    // overlay stylers read the same resolved table. Bind once here
+    // (`cells_rs` is held for the whole fn) so each call is an O(1)
+    // array index, not a per-overlay name lookup (paramount #1).
+    let overlay_resolved = &cells_rs.resolved_theme;
+    let overlay_ids = &cells_rs.theme_ids;
+    // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
+    // pane's buffer once per frame; accumulate GutterDecoration
+    // contributions into per-line maps. Replaces per-line RenderState
+    // reads from render_diff_sign_cell / render_diagnostic_severity_cell
+    // — both now read the maps, not the render-state directly.
+    let (diff_gutter, severity_gutter) = {
+        use lattice_mode::{
+            DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
+            ServiceRegistry,
+        };
+        let mut services = ServiceRegistry::new();
+        let rs_deco = app.render_state.load();
+        // DiffDecorationData: active-doc only (sign_map is per active doc).
+        if ctx.buffer_id == app.ad().document_buffer_id {
+            services.register(lattice_host::diff::mode::DiffDecorationData {
+                sign_map: rs_deco.diff.sign_map.clone(),
+            });
+        }
+        // LspDiagnosticsData: gated on lsp_diagnostics_enabled (M.5.6).
+        if view.lsp_diagnostics_enabled {
+            let diagnostics = app
+                .buffer_uri(ctx.buffer_id)
+                .and_then(|u| rs_deco.diagnostics.layer.diagnostics_arc(&u));
+            services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
+        }
+        let deco_ctx = DecorationCtx::new(ctx.buffer_id, &services);
+        let modes_rs = rs_deco.modes.clone();
+        let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
+        let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
+        if let Some(active) = modes_rs.map.get(&ctx.buffer_id) {
+            let registry = &modes_rs.mode_registry;
+            let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
+            if let Some(major) = active.major() {
+                all_ids.push(major);
+            }
+            all_ids.extend_from_slice(active.minors());
+            for id in all_ids {
+                if let Some(mode) = registry.get(id) {
+                    for deco in mode.gutter_decorations(&deco_ctx) {
+                        match deco {
+                            GutterDecoration::Diff { line, kind } => {
+                                diff_map.entry(line).or_insert(kind);
+                            }
+                            GutterDecoration::Severity { line, level } => {
+                                sev_map
+                                    .entry(line)
+                                    .and_modify(|e| {
+                                        if level > *e {
+                                            *e = level;
+                                        }
+                                    })
+                                    .or_insert(level);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (diff_map, sev_map)
+    };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
+    // Sticky pre-pass: render fixed-top rows before the scrollable content.
+    // These are excluded from virtual_rows_at so they don't double-paint.
+    for vrow in virtual_rows_matrix.sticky_rows() {
+        if (out.len() as u32) >= height {
+            break;
+        }
+        out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+    }
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {
         let line_idx = match visible.get(visible_idx) {
@@ -3696,17 +3787,17 @@ pub(crate) fn compose_pane_lines(
             // (boot frames before the first cell-builder publish,
             // or the brief gap during a buffer switch) emit
             // plain-text `Span::raw(line_text)` instead — exactly
-            // what the legacy fallback degraded to once
-            // `visible_rows` ran out of rows. Semantically
-            // equivalent for the user; one source-of-truth from
-            // the code's perspective.
+            // what the legacy fallback degraded to once the prepaint
+            // rows ran out. Semantically equivalent for the user; one
+            // source-of-truth from the code's perspective.
             //
-            // The highlights worker still runs and populates
-            // `view.visible_rows`; markdown / help / messages
-            // bodies (in other render functions) still read from
-            // it. Only the document-body branch in
-            // `compose_visible_lines_inner` is cut over to the
-            // cell-grid.
+            // display-line B4.2: the worker-published prepaint-rows
+            // cell (`view.visible_rows`) was deleted — it had no live
+            // readers left (the document body, markdown, help, and
+            // messages bodies all read their own sources). Only the
+            // overlay worker's `static_overlay_quads` survives as a
+            // worker output. The document-body branch reads the
+            // canonical `DisplayMatrix` below.
             // B2.4 (2026-06-04): consume the canonical `DisplayMatrix`
             // directly — its style-tagged runs resolve to ratatui via the
             // host theme at paint (`display_line_to_source_spans`). Pre-B2.4
@@ -3739,9 +3830,11 @@ pub(crate) fn compose_pane_lines(
                 Vec::new()
             } else {
                 match display_matrix.row_at_source_line(line_idx) {
-                    Some(line) => {
-                        crate::cells_render::display_line_to_source_spans(line, display_theme)
-                    }
+                    Some(line) => crate::cells_render::display_line_to_source_spans(
+                        line,
+                        &cells_rs.resolved_theme,
+                        &cells_rs.theme_ids,
+                    ),
                     None => Vec::new(),
                 }
             };
@@ -3884,14 +3977,23 @@ pub(crate) fn compose_pane_lines(
             let start = (b.start_col as usize).min(line_len);
             let end = ((b.end_col as usize) + 1).min(line_len);
             if start < end {
-                body = apply_match_overlay(body, map_ob(start), map_ob(end), visual_style());
+                body = apply_match_overlay(
+                    body,
+                    map_ob(start),
+                    map_ob(end),
+                    visual_style(overlay_resolved, overlay_ids),
+                );
             }
         } else if let Some(range) = visual_range
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
-            body =
-                apply_match_overlay(body, map_ob(overlay_start), map_ob(overlay_end), visual_style());
+            body = apply_match_overlay(
+                body,
+                map_ob(overlay_start),
+                map_ob(overlay_end),
+                visual_style(overlay_resolved, overlay_ids),
+            );
         }
         // Perf plan B.2 slice B.2.b: hlsearch (`all_matches`) overlay
         // now reads from the worker's per-row bucket. The bucket is
@@ -3922,7 +4024,7 @@ pub(crate) fn compose_pane_lines(
                                 body,
                                 map_ob(start),
                                 map_ob(end),
-                                hlsearch_style(),
+                                hlsearch_style(overlay_resolved, overlay_ids),
                             );
                         }
                     }
@@ -3936,7 +4038,7 @@ pub(crate) fn compose_pane_lines(
                             body,
                             map_ob(overlay_start),
                             map_ob(overlay_end),
-                            hlsearch_style(),
+                            hlsearch_style(overlay_resolved, overlay_ids),
                         );
                     }
                 }
@@ -3949,7 +4051,7 @@ pub(crate) fn compose_pane_lines(
                     body,
                     map_ob(overlay_start),
                     map_ob(overlay_end),
-                    match_style(),
+                    match_style(overlay_resolved, overlay_ids),
                 );
             }
         }
@@ -4035,7 +4137,7 @@ pub(crate) fn compose_pane_lines(
                     continue;
                 }
                 body =
-                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind));
+                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind, overlay_resolved, overlay_ids));
             }
         }
         // Perf plan A.2 slice A.2b.2: `inlayHint` virtual-text
@@ -4049,12 +4151,12 @@ pub(crate) fn compose_pane_lines(
         // splices in reverse byte order so earlier splices don't
         // shift later ones.
         //
-        // Full migration of the active-pane compose loop onto
-        // `rs.syntax.visible_rows` (which would also drop this
-        // post-hoc splice — the worker would already have woven
-        // it) is deferred to slice A.2b.2b. This slice keeps the
-        // existing Span-mutation chain intact and just collapses
-        // the inlay source-of-truth to the canonical one.
+        // display-line B-series: the active-pane document body reads
+        // the canonical `DisplayMatrix` (which already weaves inlay
+        // text into its runs); this post-hoc inlay splice covers the
+        // markdown / help / messages bodies that still build spans
+        // from raw line text. (The old prepaint-rows cell that would
+        // have woven it was deleted in B4.2.)
         //
         // DR.3: inlay hints are a buffer-intrinsic decoration shown on
         // BOTH panes. The active pane reads the publish-time-baked
@@ -4082,7 +4184,7 @@ pub(crate) fn compose_pane_lines(
                         body,
                         map_ob((h.byte as usize).min(line_len)),
                         h.text.clone(),
-                        inlay_hint_style(),
+                        inlay_hint_style(overlay_resolved, overlay_ids),
                     );
                 }
             }
@@ -4111,9 +4213,34 @@ pub(crate) fn compose_pane_lines(
                     body,
                     map_ob(src_byte.min(line_len)),
                     text,
-                    inlay_hint_style(),
+                    inlay_hint_style(overlay_resolved, overlay_ids),
                 );
             }
+        }
+        // L4a.3 (lsp-architecture.md §15): inline cursor-line diagnostic
+        // summary. The host idle gate (L4a.2) publishes
+        // `rs.diagnostics.inline_summary = Some((line, summary))` for the
+        // ACTIVE buffer's cursor line; render it as trailing eol virtual
+        // text, severity-themed to match the gutter glyph. Active pane
+        // only — unlike the buffer-intrinsic inlay/underline decorations
+        // above, the cursor-line summary is interaction state tied to the
+        // focused cursor (Helix/Zed show it only in the focused view).
+        // Spliced at `usize::MAX` so it appends at the very end of the
+        // rendered line — AFTER any inlay-hint virtual text spliced
+        // above — rather than at the source-text end (which would land
+        // it before trailing inlays, mid-line). The leading gap
+        // separates it from the code.
+        if ctx.is_active
+            && view.lsp_diagnostics_enabled
+            && let Some((sum_line, summary)) = rs.diagnostics.inline_summary.as_ref()
+            && *sum_line == line_idx
+        {
+            body = splice_virtual_text_into_spans(
+                body,
+                usize::MAX,
+                format!("    {}", summary.text),
+                diagnostic_summary_style(summary.severity_rank, view),
+            );
         }
         // Substitute live preview overlay (DESIGN.md §5.9.10): paint
         // the about-to-be-replaced ranges in a strike-through-ish
@@ -4137,7 +4264,7 @@ pub(crate) fn compose_pane_lines(
                                 body,
                                 map_ob(start),
                                 map_ob(end),
-                                substitute_preview_style(),
+                                substitute_preview_style(overlay_resolved, overlay_ids),
                             );
                             found_any = true;
                         }
@@ -4156,7 +4283,7 @@ pub(crate) fn compose_pane_lines(
                             body,
                             map_ob(overlay_start),
                             map_ob(overlay_end),
-                            substitute_preview_style(),
+                            substitute_preview_style(overlay_resolved, overlay_ids),
                         );
                     }
                 }
@@ -4240,14 +4367,18 @@ pub(crate) fn compose_pane_lines(
         // `ctx.buffer_id` so an inactive pane shows ITS buffer's
         // severity glyph (was a blank cell pre-merge). Active pane's
         // id is the active doc → byte-identical.
-        let severity_cell = render_diagnostic_severity_cell(view, ctx.buffer_id, line_idx);
+        let severity_cell = render_diagnostic_severity_cell(
+            severity_gutter.get(&line_idx).copied(),
+            view,
+        );
         // D.3.d.1: diff sign cell sits LEFT of line numbers
         // (between severity and gutter) — matches the editor
         // convention used by Vim signcolumn, Helix, Zed,
         // VSCode, JetBrains. LSP severity and diff signs
         // occupy adjacent dedicated columns so the two
         // decoration types don't compete (Helix-style).
-        let diff_sign_cell = render_diff_sign_cell(view, line_idx);
+        let diff_sign_cell =
+            render_diff_sign_cell(diff_gutter.get(&line_idx).copied(), view);
         // D.3.e: line-background tint. Applied AFTER all other
         // body overlays (whitespace decoration, hlsearch,
         // visual selection, etc.) — the tint sits BEHIND the
@@ -4333,11 +4464,20 @@ pub(crate) fn compose_pane_lines(
     out
 }
 
-fn hlsearch_style() -> TuiStyle {
-    // Softer than the primary match (which is yellow-bg). Cyan-bg reads
-    // as "another instance of what you're searching for" without
-    // stealing attention from the cursor's match.
-    TuiStyle::default().bg(Color::Cyan).fg(Color::Black)
+fn hlsearch_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: hlsearch is now a BACKGROUND tint resolved from
+    // `search.match` (both renderers agree; the legacy cyan-fg recolor
+    // is retired). Softer than the current match so it reads as
+    // "another instance of what you're searching for".
+    let bg = resolved
+        .get(ids.search_match)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Cyan);
+    TuiStyle::default().bg(bg)
 }
 
 /// 4.4.e: `documentHighlight` overlay style. Soft tint that
@@ -4354,13 +4494,23 @@ fn hlsearch_style() -> TuiStyle {
 /// (diagnostics underline, visual selection bg, hlsearch).
 fn document_highlight_style(
     kind: Option<lattice_lsp::lsp_types::DocumentHighlightKind>,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> TuiStyle {
     use lattice_lsp::lsp_types::DocumentHighlightKind;
-    let bg = match kind {
-        Some(DocumentHighlightKind::READ) => Color::Rgb(20, 50, 25),
-        Some(DocumentHighlightKind::WRITE) => Color::Rgb(60, 20, 20),
-        _ => Color::Rgb(20, 30, 60),
+    // T.6: the 3 distinct kinds resolve from the registered
+    // `doc_highlight.{read,write,text}` elements (both renderers honor
+    // all three). Fallbacks mirror the legacy literals.
+    let (id, fallback) = match kind {
+        Some(DocumentHighlightKind::READ) => (ids.doc_highlight_read, Color::Rgb(20, 50, 25)),
+        Some(DocumentHighlightKind::WRITE) => (ids.doc_highlight_write, Color::Rgb(60, 20, 20)),
+        _ => (ids.doc_highlight_text, Color::Rgb(20, 30, 60)),
     };
+    let bg = resolved
+        .get(id)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(fallback);
     TuiStyle::default().bg(bg)
 }
 
@@ -4369,10 +4519,20 @@ fn document_highlight_style(
 /// hit Enter" -- distinct from hlsearch's "this is what your
 /// search is finding" cyan, and distinct from the current-match
 /// yellow.
-fn substitute_preview_style() -> TuiStyle {
+fn substitute_preview_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: bg resolves from `substitute.preview` (shared with GPUI).
+    // The CROSSED_OUT strikethrough stays TUI-only ("this is going to
+    // be replaced if you hit Enter").
+    let bg = resolved
+        .get(ids.substitute_preview)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Magenta);
     TuiStyle::default()
-        .bg(Color::Magenta)
-        .fg(Color::Black)
+        .bg(bg)
         .add_modifier(Modifier::CROSSED_OUT)
 }
 
@@ -4403,13 +4563,18 @@ fn visual_selection_range(app: &App) -> Option<ProtoRange> {
     app.ad().visual_range
 }
 
-fn visual_style() -> TuiStyle {
-    // Distinct from the search-match style. Reverse video reads as
-    // "selected" in vim's terminal default.
-    TuiStyle::default()
-        .bg(Color::Blue)
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD)
+fn visual_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: visual selection bg resolves from `selection` (shared with
+    // GPUI's selection quad). Distinct from the search-match style.
+    let bg = resolved
+        .get(ids.selection)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Blue);
+    TuiStyle::default().bg(bg)
 }
 
 /// If `range` covers any bytes on `line_idx`, return the within-line
@@ -4476,11 +4641,19 @@ pub(crate) fn apply_match_overlay(
     out
 }
 
-fn match_style() -> TuiStyle {
-    TuiStyle::default()
-        .bg(Color::Yellow)
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD)
+fn match_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: the current search match resolves from `search.current` as a
+    // BACKGROUND tint (both renderers agree; the legacy yellow-fg
+    // recolor is retired).
+    let bg = resolved
+        .get(ids.search_current)
+        .bg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::Yellow);
+    TuiStyle::default().bg(bg)
 }
 
 /// 4.4.g: splice `virtual_text` into `spans` at `byte_offset`
@@ -4549,10 +4722,38 @@ pub(crate) fn splice_virtual_text_into_spans(
 /// content" -- italic + dim gray on default bg. Kind-specific
 /// hue could differentiate type vs parameter hints in a
 /// follow-up; v1 keeps a single style for simplicity.
-fn inlay_hint_style() -> TuiStyle {
+fn inlay_hint_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    // T.6: inlay-hint fg resolves from `inlay.hint` (shared with GPUI's
+    // `inlay_color`). The italic modifier reads as "annotation, not
+    // actual buffer content".
+    let fg = resolved
+        .get(ids.inlay_hint)
+        .fg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::DarkGray);
     TuiStyle::default()
-        .fg(Color::DarkGray)
+        .fg(fg)
         .add_modifier(Modifier::ITALIC)
+}
+
+/// L4a.3 (lsp-architecture.md §15): style for the inline end-of-line
+/// diagnostic summary. Reuses the gutter's per-severity themed style
+/// (so the eol text colour matches the gutter glyph exactly) and adds
+/// italic to read as virtual, non-document text — the same cue inlay
+/// hints use. `severity_rank` is Error = 0 … Hint = 3 (matching
+/// `lattice_lsp`'s `severity_rank` / the published summary).
+fn diagnostic_summary_style(severity_rank: u8, view: &FrameView<'_>) -> TuiStyle {
+    let theme = &view.app.theme;
+    let base = match severity_rank {
+        0 => theme.diagnostic_error_style,
+        1 => theme.diagnostic_warning_style,
+        2 => theme.diagnostic_info_style,
+        _ => theme.diagnostic_hint_style,
+    };
+    base.add_modifier(Modifier::ITALIC)
 }
 
 /// 4.4.h: apply LSP semantic styling to the spans intersecting
@@ -4793,6 +4994,9 @@ fn virtual_rows_at<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
+        // Sticky rows are rendered at the pane top in the pre-pass;
+        // skip them here so they don't double-paint in the content loop.
+        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
 }
 
 /// D.3.b.1: render a virtual row as a ratatui `Line`.
@@ -4822,24 +5026,32 @@ fn render_virtual_row(
     // merge into a single styled Span so an 80-char
     // baseline line produces ~5 spans, not 80.
     //
-    // D.6.i (2026-05-31): backdrop selection by
-    // `vrow.kind`. Deletion blocks (D.3) + Generic
-    // virtual rows get `theme.diff_deletion_block_bg`
-    // (the historical D.3.b.3 default). Filler rows
-    // (D.4.c / D.6.b) are visual padding for side-by-
-    // side alignment — they paint with no backdrop,
-    // otherwise the deletion-block red would mis-read
-    // them as deleted lines.
+    // D.6.i (2026-05-31): backdrop selection by `vrow.kind`.
+    // `vrow.bg` (0xRRGGBB u32) overrides the kind-based default
+    // when `Some` — sticky rows supply their own retro HUD palette.
+    // Deletion blocks / generic rows fall back to the theme's
+    // diff_deletion_block_bg; filler and sticky rows without an
+    // explicit bg have no backdrop.
     //
-    // `cell.fg = 0` means "use terminal default" (the
-    // renderer leaves fg unset).
-    let bg = match vrow.kind {
-        lattice_cells::VirtualRowKind::DeletionBlock
-        | lattice_cells::VirtualRowKind::Generic => {
-            Some(view.app.theme.diff_deletion_block_bg)
-        }
-        lattice_cells::VirtualRowKind::Filler => None,
-    };
+    // `cell.fg = 0` means "use terminal default" (renderer
+    // leaves fg unset).
+    let bg: Option<Color> = vrow
+        .bg
+        .map(|rgb| {
+            Color::Rgb(
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            )
+        })
+        .or_else(|| match vrow.kind {
+            lattice_cells::VirtualRowKind::DeletionBlock
+            | lattice_cells::VirtualRowKind::Generic => {
+                Some(view.app.theme.diff_deletion_block_bg)
+            }
+            lattice_cells::VirtualRowKind::Filler
+            | lattice_cells::VirtualRowKind::Sticky => None,
+        });
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();
     let mut run_fg: Option<u32> = None;
@@ -4944,97 +5156,59 @@ fn apply_diff_tint(
         .collect()
 }
 
-/// D.3.d.1: render the diff-sign cell for `line_idx`.
-/// Returns one `Span` — the sign character + colour when a
-/// hunk's current side touches the line, blank otherwise.
-/// Reads through `RenderState::diff.sign_map` — the renderer
-/// side of the diff overlay seam. Lock-free per frame; the
-/// renderer never holds an Editor reference.
+/// D.3.d.1: render the diff-sign cell. MO.4.a: `kind` is the
+/// pre-computed `GutterDiffKind` for this line from the mode-walk
+/// decoration pre-loop; `None` → blank cell.
 fn render_diff_sign_cell(
+    kind: Option<lattice_mode::GutterDiffKind>,
     view: &FrameView<'_>,
-    line_idx: u32,
 ) -> Span<'static> {
-    use lattice_host::diff::overlay::DiffSignKind;
+    use lattice_mode::GutterDiffKind;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let rs = view.app.render_state.load();
-    let Some(kind) = rs.diff.sign_map.sign_at(line_idx) else {
+    let Some(kind) = kind else {
         return blank;
     };
-    // D.3.b.3: glyph stays hardcoded (convention), style
-    // reads from theme so the bold + colour follow the user's
-    // diagnostic-style preferences too.
+    // D.3.b.3: glyph stays hardcoded (convention), style reads
+    // from theme so bold + colour follow the user's preferences.
     let (glyph, style) = match kind {
-        DiffSignKind::Add => ('+', view.app.theme.diff_add_sign_style),
-        DiffSignKind::Change => ('~', view.app.theme.diff_change_sign_style),
-        // D.3.d.0 deliberately doesn't classify any
-        // current-side line as Remove — Remove hunks have an
-        // empty current range. The arm is kept exhaustive
-        // anyway in case a future refactor (e.g., classifying
-        // deletion-block anchors) starts emitting it.
-        DiffSignKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
-        // D.6.f (2026-05-31): `?` for three-way Conflict
-        // hunks — distinct from Add/Change/Remove so the
-        // user spots conflicts immediately in the gutter.
-        DiffSignKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
+        GutterDiffKind::Add => ('+', view.app.theme.diff_add_sign_style),
+        GutterDiffKind::Change => ('~', view.app.theme.diff_change_sign_style),
+        // D.3.d.0: Remove kept exhaustive for future classifiers.
+        GutterDiffKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
+        // D.6.f: `?` for three-way Conflict hunks.
+        GutterDiffKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
     };
     Span::styled(glyph.to_string(), style)
 }
 
-/// Build the severity-column cell for `line_idx`. Returns one
-/// `Span` -- the severity glyph + the per-severity style when a
-/// diagnostic touches the line, or a single space styled
-/// dim-darkgray when nothing's there.
+/// Build the severity-column cell. MO.4.a: `level` is the
+/// pre-computed `GutterSeverityLevel` for this line from the mode-walk
+/// decoration pre-loop; `None` → blank cell.
 fn render_diagnostic_severity_cell(
+    level: Option<lattice_mode::GutterSeverityLevel>,
     view: &FrameView<'_>,
-    buffer_id: crate::buffers::BufferId,
-    line_idx: u32,
 ) -> Span<'static> {
-    let theme = &view.app.theme;
+    use lattice_mode::GutterSeverityLevel;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let Some(severity) = severity_for_line(view, buffer_id, line_idx) else {
+    let Some(level) = level else {
         return blank;
     };
-    let (glyph, style) = crate::theme::diagnostic_glyph_and_style(theme, severity);
-    // The theme stores ratatui-native Style values, so no
-    // conversion is needed here -- they're already the right
-    // shape for `Span::styled`.
+    let theme = &view.app.theme;
+    let (glyph, style) = match level {
+        GutterSeverityLevel::Error => {
+            (theme.diagnostic_error_glyph, theme.diagnostic_error_style)
+        }
+        GutterSeverityLevel::Warning => {
+            (theme.diagnostic_warning_glyph, theme.diagnostic_warning_style)
+        }
+        GutterSeverityLevel::Info => {
+            (theme.diagnostic_info_glyph, theme.diagnostic_info_style)
+        }
+        GutterSeverityLevel::Hint => {
+            (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style)
+        }
+    };
     Span::styled(glyph.to_string(), style)
-}
-
-/// Resolve the most-severe diagnostic on `line_idx` of `buffer_id`.
-/// Looks up the buffer's URI (via `app.buffer_uri`) and reads its
-/// per-URI severity from the published diagnostics layer. Returns
-/// `None` when:
-/// - `lsp-mode` is inactive on the buffer (M.5.6 gate),
-/// - the buffer has no URI (unsaved scratch),
-/// - the buffer has no LSP attachment, or
-/// - no diagnostic touches the line.
-///
-/// DR.3: takes `buffer_id` (was the active `_snap`) so inactive panes
-/// resolve their OWN buffer's severity; the active pane passes its
-/// own id (byte-identical).
-pub(crate) fn severity_for_line(
-    view: &FrameView<'_>,
-    buffer_id: crate::buffers::BufferId,
-    line_idx: u32,
-) -> Option<DiagnosticSeverity> {
-    // Slice 3c.extension.fold-rs: gate on cached
-    // `view.lsp_diagnostics_enabled` instead of per-line
-    // `app.lsp_diagnostics_mode_enabled_for(...)` actor RPC.
-    if !view.lsp_diagnostics_enabled {
-        return None;
-    }
-    let app = view.app;
-    let uri = app.buffer_uri(buffer_id)?;
-    // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
-    // `RenderState` contract instead of `editor.lsp_diagnostics`
-    // directly. This is the proof-of-life migration that
-    // establishes the read seam every later sub-slice cuts
-    // against. `load` is wait-free (~2ns); the layer it returns
-    // is internally `Arc<ArcSwap<...>>`-backed so
-    // `line_severity` stays wait-free.
-    let rs = app.render_state.load();
-    rs.diagnostics.layer.line_severity(&uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of `buffer_id`. Used by the
@@ -5687,8 +5861,24 @@ fn cursor_screen_position_at(
     } else {
         (0, display_col)
     };
+    // Sticky rows are emitted in a pre-pass before the scrollable
+    // content (compose_pane_lines), so they occupy the first N screen
+    // rows of the pane regardless of scroll. virtual_rows_at /
+    // buffer_line_to_visible_row_with exclude sticky rows from their
+    // counts (to avoid double-painting), so row_in_view is relative
+    // to the *scrollable* region starting at sticky_count, not to the
+    // pane top. Add sticky_count here so the terminal cursor lands on
+    // the correct physical row.
+    let sticky_count = {
+        let rs = view.app.render_state.load();
+        let pane_id = view.app.panes().tree.active().id;
+        rs.virtual_rows
+            .matrix_for_pane(pane_id)
+            .map(|cell| cell.load_full().sticky_rows().count() as u32)
+            .unwrap_or(0)
+    };
     let col = DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH + gutter_w + body_col;
-    let row = row_in_view.saturating_add(own_segment);
+    let row = row_in_view.saturating_add(own_segment).saturating_add(sticky_count);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y.saturating_add(row.try_into().unwrap_or(u16::MAX)),
@@ -5768,7 +5958,12 @@ fn display_col_for_byte(
 /// row the link still renders as plain text -- the underlying
 /// `[label]` and `(url)` characters stay visible, the navigation
 /// extracted by `parse_help_links` works regardless.)
-fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Span<'static>> {
+fn render_help_line(
+    line: &str,
+    spans: &[lattice_syntax::StyledSpan],
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> Vec<Span<'static>> {
     if spans.is_empty() {
         return vec![Span::raw(line.to_string())];
     }
@@ -5792,7 +5987,7 @@ fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Spa
         }
         out.push(Span::styled(
             line[span.start..end].to_string(),
-            style_to_tui(span.style),
+            style_to_tui(span.style, resolved, ids),
         ));
         cursor = end;
     }
@@ -5809,14 +6004,17 @@ fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Spa
 /// host's canonical mapping so a single edit to the palette
 /// reflects in every renderer.
 ///
-/// `Theme::default()` is used today because per-instance theme
-/// customization for syntax styles isn't wired through the cmdline
-/// yet (`:set ui.syntax.*` lands in a follow-up). When that lands
-/// the call site already in scope of `&App` can pass
-/// `&app.editor.host_theme` instead.
-fn style_to_tui(s: Style) -> TuiStyle {
-    let host_default = lattice_host::ui::theme::Theme::default();
-    crate::theme::host_style_to_ratatui(host_default.syntax_style(s))
+/// T.5.b: resolves `s` through the active theme's resolved table
+/// (`resolved` + `ids`, loaded by the caller from the render
+/// state) — the replacement for the retired `Theme::syntax_style`.
+fn style_to_tui(
+    s: Style,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> TuiStyle {
+    crate::theme::host_style_to_ratatui(lattice_host::ui::theme::resolve_syntax_style(
+        resolved, ids, s,
+    ))
 }
 
 #[cfg(test)]
@@ -5829,7 +6027,10 @@ mod tests {
     fn app_with(text: &str, viewport: u32) -> App {
         let mut a = App::new(Document::from_text(text));
         a.set_viewport_height(viewport);
-        a.refresh_highlights();
+        // display-line B4.2: `App::refresh_highlights` was deleted with
+        // the overlay worker's dead span/row cache. Syntax now flows
+        // through the cells / `DisplayMatrix` substrate (rebuilt on
+        // publish); no explicit prime is needed for these render tests.
         a
     }
 
@@ -6552,7 +6753,12 @@ mod tests {
         )
         .with_markdown_syntax(registry);
         let lines = h.lines();
-        let spans = render_help_line(&lines[0], &h.metadata.highlights[0]);
+        // T.5.b: resolve through the default registry's resolved table.
+        use lattice_host::ui::theme::ThemeRegistry as _;
+        let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
+        let spans = render_help_line(&lines[0], &h.metadata.highlights[0], &resolved, &ids);
         let any_styled = spans
             .iter()
             .any(|sp| sp.style != ratatui::style::Style::default());
@@ -6957,6 +7163,10 @@ mod tests {
         // diagnostics) is provably id-equivalent for the active pane
         // — `ctx.buffer_id == app.ad().document_buffer_id` — so it is
         // not injected here; the existing LSP overlay tests cover it.
+        // T.6: visual selection + current-match are now BACKGROUND
+        // tints resolved from the `selection` / `search.current`
+        // elements (no fg recolor / bold), matching the GPUI peer — the
+        // expected fingerprint reflects that converged styling.
         let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Visual selection on line 1 (cols 4..=6), hlsearch + current
@@ -6975,7 +7185,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/Some(White)/Some(Blue)/BOLD|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/Some(Black)/Some(Yellow)/BOLD|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 
@@ -7262,7 +7472,10 @@ mod tests {
         app.editor
             .set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let visual_bg = visual_style().bg;
+        // T.6: visual_style now resolves through the app's published
+        // resolved table — derive the expected bg from the same source.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let visual_bg = visual_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
         assert!(
@@ -7295,7 +7508,9 @@ mod tests {
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
-        let visual_bg = visual_style().bg;
+        // T.6: derive expected bg from the app's published resolved table.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let visual_bg = visual_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).bg;
         let row1 = &lines[1];
         let has_visual_span = row1.spans.iter().any(|s| s.style.bg == visual_bg);
         assert!(
@@ -7409,8 +7624,7 @@ mod tests {
             !row0.contains('■'),
             "lsp-mode off should suppress the error glyph; got {row0:?}"
         );
-        // And the modeline LSP segment hides.
-        assert_eq!(active_lsp_segment(&app), "");
+        // (LSP segment was in the old global modeline; now covered by pane_status_label.)
     }
 
     #[test]
@@ -7571,11 +7785,16 @@ mod tests {
         }
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        // T.6: inlay-hint fg now resolves from the `inlay.hint` element
+        // (shared with GPUI). Derive the expected fg from the same
+        // resolved table the renderer reads, so this stays a parity pin.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let expected_fg = inlay_hint_style(&cells_rs.resolved_theme, &cells_rs.theme_ids).fg;
         let row0 = &lines[0];
         let mut found = false;
         for span in &row0.spans {
             if span.content.as_ref().contains(": i32") {
-                assert_eq!(span.style.fg, Some(Color::DarkGray));
+                assert_eq!(span.style.fg, expected_fg);
                 found = true;
             }
         }
@@ -7882,56 +8101,6 @@ mod tests {
         assert!(row0.contains('■'), "row0 expected ■: {row0:?}");
     }
 
-    #[test]
-    fn modeline_lsp_segment_empty_when_no_uri_mapping() {
-        let app = App::new(Document::from_text(""));
-        // Path-less Document -> publish_document_opened_for_active
-        // emits an event with `path: None`, attach driver ignores
-        // it, buffer_uris stays empty -> indicator hidden.
-        assert_eq!(active_lsp_segment(&app), "");
-    }
-
-    #[test]
-    fn modeline_lsp_segment_empty_when_no_servers_attached() {
-        let mut app = App::new(Document::from_text(""));
-        // Seed a URI mapping but no actor/attachment -- supervisor
-        // returns an empty handle list, so the indicator stays empty.
-        let fake_uri =
-            <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        let doc_id = app.ad().document_buffer_id;
-        app.editor.buffer_uris.insert(doc_id, fake_uri);
-        assert_eq!(active_lsp_segment(&app), "");
-    }
-
-    #[test]
-    fn modeline_label_uses_synthetic_name_when_path_absent() {
-        // The bottom global modeline (`draw_mode_line`) must
-        // surface the buffer's synthetic name (`*lsp*`, etc.)
-        // when there is no path. Mirrors `pane_status_label`'s
-        // fallback so both modeline surfaces show the same label.
-        let mut app = App::new(Document::from_text(""));
-        // Activate *lsp* (created at boot via slice B).
-        let lsp_id = app.editor.buffers.by_name("*lsp*").expect("*lsp* present");
-        app.activate_buffer(lsp_id);
-        let snap = app.editor.document.snapshot();
-        let label = modeline_label(&app, &snap);
-        assert!(
-            label.contains("*lsp*"),
-            "modeline must surface synthetic name; got `{label}`"
-        );
-        // Synthetic buffers suppress the dirty marker.
-        assert!(modeline_is_synthetic(&app), "*lsp* is synthetic");
-    }
-
-    #[test]
-    fn modeline_label_falls_back_to_no_name_when_path_and_name_absent() {
-        let app = App::new(Document::from_text("hi"));
-        let snap = app.editor.document.snapshot();
-        // Initial buffer has no path and no synthetic name.
-        let label = modeline_label(&app, &snap);
-        assert_eq!(label, "[no name]");
-        assert!(!modeline_is_synthetic(&app));
-    }
 
     #[test]
     fn no_lsp_attachment_no_severity_glyph() {
@@ -7941,6 +8110,67 @@ mod tests {
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('■'), "no LSP -> no error glyph: {row0:?}");
         assert!(!row0.contains('▲'), "no LSP -> no warn glyph: {row0:?}");
+    }
+
+    /// L4a.3: the inline cursor-line diagnostic summary renders as
+    /// trailing eol text on the cursor's line once the idle gate fires.
+    #[test]
+    fn inline_diagnostic_summary_renders_at_eol_on_cursor_line() {
+        let mut app = app_with("let x = 1;\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            5,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom error",
+        );
+        // seed_diagnostic enables lsp-mode (cascading lsp-diagnostics-
+        // mode on); ensure the render-side diagnostics gate is active.
+        if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+            app.toggle_mode_by_name("lsp-diagnostics-mode");
+        }
+        // Cursor is on line 0 by default. Arm the idle gate, then fire
+        // it (simulating the ~300 ms settle) so the summary is visible.
+        app.editor.publish_render_state();
+        app.editor.fire_inline_diag_gate();
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            row0.contains("boom error"),
+            "eol summary expected on the cursor line: {row0:?}"
+        );
+    }
+
+    /// L4a.3: the summary respects the render-side lsp-diagnostics-mode
+    /// gate — with the mode off it is suppressed even though the host
+    /// gate published it (matching the gutter / underline gate).
+    #[test]
+    fn inline_diagnostic_summary_suppressed_when_diagnostics_mode_off() {
+        let mut app = app_with("let x = 1;\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            5,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom error",
+        );
+        // Force lsp-diagnostics-mode OFF (the lsp-mode cascade in
+        // seed_diagnostic may have enabled it).
+        if app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+            app.toggle_mode_by_name("lsp-diagnostics-mode");
+        }
+        app.editor.publish_render_state();
+        app.editor.fire_inline_diag_gate();
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            !row0.contains("boom error"),
+            "mode-off must suppress the eol summary: {row0:?}"
+        );
     }
 
     #[test]
@@ -8054,23 +8284,6 @@ mod tests {
     }
 
     /// Slice 3c.final.X.cleanup: modeline-text builder must read
-    /// only published RS (cmdline_text / cursor / cwd / etc).
-    /// Companion to `compose_visible_lines_makes_zero_actor_calls`.
-    #[test]
-    fn modeline_label_makes_zero_actor_calls() {
-        let app = app_with("a\nb\nc\nd\ne\n", 10);
-        let snap = app.ad().snapshot.clone();
-        let _warmup = modeline_label(&app, &snap);
-        let before = crate::actor_call_counter::snapshot();
-        let _label = modeline_label(&app, &snap);
-        let after = crate::actor_call_counter::snapshot();
-        let delta = after - before;
-        assert_eq!(
-            delta, 0,
-            "modeline_label made {delta} actor-seam calls; \
-             modeline must read RS, not route through read_editor.",
-        );
-    }
 
     /// Slice 3c.final.X.cleanup: pane-status text builder also
     /// counts as a per-frame paint path (drawn once per pane per
@@ -8138,5 +8351,218 @@ mod tests {
              Editor::dispatch_fused's in-actor tail. See slice I.7 \
              (docs/dev/operations/slice-plans/input-latency.md).",
         );
+    }
+
+    // --- ML.1a-render: zone layout + truncation + built-in parity -----
+
+    #[test]
+    fn truncate_to_adds_ellipsis_on_overflow() {
+        assert_eq!(truncate_to("hello", 10), "hello");
+        assert_eq!(truncate_to("hello", 5), "hello");
+        assert_eq!(truncate_to("hello", 4), "hel…");
+        assert_eq!(truncate_to("hello", 1), "…");
+        assert_eq!(truncate_to("hello", 0), "");
+    }
+
+    /// A role-less run, for layout tests where the role is irrelevant.
+    fn run(text: &str) -> ModelineSeg {
+        (text.to_string(), None)
+    }
+    /// Concatenated text of a composed segment list.
+    fn seg_text(segs: &[ModelineSeg]) -> String {
+        segs.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    #[test]
+    fn compose_row_places_left_and_right_at_edges() {
+        let row = seg_text(&compose_modeline_segments(
+            20,
+            0,
+            vec![run("L")],
+            vec![],
+            vec![run("R")],
+        ));
+        assert_eq!(row.chars().count(), 20, "row fills width");
+        assert!(row.starts_with('L'), "left flush-left: {row:?}");
+        assert!(row.ends_with('R'), "right flush-right: {row:?}");
+    }
+
+    #[test]
+    fn compose_row_applies_edge_padding() {
+        // padding 2 ⇒ a 2-col blank margin at each edge; content fills
+        // the inner width; total still exactly `width`.
+        let row = seg_text(&compose_modeline_segments(
+            20,
+            2,
+            vec![run("L")],
+            vec![],
+            vec![run("R")],
+        ));
+        assert_eq!(row.chars().count(), 20, "row still fills width");
+        assert!(row.starts_with("  L"), "2-col left margin: {row:?}");
+        assert!(row.ends_with("R  "), "2-col right margin: {row:?}");
+    }
+
+    #[test]
+    fn compose_row_centers_center_block() {
+        // width 11, "mid" (3) ⇒ offset (11-3)/2 = 4.
+        let row = seg_text(&compose_modeline_segments(
+            11,
+            0,
+            vec![],
+            vec![run("mid")],
+            vec![],
+        ));
+        assert_eq!(row, "    mid    ");
+    }
+
+    #[test]
+    fn compose_row_width_zero_is_empty() {
+        assert!(
+            compose_modeline_segments(0, 0, vec![run("L")], vec![run("C")], vec![run("R")])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compose_row_overflow_sacrifices_center_then_right_then_left() {
+        // width 12: left(8) kept; sep(1); right budget 3 ⇒ "RI…";
+        // center budget saturates to 0 ⇒ dropped first.
+        let row = seg_text(&compose_modeline_segments(
+            12,
+            0,
+            vec![run("LEFTLEFT")],
+            vec![run("CENTER")],
+            vec![run("RIGHTRIGHT")],
+        ));
+        assert_eq!(row.chars().count(), 12, "row fills width");
+        assert!(row.starts_with("LEFTLEFT"), "left preserved last: {row:?}");
+        assert!(!row.contains("CENTER"), "center sacrificed first: {row:?}");
+        assert!(row.contains('…'), "right truncated with ellipsis: {row:?}");
+        // Extreme narrow width must not panic.
+        let _ = compose_modeline_segments(
+            1,
+            0,
+            vec![run("LEFTLEFT")],
+            vec![run("CENTER")],
+            vec![run("RIGHTRIGHT")],
+        );
+    }
+
+    /// ML.1b: active-pane spans carry per-role foregrounds composed over
+    /// the active bar background (the `NOR` mode span is blue + bold
+    /// on the surface1 bar in the default theme).
+    #[test]
+    fn modeline_active_spans_carry_per_role_styles() {
+        use ratatui::style::{Color, Modifier};
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let spans = modeline_spans(&app, &pane, true, 60);
+
+        // ML.5d: lean 3-letter tag (no brackets).
+        let mode = spans
+            .iter()
+            .find(|s| s.content.contains("NOR"))
+            .expect("mode span present");
+        assert_eq!(mode.style.fg, Some(Color::Rgb(0x89, 0xb4, 0xfa)), "mode fg = blue");
+        assert!(
+            mode.style.add_modifier.contains(Modifier::BOLD),
+            "mode is bold"
+        );
+        // Every span (segments + padding) sits on the active bar bg.
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.style.bg == Some(Color::Rgb(0x45, 0x47, 0x5a))),
+            "whole active row sits on the surface1 bar"
+        );
+    }
+
+    /// ML.1b: inactive-pane spans are uniformly muted (the single
+    /// `modeline.inactive` bar style — no per-role colour).
+    #[test]
+    fn modeline_inactive_spans_are_uniformly_muted() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let spans = modeline_spans(&app, &pane, false, 60);
+        let muted = app.theme.modeline_inactive;
+        assert!(!spans.is_empty());
+        assert!(
+            spans.iter().all(|s| s.style == muted),
+            "inactive row is uniformly muted (no per-role fg)"
+        );
+    }
+
+    /// Render `draw_pane_status_line` to a `TestBackend` and read the
+    /// one-row footer as a string.
+    fn render_status_row(
+        app: &App,
+        pane: &crate::pane::PaneState,
+        is_active: bool,
+        width: u16,
+    ) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height: 1,
+                };
+                draw_pane_status_line(f, area, app, pane, is_active);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+
+    /// Active pane: `core.mode` (`NOR`) + `core.path` in the Left
+    /// zone, `core.position` right-aligned in the Right zone — the same
+    /// content the legacy single-string footer showed.
+    #[test]
+    fn modeline_active_pane_lays_out_mode_path_position() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let row = render_status_row(&app, &pane, true, 40);
+        assert_eq!(row.chars().count(), 40, "row fills pane width: {row:?}");
+        // ML.5d: lean 3-letter tag (no brackets).
+        assert!(
+            row.trim_start().starts_with("NOR"),
+            "Left zone leads with the modal label: {row:?}"
+        );
+        assert!(row.contains("[no name]"), "core.path present: {row:?}");
+        assert!(
+            row.trim_end().ends_with("1:0"),
+            "core.position right-aligned: {row:?}"
+        );
+    }
+
+    /// Inactive pane: the modal label is omitted (it is a single
+    /// active-document read), but the path + position still render.
+    #[test]
+    fn modeline_inactive_pane_omits_modal_label() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        let row = render_status_row(&app, &pane, false, 40);
+        assert!(!row.contains("NOR"), "no modal on inactive: {row:?}");
+        assert!(row.contains("[no name]"), "path still shows: {row:?}");
+        assert!(
+            row.trim_end().ends_with("1:0"),
+            "position still shows: {row:?}"
+        );
+    }
+
+    /// The footer never panics at a tiny pane width (overflow path).
+    #[test]
+    fn modeline_narrow_pane_does_not_panic() {
+        let app = app_with("hello", 10);
+        let pane = app.panes().tree.active().clone();
+        for w in [1u16, 2, 3, 8] {
+            let row = render_status_row(&app, &pane, true, w);
+            assert_eq!(row.chars().count(), w as usize, "row fills width {w}");
+        }
     }
 }

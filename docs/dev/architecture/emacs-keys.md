@@ -101,6 +101,24 @@ which is untouched and coexists.
   one re-push.
 - **Prefix token:** the configured prefix string is parsed to a chord and
   prepended to each binding's suffix at layer-build time.
+- **Digit suffixes vs. vim counts (S2):** the pane chords `<C-x>2` /
+  `<C-x>3` / `<C-x>0` collide with vim's count parser. Slice 8.i.4.f
+  hoists digit handling *ahead* of the partial-chord continuation so
+  `d2w` / `2d3w` / `5gg` see the digit — which would swallow the `2` in
+  `<C-x>2` as a count. The refinement (anticipated verbatim by 8.i.4.f's
+  own comment): when a pending prefix actually **binds** `[prefix +
+  digit]` as a chord, the digit is that chord's literal second key, not a
+  count, so the trie wins; an unbound `[prefix + digit]` (e.g. `[d, 2]`)
+  still falls through to the count accumulator. The check is
+  mode-agnostic — any layer binding a `[prefix, digit]` chord benefits.
+  Lives in `input::compute_normal_action`.
+- **Activation is per-tick, not at registration:** because the mode is
+  `Global`, it enters `active_modes` when the buffer's `MajorEntered`
+  event is drained by the generic resolver (`drain_minor_activation`,
+  the same path that activates `snippet-mode`) — the running editor does
+  this each tick. The keymap layer is pushed at boot, but the *chord only
+  fires once the mode is active*; tests must drive a `MajorEntered` drain
+  (trie-only unit tests bypass this — see `tests/emacs_keys_dispatch.rs`).
 - **Introspection:** every binding carries `SourceLocation::builtin_file`,
   so `:describe-key` / `:keymap` render the tribute bindings with
   provenance (DESIGN.md §5.11.1).

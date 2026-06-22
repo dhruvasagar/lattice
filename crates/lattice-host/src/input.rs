@@ -588,44 +588,49 @@ fn compute_normal_action(
     active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
     let _ = builtins;
-    // Numeric prefix: `1`-`9` always start (or extend) a count;
-    // `0` extends an in-progress count but otherwise is
-    // line_start. This is vim's standard count parsing.
+    // Slice 8.i.4: every multi-key Normal-mode chord flows through
+    // `App::partial_chord`. When non-empty, peek the full path through
+    // the trie ONCE: `Bound` resolves to the bound action, a deeper
+    // `Partial` returns `Action::AbsorbPartialChord`, and `Unbound`
+    // returns `Action::None` (which `App::apply` turns into a
+    // partial_chord clear). We compute it up front because the digit
+    // hoist below needs to know whether this key completes a chord.
+    let prefix_action = (!partial_chord.is_empty()).then(|| {
+        crate::keymap_normal::lookup_normal_with_prefix(
+            keymap,
+            partial_chord,
+            &chord,
+            active_minor_modes,
+        )
+    });
+
+    // Numeric prefix: `1`-`9` always start (or extend) a count; `0`
+    // extends an in-progress count but otherwise is line_start. This is
+    // vim's standard count parsing.
     //
-    // Slice 8.i.4.f: digit handling must run BEFORE the
-    // partial_chord short-circuit. Without this hoist, typing
-    // `2` after `d` (partial_chord=['d']) routes to
-    // `lookup_normal_with_prefix(['d'], '2')` -- unbound -- which
-    // returns `Action::None` and silently aborts the operator.
-    // Vim flows like `d2w`, `2d3w`, `5gg` would never see the
-    // digit. Safe to hoist because no built-in chord has a digit
-    // as second key (verified 8.i.4.f: no `[d, digit]`,
-    // `[g, digit]`, `[<C-w>, digit]`, etc.). If a future plugin
-    // wants `[X, digit]` chords the rule grows to "digit handler
-    // unless `[partial_chord, digit]` is bound" -- the registry
-    // already has the data needed.
-    if let KeyKind::Char(c) = chord.key
+    // Slice 8.i.4.f: digit handling must run BEFORE falling into the
+    // partial_chord continuation. Without it, typing `2` after `d`
+    // (partial_chord=['d']) routes to `lookup_normal_with_prefix(['d'],
+    // '2')` -- unbound -- aborting the operator; vim flows like `d2w`,
+    // `2d3w`, `5gg` would never see the digit.
+    //
+    // S2 (emacs-keys) refinement: the one exception the original 8.i.4.f
+    // comment anticipated -- when the pending prefix actually BINDS this
+    // key as a chord (`Bound`/deeper `Partial`, i.e. `prefix_action` is
+    // not `None`), the digit is the chord's literal second key, not a
+    // count, so the trie wins. This is mode-agnostic: any layer binding a
+    // `[prefix, digit]` chord (emacs-keys `<C-x>2` / `<C-x>3`) benefits.
+    let prefix_resolves_chord = matches!(prefix_action, Some(ref a) if !matches!(a, Action::None));
+    if !prefix_resolves_chord
+        && let KeyKind::Char(c) = chord.key
         && let Some(digit) = c.to_digit(10)
         && (digit > 0 || pending_count > 0)
     {
         return Action::PushDigit(digit as u8);
     }
 
-    // Slice 8.i.4: every multi-key Normal-mode chord flows
-    // through `App::partial_chord`. When non-empty, the next
-    // keystroke routes through the trie with this stack as
-    // prefix; the trie's `Bound` resolves the full path,
-    // `Partial` absorbs into the stack via
-    // `Action::AbsorbPartialChord`, and `Unbound` returns
-    // `Action::None` (which `App::apply` turns into a
-    // partial_chord clear).
-    if !partial_chord.is_empty() {
-        return crate::keymap_normal::lookup_normal_with_prefix(
-            keymap,
-            partial_chord,
-            &chord,
-            active_minor_modes,
-        );
+    if let Some(action) = prefix_action {
+        return action;
     }
 
     // `q` while a macro is recording stops the recording. The

@@ -58,12 +58,28 @@ Landed in three sub-slices:
   makes `<C-x>` fall through (no tribute); changing `emacs-keys-prefix`
   re-targets the chords; Insert-mode `<C-x>` expansion unaffected.
 
-## S2 — Tier-2 pane bindings (reuse) 🗒
+## S2 — Tier-2 pane bindings (reuse) ✅
 
-- `<C-x>2`→`SplitPaneHorizontal`, `<C-x>3`→`SplitPaneVertical`,
-  `<C-x>0`→`ClosePane`, `<C-x>o`→`NextPane`.
-- **Tests:** each chord triggers the corresponding pane action;
-  single-pane edge cases behave (close/next no-op or sane).
+- `<C-x>2`→`action:split-pane-horizontal`,
+  `<C-x>3`→`action:split-pane-vertical`, `<C-x>0`→`action:close-pane`,
+  `<C-x>o`→`action:next-pane`. Resolved by name via the same Tier-1
+  mechanism (the pane actions are pre-registered `action:*` commands).
+- **Digit-precedence fix (`input::compute_normal_action`):** `<C-x>2` /
+  `<C-x>3` were broken at runtime — slice 8.i.4.f hoists digit→count
+  parsing ahead of the partial-chord continuation, swallowing the digit.
+  The fix (anticipated by 8.i.4.f's own comment) lets a *bound* `[prefix
+  + digit]` chord win over count parsing, while an unbound one (`d2w`)
+  still counts. Mode-agnostic. Behavior-preserving for all vim count
+  flows (749 lib tests green).
+- **False-green caught:** the S1/S2 trie unit tests passed while the
+  feature was inert at runtime (the `Global` mode only activates on the
+  per-tick `MajorEntered` drain). New integration test
+  `tests/emacs_keys_dispatch.rs` boots a real editor, activates the
+  leader, and drives the chords through `dispatch_chord` — covers Tier-1
+  liveness implicitly + Tier-2 + the digit fix + count regression.
+- **Tests:** trie unit `default_prefix_binds_every_tier2_pane_chord`
+  (+ id-target check) and 5 integration tests (split-h/split-v/close/next
+  resolve + execute; bare digit still counts).
 
 ## S3 — build `quit-all` + `only`, bind the rest 🗒
 
@@ -78,4 +94,4 @@ Landed in three sub-slices:
 
 ## Status
 
-S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 🗒 · S3 🗒
+S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 ✅ · S3 🗒

@@ -73,18 +73,37 @@ pub fn register_emacs_keys_modes(registry: &mut ModeRegistry) {
         .expect("emacs-keys mode must register without conflict");
 }
 
-/// The default leader-map. `(suffix, ex-command canonical name)`; the
-/// chord bound is `prefix + suffix`. Tier-1 (S1): every target is an
-/// existing ex-command resolved by name at build time.
+/// The default leader-map. `(suffix, command canonical name)`; the chord
+/// bound is `prefix + suffix`. Every target is an existing command (ex or
+/// action) resolved by name at build time — no new command is introduced
+/// by S1/S2.
 ///
-/// emacs convention: `b` switches buffers (the picker), `<C-b>` lists
-/// them — distinct chords, mirroring `switch-to-buffer` vs `list-buffers`.
+/// Tier-1 (S1) — buffer / file / save. emacs convention: `b` switches
+/// buffers (the picker), `<C-b>` lists them — distinct chords, mirroring
+/// `switch-to-buffer` vs `list-buffers`.
 const TIER1_BINDINGS: &[(&str, &str)] = &[
     ("<C-f>", "ex:files"),     // C-x C-f — find file (picker)
     ("<C-s>", "ex:write"),     // C-x C-s — save buffer
     ("b", "ex:buffer-picker"), // C-x b   — switch buffer
     ("<C-b>", "ex:buffers"),   // C-x C-b — list buffers
     ("k", "ex:bdelete"),       // C-x k   — kill buffer
+];
+
+/// Tier-2 (S2) — pane / window. Targets the pre-registered `action:*`
+/// pane commands (`crates/lattice-host/src/actions.rs`), reused verbatim;
+/// the leader is just a second entry point to the same `CommandId`s the
+/// `<C-w>` family already binds. The digit suffixes are matched as literal
+/// second chords after the `<C-x>` partial, so they never enter count
+/// accumulation (mirrors emacs `C-x 2` / `C-x 3` / `C-x 0`).
+///
+/// emacs: `2` splits below, `3` splits right, `0` deletes this window,
+/// `o` cycles focus. Lattice's split axis names are locked per the slice
+/// plan (`2`→horizontal, `3`→vertical). `<C-x>1` (only) lands in S3.
+const TIER2_BINDINGS: &[(&str, &str)] = &[
+    ("2", "action:split-pane-horizontal"), // C-x 2 — split below
+    ("3", "action:split-pane-vertical"),   // C-x 3 — split right
+    ("0", "action:close-pane"),            // C-x 0 — delete this pane
+    ("o", "action:next-pane"),             // C-x o — focus other pane
 ];
 
 /// Build the `emacs-keys` keymap layer for the given `enabled` flag and
@@ -118,8 +137,9 @@ pub fn emacs_keys_layer_bindings(
 
     // Disabled => publish an empty Normal trie so a re-push clears any
     // prior bindings. `<C-x>` then resolves as plain Normal-mode input.
-    let bindings: &[(&str, &str)] = if enabled { TIER1_BINDINGS } else { &[] };
-    for (suffix, command) in bindings {
+    let bindings: &[&[(&str, &str)]] =
+        if enabled { &[TIER1_BINDINGS, TIER2_BINDINGS] } else { &[] };
+    for (suffix, command) in bindings.iter().copied().flatten() {
         let chord_str = format!("{prefix}{suffix}");
         let seq = match lattice_protocol::parse_chord_sequence(&chord_str) {
             Ok(seq) => seq,
@@ -161,8 +181,11 @@ mod tests {
 
     fn registry() -> lattice_grammar::CommandRegistry {
         let mut r = lattice_grammar::CommandRegistry::new();
-        let _ = lattice_grammar::builtins::populate(&mut r);
+        let builtins = lattice_grammar::builtins::populate(&mut r);
         let _ = lattice_grammar::ex_commands::populate(&mut r);
+        // Tier-2 resolves the host `action:*` pane commands, which are
+        // registered here (not by grammar builtins/ex-commands).
+        let _ = crate::actions::populate(&mut r, &builtins);
         r
     }
 
@@ -185,6 +208,32 @@ mod tests {
         assert!(matches!(trie.lookup(&seq("<C-x>")), LookupResult::Partial));
         // An unmapped suffix under the prefix is unbound (falls through).
         assert!(matches!(trie.lookup(&seq("<C-x>z")), LookupResult::Unbound));
+    }
+
+    #[test]
+    fn default_prefix_binds_every_tier2_pane_chord() {
+        let reg = registry();
+        let modes = emacs_keys_layer_bindings(true, "<C-x>", &reg);
+        let trie = modes.get(&BindingMode::Normal).unwrap();
+        // The digit suffixes (`2` / `3` / `0`) are matched as literal
+        // second chords after the `<C-x>` partial -- they never enter
+        // count accumulation -- alongside the `o` letter suffix.
+        for full in ["<C-x>2", "<C-x>3", "<C-x>0", "<C-x>o"] {
+            assert!(
+                matches!(trie.lookup(&seq(full)), LookupResult::Bound { .. }),
+                "expected pane chord `{full}` to be bound"
+            );
+        }
+        // The split-axis wiring is correct (catches a name swap):
+        // `<C-x>2` targets the horizontal split specifically.
+        let LookupResult::Bound { command, .. } = trie.lookup(&seq("<C-x>2")) else {
+            panic!("`<C-x>2` should be bound");
+        };
+        assert_eq!(
+            command.command.command,
+            reg.id_by_name("action:split-pane-horizontal").unwrap(),
+            "`<C-x>2` must target action:split-pane-horizontal"
+        );
     }
 
     #[test]

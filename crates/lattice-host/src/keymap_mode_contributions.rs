@@ -355,10 +355,14 @@ mod tests {
     }
 
     fn test_mode(id_str: &str, keymap: Keymap) -> TestMode {
-        TestMode {
-            id: ModeId::new(id_str),
-            keymap,
-        }
+        // Mode ids must end in `-mode` (enforced at registration). Append
+        // the suffix here so each fixture call-site doesn't have to.
+        let id = if id_str.ends_with("-mode") {
+            ModeId::new(id_str)
+        } else {
+            ModeId::new(&format!("{id_str}-mode"))
+        };
+        TestMode { id, keymap }
     }
 
     fn lookup(

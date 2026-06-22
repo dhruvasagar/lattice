@@ -31008,8 +31008,8 @@ mod tests {
         // resolver's Global gate keys on this).
         assert_eq!(editor.buffers.kind_of(doc), Some(lattice_core::BufferKind::Document));
 
-        let global_id = lattice_mode::ModeId::new("test-global-minor");
-        let rusty_id = lattice_mode::ModeId::new("test-rust-minor");
+        let global_id = lattice_mode::ModeId::new("test-global-minor-mode");
+        let rusty_id = lattice_mode::ModeId::new("test-rust-minor-mode");
         let mut registry = lattice_mode::ModeRegistry::new();
         registry
             .register(PolicyMinor {

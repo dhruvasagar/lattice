@@ -130,8 +130,16 @@ the same carrier `:tabonly` uses for `OnlyTab`.
   `Partial` match (`lattice-keymap/src/trie.rs`) resolves the two-key
   sequence; no new `BindingMode` variant is needed.
 - **Default-on + enable / prefix toggles:** the mode is unconditionally
-  `ActivationPolicy::Global` (active on every document buffer — the
-  `lattice-snippet` precedent; not Help / oil / file-tree). The *layer* is
+  `ActivationPolicy::Universal` (active on **every** buffer kind —
+  documents *and* synthetic buffers: `*messages*`, help, file-tree, oil,
+  terminal). This is deliberately broader than `Global` (which is
+  document-only — the right scope for content modes like snippets):
+  emacs-keys is a *universal* navigation leader, so `<C-x>b` / `<C-x>o` /
+  `<C-x><C-c>` must work everywhere the user can focus, mirroring emacs'
+  `C-x` map being live in `*Messages*`. The Normal-only layer means
+  Terminal-Insert keystroke passthrough is unaffected, and the leader
+  never shadows a synthetic buffer's own Normal-mode chords (Help's
+  Esc / Enter / `-` are distinct keys). The *layer* is
   the gate, not mode activation: the `emacs-keys` enable flag and the
   `emacs-keys-prefix` value are applied by (re)building the layer's
   contents — **empty when disabled** — at boot and live on `:set` via the

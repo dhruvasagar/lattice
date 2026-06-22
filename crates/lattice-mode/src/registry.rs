@@ -58,6 +58,13 @@ use crate::mode::{DynMode, Mode, ModeId, ModeKind};
 pub enum RegistrationError {
     #[error("mode `{0}` is already registered")]
     Duplicate(ModeId),
+    /// The mode id does not end in `-mode`. Every mode id must carry
+    /// the conventional `-mode` suffix (`snippet-mode`, `emacs-keys-mode`,
+    /// …); M.2 *groups* (which never end in `-mode`) are not modes and
+    /// never reach this path. Enforced at the single registration
+    /// choke point so the convention can't silently drift (mode_id.rs).
+    #[error("mode id `{0}` must end in `-mode` (naming convention)")]
+    MissingModeSuffix(ModeId),
 }
 
 /// Mode registry. Owns the catalogue of registered modes
@@ -108,6 +115,15 @@ impl ModeRegistry {
     /// not a hot-swap mechanism.
     pub fn register<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
         let id = <M as Mode>::id(&mode);
+        // Convention (mode_id.rs): every mode id ends in `-mode`. This is
+        // the single choke point every built-in and plugin mode flows
+        // through, so enforcing here catches a missing suffix (the
+        // `emacs-keys` → `emacs-keys-mode` slip) uniformly. Groups (M.2)
+        // are not modes and never reach `register`, so they keep their
+        // suffixless ids.
+        if !id.as_str().ends_with("-mode") {
+            return Err(RegistrationError::MissingModeSuffix(id));
+        }
         if self.modes.contains_key(&id) {
             return Err(RegistrationError::Duplicate(id));
         }
@@ -856,6 +872,33 @@ mod tests {
         );
         // An empty allowlist matches nothing (Manual-equivalent).
         assert!(!ActivationPolicy::Majors(vec![]).admits("rust-mode", doc));
+        // Universal: every kind, document AND synthetic UI buffers —
+        // the scope a universal leader (emacs-keys) needs.
+        for kind in [
+            BufferKind::Document,
+            BufferKind::Messages,
+            BufferKind::Help,
+            BufferKind::FileTree,
+            BufferKind::Oil,
+            BufferKind::Terminal,
+        ] {
+            assert!(
+                ActivationPolicy::Universal.admits("any-mode", kind),
+                "Universal must admit {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn register_rejects_mode_id_without_mode_suffix() {
+        // The `-mode` naming convention (mode_id.rs) is enforced at the
+        // registration choke point: a missing suffix is rejected for
+        // every mode, so the `emacs-keys` (no suffix) slip can't recur.
+        let mut r = ModeRegistry::new();
+        let err = r.register(MockMode::minor("emacs-keys")).unwrap_err();
+        assert_eq!(err, RegistrationError::MissingModeSuffix(ModeId::new("emacs-keys")));
+        // The suffixed form registers fine.
+        assert!(r.register(MockMode::minor("emacs-keys-mode")).is_ok());
     }
 
     #[test]
@@ -922,10 +965,10 @@ mod tests {
         // boot order isn't load-bearing for correctness.
         let mut r = ModeRegistry::new();
         let first = r
-            .register(MockMode::major("oil-a").targeting(BufferKind::Oil))
+            .register(MockMode::major("oil-a-mode").targeting(BufferKind::Oil))
             .unwrap();
         let _second = r
-            .register(MockMode::major("oil-b").targeting(BufferKind::Oil))
+            .register(MockMode::major("oil-b-mode").targeting(BufferKind::Oil))
             .unwrap();
         assert_eq!(r.find_major_for_kind(BufferKind::Oil), Some(first));
     }
@@ -939,7 +982,7 @@ mod tests {
         // A test for the *common* case: a minor with no target is
         // not indexed.
         let mut r = ModeRegistry::new();
-        r.register(MockMode::minor("a-minor")).unwrap();
+        r.register(MockMode::minor("a-minor-mode")).unwrap();
         assert_eq!(r.find_major_for_kind(BufferKind::Document), None);
     }
 

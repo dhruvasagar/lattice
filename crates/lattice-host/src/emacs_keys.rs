@@ -52,16 +52,24 @@ impl Mode for EmacsKeysMode {
         ModeKind::Minor
     }
 
-    /// Default-on in every document buffer — the tribute is universal.
+    /// Default-on in **every** buffer — the tribute is universal, so the
+    /// `<C-x>` navigation chords (switch buffer, switch pane, quit) work
+    /// everywhere the user can focus, including synthetic buffers like
+    /// `*messages*` / help / file-tree (mirroring emacs, whose `C-x` map
+    /// is live in `*Messages*`). Hence `Universal`, not `Global`
+    /// (`Global` is document-only — the right scope for content modes
+    /// like snippets, not a universal leader).
+    ///
     /// The enable toggle (`:set noemacs-keys`) is NOT gated here: the
-    /// mode stays unconditionally `Global` and the *layer* carries the
+    /// mode stays unconditionally active and the *layer* carries the
     /// gate — `enabled=false` rebuilds the leader map empty (see
     /// `emacs_keys_layer_bindings`), so disabling reclaims `<C-x>`
-    /// without churning the per-buffer mode set. `Global` admits
-    /// document buffers but not Help / oil / file-tree kinds, so the
-    /// leader never shadows those buffers' own chords.
+    /// without churning the per-buffer mode set. The layer is
+    /// Normal-mode-only, so Terminal-Insert keystroke passthrough is
+    /// unaffected and the leader never shadows a synthetic buffer's own
+    /// Normal-mode chords (Help's Esc/Enter/`-` are distinct keys).
     fn activation_policy(&self) -> ActivationPolicy {
-        ActivationPolicy::Global
+        ActivationPolicy::Universal
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {

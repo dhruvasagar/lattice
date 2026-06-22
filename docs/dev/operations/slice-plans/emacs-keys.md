@@ -142,6 +142,41 @@ implements the close-pane-unless-last semantics. `:qa` therefore mirrors
   `leader_1_collapses_to_only_pane`; emacs-keys unit tier-2 asserts
   `<C-x>1`.
 
+## S4 — follow-up polish (post-S3 review)
+
+Landed in two commits.
+
+### Commit 1 (`2beba529`) — pane ex-commands + tab-quit + mode rename ✅
+
+- **`:split` / `:vsplit` / `:close`** (vim `:sp` / `:vs` / `:clo`, emacs
+  `C-x 2/3/0`) — pane ops that only existed as chords. No-arg; emit the
+  existing Split/Close `AppEffect` carriers like `:only`.
+- **`:q` is tab-aware** — last pane of a tab with other tabs open closes
+  the TAB (vim tab-page close), not the editor; only the last pane of the
+  last tab quits. `:qa` still ignores pane + tab count. (`do_quit` gains a
+  `tabs.len() > 1` branch before the dirty guard.)
+- **`emacs-keys-mode` rename** — the mode id now carries the conventional
+  `-mode` suffix (was bare `emacs-keys`, which read wrong in
+  `:describe-mode`). The *option* stays `emacs-keys` (`:set emacs-keys`).
+
+### Commit 2 — universal activation + `-mode` enforcement ✅
+
+- **`ActivationPolicy::Universal`** (new variant; `admits` returns true
+  for every `BufferKind`). emacs-keys adopts it so the `<C-x>` leader is
+  live in synthetic buffers (`*messages*`, help, file-tree, …), not just
+  documents — matching emacs. `Global` stays document-only for content
+  modes (snippets, LSP). Normal-only layer ⇒ Terminal-Insert passthrough
+  unaffected.
+- **`-mode` suffix enforced at registration** — `ModeRegistry::register`
+  returns `RegistrationError::MissingModeSuffix` when a mode id lacks
+  `-mode`. The single choke point every built-in + future plugin mode
+  flows through; M.2 groups aren't modes and bypass it. Caught the
+  `emacs-keys` slip; renamed ~5 non-conforming test fixtures
+  (`oil-a`→`oil-a-mode`, `test-global-minor`→`…-mode`, the
+  `test-mode/<x>` helper appends `-mode`, …). True compile-time wasn't
+  feasible (`ModeId` is a runtime-interned string shared with non-mode
+  groups); registration-time is the uniform enforcement point.
+
 ## Status
 
-S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 ✅ · S3 ✅ (S3a · S3b)
+S0 ✅ · S1 ✅ (S1a · S1b.1 · S1b.2) · S2 ✅ · S3 ✅ (S3a · S3b) · S4 ✅

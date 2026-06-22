@@ -44,8 +44,23 @@ pub enum ActivationPolicy {
     /// activation turns the mode on. The trait default.
     #[default]
     Manual,
-    /// Auto-activate on every buffer that enters any major mode.
+    /// Auto-activate on every **document** buffer that enters a major
+    /// mode (scoped to [`BufferKind::Document`]). The right policy for
+    /// content modes (snippets, LSP, …) that only make sense over
+    /// user-edited text, not synthetic UI buffers.
     Global,
+    /// Auto-activate on **every** buffer kind that enters a major mode —
+    /// documents *and* synthetic UI buffers (`*messages*`, help, file
+    /// tree, oil, terminal). For *universal* contributions like the
+    /// `emacs-keys` `<C-x>` leader, where navigation chords (switch
+    /// buffer, switch pane, quit) should work everywhere the user can
+    /// focus — mirroring emacs, whose `C-x` map is live in `*Messages*`
+    /// and every other buffer. NOT for content modes (use [`Global`]).
+    /// Mode-local keymaps are gated by binding mode, so Terminal-Insert
+    /// keystroke passthrough is unaffected by a Normal-only leader.
+    ///
+    /// [`Global`]: Self::Global
+    Universal,
     /// Auto-activate only when the entered major's id is in this
     /// allowlist. An empty list behaves like [`Manual`](Self::Manual)
     /// (matches no major).
@@ -57,16 +72,17 @@ impl ActivationPolicy {
     /// `buffer_kind` enters the major mode named `major`?
     ///
     /// `Global` is scoped to **real document buffers**
-    /// ([`BufferKind::Document`]) — "global" means every code/text
-    /// buffer, not the synthetic UI buffers (file tree, help,
-    /// `*messages*`, terminal, …). A mode that genuinely wants to
-    /// activate inside a synthetic buffer names that buffer's major
-    /// explicitly via `Majors([..])`, which is kind-independent (an
-    /// explicit opt-in is honored anywhere).
+    /// ([`BufferKind::Document`]) — every code/text buffer, not the
+    /// synthetic UI buffers (file tree, help, `*messages*`, terminal,
+    /// …). `Universal` admits every kind (documents *and* synthetic
+    /// buffers) for universal-leader modes. A mode that wants a narrow
+    /// synthetic opt-in instead names that buffer's major explicitly
+    /// via `Majors([..])`, which is kind-independent.
     pub fn admits(&self, major: &str, buffer_kind: BufferKind) -> bool {
         match self {
             Self::Manual => false,
             Self::Global => buffer_kind == BufferKind::Document,
+            Self::Universal => true,
             Self::Majors(allow) => allow.iter().any(|m| m.as_str() == major),
         }
     }

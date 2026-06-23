@@ -22,6 +22,7 @@ pub mod auth;
 pub mod commands;
 pub mod dispatch;
 pub mod error;
+pub mod inbound;
 pub mod lockfile;
 pub mod modes;
 pub mod protocol;

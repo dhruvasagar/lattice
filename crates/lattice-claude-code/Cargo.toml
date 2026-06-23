@@ -1,0 +1,36 @@
+[package]
+name = "lattice-claude-code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-grammar = { path = "../lattice-grammar" }
+tokio = { workspace = true, features = [
+	"sync",
+	"rt",
+	"rt-multi-thread",
+	"macros",
+	"net",
+	"io-util",
+	"time",
+] }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+arc-swap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net"] }
+futures = { workspace = true }
+
+[lints]
+workspace = true

@@ -26,6 +26,7 @@ members = [
 	"crates/lattice-ui-gpui",
 	"crates/lattice-cli",
 	"crates/lattice-diff",
+	"crates/lattice-claude-code",
 ]
 
 [workspace.package]
@@ -111,6 +112,15 @@ ignore = "0.4"
 # JSON codec on the wire.
 lsp-types = "0.97"
 serde_json = "1.0"
+
+# Claude Code IDE peer (lattice-claude-code, IDE-protocol phase).
+# `tokio-tungstenite` is the loopback WebSocket transport for the MCP
+# JSON-RPC connection to an external `claude` CLI; default features only
+# (no TLS — the bind is 127.0.0.1 + token-gated). `getrandom` mints the
+# per-session auth token (16 random bytes → hex); a minimal, vetted CSPRNG
+# primitive, no heavier `rand`/`uuid` dep pulled for one token.
+tokio-tungstenite = "0.24"
+getrandom = "0.2"
 
 # Mode system (lattice-mode, M.1+). `internment` interns mode names
 # (and later option / group names) so `ModeId` is `Copy + Eq + Hash`

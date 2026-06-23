@@ -50,9 +50,20 @@ variants* — is met:
   *chord*-bound action would use the `ActionHandler` path; ex-commands can't.)
 - **Writes** (`openFile`/`saveDocument`/`close_tab`) reuse existing effects
   (`Effect::OpenBufferAt`, save, close-buffer) — no new host write path.
-- **Reads** are served on the WS task from the published
-  `Arc<ArcSwap<RenderState>>` snapshot + a buffer-registry read handle + the LSP
-  diagnostics cache, all handed to the mode at boot as services.
+- **Reads (corrected — crate-owned, not host-owned):** the read state + tool logic
+  belong to `lattice-claude-code`, NOT the host. The crate holds a
+  `ClaudeCodeReadState` cache fed by subscribing to the *generic* event bus
+  (`DocumentOpened` / `DocumentClosed` / `SelectionsChanged`) in the mode's
+  lifecycle, and answers on-demand text / path / dirty / selection through the
+  *generic* `BufferStore` service (`handle_for(id)` → `Document` snapshot reads,
+  wait-free off the editor thread). `getDiagnostics` reads a *generic*
+  `DiagnosticsQuery::for_uri` extension; `getWorkspaceFolders` comes from the server
+  config. The host exposes ONLY generic primitives (event bus, buffer store,
+  diagnostics query). An earlier draft proposed a host-implemented
+  `ClaudeCodeReadService` / `HostClaudeCodeReads` trait — **rejected** as a
+  mode-ownership violation (it would put the crate's surface in the host). The one
+  host-side change for reads is a *generic* `DiagnosticsQuery::for_uri` method any
+  mode can reuse.
 
 **The single new host primitive** is a generic **tick-callback registry**: any
 mode registers a per-tick drain closure. This is reusable infrastructure (it
@@ -107,8 +118,15 @@ The exact lockfile JSON field set is provisional until verified against a live
 
 ## 5. Three data paths (chosen for paramount #1 + #4)
 
-1. **Reads** — answered on the WS task from the published snapshot; zero tick
-   involvement, no renderer round-trip.
+1. **Reads** — **crate-owned**. `lattice-claude-code` keeps a `ClaudeCodeReadState`
+   cache fed by *generic* event-bus subscriptions
+   (`DocumentOpened`/`DocumentClosed`/`SelectionsChanged`) plus on-demand
+   `BufferStore` snapshot reads (off the editor thread, wait-free `ArcSwap` — no
+   actor round-trip); `getDiagnostics` uses a *generic* `DiagnosticsQuery::for_uri`;
+   `getWorkspaceFolders` from the server config. Answered entirely on the WS task —
+   zero tick involvement, no renderer round-trip, and crucially **no claude-code
+   trait in the host** (mode owns its read surface; the host stays generic). This is
+   the same cache I6's `selection_changed` notification reads, so it's produced once.
 2. **Writes** — an `ClaudeCodeInbound` mpsc channel drained per-tick via the mode's
    registered tick callback; the drain applies the matching `Effect` and resolves
    a `oneshot` reply. `O(pending)` `try_recv`, same bounded shape as LSP's

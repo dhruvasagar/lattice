@@ -55,7 +55,10 @@ use lattice_lsp::cache::{
 // `pending_*_rx` fields retired (spawned tasks write directly
 // via `PerBufferCache::insert_for` / `ArcSwapOption::store`).
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
-use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
+use lattice_mode::{
+    ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry,
+    TickCallbackRegistration,
+};
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_protocol::CancellationToken;
 use lattice_protocol::Event;
@@ -685,6 +688,16 @@ pub struct Editor {
     /// can call `add_overlay`/`remove_overlay` from mode-activation
     /// context (outside `&mut Editor`) without blocking the UI thread.
     pub fold_registry: std::sync::Arc<std::sync::Mutex<crate::fold_provider::FoldRegistry>>,
+
+    /// BC.3b: boot-lifetime tick-callback registration tokens handed off from
+    /// the `BootContext` via `into_registrations()`. A subsystem `install(boot)`
+    /// that wires an off-keystroke `boot.inbound::<T>` drain (the first is the
+    /// Claude Code IDE peer's write bus) produces an RAII token here; holding it
+    /// for the editor's lifetime keeps the drain registered (dropping it would
+    /// unregister the drain mid-session). Empty when no subsystem installs an
+    /// inbound/tick drain at boot. Never read — held purely to keep the drains
+    /// alive; the leading `_` documents that.
+    pub _boot_tick_registrations: Vec<TickCallbackRegistration>,
     /// D.4.a (2026-05-29): scroll-binding pane groups. Each
     /// entry binds a set of `(pane, buffer)` pairs through a
     /// pluggable `RowMapper`; propagation runs at

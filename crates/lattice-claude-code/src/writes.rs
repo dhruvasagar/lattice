@@ -16,7 +16,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
-use crate::inbound::{ClaudeCodeInboundBus, ClaudeCodeInboundRequest, InboundKind};
+use crate::inbound::{ClaudeCodeInboundRequest, InboundKind};
+use lattice_mode::inbound::InboundBus;
 use lattice_protocol::Position;
 
 /// Backstop so a write tool can never hang the agent connection even if the
@@ -25,7 +26,7 @@ use lattice_protocol::Position;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `openFile`: open `filePath`, optionally at a `selection` start position.
-pub async fn open_file(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> Value {
+pub async fn open_file(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
     let Some(path) = args.get("filePath").and_then(|v| v.as_str()) else {
         return result(false, "openFile: missing filePath");
     };
@@ -40,7 +41,7 @@ pub async fn open_file(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> Valu
 }
 
 /// `saveDocument`: save the document for `filePath`.
-pub async fn save_document(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> Value {
+pub async fn save_document(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
     let Some(path) = args.get("filePath").and_then(|v| v.as_str()) else {
         return result(false, "saveDocument: missing filePath");
     };
@@ -54,7 +55,7 @@ pub async fn save_document(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> 
 }
 
 /// `close_tab`: close the tab named `tab_name`.
-pub async fn close_tab(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> Value {
+pub async fn close_tab(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
     let Some(tab) = args.get("tab_name").and_then(|v| v.as_str()) else {
         return result(false, "close_tab: missing tab_name");
     };
@@ -69,7 +70,7 @@ pub async fn close_tab(bus: Option<&ClaudeCodeInboundBus>, args: &Value) -> Valu
 
 /// Send the request, await the reply, shape the result. The single graceful
 /// path for all three tools.
-async fn run_write(bus: Option<&ClaudeCodeInboundBus>, kind: InboundKind) -> Value {
+async fn run_write(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, kind: InboundKind) -> Value {
     let Some(bus) = bus else {
         return result(false, "write unavailable: IDE server not fully initialized");
     };
@@ -139,14 +140,14 @@ mod tests {
 
     #[tokio::test]
     async fn open_file_round_trips_through_a_live_bus() {
-        use crate::inbound::make_drain;
+        use crate::inbound::make_handler;
         use crate::snapshot::ClaudeCodeReadState;
+        use lattice_mode::inbound::make_inbound;
         use std::sync::{Arc, Mutex};
         use tokio::sync::Notify;
 
         let cache = Arc::new(Mutex::new(ClaudeCodeReadState::default()));
-        let (bus, rx) = ClaudeCodeInboundBus::new(Arc::new(Notify::new()));
-        let mut drain = make_drain(rx, cache);
+        let (bus, mut drain) = make_inbound(Arc::new(Notify::new()), make_handler(cache));
 
         // The write awaits the reply; here we drive the drain (the "tick") that
         // resolves it. Poll the drain until the queued request produces its

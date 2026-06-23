@@ -23,6 +23,9 @@ pub mod commands;
 pub mod dispatch;
 pub mod error;
 pub mod inbound;
+// BC.3b: the crate-owned `install(boot)` entry point — one Phase-B line in
+// `editor_boot`, all wiring here.
+pub mod install;
 pub mod lockfile;
 pub mod modes;
 pub mod protocol;
@@ -34,5 +37,6 @@ pub mod writes;
 
 pub use commands::register_claude_code_ex_commands;
 pub use error::{ClaudeCodeError, Result};
+pub use install::install;
 pub use modes::{ClaudeCodeMode, register_claude_code_modes};
 pub use server::{ClaudeCodeServerHandle, ServerConfig, ServerState, spawn};

@@ -69,10 +69,36 @@ that cannot be wired without their safety property*:
 - `wake_on_event::<E>()` — subscribe a typed event and wake `async_landed`;
   generalizes the `MultibufferExcerptsReady` / L1c forwarder tasks.
 - `tick_callback(closure)` — register a per-tick drain (the I1 registry).
-- `register_mode` / `register_command` / `register_service`.
+- `commands_mut` / `modes_mut` / `services_mut` / `register_service` /
+  `service::<T>()` — the registry seams (the registration fns take
+  `&mut CommandRegistry` / `&mut ModeRegistry`, so `*_mut` is the natural seam;
+  `service::<T>()` is the generic lookup a subsystem uses to reach a handle
+  another layer owns — e.g. the LSP `DiagnosticsQueryHandle` — without the
+  surface naming that type).
 
 The acid test becomes **structural**: a new subsystem touches `editor_boot.rs` in
 exactly one place — its entry in the Phase-B list — and zero host internals.
+
+### The surface is a trait (`SubsystemBoot`), not the concrete bundle
+
+`install(boot)` must be *crate-owned* (mode-ownership), so a subsystem crate has
+to name the type it receives. The concrete `BootContext` lives in `lattice-host`,
+which depends on every subsystem crate — naming it from a subsystem would be a
+**dependency cycle**. So the install surface is a **trait, `SubsystemBoot`, in
+`lattice-mode`** (below every subsystem crate; zero new deps — its bound types
+are all already `lattice-mode` deps). `BootContext` implements it; installs take
+`&mut impl SubsystemBoot` (static dispatch — the generic methods make the trait
+non-object-safe, which is fine). The trait exposes only the generic surface;
+host-only lifecycle (registry freezing, the `into_registrations` tick-token
+hand-off, the published-render-state cell) stays inherent on `BootContext` and
+never leaks to subsystems. The one LSP-specific handle a read-tool subsystem
+needs — `DiagnosticsQueryHandle` — is reached via the generic `service::<T>()`
+(the host registers it as a Phase-A service), so the trait names no `lattice-lsp`
+type. Rejected alternative: *move `BootContext` down to `lattice-mode`* — viable
+(post-`diagnostics`-drop it holds no host-only types), but the trait keeps the
+concrete bundle in the host where its host-specific extras live and lets
+subsystems depend on the *capability*, not the host (decided with Dhruva,
+2026-06-23, weighing low churn + clean API for a mode count in the hundreds).
 
 ## 4. Paramount-goal alignment
 

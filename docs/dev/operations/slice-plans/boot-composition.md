@@ -144,19 +144,48 @@ migration is **behaviour-pinned before it moves**.
     boot comments stress (overlay/cells cells, render_state) — move the `let`s,
     never reconstruct; BC.2 wake pins + render/decoration tests catch a break.
 
-  - **BC.3b — `lattice_claude_code::install(boot)` (first migration).** Add
-    `pub fn install(boot: &mut BootContext)` collapsing claude-code's five
-    scattered sites (`spawn` 242, `register_claude_code_ex_commands` 271,
-    `register_claude_code_modes` 356, `install_services` 1254, service register
-    1315) into one Phase-B call, against Phase-A primitives only:
-    `boot.register_command` / `register_mode` / `register_service`, `buffer_store`
-    + `diagnostics` for the I2 read tools, and the I3 write bus **rebased onto
-    `boot.inbound::<ClaudeCodeInboundRequest>(handler)`** (decision 3-a) — delete
-    the bespoke `ClaudeCodeInboundBus`, which `InboundBus<T>` was modeled on. The
-    deferred `install_services` vanishes (no late handle). **Green:** the BC.2
-    claude-code pins (mode + `claude-code-start/-stop` + `ClaudeCodeServerHandle`
-    + inbound→wake) + all existing `lattice-claude-code` tests, behaviour
-    unchanged. `inbound::<T>` keeps the I3 optimistic-ack semantics (risk #4).
+  - **BC.3b — `lattice_claude_code::install(boot)` (first migration).** ✅
+    Landed. claude-code's **five scattered `editor_boot` sites** (server `spawn`,
+    `register_claude_code_ex_commands`, `register_claude_code_modes`, the
+    `ClaudeCodeServerHandle` service register, and the late `install_services`
+    read/write wiring) collapse into **one Phase-B line**:
+    `lattice_claude_code::install(&mut boot)`. The I3 write bus is **rebased onto
+    `boot.inbound::<ClaudeCodeInboundRequest>(handler)`** (decision 3-a) — the
+    bespoke `ClaudeCodeInboundBus` + `make_drain` are deleted; `inbound.rs` now
+    owns only the payload + `make_handler` (the per-item map → Effect + oneshot
+    resolve), the generic primitive owns the channel/drain/wake. The drain's
+    registration token rides `boot.into_registrations()` onto the new
+    `Editor._boot_tick_registrations` field (this is the slice that makes
+    `into_registrations` load-bearing, deferred from BC.3a).
+
+    **Circular-dependency resolution (the gap the original plan missed).**
+    `install(boot)` must be *crate-owned* (mode-ownership), but `BootContext`
+    lives in `lattice-host`, which depends on `lattice-claude-code` → a cycle.
+    Decided with Dhruva (2026-06-23): introduce a **`SubsystemBoot` trait in
+    `lattice-mode`** (below every subsystem crate, zero new deps) exposing the
+    generic install surface (`commands_mut` / `modes_mut` / `services_mut` /
+    `register_service` / `service::<T>` / `inbound` / `wake_on_event` /
+    `tick_callback` / `event_bus` / `runtime_handle` / `buffer_store`);
+    `BootContext` implements it; installs take `&mut impl SubsystemBoot`. The
+    LSP-specific diagnostics handle is reached via the generic
+    `boot.service::<DiagnosticsQueryHandle>()` (the trait names no lattice-lsp
+    type); the host registers it as a Phase-A service. **Deviation from the
+    original prose:** used the existing `commands_mut`/`modes_mut` seam rather
+    than adding `register_command`/`register_mode` wrappers (the registration fns
+    take `&mut CommandRegistry`/`&mut ModeRegistry`, so wrappers would be
+    redundant); and dropped `BootContext`'s typed `diagnostics()` accessor (its
+    only consumer now uses the generic `service` lookup — substrate-vs-helper).
+    Chose the trait (not moving `BootContext` down) per Dhruva — keeps the
+    concrete bundle in the host, subsystems depend on the capability.
+
+    **Placement:** the install list sits after the inline mode block + before the
+    mode freeze, so an installed mode is present when
+    `register_mode_toggle_commands` enumerates the registry and both registries
+    are still open. Adding subsystem #N+1 = write its `install()` + add one line
+    to this list. **Green:** all 14 BC.2 pins (claude mode + `claude-code-start/
+    -stop` + `ClaudeCodeServerHandle` + inbound→wake-covered) + the full
+    `lattice-claude-code` suite (43) + 756 `lattice-host` lib + `lattice-mode`
+    (117) + the full workspace build incl. the GPUI peer; behaviour unchanged.
 
 - **BC.4 … BC.N — Migrate each remaining subsystem, one per slice.** terminal →
   emacs-keys → diff → multibuffer → LSP (LSP last: largest surface — its inbound
@@ -196,7 +225,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b 🚧 · BC.4+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 🚧 · BC.5+ 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -205,21 +234,17 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Next: BC.3b** — first migration (claude-code). `editor_boot` now hands a live
-`BootContext` to every registration site, so claude-code's five scattered calls
-(`spawn` ~242, `register_claude_code_ex_commands` ~328, `register_claude_code_modes`
-~415, the `ClaudeCodeServerHandle` service register ~1322, and `install_services`
-~1259) collapse into one `lattice_claude_code::install(boot)` in a Phase-B list:
-`boot.register_command` / `register_mode` / `register_service`, `boot.buffer_store`
-+ `boot.diagnostics` for the I2 read tools, and the I3 write bus **rebased onto
-`boot.inbound::<ClaudeCodeInboundRequest>(handler)`** (decision 3-a) — delete the
-bespoke `ClaudeCodeInboundBus`. This is the slice that makes `into_registrations()`
-load-bearing: the `inbound` token must move into the `Editor` (add the field +
-the hand-off then). **Green bar:** the `boot_regression_pins.rs` claude-code pins
-(mode + commands + `ClaudeCodeServerHandle` service + inbound→wake) stay green,
-behaviour unchanged.
-
-Note: `BootContext` exposes `commands_mut` / `modes_mut` / `register_service`
-today (the seam `editor_boot` uses inline); the typed `register_command` /
-`register_mode` extension helpers the BC.3b text assumes can be thin wrappers
-added when the first migration needs them.
+**Next: BC.4 — migrate `terminal`** (newest→oldest, the second-smallest
+surface). Write `lattice_terminal::install(boot: &mut impl SubsystemBoot)`
+collapsing its `register_terminal_modes` + the `TerminalStoreHandle` service
+register into one Phase-B line next to claude-code's; its inline mode/service
+sites in `editor_boot` retire in the same slice. The `SubsystemBoot` trait +
+the install-list shape are now in place (BC.3b), so each remaining subsystem
+(terminal → emacs-keys → diff → multibuffer → LSP) is a self-contained
+`install(boot)` + one list line + retiring its inline wiring; LSP last (largest:
+its `InboundShowDocument`/`InboundApplyEdit`/configuration buses become
+`boot.inbound::<T>`, its `set_wake`/L1c forwarders become `boot.wake_on_event`).
+Each slice: green against that subsystem's BC.2 pin tests. **BC.final** then
+retires the `*_mut` transitional accessors + the hardcoded `run_tick_pending`
+drains, leaving `editor_boot` as the two-list shape (Phase-A primitives, then
+the Phase-B install list).

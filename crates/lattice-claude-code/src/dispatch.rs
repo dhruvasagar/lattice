@@ -16,8 +16,9 @@ use lattice_protocol::jsonrpc::{
     Message, Notification, Request, RequestId, Response, ResponseError, error_codes,
 };
 
-use crate::inbound::ClaudeCodeInboundBus;
+use crate::inbound::ClaudeCodeInboundRequest;
 use crate::protocol;
+use lattice_mode::inbound::InboundBus;
 use crate::reads;
 use crate::writes;
 
@@ -29,9 +30,10 @@ pub struct DispatchContext {
     /// Read-tool services (cache + generic buffer-store / diagnostics +
     /// workspace config).
     pub reads: reads::ReadContext,
-    /// Write-tool inbound bus. `None` until the server is fully wired (and in
-    /// dispatch tests) — write tools then return a graceful `success: false`.
-    pub writes: Option<ClaudeCodeInboundBus>,
+    /// Write-tool inbound bus (the generic `InboundBus`, BC.3b). `None` until
+    /// the server is fully wired (and in dispatch tests) — write tools then
+    /// return a graceful `success: false`.
+    pub writes: Option<InboundBus<ClaudeCodeInboundRequest>>,
 }
 
 /// A frame the server should send back to the agent in response to an

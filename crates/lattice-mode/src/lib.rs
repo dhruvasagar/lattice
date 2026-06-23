@@ -97,6 +97,10 @@ pub mod services;
 // closure registry. Generalizes the host's hardcoded `drain_<x>` methods
 // so a mode owns its channel + drain body (`feedback_mode_owns_its_surface`).
 pub mod tick_callback;
+// Boot-composition BC.3b: the capability surface a subsystem's `install(boot)`
+// wires against. Lives here (below every subsystem crate) so subsystems name
+// the capability, not the host's concrete `BootContext` (which would cycle).
+pub mod subsystem_boot;
 
 pub use crate::action_handler_registry::{
     ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
@@ -127,6 +131,7 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::services::ServiceRegistry;
+pub use crate::subsystem_boot::SubsystemBoot;
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,

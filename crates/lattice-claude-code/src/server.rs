@@ -13,19 +13,20 @@
 //! wait-free [`ServerState`] snapshot.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+use lattice_mode::inbound::InboundBus;
 use lattice_runtime::EventBus;
 
 use crate::dispatch::{self, DispatchContext, Outgoing};
-use crate::inbound::{self, ClaudeCodeInboundBus};
+use crate::inbound::ClaudeCodeInboundRequest;
 use crate::error::Result;
 use crate::lockfile::{Lockfile, LockfileContents};
 use crate::reads::ReadContext;
@@ -76,10 +77,6 @@ pub struct ClaudeCodeServerHandle {
     /// services (cache + config only); `install_services` upgrades it once
     /// boot has wired the buffer-store / diagnostics handles + the write bus.
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
-    /// I3.2: holds the write-drain's tick-callback registration alive for the
-    /// server's lifetime (dropping it would unregister the drain). Behind a
-    /// shared cell so the handle stays `Clone`.
-    write_reg: Arc<Mutex<Option<lattice_mode::TickCallbackRegistration>>>,
 }
 
 impl ClaudeCodeServerHandle {
@@ -101,28 +98,27 @@ impl ClaudeCodeServerHandle {
         self.state.load_full()
     }
 
-    /// I2.2 + I3.2: install the generic read + write services once boot has
-    /// created them (they're built later than the server handle — see the
-    /// boot-ordering note + boot-composition.md). Rebuilds the dispatch context
-    /// with the cache + config + read handles + the write bus, and registers
-    /// the write drain with the tick-callback registry. Connections read the
-    /// upgraded context wait-free.
+    /// BC.3b: the crate-owned read cache. `install()` clones it to build the
+    /// inbound handler ([`crate::inbound::make_handler`]) — the per-item closure
+    /// the generic `boot.inbound` bus drains, which maps write requests against
+    /// the same cache the read tools snapshot.
+    pub fn read_cache(&self) -> ReadStateHandle {
+        self.cache.clone()
+    }
+
+    /// I2.2 + I3.2 / BC.3b: seat the generic read handles + the write bus into
+    /// the live dispatch context (connections read it wait-free). `writes` is
+    /// the generic [`InboundBus`] built by `install()` via `boot.inbound` (which
+    /// owns the channel, the per-tick drain, and the off-keystroke wake — the
+    /// drain's registration token rides `boot.into_registrations()` into the
+    /// Editor). The server handle is spawned before boot wires these handles, so
+    /// this upgrade runs once, from the subsystem's `install(boot)`.
     pub fn install_services(
         &self,
         buffer_store: Option<lattice_mode::BufferStoreHandle>,
         diagnostics: Option<lattice_lsp::modes::DiagnosticsQueryHandle>,
-        tick_callbacks: lattice_mode::TickCallbackRegistryHandle,
-        async_landed: Arc<Notify>,
+        writes: InboundBus<ClaudeCodeInboundRequest>,
     ) {
-        // I3.2: create the inbound write bus (its `send` wakes `async_landed`,
-        // so writes apply off-keystroke) + register its per-tick drain with the
-        // tick-callback registry. The registration is held in `write_reg` for
-        // the server's lifetime.
-        let (bus, rx) = ClaudeCodeInboundBus::new(async_landed);
-        let drain = inbound::make_drain(rx, self.cache.clone());
-        let reg = tick_callbacks.register(Box::new(drain));
-        *self.write_reg.lock().unwrap_or_else(|e| e.into_inner()) = Some(reg);
-
         self.dispatch_ctx.store(Arc::new(DispatchContext {
             reads: ReadContext {
                 cache: self.cache.clone(),
@@ -130,7 +126,7 @@ impl ClaudeCodeServerHandle {
                 diagnostics,
                 workspace_folders: self.workspace_folders.clone(),
             },
-            writes: Some(bus),
+            writes: Some(writes),
         }));
     }
 }
@@ -172,7 +168,6 @@ pub fn spawn(
         cache,
         workspace_folders: config.workspace_folders,
         dispatch_ctx,
-        write_reg: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -321,7 +316,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn install_services_registers_write_drain_and_installs_bus() {
+    async fn install_services_seats_read_handles_and_bus() {
+        use crate::inbound::make_handler;
+        use lattice_mode::inbound::make_inbound;
+        use tokio::sync::Notify;
+
         let config = ServerConfig {
             workspace_folders: vec![],
             lock_dir: std::env::temp_dir(),
@@ -331,10 +330,12 @@ mod tests {
             Arc::new(EventBus::new()),
             &tokio::runtime::Handle::current(),
         );
-        let tick: lattice_mode::TickCallbackRegistryHandle =
-            Arc::new(lattice_mode::TickCallbackRegistry::new());
-        handle.install_services(None, None, tick.clone(), Arc::new(Notify::new()));
-        assert_eq!(tick.registered_count(), 1, "the write drain is registered");
+        // The generic inbound bus, as `install()` builds it via `boot.inbound`.
+        let (bus, _drain) = make_inbound::<ClaudeCodeInboundRequest, _>(
+            Arc::new(Notify::new()),
+            make_handler(handle.read_cache()),
+        );
+        handle.install_services(None, None, bus);
         assert!(
             handle.dispatch_ctx.load().writes.is_some(),
             "the write bus is installed"

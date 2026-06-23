@@ -33,7 +33,7 @@ use lattice_lsp::{
     InboundConfigurationRequest, InboundShowDocument, InboundShowMessageRequest, LspLogger,
     LspSupervisor, LspSupervisorHandle, ShowDocumentBus, ShowMessageRequestBus,
 };
-use lattice_mode::{ModeRegistry, ServiceRegistry};
+use lattice_mode::{ModeRegistry, ServiceRegistry, SubsystemBoot};
 use lattice_picker::PickerRegistry;
 use lattice_protocol::position::Position;
 use lattice_runtime::{EventBus, MessagesRing, spawn_document};
@@ -277,11 +277,15 @@ impl Editor {
             async_landed.clone(),
             runtime_handle.clone(),
             buffer_store_handle.clone(),
-            diag_query.clone(),
             CommandRegistry::new(),
             ModeRegistry::new(),
             ServiceRegistry::new(),
         );
+        // BC.3b: register the generic diagnostics-query service in Phase A so a
+        // subsystem `install(boot)` can reach it via `boot.service::<DiagnosticsQueryHandle>()`
+        // (the `SubsystemBoot` surface can't name the lattice-lsp type). Read by
+        // claude-code's read tools; registered once here, not in the late block.
+        boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
 
         let (
             lsp,
@@ -293,25 +297,11 @@ impl Editor {
             lsp_show_message_request_rx,
         ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
 
-        // IDE-protocol I1.3: spawn the Claude Code IDE server supervisor
-        // (idle until `:claude-code-start`). Reuses the shared async
-        // runtime; registered as a service below + driven by the
-        // `:claude-code-*` ex-commands. The discovery lockfile lives under
-        // ~/.claude/ide, where a `claude` CLI looks for it.
-        let claude_code_server = lattice_claude_code::spawn(
-            lattice_claude_code::ServerConfig {
-                workspace_folders: std::env::current_dir()
-                    .ok()
-                    .map(|p| vec![p.display().to_string()])
-                    .unwrap_or_default(),
-                lock_dir: lattice_claude_code::lockfile::default_lock_dir()
-                    .unwrap_or_else(std::env::temp_dir),
-            },
-            // I2.1: the generic event bus, for the crate's read-state cache
-            // subscription (DocumentOpened/Closed/SelectionsChanged).
-            event_bus.clone(),
-            &runtime_handle,
-        );
+        // BC.3b: the Claude Code IDE peer is no longer hand-wired here. Its
+        // server spawn, ex-commands, mode, service handle, and read/write tools
+        // all install through one Phase-B call below
+        // (`lattice_claude_code::install(&mut boot)`), against the generic
+        // `SubsystemBoot` surface — the mode-ownership acid test.
 
         let builtins = grammar_builtins_populate(boot.commands_mut());
         // Register the built-in ex-commands as peers of motions /
@@ -321,15 +311,6 @@ impl Editor {
         // populates the registry so `:`-line parsing can route to
         // them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(boot.commands_mut());
-        // IDE-protocol I1.3: `:claude-code-start` / `:claude-code-stop`.
-        // Crate-owned, bare-named ex-commands (resolve via `id_by_name`,
-        // no host alias-table entry) whose `apply` closures drive the
-        // server handle directly — mode-ownership without a host `Effect`
-        // variant. See `lattice_claude_code::commands` + design §2.
-        lattice_claude_code::register_claude_code_ex_commands(
-            boot.commands_mut(),
-            claude_code_server.clone(),
-        );
 
         // CSM.5: shared snippet-registry handle. Built before the
         // mode registry so `register_snippet_modes` can capture a
@@ -410,9 +391,27 @@ impl Editor {
         // emacs-keys minor — default-on `<C-x>` leader (tribute).
         crate::emacs_keys::register_emacs_keys_modes(boot.modes_mut());
         crate::tutor::register_tutor_modes(boot.modes_mut());
-        // claude-code-mode minor — Manual marker for I1 (I5 activates
-        // it on the `:claude` terminal buffer).
-        lattice_claude_code::register_claude_code_modes(boot.modes_mut());
+
+        // ── BC.3b: Phase-B subsystem install list ──────────────────────────
+        // One line per subsystem; each `install(boot)` does ALL of its own
+        // wiring (modes, commands, services, the off-keystroke inbound bus,
+        // event wakes) against the generic `SubsystemBoot` surface — zero host
+        // internals (no `Editor::` method, no host `Action`/`Effect` variant).
+        // Placed after the inline mode block + before the mode freeze, so an
+        // installed mode is present when `register_mode_toggle_commands`
+        // enumerates the registry, and while both registries are still open.
+        // As each remaining subsystem migrates (terminal → emacs-keys → diff →
+        // multibuffer → LSP, newest→oldest) its inline wiring collapses into an
+        // `install` here; at BC.final this list + the Phase-A primitives are the
+        // whole of `editor_boot`.
+        //
+        // claude-code (I-series): server spawn + `:claude-code-*` ex-commands +
+        // `claude-code-mode` + the `ClaudeCodeServerHandle` service + the I2
+        // read tools (buffer-store + diagnostics via `boot.service`) + the I3
+        // write bus (`boot.inbound`, whose drain token rides `into_registrations`
+        // into the Editor below).
+        lattice_claude_code::install(&mut boot);
+
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
         // `&mut CommandRegistry` + `&ModeRegistry` simultaneously; both live
@@ -1268,24 +1267,12 @@ impl Editor {
         // lookups via `services().get::<BufferStoreHandle>()`.
         boot.register_service(buffer_store_handle.clone());
         boot.register_service(lsp_logger.clone());
-        // L4b (lsp-architecture.md §15): diagnostics-query service so
-        // `lsp-diagnostics-mode`'s `gl` handler reads the cursor line's
-        // diagnostics (buffer_id → uri → layer over the live published render
-        // state) without a host method or its own URI map. `diag_query` is the
-        // Phase-A handle over the same render-state cell every
-        // `publish_render_state` stores into.
-        boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
-        // IDE-protocol I2.2: install the GENERIC read services into the Claude
-        // Code server (the server handle was spawned earlier for the
-        // ex-commands). The read-tool LOGIC lives in the crate; these are just
-        // the generic buffer-store + diagnostics handles it composes. (BC.3b
-        // collapses this into `lattice_claude_code::install(boot)`.)
-        claude_code_server.install_services(
-            Some(buffer_store_handle.clone()),
-            Some(diag_query.clone()),
-            tick_callbacks.clone(),
-            async_landed.clone(),
-        );
+        // L4b (lsp-architecture.md §15): the diagnostics-query service
+        // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read
+        // it) is registered in Phase A above, so a subsystem `install(boot)` can
+        // reach it via `boot.service::<DiagnosticsQueryHandle>()`. Not re-registered here.
+        // (BC.3b: the claude-code `install_services` read/write wiring moved into
+        // `lattice_claude_code::install` in the Phase-B list above.)
         // M.2.b.2 (2026-06-01): expose the typed multibuffer-handle lookup so
         // providers (`create_multibuffer_view`, the `:search` minor) reach it
         // via `services().get::<MultibufferRegistryHandle>()`.
@@ -1316,12 +1303,8 @@ impl Editor {
         // `cmd_registry.id_by_name("action:search-jump-to-source")` — without
         // depending on host-internal types. Same `Arc<X>` alias pattern.
         boot.register_service::<lattice_grammar::CommandRegistryHandle>(registry.clone());
-        // IDE-protocol I1.3: the Claude Code IDE server handle, so
-        // claude-code-mode's `on_activate` (I5) + the IdeInbound drain (I3)
-        // reach it via the service registry.
-        boot.register_service::<lattice_claude_code::ClaudeCodeServerHandle>(
-            claude_code_server.clone(),
-        );
+        // (BC.3b: the `ClaudeCodeServerHandle` service is registered by
+        // `lattice_claude_code::install` in the Phase-B list above.)
         // M.7: expose the fold-overlay service so `MultibufferMode::on_activate`
         // can register `ExcerptFoldProvider` without depending on
         // `lattice-host`. Same Arc as `fold_registry` above.
@@ -1350,6 +1333,11 @@ impl Editor {
         // BC.3a: freeze the service registry into its shared `Arc` (last, after
         // the full services block). The `Editor` literal seats it below.
         let services = boot.freeze_service_registry();
+        // BC.3b: consume `boot`, taking the boot-lifetime tick-callback
+        // registration tokens (e.g. the claude-code inbound drain wired in the
+        // Phase-B install list). They move onto the `Editor` so the drains live
+        // for the program rather than being dropped when `boot` drops here.
+        let boot_tick_registrations = boot.into_registrations();
 
         let mut editor = Editor {
             messages: messages_ring.clone(),
@@ -1382,6 +1370,9 @@ impl Editor {
             // BC.3a: the frozen service registry (registration hoisted above,
             // through `boot.register_service` / `boot.services_mut`).
             services,
+            // BC.3b: boot-lifetime tick-callback drain tokens (claude-code's
+            // inbound write-bus drain today). Held for the editor's lifetime.
+            _boot_tick_registrations: boot_tick_registrations,
             // T.4 (theme-system): builtin ids captured (above) from the
             // theme registry, which is registered into `services` for
             // the renderer snapshot + mode lookups.

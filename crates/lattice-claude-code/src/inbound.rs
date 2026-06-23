@@ -1,28 +1,29 @@
-//! IDE-protocol I3: the write-request inbound bus + per-tick drain.
+//! IDE-protocol I3: the write-request payload + per-item handler.
 //!
 //! Writes mutate the editor, which must happen on the editor (actor) thread.
-//! The WS task hands a request to the editor thread over this bus and awaits a
-//! oneshot reply.
+//! The WS task hands a [`ClaudeCodeInboundRequest`] to the editor thread over
+//! the generic inbound bus ([`lattice_mode::inbound`], via
+//! [`SubsystemBoot::inbound`](lattice_mode::SubsystemBoot::inbound)) and awaits
+//! a oneshot reply.
 //!
-//! CRITICAL (paramount #4 — async-correct by construction, not by discipline):
-//! [`ClaudeCodeInboundBus::send`] **wakes the actor** (`async_landed.notify_one`)
-//! so the per-tick drain runs WITHOUT a keystroke. The wake is baked into the
-//! sender here so it is structurally impossible to forget — the bug class
-//! `boot-composition.md` §3 designs out, and the migration-ready shape for that
-//! `inbound::<T>` primitive.
+//! BC.3b: the bespoke `ClaudeCodeInboundBus` + per-tick `make_drain` were
+//! replaced by the generic `InboundBus<ClaudeCodeInboundRequest>` primitive,
+//! whose `send` wakes the actor off-keystroke (the wake is baked into the
+//! sender — structurally impossible to forget, paramount #4) and whose per-tick
+//! drain runs each request through [`make_handler`]. This module now owns only
+//! the claude-specific payload + mapping logic; the channel + drain + wake are
+//! the shared primitive.
 //!
-//! The drain (registered via the I1 tick-callback registry) `try_recv`s pending
-//! requests, validates + maps each to an EXISTING `Effect`, returns the effects
-//! for the host to apply, and resolves each oneshot — optimistic-ack: `ok=true`
-//! on a valid map, `ok=false` on an unknown / non-active target (option C,
-//! design §2: per-buffer save/close targeting lands with the diff/tab work).
+//! [`make_handler`] validates + maps each request to an EXISTING `Effect` and
+//! resolves its oneshot — optimistic-ack: `ok=true` on a valid map, `ok=false`
+//! on an unknown / non-active target (option C, design §2: per-buffer save/close
+//! targeting lands with the diff/tab work).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use lattice_grammar::effect::Effect;
 use lattice_protocol::Position;
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use crate::snapshot::ReadStateHandle;
 
@@ -69,52 +70,19 @@ pub struct ClaudeCodeInboundRequest {
     pub response: oneshot::Sender<InboundReply>,
 }
 
-/// Sender half — held by the WS task (write tools). `send` wakes the actor so
-/// the drain runs off-keystroke.
-#[derive(Clone)]
-pub struct ClaudeCodeInboundBus {
-    tx: mpsc::UnboundedSender<ClaudeCodeInboundRequest>,
-    wake: Arc<Notify>,
-}
-
-impl ClaudeCodeInboundBus {
-    /// Build the bus + its receiver. `wake` is the editor's `async_landed`.
-    pub fn new(wake: Arc<Notify>) -> (Self, mpsc::UnboundedReceiver<ClaudeCodeInboundRequest>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx, wake }, rx)
-    }
-
-    /// Send a request and wake the actor. Returns the request back on failure
-    /// (receiver dropped — server stopped), so the caller reports a graceful
-    /// error instead of awaiting a oneshot that will never resolve.
-    pub fn send(
-        &self,
-        req: ClaudeCodeInboundRequest,
-    ) -> Result<(), ClaudeCodeInboundRequest> {
-        self.tx.send(req).map_err(|e| e.0)?;
-        self.wake.notify_one();
-        Ok(())
-    }
-}
-
-/// Build the per-tick drain closure registered with the tick-callback registry.
-/// Drains all pending requests, maps each to an Effect (or `ok=false`), resolves
-/// oneshots, and returns the Effects for the host to apply.
-pub fn make_drain(
-    mut rx: mpsc::UnboundedReceiver<ClaudeCodeInboundRequest>,
+/// Build the per-item handler for the generic inbound primitive
+/// ([`SubsystemBoot::inbound`](lattice_mode::SubsystemBoot::inbound)). Maps one
+/// request to its `Effect` (or none, on `ok=false`), resolves the oneshot, and
+/// returns the effect(s) for the host to apply. The generic bus owns the
+/// channel, the per-tick `try_recv` loop, and the off-keystroke wake.
+pub fn make_handler(
     cache: ReadStateHandle,
-) -> impl FnMut() -> Vec<Effect> + Send + 'static {
-    move || {
-        let mut effects = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            let (effect, reply) = map_request(&req.kind, &cache);
-            if let Some(e) = effect {
-                effects.push(e);
-            }
-            // A dropped response receiver (agent gone) is fine — log-and-skip.
-            let _ = req.response.send(reply);
-        }
-        effects
+) -> impl FnMut(ClaudeCodeInboundRequest) -> Vec<Effect> + Send + 'static {
+    move |req| {
+        let (effect, reply) = map_request(&req.kind, &cache);
+        // A dropped response receiver (agent gone) is fine — log-and-skip.
+        let _ = req.response.send(reply);
+        effect.into_iter().collect()
     }
 }
 
@@ -166,10 +134,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::snapshot::ClaudeCodeReadState;
+    use lattice_mode::inbound::make_inbound;
     use lattice_protocol::ids::DocumentId;
     use lattice_protocol::{Event, SelectionSet};
-    use std::sync::Mutex;
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
 
     fn cache_with_active(path: &str) -> ReadStateHandle {
         let mut s = ClaudeCodeReadState::default();
@@ -250,10 +219,12 @@ mod tests {
     }
 
     #[test]
-    fn drain_applies_effect_and_resolves_oneshot() {
-        let wake = Arc::new(Notify::new());
-        let (bus, rx) = ClaudeCodeInboundBus::new(wake);
-        let mut drain = make_drain(rx, empty_cache());
+    fn handler_maps_request_and_resolves_oneshot() {
+        // The generic inbound primitive (`make_inbound`) owns the channel + the
+        // per-tick drain + the wake (those are pinned by lattice-mode's inbound
+        // tests); this pins claude's per-item handler — it maps the request to
+        // an Effect and resolves the oneshot.
+        let (bus, mut drain) = make_inbound(Arc::new(Notify::new()), make_handler(empty_cache()));
 
         let (resp_tx, mut resp_rx) = oneshot::channel();
         bus.send(ClaudeCodeInboundRequest {
@@ -269,40 +240,5 @@ mod tests {
         assert_eq!(effects.len(), 1);
         let reply = resp_rx.try_recv().expect("oneshot resolved");
         assert!(reply.ok);
-    }
-
-    #[tokio::test]
-    async fn send_wakes_the_actor() {
-        let wake = Arc::new(Notify::new());
-        let (bus, _rx) = ClaudeCodeInboundBus::new(wake.clone());
-        let (resp_tx, _resp_rx) = oneshot::channel();
-        bus.send(ClaudeCodeInboundRequest {
-            kind: InboundKind::OpenFile {
-                path: PathBuf::from("/a.rs"),
-                position: Position::ZERO,
-            },
-            response: resp_tx,
-        })
-        .expect("send ok");
-        // The wake permit stored by `notify_one` must let a `notified()` resolve
-        // promptly — i.e. the actor would wake off-keystroke.
-        let woke = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
-        assert!(woke.is_ok(), "send must wake the actor");
-    }
-
-    #[test]
-    fn dropped_receiver_makes_send_fail_gracefully() {
-        let wake = Arc::new(Notify::new());
-        let (bus, rx) = ClaudeCodeInboundBus::new(wake);
-        drop(rx); // server stopped
-        let (resp_tx, _resp_rx) = oneshot::channel();
-        let result = bus.send(ClaudeCodeInboundRequest {
-            kind: InboundKind::OpenFile {
-                path: PathBuf::from("/a.rs"),
-                position: Position::ZERO,
-            },
-            response: resp_tx,
-        });
-        assert!(result.is_err(), "dropped receiver → send returns the request");
     }
 }

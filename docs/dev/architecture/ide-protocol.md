@@ -12,7 +12,7 @@ contract those editors expose.
 
 ## 1. Peer protocol, not an extension substrate
 
-`lattice-ide` is a **network peer**, architecturally identical in spirit to
+`lattice-claude-code` is a **network peer**, architecturally identical in spirit to
 `lattice-lsp` (an LSP *client*): a loopback JSON-RPC connection to an external
 process. It runs no agent in-process, executes no third-party code in lattice's
 address space, and adds no scripting surface. It therefore does **not** violate
@@ -22,19 +22,32 @@ plugin host** (design.md Phase 7, unbuilt) — it depends on none of it.
 
 ## 2. Mode-owned, minimum host touch (Steer A)
 
-`lattice-ide` is a **mode that owns its full surface**; the App stays a thin host
+`lattice-claude-code` is a **mode that owns its full surface**; the App stays a thin host
 exposing generic primitives (`feedback_mode_owns_its_surface`). The acid test —
 *a new provider crate adds zero `Editor::` methods and zero new `Action`
 variants* — is met:
 
-- **Server + lifecycle:** `ide-mode`'s `on_activate` spawns the WebSocket server
-  as a tokio task on a dedicated runtime; the returned `Guard` aborts it on
-  deactivation. The crate's `register_ide_*` fns register `IdeServerHandle` into
-  `ServiceRegistry` and the mode into the `ModeRegistry` at boot.
-- **Commands:** ex-commands (`:ide-start`/`:ide-stop`/`:claude`/`:claude-send`)
-  route to **mode-owned action handlers** (`ActionHandler: Fn(&ActionContext) ->
-  Option<Effect>`), not host `Editor::do_x`. Handlers read `buffer_id`/`cursor`/
-  `services`/`events` from `ActionContext` and return **existing** `Effect`s.
+- **Server + lifecycle:** boot spawns the `ClaudeCodeServer` supervisor task
+  (idle until started) on the shared async runtime and registers its
+  `ClaudeCodeServerHandle` into `ServiceRegistry`; `register_claude_code_modes`
+  registers `claude-code-mode` into the `ModeRegistry`. The server is
+  started / stopped by the `:claude-code-*` ex-commands (and, from I5,
+  *ensured* running by `claude-code-mode`'s `on_activate`, with its `Guard`
+  stopping it on deactivation).
+- **Commands (corrected from I0):** the server-lifecycle ex-commands
+  (`:claude-code-start` / `:claude-code-stop`; `:claude` / `:claude-send` land
+  in I5/I6) are registered **by the crate** with **bare dashed names** — they
+  resolve directly via `id_by_name` on the `:` line, so the command surface
+  needs **no host alias-table entry**. Each `apply` closure **captures the
+  `ClaudeCodeServerHandle`** and drives it directly (a non-blocking `cmd_tx`
+  send), returning an **existing** `Effect` (`Echo`). This — *not* a mode
+  `ActionHandler` — is the mode-ownership-compliant route for ex-commands: the
+  `:` line rejects `CommandKind::Action` (`excommand.rs`), and an ex-command
+  `apply` (`Fn(&ExCommandContext) -> Effect`) is handed no `services`, so it
+  cannot reach the `ActionHandlerRegistry`. Capturing the subsystem handle
+  keeps BOTH the binding (the command name) AND the handler body in the crate,
+  with no new host `Editor::` method and no new `Effect` variant. (A future
+  *chord*-bound action would use the `ActionHandler` path; ex-commands can't.)
 - **Writes** (`openFile`/`saveDocument`/`close_tab`) reuse existing effects
   (`Effect::OpenBufferAt`, save, close-buffer) — no new host write path.
 - **Reads** are served on the WS task from the published
@@ -44,9 +57,9 @@ variants* — is met:
 **The single new host primitive** is a generic **tick-callback registry**: any
 mode registers a per-tick drain closure. This is reusable infrastructure (it
 generalizes the host's existing hardcoded `option_change_rx` / `lsp_log_event_rx`
-/ … drains, which are the smell), not an ide-specific touch point. `ide-mode`
-registers its `IdeInbound` drain through it. Rejected alternatives: an
-ide-specific `Editor::drain_inbound_ide` (fails the acid test, no merit gain over
+/ … drains, which are the smell), not an claude-code-specific touch point. `claude-code-mode`
+registers its `ClaudeCodeInbound` drain through it. Rejected alternatives: an
+claude-code-specific `Editor::drain_inbound_claude_code` (fails the acid test, no merit gain over
 the generic registry — UX and perf are identical) and event→`Invocation` routing
 (a fixed-at-subscribe-time invocation can't carry structured write payloads —
 path / range / contents — cleanly).
@@ -63,13 +76,13 @@ property, not kind-branching** (`feedback_buffers_no_special_case`):
 - **Insert mode:** keystrokes pass through to the `claude` PTY (terminal-insert),
   i.e. you type your prompt to the agent.
 
-`ide-mode` is a **minor mode layered on that terminal buffer** — it does **not**
+`claude-code-mode` is a **minor mode layered on that terminal buffer** — it does **not**
 introduce a new `BufferKind` (which would mean renderer kind-arms + buffer-
 registry plumbing, fighting both minimum-host-touch and no-kind-specific-logic).
-`ide-mode` adds: the protocol server, the headerline status row (running / port /
+`claude-code-mode` adds: the protocol server, the headerline status row (running / port /
 connected — the async-buffer-status convention, `project_async_buffer_status_in_headerline`),
 and diff affordances. `:claude` spawns `claude` in a terminal buffer with the
-discovery env injected and activates `ide-mode` on it.
+discovery env injected and activates `claude-code-mode` on it.
 
 ## 4. Wire contract (must match VS Code's, for CLI compatibility)
 
@@ -96,7 +109,7 @@ The exact lockfile JSON field set is provisional until verified against a live
 
 1. **Reads** — answered on the WS task from the published snapshot; zero tick
    involvement, no renderer round-trip.
-2. **Writes** — an `IdeInbound` mpsc channel drained per-tick via the mode's
+2. **Writes** — an `ClaudeCodeInbound` mpsc channel drained per-tick via the mode's
    registered tick callback; the drain applies the matching `Effect` and resolves
    a `oneshot` reply. `O(pending)` `try_recv`, same bounded shape as LSP's
    existing inbound drains. All I/O + JSON parse happens off-thread on the WS
@@ -114,13 +127,13 @@ dropped host receiver yields a JSON-RPC error to the agent, never a hang or pani
 ## 6. Paramount-goal alignment
 
 - **#1 perf:** protocol parse/serialize runs off the UI thread; the only main-loop
-  cost is the bounded per-tick `IdeInbound` drain dispatched through the
+  cost is the bounded per-tick `ClaudeCodeInbound` drain dispatched through the
   tick-callback registry. No per-frame protocol work.
 - **#2 extensibility:** a new peer-protocol axis (alongside LSP), mode-owned;
   capability-gated by loopback bind + token. Revisit a capability token when the
   WASM host lands so a plugin could mediate agent access.
 - **#3 strict vim:** the IDE buffer keeps vim grammar in Normal mode (it's a
-  terminal buffer); `ide-mode` contributes only a minor-mode layer.
+  terminal buffer); `claude-code-mode` contributes only a minor-mode layer.
 - **#4 async:** server is a tokio task; reads use the snapshot; writes use the
   per-tick drain; the one blocking op blocks only the agent's task. Architectural,
   not by discipline.
@@ -137,7 +150,7 @@ dropped host receiver yields a JSON-RPC error to the agent, never a hang or pani
   larger surface (auth, model API, tool loop), couples lattice to one agent.
   Peer-protocol host reuses an external agent and ships sooner. Revisit
   post-Phase-7.
-- **ide-specific host drain / event→Invocation writes** — see §2.
+- **claude-code-specific host drain / event→Invocation writes** — see §2.
 
 See the slice plan for sequencing:
 `docs/dev/operations/slice-plans/ide-protocol.md`.

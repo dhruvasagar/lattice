@@ -90,5 +90,11 @@ criterion = { workspace = true }
 name = "activation_resolver"
 harness = false
 
+# IDE-protocol I1.1: pin the per-tick `TickCallbackRegistry::run_all` cost
+# (Mutex lock + O(registered-drains) walk) so a regression surfaces in CI.
+[[bench]]
+name = "tick_callback"
+harness = false
+
 [lints]
 workspace = true

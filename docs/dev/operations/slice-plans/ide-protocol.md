@@ -4,7 +4,7 @@ Design fragment: `docs/dev/architecture/ide-protocol.md` (the *what* and *why*;
 this file owns the *when* and *in what order*).
 
 Feature: lattice as the IDE side of the Claude Code agent protocol. Mode-owned
-(`ide-mode` minor mode on a reused `BufferKind::Terminal` buffer); one new generic
+(`claude-code-mode` minor mode on a reused `BufferKind::Terminal` buffer); one new generic
 host primitive (tick-callback registry); writes via existing Effects; `openDiff`
 via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
@@ -12,31 +12,36 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 - **I0 — Docs seed.** ✅ This slice plan + the design fragment.
 
-- **I1 — Crate + generic tick-callback registry + WS/MCP skeleton.**
-  New `crates/lattice-ide/` + workspace member + `tokio-tungstenite`. The one
+- **I1 — Crate + generic tick-callback registry + WS/MCP skeleton.** ✅
+  Landed as five green sub-commits I1.0–I1.4 (jsonrpc lift → tick-callback
+  registry → crate skeleton → boot wiring + WS round-trip → docs).
+  New `crates/lattice-claude-code/` + workspace member + `tokio-tungstenite`. The one
   generic host primitive: a **tick-callback registry** (host service; `register`
-  + per-tick `run_all`, wired into `run_tick_pending`). `lattice-ide`: `lockfile.rs`
+  + per-tick `run_all`, wired into `run_tick_pending`). `lattice-claude-code`: `lockfile.rs`
   (writer + RAII unlink), `auth.rs` (token + constant-time header check),
   `transport.rs` (WS accept + auth), `protocol.rs` (MCP envelopes; lift
   `lattice-lsp::jsonrpc` into `lattice-protocol` first — see Risk 3), `dispatch.rs`
   (`initialize`/`tools/list`/`prompts/list` + `tools/list_changed`; tools stubbed),
-  `server.rs`, `error.rs`. `ide-mode` registered (Manual activation for now) +
-  `:ide-start`/`:ide-stop` action handlers. **Tests:** tick-callback registry
+  `server.rs`, `error.rs`, `commands.rs`. `claude-code-mode` registered (Manual
+  activation for now) + `:claude-code-start`/`:claude-code-stop` **ex-commands**
+  (crate-owned, bare-named; `apply` closures capture the server handle — design §2
+  corrects I0's "mode action handler" framing, which is infeasible for
+  ex-commands). **Tests:** tick-callback registry
   register/run; lockfile round-trip + unlink-on-Drop; auth accept/reject;
   `initialize` handshake; `tools/list` enumerates; malformed frame → error, no
   panic.
 
-- **I2 — Read tools.** `snapshot.rs` (`IdeReadState`) + a boot publisher (from
+- **I2 — Read tools.** `snapshot.rs` (`ClaudeCodeReadState`) + a boot publisher (from
   `RenderState`/`BufferRegistry`/diagnostics cache, registered as a read service)
   + `tools/reads.rs`: `getCurrentSelection`, `getOpenEditors`,
   `getWorkspaceFolders`, `getDiagnostics`, `checkDocumentDirty`. **Tests:**
   snapshot→result per tool; absent buffer / no-diagnostics → empty (not error).
   *(I0–I2 = the walking skeleton: a real `claude` CLI can attach via a manual
-  `:ide-start` + lockfile and read editor state — validate the contract here.)*
+  `:claude-code-start` + lockfile and read editor state — validate the contract here.)*
 
-- **I3 — Write tools.** `inbound.rs` (`IdeInboundRequest` + replies + `IdeInboundBus`)
-  + `tools/writes.rs` (`openFile`/`saveDocument`/`close_tab`). `ide-mode` registers
-  an `IdeInbound` drain via the I1 tick-callback registry; the drain returns
+- **I3 — Write tools.** `inbound.rs` (`ClaudeCodeInboundRequest` + replies + `ClaudeCodeInboundBus`)
+  + `tools/writes.rs` (`openFile`/`saveDocument`/`close_tab`). `claude-code-mode` registers
+  an `ClaudeCodeInbound` drain via the I1 tick-callback registry; the drain returns
   existing Effects (`OpenBufferAt`, save, close) and resolves oneshots. **Tests:**
   request→Effect mapping; oneshot round-trip; unknown path/tab → `ok=false`;
   dropped receiver → graceful error to agent.
@@ -50,10 +55,10 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 - **I5 — Terminal launch + the IDE buffer.** Add `env: Vec<(String,String)>` to
   `SpawnConfig` (spawner.rs:24 — confirmed absent; thread into `CommandBuilder`).
   `:claude` spawns `claude` in a `BufferKind::Terminal` buffer with
-  `CLAUDE_CODE_SSE_PORT`+`ENABLE_IDE_INTEGRATION` injected, activates `ide-mode` on
+  `CLAUDE_CODE_SSE_PORT`+`ENABLE_IDE_INTEGRATION` injected, activates `claude-code-mode` on
   it, and starts the server. `--ide` CLI flag optional. **TUI+GPUI parity** for any
   new effect. **Tests:** `SpawnConfig.env` reaches the child; `:claude` injects both
-  vars + activates `ide-mode`; lockfile exists while running.
+  vars + activates `claude-code-mode`; lockfile exists while running.
 
 - **I6 — Notifications.** `notifications.rs` + event-bus subscriber:
   `selection_changed` (coalesced — fires per cursor move), `didChangeActiveEditor`,
@@ -62,16 +67,17 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 - **I7 — Status + hardening.** Headerline/modeline status (running/port/conns) +
   `*messages*` log; loopback-only bind enforced; token gating audited; clean
-  teardown (lockfile unlink, conn close) on `:ide-stop`/quit; idempotent restart.
+  teardown (lockfile unlink, conn close) on `:claude-code-stop`/quit; idempotent restart.
   **Tests:** status reflects state; non-loopback refused; lockfile removed on stop;
   never panics on the WS thread.
 
 ## Risks / decisions (carry into the slices)
 
 1. Lockfile JSON schema provisional — verify against a live `claude` CLI before I5.
-2. `tokio-tungstenite` — first WS dep; pin a version (the repo is dep-careful).
-3. Lift `lattice-lsp::jsonrpc` into `lattice-protocol` (pre-I1) so `lattice-ide`
-   reuses the JSON-RPC types without an `ide→lsp` crate edge.
+2. `tokio-tungstenite` — first WS dep; ✅ pinned to `0.24` (default features, no
+   TLS — loopback + token gated). `getrandom 0.2` added for the auth token only.
+3. ✅ Done in I1.0: lifted `lattice-lsp::jsonrpc` into `lattice-protocol` so
+   `lattice-claude-code` reuses the JSON-RPC types without an `ide→lsp` crate edge.
 4. `SpawnConfig.env` touches a shared struct (derives Clone/Debug, no `..Default`)
    — audit all construction sites in I5.
 5. Single active agent connection in v1 (VS Code assumes 1 IDE↔1 agent); reject
@@ -79,4 +85,4 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 🗒 · I2 🗒 · I3 🗒 · I4 🗒 · I5 🗒 · I6 🗒 · I7 🗒
+I0 ✅ · I1 ✅ · I2 🗒 · I3 🗒 · I4 🗒 · I5 🗒 · I6 🗒 · I7 🗒

@@ -1767,6 +1767,34 @@ be reset by deleting `target/criterion/`.
 
 ---
 
+## I1.1 — tick-callback registry `run_all` (2026-06-23)
+
+The IDE-protocol tick-callback registry (`lattice-mode::tick_callback`) is
+the one new generic host primitive: a mode registers an `FnMut() ->
+Vec<Effect>` drain closure, and `Editor::run_tick_pending` calls
+`TickCallbackRegistry::run_all` once per editor tick to run them all and
+apply the returned effects. `run_all` is a single `Mutex` lock + an
+O(registered-drains) walk. This runs on the async-landed / `Tick` path
+(not the keystroke path), but it's per-tick, so the cost must stay flat.
+
+Bench: `crates/lattice-mode/benches/tick_callback.rs`
+(`tick_callback_run_all/<N>`), N registered drains each returning one
+`Effect`.
+
+| registered drains | run_all (median) | Notes |
+|---|---|---|
+| 0 | ~9.4 ns | Boot steady state — no mode has registered a drain. Just the lock + empty walk. |
+| 1 | ~18.8 ns | One drain (the typical single-IDE-peer shape). |
+| 8 | ~99 ns | Linear in drain count. |
+| 32 | ~0.4 µs | Stress shape; still ~20,000× under the 8.3 ms one-frame ceiling. |
+
+Flat and negligible: even the 32-drain stress case is four orders of
+magnitude under one display frame, and the common 0/1-drain cost is sub-20
+ns. A regression (per-call allocation blow-up, lock-contention change)
+surfaces here in CI.
+
+---
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

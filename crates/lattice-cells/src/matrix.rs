@@ -506,64 +506,62 @@ impl<'a> Iterator for DisplaySliceIter<'a> {
             return None;
         }
 
-        loop {
-            // Phase A: drain `Below(line)` virtual rows for
-            // the most-recently emitted document row.
-            if let Some(line) = self.after_cell_below_for {
-                if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
-                    if vrow.anchor_line == line
-                        && vrow.position == AnchorPosition::Below
-                    {
-                        self.v_idx += 1;
-                        self.remaining -= 1;
-                        return Some(DisplayRowEntry::Virtual(vrow));
-                    }
-                }
-                // No more Below(line) entries — exit phase A.
-                self.after_cell_below_for = None;
-            }
+        // Each `next()` emits exactly one entry on a single straight-line
+        // pass: phase A returns a queued `Below` row, else phase B/C/D
+        // peeks the next document row and returns either the document row
+        // or a virtual row anchored at/before it. No path loops back, so
+        // this is straight-line, not a `loop` (clippy::never_loop).
 
-            // Phase B: peek next document row if we haven't.
-            if self.cell_peek.is_none() {
-                self.cell_peek = self.cells.next();
-            }
-
-            match self.cell_peek {
-                Some(crow) => {
-                    let line = crow.source_line;
-                    // Phase C: emit any virtual row whose
-                    // anchor sits at or before `line` with
-                    // `Above`-or-earlier semantics.
-                    if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
-                        let v_anchor = vrow.anchor_line;
-                        let emits_before_cell = v_anchor < line
-                            || (v_anchor == line
-                                && vrow.position == AnchorPosition::Above);
-                        if emits_before_cell {
-                            self.v_idx += 1;
-                            self.remaining -= 1;
-                            return Some(DisplayRowEntry::Virtual(vrow));
-                        }
-                    }
-                    // Phase D: emit the document row; queue
-                    // `Below(line)` for phase A on the next
-                    // call.
-                    self.cell_peek = None;
-                    self.after_cell_below_for = Some(line);
+        // Phase A: drain `Below(line)` virtual rows for the
+        // most-recently emitted document row.
+        if let Some(line) = self.after_cell_below_for {
+            if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                if vrow.anchor_line == line && vrow.position == AnchorPosition::Below {
+                    self.v_idx += 1;
                     self.remaining -= 1;
-                    return Some(DisplayRowEntry::Document(crow));
+                    return Some(DisplayRowEntry::Virtual(vrow));
                 }
-                None => {
-                    // No more document rows; emit any
-                    // remaining virtual rows in sorted
-                    // order.
-                    if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+            }
+            // No more Below(line) entries — exit phase A.
+            self.after_cell_below_for = None;
+        }
+
+        // Phase B: peek next document row if we haven't.
+        if self.cell_peek.is_none() {
+            self.cell_peek = self.cells.next();
+        }
+
+        match self.cell_peek {
+            Some(crow) => {
+                let line = crow.source_line;
+                // Phase C: emit any virtual row whose anchor sits at or
+                // before `line` with `Above`-or-earlier semantics.
+                if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                    let v_anchor = vrow.anchor_line;
+                    let emits_before_cell = v_anchor < line
+                        || (v_anchor == line && vrow.position == AnchorPosition::Above);
+                    if emits_before_cell {
                         self.v_idx += 1;
                         self.remaining -= 1;
                         return Some(DisplayRowEntry::Virtual(vrow));
                     }
-                    return None;
                 }
+                // Phase D: emit the document row; queue `Below(line)` for
+                // phase A on the next call.
+                self.cell_peek = None;
+                self.after_cell_below_for = Some(line);
+                self.remaining -= 1;
+                Some(DisplayRowEntry::Document(crow))
+            }
+            None => {
+                // No more document rows; emit any remaining virtual rows
+                // in sorted order.
+                if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                    self.v_idx += 1;
+                    self.remaining -= 1;
+                    return Some(DisplayRowEntry::Virtual(vrow));
+                }
+                None
             }
         }
     }

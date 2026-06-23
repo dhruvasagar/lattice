@@ -95,4 +95,4 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 ✅ · I2 🗒 · I3 🗒 · I4 🗒 · I5 🗒 · I6 🗒 · I7 🗒
+I0 ✅ · I1 ✅ · I2 ✅ · I3 🗒 · I4 🗒 · I5 🗒 · I6 🗒 · I7 🗒

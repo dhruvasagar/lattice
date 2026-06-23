@@ -13,6 +13,12 @@ lattice-grammar = { path = "../lattice-grammar" }
 # (`EventBus`/`EventFilter`/`SubscriptionTarget`) to track open buffers +
 # the active selection off the editor thread.
 lattice-runtime = { path = "../lattice-runtime" }
+# I2.2: read tools consume generic services — `lattice-core` for the
+# `BufferStore`'s `BufferId`, `lattice-lsp` for the `DiagnosticsQuery`
+# service + `Diagnostic` type (`getDiagnostics`). The diagnostics edge is a
+# legitimate semantic dep (the IDE reports LSP diagnostics to the agent).
+lattice-core = { path = "../lattice-core" }
+lattice-lsp = { path = "../lattice-lsp" }
 tokio = { workspace = true, features = [
 	"sync",
 	"rt",

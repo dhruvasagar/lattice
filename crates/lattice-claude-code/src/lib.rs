@@ -25,6 +25,7 @@ pub mod error;
 pub mod lockfile;
 pub mod modes;
 pub mod protocol;
+pub mod reads;
 pub mod server;
 pub mod snapshot;
 pub mod transport;

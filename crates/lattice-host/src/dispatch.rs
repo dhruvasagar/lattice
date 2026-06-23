@@ -11328,7 +11328,43 @@ impl Editor {
         // Last App-resident drain to migrate; both peers now reach
         // every per-tick drain through this aggregator.
         signals.extend(self.drain_pending_live_picker_query());
+        // IDE-protocol I1.1: run mode-registered per-tick drain closures
+        // (the generic tick-callback registry) and apply their effects.
+        // No-op until a mode registers one (e.g. the Claude Code IDE
+        // peer's `IdeInbound` drain, I3).
+        signals.extend(self.drain_tick_callbacks());
         signals
+    }
+
+    /// IDE-protocol I1.1: run every mode-registered per-tick drain
+    /// closure and apply the `Effect`s they return, surfacing any
+    /// `RendererSignal`s produced. The single generic host primitive
+    /// that replaces per-subsystem `drain_<x>` methods: a mode owns its
+    /// channel + drain body and registers the closure via the
+    /// `TickCallbackRegistryHandle` service; the host just runs them.
+    ///
+    /// Reads the registry from `self.services` (one `Arc` load + downcast
+    /// — cheap, and this runs per tick, not per frame). No registered
+    /// callbacks → no-op. Effects flow through the same
+    /// `apply_effect_host` pipeline mode action handlers use, so
+    /// renderer-coupled effects land on `out` and host-side signals are
+    /// returned for the actor to forward.
+    fn drain_tick_callbacks(&mut self) -> Vec<RendererSignal> {
+        let Some(registry) = self
+            .services
+            .get::<lattice_mode::TickCallbackRegistryHandle>()
+        else {
+            return Vec::new();
+        };
+        let effects = registry.run_all();
+        if effects.is_empty() {
+            return Vec::new();
+        }
+        let mut out = DispatchOutcome::default();
+        for effect in effects {
+            apply_effect_host(self, effect, &mut out);
+        }
+        out.renderer_signals
     }
 
     pub fn drain_pending_hover(&mut self) -> Vec<RendererSignal> {

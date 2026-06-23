@@ -87,6 +87,10 @@ pub mod modeline;
 pub mod modes;
 pub mod registry;
 pub mod services;
+// IDE-protocol I1.1: the one generic host primitive — a per-tick drain
+// closure registry. Generalizes the host's hardcoded `drain_<x>` methods
+// so a mode owns its channel + drain body (`feedback_mode_owns_its_surface`).
+pub mod tick_callback;
 
 pub use crate::action_handler_registry::{
     ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
@@ -95,6 +99,9 @@ pub use crate::action_handler_registry::{
 pub use crate::active::ActiveModes;
 pub use crate::activator::ModeActivator;
 pub use crate::binding_mode::BindingMode;
+pub use crate::tick_callback::{
+    TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,
+};
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;

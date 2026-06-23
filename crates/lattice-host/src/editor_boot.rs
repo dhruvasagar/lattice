@@ -1110,6 +1110,17 @@ impl Editor {
                 &registry,
             );
 
+        // IDE-protocol I1.1: the one new generic host primitive — a
+        // per-tick drain-closure registry. A single Arc spans the
+        // editor's lifetime; registered as a service so modes add their
+        // drain from `on_activate` (e.g. the Claude Code IDE peer's
+        // `IdeInbound` drain, I3). The host runs every registered closure
+        // once per tick inside `run_tick_pending` (`drain_tick_callbacks`)
+        // and applies the returned `Effect`s. Generalizes the host's
+        // hardcoded `drain_<x>` methods; see `tick_callback.rs`.
+        let tick_callbacks: lattice_mode::TickCallbackRegistryHandle =
+            Arc::new(lattice_mode::TickCallbackRegistry::new());
+
         // T.3/T.4 (theme-system): the builtin element ids, captured from
         // the theme-element registry created earlier (above the picker
         // registry so the T.12a colorscheme picker could capture a
@@ -1236,6 +1247,13 @@ impl Editor {
                 // `on_activate`.
                 s.register::<lattice_mode::ActionHandlerRegistryHandle>(
                     action_handlers.clone(),
+                );
+                // IDE-protocol I1.1: per-tick drain-closure registry.
+                // Read each tick by `Editor::drain_tick_callbacks`;
+                // written by modes' `on_activate` via
+                // `ctx.service::<TickCallbackRegistryHandle>()`.
+                s.register::<lattice_mode::TickCallbackRegistryHandle>(
+                    tick_callbacks.clone(),
                 );
                 // M.10.3 (2026-06-03): expose the CommandRegistry
                 // as a service so mode handlers (registered via

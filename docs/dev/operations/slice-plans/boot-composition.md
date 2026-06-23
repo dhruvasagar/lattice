@@ -227,16 +227,29 @@ migration is **behaviour-pinned before it moves**.
   `emacs_keys_dispatch` + 123 `lattice-mode` (+6 moved) + 750 `lattice-host` lib
   + full workspace incl. GPUI.
 
-- **BC.6 … BC.N — Migrate each remaining subsystem, one per slice.** diff →
-  multibuffer → LSP (LSP last: largest surface — its inbound buses
-  [`InboundShowDocument`, `InboundApplyEdit`, configuration] become
-  `inbound::<T>` calls, its `set_wake` / L1c forwarders become `wake_on_event`).
-  Each slice: green against that subsystem's BC.2 pin tests; one `install(boot)`
-  replaces its scattered calls. (Watch for the residual classes seen so far:
-  host-published primitives a mode merely consumes stay host-side [BC.4]; a
-  default-on builtin with no owning crate becomes a `lattice-mode` builtin
-  rather than a subsystem install [BC.5] — `diff` lives in `lattice-host`
-  today, so it faces the same own-crate-vs-builtin question.)
+- **BC.6 — `diff` extraction.** 🗒 DECIDED + planned in its own slice plan:
+  **`docs/dev/operations/slice-plans/diff-extraction.md`** (DX.0–DX.final). The
+  own-crate-vs-builtin fork resolved to **extract the whole diff subsystem into
+  the existing `lattice-diff` crate** (Dhruva, 2026-06-23) — diff is a real
+  subsystem (DiffSubsystem + resolver + overlay/fold/filler render providers +
+  modeline element + bridge), too machinery-heavy for a `lattice-mode` builtin.
+  It installs through the BC `SubsystemBoot` seam (`lattice_diff::install(boot)`,
+  the DX.7 slice closes BC.6) and decomposes into `diff-mode` +
+  `diff-conflict-mode`. The cross-cutting prep (move `resolve_syntax_style` →
+  lattice-theme; fold/RowMapper traits → lattice-core; `ROLE_MODE_ITEM` →
+  lattice-mode; diff owns its `action:diff-*` + name-based keymap) lands as
+  DX.2–DX.5 before the file move. See that plan for the full coupling table +
+  sequence.
+
+- **BC.7 … BC.N — Migrate the remaining subsystems, one per slice.** multibuffer
+  → LSP (LSP last: largest surface — its inbound buses [`InboundShowDocument`,
+  `InboundApplyEdit`, configuration] become `inbound::<T>` calls, its `set_wake`
+  / L1c forwarders become `wake_on_event`). Each slice: green against that
+  subsystem's BC.2 pin tests; one `install(boot)` replaces its scattered calls.
+  (Residual classes seen so far: host-published primitives a mode merely
+  consumes stay host-side [BC.4]; a default-on builtin with no owning crate
+  becomes a `lattice-mode` builtin, not a subsystem install [BC.5]; a real
+  subsystem living in-host gets extracted to its own crate [BC.6].)
 
 - **BC.final — Remove dead scaffolding.** Retire the hardcoded `run_tick_pending`
   drains the tick-callback registry now subsumes, and the ad-hoc wake forwarders
@@ -278,18 +291,15 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Next: BC.6 — `diff`** (newest→oldest). Like emacs-keys (BC.5), `diff` lives
-*in* `lattice-host` (`crate::diff`), so the first question is the BC.5 fork
-again: is `diff-mode` a `lattice-mode` builtin (like emacs-keys), or does diff
-get its own crate (it has real subsystem machinery — the `DiffSubsystem`,
-debounced drainer, per-session forwarders — so unlike emacs-keys it is NOT just
-a marker mode + keymap, and a crate may be the better home)? Settle that fork
-before coding. Then multibuffer → LSP (LSP last, largest: its
-`InboundShowDocument`/`InboundApplyEdit`/configuration buses become
-`boot.inbound::<T>`, its `set_wake`/L1c forwarders become `boot.wake_on_event`).
-Each slice: green against that subsystem's BC.2 pin tests; watch the residual
-classes (host-published primitives a mode merely consumes stay host-side [BC.4];
-a default-on no-owning-crate builtin becomes a `lattice-mode` builtin, not a
-subsystem install [BC.5]). **BC.final** then retires the `*_mut` transitional
-accessors + the hardcoded `run_tick_pending` drains, leaving `editor_boot` as
-the two-list shape (Phase-A primitives, then the Phase-B install list).
+**Next: BC.6 — `diff` extraction → the `lattice-diff` crate.** The fork is
+settled (extract the subsystem into the existing `lattice-diff` crate; decompose
+into `diff-mode` + `diff-conflict-mode`) and fully planned in
+**`docs/dev/operations/slice-plans/diff-extraction.md`** (DX.0–DX.final, with the
+coupling table, cycle-safety proof, and per-slice green bars). Start there with
+DX.1 (the diff regression pins). After BC.6, **BC.7+** migrate multibuffer → LSP
+(LSP last, largest: its `InboundShowDocument`/`InboundApplyEdit`/configuration
+buses become `boot.inbound::<T>`, its `set_wake`/L1c forwarders become
+`boot.wake_on_event`); each green against its BC.2 pins, one `install(boot)` per
+subsystem. **BC.final** then retires the `*_mut` transitional accessors + the
+hardcoded `run_tick_pending` drains, leaving `editor_boot` as the two-list shape
+(Phase-A primitives, then the Phase-B install list).

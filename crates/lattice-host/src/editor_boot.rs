@@ -1251,8 +1251,12 @@ impl Editor {
                 // server handle was spawned earlier for the ex-commands). The
                 // read-tool LOGIC lives in the crate; these are just the
                 // generic buffer-store + diagnostics handles it composes.
-                claude_code_server
-                    .install_read_services(Some(buffer_store_handle), Some(diag_query));
+                claude_code_server.install_services(
+                    Some(buffer_store_handle),
+                    Some(diag_query),
+                    tick_callbacks.clone(),
+                    async_landed.clone(),
+                );
                 // M.2.b.2 (2026-06-01): expose the typed
                 // multibuffer-handle lookup so providers
                 // (`create_multibuffer_view`, future M.6

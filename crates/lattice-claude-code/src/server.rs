@@ -13,18 +13,19 @@
 //! wait-free [`ServerState`] snapshot.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use lattice_runtime::EventBus;
 
 use crate::dispatch::{self, DispatchContext, Outgoing};
+use crate::inbound::{self, ClaudeCodeInboundBus};
 use crate::error::Result;
 use crate::lockfile::{Lockfile, LockfileContents};
 use crate::reads::ReadContext;
@@ -72,9 +73,13 @@ pub struct ClaudeCodeServerHandle {
     /// Workspace folders from the config (for `getWorkspaceFolders`).
     workspace_folders: Vec<String>,
     /// The live dispatch context connections read. Starts with no generic
-    /// services (cache + config only); `install_read_services` upgrades it
-    /// once boot has wired the buffer-store / diagnostics handles.
+    /// services (cache + config only); `install_services` upgrades it once
+    /// boot has wired the buffer-store / diagnostics handles + the write bus.
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    /// I3.2: holds the write-drain's tick-callback registration alive for the
+    /// server's lifetime (dropping it would unregister the drain). Behind a
+    /// shared cell so the handle stays `Clone`.
+    write_reg: Arc<Mutex<Option<lattice_mode::TickCallbackRegistration>>>,
 }
 
 impl ClaudeCodeServerHandle {
@@ -96,15 +101,28 @@ impl ClaudeCodeServerHandle {
         self.state.load_full()
     }
 
-    /// I2.2: install the generic read services once boot has created them
-    /// (they're built later than the server handle — see the boot-ordering
-    /// note). Rebuilds the dispatch context with the same cache + config plus
-    /// the buffer-store / diagnostics handles; connections read it wait-free.
-    pub fn install_read_services(
+    /// I2.2 + I3.2: install the generic read + write services once boot has
+    /// created them (they're built later than the server handle — see the
+    /// boot-ordering note + boot-composition.md). Rebuilds the dispatch context
+    /// with the cache + config + read handles + the write bus, and registers
+    /// the write drain with the tick-callback registry. Connections read the
+    /// upgraded context wait-free.
+    pub fn install_services(
         &self,
         buffer_store: Option<lattice_mode::BufferStoreHandle>,
         diagnostics: Option<lattice_lsp::modes::DiagnosticsQueryHandle>,
+        tick_callbacks: lattice_mode::TickCallbackRegistryHandle,
+        async_landed: Arc<Notify>,
     ) {
+        // I3.2: create the inbound write bus (its `send` wakes `async_landed`,
+        // so writes apply off-keystroke) + register its per-tick drain with the
+        // tick-callback registry. The registration is held in `write_reg` for
+        // the server's lifetime.
+        let (bus, rx) = ClaudeCodeInboundBus::new(async_landed);
+        let drain = inbound::make_drain(rx, self.cache.clone());
+        let reg = tick_callbacks.register(Box::new(drain));
+        *self.write_reg.lock().unwrap_or_else(|e| e.into_inner()) = Some(reg);
+
         self.dispatch_ctx.store(Arc::new(DispatchContext {
             reads: ReadContext {
                 cache: self.cache.clone(),
@@ -112,7 +130,7 @@ impl ClaudeCodeServerHandle {
                 diagnostics,
                 workspace_folders: self.workspace_folders.clone(),
             },
-            writes: None,
+            writes: Some(bus),
         }));
     }
 }
@@ -154,6 +172,7 @@ pub fn spawn(
         cache,
         workspace_folders: config.workspace_folders,
         dispatch_ctx,
+        write_reg: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -294,4 +313,31 @@ async fn serve_connection(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[tokio::test]
+    async fn install_services_registers_write_drain_and_installs_bus() {
+        let config = ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: std::env::temp_dir(),
+        };
+        let handle = spawn(
+            config,
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        let tick: lattice_mode::TickCallbackRegistryHandle =
+            Arc::new(lattice_mode::TickCallbackRegistry::new());
+        handle.install_services(None, None, tick.clone(), Arc::new(Notify::new()));
+        assert_eq!(tick.registered_count(), 1, "the write drain is registered");
+        assert!(
+            handle.dispatch_ctx.load().writes.is_some(),
+            "the write bus is installed"
+        );
+    }
 }

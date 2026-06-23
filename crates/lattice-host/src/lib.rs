@@ -34,6 +34,11 @@ pub mod action;
 pub mod actions;
 pub(crate) mod events;
 pub mod activator;
+// Boot-composition BC.1: the `BootContext` skeleton — the host's
+// generic-primitive surface (the typed bundle a subsystem's future
+// `install(boot)` receives). Additive this slice; `editor_boot` migrates onto
+// it at BC.3. See `docs/dev/architecture/boot-composition.md`.
+pub mod boot_context;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;

@@ -69,6 +69,12 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod guards;
+// Boot-composition BC.1: the generic *inbound* primitive — a channel whose
+// `send` wakes the editor (`async_landed`) and whose items drain per-tick
+// through a handler. Pairs with `tick_callback`; generalizes the I3
+// `ClaudeCodeInboundBus` + LSP's hand-rolled inbound buses. The wake is baked
+// into the sender so it cannot be forgotten (`boot-composition.md` §3).
+pub mod inbound;
 // K.3 (2026-06-07): `KeymapEntry` + `keymap_entry!` live in
 // `lattice-keymap::keymap_entry`. lattice-mode re-exports the MODULE and
 // the `#[macro_export]` macro with a single `pub use` — the name

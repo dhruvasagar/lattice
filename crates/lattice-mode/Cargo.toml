@@ -72,6 +72,13 @@ tracing = { workspace = true }
 # host's chord dispatcher can read the closure map without
 # blocking mode activation/deactivation.
 arc-swap = { workspace = true }
+# Boot-composition BC.1: the `inbound` primitive (`src/inbound.rs`) is
+# library code (not just tests), so `tokio::sync::{Notify, mpsc}` must be a
+# regular dependency. Only `sync` is needed here — the wake is an
+# `Arc<tokio::sync::Notify>` and the channel an unbounded mpsc. The
+# dev-dependency below additively adds `macros`/`rt`/`time` for the
+# `#[tokio::test]` suites.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # M-async.2: registry tests are `#[tokio::test]` so they can

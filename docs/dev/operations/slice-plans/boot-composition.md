@@ -13,15 +13,32 @@ migration is **behaviour-pinned before it moves**.
 
 - **BC.0 — Design seed.** ✅ This plan + the design fragment.
 
-- **BC.1 — `BootContext` skeleton + `inbound::<T>` primitive.** Additive, no
-  migration. Define `BootContext` as a typed bundle of the *existing* primitives
-  (event bus, registries, tick-callback registry, buffer-store / diagnostics
-  handles, render-state cell, `async_landed`, runtime). Add the `inbound::<T>`
-  primitive: a channel whose `send` calls `async_landed.notify_one()` and whose
-  items are drained per-tick via the tick-callback registry through a handler.
-  **Tests:** `inbound` send wakes (a fake `Notify` is notified); the per-tick
-  drain runs the handler in order; dropped receiver → send error (graceful);
-  `wake_on_event` fires the wake. No `editor_boot.rs` behaviour change yet.
+- **BC.1 — `BootContext` skeleton + `inbound::<T>` primitive.** ✅ Additive, no
+  migration. Landed as:
+  - `lattice-mode/src/inbound.rs` — the reusable primitive: `InboundBus<T>`
+    (manual `Clone` so `T` need not be `Clone`) whose `send` wakes the editor +
+    `make_inbound(wake, handler) -> (InboundBus<T>, TickCallback)`. Generalizes
+    the I3 `ClaudeCodeInboundBus`; the wake is baked into the sender. Pairs with
+    the I1 `tick_callback` registry. (`tokio` promoted dev → regular dep for
+    feature `sync`.)
+  - `lattice-host/src/boot_context.rs` — `BootContext` bundling
+    `event_bus` / `tick_callbacks` / `async_landed` / `runtime_handle`, with
+    `inbound::<T>(handler)`, `wake_on_event::<E>()`, `tick_callback(cb)`, and
+    `into_registrations()` (boot-lifetime RAII tokens handed to the `Editor` at
+    BC.3).
+  - **Scope call (heuristic #1):** the `render_state` cell / `BufferStore` /
+    `DiagnosticsQueryHandle` are **deferred to BC.3** — their correct shape is a
+    *forwardable cell* (the §5 crux), so eager fields here would bake the wrong
+    primitive. The mode/command/service registration helpers likewise land at
+    BC.3 against the live registries.
+  - **Tests (10):** 6 in `inbound.rs` (drain runs handler in order; empty drain;
+    handler may drop items → no effect; `send` wakes; dropped receiver → graceful
+    `Err(item)`; `Clone` without `T: Clone`) + 4 in `boot_context.rs` (inbound
+    drains via the tick registry + `send` wakes; tick-callback token retained;
+    `into_registrations` hand-off is the lifetime anchor; `wake_on_event` fires
+    the wake). No `editor_boot.rs` behaviour change. **No bench:** `send` is an
+    `mpsc::send` + `Notify::notify_one` (upstream-benched); the per-tick drain
+    cost is already covered by `lattice-mode/benches/tick_callback.rs`.
 
 - **BC.2 — Regression-pin tests (gate for all migrations).** For *each* subsystem
   (LSP, multibuffer, emacs-keys, diff, terminal, claude-code) pin its current
@@ -69,7 +86,14 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 🗒 · BC.2 🗒 · BC.3 🗒 · BC.4+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 🗒 · BC.3 🗒 · BC.4+ 🗒 · BC.final 🗒
 
 **Resume after I3.** I3 lands on the current wiring with the wake already baked
 into `ClaudeCodeInboundBus::send`, so claude-code is migration-ready at BC.3.
+
+**Next: BC.2** — regression-pin tests for each subsystem's current boot
+behaviour (modes registered, commands resolve, services present under the right
+`TypeId`, one representative off-keystroke async path wakes `run_tick_pending`).
+These gate all migrations; nothing moves until its pin test is green on the
+current code. BC.1's `BootContext` + `inbound`/`wake_on_event` are the targets
+those migrations rebase onto at BC.3.

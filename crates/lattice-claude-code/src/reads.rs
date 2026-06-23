@@ -7,7 +7,7 @@
 //! claude-code trait is involved.
 //!
 //! Shape: pure *result-builders* (`*_result`, unit-tested with plain data)
-//! + thin tool entry points (`get_*` / `check_*`) that fetch from a
+//! plus thin tool entry points (`get_*` / `check_*`) that fetch from a
 //! [`ReadContext`] and call the builders. Reads run on the WS task off the
 //! editor thread — `BufferStore::handle_for(id)` → `Document` snapshot reads
 //! are wait-free `ArcSwap` loads, and the cache is a brief `Mutex`.

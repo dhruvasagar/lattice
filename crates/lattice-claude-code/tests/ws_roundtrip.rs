@@ -18,6 +18,8 @@ use lattice_claude_code::auth::AUTH_HEADER;
 use lattice_claude_code::lockfile::LockfileContents;
 use lattice_claude_code::{ServerConfig, spawn};
 use lattice_protocol::jsonrpc::{Message, Request, RequestId};
+use lattice_runtime::EventBus;
+use std::sync::Arc;
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -27,6 +29,12 @@ fn unique_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!("lattice-cc-it-{}-{}-{}", tag, std::process::id(), n))
+}
+
+/// A fresh, empty event bus — these tests exercise the handshake / auth /
+/// lockfile / dispatch routing, not the read cache, so no events are driven.
+fn bus() -> Arc<EventBus> {
+    Arc::new(EventBus::new())
 }
 
 /// Poll the lock dir until a `<port>.lock` appears; return (port, token).
@@ -84,6 +92,7 @@ async fn ws_handshake_initialize_and_tools_list() {
             workspace_folders: vec!["/tmp/ws-project".to_string()],
             lock_dir: dir.clone(),
         },
+        bus(),
         &tokio::runtime::Handle::current(),
     );
     handle.start();
@@ -122,6 +131,23 @@ async fn ws_handshake_initialize_and_tools_list() {
         .len();
     assert!(tools >= 9, "expected the full tool catalog, got {tools}");
 
+    // tools/call getWorkspaceFolders → routed end-to-end through dispatch +
+    // the MCP content envelope; the configured workspace folder appears.
+    send_request(
+        &mut ws,
+        3,
+        "tools/call",
+        Some(json!({ "name": "getWorkspaceFolders", "arguments": {} })),
+    )
+    .await;
+    let resp = read_response(&mut ws).await;
+    let result = resp.result.expect("tool result");
+    assert_eq!(result["isError"], json!(false));
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("text content block");
+    assert!(text.contains("/tmp/ws-project"), "got {text}");
+
     handle.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -134,6 +160,7 @@ async fn wrong_token_is_rejected() {
             workspace_folders: vec![],
             lock_dir: dir.clone(),
         },
+        bus(),
         &tokio::runtime::Handle::current(),
     );
     handle.start();
@@ -163,6 +190,7 @@ async fn start_writes_lockfile_and_stop_removes_it() {
             workspace_folders: vec![],
             lock_dir: dir.clone(),
         },
+        bus(),
         &tokio::runtime::Handle::current(),
     );
     handle.start();

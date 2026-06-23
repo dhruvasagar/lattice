@@ -248,6 +248,9 @@ impl Editor {
                 lock_dir: lattice_claude_code::lockfile::default_lock_dir()
                     .unwrap_or_else(std::env::temp_dir),
             },
+            // I2.1: the generic event bus, for the crate's read-state cache
+            // subscription (DocumentOpened/Closed/SelectionsChanged).
+            event_bus.clone(),
             &runtime_handle,
         );
 
@@ -1229,7 +1232,8 @@ impl Editor {
                     Arc::new(buffers_for_services.clone());
                 s.register(lattice_terminal::TerminalStoreHandle::new(term_store));
                 let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
-                s.register(lattice_mode::BufferStoreHandle::new(store));
+                let buffer_store_handle = lattice_mode::BufferStoreHandle::new(store);
+                s.register(buffer_store_handle.clone());
                 s.register(lsp_logger.clone());
                 // L4b (lsp-architecture.md §15): diagnostics-query
                 // service so `lsp-diagnostics-mode`'s `gl` handler reads
@@ -1241,7 +1245,14 @@ impl Editor {
                     Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
                         render_state_arc.clone(),
                     ));
-                s.register::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query);
+                s.register::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
+                // IDE-protocol I2.2: install the GENERIC read services into
+                // the Claude Code server, now that boot has created them (the
+                // server handle was spawned earlier for the ex-commands). The
+                // read-tool LOGIC lives in the crate; these are just the
+                // generic buffer-store + diagnostics handles it composes.
+                claude_code_server
+                    .install_read_services(Some(buffer_store_handle), Some(diag_query));
                 // M.2.b.2 (2026-06-01): expose the typed
                 // multibuffer-handle lookup so providers
                 // (`create_multibuffer_view`, future M.6

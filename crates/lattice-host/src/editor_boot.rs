@@ -234,6 +234,23 @@ impl Editor {
             lsp_show_message_request_rx,
         ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
 
+        // IDE-protocol I1.3: spawn the Claude Code IDE server supervisor
+        // (idle until `:claude-code-start`). Reuses the shared async
+        // runtime; registered as a service below + driven by the
+        // `:claude-code-*` ex-commands. The discovery lockfile lives under
+        // ~/.claude/ide, where a `claude` CLI looks for it.
+        let claude_code_server = lattice_claude_code::spawn(
+            lattice_claude_code::ServerConfig {
+                workspace_folders: std::env::current_dir()
+                    .ok()
+                    .map(|p| vec![p.display().to_string()])
+                    .unwrap_or_default(),
+                lock_dir: lattice_claude_code::lockfile::default_lock_dir()
+                    .unwrap_or_else(std::env::temp_dir),
+            },
+            &runtime_handle,
+        );
+
         let mut registry = CommandRegistry::new();
         let builtins = grammar_builtins_populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -243,6 +260,15 @@ impl Editor {
         // populates the registry so `:`-line parsing can route to
         // them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        // IDE-protocol I1.3: `:claude-code-start` / `:claude-code-stop`.
+        // Crate-owned, bare-named ex-commands (resolve via `id_by_name`,
+        // no host alias-table entry) whose `apply` closures drive the
+        // server handle directly — mode-ownership without a host `Effect`
+        // variant. See `lattice_claude_code::commands` + design §2.
+        lattice_claude_code::register_claude_code_ex_commands(
+            &mut registry,
+            claude_code_server.clone(),
+        );
 
         // CSM.5: shared snippet-registry handle. Built before the
         // mode registry so `register_snippet_modes` can capture a
@@ -322,6 +348,9 @@ impl Editor {
             // emacs-keys minor — default-on `<C-x>` leader (tribute).
             crate::emacs_keys::register_emacs_keys_modes(&mut mr);
             crate::tutor::register_tutor_modes(&mut mr);
+            // claude-code-mode minor — Manual marker for I1 (I5 activates
+            // it on the `:claude` terminal buffer).
+            lattice_claude_code::register_claude_code_modes(&mut mr);
             mr
         };
         register_mode_toggle_commands(&mut registry, &mode_registry);
@@ -1265,6 +1294,12 @@ impl Editor {
                 // Same `Arc<X>` alias pattern as
                 // ActionHandlerRegistryHandle.
                 s.register::<lattice_grammar::CommandRegistryHandle>(registry.clone());
+                // IDE-protocol I1.3: the Claude Code IDE server handle, so
+                // claude-code-mode's `on_activate` (I5) + the future
+                // IdeInbound drain (I3) reach it via the service registry.
+                s.register::<lattice_claude_code::ClaudeCodeServerHandle>(
+                    claude_code_server.clone(),
+                );
                 // M.7: expose the fold-overlay service so
                 // `MultibufferMode::on_activate` can register
                 // `ExcerptFoldProvider` without depending on

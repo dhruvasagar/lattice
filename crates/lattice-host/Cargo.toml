@@ -77,6 +77,10 @@ lattice-cells = { path = "../lattice-cells" }
 # reads. Compute lands D.2.b. See
 # `docs/dev/architecture/diff-system.md`.
 lattice-diff = { path = "../lattice-diff" }
+# IDE-protocol: the Claude Code IDE peer. Boot spawns its server
+# supervisor (idle until `:claude-code-start`), registers the handle as a
+# service, and wires `claude-code-mode` + the `:claude-code-*` ex-commands.
+lattice-claude-code = { path = "../lattice-claude-code" }
 # D.2.b (2026-05-28): `BaselineSource::snapshot(&self) -> Rope`
 # trait + `StaticBaseline` impl + `DiffSession::recompute_blocking`
 # (and `DiffSubsystem::schedule_recompute` on `spawn_blocking`)

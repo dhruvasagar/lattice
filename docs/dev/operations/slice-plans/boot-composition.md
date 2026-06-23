@@ -40,12 +40,36 @@ migration is **behaviour-pinned before it moves**.
     `mpsc::send` + `Notify::notify_one` (upstream-benched); the per-tick drain
     cost is already covered by `lattice-mode/benches/tick_callback.rs`.
 
-- **BC.2 — Regression-pin tests (gate for all migrations).** For *each* subsystem
-  (LSP, multibuffer, emacs-keys, diff, terminal, claude-code) pin its current
-  boot behaviour: its modes are registered, its commands resolve by name, its
-  services are present under the right `TypeId`, and one representative
-  off-keystroke async path wakes `run_tick_pending` (no keypress). These are the
-  guard rails; nothing migrates until its pin test is green on the *current* code.
+- **BC.2 — Regression-pin tests (gate for all migrations).** ✅ Landed as
+  `crates/lattice-host/tests/boot_regression_pins.rs` (14 pins) against the
+  *current* code. For each subsystem (LSP, multibuffer, emacs-keys, diff,
+  terminal, claude-code) it pins:
+  - **Modes registered** — `mode_registry.is_registered(ModeId::new(name))` for
+    all 8 LSP modes, `multibuffer-mode`, the 3 terminal modes, `diff-mode`,
+    `emacs-keys-mode`, `claude-code-mode`.
+  - **Subsystem-wired commands resolve** — `registry.lookup_by_name`:
+    `claude-code-start` / `-stop` (claude-code), `narrow` / `widen` (multibuffer
+    narrow provider). LSP's `lsp-*` commands come from the generic
+    `ex_commands::populate`, NOT LSP-subsystem boot wiring, so they are not a
+    meaningful "LSP boot" pin — excluded by design.
+  - **Services present under the right `TypeId`** — `services.get::<T>()` with the
+    EXACT register-site `T` (the Arc/TypeId rule): `LspSupervisorHandle`,
+    `DiagnosticsQueryHandle`, `LspLogger`, `TerminalStoreHandle`,
+    `MultibufferRegistryHandle`, `ClaudeCodeServerHandle`, plus the generic
+    Phase-A primitives `Arc<EventBus>`, `BufferStoreHandle`,
+    `TickCallbackRegistryHandle`, `ActionHandlerRegistryHandle`,
+    `CommandRegistryHandle`.
+  - **Off-keystroke wake** — publishing a boot-subscribed typed event on
+    `editor.event_bus` wakes `editor.async_landed` with no keystroke
+    (`LspInlayHintRefresh` → LSP refresh forwarder; `MultibufferExcerptsReady` →
+    multibuffer forwarder). The claude-code inbound→wake is already covered by
+    `lattice-claude-code` + the BC.1 `inbound` tests; terminal/diff wakes fire
+    from `on_activate`/subsystem tasks (not boot-wired without activation), so
+    they are out of scope for a *boot* pin.
+
+  These are the guard rails; nothing migrates until its pin is green on the
+  current code. `Editor::boot(scratch)` is cheap + side-effect-free (LSP attach
+  is lazy), so the pins are plain `#[test]` (wake pins `#[tokio::test]`).
 
 - **BC.3 — Phase split + first migration (claude-code).** Restructure boot into
   Phase A (all primitives, incl. forwardable cells for `render_state_arc` /
@@ -86,14 +110,17 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 🗒 · BC.3 🗒 · BC.4+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3 🗒 · BC.4+ 🗒 · BC.final 🗒
 
 **Resume after I3.** I3 lands on the current wiring with the wake already baked
 into `ClaudeCodeInboundBus::send`, so claude-code is migration-ready at BC.3.
 
-**Next: BC.2** — regression-pin tests for each subsystem's current boot
-behaviour (modes registered, commands resolve, services present under the right
-`TypeId`, one representative off-keystroke async path wakes `run_tick_pending`).
-These gate all migrations; nothing moves until its pin test is green on the
-current code. BC.1's `BootContext` + `inbound`/`wake_on_event` are the targets
-those migrations rebase onto at BC.3.
+**Next: BC.3** — Phase split (Phase A: all generic primitives, incl. forwardable
+cells for `render_state_arc` / `BufferStore` seated at renderer wiring — the §5
+crux) + first migration (claude-code): collapse its `spawn` +
+`register_claude_code_modes` + `register_claude_code_ex_commands` + service
+registration + `install_services` + the I3 inbound wake into a single
+`lattice_claude_code::install(boot)` against BC.1's `BootContext`. **Green
+bar:** the `boot_regression_pins.rs` claude-code pins (mode + commands +
+`ClaudeCodeServerHandle` service + inbound→wake) stay green, behaviour
+unchanged.

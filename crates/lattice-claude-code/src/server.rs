@@ -112,6 +112,7 @@ impl ClaudeCodeServerHandle {
                 diagnostics,
                 workspace_folders: self.workspace_folders.clone(),
             },
+            writes: None,
         }));
     }
 }
@@ -137,6 +138,9 @@ pub fn spawn(
             diagnostics: None,
             workspace_folders: config.workspace_folders.clone(),
         },
+        // I3.2 wires the real inbound bus here; until then write tools report
+        // a graceful "not initialized".
+        writes: None,
     }));
     rt.spawn(supervisor_main(
         config.clone(),
@@ -281,7 +285,7 @@ async fn serve_connection(
         let Ok(text) = frame.to_text() else {
             continue;
         };
-        for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx) {
+        for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
             let payload = match &outgoing {
                 Outgoing::Response(r) => serde_json::to_string(r)?,
                 Outgoing::Notification(n) => serde_json::to_string(n)?,

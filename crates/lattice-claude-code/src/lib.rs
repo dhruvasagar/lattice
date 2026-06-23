@@ -30,6 +30,7 @@ pub mod reads;
 pub mod server;
 pub mod snapshot;
 pub mod transport;
+pub mod writes;
 
 pub use commands::register_claude_code_ex_commands;
 pub use error::{ClaudeCodeError, Result};

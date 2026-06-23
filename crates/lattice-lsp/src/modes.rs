@@ -734,11 +734,51 @@ pub trait DiagnosticsQuery: Send + Sync {
     /// mapped / no LSP attachment.
     fn on_line(&self, buffer_id: lattice_protocol::ids::BufferId, line: u32)
     -> Vec<crate::Diagnostic>;
+
+    /// IDE-protocol I2.0: every diagnostic for the file `uri` (string form,
+    /// e.g. `file:///x.rs`), in the layer's order. Empty when the uri has
+    /// no diagnostics or doesn't parse. Generic (any consumer of the
+    /// diagnostics service can use it — the Claude Code IDE peer's
+    /// `getDiagnostics` is the first). Default returns empty so impls that
+    /// only serve the `gl` line query keep compiling.
+    fn for_uri(&self, _uri: &str) -> Vec<crate::Diagnostic> {
+        Vec::new()
+    }
+
+    /// IDE-protocol I2.0: every file uri (string form) that currently has
+    /// diagnostics — lets a caller fan `for_uri` out for a workspace-wide
+    /// query. Default empty.
+    fn uris_with_diagnostics(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Service alias for [`DiagnosticsQuery`]. Register the host impl as
 /// this exact type and look it up the same way.
 pub type DiagnosticsQueryHandle = std::sync::Arc<dyn DiagnosticsQuery>;
+
+#[cfg(test)]
+mod diagnostics_query_for_uri_tests {
+    use super::DiagnosticsQuery;
+    use lattice_protocol::ids::BufferId;
+
+    /// An impl serving only the `gl` line query — `for_uri` /
+    /// `uris_with_diagnostics` come from the trait defaults.
+    struct OnlyOnLine;
+    impl DiagnosticsQuery for OnlyOnLine {
+        fn on_line(&self, _b: BufferId, _l: u32) -> Vec<crate::Diagnostic> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn for_uri_methods_are_object_safe_and_default_to_empty() {
+        let q: &dyn DiagnosticsQuery = &OnlyOnLine;
+        assert!(q.for_uri("file:///x.rs").is_empty());
+        assert!(q.uris_with_diagnostics().is_empty());
+        assert!(q.on_line(BufferId::new(0), 0).is_empty());
+    }
+}
 
 /// L4b: format the cursor line's diagnostics into one popup line each:
 /// `<severity glyph> <message> [source:code] (+N related)`. The glyph

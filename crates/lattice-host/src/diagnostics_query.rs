@@ -42,4 +42,31 @@ impl lattice_lsp::modes::DiagnosticsQuery for HostDiagnosticsQuery {
         };
         rs.diagnostics.layer.diagnostics_on_line(uri, line)
     }
+
+    /// IDE-protocol I2.0: all diagnostics for a file `uri` (string form).
+    /// Parses the uri and reads the layer's `diagnostics_for`; both are
+    /// wait-free over the published render state, so this is safe to call
+    /// off the editor thread (the Claude Code IDE peer's WS task does).
+    fn for_uri(&self, uri: &str) -> Vec<lattice_lsp::Diagnostic> {
+        let Ok(parsed) = lattice_lsp::uri_from_str(uri) else {
+            return Vec::new();
+        };
+        self.render_state
+            .load()
+            .diagnostics
+            .layer
+            .diagnostics_for(&parsed)
+    }
+
+    /// IDE-protocol I2.0: every uri (string form) with diagnostics.
+    fn uris_with_diagnostics(&self) -> Vec<String> {
+        self.render_state
+            .load()
+            .diagnostics
+            .layer
+            .iter_uris()
+            .into_iter()
+            .map(|u| u.as_str().to_string())
+            .collect()
+    }
 }

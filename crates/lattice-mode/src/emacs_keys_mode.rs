@@ -1,15 +1,27 @@
-//! `emacs-keys` — a default-on minor mode contributing an emacs-style
-//! `<C-x>` leader (a tribute layer). Design:
+//! `emacs-keys-mode` — a default-on builtin minor mode contributing an
+//! emacs-style `<C-x>` leader (a tribute layer). Design:
 //! `docs/dev/architecture/emacs-keys.md`; sequencing:
 //! `docs/dev/operations/slice-plans/emacs-keys.md`.
 //!
+//! ## Home (BC.5, 2026-06-23)
+//!
+//! Moved here from `lattice-host` and reclassified as a **builtin** mode: it
+//! is default-on + `Universal`, has no owning feature crate, and is
+//! renderer-agnostic — so it belongs with the foundation modes in
+//! `lattice-mode` (registered via [`register_foundation_modes`]). All the
+//! keymap-trie types its layer builder needs (`KeymapTrie` / `BoundCommand` /
+//! `KeymapLayer` from `lattice-keymap`, `ChordPattern` from `lattice-protocol`,
+//! `CommandRegistry` / `CommandInvocation` from `lattice-grammar`) live below
+//! `lattice-mode`, so the *whole* module moves. The host retains only the
+//! keymap-layer **push** (it owns the live `KeymapHandle` + reads `config` for
+//! the prefix / enable flag), calling [`emacs_keys_layer_bindings`] here.
+//!
 //! ## Shape
 //!
-//! A marker minor mode (`Guard = ()`) with `ActivationPolicy::Global`, so
-//! it auto-activates on every document buffer. Its keymap layer is pushed
-//! once at boot under `MinorMode(emacs-keys)`; K.1.c's per-keystroke
-//! filter gates the chords to buffers where the mode is active — exactly
-//! the `diff-mode` pattern (`crate::diff::mode`).
+//! A marker minor mode (`Guard = ()`) with `ActivationPolicy::Universal`, so
+//! it auto-activates on every buffer. Its keymap layer is pushed once at boot
+//! under `MinorMode(emacs-keys-mode)`; K.1.c's per-keystroke filter gates the
+//! chords to buffers where the mode is active — the `diff-mode` pattern.
 //!
 //! ## Configurable prefix
 //!
@@ -19,13 +31,9 @@
 //! whole tribute. A malformed prefix (user config) or an unknown command
 //! name skips that one binding with a warning — never a panic on the boot
 //! path (graceful-degradation contract).
-//!
-//! S1 ships Tier-1 (buffer / file / save), all of which resolve to
-//! existing ex-commands by name. Tier-2 (panes) and the new `quit-all` /
-//! `only` actions land in S2 / S3.
 
-use lattice_mode::registry::ModeRegistry;
-use lattice_mode::{ActivationPolicy, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+use crate::registry::ModeRegistry;
+use crate::{ActivationPolicy, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 /// The `emacs-keys` minor mode. A marker mode: it owns a keymap layer and
 /// an activation policy, but allocates no per-buffer resources.
@@ -77,12 +85,13 @@ impl Mode for EmacsKeysMode {
     }
 }
 
-/// Register `emacs-keys` against `registry`. Called from the editor boot
-/// path alongside the other `register_*_modes` helpers.
-pub fn register_emacs_keys_modes(registry: &mut ModeRegistry) {
+/// Register `emacs-keys-mode` against `registry`. Called from
+/// [`register_foundation_modes`](crate::register_foundation_modes) — it is a
+/// builtin, so there is no separate boot call.
+pub fn register_emacs_keys_mode(registry: &mut ModeRegistry) {
     registry
         .register(EmacsKeysMode)
-        .expect("emacs-keys mode must register without conflict");
+        .expect("emacs-keys-mode must register without conflict");
 }
 
 /// The default leader-map. `(suffix, command canonical name)`; the chord
@@ -126,7 +135,7 @@ const TIER2_BINDINGS: &[(&str, &str)] = &[
 /// Build the `emacs-keys` keymap layer for the given `enabled` flag and
 /// `prefix`, resolving each binding's command name against `registry`.
 /// Returns the per-mode trie map the host pushes under
-/// `MinorMode(emacs-keys)`.
+/// `MinorMode(emacs-keys-mode)`.
 ///
 /// `enabled` is the `:set emacs-keys` toggle: `false` yields an EMPTY
 /// Normal trie. The layer is the gate (the mode itself stays a marker),
@@ -141,11 +150,12 @@ pub fn emacs_keys_layer_bindings(
     enabled: bool,
     prefix: &str,
     registry: &lattice_grammar::CommandRegistry,
-) -> std::collections::HashMap<crate::keymap::BindingMode, crate::keymap_trie::KeymapTrie> {
-    use crate::keymap::BindingMode;
-    use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
-    use lattice_grammar::source::SourceLocation;
+) -> std::collections::HashMap<crate::BindingMode, lattice_keymap::KeymapTrie> {
+    use crate::BindingMode;
     use lattice_grammar::CommandInvocation;
+    use lattice_grammar::source::SourceLocation;
+    use lattice_keymap::{BoundCommand, KeymapLayer, KeymapTrie};
+    use lattice_protocol::chord::ChordPattern;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -193,16 +203,34 @@ pub fn emacs_keys_layer_bindings(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::keymap::BindingMode;
-    use crate::keymap_trie::LookupResult;
+    use crate::BindingMode;
+    use lattice_keymap::LookupResult;
 
     fn registry() -> lattice_grammar::CommandRegistry {
         let mut r = lattice_grammar::CommandRegistry::new();
-        let builtins = lattice_grammar::builtins::populate(&mut r);
+        let _builtins = lattice_grammar::builtins::populate(&mut r);
         let _ = lattice_grammar::ex_commands::populate(&mut r);
-        // Tier-2 resolves the host `action:*` pane commands, which are
-        // registered here (not by grammar builtins/ex-commands).
-        let _ = crate::actions::populate(&mut r, &builtins);
+        // Tier-2 resolves the host `action:*` pane commands. The host's
+        // `actions::populate` is not reachable here (it lives in
+        // `lattice-host`), so register the five pane-action names as minimal
+        // no-op action commands — `emacs_keys_layer_bindings` only needs
+        // `id_by_name` to resolve them.
+        for name in [
+            "action:split-pane-horizontal",
+            "action:split-pane-vertical",
+            "action:close-pane",
+            "action:only-pane",
+            "action:next-pane",
+        ] {
+            r.register_action(
+                name,
+                "test pane action",
+                lattice_grammar::registry::ActionSpec {
+                    apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                    args_schema: vec![],
+                },
+            );
+        }
         r
     }
 

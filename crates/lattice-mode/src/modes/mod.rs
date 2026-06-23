@@ -128,6 +128,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(CurrentLineHighlightMode)
         .expect("current-line-highlight-mode must register without conflict");
+    // BC.5: `emacs-keys-mode` — the default-on universal `<C-x>` leader
+    // tribute. A renderer-agnostic builtin with no owning feature crate, so it
+    // registers with the foundation set. Its keymap layer is pushed host-side
+    // (config-dependent prefix/enable + the live `KeymapHandle`) via
+    // `emacs_keys_layer_bindings`.
+    crate::emacs_keys_mode::register_emacs_keys_mode(registry);
 }
 
 #[cfg(test)]

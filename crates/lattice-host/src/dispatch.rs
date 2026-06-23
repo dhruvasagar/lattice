@@ -23614,10 +23614,10 @@ impl Editor {
                     .unwrap_or_else(|| "<C-x>".to_string());
                 self.keymap.push_layer(
                     crate::keymap_registry::PushLayerKind::MinorMode(
-                        crate::emacs_keys::EmacsKeysMode::mode_id(),
+                        lattice_mode::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys-mode",
-                    crate::emacs_keys::emacs_keys_layer_bindings(enabled, &prefix, &self.registry),
+                    lattice_mode::emacs_keys_layer_bindings(enabled, &prefix, &self.registry),
                 );
             }
             n if n.starts_with("ui.") => {

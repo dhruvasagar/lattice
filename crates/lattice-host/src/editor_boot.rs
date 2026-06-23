@@ -386,8 +386,9 @@ impl Editor {
         // `do`/`dp` chords gate on per-buffer diff
         // participation.
         crate::diff::mode::register_diff_modes(boot.modes_mut());
-        // emacs-keys minor — default-on `<C-x>` leader (tribute).
-        crate::emacs_keys::register_emacs_keys_modes(boot.modes_mut());
+        // BC.5: `emacs-keys-mode` is now a `lattice-mode` builtin — registered
+        // with the foundation set by `register_foundation_modes` above, not
+        // here. The host keeps only its keymap-layer push (keymap block below).
         crate::tutor::register_tutor_modes(boot.modes_mut());
 
         // ── BC.3b: Phase-B subsystem install list ──────────────────────────
@@ -1493,10 +1494,10 @@ impl Editor {
                     .unwrap_or_else(|| "<C-x>".to_string());
                 h.push_layer(
                     crate::keymap_registry::PushLayerKind::MinorMode(
-                        crate::emacs_keys::EmacsKeysMode::mode_id(),
+                        lattice_mode::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys-mode",
-                    crate::emacs_keys::emacs_keys_layer_bindings(
+                    lattice_mode::emacs_keys_layer_bindings(
                         emacs_keys_enabled,
                         &emacs_keys_prefix,
                         &registry,

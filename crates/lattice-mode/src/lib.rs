@@ -66,6 +66,11 @@ pub mod buffer_store;
 pub mod capability;
 pub mod context;
 pub mod contributions;
+// BC.5: `emacs-keys-mode` — a default-on universal builtin minor mode (the
+// `<C-x>` leader tribute). Moved here from `lattice-host`; registered with the
+// foundation modes. The host keeps only the keymap-layer push (config + the
+// live `KeymapHandle`).
+pub mod emacs_keys_mode;
 pub mod error;
 pub mod event;
 pub mod guards;
@@ -132,6 +137,10 @@ pub use crate::modes::{
 };
 pub use crate::services::ServiceRegistry;
 pub use crate::subsystem_boot::SubsystemBoot;
+// BC.5: the host pushes the `<C-x>` leader layer (it owns the `KeymapHandle` +
+// config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys
+// the layer + the K.1.c per-keystroke gate.
+pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,

@@ -207,14 +207,36 @@ migration is **behaviour-pinned before it moves**.
   `terminal_service_present_at_boot`) + 42 `lattice-terminal` + 756
   `lattice-host` lib + full workspace build incl. the GPUI peer.
 
-- **BC.5 … BC.N — Migrate each remaining subsystem, one per slice.** emacs-keys →
-  diff → multibuffer → LSP (LSP last: largest surface — its inbound buses
+- **BC.5 — `emacs-keys` reclassified as a `lattice-mode` builtin.** ✅ Landed.
+  Resolved the BC.5 fork (emacs-keys was a *host module*, not a crate) by
+  Dhruva's directive: **`emacs-keys-mode` is a builtin mode, and the home for
+  builtin modes is `lattice-mode`.** The whole module moved to
+  `lattice-mode/src/emacs_keys_mode.rs` (named for parity with the mode) — the
+  mode AND `emacs_keys_layer_bindings`, since every keymap-trie type it needs
+  (`KeymapTrie`/`BoundCommand`/`KeymapLayer` from `lattice-keymap`,
+  `ChordPattern` from `lattice-protocol`, `CommandRegistry`/`CommandInvocation`
+  from `lattice-grammar`) lives below `lattice-mode`. `EmacsKeysMode` now
+  registers with `register_foundation_modes` (it is a builtin), so it **leaves
+  the Phase-B install list entirely** — the host's `register_emacs_keys_modes`
+  boot line is gone. The host keeps only the keymap-layer **push** (it owns the
+  live `KeymapHandle` + reads `config` for prefix/enable), at both sites
+  (editor_boot keymap block + dispatch `:set` re-push), now calling
+  `lattice_mode::emacs_keys_layer_bindings` / `EmacsKeysMode::mode_id`. Tests
+  moved too (Tier-2 registers the `action:*` pane names inline, no host dep).
+  **Green:** 14 BC.2 pins (incl. `emacs_keys_mode_registered_at_boot`) + 10
+  `emacs_keys_dispatch` + 123 `lattice-mode` (+6 moved) + 750 `lattice-host` lib
+  + full workspace incl. GPUI.
+
+- **BC.6 … BC.N — Migrate each remaining subsystem, one per slice.** diff →
+  multibuffer → LSP (LSP last: largest surface — its inbound buses
   [`InboundShowDocument`, `InboundApplyEdit`, configuration] become
   `inbound::<T>` calls, its `set_wake` / L1c forwarders become `wake_on_event`).
   Each slice: green against that subsystem's BC.2 pin tests; one `install(boot)`
-  replaces its scattered calls. (Watch for the same residual classes BC.4 hit:
-  host-published primitives a mode merely consumes stay host-side; only the
-  subsystem's own wiring migrates.)
+  replaces its scattered calls. (Watch for the residual classes seen so far:
+  host-published primitives a mode merely consumes stay host-side [BC.4]; a
+  default-on builtin with no owning crate becomes a `lattice-mode` builtin
+  rather than a subsystem install [BC.5] — `diff` lives in `lattice-host`
+  today, so it faces the same own-crate-vs-builtin question.)
 
 - **BC.final — Remove dead scaffolding.** Retire the hardcoded `run_tick_pending`
   drains the tick-callback registry now subsumes, and the ad-hoc wake forwarders
@@ -247,7 +269,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 🚧 · BC.6+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 🚧 · BC.7+ 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -256,20 +278,18 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Next: BC.5 — migrate `emacs-keys`** (newest→oldest). It lives in
-`lattice-host` today (`crate::emacs_keys`), so unlike claude-code/terminal there
-is no separate crate to receive the `install` — its footprint is the
-`register_emacs_keys_modes(boot.modes_mut())` call + the `<C-x>`-leader keymap
-layer push (which reads `config` for the leader prefix + enable flag) + its
-`:split`/`:vsplit`/`:close`/`:qa`/`:only` ex-commands. Decide first whether
-emacs-keys gets its own crate (so it can host an `install`) or whether a
-host-module `emacs_keys::install(boot)` is the right shape while it stays
-in-host — a genuine design fork to raise before coding. Then diff → multibuffer
-→ LSP (LSP last, largest: its `InboundShowDocument`/`InboundApplyEdit`/
-configuration buses become `boot.inbound::<T>`, its `set_wake`/L1c forwarders
-become `boot.wake_on_event`). Each slice: green against that subsystem's BC.2
-pin tests; watch for BC.4's residual classes (host-published primitives a mode
-merely consumes stay host-side). **BC.final** then retires the `*_mut`
-transitional accessors + the hardcoded `run_tick_pending` drains, leaving
-`editor_boot` as the two-list shape (Phase-A primitives, then the Phase-B
-install list).
+**Next: BC.6 — `diff`** (newest→oldest). Like emacs-keys (BC.5), `diff` lives
+*in* `lattice-host` (`crate::diff`), so the first question is the BC.5 fork
+again: is `diff-mode` a `lattice-mode` builtin (like emacs-keys), or does diff
+get its own crate (it has real subsystem machinery — the `DiffSubsystem`,
+debounced drainer, per-session forwarders — so unlike emacs-keys it is NOT just
+a marker mode + keymap, and a crate may be the better home)? Settle that fork
+before coding. Then multibuffer → LSP (LSP last, largest: its
+`InboundShowDocument`/`InboundApplyEdit`/configuration buses become
+`boot.inbound::<T>`, its `set_wake`/L1c forwarders become `boot.wake_on_event`).
+Each slice: green against that subsystem's BC.2 pin tests; watch the residual
+classes (host-published primitives a mode merely consumes stay host-side [BC.4];
+a default-on no-owning-crate builtin becomes a `lattice-mode` builtin, not a
+subsystem install [BC.5]). **BC.final** then retires the `*_mut` transitional
+accessors + the hardcoded `run_tick_pending` drains, leaving `editor_boot` as
+the two-list shape (Phase-A primitives, then the Phase-B install list).

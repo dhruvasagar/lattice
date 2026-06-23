@@ -9,6 +9,10 @@ license.workspace = true
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-grammar = { path = "../lattice-grammar" }
+# I2.1: the read-state cache subscribes to the generic event bus
+# (`EventBus`/`EventFilter`/`SubscriptionTarget`) to track open buffers +
+# the active selection off the editor thread.
+lattice-runtime = { path = "../lattice-runtime" }
 tokio = { workspace = true, features = [
 	"sync",
 	"rt",

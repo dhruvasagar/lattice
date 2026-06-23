@@ -3364,6 +3364,7 @@ dependencies = [
  "lattice-grammar",
  "lattice-mode",
  "lattice-protocol",
+ "lattice-runtime",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

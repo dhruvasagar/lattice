@@ -26,6 +26,7 @@ pub mod lockfile;
 pub mod modes;
 pub mod protocol;
 pub mod server;
+pub mod snapshot;
 pub mod transport;
 
 pub use commands::register_claude_code_ex_commands;

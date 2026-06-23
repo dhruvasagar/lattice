@@ -7,11 +7,14 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+# `jsonrpc` (lifted from lattice-lsp, IDE-protocol Risk 3) serializes
+# JSON-RPC 2.0 envelopes and keeps `params`/`result` as
+# `serde_json::Value`; promoted from a dev-dep to a normal dep so the
+# module compiles into the crate. Both lattice-lsp (LSP client) and
+# lattice-claude-code (Claude Code IDE peer) reuse these types.
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 linkme = { workspace = true }
-
-[dev-dependencies]
-serde_json = "1.0"
 
 [lints]
 workspace = true

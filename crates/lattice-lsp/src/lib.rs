@@ -69,7 +69,11 @@ pub mod file_watcher;
 pub mod folding_sync;
 pub mod framing;
 pub mod help_views;
-pub mod jsonrpc;
+/// JSON-RPC 2.0 message types now live in `lattice-protocol` (IDE-protocol
+/// Risk 3 lift) so `lattice-claude-code` can share them. Re-exported here
+/// as `lattice_lsp::jsonrpc` so existing `crate::jsonrpc::*` paths,
+/// downstream callers, tests, and benches keep resolving unchanged.
+pub use lattice_protocol::jsonrpc;
 pub mod logging;
 pub mod modeline;
 pub mod modes;
@@ -104,7 +108,9 @@ pub use events::{
 };
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use framing::{FrameError, FrameHeader};
-pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
+pub use lattice_protocol::jsonrpc::{
+    Message, Notification, Request, RequestId, Response, ResponseError,
+};
 pub use logging::{
     InstanceKey, LogLevel, LogRecord, LogRing, LogSource, LspLogger, format_log_event_line,
     level_tag as log_level_tag,

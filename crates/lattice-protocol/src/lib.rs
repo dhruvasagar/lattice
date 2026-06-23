@@ -31,6 +31,11 @@ pub mod error;
 pub mod event;
 pub mod event_registry;
 pub mod ids;
+/// JSON-RPC 2.0 message types. Lifted out of `lattice-lsp` (IDE-protocol
+/// Risk 3) so a second peer-protocol crate (`lattice-claude-code`) can
+/// reuse the wire shape without an `ide -> lsp` crate edge. The types are
+/// transport-agnostic; each peer's codec writes the bytes.
+pub mod jsonrpc;
 pub mod position;
 pub mod selection;
 
@@ -44,6 +49,9 @@ pub use crate::error::{ProtocolError, Result};
 pub use crate::event::{Event, EventKind};
 pub use crate::ids::{
     BufferId, CommandId, DocumentId, MajorModeId, MinorModeId, PaneId, PluginId, TabId, WindowId,
+};
+pub use crate::jsonrpc::{
+    Message, MessageDecodeError, Notification, Request, RequestId, Response, ResponseError,
 };
 pub use crate::position::{Position, Range};
 pub use crate::selection::{Selection, SelectionSet, VisualMode};

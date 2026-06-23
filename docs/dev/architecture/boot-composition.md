@@ -96,12 +96,24 @@ exactly one place — its entry in the Phase-B list — and zero host internals.
 - **Cross-cutting.** Touches LSP, multibuffer, emacs-keys, diff, terminal,
   claude-code. Each migrates one slice at a time, behaviour-pinned first (§ slice
   plan BC.2).
-- **Phase-A hoisting is the crux.** `render_state_arc` and the renderer's
-  `BufferStore` are created during renderer wiring. Phase A must create
-  *forwardable cells* for them and seat the content when the renderer runs —
-  **without changing *when* that content goes live** (e.g. a `BufferStore` read
-  before seating must behave exactly as today: empty / `None`, not a panic). Get
-  this wrong and reads/diagnostics regress subtly.
+- **Phase-A hoisting — re-assessed (the "forwardable cell" worry was wrong).**
+  An earlier draft of this fragment expected `render_state_arc` and the
+  renderer's `BufferStore` to be "created during renderer wiring", requiring
+  *forwardable cells* seated later. Reading the code (2026-06-23, BC.3 planning)
+  corrected that: `editor_boot.rs` is renderer-agnostic; `render_state_arc` is
+  `Arc::new(ArcSwap::from_pointee(RenderState::default()))` — a default-init cell
+  populated at runtime by `publish_render_state` — and the `BufferRegistry` is
+  created + immediately seeded with the initial document and shared by `Arc`
+  clone. Neither depends on anything created before it, so Phase-A hoisting is a
+  mechanical `let`-binding reorder, **not** a seat-content-later refactor. The
+  actual hazard is narrower: **preserve the "same Arc identity" invariants** —
+  `render_state_arc`, `async_landed`, and the overlay/cells worker cells are
+  shared by Arc identity across worker spawns, Editor fields, and service
+  registrations; reconstruct one instead of moving it and the worker's writes
+  stop being observable through `RenderState::load_full`. The genuinely
+  structural facts are that `ServiceRegistry` is created *and* populated late
+  (it reads mid-boot values) and `CommandRegistry` freezes mid-boot before its
+  `Arc` is consumed — both handled by sequencing, not forwardable cells.
 - **Boot is load-bearing.** A behaviour change here ripples everywhere; the
   regression-pin tests (BC.2) are mandatory *before* each migration, not after.
 

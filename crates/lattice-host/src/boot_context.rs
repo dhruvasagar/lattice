@@ -1,44 +1,44 @@
-//! Boot-composition BC.1: the `BootContext` skeleton.
+//! Boot-composition: the `BootContext` — the host's generic-primitive surface.
 //!
-//! `editor_boot.rs` is a ~1700-line god-function where every async subsystem
-//! hand-wires the same six things: mode registration, command registration,
+//! `editor_boot.rs` was a ~1700-line god-function where every async subsystem
+//! hand-wired the same six things: mode registration, command registration,
 //! service registration, an `async_landed` wake, a per-tick drain, and a
-//! deferred install for late handles. `BootContext` is the host's
-//! generic-primitive surface made explicit — the typed bundle a subsystem's
-//! future `install(boot)` receives, exposing the easy-to-get-wrong operations
-//! as *primitives that cannot be wired without their safety property*.
+//! deferred install for late handles. `BootContext` is that surface made
+//! explicit — the typed bundle a subsystem's `install(boot)` receives, exposing
+//! the easy-to-get-wrong operations as *primitives that cannot be wired without
+//! their safety property*.
 //!
 //! Design fragment: `docs/dev/architecture/boot-composition.md`.
 //! Slice plan: `docs/dev/operations/slice-plans/boot-composition.md`.
 //!
-//! ## BC.1 scope (this slice)
+//! ## Status
 //!
-//! Additive only — `editor_boot.rs` does not yet construct or use a
-//! `BootContext`; that is BC.3. This slice defines the bundle plus the two
-//! wake-robustness primitives and pins their behaviour:
+//! - **BC.1** ✅ — the skeleton + the two wake-robustness primitives below.
+//! - **BC.3a** ✅ — `editor_boot::Editor::boot` now builds a `BootContext` in a
+//!   Phase-A block and routes **all** command / mode / service registration
+//!   through it (`commands_mut` / `modes_mut` / `register_service`), freezing
+//!   each registry into the `Arc` the `Editor` literal seats. The `render_state`
+//!   cell / `BufferStore` / `DiagnosticsQueryHandle` are fields here (built in
+//!   Phase A); the §5 "forwardable cell" worry did not match the code (both are
+//!   default-init / early-seeded Arc-shared cells — see the design fragment §5
+//!   re-assessment), so the hoist preserved Arc identity by moving `let`
+//!   bindings, never reconstructing.
+//! - **BC.3b+** 🚧 — per-subsystem `install(boot)` migrations (claude-code
+//!   first), collapsing each subsystem's scattered wiring into one call.
+//!
+//! ## Wake-robustness primitives
 //!
 //! - [`BootContext::inbound`] — the bundled inbound primitive. A channel
 //!   whose `send` wakes `async_landed` (the wake is inside the sender, so it
 //!   is structurally impossible to forget) and whose items are drained
 //!   per-tick via the tick-callback registry through a handler. Generalizes
-//!   the I3 `ClaudeCodeInboundBus` and LSP's hand-rolled inbound buses.
+//!   the I3 `ClaudeCodeInboundBus` and LSP's hand-rolled inbound buses. (Not
+//!   yet consumed by `editor_boot` — BC.3b is its first caller.)
 //! - [`BootContext::wake_on_event`] — subscribe a typed event and wake
 //!   `async_landed` whenever one is published. Generalizes the
 //!   `MultibufferExcerptsReady` / L1c `wake_on` forwarder tasks.
 //! - [`BootContext::tick_callback`] — register a raw per-tick drain (the I1
 //!   registry), retaining the RAII token for boot lifetime.
-//!
-//! ## Deferred to BC.3 (intentionally NOT here)
-//!
-//! The full bundle in the design fragment also lists the `render_state` cell,
-//! the renderer's `BufferStore` handle, and the `DiagnosticsQueryHandle`.
-//! Those are **not** fields here yet: their correct representation is a
-//! *forwardable cell* (`Arc<ArcSwap<…>>` / `Arc::default()`) created in Phase
-//! A and *seated* when the renderer wiring runs (the §5 crux). Modeling them
-//! as eager fields in BC.1 would bake the wrong shape; they join at BC.3 with
-//! the forwardable-cell semantics. The mode / command / service registration
-//! helpers likewise land when boot actually constructs the context (BC.3),
-//! against the live registries — not stubbed here.
 
 use std::sync::Arc;
 
@@ -76,11 +76,17 @@ use tokio::sync::{Notify, mpsc};
 /// the `*_mut` accessors once nothing inline remains). The registries are held
 /// behind `Option` and *taken* on [`freeze_command_registry`](Self::freeze_command_registry)
 /// / [`freeze_mode_registry`](Self::freeze_mode_registry) /
-/// [`freeze_service_registry`](Self::freeze_service_registry): the
-/// `CommandRegistry` freezes mid-boot (its `Arc` feeds the picker registry +
-/// document handles), the `ModeRegistry` after `register_mode_toggle_commands`,
-/// the `ServiceRegistry` last. Registering into an already-frozen registry is a
-/// boot-sequencing bug and panics with a clear message.
+/// [`freeze_service_registry`](Self::freeze_service_registry). The freeze order
+/// `editor_boot` uses: the `ModeRegistry` first (right after the mode-
+/// registration block — its `Arc` is needed by `register_mode_toggle_commands`,
+/// which borrows `&mut CommandRegistry` + `&ModeRegistry` at once and so cannot
+/// hold both through `boot`; freezing modes first hands back an
+/// `Arc<ModeRegistry>` that derefs to `&ModeRegistry`), then the
+/// `CommandRegistry` mid-boot (its `Arc` feeds the picker registry + document
+/// handles), then the `ServiceRegistry` last. Freezing only wraps + takes the
+/// registry; the populated data is unchanged, so the order is behaviour-neutral.
+/// Registering into an already-frozen registry is a boot-sequencing bug and
+/// panics with a clear message.
 pub struct BootContext {
     event_bus: Arc<EventBus>,
     tick_callbacks: TickCallbackRegistryHandle,

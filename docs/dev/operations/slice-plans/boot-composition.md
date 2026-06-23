@@ -93,6 +93,34 @@ migration is **behaviour-pinned before it moves**.
   document handles). See risk #1 (rewritten).
 
   - **BC.3a — Phase-A hoist; `BootContext` owns the registries (decision 2-b).**
+    ✅ Landed in two commits: **(1/2)** `74496960` — the additive `BootContext`
+    API surface (`buffer_store` / `diagnostics` read handles, owned
+    `CommandRegistry` / `ModeRegistry` / `ServiceRegistry` behind `Option`,
+    `commands_mut` / `modes_mut` / `services_mut` + `register_service` seams,
+    `freeze_*` take-on-freeze, register-after-freeze panics). **(2/2)** — the
+    `editor_boot.rs` rewire: a delineated Phase-A block builds the primitives
+    (`event_bus`, `runtime_handle`, `async_landed`, `tick_callbacks`,
+    `render_state`, `buffers` + `buffer_store_handle`, `diag_query`) and
+    `BootContext::new`; all command / mode / service registration routes
+    through `boot.commands_mut()` / `boot.modes_mut()` /
+    `boot.register_service()`; the `services: { … }` field is hoisted out of
+    the `Editor` literal as statements on `boot`; the three `freeze_*` calls
+    hand back the `Arc`s the literal seats. **Green:** 14 BC.2 pins + 756
+    `lattice-host` lib tests + the boot-driven integration suites + the full
+    workspace build (incl. the GPUI peer); zero behaviour change.
+    **Deviation (behaviour-neutral):** the `ModeRegistry` is frozen *before*
+    `register_mode_toggle_commands`, not after — the toggle helper borrows
+    `&mut CommandRegistry` + `&ModeRegistry` at once and both live in `boot`,
+    so freezing modes first hands back an `Arc<ModeRegistry>` (derefs to
+    `&ModeRegistry`). The registry is fully populated either way, so the
+    generated toggles are identical; `boot_context.rs`'s freeze-order doc was
+    corrected to match. **Deferred to BC.3b:** `into_registrations()` → the
+    `Editor` — no `boot.inbound()` / `boot.tick_callback()` is wired at BC.3a,
+    so the hand-off is empty and `boot` drops harmlessly after the last freeze;
+    BC.3b (claude-code's inbound bus) is the first non-empty registration and
+    adds the Editor field + hand-off then.
+
+    Original plan (retained for reference):
     Open `Editor::boot` with a delineated **Phase-A block** creating the
     BootContext primitives up front: `event_bus`, `runtime_handle`,
     `async_landed`, `tick_callbacks`, `render_state_arc`, `BufferRegistry`
@@ -168,7 +196,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a 🚧 · BC.3b 🗒 · BC.4+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b 🚧 · BC.4+ 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -177,15 +205,21 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Resume after I3.** I3 lands on the current wiring with the wake already baked
-into `ClaudeCodeInboundBus::send`, so claude-code is migration-ready at BC.3.
+**Next: BC.3b** — first migration (claude-code). `editor_boot` now hands a live
+`BootContext` to every registration site, so claude-code's five scattered calls
+(`spawn` ~242, `register_claude_code_ex_commands` ~328, `register_claude_code_modes`
+~415, the `ClaudeCodeServerHandle` service register ~1322, and `install_services`
+~1259) collapse into one `lattice_claude_code::install(boot)` in a Phase-B list:
+`boot.register_command` / `register_mode` / `register_service`, `boot.buffer_store`
++ `boot.diagnostics` for the I2 read tools, and the I3 write bus **rebased onto
+`boot.inbound::<ClaudeCodeInboundRequest>(handler)`** (decision 3-a) — delete the
+bespoke `ClaudeCodeInboundBus`. This is the slice that makes `into_registrations()`
+load-bearing: the `inbound` token must move into the `Editor` (add the field +
+the hand-off then). **Green bar:** the `boot_regression_pins.rs` claude-code pins
+(mode + commands + `ClaudeCodeServerHandle` service + inbound→wake) stay green,
+behaviour unchanged.
 
-**Next: BC.3** — Phase split (Phase A: all generic primitives, incl. forwardable
-cells for `render_state_arc` / `BufferStore` seated at renderer wiring — the §5
-crux) + first migration (claude-code): collapse its `spawn` +
-`register_claude_code_modes` + `register_claude_code_ex_commands` + service
-registration + `install_services` + the I3 inbound wake into a single
-`lattice_claude_code::install(boot)` against BC.1's `BootContext`. **Green
-bar:** the `boot_regression_pins.rs` claude-code pins (mode + commands +
-`ClaudeCodeServerHandle` service + inbound→wake) stay green, behaviour
-unchanged.
+Note: `BootContext` exposes `commands_mut` / `modes_mut` / `register_service`
+today (the seam `editor_boot` uses inline); the typed `register_command` /
+`register_mode` extension helpers the BC.3b text assumes can be thin wrappers
+added when the first migration needs them.

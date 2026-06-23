@@ -40,6 +40,7 @@ use lattice_runtime::{EventBus, MessagesRing, spawn_document};
 use lattice_snippet::SnippetRegistry;
 use lattice_syntax::{Lang, LangRegistry, Syntax, SyntaxHandle};
 
+use crate::boot_context::BootContext;
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId};
 use crate::editor::Editor;
@@ -224,6 +225,64 @@ impl Editor {
         // definition / etc., the attach driver, every test that
         // exercises the LSP write path) reuses the same instance.
         let runtime_handle = lattice_runtime::runtime::lsp_runtime().handle().clone();
+
+        // ── Phase A (boot-composition BC.3a): generic primitives ──────────
+        // The host's generic-primitive surface, built up front and bundled
+        // into a `BootContext`. Each subsystem's command / mode / service
+        // registration runs through `boot` (BC.3a); BC.3b+ collapse each
+        // subsystem's scattered wiring into one `install(boot)` call. These
+        // bindings used to be created mid-boot (`async_landed` ~706,
+        // `tick_callbacks` ~1153, `render_state` ~821, `buffers` ~767,
+        // `buffer_store` / `diag_query` inside the `services:` block);
+        // hoisting them here is a mechanical `let`-reorder that PRESERVES Arc
+        // identity (the workers + Editor fields + service registrations below
+        // still clone these exact Arcs — never re-`Arc::new`).
+        //
+        // Slice B.1: `async_landed` seats the reparse-worker `on_publish`
+        // wake + the `Editor::async_landed` field; the actor loop awaits it.
+        let async_landed: Arc<tokio::sync::Notify> = Arc::default();
+        // IDE-protocol I1.1: the per-tick drain-closure registry (one Arc for
+        // the editor's lifetime; modes add drains from `on_activate`).
+        let tick_callbacks: lattice_mode::TickCallbackRegistryHandle =
+            Arc::new(lattice_mode::TickCallbackRegistry::new());
+        // Phase 5.8.AF.5 / Slice 3a: the published render-state cell. The
+        // overlay / cells / virtual-rows workers (spawned below) + every
+        // `publish_render_state` share this exact Arc identity.
+        let render_state_arc: Arc<ArcSwap<crate::render_state::RenderState>> =
+            Arc::new(ArcSwap::from_pointee(crate::render_state::RenderState::default()));
+        // The buffer registry; created empty here and seeded with the initial
+        // document at the spawn site below (`BufferRegistry` is `Clone` via an
+        // inner Arc, so the handle handed to `boot` observes that seeding).
+        let buffers = BufferRegistry::new();
+        // BC.3a read-tool handles derived from the Phase-A cells: the generic
+        // buffer-store (over `buffers`) + the diagnostics query (over the
+        // render-state cell). Registered as services below + handed to the
+        // claude-code read tools; `boot` holds clones for the BC.3b migration.
+        let buffer_store_handle = {
+            let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers.clone());
+            lattice_mode::BufferStoreHandle::new(store)
+        };
+        let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle =
+            Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
+                render_state_arc.clone(),
+            ));
+        // BC.3a (decision 2-b): `boot` owns the three registries during the
+        // build phase. Every mode / command / service registration below runs
+        // through `boot.modes_mut()` / `boot.commands_mut()` /
+        // `boot.register_service()`; the `freeze_*` calls hand back the shared
+        // `Arc`s the `Editor` literal seats. The registries are passed empty.
+        let mut boot = BootContext::new(
+            event_bus.clone(),
+            tick_callbacks.clone(),
+            async_landed.clone(),
+            runtime_handle.clone(),
+            buffer_store_handle.clone(),
+            diag_query.clone(),
+            CommandRegistry::new(),
+            ModeRegistry::new(),
+            ServiceRegistry::new(),
+        );
+
         let (
             lsp,
             lsp_diagnostics,
@@ -254,22 +313,21 @@ impl Editor {
             &runtime_handle,
         );
 
-        let mut registry = CommandRegistry::new();
-        let builtins = grammar_builtins_populate(&mut registry);
+        let builtins = grammar_builtins_populate(boot.commands_mut());
         // Register the built-in ex-commands as peers of motions /
         // operators / text objects (DESIGN.md §5.2.1). The returned
         // ids aren't held in App state today -- the parser front-
         // end looks them up by name -- but registering them
         // populates the registry so `:`-line parsing can route to
         // them.
-        let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        let _ex_builtins = lattice_grammar::ex_commands::populate(boot.commands_mut());
         // IDE-protocol I1.3: `:claude-code-start` / `:claude-code-stop`.
         // Crate-owned, bare-named ex-commands (resolve via `id_by_name`,
         // no host alias-table entry) whose `apply` closures drive the
         // server handle directly — mode-ownership without a host `Effect`
         // variant. See `lattice_claude_code::commands` + design §2.
         lattice_claude_code::register_claude_code_ex_commands(
-            &mut registry,
+            boot.commands_mut(),
             claude_code_server.clone(),
         );
 
@@ -309,61 +367,67 @@ impl Editor {
         // it (below) and `Editor` can hold the clone the cascade
         // re-folds.
         let snippet_activation_policy;
-        let mode_registry = {
-            let mut mr = ModeRegistry::new();
-            lattice_mode::register_foundation_modes(&mut mr);
-            lattice_syntax::register_language_modes(&mut mr);
-            lattice_lsp::modes::register_lsp_log_modes(&mut mr);
-            // CSM.8a: lsp-completion-mode needs the supervisor
-            // handle (its contributed source captures it).
-            lattice_lsp::completion::register_lsp_completion_mode(&mut mr, lsp.clone());
-            lattice_oil::register_oil_modes(&mut mr);
-            lattice_file_tree::register_file_tree_modes(&mut mr);
-            snippet_activation_policy =
-                lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
-            // Issue #40 / Terminal-mode T1: register the
-            // `terminal-mode` major so option contributions
-            // (ReadOnly + NoFile) apply to Terminal buffers.
-            lattice_terminal::register_terminal_modes(&mut mr);
-            crate::modes::register_buffer_kind_modes(&mut mr);
-            // M.2.b.2 (2026-06-01): register `multibuffer-mode`
-            // + wire its `DocumentClosed` cleanup subscriber. The
-            // mode is H.2 kind-bound to `BufferKind::Multibuffer`.
-            lattice_multibuffer::register_multibuffer_modes(
-                &mut mr,
-                &event_bus,
-                multibuffer_registry_handle.clone(),
-            );
-            // M.6 (2026-06-01): register the project-search
-            // provider-minor mode. The service handle is
-            // registered separately in the ServiceRegistry block
-            // below.
-            #[cfg(feature = "search")]
-            lattice_multibuffer::providers::search::register_project_search_mode(&mut mr);
-            // N.1.1 (2026-06-10): narrow provider-minor mode (marker
-            // for narrow views). First-class — no feature gate.
-            lattice_multibuffer::providers::narrow::register_narrow_mode(&mut mr);
-            // D.5.a (2026-05-30): `diff-mode` minor — marker bit
-            // consulted by K.1.c per-keystroke lookup so D.5.b/c
-            // `do`/`dp` chords gate on per-buffer diff
-            // participation.
-            crate::diff::mode::register_diff_modes(&mut mr);
-            // emacs-keys minor — default-on `<C-x>` leader (tribute).
-            crate::emacs_keys::register_emacs_keys_modes(&mut mr);
-            crate::tutor::register_tutor_modes(&mut mr);
-            // claude-code-mode minor — Manual marker for I1 (I5 activates
-            // it on the `:claude` terminal buffer).
-            lattice_claude_code::register_claude_code_modes(&mut mr);
-            mr
-        };
-        register_mode_toggle_commands(&mut registry, &mode_registry);
-        let mode_registry = Arc::new(mode_registry);
+        // BC.3a: mode registration runs through `boot.modes_mut()` (the
+        // registration seam). Order preserved verbatim from the prior
+        // `let mr = { … }` block.
+        lattice_mode::register_foundation_modes(boot.modes_mut());
+        lattice_syntax::register_language_modes(boot.modes_mut());
+        lattice_lsp::modes::register_lsp_log_modes(boot.modes_mut());
+        // CSM.8a: lsp-completion-mode needs the supervisor
+        // handle (its contributed source captures it).
+        lattice_lsp::completion::register_lsp_completion_mode(boot.modes_mut(), lsp.clone());
+        lattice_oil::register_oil_modes(boot.modes_mut());
+        lattice_file_tree::register_file_tree_modes(boot.modes_mut());
+        snippet_activation_policy =
+            lattice_snippet::register_snippet_modes(boot.modes_mut(), snippet_registry_handle.clone());
+        // Issue #40 / Terminal-mode T1: register the
+        // `terminal-mode` major so option contributions
+        // (ReadOnly + NoFile) apply to Terminal buffers.
+        lattice_terminal::register_terminal_modes(boot.modes_mut());
+        crate::modes::register_buffer_kind_modes(boot.modes_mut());
+        // M.2.b.2 (2026-06-01): register `multibuffer-mode`
+        // + wire its `DocumentClosed` cleanup subscriber. The
+        // mode is H.2 kind-bound to `BufferKind::Multibuffer`.
+        lattice_multibuffer::register_multibuffer_modes(
+            boot.modes_mut(),
+            &event_bus,
+            multibuffer_registry_handle.clone(),
+        );
+        // M.6 (2026-06-01): register the project-search
+        // provider-minor mode. The service handle is
+        // registered separately in the ServiceRegistry block
+        // below.
+        #[cfg(feature = "search")]
+        lattice_multibuffer::providers::search::register_project_search_mode(boot.modes_mut());
+        // N.1.1 (2026-06-10): narrow provider-minor mode (marker
+        // for narrow views). First-class — no feature gate.
+        lattice_multibuffer::providers::narrow::register_narrow_mode(boot.modes_mut());
+        // D.5.a (2026-05-30): `diff-mode` minor — marker bit
+        // consulted by K.1.c per-keystroke lookup so D.5.b/c
+        // `do`/`dp` chords gate on per-buffer diff
+        // participation.
+        crate::diff::mode::register_diff_modes(boot.modes_mut());
+        // emacs-keys minor — default-on `<C-x>` leader (tribute).
+        crate::emacs_keys::register_emacs_keys_modes(boot.modes_mut());
+        crate::tutor::register_tutor_modes(boot.modes_mut());
+        // claude-code-mode minor — Manual marker for I1 (I5 activates
+        // it on the `:claude` terminal buffer).
+        lattice_claude_code::register_claude_code_modes(boot.modes_mut());
+        // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
+        // `register_mode_toggle_commands`. The toggle helper needs
+        // `&mut CommandRegistry` + `&ModeRegistry` simultaneously; both live
+        // in `boot`, so a concurrent `boot.commands_mut()` + mode-read borrow
+        // would conflict. Freezing first hands back an `Arc<ModeRegistry>`
+        // (derefs to `&ModeRegistry`); the registry is fully populated here,
+        // so the auto-generated `:<mode-name>` toggles are identical.
+        let mode_registry = boot.freeze_mode_registry();
+        register_mode_toggle_commands(boot.commands_mut(), &mode_registry);
 
         // Slice 8.i action ids: each `CommandKind::Action` entry
         // returns `Effect::AppAction(AppEffect::Foo)`; per-mode
         // keymap modules consume the resulting `ActionIds` to
         // build typed `CommandInvocation`s for chord bindings.
-        let action_ids = crate::actions::populate(&mut registry, &builtins);
+        let action_ids = crate::actions::populate(boot.commands_mut(), &builtins);
 
         // M.2.b.3 (2026-06-01): register multibuffer excerpt-jump
         // motions (`]e` / `[e` / `]E` / `[E`) against the command
@@ -380,7 +444,7 @@ impl Editor {
         // names in `CommandRegistry`) is what keeps the keymap's
         // name lookup successful.
         let _ = lattice_multibuffer::register_multibuffer_motions(
-            &mut registry,
+            boot.commands_mut(),
             multibuffer_registry_handle.clone(),
         );
 
@@ -389,26 +453,27 @@ impl Editor {
         // host-side `multibuffer_keymap.rs` glue. Behaviour
         // preserved verbatim; the new home sits next to the
         // modes that use them.
-        lattice_multibuffer::register_multibuffer_ex_commands(&mut registry);
+        lattice_multibuffer::register_multibuffer_ex_commands(boot.commands_mut());
         #[cfg(feature = "search")]
-        lattice_multibuffer::providers::search::register_search_ex_command(&mut registry);
+        lattice_multibuffer::providers::search::register_search_ex_command(boot.commands_mut());
         // N.1.1 (2026-06-10): `:narrow` + `:widen`. First-class — no
         // feature gate.
-        lattice_multibuffer::providers::narrow::register_narrow_ex_commands(&mut registry);
+        lattice_multibuffer::providers::narrow::register_narrow_ex_commands(boot.commands_mut());
         // N.1.3 (2026-06-10): register the `zn` narrow operator SPEC
         // (owned by the narrow provider) and capture its OperatorId;
         // the `zn` chord is wired into the universal operator-pending
         // layer below, right after `register_normal_bindings`.
         let narrow_operator_id =
-            lattice_multibuffer::providers::narrow::register_narrow_operator(&mut registry);
+            lattice_multibuffer::providers::narrow::register_narrow_operator(boot.commands_mut());
 
         // N.1.4c: register the structural (tree-sitter) text objects
         // (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`) -- owned by
         // lattice-syntax -- and capture their ids so the universal
         // operator-pending keymap (`register_normal_bindings` + the `zn`
-        // operator below) can bind their chords. Must run while
-        // `registry` is still `&mut` (before the Arc freeze below).
-        let syntax_textobject_ids = lattice_syntax::register_syntax_text_objects(&mut registry);
+        // operator below) can bind their chords. Must run while the command
+        // registry is still mutable (before `freeze_command_registry` below).
+        let syntax_textobject_ids =
+            lattice_syntax::register_syntax_text_objects(boot.commands_mut());
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
@@ -626,10 +691,13 @@ impl Editor {
             },
         );
 
-        // Wrap the command registry in `Arc` early so picker
-        // sources that capture it (CommandsSource) can clone
-        // here.
-        let registry = Arc::new(registry);
+        // BC.3a: freeze the command registry into its shared `Arc` — all
+        // command registration (builtins, ex-commands, toggles, actions,
+        // multibuffer motions/ex-commands, narrow, syntax text objects) is
+        // done by here, and the `Arc` is consumed just below (picker sources
+        // that capture it, document handles). Subsequent `boot.commands_mut()`
+        // panics — a boot-sequencing bug.
+        let registry = boot.freeze_command_registry();
         // T.3/T.4 (theme-system): the theme-element registry, seeded
         // with the default palette + all builtin elements (resolved +
         // ready). Created here (ahead of the struct literal) so the
@@ -700,10 +768,9 @@ impl Editor {
         // `ArcSwap`.
         let initial_text = document.text();
         let initial_text_version = document.text_version();
-        // Slice B.1: created here (before the syntax handle) so it can
-        // be handed to the reparse worker as its `on_publish` callback;
-        // it also seats the `Editor::async_landed` field below.
-        let async_landed: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
+        // BC.3a: `async_landed` is a Phase-A primitive (created up top, owned
+        // by `boot`). The reparse worker below takes it as its `on_publish`
+        // wake and the diagnostics layer's `set_wake` arms it here.
         // Wake the render loop on every server `publishDiagnostics`
         // push so diagnostic changes — a new error OR the clear when one
         // is fixed — repaint off-keystroke, instead of waiting for the
@@ -759,12 +826,12 @@ impl Editor {
         };
         let pane_tree = PaneTree::single(initial_pane);
 
-        // Seed the buffer registry with the initial document.
-        // The hot-path `Editor.document` / `Editor.syntax` /
-        // `Editor.last_parsed_text_version` mirror what's stored
-        // here for the active buffer; switching buffers swaps
-        // them.
-        let buffers = BufferRegistry::new();
+        // Seed the buffer registry with the initial document. `buffers` is a
+        // Phase-A primitive (created empty up top, handed to `boot` via the
+        // `BufferStoreHandle`); this seeding is observable through that handle
+        // (shared inner Arc). The hot-path `Editor.document` / `Editor.syntax`
+        // / `Editor.last_parsed_text_version` mirror what's stored here for the
+        // active buffer; switching buffers swaps them.
         buffers.insert(BufferEntry {
             id: document_buffer_id,
             flags: BufferFlags::default(),
@@ -790,11 +857,6 @@ impl Editor {
         initial_locals.insert(crate::modes::DocumentFolds(Vec::new()));
         buffer_locals.insert(document_buffer_id, initial_locals);
 
-        // B'.3: keep a clone of `buffers` outside the struct
-        // initialiser so the service-registry block below can
-        // also hold one (BufferRegistry is `Clone` via Arc).
-        let buffers_for_services = buffers.clone();
-
         // Phase 5.8.AF.5 / Slice X2.4 (gut + rename B4.2):
         // instantiate the overlay worker's shared cell BEFORE the
         // Editor literal so we can hand the worker its own clone at
@@ -818,10 +880,9 @@ impl Editor {
         let syntax_static_overlay_quads_cell: std::sync::Arc<
             arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>,
         > = std::sync::Arc::default();
-        let render_state_arc: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>> =
-            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
-                crate::render_state::RenderState::default(),
-            ));
+        // BC.3a: `render_state_arc` is a Phase-A primitive (created up top,
+        // owned by `boot`); the workers below + every `publish_render_state`
+        // share its exact Arc identity.
         // X1b: paint-request signal. Created here so the worker
         // (spawned below) and the Editor (constructed below) hold
         // the same `Arc<Notify>`. The renderer peer subscribes to
@@ -1142,16 +1203,13 @@ impl Editor {
                 &registry,
             );
 
-        // IDE-protocol I1.1: the one new generic host primitive — a
-        // per-tick drain-closure registry. A single Arc spans the
-        // editor's lifetime; registered as a service so modes add their
-        // drain from `on_activate` (e.g. the Claude Code IDE peer's
-        // `IdeInbound` drain, I3). The host runs every registered closure
-        // once per tick inside `run_tick_pending` (`drain_tick_callbacks`)
-        // and applies the returned `Effect`s. Generalizes the host's
-        // hardcoded `drain_<x>` methods; see `tick_callback.rs`.
-        let tick_callbacks: lattice_mode::TickCallbackRegistryHandle =
-            Arc::new(lattice_mode::TickCallbackRegistry::new());
+        // IDE-protocol I1.1 / BC.3a: the per-tick drain-closure registry is a
+        // Phase-A primitive (`tick_callbacks`, created up top, owned by
+        // `boot`). A single Arc spans the editor's lifetime; registered as a
+        // service so modes add their drain from `on_activate` (e.g. the Claude
+        // Code IDE peer's `IdeInbound` drain, I3). The host runs every
+        // registered closure once per tick inside `run_tick_pending`
+        // (`drain_tick_callbacks`) and applies the returned `Effect`s.
 
         // T.3/T.4 (theme-system): the builtin element ids, captured from
         // the theme-element registry created earlier (above the picker
@@ -1189,6 +1247,110 @@ impl Editor {
             &runtime_handle,
         );
 
+        // ── BC.3a: service registration through `boot` ───────────────────
+        // Hoisted out of the former `services: { … }` field in the `Editor`
+        // literal so each registration runs through `boot.register_service()`
+        // / `boot.services_mut()` (decision 2-b). `freeze_service_registry`
+        // hands back the shared `Arc<ServiceRegistry>` the literal seats.
+        // Registration order preserved verbatim from the old block.
+        boot.register_service(lsp.clone());
+        // ML.0b-2: same Arc as `Editor.modeline` below, so modes
+        // register/update the instance the renderer snapshots.
+        boot.register_service(modeline_service.clone());
+        // T-mode-1 (2026-05-27): TerminalStoreHandle so `TerminalNormalMode`
+        // can install / clear the SyntheticDoc on a TerminalBuffer from its
+        // lifecycle hooks. Same `BufferRegistry` backs both stores — cheap
+        // clone (Arc inside).
+        let term_store: Arc<dyn lattice_terminal::TerminalStore> = Arc::new(buffers.clone());
+        boot.register_service(lattice_terminal::TerminalStoreHandle::new(term_store));
+        // BC.3a: the generic buffer-store is a Phase-A handle (`boot` already
+        // holds a clone via `BootContext::new`); register the clone for mode
+        // lookups via `services().get::<BufferStoreHandle>()`.
+        boot.register_service(buffer_store_handle.clone());
+        boot.register_service(lsp_logger.clone());
+        // L4b (lsp-architecture.md §15): diagnostics-query service so
+        // `lsp-diagnostics-mode`'s `gl` handler reads the cursor line's
+        // diagnostics (buffer_id → uri → layer over the live published render
+        // state) without a host method or its own URI map. `diag_query` is the
+        // Phase-A handle over the same render-state cell every
+        // `publish_render_state` stores into.
+        boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
+        // IDE-protocol I2.2: install the GENERIC read services into the Claude
+        // Code server (the server handle was spawned earlier for the
+        // ex-commands). The read-tool LOGIC lives in the crate; these are just
+        // the generic buffer-store + diagnostics handles it composes. (BC.3b
+        // collapses this into `lattice_claude_code::install(boot)`.)
+        claude_code_server.install_services(
+            Some(buffer_store_handle.clone()),
+            Some(diag_query.clone()),
+            tick_callbacks.clone(),
+            async_landed.clone(),
+        );
+        // M.2.b.2 (2026-06-01): expose the typed multibuffer-handle lookup so
+        // providers (`create_multibuffer_view`, the `:search` minor) reach it
+        // via `services().get::<MultibufferRegistryHandle>()`.
+        boot.register_service(multibuffer_registry_handle.clone());
+        // M.4 (2026-06-01): expose the EventBus so multibuffer views (and
+        // future provider triggers) can subscribe to source events + publish
+        // typed events (`MultibufferSourceClosed`, `MultibufferHeaderlineChanged`)
+        // via `services().get::<EventBus>()`.
+        boot.register_service(event_bus.clone());
+        // M.6 (2026-06-01): register the project-search service handle so
+        // `project_search` triggers can look it up.
+        #[cfg(feature = "search")]
+        lattice_multibuffer::providers::search::register_project_search_service(boot.services_mut());
+        // M.10.1.b (2026-06-03): action-handler registry — mode-contributed
+        // chord/ex-command handler closures. Modes register from `on_activate`
+        // via `ctx.service::<ActionHandlerRegistryHandle>()`; one Arc serves
+        // every activation. SN.3c.0: reuse the Arc created above (after the
+        // boot action-handler walk). See `mode-architecture.md` §5.3 +
+        // `feedback_mode_owns_its_surface`.
+        boot.register_service::<lattice_mode::ActionHandlerRegistryHandle>(action_handlers.clone());
+        // IDE-protocol I1.1: per-tick drain-closure registry. Read each tick by
+        // `Editor::drain_tick_callbacks`; written by modes' `on_activate` via
+        // `ctx.service::<TickCallbackRegistryHandle>()`.
+        boot.register_service::<lattice_mode::TickCallbackRegistryHandle>(tick_callbacks.clone());
+        // M.10.3 (2026-06-03): expose the CommandRegistry as a service so mode
+        // handlers (registered via M.10.1.b ActionHandlerRegistry) can look up
+        // CommandIds by action name at `on_activate` time — e.g.
+        // `cmd_registry.id_by_name("action:search-jump-to-source")` — without
+        // depending on host-internal types. Same `Arc<X>` alias pattern.
+        boot.register_service::<lattice_grammar::CommandRegistryHandle>(registry.clone());
+        // IDE-protocol I1.3: the Claude Code IDE server handle, so
+        // claude-code-mode's `on_activate` (I5) + the IdeInbound drain (I3)
+        // reach it via the service registry.
+        boot.register_service::<lattice_claude_code::ClaudeCodeServerHandle>(
+            claude_code_server.clone(),
+        );
+        // M.7: expose the fold-overlay service so `MultibufferMode::on_activate`
+        // can register `ExcerptFoldProvider` without depending on
+        // `lattice-host`. Same Arc as `fold_registry` above.
+        let fold_svc: lattice_core::FoldOverlayServiceHandle =
+            Arc::new(crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()));
+        boot.register_service::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
+        // SN.2: register the live snippet session so `SnippetActiveMode`'s
+        // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
+        // as the `Editor.snippet_session` field (set below).
+        boot.register_service::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
+        // T.3/T.4 (theme-system): register the theme-element registry (created
+        // above) so modes + renderers look it up via
+        // `services().get::<ThemeRegistryHandle>()`. Register + look up the
+        // SAME `Arc<dyn ThemeRegistry>` per the ServiceRegistry Arc/TypeId rule
+        // (`feedback_servicesregistry_arc_typeid`). Renderers read the resolved
+        // table via the `RenderState` snapshot (T.4); modes intern their own
+        // `ElementId`s from `on_activate` (T.7). Moves `theme_registry` (its
+        // last use — captured into `builtin_element_ids` above).
+        boot.register_service::<lattice_theme::ThemeRegistryHandle>(theme_registry);
+        // MH.A3 (2026-06-19): expose the ConfigRegistry so extension-crate code
+        // (`create_multibuffer_view`) can read global option defaults — e.g.
+        // `ui.nerd_fonts` for the rich excerpt-header icon palette — without
+        // depending on `lattice-host`'s typed option decls. Read by name
+        // (`get_bool_by_name`). Same `Arc<X>` register/lookup pair per the rule.
+        boot.register_service::<Arc<ConfigRegistry>>(config.clone());
+        // BC.3a: freeze the service registry into its shared `Arc` (last, after
+        // the full services block). The `Editor` literal seats it below.
+        let services = boot.freeze_service_registry();
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -1217,140 +1379,9 @@ impl Editor {
             // ML.0b-2: the shared modeline service (same Arc registered
             // into `services` below).
             modeline: modeline_service.clone(),
-            services: {
-                let mut s = ServiceRegistry::new();
-                s.register(lsp.clone());
-                // ML.0b-2: same Arc as `Editor.modeline` below, so modes
-                // register/update the instance the renderer snapshots.
-                s.register(modeline_service.clone());
-                // T-mode-1 (2026-05-27): TerminalStoreHandle so
-                // `TerminalNormalMode` can install / clear the
-                // SyntheticDoc on a TerminalBuffer from its
-                // lifecycle hooks. Same `BufferRegistry` backs
-                // both stores — cheap clone (Arc inside).
-                let term_store: Arc<dyn lattice_terminal::TerminalStore> =
-                    Arc::new(buffers_for_services.clone());
-                s.register(lattice_terminal::TerminalStoreHandle::new(term_store));
-                let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
-                let buffer_store_handle = lattice_mode::BufferStoreHandle::new(store);
-                s.register(buffer_store_handle.clone());
-                s.register(lsp_logger.clone());
-                // L4b (lsp-architecture.md §15): diagnostics-query
-                // service so `lsp-diagnostics-mode`'s `gl` handler reads
-                // the cursor line's diagnostics (buffer_id → uri → layer
-                // over the live published render state) without a host
-                // method or its own URI map. Same `render_state_arc`
-                // every `publish_render_state` stores into.
-                let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle =
-                    Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
-                        render_state_arc.clone(),
-                    ));
-                s.register::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
-                // IDE-protocol I2.2: install the GENERIC read services into
-                // the Claude Code server, now that boot has created them (the
-                // server handle was spawned earlier for the ex-commands). The
-                // read-tool LOGIC lives in the crate; these are just the
-                // generic buffer-store + diagnostics handles it composes.
-                claude_code_server.install_services(
-                    Some(buffer_store_handle),
-                    Some(diag_query),
-                    tick_callbacks.clone(),
-                    async_landed.clone(),
-                );
-                // M.2.b.2 (2026-06-01): expose the typed
-                // multibuffer-handle lookup so providers
-                // (`create_multibuffer_view`, future M.6
-                // `:search` minor) reach it via
-                // `services().get::<MultibufferRegistryHandle>()`.
-                s.register(multibuffer_registry_handle.clone());
-                // M.4 (2026-06-01): expose the EventBus so
-                // multibuffer views (and future provider
-                // triggers) can subscribe to source events +
-                // publish typed events
-                // (`MultibufferSourceClosed`,
-                // `MultibufferHeaderlineChanged`) via
-                // `services().get::<EventBus>()`.
-                s.register(event_bus.clone());
-                // M.6 (2026-06-01): register the project-search
-                // service handle so `project_search` triggers
-                // can look it up.
-                #[cfg(feature = "search")]
-                lattice_multibuffer::providers::search::register_project_search_service(&mut s);
-                // M.10.1.b (2026-06-03): action-handler registry —
-                // mode-contributed chord/ex-command handler
-                // closures. Modes register from `on_activate` via
-                // `ctx.service::<ActionHandlerRegistryHandle>()`;
-                // the registry's lifetime spans the editor's
-                // lifetime, so a single Arc registered here
-                // serves every mode activation. See
-                // `mode-architecture.md` §5.3 +
-                // `feedback_mode_owns_its_surface`.
-                // SN.3c.0: reuse the Arc created above (after the
-                // boot action-handler walk); register it as a service
-                // so per-buffer handlers still register from
-                // `on_activate`.
-                s.register::<lattice_mode::ActionHandlerRegistryHandle>(
-                    action_handlers.clone(),
-                );
-                // IDE-protocol I1.1: per-tick drain-closure registry.
-                // Read each tick by `Editor::drain_tick_callbacks`;
-                // written by modes' `on_activate` via
-                // `ctx.service::<TickCallbackRegistryHandle>()`.
-                s.register::<lattice_mode::TickCallbackRegistryHandle>(
-                    tick_callbacks.clone(),
-                );
-                // M.10.3 (2026-06-03): expose the CommandRegistry
-                // as a service so mode handlers (registered via
-                // M.10.1.b ActionHandlerRegistry) can look up
-                // CommandIds by action name at `on_activate`
-                // time — e.g.
-                // `cmd_registry.id_by_name("action:search-jump-to-source")`
-                // — without depending on host-internal types.
-                // Same `Arc<X>` alias pattern as
-                // ActionHandlerRegistryHandle.
-                s.register::<lattice_grammar::CommandRegistryHandle>(registry.clone());
-                // IDE-protocol I1.3: the Claude Code IDE server handle, so
-                // claude-code-mode's `on_activate` (I5) + the future
-                // IdeInbound drain (I3) reach it via the service registry.
-                s.register::<lattice_claude_code::ClaudeCodeServerHandle>(
-                    claude_code_server.clone(),
-                );
-                // M.7: expose the fold-overlay service so
-                // `MultibufferMode::on_activate` can register
-                // `ExcerptFoldProvider` without depending on
-                // `lattice-host`. Same Arc as `fold_registry` above.
-                let fold_svc: lattice_core::FoldOverlayServiceHandle = Arc::new(
-                    crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()),
-                );
-                s.register::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
-                // SN.2: register the live snippet session so
-                // `SnippetActiveMode`'s `<Tab>`/`<S-Tab>` handlers can
-                // reach it from `on_activate`. Same Arc as the
-                // `Editor.snippet_session` field (set below).
-                s.register::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
-                // T.3/T.4 (theme-system): register the theme-element
-                // registry (created above the struct literal) so modes
-                // + renderers look it up via
-                // `services().get::<ThemeRegistryHandle>()`. Register +
-                // look up the SAME `Arc<dyn ThemeRegistry>` type per
-                // the ServiceRegistry Arc/TypeId rule
-                // (`feedback_servicesregistry_arc_typeid`). The
-                // renderers read the resolved table via the
-                // `RenderState` snapshot (T.4); modes intern their
-                // own `ElementId`s from `on_activate` (T.7).
-                s.register::<lattice_theme::ThemeRegistryHandle>(theme_registry);
-                // MH.A3 (2026-06-19): expose the ConfigRegistry so
-                // extension-crate code (`create_multibuffer_view`) can
-                // read global option defaults — e.g. `ui.nerd_fonts`
-                // for the rich excerpt-header icon palette — without
-                // depending on `lattice-host`'s typed option decls.
-                // Same `Arc<X>` register/lookup pair per the
-                // ServiceRegistry Arc/TypeId rule. Read by name
-                // (`get_bool_by_name`) so multibuffer needn't import
-                // the `UiNerdFonts` decl (which lives in host).
-                s.register::<Arc<ConfigRegistry>>(config.clone());
-                Arc::new(s)
-            },
+            // BC.3a: the frozen service registry (registration hoisted above,
+            // through `boot.register_service` / `boot.services_mut`).
+            services,
             // T.4 (theme-system): builtin ids captured (above) from the
             // theme registry, which is registered into `services` for
             // the renderer snapshot + mode lookups.

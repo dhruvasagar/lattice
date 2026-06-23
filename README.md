@@ -74,6 +74,7 @@ fundamental, not cosmetic:
 | **Editing model** | Strict **vim grammar IS the public command API**; motions / operators / text-objects are extensible from WASM | **Not modal by default** (Vim is a mode layer); core editing is fixed Rust |
 | **Buffers** | **Everything is a buffer** — file tree, diagnostics, terminal, REPL — atop multibuffer | Multibuffer (excerpts), but file-tree / terminal are **bespoke panels** |
 | **Extensibility** | WASM Component Model — **any language**, capability-gated, fuel-limited, crash-isolated | WASM extensions (languages / themes / slash-commands); core editing is not extensible at the grammar level |
+| **Customization spine** | A feature **is a mode** that owns its keymaps, action-handler bodies, decorations, and subscriptions; the host is a thin substrate. Acid test: a new provider crate adds **zero** `Editor::` methods / host `Action` variants | Features are Rust **entities** wired through GPUI's entity graph; **Vim is a separate crate** layered over a non-modal core — modes are not the extension mechanism |
 | **Collaboration** | None (single-user, deliberate scope) | **CRDT real-time multiplayer** — the rope is a CRDT; its headline feature |
 | **Latency discipline** | keystroke→glyph **ratcheted in CI**; UI thread does **zero** I/O / parse / shape | GPU-smooth + SumTree for huge files; no public per-keystroke CI gate |
 
@@ -87,6 +88,15 @@ fundamental, not cosmetic:
   and text objects apply to it with no bespoke code. **Cost:** no collaboration
   story, younger and less polished, and the actor discipline adds ceremony to
   cross-feature data flow.
+- **Lattice's bet is that the mode system *is* the extension mechanism.** A feature
+  is a mode that owns its keymaps, action-handler bodies, decorations, and
+  subscriptions; the host is a thin substrate with no per-feature branch (acid test:
+  a new provider crate adds **zero** `Editor::` methods / host `Action` variants).
+  Features therefore compose uniformly and a new one is a *crate*, not a host
+  edit — where Zed's features are bespoke entities and Vim is a layer over a
+  non-modal core. **Cost:** the host must stay disciplined-thin, and the recurring
+  drift is the *half-migration* (keymap moved into the mode, handler left in the
+  host), caught by tests rather than the type system.
 - **Zed's bet is a shared entity graph + GPU polish + real-time collaboration.**
   Keeping editor state *with* the UI makes cross-feature data flow ergonomic and
   made CRDT multiplayer tractable; GPUI + SumTree deliver gorgeous, fast rendering
@@ -311,6 +321,7 @@ Among modern editors built on Rust + GPU + tree-sitter + LSP + WASM (the only st
 
 - **Vim grammar is the public command API**, not a key mapping over a non-modal core. One dispatcher; ex-commands, chords, and plugin contributions all flow through `CommandInvocation`. Adding a motion *is* extending the grammar.
 - **Everything is a buffer, enforced**. File tree, diagnostics list, terminal, `*messages*`, scratch — all are buffers placed by the user into panes via splits. There is no sidebar / bottom-panel concept. Every text operation works on every buffer kind through one code path.
+- **Modes own their surface; the host is a thin substrate**. A feature is a *mode* — it owns its keymaps (at `KeymapLayer::MinorMode` / `MajorMode`, never `Builtin`), the action-handler bodies those chords fire, its decorations, subscriptions, and completion sources. The host carries no per-feature branch; it exposes only generic primitives (buffer store, event bus, action-handler registry, chord dispatcher). The acid test is enforced: a new provider crate adds **zero** `Editor::` methods and **zero** host `Action` variants. This is the single deepest structural difference from Zed — lattice elevates *the mode system itself* to the extension mechanism, where Zed elevates the entity graph and treats modes as one feature layered over it. (DESIGN.md §5.8.2; `comparison-zed.md` §3.)
 - **WIT is the canonical plugin API today** (not aspirationally). Any Component-Model language speaks the same protocol — Rust, Zig, Go, AssemblyScript. CI-gated overhead budgets (typed-call < 500 ns p99, grammar-extension round-trip < 5 µs p99).
 - **Asynchrony is architectural, not disciplinary**. Other editors keep the UI thread free by convention — contributors know which calls might block. Lattice (DESIGN.md §5.7) chooses primitives that make UI-thread blocking *physically impossible* in the steady state: `RenderState` for reads, `Arc<ArcSwapOption<T>>` / `PerBufferCache<T>` for writes, dedicated subsystem tasks for everything else. The architecture stays uniform under feature pressure.
 

@@ -62,7 +62,9 @@ Three load-bearing rules sit on top:
    `MajorMode`, never `Builtin`), action-handler bodies, lifecycle
    subscriptions, decorations, completion sources. The host is a thin
    substrate. Acid test: a new provider crate adds **zero** `Editor::` methods
-   and **zero** host `Action` variants.
+   and **zero** host `Action` variants. (Named as a first-class design
+   commitment in DESIGN.md §5.8.2; trait detail in `mode-architecture.md`
+   §5.2 / §5.3.)
 3. **Everything is a buffer.** The modal grammar therefore applies uniformly to
    the terminal, the file tree, diagnostics, ...
 

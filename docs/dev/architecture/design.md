@@ -28,6 +28,16 @@ the same shape as `keymap-architecture.md` for §5.2.
   lifecycle events, typed option registry, group resolution,
   customize surface, migration plan all live in
   `mode-architecture.md`.
+- **§5.8.2 added -- mode ownership elevated to a named
+  commitment.** "Modes own their full surface; the host is a
+  thin substrate" is now a first-class §5.8.1 commitment with
+  its own §5.8.2 subsection (the acid test, the half-migration
+  failure mode, the substrate-vs-helper rule). Previously this
+  load-bearing rule lived only in `mode-architecture.md` §5.2 /
+  §5.3 and `CLAUDE.md`; surfacing it in design.md makes the
+  single deepest Zed differentiator (`comparison-zed.md` §3)
+  enforceable by reference, closing the half-migration drift
+  class (K.3.2, M.7).
 - **Options and groups are typed identities, not strings.**
   Cross-crate uniqueness enforced by Rust's type system;
   display-name uniqueness by `linkme` aggregation. Strings
@@ -1341,12 +1351,38 @@ The major / minor mode system is the primary customization mechanism. The full d
 - A buffer has exactly one **major mode** -- content-type identity (rust, markdown, help, file-tree, lsp-log, ...). The major mode declares parser, default LSP attachment, default keymap layer, default minor modes, rendering profile (§5.6), and mode-scoped option overrides.
 - A buffer can have any number of **minor modes** active simultaneously. Minor modes are composable, additive, and *declaratively* contribute keymap layers, option overrides, event subscriptions, decoration providers, statusline segments, and lifecycle hooks. Conflicts are declared, not implicit.
 - **Modal state** (Normal / Insert / Visual / Op-pending / Command / Search) is orthogonal to major / minor modes; the two axes do not collapse.
+- **Modes own their full surface; the host is a thin substrate.** A mode owns not just its keymap layer but the *action-handler bodies* those chords fire, its lifecycle subscriptions, decoration providers, completion sources, and the production of its buffers. Keymaps live at `KeymapLayer::MinorMode` / `MajorMode`, never `Builtin`. The host exposes only generic primitives (buffer-store service, event bus, action-handler registry, generic chord dispatcher) and carries no per-mode branch. **Acid test:** a new provider crate adds **zero** `Editor::` methods in `lattice-host` and **zero** new variants to the host `Action` enum. This is the load-bearing commitment that makes the mode system the *extension mechanism* (paramount goal #2) rather than one feature among many -- and the single deepest structural difference from Zed. See §5.8.2.
 - **Modes are an interface, not a distribution unit.** Same `Mode` trait, three implementation paths: built-in (compiled Rust against the trait), bundled plugin (WASM Component Model, ships with the editor), third-party plugin (WASM Component Model, user-installed). The host treats all three identically downstream of registration; built-ins do not pay per-call WIT overhead. (See `mode-architecture.md` §2 for the rationale and the v0.4-to-v0.5 correction.)
 - **Options and `OptionGroup`s are typed identities, not strings.** Each is a unique Rust type; cross-crate uniqueness is enforced by Rust's type system, display-name uniqueness by `linkme` aggregation, and naming-rule constraints (mode names end in `-mode`; group names do not) by `const fn` assertions emitted at macro expansion. Strings appear only at boundaries (`:set`, TOML, plugin manifests). The bare namespace is reserved for built-ins by macro-API construction; plugin options are mechanically prefixed by plugin ID at registration. (`mode-architecture.md` §6.4 / §6.7.1.1 / §6.8.)
 - **`:set` and `:customize` are two front-ends on the same store.** `:set <opt>=<val>` is the cmdline parser, single-option, immediate. `:customize <name>` is the form-buffer front-end, group-oriented, buffer-backed (`customize-mode` major), TUI-first. `<name>` resolves to a mode (when ending in `-mode`) for a focused view, or to an `OptionGroup` (`Editor`, `Lsp`, `Picker`, `Filetree`, ...) for a cross-mode collection. Both ship in v1; TOML write-through is deferred to v1.x.
 - **Mode toggle and reload.** Every registered mode is user-toggleable via `:enable` / `:disable` / `:toggle` plus an auto-generated ex-command per mode (`:rust-mode`, `:lsp-diagnostics-mode`). Major modes additionally support reload (call the ex-command on a buffer already in that mode ⇒ deactivate then re-activate; the trait contract is idempotent setup). Minor mode deactivation removes every contributed override (options, keymap, subscriptions, decorations) by construction because the registry, not the mode, owns the layer stack.
 
 The detailed taxonomy of which lattice features are major modes, minor modes, or neither -- plus the migration plan to land the `lattice-mode` foundation crate, retire `BufferKind`, unify the renderer, gate LSP behind `lsp-mode`, and ship the `:customize` form view -- is in `mode-architecture.md` §4 (inventory) and §10 (migration).
+
+#### 5.8.2 Mode ownership -- the host is a thin substrate
+
+This is the load-bearing commitment that makes the mode system the *extension mechanism* rather than one feature among many -- and the single deepest structural difference from Zed (`comparison-zed.md` §3). It is stated at design level because past sessions repeatedly *half-migrated* features -- a mode contributed its keymap but left the handler body in the host -- and naming the rule here is what makes "don't do that" enforceable by reference rather than by memory.
+
+**A mode owns its full surface.** Not just the keymap layer, but everything the keymap implies:
+
+- **Keymaps** -- pushed at `KeymapLayer::MinorMode(id)` / `MajorMode(id)`, *never* `KeymapLayer::Builtin`. Builtin is the universal vim grammar that fires in every buffer; a feature chord scoped to one mode does not belong there. A mode registers its layer via `register_<mode>_keymap(...)` in the mode's own crate, returning a trie pushed under `PushLayerKind::MinorMode(<mode>::mode_id())`; a per-keystroke filter scopes the chord to mode-active buffers.
+- **Action-handler bodies** -- the closure that runs when a chord or ex-command fires. The mode registers it against its contributed `ActionId` in `on_activate`; the registration token lives in the mode's `Guard` and unregisters on deactivation. There is no `Editor::do_<provider>_action` in the host. (`ActionHandlerRegistry`: `mode-architecture.md` §5.3.)
+- **Lifecycle subscriptions, decoration providers, completion sources, option overrides, and the production of the mode's buffers** -- all owned by the mode, acquired in `on_activate`, released by `Guard` drop.
+
+**What stays in the host** is purely generic: the buffer-store service, the typed event bus, the `ActionHandlerRegistry`, the generic chord dispatcher (walks the layer stack, resolves a chord to an `ActionId`), and the generic `Effect` applier. None of these branch on mode or `BufferKind`.
+
+**Acid test.** A new provider crate landing requires **zero** `Editor::` method additions in `lattice-host` and **zero** new variants in the host `Action` enum. If a migration adds either, it is incomplete.
+
+**The half-migration failure mode.** Moving a mode's keymap into the mode while leaving its handler in the host's dispatcher -- *or* publishing substrate data through a `Document` trait method while the host still binds the chord -- leaves half the ownership surface with the host and silently re-introduces per-mode host logic. This is the exact drift the rule prevents; it is caught by tests (`crates/lattice-host/tests/multibuffer_is_a_regular_buffer.rs`), not the type system, so it must be checked at review.
+
+**Substrate-vs-helper rule** (which side owns mode-relevant data):
+
+- **`Document` trait method** -- when *generic host machinery* (renderer, generic dispatch loop, position-history walker) reads the data uniformly across all buffer kinds. Example: `display_line_numbers` (the renderer reads it for the gutter), `dispatch_with_cancel` (the chord-dispatch loop reads it to execute grammar).
+- **Substrate helper function** in the owning crate -- when only a *specific mode's handler* reads the data. Example: composed->source translation, excerpt expansion -- consumed only by the multibuffer mode's handlers, so they are free functions the mode imports, not trait methods.
+
+Rule of thumb: **trait method = uniform-host consumer; helper = mode consumer.** Mode-consumed data must not extend the `Document` trait surface, because doing so implies host involvement the mode-ownership rule forbids.
+
+The trait surface, the `ActionHandlerRegistry`, the `Guard` cleanup contract, and the full migration history are in `mode-architecture.md` §5.2 (modes own their lifecycle) and §5.3 (modes own their action handlers).
 
 ### 5.9 UI Components
 

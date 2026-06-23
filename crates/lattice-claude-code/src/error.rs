@@ -15,9 +15,13 @@ pub enum ClaudeCodeError {
     Io(#[from] std::io::Error),
 
     /// WebSocket transport / handshake failure (including auth rejection
-    /// surfaced by the handshake).
+    /// surfaced by the handshake). Boxed because `tungstenite::Error` is a
+    /// ~136-byte enum; boxing keeps `ClaudeCodeError` small so every
+    /// `Result<_, ClaudeCodeError>` stays cheap to move (clippy
+    /// `result_large_err`). The manual `From` below preserves `?`
+    /// ergonomics on a bare `tungstenite::Error`.
     #[error("websocket error: {0}")]
-    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
+    WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
 
     /// JSON (de)serialization failure on the wire.
     #[error("json error: {0}")]
@@ -26,6 +30,12 @@ pub enum ClaudeCodeError {
     /// The OS random source was unavailable when minting an auth token.
     #[error("random source unavailable: {0}")]
     Random(String),
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for ClaudeCodeError {
+    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        ClaudeCodeError::WebSocket(Box::new(e))
+    }
 }
 
 /// Crate-local result alias.

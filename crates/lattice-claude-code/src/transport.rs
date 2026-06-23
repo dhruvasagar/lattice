@@ -18,6 +18,11 @@ use crate::error::Result;
 /// `x-claude-code-ide-authorization` header to match `expected_token`
 /// (constant-time). Rejects with HTTP 401 otherwise — the returned future
 /// resolves to an error and the connection is dropped.
+// The handshake callback's `Result<Response, ErrorResponse>` return type is
+// dictated by tokio-tungstenite's `Callback` trait; `ErrorResponse`
+// (`http::Response<Option<String>>`) is inherently large, so we can't shrink
+// the Err variant here (clippy `result_large_err`).
+#[allow(clippy::result_large_err)]
 pub async fn accept(
     stream: TcpStream,
     expected_token: &str,

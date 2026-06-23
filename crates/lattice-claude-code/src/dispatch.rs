@@ -89,6 +89,7 @@ fn handle_notification(note: &Notification) -> Vec<Outgoing> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use serde_json::json;
 

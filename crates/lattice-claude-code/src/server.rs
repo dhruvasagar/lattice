@@ -210,7 +210,7 @@ async fn serve_connection(stream: TcpStream, token: String) -> Result<()> {
                 Outgoing::Response(r) => serde_json::to_string(r)?,
                 Outgoing::Notification(n) => serde_json::to_string(n)?,
             };
-            write.send(WsMessage::Text(payload.into())).await?;
+            write.send(WsMessage::Text(payload)).await?;
         }
     }
     Ok(())

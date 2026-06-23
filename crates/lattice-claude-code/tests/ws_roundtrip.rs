@@ -7,6 +7,7 @@
 //! Also covers auth rejection and the lockfile start/stop lifecycle —
 //! the parts of `transport` + `server` not reachable by the pure
 //! unit tests.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::collapsible_if)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -60,7 +61,7 @@ where
 {
     let req = Request::new(RequestId::from_u64(id), method, params);
     let text = serde_json::to_string(&req).unwrap();
-    ws.send(WsMessage::Text(text.into())).await.expect("send");
+    ws.send(WsMessage::Text(text)).await.expect("send");
 }
 
 async fn read_response<S>(ws: &mut S) -> lattice_protocol::jsonrpc::Response

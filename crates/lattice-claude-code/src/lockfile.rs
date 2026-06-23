@@ -81,6 +81,7 @@ impl Drop for Lockfile {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 

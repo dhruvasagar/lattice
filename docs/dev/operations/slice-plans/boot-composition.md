@@ -187,12 +187,34 @@ migration is **behaviour-pinned before it moves**.
     `lattice-claude-code` suite (43) + 756 `lattice-host` lib + `lattice-mode`
     (117) + the full workspace build incl. the GPUI peer; behaviour unchanged.
 
-- **BC.4 … BC.N — Migrate each remaining subsystem, one per slice.** terminal →
-  emacs-keys → diff → multibuffer → LSP (LSP last: largest surface — its inbound
-  buses [`InboundShowDocument`, `InboundApplyEdit`, configuration] become
+- **BC.4 — Migrate `terminal`.** ✅ Landed. `lattice_terminal::install(boot)`
+  collapses terminal's mode registration (`register_terminal_modes`) into one
+  Phase-B line. A **thinner** migration than claude-code: terminal's only
+  host-side *wiring* was mode registration. Two touch-points stay host-side, by
+  design, and are NOT mode-ownership violations:
+  - the `TerminalStoreHandle` service is a **host-published primitive** (the
+    host `BufferRegistry` exposed under `dyn TerminalStore`; `impl TerminalStore
+    for BufferRegistry` lives in `lattice-host`) — sibling to `buffer_store` /
+    `diagnostics`, host owns the data + the terminal *mode* consumes it via
+    `services.get`. The `SubsystemBoot` surface can't carry a terminal type, so
+    it stays host-registered. Terminal owning it = a follow-up that impls
+    `TerminalStore` over `BufferStoreHandle` (terminal-crate slice).
+  - the `Editor`-coupled invocation runner (`Editor::run_terminal_invocation`)
+    is the **shared** invocation-runner mechanism (Help / Oil / FileTree /
+    Terminal all bind `Editor::run_*_invocation`, deeply `&mut Editor`-coupled);
+    migrating it is a cross-cutting cleanup, not a terminal slice.
+  **Green:** 14 BC.2 pins (incl. `terminal_modes_registered_at_boot` +
+  `terminal_service_present_at_boot`) + 42 `lattice-terminal` + 756
+  `lattice-host` lib + full workspace build incl. the GPUI peer.
+
+- **BC.5 … BC.N — Migrate each remaining subsystem, one per slice.** emacs-keys →
+  diff → multibuffer → LSP (LSP last: largest surface — its inbound buses
+  [`InboundShowDocument`, `InboundApplyEdit`, configuration] become
   `inbound::<T>` calls, its `set_wake` / L1c forwarders become `wake_on_event`).
   Each slice: green against that subsystem's BC.2 pin tests; one `install(boot)`
-  replaces its scattered calls.
+  replaces its scattered calls. (Watch for the same residual classes BC.4 hit:
+  host-published primitives a mode merely consumes stay host-side; only the
+  subsystem's own wiring migrates.)
 
 - **BC.final — Remove dead scaffolding.** Retire the hardcoded `run_tick_pending`
   drains the tick-callback registry now subsumes, and the ad-hoc wake forwarders
@@ -225,7 +247,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 🚧 · BC.5+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 🚧 · BC.6+ 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -234,17 +256,20 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Next: BC.4 — migrate `terminal`** (newest→oldest, the second-smallest
-surface). Write `lattice_terminal::install(boot: &mut impl SubsystemBoot)`
-collapsing its `register_terminal_modes` + the `TerminalStoreHandle` service
-register into one Phase-B line next to claude-code's; its inline mode/service
-sites in `editor_boot` retire in the same slice. The `SubsystemBoot` trait +
-the install-list shape are now in place (BC.3b), so each remaining subsystem
-(terminal → emacs-keys → diff → multibuffer → LSP) is a self-contained
-`install(boot)` + one list line + retiring its inline wiring; LSP last (largest:
-its `InboundShowDocument`/`InboundApplyEdit`/configuration buses become
-`boot.inbound::<T>`, its `set_wake`/L1c forwarders become `boot.wake_on_event`).
-Each slice: green against that subsystem's BC.2 pin tests. **BC.final** then
-retires the `*_mut` transitional accessors + the hardcoded `run_tick_pending`
-drains, leaving `editor_boot` as the two-list shape (Phase-A primitives, then
-the Phase-B install list).
+**Next: BC.5 — migrate `emacs-keys`** (newest→oldest). It lives in
+`lattice-host` today (`crate::emacs_keys`), so unlike claude-code/terminal there
+is no separate crate to receive the `install` — its footprint is the
+`register_emacs_keys_modes(boot.modes_mut())` call + the `<C-x>`-leader keymap
+layer push (which reads `config` for the leader prefix + enable flag) + its
+`:split`/`:vsplit`/`:close`/`:qa`/`:only` ex-commands. Decide first whether
+emacs-keys gets its own crate (so it can host an `install`) or whether a
+host-module `emacs_keys::install(boot)` is the right shape while it stays
+in-host — a genuine design fork to raise before coding. Then diff → multibuffer
+→ LSP (LSP last, largest: its `InboundShowDocument`/`InboundApplyEdit`/
+configuration buses become `boot.inbound::<T>`, its `set_wake`/L1c forwarders
+become `boot.wake_on_event`). Each slice: green against that subsystem's BC.2
+pin tests; watch for BC.4's residual classes (host-published primitives a mode
+merely consumes stay host-side). **BC.final** then retires the `*_mut`
+transitional accessors + the hardcoded `run_tick_pending` drains, leaving
+`editor_boot` as the two-list shape (Phase-A primitives, then the Phase-B
+install list).

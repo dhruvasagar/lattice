@@ -23,6 +23,9 @@
 pub mod buffer;
 pub mod cell;
 pub mod handle;
+// BC.4: the crate-owned `install(boot)` entry point — one Phase-B line in
+// `editor_boot`.
+pub mod install;
 pub mod modes;
 pub mod reader;
 pub mod snapshot;
@@ -32,6 +35,7 @@ pub mod synthetic;
 pub use buffer::{TerminalBuffer, TerminalVisualState, VisualKind};
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
+pub use install::install;
 pub use modes::{
     register_terminal_modes, TerminalInsertMode, TerminalMode, TerminalNormalMode,
     TerminalNormalModeGuard,

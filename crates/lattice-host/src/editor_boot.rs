@@ -361,10 +361,8 @@ impl Editor {
         lattice_file_tree::register_file_tree_modes(boot.modes_mut());
         snippet_activation_policy =
             lattice_snippet::register_snippet_modes(boot.modes_mut(), snippet_registry_handle.clone());
-        // Issue #40 / Terminal-mode T1: register the
-        // `terminal-mode` major so option contributions
-        // (ReadOnly + NoFile) apply to Terminal buffers.
-        lattice_terminal::register_terminal_modes(boot.modes_mut());
+        // BC.4: terminal-mode registration moved into
+        // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
         // M.2.b.2 (2026-06-01): register `multibuffer-mode`
         // + wire its `DocumentClosed` cleanup subscriber. The
@@ -411,6 +409,11 @@ impl Editor {
         // write bus (`boot.inbound`, whose drain token rides `into_registrations`
         // into the Editor below).
         lattice_claude_code::install(&mut boot);
+        // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
+        // `TerminalStoreHandle` service is a host-published primitive (in the
+        // service block below) and its invocation runner stays host-side (the
+        // shared invocation-runner mechanism) — see `lattice_terminal::install`.
+        lattice_terminal::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
@@ -1259,7 +1262,11 @@ impl Editor {
         // T-mode-1 (2026-05-27): TerminalStoreHandle so `TerminalNormalMode`
         // can install / clear the SyntheticDoc on a TerminalBuffer from its
         // lifecycle hooks. Same `BufferRegistry` backs both stores — cheap
-        // clone (Arc inside).
+        // clone (Arc inside). BC.4: this is a HOST-PUBLISHED primitive (the host
+        // `BufferRegistry` exposed under `dyn TerminalStore`), so it stays here
+        // — not in `lattice_terminal::install` — sibling to `buffer_store` /
+        // `diagnostics`. Terminal owning it would need `TerminalStore` impl'd
+        // over `BufferStoreHandle` (a terminal-crate slice).
         let term_store: Arc<dyn lattice_terminal::TerminalStore> = Arc::new(buffers.clone());
         boot.register_service(lattice_terminal::TerminalStoreHandle::new(term_store));
         // BC.3a: the generic buffer-store is a Phase-A handle (`boot` already

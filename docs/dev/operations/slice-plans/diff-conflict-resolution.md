@@ -1,6 +1,6 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2–CR.5 planned. Builds on
+**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3–CR.5 planned. Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -100,10 +100,18 @@ Two threads, decided with Dhruva (2026-06-24):
   `diff_*_effect` + `apply_diff_effect_inline` + 4 new lattice-diff resolver/
   `action_handlers` tests + 561 host lib + 14 BC.2 pins. (Residue for CR.4: the
   ex-command CommandSpec registration still lives host-side.)
-- **CR.2 — conflict edit + ops in `lattice-diff`.** `compute_keep_both_edit`
-  (ours⌢theirs splice at the conflict hunk) beside `compute_get_edit`; keep-ours/
-  keep-theirs reuse `compute_get_edit` with the resolved slot→bufnr target.
-  Unit-tested in-crate.
+- **CR.2 ✅ — conflict edit + ops in `lattice-diff`.** Landed:
+  `DiffSubsystem::compute_keep_both_edit(active, cursor, theirs)` beside
+  `compute_get_edit` — finds the Conflict hunk under the cursor on the active
+  (local/ours) side, splices `ours_text ⌢ theirs_text` (ours-then-theirs, base
+  omitted — risk #4) into the active range, and returns a `DiffGetOutcome::Edit`
+  whose apply target is the active buffer. Conflict-only (a `Change`/`Add`/none
+  → `Nothing`); unknown/self `theirs` → `Nothing`. Keep-ours/keep-theirs need NO
+  new compute — they reuse `compute_get_edit(active, cursor, Some(slot→bufnr))`
+  (already conflict-capable: `allow_conflict = target.is_some()`), as pinned by
+  the existing `compute_get_edit_three_way_with_target_resolves_conflict`. Green:
+  3 new keep-both unit tests + 228 lattice-diff. (Effect wrapper + chords land in
+  CR.3.)
 - **CR.3 — `diff-conflict-mode` chords + activation.** `d2o`/`d3o`/`d2p`/`d3p`/`dB`
   via `DiffConflictMode::keymap()` (`keymap_entry!`, name-resolved, MO.x pattern)
   + `action_handlers()` for `dB`; bridge-driven activation (consume

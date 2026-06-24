@@ -1532,6 +1532,81 @@ impl DiffSubsystem {
         }
     }
 
+    /// CR.2 (2026-06-24): compute the "keep both" resolution edit for the
+    /// conflict hunk under `cursor_row` on the active (local / "ours")
+    /// side of a three-way session — the `dB` chord. Splices the active
+    /// side's lines followed by `theirs`' lines (ours-then-theirs, the v1
+    /// convention; base is omitted, matching git's non-diff3 style) into
+    /// the active range, so the conflict region ends up holding both
+    /// sides' content in order. The edit applies to the active buffer
+    /// (like keep-ours / keep-theirs, which reuse
+    /// [`Self::compute_get_edit`] with the resolved slot→bufnr target);
+    /// `target_buffer_id` in the returned [`DiffGetOutcome::Edit`] is the
+    /// active buffer — the apply destination.
+    ///
+    /// Conflict-only: a non-`Conflict` covering hunk (or none) →
+    /// `Nothing`, as does an unknown / self `theirs`, or a
+    /// session/descriptor miss. The whole-line ranges are
+    /// newline-terminated, so the splice is a clean line concatenation.
+    pub fn compute_keep_both_edit(
+        &self,
+        active_buffer_id: BufferId,
+        cursor_row: u32,
+        theirs: BufferId,
+    ) -> DiffGetOutcome {
+        let Some(session) = self.lookup_session_for(active_buffer_id) else {
+            return DiffGetOutcome::Nothing;
+        };
+        let session_key = session.buffer_id();
+        let Some(descriptor) = self.lookup_descriptor(session_key) else {
+            return DiffGetOutcome::Nothing;
+        };
+        let Some(active_pane) = pane_index_of(&descriptor, active_buffer_id) else {
+            return DiffGetOutcome::Nothing;
+        };
+        let Some(theirs_pane) = pane_index_of(&descriptor, theirs) else {
+            return DiffGetOutcome::Nothing;
+        };
+        if theirs_pane == active_pane {
+            return DiffGetOutcome::Nothing;
+        }
+        let hunks = session.current_hunks();
+        let Some(hunk) = find_covering_hunk(&hunks, active_pane, cursor_row, true) else {
+            return DiffGetOutcome::Nothing;
+        };
+        // keep-both resolves Conflict hunks only — a clean 2-way Change
+        // under the cursor is `do`/`dp` territory, not `dB`.
+        if !matches!(hunk.kind, HunkKind::Conflict) {
+            return DiffGetOutcome::Nothing;
+        }
+        let Some(active_range) = hunk.ranges.get(active_pane).copied() else {
+            return DiffGetOutcome::Nothing;
+        };
+        let Some(theirs_range) = hunk.ranges.get(theirs_pane).copied() else {
+            return DiffGetOutcome::Nothing;
+        };
+        let Some(active_rope) = snapshot_for_pane(&descriptor, active_pane) else {
+            return DiffGetOutcome::Nothing;
+        };
+        let Some(theirs_rope) = snapshot_for_pane(&descriptor, theirs_pane) else {
+            return DiffGetOutcome::Nothing;
+        };
+        let mut text = slice_line_range(&active_rope, active_range);
+        text.push_str(&slice_line_range(&theirs_rope, theirs_range));
+        let edit = lattice_protocol::edit::Edit::replace(
+            lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(active_range.start, 0),
+                lattice_protocol::position::Position::new(active_range.end, 0),
+            ),
+            text,
+        );
+        DiffGetOutcome::Edit {
+            target_buffer_id: active_buffer_id,
+            edit,
+            post_cursor_row: active_range.start,
+        }
+    }
+
     /// D.5.c (2026-05-30): compute the outcome the diff-mode
     /// `dp` chord would produce for `buffer_id` at
     /// `cursor_row`. Mirror of [`Self::compute_get_edit`] but
@@ -4558,6 +4633,78 @@ mod tests {
             }
             other => panic!("expected Edit, got {other:?}"),
         }
+    }
+
+    /// CR.2: `dB` keep-both splices ours-then-theirs into the active
+    /// (local) conflict range — base omitted. Active = local, theirs =
+    /// remote → the local range becomes "LOCAL\nREMOTE\n"; the edit
+    /// applies to the active (local) buffer.
+    #[test]
+    fn compute_keep_both_edit_splices_ours_then_theirs() {
+        let (sub, _base, local, remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        match sub.compute_keep_both_edit(local, 0, remote) {
+            DiffGetOutcome::Edit {
+                target_buffer_id,
+                edit,
+                post_cursor_row,
+            } => {
+                assert_eq!(target_buffer_id, local, "keep-both edits the active/local side");
+                assert_eq!(post_cursor_row, 0);
+                assert_eq!(edit.range.start.line, 0);
+                assert_eq!(edit.range.end.line, 1);
+                match edit.kind {
+                    lattice_protocol::edit::EditKind::Replace { ref text } => {
+                        assert_eq!(text, "LOCAL\nREMOTE\n");
+                    }
+                }
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+    }
+
+    /// CR.2: keep-both is conflict-only — a `Change` hunk under the
+    /// cursor yields `Nothing` (that's `do`/`dp` territory).
+    #[test]
+    fn compute_keep_both_edit_non_conflict_hunk_returns_nothing() {
+        let (sub, _base, local, remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        assert!(matches!(
+            sub.compute_keep_both_edit(local, 0, remote),
+            DiffGetOutcome::Nothing
+        ));
+    }
+
+    /// CR.2: an unknown `theirs` buffer (not a participant) → `Nothing`.
+    #[test]
+    fn compute_keep_both_edit_unknown_theirs_returns_nothing() {
+        let (sub, _base, local, _remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        assert!(matches!(
+            sub.compute_keep_both_edit(local, 0, bid(99)),
+            DiffGetOutcome::Nothing
+        ));
     }
 
     /// Target buffer that isn't a participant → `Nothing`.

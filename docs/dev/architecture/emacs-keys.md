@@ -211,4 +211,4 @@ the same carrier `:tabonly` uses for `OnlyTab`.
   a separate, vim-faithful feature.
 
 See the slice plan for sequencing:
-`docs/dev/operations/slice-plans/emacs-keys.md`.
+`docs/dev/operations/slice-plans/archive/emacs-keys.md`.

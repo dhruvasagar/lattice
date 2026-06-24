@@ -228,7 +228,7 @@ migration is **behaviour-pinned before it moves**.
   + full workspace incl. GPUI.
 
 - **BC.6 — `diff` extraction.** ✅ COMPLETE (DX.0–DX.final ✅, 2026-06-24). Slice
-  plan: **`docs/dev/operations/slice-plans/diff-extraction.md`**; design
+  plan: **`docs/dev/operations/slice-plans/archive/diff-extraction.md`**; design
   fragment: **`docs/dev/architecture/diff-extraction.md`**. The
   own-crate-vs-builtin fork resolved to **extract the whole diff subsystem into
   the existing `lattice-diff` crate** (Dhruva, 2026-06-23) — diff is a real
@@ -255,7 +255,7 @@ migration is **behaviour-pinned before it moves**.
   `diff_mode_layer_bindings` retired). Follow-up (NOT BC.6) **✅ landed in CR.x**
   (2026-06-24): `diff-conflict-mode` resolution chords
   (`d2o`/`d3o`/`d2p`/`d3p`/`dB`) + bridge-driven activation — see
-  `slice-plans/diff-conflict-resolution.md`. CR.1 also fully mode-owned `do`/`dp`
+  `slice-plans/archive/diff-conflict-resolution.md`. CR.1 also fully mode-owned `do`/`dp`
   (deleted `Editor::do_diff_*` + `Action::Diff*`), closing the diff
   mode-ownership acid test.
 
@@ -312,7 +312,7 @@ UX/perf impact.
 **BC.6 ✅ COMPLETE (2026-06-24)** — the diff subsystem is extracted into
 `lattice-diff` as `diff-mode` + `diff-conflict-mode`, installed via
 `lattice_diff::install(&mut boot)`. See
-**`docs/dev/operations/slice-plans/diff-extraction.md`** for the DX.0–DX.final
+**`docs/dev/operations/slice-plans/archive/diff-extraction.md`** for the DX.0–DX.final
 record (coupling table, the DX.2 lattice-syntax deviation, the DX.6 façade +
 C6 resolver split, the DX.7 terminal-pattern residue).
 

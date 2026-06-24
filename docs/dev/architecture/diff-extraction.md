@@ -3,7 +3,7 @@
 **What + why** of moving the host-side diff *subsystem* into the existing
 `lattice-diff` crate as diff *modes*, installed through the BC `SubsystemBoot`
 seam. The **when + how** (slice IDs, sequencing, status) lives in the slice plan:
-`docs/dev/operations/slice-plans/diff-extraction.md`. This is **BC.6** of the
+`docs/dev/operations/slice-plans/archive/diff-extraction.md`. This is **BC.6** of the
 boot-composition initiative (`docs/dev/architecture/boot-composition.md`).
 
 **Directive (Dhruva, 2026-06-23):** "properly extract all diff related
@@ -95,7 +95,7 @@ abstractions).
   separately-activatable surface. DX.8 established the mode shell + the
   `sign_map_has_conflicts` activation predicate only (forward-looking); the
   resolution itself **landed in CR.x** (2026-06-24) — see
-  `slice-plans/diff-conflict-resolution.md`. The chords are the vim-fugitive
+  `slice-plans/archive/diff-conflict-resolution.md`. The chords are the vim-fugitive
   3-way family `d2o`/`d3o`/`d2p`/`d3p`/`dB` (keep-ours / keep-theirs /
   put-ours / put-theirs / keep-both) + `]c`/`[c` (next/prev hunk, conflicts
   included), mode-owned via `DiffConflictMode::keymap()` +
@@ -157,7 +157,7 @@ modeline element + keymap push + the `diff_subsystem` / `diff_subscription_guard
 ## 6. Cross-references
 
 - **Slice plan (when + how + status):**
-  `docs/dev/operations/slice-plans/diff-extraction.md` (DX.0–DX.final).
+  `docs/dev/operations/slice-plans/archive/diff-extraction.md` (DX.0–DX.final).
 - Parent initiative + the `SubsystemBoot` seam diff installs through:
   `docs/dev/operations/slice-plans/boot-composition.md` (BC.6) +
   `docs/dev/architecture/boot-composition.md`.

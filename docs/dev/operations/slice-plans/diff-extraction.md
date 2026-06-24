@@ -6,10 +6,16 @@ carved into its own file because it is a multi-slice cross-crate extraction, not
 a one-line `install` migration like BC.3b/BC.4/BC.5. The host-side diff
 subsystem (7 files) now lives in `lattice-diff` as `diff-mode` +
 `diff-conflict-mode`, installed through the `SubsystemBoot` seam
-(`lattice_diff::install(&mut boot)`). Two follow-ups are tracked (NOT part of
-BC.6): MO.x (migrate the diff keymap to `Mode::keymap()`, retiring the host's
-explicit push) and the `diff-conflict-mode` resolution chords + bridge-driven
-activation (DX.8 left the shell + predicate).
+(`lattice_diff::install(&mut boot)`). **MO.x ✅ (2026-06-24, post-BC.6):** the
+diff `do`/`dp` keymap migrated to `DiffMode::keymap()` (the multibuffer
+`keymap_entry!` pattern), pushed by the host's generic K.2.4
+`translate_mode_keymaps` pass under `MinorMode(diff-mode)` — the bespoke
+explicit host `push_layer` + `diff_mode_layer_bindings` are retired, so the host
+pushes nothing diff-specific. Arbiter: the DX.1 chord pins
+(`diff_get_put_chords_bound_on_diff_mode_layer` + `..._inactive_when_not_active`)
+pass via the translate path. One follow-up remains (NOT part of BC.6): the
+`diff-conflict-mode` resolution chords + bridge-driven activation (DX.8 left the
+shell + predicate).
 
 **Directive (Dhruva, 2026-06-23):** "properly extract all diff related
 functionality into diff modes within `lattice-diff`" — and "identify any
@@ -230,9 +236,10 @@ the host rewire, then the mode decomposition.
     only the registration *call* is host-sequenced.
   install itself registers the modes (`register_diff_modes`). Migrating the
   keymap to `Mode::keymap()` (so the K.2.4 pass owns the push, retiring the
-  explicit push) is the tracked **MO.x** follow-up — deferred to avoid the
-  minor-mode→`MinorMode`-layer path risk; the emacs-keys host-push is the
-  proven, lower-risk shape and is NOT a half-migration. **Green:** lattice-diff
+  explicit push) was tracked as **MO.x** at DX.7 and **✅ landed (2026-06-24)** —
+  the feared minor-mode→`MinorMode`-layer path turned out to be already tested
+  (`keymap_mode_contributions` asserts a `ModeKind::Minor` keymap lands on
+  `MinorMode(mode_id)`), so the migration was low-risk. **Green:** lattice-diff
   + host build; **7 DX.1 pins + 14 BC.2 pins** (incl. `diff_mode_registered_at_boot`,
   the arbiter that the install-list move preserved registration).
 - **DX.8 — mode decomposition** (design §4). ✅ Landed (2026-06-24). The

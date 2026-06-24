@@ -414,14 +414,14 @@ impl Editor {
         // service block below) and its invocation runner stays host-side (the
         // shared invocation-runner mechanism) — see `lattice_terminal::install`.
         lattice_terminal::install(&mut boot);
-        // diff (BC.6/DX.7): `diff-mode` registration. Three touch-points stay
+        // diff (BC.6/DX.7): `diff-mode` registration. Two touch-points stay
         // host-side and are NOT mode-ownership violations — the `DiffSubsystem`
         // bind (uses the host `BufferRegistryDocumentResolver`; produces the
         // `diff_subsystem` / `diff_subscription_guard` / `diff_forwarders`
-        // actor-loop fields below), the name-based keymap-layer push (the
-        // emacs-keys pattern; host owns the live `KeymapHandle`), and the
-        // `+N ~M` modeline element (its `ModelineService` is created after this
-        // list) — see `lattice_diff::install` for the full rationale.
+        // actor-loop fields below) and the `+N ~M` modeline element (its
+        // `ModelineService` is created after this list). The `do`/`dp` keymap
+        // is fully mode-owned (MO.x): `DiffMode::keymap()` + the K.2.4 pass —
+        // see `lattice_diff::install` for the full rationale.
         lattice_diff::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
@@ -1477,23 +1477,13 @@ impl Editor {
                 // (populated above by ex_commands::populate +
                 // actions::populate).
                 crate::keymap_help::register_help_prefix_bindings(&h, &registry);
-                // D.5.b (2026-05-30): push the diff-mode minor
-                // keymap layer once. K.1.c per-keystroke filter
-                // gates the chord so it only fires on buffers
-                // where `diff-mode` is in `ActiveModes.minors()`.
-                // No matching push/pop on activation needed —
-                // the layer stays for the editor's lifetime and
-                // the filter takes the per-buffer responsibility.
-                h.push_layer(
-                    crate::keymap_registry::PushLayerKind::MinorMode(
-                        crate::diff::mode::DiffMode::mode_id(),
-                    ),
-                    "diff-mode",
-                    // DX.5 (C10): the builder resolves `action:diff-*`
-                    // by name against the registry (emacs-keys pattern),
-                    // so it carries no host `ActionIds` dependency.
-                    crate::diff::mode::diff_mode_layer_bindings(&registry),
-                );
+                // MO.x (2026-06-24): the diff-mode `do`/`dp` keymap is
+                // contributed via `DiffMode::keymap()` and pushed by the
+                // K.2.4 `translate_mode_keymaps` pass below (under
+                // `MinorMode(diff-mode)`, K.1.c-gated, names resolved against
+                // the registry) — the bespoke explicit host push is retired.
+                // The mode now owns its binding choice end-to-end (no
+                // diff-specific host push remains).
                 // emacs-keys (S1): push the `<C-x>` leader layer once.
                 // K.1.c's filter gates the chords to buffers where the
                 // mode is active. S1b reads the configurable leader prefix

@@ -5,17 +5,16 @@
 //! one Phase-B line (`lattice_diff::install(&mut boot)`), matching the
 //! terminal / claude-code shape (BC.3b/BC.4) and closing BC.6.
 //!
-//! Three diff touch-points intentionally stay host-side, and are *not*
+//! The diff-mode `do`/`dp` keymap is **fully mode-owned** (MO.x, 2026-06-24):
+//! contributed through [`crate::mode::DiffMode::keymap`] and pushed by the
+//! host's generic K.2.4 `translate_mode_keymaps` pass (under
+//! `MinorMode(diff-mode)`, K.1.c-gated, `cmd` names resolved against the
+//! `CommandRegistry`) — exactly like every other mode's keymap. No
+//! diff-specific host push remains.
+//!
+//! Two diff touch-points intentionally stay host-side, and are *not*
 //! mode-ownership violations:
 //!
-//! - **The `diff-mode` keymap layer** is pushed host-side from the live
-//!   `KeymapHandle` (the host owns it and reads the `CommandRegistry` for name
-//!   resolution), calling the mode-owned [`crate::mode::diff_mode_layer_bindings`]
-//!   — the emacs-keys pattern (BC.5: "the host retains only the keymap-layer
-//!   push"). The binding choice, the name-based builder, AND the `do_diff_*`
-//!   handler bodies all live in this crate / its effect contract; the host
-//!   performs only the mechanical push. `SubsystemBoot` exposes no
-//!   keymap-push primitive by design.
 //! - **The `DiffSubsystem` lifecycle** — `bind` with the host's
 //!   `BufferRegistryDocumentResolver`, the `diff_subsystem` /
 //!   `diff_subscription_guard` / `diff_forwarders` Editor fields, and the

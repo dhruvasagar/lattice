@@ -52,12 +52,12 @@
 use lattice_core::{BufferId, FoldOverlayServiceHandle, ProviderId};
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{
-    DecorationCtx, ElementContent, ElementId, GutterDecoration, GutterDiffKind, LifecycleFuture,
-    Mode, ModeContext, ModeId, ModeKind, ModelineElement, ModelineRole, ModelineService, Scope,
-    Zone,
+    DecorationCtx, ElementContent, ElementId, GutterDecoration, GutterDiffKind, Keymap, KeymapEntry,
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModelineElement, ModelineRole,
+    ModelineService, Scope, Zone, keymap_entry,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::fold::HunkFoldSource;
 use crate::subsystem::DiffSubsystemHandle;
@@ -162,6 +162,17 @@ impl Mode for DiffMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
+    }
+    /// MO.x (2026-06-24): contribute the `do`/`dp` chords through the
+    /// standard `Mode::keymap()` seam (the multibuffer `]e`/`[e` pattern).
+    /// The host's K.2.4 translation pass resolves each entry's `cmd` name
+    /// against the `CommandRegistry` and pushes the layer under
+    /// `MinorMode(diff-mode)`, gated to diff-active buffers by K.1.c —
+    /// retiring the host's bespoke explicit `push_layer` (the emacs-keys
+    /// host-push that DX.5/DX.7 left as this follow-up). The binding choice
+    /// now lives wholly with the mode; the host pushes nothing diff-specific.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(diff_mode_keymap_entries())
     }
     // ML.3: the `+N ~M` summary moved off `status_line_items` to a
     // registered modeline element (`register_diff_modeline_element` /
@@ -314,80 +325,40 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
         .expect("diff-conflict-mode must register without conflict");
 }
 
-/// D.5.b/c (2026-05-30): chord bindings for the `diff-mode`
-/// keymap layer.
+/// MO.x (2026-06-24): the `diff-mode` keymap entries, contributed through
+/// `DiffMode::keymap()`. Each entry carries a canonical `action:diff-*`
+/// **name**; the host's K.2.4 translate pass (`translate_mode_keymaps`)
+/// resolves it against the `CommandRegistry` and pushes the layer under
+/// `MinorMode(diff-mode)` — the multibuffer `multibuffer_keymap_entries`
+/// pattern. This replaces the former `diff_mode_layer_bindings` host-push
+/// builder (DX.5): the binding choice now lives wholly with the mode and the
+/// host pushes nothing diff-specific. An unregistered name is dropped by the
+/// translate pass with a `warn!` — never a boot panic (graceful degradation).
 ///
-/// - `do` → `action:diff-get` (D.5.b): rewrite the current
-///   side's hunk to match the baseline.
-/// - `dp` → `action:diff-put` (D.5.c): push the current
-///   side's hunk into the peer buffer.
+/// - `do` → `action:diff-get` (D.5.b): rewrite the current side's hunk to
+///   match the baseline.
+/// - `dp` → `action:diff-put` (D.5.c): push the current side's hunk into the
+///   peer buffer.
 ///
-/// DX.5 (2026-06-24, C10): each target is resolved **by name**
-/// against the `CommandRegistry` — the `emacs_keys_layer_bindings`
-/// pattern (BC.5) — rather than read off the host's `ActionIds`
-/// struct. This drops the builder's only host-type dependency, so
-/// it moves to `lattice-diff` with the mode at DX.6 unchanged. The
-/// resolved `CommandId` is identical to `ActionIds::diff_get` /
-/// `diff_put` (`register_simple` registered them under these exact
-/// names), so the DX.1 chord pins are preserved. An unregistered
-/// action name skips that one binding with a `warn!` — a missing
-/// action drops its chord, never a boot panic (graceful
-/// degradation).
-///
-/// The layer is pushed once at editor boot under
-/// `PushLayerKind::MinorMode(diff-mode)`; K.1.c's
-/// per-keystroke filter gates the bindings so they only
-/// fire on buffers where `diff-mode` is in
-/// `ActiveModes.minors()`. Buffers without diff-mode active
-/// fall through to the normal `d`-operator resolution — the
-/// diff-mode bindings are invisible to them.
-pub fn diff_mode_layer_bindings(
-    registry: &lattice_grammar::CommandRegistry,
-) -> std::collections::HashMap<lattice_mode::BindingMode, lattice_keymap::KeymapTrie> {
-    use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
-    use lattice_mode::BindingMode;
-    use lattice_keymap::{BoundCommand, KeymapLayer, KeymapTrie};
-    use lattice_protocol::ChordPattern;
-    use lattice_grammar::CommandInvocation;
-    use lattice_grammar::source::SourceLocation;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    fn lit_char(c: char) -> ChordPattern {
-        ChordPattern::Literal(KeyChord {
-            key: KeyKind::Char(c),
-            mods: KeyMods::NONE,
-        })
-    }
-
-    // (suffix-after-`d`, action canonical name). The full chord is
-    // `d` + the suffix; both target a host-registered `action:diff-*`
-    // command resolved by name.
-    const BINDINGS: &[(char, &str)] = &[
-        ('o', "action:diff-get"), // do — diff-get
-        ('p', "action:diff-put"), // dp — diff-put
-    ];
-
-    let layer = KeymapLayer::MinorMode(DiffMode::mode_id());
-    let mut trie = KeymapTrie::new();
-    for (suffix, command) in BINDINGS.iter().copied() {
-        let Some(id) = registry.id_by_name(command) else {
-            tracing::warn!(command, "diff-mode: skipping binding -- command not registered");
-            continue;
-        };
-        trie.insert(
-            &[lit_char('d'), lit_char(suffix)],
-            Arc::new(BoundCommand::from_invocation(
-                CommandInvocation::of(id),
-                SourceLocation::builtin_file(file!(), line!()),
-                layer,
-            )),
-        );
-    }
-
-    let mut modes = HashMap::new();
-    modes.insert(BindingMode::Normal, trie);
-    modes
+/// K.1.c's per-keystroke filter gates the chords so they only fire on
+/// buffers where `diff-mode` is in `ActiveModes.minors()`; buffers without
+/// diff-mode active fall through to the normal `d`-operator resolution.
+fn diff_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "do",
+                doc: "diff-get: rewrite the current side's hunk to match the baseline",
+                cmd: "action:diff-get"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "dp",
+                doc: "diff-put: push the current side's hunk into the peer buffer",
+                cmd: "action:diff-put"
+            },
+        ]
+    })
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -637,80 +608,23 @@ mod tests {
         assert!(DiffConflictMode::mode_id().as_str().ends_with("-mode"));
     }
 
-    /// DX.5 (C10): a registry with the two diff actions registered under
-    /// their canonical names, mirroring `emacs_keys_mode::tests::registry`.
-    /// `diff_mode_layer_bindings` only needs `id_by_name` to resolve them,
-    /// so a minimal no-op `ActionSpec` suffices (the real `apply` closures
-    /// — `AppEffect::Diff{Get,Put}` — live in host `actions::populate`).
-    fn diff_registry() -> lattice_grammar::CommandRegistry {
-        let mut r = lattice_grammar::CommandRegistry::new();
-        for name in ["action:diff-get", "action:diff-put"] {
-            r.register_action(
-                name,
-                "test diff action",
-                lattice_grammar::registry::ActionSpec {
-                    apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
-                    args_schema: vec![],
-                },
-            );
-        }
-        r
-    }
-
-    /// DX.5 (C10): `do`/`dp` bind on the `MinorMode(diff-mode)` layer,
-    /// resolved by name against the registry, and each targets the
-    /// correct `action:diff-*` command (catches a name swap).
+    /// MO.x (C10): the `diff-mode` keymap entries map `do`/`dp` to the
+    /// canonical `action:diff-*` names, in order (catches a name swap or a
+    /// dropped chord). The end-to-end resolution on the
+    /// `MinorMode(diff-mode)` layer via the host's K.2.4 translate pass is
+    /// pinned by `diff_get_put_chords_bound_on_diff_mode_layer` (DX.1) — a
+    /// stronger guard than a builder unit test, so the DX.5 trie-builder
+    /// tests retire with `diff_mode_layer_bindings`.
     #[test]
-    fn layer_binds_get_and_put_by_name() {
-        use lattice_mode::BindingMode;
-        use lattice_keymap::LookupResult;
-        use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
-
-        fn ch(c: char) -> KeyChord {
-            KeyChord { key: KeyKind::Char(c), mods: KeyMods::NONE }
-        }
-
-        let reg = diff_registry();
-        let modes = diff_mode_layer_bindings(&reg);
-        let trie = modes.get(&BindingMode::Normal).expect("Normal trie");
-
-        for (full, name) in [
-            (['d', 'o'], "action:diff-get"),
-            (['d', 'p'], "action:diff-put"),
-        ] {
-            let seq = [ch(full[0]), ch(full[1])];
-            let LookupResult::Bound { command, .. } = trie.lookup(&seq) else {
-                panic!("`{}{}` should be bound", full[0], full[1]);
-            };
-            assert_eq!(
-                command.command.command,
-                reg.id_by_name(name).expect("registered action"),
-                "`{}{}` must target {name}",
-                full[0],
-                full[1],
-            );
-        }
-        // The bare `d` prefix is a pending partial (waits for the suffix).
-        assert!(matches!(trie.lookup(&[ch('d')]), LookupResult::Partial));
-    }
-
-    /// DX.5 (C10): graceful degradation — an empty registry resolves no
-    /// names, so the builder yields an empty Normal trie (the chords fall
-    /// through to the plain `d`-operator) rather than panicking on boot.
-    #[test]
-    fn missing_actions_degrade_to_empty_layer_no_panic() {
-        use lattice_mode::BindingMode;
-        use lattice_keymap::LookupResult;
-        use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
-
-        let reg = lattice_grammar::CommandRegistry::new();
-        let modes = diff_mode_layer_bindings(&reg);
-        let trie = modes.get(&BindingMode::Normal).expect("Normal trie");
-        let seq = [
-            KeyChord { key: KeyKind::Char('d'), mods: KeyMods::NONE },
-            KeyChord { key: KeyKind::Char('o'), mods: KeyMods::NONE },
-        ];
-        assert!(matches!(trie.lookup(&seq), LookupResult::Unbound));
+    fn keymap_entries_map_do_and_dp_to_diff_actions() {
+        let pairs: Vec<(&str, Option<&str>)> = diff_mode_keymap_entries()
+            .iter()
+            .map(|e| (e.chord, e.command))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("do", Some("action:diff-get")), ("dp", Some("action:diff-put"))],
+        );
     }
 
     /// ML.3b: the formatter counts adds vs changes (Change/Conflict/Remove

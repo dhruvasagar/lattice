@@ -1,6 +1,6 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3 ✅; CR.4–CR.5 planned. Builds on
+**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3 ✅; CR.4 ✅; CR.5 planned. Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -135,10 +135,22 @@ Two threads, decided with Dhruva (2026-06-24):
   handlers shape + bridge transitions) + 2 new DX.1-style host pins
   (`diff_conflict_chords_bound_on_conflict_mode_layer` + inactive-gating) + 236
   lattice-diff + 561 host lib + 9 diff pins. Both renderer peers compile.
-- **CR.4 — conflict nav + ex-command rehoming.** `]c`/`[c` confirmed/filtered to
-  land on conflicts in a 3-way session; migrate `:diffget`/`:diffput`/`:diffsplit`/
-  `:diff-accept`/`:diff-reject` registration to be diff-owned (or confirm they
-  desugar to the mode-owned actions). Green: ex-command resolve pins.
+- **CR.4 ✅ — conflict nav + ex-command rehoming (confirmed).** `]c`/`[c`:
+  **confirmed, not filtered** — `do_next_hunk`/`do_prev_hunk` visit every hunk by
+  its slot-1 start with no kind filter, so conflicts (which ARE hunks) are
+  already reached. Chosen over a conflict-only filter on convention-first grounds
+  (vim's `]c` = next change; conflicts are among the changes). Pinned by
+  `next_hunk_lands_on_conflict_hunk`. Ex-commands: **confirmed they desugar to
+  mode-owned logic**, no registration move. All ex-commands live in the grammar
+  ex-command registry (the canonical home) and desugar to host-boundary `Effect`s
+  by design (`feedback_effect_vocabulary_is_host_boundary`) — moving the diff ones
+  out would fight that architecture. `:diffget`/`:diffput` desugar straight onto
+  the diff-owned `diff_*_effect` resolvers (CR.1); `:diffsplit`/`:diff-accept`/
+  `:diff-reject` are host pane/session **lifecycle** (not chord/buffer handlers),
+  legitimately host-side per the substrate-vs-mode-helper rule + DX.7's documented
+  residue. Green: `diff_ex_commands_resolve_at_boot` extended to cover
+  `:diff-accept`/`:diff-reject` (9 diff pins) + the conflict-nav test + 562 host
+  lib.
 - **CR.5 — four artefacts + cleanup.** Cross-renderer parity (conflict gutter
   already renders — confirm both peers); design `diff-extraction.md` §4 → landed;
   user docs (the `:diffget`/`:diffput` optional-target + the fugitive chords);

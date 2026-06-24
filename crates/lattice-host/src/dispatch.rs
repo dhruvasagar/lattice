@@ -29273,6 +29273,38 @@ mod tests {
         assert_eq!(editor.cursor.byte, 0);
     }
 
+    /// CR.4 (2026-06-24): `]c` (next-hunk) lands on a `Conflict` hunk —
+    /// conflicts ARE hunks, so the existing change-nav reaches them with
+    /// no conflict-specific filter. This is the deliberate "confirmed,
+    /// not filtered" choice: vim's `]c` = next change, and conflicts are
+    /// among the changes (convention-first). Pins that `]c`/`[c` navigate
+    /// to conflicts in a three-way session.
+    #[tokio::test]
+    async fn next_hunk_lands_on_conflict_hunk() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        let mut editor =
+            boot_editor_with_diff_session("a\nb\nc\nd\ne\n", "a\nb\nc\nd\ne\n");
+        let bid = editor.document_buffer_id;
+        let session = editor.diff_subsystem.lookup(bid).unwrap();
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![LineRange::new(2, 3), LineRange::new(2, 3)],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_next_hunk();
+        assert_eq!(
+            editor.cursor.line, 2,
+            "]c should land on the conflict hunk start (conflicts are hunks)"
+        );
+    }
+
     /// No session → silent no-op; buffer + cursor unchanged.
     /// Per-buffer K.1.c filtering would normally suppress
     /// the chord, but the handler's own no-session guard

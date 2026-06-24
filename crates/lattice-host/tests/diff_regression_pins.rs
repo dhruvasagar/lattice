@@ -85,6 +85,16 @@ fn diff_ex_commands_resolve_at_boot() {
         "diffsplit",
         "diffget",
         "diffput",
+        // CR.4 (2026-06-24): the conflict-session lifecycle ex-commands
+        // also resolve at boot. Like the rest of the `:diff` family they
+        // desugar to host-boundary Effects (`Effect::DiffAccept` /
+        // `DiffReject`); their registration stays in the grammar
+        // ex-command registry (the canonical home for every ex-command),
+        // while the diff-owned LOGIC lives in lattice-diff (the `do`/`dp`
+        // + conflict resolvers). `:diffget`/`:diffput` desugar straight
+        // onto the mode resolvers via `diff_*_effect` (CR.1).
+        "diff-accept",
+        "diff-reject",
         "describe-diff",
     ] {
         assert!(

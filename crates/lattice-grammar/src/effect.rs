@@ -105,6 +105,18 @@ pub enum QuitScope {
     All,
 }
 
+/// BC.8c: a UTF-16 code-unit column on a given line. LSP's default
+/// position encoding counts UTF-16 code units, not bytes; converting to
+/// Lattice's byte offset (`lattice_protocol::Position.byte`) needs the
+/// target line's text, which only exists after the file is open. So
+/// [`Effect::OpenBufferAtColumn`] carries this *unconverted* column for
+/// the host to resolve post-open. Plain `u32`s — no `lsp_types` leak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Utf16Pos {
+    pub line: u32,
+    pub col: u32,
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     None,
@@ -195,6 +207,37 @@ pub enum Effect {
     OpenBufferAt {
         path: Option<PathBuf>,
         position: lattice_protocol::position::Position,
+        force: bool,
+    },
+    /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
+    /// `explorer`). Emitted by the LSP `window/showDocument` handler for
+    /// `external: true` requests; generic enough to reuse for any "open
+    /// this URL externally" need (`gx`, markdown / help external links).
+    /// A plain URL string — no `lsp_types` leak into the grammar.
+    /// **Host-applied** in `Editor::handle_effect`: the spawn is a host
+    /// side-effect, and the showDocument bus drains off-keystroke through
+    /// the generic inbound tick-callback (where peer-applied effects are
+    /// not forwarded), so the work must run host-side.
+    OpenExternalUri {
+        uri: String,
+    },
+    /// BC.8c: **host-applied** atomic open + optional UTF-16-column
+    /// cursor placement. Unlike [`Effect::OpenBufferAt`] (peer-applied,
+    /// carrying a pre-converted byte offset), this runs entirely in
+    /// `Editor::handle_effect` so it works on the off-keystroke async
+    /// path: server-initiated `window/showDocument` drains through the
+    /// generic inbound tick-callback, where peer-applied effects are
+    /// discarded — the open must happen host-side (as the retired
+    /// `drain_inbound_show_documents` did via `do_edit`).
+    ///
+    /// `column = None` opens only, leaving the cursor where `do_edit`
+    /// puts it (the no-selection showDocument case). `Some` positions the
+    /// cursor at the UTF-16 code-unit column, converted to a byte offset
+    /// against the opened line — the conversion needs the line text, which
+    /// only exists post-open, which is why the column travels unconverted.
+    OpenBufferAtColumn {
+        path: Option<PathBuf>,
+        column: Option<Utf16Pos>,
         force: bool,
     },
     /// `:set <option>` -- the host parses the option spec; the closure

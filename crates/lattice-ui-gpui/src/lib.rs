@@ -1060,6 +1060,10 @@ impl GpuiApp {
             | Effect::Apropos { .. }
             | Effect::DescribeKey { .. }
             | Effect::AppAction(_)
+            // BC.8c: showDocument open effects are host-applied in
+            // `Editor::handle_effect` (TUI/GPUI parity); the peer no-ops them.
+            | Effect::OpenExternalUri { .. }
+            | Effect::OpenBufferAtColumn { .. }
             | Effect::RecordJump => {}
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force, scope } => {

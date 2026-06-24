@@ -175,7 +175,6 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `lsp_log_event_rx`, `lsp_progress_event_rx`,
 ///   `lsp_config_tree`, `buffer_uris`), server-initiated
 ///   channels (`pending_apply_edit_rx`,
-///   `pending_configuration_rx`, `pending_show_document_rx`,
 ///   `pending_show_message_request_rx`,
 ///   `lsp_pending_show_message_requests`,
 ///   `lsp_show_message_request_queue`,
@@ -1405,11 +1404,10 @@ pub struct Editor {
     // ---- LSP server-initiated channels ----
     pub pending_apply_edit_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
-    // BC.8b: `pending_configuration_rx` removed — the `workspace/configuration`
-    // bus is now the generic `InboundBus`, drained per-tick through the
-    // mode-owned handler (`boot.inbound`), not a host `Editor` receiver field.
-    pub pending_show_document_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
+    // BC.8b/BC.8c: `pending_configuration_rx` + `pending_show_document_rx`
+    // removed — the `workspace/configuration` and `window/showDocument` buses
+    // are now the generic `InboundBus`, drained per-tick through their mode-
+    // owned handlers (`boot.inbound`), not host `Editor` receiver fields.
     pub pending_show_message_request_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
     pub lsp_pending_show_message_requests: HashMap<u32, lattice_lsp::InboundShowMessageRequest>,

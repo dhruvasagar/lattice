@@ -902,12 +902,11 @@ pub struct App {
     // `Editor::refresh_lsp_file_watcher` + `drain_lsp_fs_events`
     // (called from `run_tick_pending`).
     // 5.B.18b: `pending_apply_edit_rx`,
-    // `pending_configuration_rx`,
-    // `pending_show_document_rx`,
     // `pending_show_message_request_rx` moved to
-    // `editor.{pending_apply_edit_rx,
-    // pending_configuration_rx, pending_show_document_rx,
-    // pending_show_message_request_rx}`.
+    // `editor.{pending_apply_edit_rx, pending_show_message_request_rx}`.
+    // BC.8b/BC.8c: `pending_configuration_rx` + `pending_show_document_rx`
+    // are gone entirely — those buses are now the generic `InboundBus`,
+    // drained per-tick through mode-owned handlers (`boot.inbound`).
     // 5.B.18b: `lsp_pending_show_message_requests` moved to
     // `editor.lsp_pending_show_message_requests`.
     // 5.B.18b: `lsp_show_message_request_queue`,

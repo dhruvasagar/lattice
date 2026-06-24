@@ -552,35 +552,11 @@ impl App {
         self.mutate_editor(move |e| e.fan_out_did_change_configuration(&server_id));
     }
 
-    /// 4.4.b: drain server-initiated `window/showDocument`
-    /// requests. Each request lands as
-    /// [`lattice_lsp::InboundShowDocument`] carrying the URI,
-    /// the `external`/`take_focus` flags, an optional
-    /// `selection` range, and a oneshot for the reply.
-    ///
-    /// Open semantics:
-    /// - `external == true` -> delegate to the OS handler
-    ///   (`open` on macOS, `xdg-open` on linux). Selection is
-    ///   ignored; success reflects whether the spawn was
-    ///   accepted, not whether the target opened.
-    /// - `file://` URI with `external == false` -> open the
-    ///   path in a new editor buffer via the same path
-    ///   `:e <path>` uses. Selection (if present) is applied
-    ///   after open via the standard LSP-position conversion.
-    /// - Anything else with `external == false` -> reply
-    ///   `success: false` (we don't know how to surface a
-    ///   non-file URI in a buffer).
-    pub fn drain_inbound_show_documents(&mut self) {
-        // 5.8.AA.k.3: migrated to host.
-        let signals = self.mutate_editor_with(|e| e.drain_inbound_show_documents());
-        for s in signals {
-            self.handle_renderer_signal(s);
-        }
-    }
-
-    // 5.8.AA.k.3: perform_show_document, open_external_uri,
-    // move_cursor_to_lsp_position migrated to host alongside
-    // drain_inbound_show_documents.
+    // BC.8c: the TUI `drain_inbound_show_documents` wrapper is retired.
+    // `window/showDocument` now drains through the generic inbound
+    // tick-callback (mode-owned `lattice_lsp::show_document::make_handler` →
+    // host-applied open effects), so neither the host method nor this TUI
+    // wrapper exist anymore. Coverage moved to the lattice-lsp handler tests.
 
     /// 4.4.b: drain server-initiated
     /// Drain server-initiated `window/showMessageRequest`
@@ -4934,69 +4910,13 @@ mod tests {
         assert_eq!(app.editor.lsp_logger.snapshot_instance(&instance).len(), 0);
     }
 
-    /// 4.4.b: show-document drain on a `file://` URI opens the
-    /// path via the same edit path `:e` uses; the response
-    /// oneshot resolves with `success: true`.
-    #[test]
-    fn show_document_file_uri_opens_buffer_and_replies_success() {
-        use std::str::FromStr;
-        let tmp_dir = std::env::temp_dir();
-        let file_path = tmp_dir.join("lattice-4-4-b-show-document.rs");
-        std::fs::write(&file_path, "fn main() {}\n").unwrap();
-        let uri = lattice_lsp::Uri::from_str(&format!("file://{}", file_path.display())).unwrap();
-
-        let mut app = app_with("hi\n", 5);
-        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
-        let bus_sender = app.editor.pending_show_document_rx.take().unwrap();
-        // Re-push back so the App drain can consume it.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(lattice_lsp::InboundShowDocument {
-            server_id: std::sync::Arc::from("rust"),
-            workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            uri,
-            external: false,
-            take_focus: true,
-            selection: None,
-            response: response_tx,
-        })
-        .unwrap();
-        app.editor.pending_show_document_rx = Some(rx);
-        drop(bus_sender); // discard the boot-time receiver
-
-        app.drain_inbound_show_documents();
-        let outcome = response_rx.try_recv().expect("reply landed");
-        assert!(outcome.success);
-        // The active document should now reflect the opened
-        // file (path matches).
-        let snap = app.editor.document.snapshot();
-        assert_eq!(snap.path(), Some(file_path.as_ref()));
-        let _ = std::fs::remove_file(&file_path);
-    }
-
-    /// 4.4.b: non-file URI without `external` is refused
-    /// (we don't know how to surface http* in a buffer).
-    #[test]
-    fn show_document_refuses_non_file_uri_without_external() {
-        use std::str::FromStr;
-        let uri = lattice_lsp::Uri::from_str("https://example.com/x").unwrap();
-        let mut app = app_with("hi\n", 5);
-        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(lattice_lsp::InboundShowDocument {
-            server_id: std::sync::Arc::from("rust"),
-            workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            uri,
-            external: false,
-            take_focus: false,
-            selection: None,
-            response: response_tx,
-        })
-        .unwrap();
-        app.editor.pending_show_document_rx = Some(rx);
-        app.drain_inbound_show_documents();
-        let outcome = response_rx.try_recv().expect("reply landed");
-        assert!(!outcome.success);
-    }
+    // BC.8c: the two show-document TUI drain tests
+    // (`show_document_file_uri_opens_buffer_and_replies_success`,
+    // `show_document_refuses_non_file_uri_without_external`) moved to
+    // `lattice-lsp/src/show_document.rs` handler tests, their new home now
+    // that the bus is the generic inbound primitive (mode-owned handler). The
+    // host-applied open path (do_edit + UTF-16 cursor on the async tick) is
+    // pinned by `lattice-host`'s `show_document_*` integration tests.
 
     /// Helper: inject a single inbound showMessageRequest into
     /// the App's drain receiver and run the drain. Returns the

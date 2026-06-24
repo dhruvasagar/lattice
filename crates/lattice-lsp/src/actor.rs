@@ -1900,7 +1900,10 @@ async fn handle_show_document_request(
         selection: parsed.selection,
         response: response_tx,
     };
-    if bus.dispatch(inbound).is_err() {
+    // BC.8c: the show-document bus is now the generic `InboundBus`; `send`
+    // wakes the editor (off-keystroke reply) — same `Result<(), payload>`
+    // shape as the retired `ShowDocumentBus::dispatch`.
+    if bus.send(inbound).is_err() {
         return show_document_response(req_id, false);
     }
     match response_rx.await {

@@ -369,7 +369,47 @@ migration is **behaviour-pinned before it moves**.
     in Phase A; delete the Editor drain + field. **Green:** 14 BC.2 pins +
     lattice-lsp 195 (3 new handler tests) + 562 host lib + TUI 185 lsp / 5
     lifecycle-config + full GPUI build.
-  - **BC.8c — show-document** (optimistic-ack → `Effect::OpenBufferAt`).
+  - **BC.8c — show-document.** ✅ COMPLETE (2026-06-24). Reshaped onto
+    `boot.inbound::<InboundShowDocument, _>` (the 8b pattern): `ShowDocumentBus`
+    is now a type alias for the generic `InboundBus`; `actor.rs`
+    `bus.dispatch`→`bus.send` (now wakes off-keystroke); the mode-owned
+    `lattice_lsp::show_document::make_handler(LspLogger)` maps the 4 request
+    shapes (external / non-file / file±selection / malformed) to an open
+    [`Effect`] + an optimistic reply; `build_lsp_subsystem` takes the bus +
+    `logger` params (logger created in Phase A so the handler captures an
+    Arc-shared clone); `Editor::drain_inbound_show_documents` +
+    `pending_show_document_rx` field + the TUI drain wrapper + 2 TUI tests
+    deleted (coverage moved to lattice-lsp).
+    **Design finding (re-evaluated at execution, per the slice-plan rule):**
+    the "→ `Effect::OpenBufferAt`" sketch was falsified on merit twice over.
+    (1) **The selection conversion needs the open buffer.** LSP positions are
+    UTF-16 code units; Lattice stores UTF-8 byte offsets; the conversion needs
+    the target line's text, which only exists *after* the open. `OpenBufferAt`
+    carries a pre-converted byte the handler can't compute. (2) **The async
+    path discards peer-applied effects.** show-document drains through the
+    generic inbound tick-callback (`drain_tick_callbacks` → `apply_effect_host`),
+    which returns only `renderer_signals` and drops `out.effects`; the host
+    `handle_effect` no-ops `OpenBuffer`/`OpenBufferAt` (they're peer-applied on
+    the keystroke path). So an open emitted there would be silently dropped.
+    **Resolution (Dhruva, 2026-06-24 — Option 1, contained):** two NEW
+    **host-applied** generic effects in `lattice-grammar`:
+    `OpenExternalUri { uri }` (the relocated OS-handler spawn) and
+    `OpenBufferAtColumn { path, column: Option<Utf16Pos>, force }` (open +
+    optional UTF-16-column cursor, converted host-side in `handle_effect`
+    against the opened line via `move_cursor_to_utf16_column`). `Utf16Pos`
+    is a plain `{ line, col }` — no `lsp_types` in the grammar. They run
+    host-side (do_edit + signals to `out.renderer_signals`), so they work on
+    the off-keystroke async path by construction; the active-slot swap is
+    reflected by the next render-state publish. Both peers no-op them
+    (TUI/GPUI parity); the 4 exhaustive `effect_mutates*` sites classify them
+    non-mutating. **Side-finding (out of scope, follow-up):** claude-code I3's
+    `openFile` emits `Effect::OpenBufferAt` from this same tick path → also
+    silently dropped (its tests only assert the oneshot, not the open). Fixing
+    it (general "forward tick-path effects to the peer" Option 2, or migrating
+    I3 to `OpenBufferAtColumn`) is a separate slice. **Green:** 14 BC.2 pins +
+    lattice-lsp 200 (6 new show_document handler tests) + 562 host lib + 2 new
+    `show_document_open_effect` host pins (incl. the café `col 9 → byte 10`
+    conversion) + lattice-ui-tui 183 lsp + full GPUI build.
   - **BC.8d — apply-edit** (UX-sensitive: mutates user buffers; logic-preserving
     move into `handle_effect`; optimistic-ack with target pre-validation; heavy
     behaviour pins).
@@ -425,7 +465,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c–e (LSP inbound: show-doc / apply-edit / show-message) 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c ✅ · BC.8d–e (LSP inbound: apply-edit / show-message) 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -466,10 +506,23 @@ sub-sliced BC.8b–e.
 mode-owned handler in `lattice_lsp::configuration`; `lsp_config_tree` shared
 (`Arc<ArcSwap>`). Green across BC.2 pins + lattice-lsp + host lib + TUI + GPUI.
 
-**Next: BC.8c (show-document)** — same shape as 8b but the handler emits
-`Effect::OpenBufferAt` (optimistic-ack reply) instead of a pure read. Then BC.8d
-(apply-edit, UX-sensitive — mutates user buffers), BC.8e (show-message-request —
-needs a host-published picker primitive). **BC.final** then
-retires the `*_mut` transitional accessors + the hardcoded `run_tick_pending`
-drains, leaving `editor_boot` as the two-list shape (Phase-A primitives, then the
-Phase-B install list).
+**BC.8c ✅ COMPLETE (2026-06-24)** — show-document reshaped onto
+`boot.inbound::<T>`. The "→ `Effect::OpenBufferAt`" sketch was falsified on
+merit: the async/tick path discards peer-applied effects (`drain_tick_callbacks`
+drops `out.effects`; host `handle_effect` no-ops `OpenBuffer*`) AND the UTF-16
+selection conversion needs the opened line. Resolved (Option 1, Dhruva) with two
+NEW **host-applied** generic effects — `OpenExternalUri { uri }` +
+`OpenBufferAtColumn { path, column: Option<Utf16Pos>, force }` (host-side
+UTF-16→byte conversion via `move_cursor_to_utf16_column`). Mode-owned handler in
+`lattice_lsp::show_document::make_handler`; `Utf16Pos` is a plain `{line,col}` —
+no `lsp_types` in the grammar. Follow-up (separate slice): claude-code I3's
+`openFile` shares the latent tick-path-effect-drop and should move to
+`OpenBufferAtColumn` (or the general "forward tick-path effects to the peer"
+fix).
+
+**Next: BC.8d (apply-edit)** — UX-sensitive (mutates user buffers); the open
+effects are now host-applied, so apply-edit can follow the same host-side shape.
+Then BC.8e (show-message-request — needs a host-published picker primitive).
+**BC.final** then retires the `*_mut` transitional accessors + the hardcoded
+`run_tick_pending` drains, leaving `editor_boot` as the two-list shape (Phase-A
+primitives, then the Phase-B install list).

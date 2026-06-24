@@ -30,8 +30,8 @@ use lattice_grammar::CommandRegistry;
 use lattice_grammar::builtins::populate as grammar_builtins_populate;
 use lattice_lsp::{
     ApplyEditBus, ConfigurationBus, DiagnosticsLayer, InboundApplyEdit,
-    InboundShowDocument, InboundShowMessageRequest, LspLogger,
-    LspSupervisor, LspSupervisorHandle, ShowDocumentBus, ShowMessageRequestBus,
+    InboundShowMessageRequest, LspLogger, LspSupervisor, LspSupervisorHandle, ShowDocumentBus,
+    ShowMessageRequestBus,
 };
 use lattice_mode::{ModeRegistry, ServiceRegistry, SubsystemBoot};
 use lattice_picker::PickerRegistry;
@@ -60,21 +60,22 @@ use crate::pane::{PaneId, PaneState, PaneTree};
 fn build_lsp_subsystem(
     event_bus: Arc<EventBus>,
     runtime_handle: &tokio::runtime::Handle,
-    // BC.8b: the configuration bus is now the generic `InboundBus` (wired via
-    // `boot.inbound` in Phase A so its `send` wakes the editor + its drain runs
-    // the mode-owned handler). Passed in pre-spawn so the supervisor fans it out
-    // to its (lazily-spawned) actors. The other three buses stay bespoke until
-    // their BC.8c–e sub-slices.
+    // BC.8b/BC.8c: the configuration + show-document buses are now the generic
+    // `InboundBus` (wired via `boot.inbound` in Phase A so their `send` wakes
+    // the editor + their drain runs the mode-owned handler). Passed in
+    // pre-spawn so the supervisor fans them out to its (lazily-spawned) actors.
+    // `logger` is likewise created in Phase A (so the show-document handler can
+    // capture a clone — LspLogger is Arc-backed, clones share rings) and passed
+    // in. apply-edit + show-message-request stay bespoke until BC.8d/e.
+    logger: LspLogger,
     configuration_bus: ConfigurationBus,
+    show_document_bus: ShowDocumentBus,
 ) -> (
     LspSupervisorHandle,
     DiagnosticsLayer,
-    LspLogger,
     tokio::sync::mpsc::UnboundedReceiver<InboundApplyEdit>,
-    tokio::sync::mpsc::UnboundedReceiver<InboundShowDocument>,
     tokio::sync::mpsc::UnboundedReceiver<InboundShowMessageRequest>,
 ) {
-    let logger = LspLogger::with_defaults();
     let mut sup = LspSupervisor::new(logger.clone());
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
@@ -83,7 +84,8 @@ fn build_lsp_subsystem(
     // BC.8b: the configuration bus is the generic `InboundBus` passed in (no
     // bespoke `ConfigurationBus::new()` / host-drained `rx`).
     sup.set_configuration_bus(configuration_bus);
-    let (show_document_bus, show_document_rx) = ShowDocumentBus::new();
+    // BC.8c: the show-document bus is the generic `InboundBus` passed in (no
+    // bespoke `ShowDocumentBus::new()` / host-drained `rx`).
     sup.set_show_document_bus(show_document_bus);
     let (show_message_request_bus, show_message_request_rx) = ShowMessageRequestBus::new();
     sup.set_show_message_request_bus(show_message_request_bus);
@@ -98,9 +100,7 @@ fn build_lsp_subsystem(
     (
         handle,
         diagnostics,
-        logger,
         apply_edit_rx,
-        show_document_rx,
         show_message_request_rx,
     )
 }
@@ -309,14 +309,26 @@ impl Editor {
         let lsp_configuration_bus = boot.inbound::<lattice_lsp::InboundConfigurationRequest, _>(
             lattice_lsp::configuration::make_handler(lsp_config_tree.clone()),
         );
-        let (
-            lsp,
-            lsp_diagnostics,
-            lsp_logger,
-            lsp_apply_edit_rx,
-            lsp_show_document_rx,
-            lsp_show_message_request_rx,
-        ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle, lsp_configuration_bus);
+        // BC.8c: create the LSP logger in Phase A so the mode-owned
+        // show-document handler can capture a clone (LspLogger is Arc-backed —
+        // every clone shares the same log rings). Wire the show-document bus as
+        // the generic inbound primitive: `send` wakes the editor; the per-tick
+        // drain runs `make_handler`, which maps each request to a HOST-APPLIED
+        // open effect (OpenExternalUri / OpenBufferAtColumn) + an optimistic
+        // reply. Host-applied because this bus drains off-keystroke, where
+        // peer-applied open effects are not forwarded.
+        let lsp_logger = lattice_lsp::LspLogger::with_defaults();
+        let lsp_show_document_bus = boot.inbound::<lattice_lsp::InboundShowDocument, _>(
+            lattice_lsp::show_document::make_handler(lsp_logger.clone()),
+        );
+        let (lsp, lsp_diagnostics, lsp_apply_edit_rx, lsp_show_message_request_rx) =
+            build_lsp_subsystem(
+                event_bus.clone(),
+                &runtime_handle,
+                lsp_logger.clone(),
+                lsp_configuration_bus,
+                lsp_show_document_bus,
+            );
         // BC.8a: register the supervisor handle as a Phase-A service HERE (moved
         // up from the late service block) so `lattice_lsp::install` below can
         // read it via `boot.service::<LspSupervisorHandle>()` to register
@@ -1669,7 +1681,9 @@ impl Editor {
             // seated below (overriding `..Editor::default()`'s fresh Arc) so the
             // mode-owned handler + the editor observe one tree.
             lsp_config_tree,
-            pending_show_document_rx: Some(lsp_show_document_rx),
+            // BC.8c: `pending_show_document_rx` removed — the generic inbound
+            // drain (mode-owned handler → host-applied open effects) replaces
+            // the host receiver field.
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),

@@ -3224,6 +3224,37 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // `apply_effect_app_arms` collapses its old `AppAction` arm to
         // the grouped no-op band.
         Effect::AppAction(app) => editor.apply_app_effect(app, out),
+        // BC.8c: host-applied `window/showDocument` open effects. They run
+        // host-side (NOT in the peer) because the showDocument bus drains
+        // off-keystroke through the generic inbound tick-callback, where
+        // peer-applied effects are not forwarded — so the open must happen
+        // here, exactly as the retired `drain_inbound_show_documents` did
+        // via `do_edit`. `do_edit`'s signals (Opened/Activated/Reloaded)
+        // flow back through `out` to refresh renderer caches; the active-
+        // slot swap is reflected by the next render-state publish on the
+        // async wake.
+        Effect::OpenExternalUri { uri } => {
+            // Optimistic ack already sent by the handler; ignore the spawn
+            // result here (a failure is logged via tracing).
+            let _ = editor.open_external_uri(&uri);
+        }
+        Effect::OpenBufferAtColumn {
+            path,
+            column,
+            force,
+        } => {
+            match editor.do_edit(path, force) {
+                DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s)
+                | DoEditOutcome::Reloaded(s) => out.renderer_signals.extend(s),
+                _ => {}
+            }
+            // Convert the UTF-16 column to a byte offset against the now-
+            // open line (the conversion the handler couldn't do pre-open).
+            if let Some(lattice_grammar::Utf16Pos { line, col }) = column {
+                editor.move_cursor_to_utf16_column(line, col);
+            }
+        }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -9016,25 +9047,30 @@ impl Editor {
         signals
     }
 
-    /// Move cursor to an LSP-encoded position (utf-16 column).
-    /// Best-effort: out-of-buffer lines leave the cursor where it
-    /// was. Phase 5.8.AA.k.3: hoisted from TUI App.
-    pub fn move_cursor_to_lsp_position(&mut self, position: lattice_lsp::lsp_types::Position) {
+    /// BC.8c: move cursor to a UTF-16 code-unit column on `line`,
+    /// converting to a byte offset against the now-open line. Best-effort:
+    /// an out-of-buffer line leaves the cursor put. Host-side because the
+    /// conversion needs the opened line's text (generalises the retired
+    /// `move_cursor_to_lsp_position`; no `lsp_types` dependency).
+    pub fn move_cursor_to_utf16_column(&mut self, line: u32, col: u32) {
         let snapshot = self.document.snapshot();
-        let line_text = snapshot.buffer.line(position.line).unwrap_or_default();
-        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, position.character);
-        if snapshot.buffer.line(position.line).is_some() {
-            self.cursor = lattice_protocol::Position {
-                line: position.line,
-                byte,
-            };
+        let line_text = snapshot.buffer.line(line).unwrap_or_default();
+        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, col);
+        if snapshot.buffer.line(line).is_some() {
+            self.cursor = lattice_protocol::Position { line, byte };
         }
     }
 
-    /// Open a non-file URI via the OS handler (`open` / `xdg-open` /
-    /// `explorer`). Used by `window/showDocument` with `external:
-    /// true`. Phase 5.8.AA.k.3: hoisted from TUI App.
-    pub fn open_external_uri(&mut self, instance: &lattice_lsp::InstanceKey, uri: &str) -> bool {
+    /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
+    /// `explorer`). Host-applied arm of
+    /// [`lattice_grammar::Effect::OpenExternalUri`], and the shared helper
+    /// `follow_document_link_target` uses for non-file links. Returns whether
+    /// the spawn was accepted (the documentLink path surfaces a warn on
+    /// failure; the showDocument effect arm already replied optimistically so
+    /// it ignores the result — a spawn failure is logged via tracing). No
+    /// instance-ring logging here: the show-document handler records its own
+    /// external trail before emitting the effect.
+    pub fn open_external_uri(&self, uri: &str) -> bool {
         #[cfg(target_os = "macos")]
         let cmd = "open";
         #[cfg(target_os = "windows")]
@@ -9042,84 +9078,12 @@ impl Editor {
         #[cfg(all(unix, not(target_os = "macos")))]
         let cmd = "xdg-open";
         match std::process::Command::new(cmd).arg(uri).spawn() {
-            Ok(_) => {
-                self.lsp_logger.log(
-                    Some(instance),
-                    lattice_lsp::LogLevel::Info,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument(external): {uri}"),
-                );
-                true
-            }
+            Ok(_) => true,
             Err(e) => {
-                self.lsp_logger.log(
-                    Some(instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument(external) failed: {e}"),
-                );
+                tracing::warn!(uri, error = %e, "open_external_uri: failed to spawn OS handler");
                 false
             }
         }
-    }
-
-    /// Drain server-initiated `window/showDocument` requests.
-    /// External URIs delegate to OS handler. `file://` URIs open
-    /// in-editor via `do_edit` and apply optional selection.
-    /// Returns renderer signals from successful `do_edit` calls.
-    /// Phase 5.8.AA.k.3: hoisted from TUI App.
-    pub fn drain_inbound_show_documents(&mut self) -> Vec<RendererSignal> {
-        let Some(mut rx) = self.pending_show_document_rx.take() else {
-            return Vec::new();
-        };
-        let mut requests: Vec<lattice_lsp::InboundShowDocument> = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            requests.push(req);
-        }
-        self.pending_show_document_rx = Some(rx);
-        let mut signals = Vec::new();
-        for req in requests {
-            let instance = lattice_lsp::InstanceKey::new(
-                std::sync::Arc::clone(&req.server_id),
-                std::sync::Arc::clone(&req.workspace),
-            );
-            let uri_str = req.uri.as_str().to_string();
-            let success = if req.external {
-                self.open_external_uri(&instance, &uri_str)
-            } else if !uri_str.starts_with("file://") {
-                self.lsp_logger.log(
-                    Some(&instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument: refusing non-file URI {uri_str:?} without `external`"),
-                );
-                false
-            } else if let Some(path) = lattice_lsp::actor::uri_to_path(&req.uri) {
-                let _take_focus = req.take_focus;
-                match self.do_edit(Some(path), false) {
-                    DoEditOutcome::Opened(s)
-                    | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    _ => {}
-                }
-                if let Some(range) = req.selection {
-                    self.move_cursor_to_lsp_position(range.start);
-                }
-                true
-            } else {
-                self.lsp_logger.log(
-                    Some(&instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument: malformed file URI {uri_str:?}"),
-                );
-                false
-            };
-            let _ = req
-                .response
-                .send(lattice_lsp::ShowDocumentOutcome { success });
-        }
-        signals
     }
 
     /// Jump to an LSP `Location`. Same-buffer: move cursor only.
@@ -11304,7 +11268,10 @@ impl Editor {
         // tick-callback (mode-owned handler), registered through `boot.inbound`.
         self.drain_inbound_show_message_requests();
         self.drain_message_events();
-        signals.extend(self.drain_inbound_show_documents());
+        // BC.8c: show-document requests now drain via the generic inbound
+        // tick-callback (mode-owned handler → host-applied open effects),
+        // registered through `boot.inbound`; the bespoke
+        // `drain_inbound_show_documents` host method is retired.
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
         signals.extend(self.drain_inbound_apply_edits());
@@ -20875,15 +20842,7 @@ impl Editor {
             );
             return Vec::new();
         }
-        let instance = lattice_lsp::InstanceKey::new(
-            std::sync::Arc::<str>::from("<editor>"),
-            std::sync::Arc::<std::path::Path>::from(
-                std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
-                    .as_path(),
-            ),
-        );
-        let opened = self.open_external_uri(&instance, target_str);
+        let opened = self.open_external_uri(target_str);
         if !opened {
             self.set_message(EchoLevel::Warn, format!("could not open {target_str}"));
         }
@@ -26181,6 +26140,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::RecordJump
         | Effect::OpenBufferAt { .. }
+        // BC.8c: host-applied open effects — neither mutates a buffer nor
+        // yanks (the open swaps the active slot; no edit/register write).
+        | Effect::OpenExternalUri { .. }
+        | Effect::OpenBufferAtColumn { .. }
         | Effect::AppAction(_) => false,
     }
 }
@@ -26286,6 +26249,10 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::RecordJump
         | Effect::OpenBufferAt { .. }
+        // BC.8c: host-applied open effects — neither mutates a buffer nor
+        // yanks (the open swaps the active slot; no edit/register write).
+        | Effect::OpenExternalUri { .. }
+        | Effect::OpenBufferAtColumn { .. }
         | Effect::AppAction(_) => false,
     }
 }

@@ -930,6 +930,12 @@ impl App {
             | Effect::DeleteCurrentLine
             | Effect::Substitute { .. }
             | Effect::RecordJump
+            // BC.8c: the showDocument open effects are host-applied in
+            // `Editor::handle_effect` (they must run host-side because the
+            // bus drains off-keystroke, where peer-applied effects are not
+            // forwarded); the peer no-ops them here.
+            | Effect::OpenExternalUri { .. }
+            | Effect::OpenBufferAtColumn { .. }
             // CR.0: host's `handle_effect` translates `ApplyEdit` into
             // `Action::ApplyEdit` on `out.next_actions` (drained by the
             // dispatch wrapper); nothing renderer-coupled here.
@@ -1188,6 +1194,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
+        // BC.8c: host-applied open effects (showDocument) — non-mutating,
+        // non-yanking, same as OpenBuffer / OpenBufferAt.
+        | Effect::OpenExternalUri { .. }
+        | Effect::OpenBufferAtColumn { .. }
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
@@ -1292,6 +1302,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
+        // BC.8c: host-applied open effects (showDocument) — non-mutating,
+        // non-yanking, same as OpenBuffer / OpenBufferAt.
+        | Effect::OpenExternalUri { .. }
+        | Effect::OpenBufferAtColumn { .. }
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }

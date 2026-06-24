@@ -1,5 +1,5 @@
 //! Server-initiated `window/showMessageRequest` plumbing
-//! (4.4.b).
+//! (4.4.b; BC.8e reshape).
 //!
 //! Spec (LSP §3.16): the server emits a message at a severity
 //! level (`Error` / `Warning` / `Info` / `Log`) accompanied by a
@@ -14,15 +14,34 @@
 //! infrastructure (P.1+) but with a synthetic source built from
 //! the action list.
 //!
-//! Same bridge shape as `apply_edit`: mpsc Sender cloned per-
-//! actor, per-request oneshot for the response.
+//! **BC.8e (2026-06-24): reshaped onto the generic inbound primitive
+//! (host-drained variant).** `ShowMessageRequestBus` is now a type alias for the
+//! generic [`InboundBus`](lattice_mode::inbound::InboundBus) built via
+//! [`make_inbound_raw`](lattice_mode::inbound::make_inbound_raw): its `send`
+//! **wakes the editor**, so a server-initiated request raises the picker
+//! off-keystroke (was: no wake — it only appeared on the next keypress). Like
+//! apply-edit (BC.8d), this is the *host-drained* variant: the request is a
+//! **deferred user choice** routed through the host picker primitive (the host
+//! `drain_inbound_show_message_requests` registers the request — holding the
+//! oneshot in `lsp_pending_show_message_requests` — opens the picker, and
+//! resolves the oneshot from the accept / dismiss routing). That machinery is
+//! irreducibly `&mut Editor` + the host picker, so the host keeps the receiver
+//! (`Editor::pending_show_message_request_rx`) and the drain; the bus
+//! contributes only the structural wake. No mode-owned handler, no `Effect`.
 
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
+
+/// The bus the supervisor fans out to each actor -- the generic inbound
+/// primitive specialised to the show-message-request payload, built
+/// host-drained via [`make_inbound_raw`](lattice_mode::inbound::make_inbound_raw).
+/// `send` wakes the editor; the host owns the matching receiver and drains it.
+/// (Was the bespoke `ShowMessageRequestBus` struct before BC.8e.)
+pub type ShowMessageRequestBus = lattice_mode::inbound::InboundBus<InboundShowMessageRequest>;
 
 /// One server-initiated `window/showMessageRequest` request,
-/// ferried from the LSP actor to the App's drain.
+/// ferried from the LSP actor to the host's drain.
 #[derive(Debug)]
 pub struct InboundShowMessageRequest {
     /// Server that sent the request.
@@ -37,15 +56,16 @@ pub struct InboundShowMessageRequest {
     pub message: String,
     /// Action labels the user picks between. Empty when the
     /// server attached no actions (degenerate -- effectively
-    /// `showMessage` with a forced acknowledgement). The App
-    /// surfaces an `OK` entry so the user can still dismiss.
+    /// `showMessage` with a forced acknowledgement). The host
+    /// auto-replies `None` for the actionless case.
     pub actions: Vec<lsp_types::MessageActionItem>,
-    /// Oneshot the App fills after the user picks (or
-    /// dismisses).
+    /// Oneshot the host fills after the user picks (or
+    /// dismisses) -- held in `lsp_pending_show_message_requests`
+    /// until the picker resolves.
     pub response: oneshot::Sender<ShowMessageRequestOutcome>,
 }
 
-/// Result the App reports back. `None` = user dismissed. `Some`
+/// Result the host reports back. `None` = user dismissed. `Some`
 /// = user selected the carried action; the actor forwards this
 /// verbatim to the server.
 #[derive(Debug, Clone)]
@@ -53,52 +73,9 @@ pub struct ShowMessageRequestOutcome {
     pub selected: Option<lsp_types::MessageActionItem>,
 }
 
-/// Sender end of the show-message-request channel.
-#[derive(Clone)]
-pub struct ShowMessageRequestBus {
-    tx: mpsc::UnboundedSender<InboundShowMessageRequest>,
-}
-
-impl ShowMessageRequestBus {
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<InboundShowMessageRequest>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx }, rx)
-    }
-
-    pub fn dispatch(&self, ev: InboundShowMessageRequest) -> Result<(), InboundShowMessageRequest> {
-        self.tx.send(ev).map_err(|e| e.0)
-    }
-}
-
-impl std::fmt::Debug for ShowMessageRequestBus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ShowMessageRequestBus")
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn dispatch_round_trips_to_receiver() {
-        let (bus, mut rx) = ShowMessageRequestBus::new();
-        let (tx, _resp_rx) = oneshot::channel();
-        bus.dispatch(InboundShowMessageRequest {
-            server_id: Arc::from("test"),
-            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            level: lsp_types::MessageType::INFO,
-            message: "Reload?".into(),
-            actions: vec![lsp_types::MessageActionItem {
-                title: "Yes".into(),
-                properties: Default::default(),
-            }],
-            response: tx,
-        })
-        .expect("receiver alive");
-        let got = rx.recv().await.expect("payload arrived");
-        assert_eq!(got.server_id.as_ref(), "test");
-        assert_eq!(got.actions.len(), 1);
-    }
-}
+// BC.8e: the bespoke `ShowMessageRequestBus::new()`/`dispatch()` round-trip test
+// is retired — the bus is now the generic `InboundBus`, whose send/wake/dropped-
+// receiver behaviour is pinned in `lattice-mode`'s inbound tests. The host-side
+// drain + picker routing + deferred reply stay exercised by `lattice-ui-tui`'s
+// `inject_show_message_request`-based tests against
+// `Editor::drain_inbound_show_message_requests` + `finalize_show_message_request`.

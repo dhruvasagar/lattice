@@ -440,9 +440,32 @@ migration is **behaviour-pinned before it moves**.
     inbound 7 (incl. `raw_send_wakes_and_receiver_gets_item`) + lattice-lsp
     apply_edit + 562 host lib + lattice-ui-tui 3 `drain_inbound_apply_edits_*`
     (real apply preserved) + full workspace build incl. the GPUI peer.
-  - **BC.8e — show-message-request** (the genuine wall: deferred user choice →
-    needs a **host-published choice/picker primitive** that `lattice-lsp` drives;
-    forcing optimistic-ack would be unsound. Mechanism to be settled when reached.)
+  - **BC.8e — show-message-request.** ✅ COMPLETE (2026-06-24). The deferred
+    user choice (server message + action buttons → modal picker → reply with the
+    chosen action or null on dismiss). **Resolution (A3-again, locked with
+    Dhruva):** structurally the apply-edit case — the work is irreducibly
+    `&mut Editor` + the **host picker primitive** (`drain_inbound_show_message_requests`
+    registers the request holding the oneshot in `lsp_pending_show_message_requests`,
+    opens the picker, and resolves the oneshot from the accept / dismiss routing
+    via `finalize_show_message_request` + `open_next_queued`). So the
+    host-drained `InboundBus` (via `make_inbound_raw`) again: `send` wakes the
+    editor (the picker is raised off-keystroke instead of on the next keypress),
+    the host keeps `pending_show_message_request_rx` + the drain + the
+    map/queue/picker as documented residue. `ShowMessageRequestBus` → type alias;
+    bespoke struct/`new`/`dispatch` deleted; `actor.rs` `dispatch`→`send`;
+    `build_lsp_subsystem` takes the bus + drops the last `_rx` return (now returns
+    `(handle, diagnostics)`). **The richer "host-published choice-picker
+    primitive that lattice-lsp drives" (option B) was rejected on heuristic #1** —
+    abstracting a generic callback-picker for a *single* consumer is speculative;
+    the picker is a host primitive modes consume (buffer-store/terminal-store
+    class). **Deferred follow-up:** `lattice_picker` carries LSP-specific variants
+    (`PickerSource::LspShowMessageRequest`, `RoutingPayload::AcceptShowMessageAction`)
+    — a pre-existing layering wrinkle option B would have cleaned up; worth doing
+    only when a second mode needs a choice picker. No mode-owned handler, no
+    `Effect`, no peer/classification changes. **Green:** 14 BC.2 pins + lattice-lsp
+    lib 197 + 562 host lib + lattice-ui-tui 5 show-message tests (accept / dismiss
+    / actionless / queue / minibuffer — the full deferred-choice flow preserved) +
+    full workspace build incl. the GPUI peer.
 
   (Residual classes seen so far: host-published primitives a mode merely
   consumes stay host-side [BC.4]; a default-on builtin with no owning crate
@@ -492,7 +515,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c ✅ · BC.8d ✅ · BC.8e (LSP inbound: show-message) 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8 ✅ (8a–8e all complete — LSP fully migrated, no bespoke inbound bus remains) · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -558,9 +581,19 @@ reply preserved). Chosen (A3) over the trigger-effect shape (A1) after a UX/perf
 review — A3 keeps the Effect vocabulary clean, preserves the exact mid-tick
 ordering, and degrades nothing (strict off-keystroke UX win).
 
-**Next: BC.8e (show-message-request)** — the genuine wall: deferred user choice
-→ needs a host-published choice/picker primitive that `lattice-lsp` drives
-(optimistic-ack is unsound for a deferred choice). **BC.final** then retires the
-`*_mut` transitional accessors + the hardcoded `run_tick_pending` drains, leaving
-`editor_boot` as the two-list shape (Phase-A primitives, then the Phase-B install
-list).
+**BC.8e ✅ COMPLETE (2026-06-24)** — show-message-request reshaped via A3-again
+(host-drained `make_inbound_raw`): the deferred-choice picker routing is
+irreducibly `&mut Editor` + the host picker primitive, so the bus contributes
+only the off-keystroke wake and the host keeps the drain + map/queue/picker +
+finalize. Rejected option B (a generic callback-picker primitive lattice-lsp
+drives) on heuristic #1 — speculative for one consumer; the `lattice_picker`
+LSP-variant cleanup is a deferred follow-up. **BC.8 is now fully complete** — all
+four LSP server-initiated buses (configuration / show-document / apply-edit /
+show-message-request) ride the generic `InboundBus` with a structural wake; no
+bespoke inbound bus remains.
+
+**Next: BC.final** — retire the `*_mut` transitional accessors + the hardcoded
+`run_tick_pending` drains the `inbound`/`wake_on_event`/tick-callback primitives
+subsume, leaving `editor_boot` as the two-list shape (Phase-A primitives, then
+the Phase-B `install` list). Confirm the acid test: a hypothetical new subsystem
+touches boot in one place.

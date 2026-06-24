@@ -66,16 +66,16 @@ fn build_lsp_subsystem(
     // pre-spawn so the supervisor fans them out to its (lazily-spawned) actors.
     // `logger` is likewise created in Phase A (so the show-document handler can
     // capture a clone — LspLogger is Arc-backed, clones share rings) and passed
-    // in. apply-edit + show-message-request stay bespoke until BC.8d/e.
+    // in. BC.8d/e: apply-edit + show-message-request are the host-drained
+    // `InboundBus` (wake-baked sender + host-owned receiver via
+    // `boot.inbound_raw`) — all four server-initiated buses now ride the generic
+    // primitive; no bespoke bus remains.
     logger: LspLogger,
     configuration_bus: ConfigurationBus,
     show_document_bus: ShowDocumentBus,
     apply_edit_bus: ApplyEditBus,
-) -> (
-    LspSupervisorHandle,
-    DiagnosticsLayer,
-    tokio::sync::mpsc::UnboundedReceiver<InboundShowMessageRequest>,
-) {
+    show_message_request_bus: ShowMessageRequestBus,
+) -> (LspSupervisorHandle, DiagnosticsLayer) {
     let mut sup = LspSupervisor::new(logger.clone());
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
@@ -89,7 +89,10 @@ fn build_lsp_subsystem(
     // BC.8c: the show-document bus is the generic `InboundBus` passed in (no
     // bespoke `ShowDocumentBus::new()` / host-drained `rx`).
     sup.set_show_document_bus(show_document_bus);
-    let (show_message_request_bus, show_message_request_rx) = ShowMessageRequestBus::new();
+    // BC.8e: the show-message-request bus is the generic (host-drained)
+    // `InboundBus` passed in (no bespoke `ShowMessageRequestBus::new()`); the
+    // host owns the matching receiver, seated on the Editor + drained in
+    // `run_tick_pending` (the picker routing is irreducibly `&mut Editor`).
     sup.set_show_message_request_bus(show_message_request_bus);
     sup.set_event_bus(event_bus.clone());
     let handle = sup.spawn(runtime_handle);
@@ -99,7 +102,7 @@ fn build_lsp_subsystem(
     // the supervisor for the per-actor edit fan-in; the keep
     // is intentional -- no other consumer in this function.
     let _ = &event_bus;
-    (handle, diagnostics, show_message_request_rx)
+    (handle, diagnostics)
 }
 
 /// Boot-time registration of the first-party picker sources
@@ -326,13 +329,22 @@ impl Editor {
         // off-keystroke instead of on the next keypress.
         let (lsp_apply_edit_bus, lsp_apply_edit_rx) =
             boot.inbound_raw::<InboundApplyEdit>();
-        let (lsp, lsp_diagnostics, lsp_show_message_request_rx) = build_lsp_subsystem(
+        // BC.8e: the show-message-request bus is likewise the host-drained
+        // generic `InboundBus`. The request is a deferred user choice routed
+        // through the host picker primitive, so the host seats the receiver on
+        // the Editor (`pending_show_message_request_rx`) and drains it in
+        // `run_tick_pending`; `send` wakes the editor so the picker is raised
+        // off-keystroke.
+        let (lsp_show_message_request_bus, lsp_show_message_request_rx) =
+            boot.inbound_raw::<InboundShowMessageRequest>();
+        let (lsp, lsp_diagnostics) = build_lsp_subsystem(
             event_bus.clone(),
             &runtime_handle,
             lsp_logger.clone(),
             lsp_configuration_bus,
             lsp_show_document_bus,
             lsp_apply_edit_bus,
+            lsp_show_message_request_bus,
         );
         // BC.8a: register the supervisor handle as a Phase-A service HERE (moved
         // up from the late service block) so `lattice_lsp::install` below can

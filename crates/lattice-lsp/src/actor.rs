@@ -1967,7 +1967,11 @@ async fn handle_show_message_request(
         actions: parsed.actions.unwrap_or_default(),
         response: response_tx,
     };
-    if bus.dispatch(inbound).is_err() {
+    // BC.8e: the show-message-request bus is now the generic `InboundBus`
+    // (host-drained variant); `send` wakes the editor so the picker is raised
+    // off-keystroke — same `Result<(), payload>` shape as the retired
+    // `ShowMessageRequestBus::dispatch`.
+    if bus.send(inbound).is_err() {
         return Response::ok(req_id, Value::Null);
     }
     let selected = match response_rx.await {

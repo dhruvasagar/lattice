@@ -46,7 +46,7 @@ use std::any::Any;
 
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::effect::Effect;
-use lattice_mode::inbound::{InboundBus, make_inbound};
+use lattice_mode::inbound::{InboundBus, make_inbound, make_inbound_raw};
 use lattice_mode::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistryHandle,
 };
@@ -143,6 +143,21 @@ impl BootContext {
     /// the subsystem install surface is the [`SubsystemBoot`] impl below).
     pub fn async_landed(&self) -> &Arc<Notify> {
         &self.async_landed
+    }
+
+    /// BC.8d: a *host-drained* inbound bus — the wake-baked sender PLUS the raw
+    /// receiver, with no per-tick handler. For server-initiated work whose apply
+    /// is irreducibly `&mut Editor` (LSP `workspace/applyEdit`): the host seats
+    /// the receiver on the `Editor` and drains it from `run_tick_pending`, while
+    /// `send` still wakes the editor off-keystroke (the wake lives in the sender
+    /// — can't be forgotten). Keeps the irreducible apply host-side without an
+    /// internal-pump `Effect`. Inherent (not on [`SubsystemBoot`]): only the
+    /// host's own Phase-A wiring uses it; no subsystem `install` does.
+    pub fn inbound_raw<T>(&self) -> (InboundBus<T>, tokio::sync::mpsc::UnboundedReceiver<T>)
+    where
+        T: Send + 'static,
+    {
+        make_inbound_raw::<T>(Arc::clone(&self.async_landed))
     }
 
     /// The shared tick-callback registry (run once per tick by the host).

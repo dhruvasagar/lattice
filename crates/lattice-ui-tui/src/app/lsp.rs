@@ -5100,8 +5100,11 @@ mod tests {
     }
 
     fn inject_inbound_apply_edit(a: &mut App, inbound: lattice_lsp::InboundApplyEdit) {
-        let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
-        bus.dispatch(inbound).expect("dispatch");
+        // BC.8d: `ApplyEditBus` is now the generic `InboundBus` (no `::new()`).
+        // The host-side drain (`Editor::drain_inbound_apply_edits`) reads the
+        // `pending_apply_edit_rx` receiver, so the test seeds it directly.
+        let (tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(inbound).expect("send to fresh receiver");
         a.editor.pending_apply_edit_rx = Some(new_rx);
     }
 

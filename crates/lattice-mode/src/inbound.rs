@@ -96,6 +96,27 @@ where
     (bus, drain)
 }
 
+/// Build a *host-drained* inbound primitive: the wake-baked [`InboundBus`]
+/// sender PLUS the raw receiver, with NO per-tick handler.
+///
+/// Use this (instead of [`make_inbound`]) when the per-item work needs mutable
+/// host state a `FnMut(T) -> Vec<Effect>` handler closure can't capture — e.g.
+/// LSP `workspace/applyEdit`, whose apply is irreducibly `&mut Editor` and
+/// carries `lsp_types` that can't cross the [`Effect`] boundary. The caller
+/// holds the receiver and drains it from its own tick (with whatever `&mut`
+/// access it needs); the wake still fires on every [`InboundBus::send`], so the
+/// work is answered off-keystroke (paramount #4 — the wake lives in the sender,
+/// so it can't be forgotten), exactly like [`make_inbound`]. Keeping the drain
+/// host-side this way avoids introducing an internal-pump variant into the
+/// [`Effect`] vocabulary.
+pub fn make_inbound_raw<T>(wake: Arc<Notify>) -> (InboundBus<T>, mpsc::UnboundedReceiver<T>)
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::unbounded_channel::<T>();
+    (InboundBus { tx, wake }, rx)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -179,6 +200,23 @@ mod tests {
             result.err(),
             Some(7),
             "dropped receiver → send returns the item back"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_send_wakes_and_receiver_gets_item() {
+        // make_inbound_raw: the wake still fires on send (off-keystroke), but
+        // the caller drains the receiver itself (no handler). Used by LSP
+        // apply-edit, whose apply is irreducibly &mut Editor.
+        let wake = Arc::new(Notify::new());
+        let (bus, mut rx) = make_inbound_raw::<u32>(Arc::clone(&wake));
+        bus.send(42).unwrap();
+        let woke = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(woke.is_ok(), "raw send must wake the editor");
+        assert_eq!(
+            rx.try_recv().ok(),
+            Some(42),
+            "host drains the raw receiver itself"
         );
     }
 

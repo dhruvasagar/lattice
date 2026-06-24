@@ -410,9 +410,36 @@ migration is **behaviour-pinned before it moves**.
     lattice-lsp 200 (6 new show_document handler tests) + 562 host lib + 2 new
     `show_document_open_effect` host pins (incl. the café `col 9 → byte 10`
     conversion) + lattice-ui-tui 183 lsp + full GPUI build.
-  - **BC.8d — apply-edit** (UX-sensitive: mutates user buffers; logic-preserving
-    move into `handle_effect`; optimistic-ack with target pre-validation; heavy
-    behaviour pins).
+  - **BC.8d — apply-edit.** ✅ COMPLETE (2026-06-24). UX-sensitive (mutates user
+    buffers), but the only behavioural change is the **off-keystroke wake** — the
+    apply path, reply, field, and mid-tick drain ordering are byte-identical to
+    before. **Design finding (re-evaluated at execution):** the I3/8b/8c
+    "handler → generic `Effect`" pattern does NOT extend — the apply
+    (`Editor::apply_inbound_workspace_edit` → `apply_lsp_text_edits` / `do_edit`)
+    is irreducibly `&mut Editor` AND carries `lsp_types::WorkspaceEdit`, which
+    cannot cross the `Effect` boundary into a mode-owned handler. The slice
+    plan's "optimistic-ack with pre-validation" + "move into `handle_effect`"
+    sketch was falsified: optimistic-ack would *downgrade* today's real-outcome
+    reply, and a generic effect can't carry the edit. **Resolution (A3, locked
+    with Dhruva after a UX/perf review):** add a *host-drained* variant to the
+    inbound primitive — `lattice_mode::inbound::make_inbound_raw(wake) ->
+    (InboundBus<T>, Receiver<T>)` (+ inherent `BootContext::inbound_raw`). The
+    bus's `send` still wakes (the whole win — applyEdit was the L1c
+    "lands-on-next-keypress" bug class); the host keeps the
+    `pending_apply_edit_rx` field + `drain_inbound_apply_edits` in
+    `run_tick_pending` (the apply is documented host residue — the diff-lifecycle
+    / multibuffer Effect-arm class). `ApplyEditBus` becomes a type alias for
+    `InboundBus<InboundApplyEdit>`; the bespoke struct/`new`/`dispatch` are
+    deleted; `actor.rs` `dispatch`→`send`; `build_lsp_subsystem` takes the bus +
+    drops the `apply_edit_rx` return. **No new `Effect`** (vs the rejected
+    trigger-effect A1 — keeps the Effect vocabulary free of an internal pump) and
+    **no peer/classification changes**. Real-outcome reply preserved.
+    **UX/perf:** strict UX improvement (immediate off-keystroke apply); off the
+    keystroke hot path; ~1 extra cheap `run_tick_pending` per (rare) applyEdit,
+    N-batched edits coalesce to one wake. **Green:** 14 BC.2 pins + lattice-mode
+    inbound 7 (incl. `raw_send_wakes_and_receiver_gets_item`) + lattice-lsp
+    apply_edit + 562 host lib + lattice-ui-tui 3 `drain_inbound_apply_edits_*`
+    (real apply preserved) + full workspace build incl. the GPUI peer.
   - **BC.8e — show-message-request** (the genuine wall: deferred user choice →
     needs a **host-published choice/picker primitive** that `lattice-lsp` drives;
     forcing optimistic-ack would be unsound. Mechanism to be settled when reached.)
@@ -465,7 +492,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c ✅ · BC.8d–e (LSP inbound: apply-edit / show-message) 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c ✅ · BC.8d ✅ · BC.8e (LSP inbound: show-message) 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -520,9 +547,20 @@ no `lsp_types` in the grammar. Follow-up (separate slice): claude-code I3's
 `OpenBufferAtColumn` (or the general "forward tick-path effects to the peer"
 fix).
 
-**Next: BC.8d (apply-edit)** — UX-sensitive (mutates user buffers); the open
-effects are now host-applied, so apply-edit can follow the same host-side shape.
-Then BC.8e (show-message-request — needs a host-published picker primitive).
-**BC.final** then retires the `*_mut` transitional accessors + the hardcoded
-`run_tick_pending` drains, leaving `editor_boot` as the two-list shape (Phase-A
-primitives, then the Phase-B install list).
+**BC.8d ✅ COMPLETE (2026-06-24)** — apply-edit reshaped onto the generic bus
+via the new *host-drained* variant `make_inbound_raw` (+ `BootContext::inbound_raw`).
+The apply is irreducibly `&mut Editor` + carries `lsp_types::WorkspaceEdit`
+(can't cross the `Effect` boundary), so — unlike show-doc — there is no
+mode-owned handler and no new `Effect`: the bus contributes only the
+off-keystroke wake; the host keeps `pending_apply_edit_rx` + the
+`drain_inbound_apply_edits` mid-tick drain (documented host residue, real-outcome
+reply preserved). Chosen (A3) over the trigger-effect shape (A1) after a UX/perf
+review — A3 keeps the Effect vocabulary clean, preserves the exact mid-tick
+ordering, and degrades nothing (strict off-keystroke UX win).
+
+**Next: BC.8e (show-message-request)** — the genuine wall: deferred user choice
+→ needs a host-published choice/picker primitive that `lattice-lsp` drives
+(optimistic-ack is unsound for a deferred choice). **BC.final** then retires the
+`*_mut` transitional accessors + the hardcoded `run_tick_pending` drains, leaving
+`editor_boot` as the two-list shape (Phase-A primitives, then the Phase-B install
+list).

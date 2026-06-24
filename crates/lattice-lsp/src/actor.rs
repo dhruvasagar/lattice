@@ -1753,7 +1753,10 @@ async fn handle_apply_edit_request(
         edit: parsed.edit,
         response: response_tx,
     };
-    if bus.dispatch(inbound).is_err() {
+    // BC.8d: the apply-edit bus is now the generic `InboundBus` (host-drained
+    // variant); `send` wakes the editor so the edit is applied off-keystroke —
+    // same `Result<(), payload>` shape as the retired `ApplyEditBus::dispatch`.
+    if bus.send(inbound).is_err() {
         return apply_edit_response(
             req_id,
             false,

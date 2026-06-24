@@ -70,16 +70,18 @@ fn build_lsp_subsystem(
     logger: LspLogger,
     configuration_bus: ConfigurationBus,
     show_document_bus: ShowDocumentBus,
+    apply_edit_bus: ApplyEditBus,
 ) -> (
     LspSupervisorHandle,
     DiagnosticsLayer,
-    tokio::sync::mpsc::UnboundedReceiver<InboundApplyEdit>,
     tokio::sync::mpsc::UnboundedReceiver<InboundShowMessageRequest>,
 ) {
     let mut sup = LspSupervisor::new(logger.clone());
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
-    let (apply_edit_bus, apply_edit_rx) = ApplyEditBus::new();
+    // BC.8d: the apply-edit bus is the generic (host-drained) `InboundBus`
+    // passed in (no bespoke `ApplyEditBus::new()`); the host owns the matching
+    // receiver, seated on the Editor + drained in `run_tick_pending`.
     sup.set_apply_edit_bus(apply_edit_bus);
     // BC.8b: the configuration bus is the generic `InboundBus` passed in (no
     // bespoke `ConfigurationBus::new()` / host-drained `rx`).
@@ -97,12 +99,7 @@ fn build_lsp_subsystem(
     // the supervisor for the per-actor edit fan-in; the keep
     // is intentional -- no other consumer in this function.
     let _ = &event_bus;
-    (
-        handle,
-        diagnostics,
-        apply_edit_rx,
-        show_message_request_rx,
-    )
+    (handle, diagnostics, show_message_request_rx)
 }
 
 /// Boot-time registration of the first-party picker sources
@@ -321,14 +318,22 @@ impl Editor {
         let lsp_show_document_bus = boot.inbound::<lattice_lsp::InboundShowDocument, _>(
             lattice_lsp::show_document::make_handler(lsp_logger.clone()),
         );
-        let (lsp, lsp_diagnostics, lsp_apply_edit_rx, lsp_show_message_request_rx) =
-            build_lsp_subsystem(
-                event_bus.clone(),
-                &runtime_handle,
-                lsp_logger.clone(),
-                lsp_configuration_bus,
-                lsp_show_document_bus,
-            );
+        // BC.8d: the apply-edit bus is the host-drained generic `InboundBus`
+        // (wake-baked sender + raw receiver). The host seats the receiver on the
+        // Editor (`pending_apply_edit_rx`) and drains it in `run_tick_pending`
+        // (the apply is irreducibly `&mut Editor` + `lsp_types`, so it can't be
+        // a mode-owned handler); `send` wakes the editor so the edit lands
+        // off-keystroke instead of on the next keypress.
+        let (lsp_apply_edit_bus, lsp_apply_edit_rx) =
+            boot.inbound_raw::<InboundApplyEdit>();
+        let (lsp, lsp_diagnostics, lsp_show_message_request_rx) = build_lsp_subsystem(
+            event_bus.clone(),
+            &runtime_handle,
+            lsp_logger.clone(),
+            lsp_configuration_bus,
+            lsp_show_document_bus,
+            lsp_apply_edit_bus,
+        );
         // BC.8a: register the supervisor handle as a Phase-A service HERE (moved
         // up from the late service block) so `lattice_lsp::install` below can
         // read it via `boot.service::<LspSupervisorHandle>()` to register

@@ -3042,14 +3042,22 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.apply_diff_effect_inline(eff, out);
         }
         Effect::NextHunk => {
-            // D.3.c: `]c` — jump cursor to next hunk start
-            // on the current side. Wraps to top.
-            editor.do_next_hunk();
+            // D.3.c / CR.6: `]c` / `:hunk-next` — jump cursor to next hunk
+            // start. Mode-owned resolver (`diff_next_hunk_effect` →
+            // `Effect::SelectionChange`); the host just applies it. The
+            // `]c` chord goes through `DiffMode::action_handlers()`; this
+            // arm is the `:hunk-next` ex-command path onto the same resolver.
+            let eff = editor
+                .diff_subsystem
+                .diff_next_hunk_effect(editor.document_buffer_id, editor.cursor.line);
+            editor.apply_diff_effect_inline(eff, out);
         }
         Effect::PrevHunk => {
-            // D.3.c: `[c` — jump cursor to previous hunk start.
-            // Wraps to bottom.
-            editor.do_prev_hunk();
+            // D.3.c / CR.6: `[c` / `:hunk-prev` — mirror of NextHunk.
+            let eff = editor
+                .diff_subsystem
+                .diff_prev_hunk_effect(editor.document_buffer_id, editor.cursor.line);
+            editor.apply_diff_effect_inline(eff, out);
         }
         Effect::DescribeEvent { name } => {
             // 5.5.F.3: `:describe-event <name>` -- descriptor
@@ -3366,82 +3374,12 @@ impl Editor {
         );
     }
 
-    /// D.3.c (2026-05-29): `]c` — jump cursor to the start of
-    /// the next diff hunk on the current side of the active
-    /// session. Wraps to top. Surfaces info messages if no
-    /// session is open or the session has no hunks.
-    ///
-    /// Hunks are sorted by their `ranges[1].start` (current
-    /// side); selection finds the first hunk whose start is
-    /// strictly past the cursor's line. If none, wrap to the
-    /// first hunk.
-    pub fn do_next_hunk(&mut self) {
-        let buffer_id = self.document_buffer_id;
-        let Some(session) = self.diff_subsystem.lookup(buffer_id) else {
-            self.set_message(EchoLevel::Info, "no diff session");
-            return;
-        };
-        let hunks = session.current_hunks();
-        if hunks.hunks.is_empty() {
-            self.set_message(EchoLevel::Info, "no hunks");
-            return;
-        }
-        let cursor_line = self.cursor.line;
-        let target_line = hunks
-            .hunks
-            .iter()
-            .filter_map(|h| h.ranges.get(1).map(|r| r.start))
-            .find(|&l| l > cursor_line)
-            .or_else(|| {
-                hunks
-                    .hunks
-                    .iter()
-                    .filter_map(|h| h.ranges.get(1).map(|r| r.start))
-                    .next()
-            });
-        let Some(line) = target_line else {
-            return;
-        };
-        self.cursor = lattice_protocol::position::Position::new(line, 0);
-    }
-
-    /// D.3.c (2026-05-29): `[c` — jump cursor to the start of
-    /// the previous diff hunk on the current side. Wraps to
-    /// bottom.
-    pub fn do_prev_hunk(&mut self) {
-        let buffer_id = self.document_buffer_id;
-        let Some(session) = self.diff_subsystem.lookup(buffer_id) else {
-            self.set_message(EchoLevel::Info, "no diff session");
-            return;
-        };
-        let hunks = session.current_hunks();
-        if hunks.hunks.is_empty() {
-            self.set_message(EchoLevel::Info, "no hunks");
-            return;
-        }
-        let cursor_line = self.cursor.line;
-        // Walk hunks in reverse for the strictly-less-than
-        // search; wrap to last hunk if cursor is at/before the
-        // first.
-        let target_line = hunks
-            .hunks
-            .iter()
-            .rev()
-            .filter_map(|h| h.ranges.get(1).map(|r| r.start))
-            .find(|&l| l < cursor_line)
-            .or_else(|| {
-                hunks
-                    .hunks
-                    .iter()
-                    .rev()
-                    .filter_map(|h| h.ranges.get(1).map(|r| r.start))
-                    .next()
-            });
-        let Some(line) = target_line else {
-            return;
-        };
-        self.cursor = lattice_protocol::position::Position::new(line, 0);
-    }
+    // CR.6 (2026-06-24): `Editor::do_next_hunk` / `do_prev_hunk` deleted.
+    // `]c`/`[c` + `:hunk-next`/`:hunk-prev` are mode-owned now —
+    // `DiffSubsystem::diff_next_hunk_effect` / `diff_prev_hunk_effect`
+    // (lattice-diff) return a generic `Effect::SelectionChange`; the chord
+    // flows through `DiffMode::action_handlers()` and the ex-command through
+    // the `Effect::NextHunk`/`PrevHunk` arms, both onto the same resolver.
 
     // =====================================================
     // D.4.a (2026-05-29): pane-group substrate. See
@@ -29072,7 +29010,7 @@ mod tests {
     fn do_next_hunk_with_no_session_messages_and_doesnt_move() {
         let mut editor = Editor::default();
         let before = editor.cursor;
-        editor.do_next_hunk();
+        drive_next_hunk(&mut editor);
         let msg = editor.last_message.as_ref().expect("message set");
         assert!(msg.text.contains("no diff session"), "{}", msg.text);
         assert_eq!(editor.cursor, before);
@@ -29082,7 +29020,7 @@ mod tests {
     fn do_prev_hunk_with_no_session_messages_and_doesnt_move() {
         let mut editor = Editor::default();
         let before = editor.cursor;
-        editor.do_prev_hunk();
+        drive_prev_hunk(&mut editor);
         let msg = editor.last_message.as_ref().expect("message set");
         assert!(msg.text.contains("no diff session"), "{}", msg.text);
         assert_eq!(editor.cursor, before);
@@ -29114,11 +29052,11 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
-        editor.do_next_hunk();
+        drive_next_hunk(&mut editor);
         assert_eq!(editor.cursor.line, 3, "first ]c lands at hunk 1 start");
-        editor.do_next_hunk();
+        drive_next_hunk(&mut editor);
         assert_eq!(editor.cursor.line, 10, "second ]c lands at hunk 2 start");
-        editor.do_next_hunk();
+        drive_next_hunk(&mut editor);
         assert_eq!(
             editor.cursor.line, 3,
             "third ]c wraps to first hunk (cursor at 10 → next is hunk 1)"
@@ -29151,11 +29089,11 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(20, 0);
-        editor.do_prev_hunk();
+        drive_prev_hunk(&mut editor);
         assert_eq!(editor.cursor.line, 10, "first [c lands at hunk 2 start");
-        editor.do_prev_hunk();
+        drive_prev_hunk(&mut editor);
         assert_eq!(editor.cursor.line, 3, "second [c lands at hunk 1 start");
-        editor.do_prev_hunk();
+        drive_prev_hunk(&mut editor);
         assert_eq!(
             editor.cursor.line, 10,
             "third [c wraps to last hunk (cursor at 3 → prev is hunk 2)"
@@ -29233,6 +29171,27 @@ mod tests {
         editor.apply_diff_effect_inline(eff, &mut out);
     }
 
+    /// CR.6 test drivers: the post-migration replacement for the deleted
+    /// `editor.do_next_hunk()` / `do_prev_hunk()`. Drive the mode-owned
+    /// `diff_next_hunk_effect` / `diff_prev_hunk_effect` resolver through
+    /// the host applier (`Effect::SelectionChange` → cursor, or the
+    /// no-session / no-hunks `Echo` → `set_message`).
+    fn drive_next_hunk(editor: &mut Editor) {
+        let eff = editor
+            .diff_subsystem
+            .diff_next_hunk_effect(editor.document_buffer_id, editor.cursor.line);
+        let mut out = DispatchOutcome::default();
+        editor.apply_diff_effect_inline(eff, &mut out);
+    }
+
+    fn drive_prev_hunk(editor: &mut Editor) {
+        let eff = editor
+            .diff_subsystem
+            .diff_prev_hunk_effect(editor.document_buffer_id, editor.cursor.line);
+        let mut out = DispatchOutcome::default();
+        editor.apply_diff_effect_inline(eff, &mut out);
+    }
+
     /// `do` on a Change hunk rewrites the current side's
     /// lines to match the baseline and parks the cursor at
     /// the hunk start. Verifies the full
@@ -29298,7 +29257,13 @@ mod tests {
             revision: rev,
         }));
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
-        editor.do_next_hunk();
+        // CR.6: drive the mode-owned resolver + the host applier (the
+        // post-CR.6 replacement for the deleted `editor.do_next_hunk()`).
+        let eff = editor
+            .diff_subsystem
+            .diff_next_hunk_effect(editor.document_buffer_id, editor.cursor.line);
+        let mut out = DispatchOutcome::default();
+        editor.apply_diff_effect_inline(eff, &mut out);
         assert_eq!(
             editor.cursor.line, 2,
             "]c should land on the conflict hunk start (conflicts are hunks)"
@@ -29549,7 +29514,7 @@ mod tests {
             .diff_subsystem
             .register(bid, lattice_diff::DiffAlgorithm::Histogram);
         let before = editor.cursor;
-        editor.do_next_hunk();
+        drive_next_hunk(&mut editor);
         let msg = editor.last_message.as_ref().expect("message set");
         assert!(msg.text.contains("no hunks"), "{}", msg.text);
         assert_eq!(editor.cursor, before);

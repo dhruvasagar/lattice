@@ -694,6 +694,37 @@ fn target_required_echo(cmd: &str, available_targets: &[BufferId]) -> lattice_gr
     }
 }
 
+/// CR.6: the current-side (slot 1) start rows of every hunk, in order —
+/// the navigation order `]c`/`[c` walk.
+fn hunk_starts(index: &HunkIndex) -> Vec<u32> {
+    index
+        .hunks
+        .iter()
+        .filter_map(|h| h.ranges.get(1).map(|r| r.start))
+        .collect()
+}
+
+/// CR.6: an info `Echo` for the `:hunk-next`/`:hunk-prev` no-session /
+/// no-hunks cases — preserves the former host `do_next_hunk` messages.
+fn hunk_nav_echo(text: &str) -> lattice_grammar::Effect {
+    lattice_grammar::Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: text.to_string(),
+    }
+}
+
+/// CR.6: a collapsed-cursor `Effect::SelectionChange` at `(row, 0)` — the
+/// generic cursor-move the host applies for hunk navigation.
+fn hunk_selection(row: u32) -> lattice_grammar::Effect {
+    lattice_grammar::Effect::SelectionChange(
+        lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(
+                lattice_protocol::position::Position::new(row, 0),
+            ),
+        ),
+    )
+}
+
 /// D.5.b helper: slice the rope at the given line range and
 /// return the contents as a `String`. Half-open `[start, end)`.
 /// Empty range returns the empty string. Tolerant of an
@@ -1909,6 +1940,55 @@ impl DiffSubsystem {
             }),
             _ => None,
         }
+    }
+
+    /// CR.6 `]c` / `:hunk-next`: move the cursor to the next hunk start
+    /// (slot 1, wraps to the first) — the mode-owned replacement for the
+    /// host's `do_next_hunk`. Returns a generic `Effect::SelectionChange`
+    /// (the host owns the cursor write), or an info `Echo` ("no diff
+    /// session" / "no hunks") preserving the former host messages for the
+    /// `:hunk-next` ex-command path (the `]c` chord is K.1.c-gated and
+    /// never hits those).
+    pub fn diff_next_hunk_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let Some(session) = self.lookup_session_for(active_buffer) else {
+            return Some(hunk_nav_echo("no diff session"));
+        };
+        let hunks = session.current_hunks();
+        let rows = hunk_starts(&hunks);
+        if rows.is_empty() {
+            return Some(hunk_nav_echo("no hunks"));
+        }
+        let row = rows.iter().copied().find(|&l| l > cursor_row).unwrap_or(rows[0]);
+        Some(hunk_selection(row))
+    }
+
+    /// CR.6 `[c` / `:hunk-prev`: mirror of [`Self::diff_next_hunk_effect`]
+    /// — largest slot-1 start strictly before `cursor_row`, wrapping to
+    /// the last hunk.
+    pub fn diff_prev_hunk_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let Some(session) = self.lookup_session_for(active_buffer) else {
+            return Some(hunk_nav_echo("no diff session"));
+        };
+        let hunks = session.current_hunks();
+        let rows = hunk_starts(&hunks);
+        if rows.is_empty() {
+            return Some(hunk_nav_echo("no hunks"));
+        }
+        let row = rows
+            .iter()
+            .rev()
+            .copied()
+            .find(|&l| l < cursor_row)
+            .unwrap_or_else(|| *rows.last().expect("rows non-empty"));
+        Some(hunk_selection(row))
     }
 
     /// D.2.c: snapshot of the inverse routing index for
@@ -4936,6 +5016,38 @@ mod tests {
             }
             other => panic!("expected ApplyEdit, got {other:?}"),
         }
+    }
+
+    /// CR.6: `]c`/`[c` hunk-nav resolvers return a `SelectionChange` to
+    /// the next/prev hunk's slot-1 start, wrapping at both ends — the
+    /// mode-owned replacement for the host `do_next_hunk`/`do_prev_hunk`.
+    #[test]
+    fn hunk_nav_effects_move_to_neighbouring_hunk() {
+        let (sub, key) = fixture_with_baseline("base\n");
+        publish_hunks(
+            &sub,
+            key,
+            vec![
+                Hunk {
+                    kind: HunkKind::Change,
+                    ranges: smallvec![lr(0, 1), lr(1, 2)],
+                },
+                Hunk {
+                    kind: HunkKind::Change,
+                    ranges: smallvec![lr(2, 3), lr(5, 6)],
+                },
+            ],
+        );
+        // slot-1 hunk starts are [1, 5].
+        let row = |eff: Option<lattice_grammar::Effect>| match eff {
+            Some(lattice_grammar::Effect::SelectionChange(set)) => set.primary().head.line,
+            other => panic!("expected SelectionChange, got {other:?}"),
+        };
+        assert_eq!(row(sub.diff_next_hunk_effect(key, 0)), 1, "next from 0 → 1");
+        assert_eq!(row(sub.diff_next_hunk_effect(key, 3)), 5, "next from 3 → 5");
+        assert_eq!(row(sub.diff_next_hunk_effect(key, 5)), 1, "next past last → wrap to 1");
+        assert_eq!(row(sub.diff_prev_hunk_effect(key, 6)), 5, "prev from 6 → 5");
+        assert_eq!(row(sub.diff_prev_hunk_effect(key, 0)), 5, "prev before first → wrap to 5");
     }
 
     /// Target buffer that isn't a participant → `Nothing`.

@@ -34,14 +34,48 @@
 //! See `docs/dev/architecture/diff-extraction.md` (couplings C6/C10) for the
 //! cut and the rationale.
 
+use lattice_grammar::CommandRegistry;
+use lattice_grammar::registry::ActionSpec;
 use lattice_mode::SubsystemBoot;
 
 use crate::mode::register_diff_modes;
 
-/// Wire the diff subsystem's modes into the editor at boot.
+/// Wire the diff subsystem's modes + commands into the editor at boot.
 pub fn install(boot: &mut impl SubsystemBoot) {
     // D.5.a: register `diff-mode` (the marker minor mode K.1.c gates the
     // `do`/`dp` chords on; its `on_activate` registers the buffer's
     // hunk-fold source, DX.3-C7). DX.8 adds `diff-conflict-mode` here.
     register_diff_modes(boot.modes_mut());
+    // CR.6 (2026-06-24): the diff subsystem registers its own commands
+    // through `boot.commands_mut()` — the "modes register commands"
+    // pattern (multibuffer precedent). The command *declarations* are
+    // mode-owned; the host keeps only the generic `Effect` appliers.
+    register_diff_commands(boot.commands_mut());
+}
+
+/// CR.6: register the diff subsystem's mode-owned action commands. Pure
+/// shells (`Effect::None` fallback) whose real bodies live in the modes'
+/// `action_handlers()` — the `ActionHandlerRegistry` is consulted before
+/// the CommandSpec in dispatch. CR.6a seeds the hunk-nav actions; CR.6b
+/// folds in `action:diff-*` + the `:diff*` ex-commands.
+fn register_diff_commands(registry: &mut CommandRegistry) {
+    for (name, doc) in [
+        (
+            "action:hunk-next",
+            "diff `]c`: jump the cursor to the next hunk start (wraps).",
+        ),
+        (
+            "action:hunk-prev",
+            "diff `[c`: jump the cursor to the previous hunk start (wraps).",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: Box::new(|_| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        );
+    }
 }

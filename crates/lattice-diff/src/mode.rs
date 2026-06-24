@@ -203,9 +203,24 @@ impl Mode for DiffMode {
             let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
             sub.diff_put_effect(active, ctx.cursor.line, None)
         });
+        // CR.6 (2026-06-24): `]c`/`[c` hunk-nav, now mode-owned (was the
+        // host's `do_next_hunk`/`do_prev_hunk`). The resolvers return a
+        // generic `Effect::SelectionChange`; the host owns the cursor write.
+        let next_hunk: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let sub = ctx.services.get::<DiffSubsystemHandle>()?;
+            let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            sub.diff_next_hunk_effect(active, ctx.cursor.line)
+        });
+        let prev_hunk: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let sub = ctx.services.get::<DiffSubsystemHandle>()?;
+            let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            sub.diff_prev_hunk_effect(active, ctx.cursor.line)
+        });
         vec![
             ActionHandlerContribution { action_name: "action:diff-get", handler: get },
             ActionHandlerContribution { action_name: "action:diff-put", handler: put },
+            ActionHandlerContribution { action_name: "action:hunk-next", handler: next_hunk },
+            ActionHandlerContribution { action_name: "action:hunk-prev", handler: prev_hunk },
         ]
     }
     // ML.3: the `+N ~M` summary moved off `status_line_items` to a
@@ -443,6 +458,16 @@ fn diff_mode_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "dp",
                 doc: "diff-put: push the current side's hunk into the peer buffer",
                 cmd: "action:diff-put"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]c",
+                doc: "diff: jump the cursor to the next hunk start (wraps)",
+                cmd: "action:hunk-next"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[c",
+                doc: "diff: jump the cursor to the previous hunk start (wraps)",
+                cmd: "action:hunk-prev"
             },
         ]
     })
@@ -858,7 +883,13 @@ mod tests {
             .collect();
         assert_eq!(
             pairs,
-            vec![("do", Some("action:diff-get")), ("dp", Some("action:diff-put"))],
+            vec![
+                ("do", Some("action:diff-get")),
+                ("dp", Some("action:diff-put")),
+                // CR.6: hunk-nav is mode-owned now (was host do_next/prev_hunk).
+                ("]c", Some("action:hunk-next")),
+                ("[c", Some("action:hunk-prev")),
+            ],
         );
     }
 
@@ -875,7 +906,15 @@ mod tests {
             .iter()
             .map(|c| c.action_name)
             .collect();
-        assert_eq!(names, vec!["action:diff-get", "action:diff-put"]);
+        assert_eq!(
+            names,
+            vec![
+                "action:diff-get",
+                "action:diff-put",
+                "action:hunk-next",
+                "action:hunk-prev",
+            ]
+        );
     }
 
     /// CR.3: `DiffConflictMode` keymap maps the 5 vim-fugitive chords to

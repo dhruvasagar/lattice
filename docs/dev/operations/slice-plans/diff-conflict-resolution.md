@@ -1,6 +1,8 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** ✅ COMPLETE (2026-06-24). CR.0–CR.5 all landed. Builds on
+**Status:** ✅ COMPLETE (2026-06-24). CR.0–CR.6 all landed (CR.6 = the
+mode-ownership-audit follow-up: hunk-nav + full command self-registration).
+Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -169,6 +171,39 @@ Two threads, decided with Dhruva (2026-06-24):
     existing `sync_diff_modeline_element`, on the actor — never the render thread).
   - **Cleanup:** `boot-composition.md` follow-up marked ✅ landed; memory
     `[[project_boot_composition]]` updated.
+
+- **CR.6 ✅ — mode-ownership audit follow-up (Dhruva, 2026-06-24).** A careful
+  audit after CR.5 found the diff chord surface fully mode-owned but two gaps:
+  (a) `]c`/`[c` hunk-nav bodies were still host `Editor` methods (a
+  half-migration — pure subsystem-read + cursor-set, no `&mut Editor`
+  primitive), and (b) the diff command *declarations* lived in
+  `lattice-grammar`/host `actions.rs`, not the mode crate. Dhruva directed: modes
+  register their own commands + all movable `do_*` move to modes. Two slices:
+  - **CR.6a ✅ — hunk-nav fully mode-owned.** `DiffSubsystem::diff_next_hunk_effect`
+    / `diff_prev_hunk_effect` (lattice-diff) return a generic
+    `Effect::SelectionChange` (or an info `Echo` preserving the no-session /
+    no-hunks messages); `]c`/`[c` bound as `DiffMode` chords (were documented but
+    UNBOUND) → `action:hunk-next/prev` handlers; `Effect::NextHunk`/`PrevHunk`
+    arms rewired onto the resolver; `Editor::do_next_hunk`/`do_prev_hunk`
+    deleted.
+  - **CR.6b ✅ — diff commands self-registered.** All diff command
+    *declarations* moved to `lattice_diff::install()` via `boot.commands_mut()`
+    (multibuffer pattern): 9 actions + 11 ex-commands + the 5 relocated
+    parse/apply helpers, registered under PLAIN names (no `ex:` prefix / host
+    alias — `:diff` resolves canonically). Removed from `lattice-grammar`
+    (11 regs + `ExCommands` fields + return + 5 fns), host `actions.rs`
+    (`diff_get`/`diff_put` ActionIds + conflict-shell loop + `register_mode_owned`),
+    host `excommand.rs` (11 aliases).
+  - **Boundary (accepted):** the lifecycle `Effect` appliers
+    (`do_diff_open`/`diffsplit`/`off`/`accept`/`reject`/`diffthis`) stay host —
+    they mutate `&mut Editor` (pane tree, document actor, task spawning), which
+    `lattice-diff` cannot reach without a dependency cycle. This is the
+    Effect-vocabulary-is-the-host-boundary rule (`feedback_effect_vocabulary_is_host_boundary`);
+    getting those bodies out needs the host-provider-inversion initiative
+    (deferred). End state: every diff command declaration + every chord body is
+    mode-owned; only the generic lifecycle Effect appliers remain host.
+  - Green: 237 lattice-diff + 562 host lib + 199 grammar + 9 diff pins + 14 BC.2
+    pins; both renderer peers compile.
 
 ## Risks / open questions
 

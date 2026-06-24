@@ -329,27 +329,11 @@ pub enum Action {
     // (`active-snippet-mode`'s per-buffer handler clears the
     // session + returns `Effect::EnterMode(Normal)`); no host
     // `Action` round-trip. (`feedback_mode_owns_its_surface`.)
-    /// D.5.b (2026-05-30): diff-mode `do` operator. Resolves
-    /// the hunk under the cursor on the current side of the
-    /// active `DiffSession` for the current buffer and
-    /// rewrites the current side to match the baseline (cf.
-    /// `crate::diff::subsystem::DiffSubsystem::compute_get_edit`).
-    /// Gated by K.1.c: the binding only fires when `diff-mode`
-    /// is in the active buffer's `ActiveModes.minors()`, so a
-    /// non-diff buffer receiving the chord falls through to
-    /// the normal `do` resolution (operator `d` + `o`, which
-    /// the trie rejects), not this variant. No-ops silently
-    /// if there's no hunk under the cursor or a recompute
-    /// hasn't published one yet.
-    DiffGet,
-    /// D.5.c (2026-05-30): diff-mode `dp` (diff-put) operator.
-    /// Pushes the current side's hunk text into the peer
-    /// buffer (two-pane sessions). For inline file-on-disk
-    /// baselines (no peer buffer) the dispatch handler emits
-    /// a clear error rather than silently no-op'ing — see
-    /// `Editor::do_diff_put` and
-    /// `crate::diff::subsystem::DiffSubsystem::compute_put_plan`.
-    DiffPut,
+    // CR.1 (2026-06-24): `Action::DiffGet` / `Action::DiffPut` deleted.
+    // The diff `do`/`dp` chords are mode-owned (`DiffMode::action_handlers()`
+    // → `Effect::ApplyEdit`), so they flow through the generic
+    // `Action::ApplyEdit` below instead of a host-side diff variant — the
+    // mode-ownership acid test (`feedback_mode_owns_its_surface`).
     /// CR.0: host counterpart of [`lattice_grammar::Effect::ApplyEdit`].
     /// Applies a mode-computed `edit` to `target` (routing through the
     /// active-document pipeline when `target` is the focused buffer, or

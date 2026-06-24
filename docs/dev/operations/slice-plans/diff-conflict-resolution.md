@@ -1,6 +1,6 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1–CR.5 planned. Builds on
+**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2–CR.5 planned. Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -82,13 +82,24 @@ Two threads, decided with Dhruva (2026-06-24):
   new `apply_edit_effect_edits_active_buffer_and_parks_cursor` (host lib, proves
   translate-then-apply single-apply) + 561 host lib + 227 lattice-diff + 14 BC.2
   + 7 DX.1 + 15 diff get/put behaviour tests.
-- **CR.1 — migrate `do_diff_get`/`do_diff_put` to `DiffMode::action_handlers()`.**
-  Closures in `lattice-diff` read cursor/buffer/subsystem from `ActionContext`,
-  call `compute_get_edit`/`compute_put`, return `Effect::ApplyEdit` (or `Echo` on
-  `TargetRequired`/error). Empty the `AppEffect::DiffGet/DiffPut` arms; delete
-  `Editor::do_diff_get/do_diff_put` + `Action::DiffGet/DiffPut`. **Arbiter:** the
-  DX.1 chord pins + the existing `do_diff_get_*`/`do_diff_put_*` behaviour tests
-  (migrated to drive through the handler). Proves the full-ownership pattern.
+- **CR.1 ✅ — migrate `do_diff_get`/`do_diff_put` to `DiffMode::action_handlers()`.**
+  Landed: `DiffSubsystem::diff_get_effect`/`diff_put_effect` (lattice-diff) wrap
+  `compute_get_edit`/`compute_put_plan` outcomes into `Effect::ApplyEdit` (get →
+  active buffer; put → peer `target_buffer_id`) or an error `Echo`
+  (`TargetRequired`/`NoPeerBuffer`, wording preserved verbatim) or `None`.
+  `DiffMode::action_handlers()` registers `action:diff-get`/`action:diff-put`
+  closures that read buffer/cursor from `ActionContext` + the
+  `DiffSubsystemHandle` service and call the resolvers (`target = None`),
+  auto-registered by the host's existing `register_mode_action_handlers` boot
+  walk. Host: `AppEffect::DiffGet/DiffPut` arms emptied to the no-op fallback;
+  `Editor::do_diff_get`/`do_diff_put` + `Action::DiffGet`/`DiffPut` **deleted**;
+  the `:diffget`/`:diffput` ex-commands rewired to the same resolver + a shared
+  `apply_diff_effect_inline` (synchronous, no `next_actions` dependency). Acid
+  test passes: zero `Editor::do_diff_*`, zero `Action::Diff*`. **Arbiter green:**
+  DX.1 pins (7) + the 15 diff get/put behaviour tests migrated to drive through
+  `diff_*_effect` + `apply_diff_effect_inline` + 4 new lattice-diff resolver/
+  `action_handlers` tests + 561 host lib + 14 BC.2 pins. (Residue for CR.4: the
+  ex-command CommandSpec registration still lives host-side.)
 - **CR.2 — conflict edit + ops in `lattice-diff`.** `compute_keep_both_edit`
   (ours⌢theirs splice at the conflict hunk) beside `compute_get_edit`; keep-ours/
   keep-theirs reuse `compute_get_edit` with the resolved slot→bufnr target.

@@ -50,11 +50,13 @@
 //! the bucket empties.
 
 use lattice_core::{BufferId, FoldOverlayServiceHandle, ProviderId};
+use lattice_grammar::Effect;
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{
-    DecorationCtx, ElementContent, ElementId, GutterDecoration, GutterDiffKind, Keymap, KeymapEntry,
-    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModelineElement, ModelineRole,
-    ModelineService, Scope, Zone, keymap_entry,
+    ActionContext, ActionHandler, ActionHandlerContribution, DecorationCtx, ElementContent,
+    ElementId, GutterDecoration, GutterDiffKind, Keymap, KeymapEntry, LifecycleFuture, Mode,
+    ModeContext, ModeId, ModeKind, ModelineElement, ModelineRole, ModelineService, Scope, Zone,
+    keymap_entry,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -173,6 +175,38 @@ impl Mode for DiffMode {
     /// now lives wholly with the mode; the host pushes nothing diff-specific.
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(diff_mode_keymap_entries())
+    }
+    /// CR.1 (2026-06-24): the `do`/`dp` chord handler bodies, now
+    /// mode-owned (they were `Editor::do_diff_get`/`do_diff_put` +
+    /// `Action::DiffGet`/`DiffPut` host-side). Bound globally
+    /// (buffer-agnostic) at boot by the host's `register_mode_action_handlers`
+    /// walk: `diff-mode` is active on many buffers at once and the
+    /// `ActionHandlerRegistry` is keyed by `CommandId` alone, so a
+    /// per-`on_activate` registration would let one buffer's deactivation
+    /// evict the handler for the others — the snippet `action:snippet-expand`
+    /// precedent. Each handler reads the active buffer + cursor from the
+    /// `ActionContext` and the diff session from the `DiffSubsystemHandle`
+    /// service, resolves the hunk via `DiffSubsystem::diff_*_effect`, and
+    /// hands the host an `Effect::ApplyEdit` (CR.0): the mode owns the
+    /// resolution, the host owns the apply. `do`/`dp` pass `None` as the
+    /// target (auto-resolve the peer in 2-way; "target required" in 3-way);
+    /// the `:diffget`/`:diffput` optional `<bufnr>` is a separate host call
+    /// into the same `diff_*_effect` resolver.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        let get: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let sub = ctx.services.get::<DiffSubsystemHandle>()?;
+            let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            sub.diff_get_effect(active, ctx.cursor.line, None)
+        });
+        let put: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let sub = ctx.services.get::<DiffSubsystemHandle>()?;
+            let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            sub.diff_put_effect(active, ctx.cursor.line, None)
+        });
+        vec![
+            ActionHandlerContribution { action_name: "action:diff-get", handler: get },
+            ActionHandlerContribution { action_name: "action:diff-put", handler: put },
+        ]
     }
     // ML.3: the `+N ~M` summary moved off `status_line_items` to a
     // registered modeline element (`register_diff_modeline_element` /
@@ -625,6 +659,22 @@ mod tests {
             pairs,
             vec![("do", Some("action:diff-get")), ("dp", Some("action:diff-put"))],
         );
+    }
+
+    /// CR.1: `DiffMode::action_handlers()` contributes exactly the
+    /// `do`/`dp` handler bodies, keyed to the `action:diff-get` /
+    /// `action:diff-put` command names — the SAME names the keymap binds,
+    /// so the host's `register_mode_action_handlers` boot walk resolves
+    /// each to the chord's `CommandId`. Catches a name drift or a
+    /// dropped/duplicated handler.
+    #[test]
+    fn action_handlers_contribute_diff_get_and_put() {
+        let names: Vec<&str> = DiffMode
+            .action_handlers()
+            .iter()
+            .map(|c| c.action_name)
+            .collect();
+        assert_eq!(names, vec!["action:diff-get", "action:diff-put"]);
     }
 
     /// ML.3b: the formatter counts adds vs changes (Change/Conflict/Remove

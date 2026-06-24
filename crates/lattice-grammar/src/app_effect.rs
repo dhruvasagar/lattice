@@ -563,21 +563,16 @@ pub enum AppEffect {
     /// (`<C-Space>`). Restores the mixed merged candidate list.
     CompletionFilterClear,
     /// D.5.b (2026-05-30): diff-mode `do` (diff-get) operator.
-    /// Resolves the hunk under the cursor on the current side
-    /// of the active `DiffSession` and replaces / inserts /
-    /// deletes the current side to match the baseline for that
-    /// hunk. No-ops when no session, no hunk, or the hunk is a
-    /// three-way `Conflict` (D.6 handles those). Translated to
-    /// `Action::DiffGet` by the translate path; routed to
-    /// `editor.do_diff_get()` from the dispatch path.
+    /// CR.1 (2026-06-24): `do` is now mode-owned
+    /// (`DiffMode::action_handlers()` → `Effect::ApplyEdit`); this
+    /// `AppEffect` is retained only as the FALLBACK the `action:diff-get`
+    /// CommandSpec emits when no handler is registered. The host's
+    /// `apply_app_effect` arm is emptied to a silent no-op (the
+    /// `Action::DiffGet` variant it used to push is deleted).
     DiffGet,
     /// D.5.c (2026-05-30): diff-mode `dp` (diff-put) operator.
-    /// Mirror of [`Self::DiffGet`] — pushes the current
-    /// side's hunk text into the peer buffer (two-pane
-    /// sessions). For inline file-on-disk baselines (and
-    /// D.7's future git-baseline) there's no peer buffer;
-    /// the dispatch handler emits "dp: baseline is not a
-    /// buffer; use :write" rather than silently no-op'ing.
+    /// CR.1: mirror of [`Self::DiffGet`] — mode-owned now; retained as
+    /// the emptied `action:diff-put` fallback shell.
     DiffPut,
     /// T.3: tutor-mode `<CR>` / `:tutor-next`. Advance to the
     /// next exercise; advance to the next lesson when the

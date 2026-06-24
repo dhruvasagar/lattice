@@ -675,6 +675,25 @@ pub enum DiffPutOutcome {
     Nothing,
 }
 
+/// CR.1: the "three-way merge needs an explicit bufnr" error `Echo`
+/// shared by [`DiffSubsystem::diff_get_effect`] /
+/// [`DiffSubsystem::diff_put_effect`]. Preserves the host's former
+/// `do_diff_get`/`do_diff_put` wording verbatim so the migration is
+/// behaviour-preserving (`cmd` is `"diffget"` / `"diffput"`).
+fn target_required_echo(cmd: &str, available_targets: &[BufferId]) -> lattice_grammar::Effect {
+    let avail = available_targets
+        .iter()
+        .map(|b| b.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    lattice_grammar::Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: format!(
+            "{cmd}: target required for three-way merge; use :{cmd} <bufnr> (one of: {avail})"
+        ),
+    }
+}
+
 /// D.5.b helper: slice the rope at the given line range and
 /// return the contents as a `String`. Half-open `[start, end)`.
 /// Empty range returns the empty string. Tolerant of an
@@ -1609,6 +1628,82 @@ impl DiffSubsystem {
             target_buffer_id,
             edit,
             post_cursor_row: active_range.start,
+        }
+    }
+
+    /// CR.1 (2026-06-24): resolve the diff-get (`do` chord / `:diffget`)
+    /// at `cursor_row` on `active_buffer` into an [`Effect`] the host
+    /// applies — the mode-owned replacement for the host's former
+    /// `Editor::do_diff_get`. Diff-get rewrites the *active* side's hunk
+    /// to match the resolved baseline, so the edit targets `active_buffer`
+    /// (the cursor's buffer); the `target_buffer_id` from
+    /// [`Self::compute_get_edit`] names only the source side and is NOT
+    /// the apply target.
+    ///
+    /// - covering hunk → `Effect::ApplyEdit { target: active_buffer, .. }`
+    ///   carrying the post-edit cursor row;
+    /// - three-way without a disambiguating `target` → an error `Echo`
+    ///   listing the available bufnrs;
+    /// - nothing under the cursor / no session → `None` (silent no-op).
+    pub fn diff_get_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+        target: Option<BufferId>,
+    ) -> Option<lattice_grammar::Effect> {
+        match self.compute_get_edit(active_buffer, cursor_row, target) {
+            DiffGetOutcome::Edit {
+                edit,
+                post_cursor_row,
+                ..
+            } => Some(lattice_grammar::Effect::ApplyEdit {
+                target: active_buffer,
+                edit,
+                cursor: Some(post_cursor_row),
+            }),
+            DiffGetOutcome::TargetRequired { available_targets } => {
+                Some(target_required_echo("diffget", &available_targets))
+            }
+            DiffGetOutcome::Nothing => None,
+        }
+    }
+
+    /// CR.1 (2026-06-24): resolve the diff-put (`dp` chord / `:diffput`)
+    /// at `cursor_row` on `active_buffer` into an [`Effect`] — the
+    /// mode-owned replacement for `Editor::do_diff_put`. Diff-put pushes
+    /// the active side's hunk INTO the peer, so the edit targets the
+    /// resolved `target_buffer_id` (the peer); the cursor parks on the
+    /// active side.
+    ///
+    /// - peer + covering hunk → `Effect::ApplyEdit { target: peer, .. }`;
+    /// - inline baseline (no live peer buffer) → an error `Echo`
+    ///   ("dp: baseline is not a buffer; use :write");
+    /// - three-way without a `target` → an error `Echo` listing bufnrs;
+    /// - nothing under the cursor / no session → `None`.
+    pub fn diff_put_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+        target: Option<BufferId>,
+    ) -> Option<lattice_grammar::Effect> {
+        match self.compute_put_plan(active_buffer, cursor_row, target) {
+            DiffPutOutcome::Edit {
+                target_buffer_id,
+                edit,
+                post_cursor_row,
+            } => Some(lattice_grammar::Effect::ApplyEdit {
+                target: target_buffer_id,
+                edit,
+                cursor: Some(post_cursor_row),
+            }),
+            DiffPutOutcome::NoPeerBuffer => Some(lattice_grammar::Effect::Echo {
+                level: lattice_grammar::EchoLevel::Error,
+                text: "dp: baseline is not a buffer; use :write".to_string(),
+            }),
+            DiffPutOutcome::TargetRequired { available_targets } => {
+                Some(target_required_echo("diffput", &available_targets))
+            }
+            DiffPutOutcome::Nothing => None,
         }
     }
 
@@ -3340,6 +3435,67 @@ mod tests {
             lattice_protocol::edit::EditKind::Replace { ref text } => {
                 assert_eq!(text, "base-a\nbase-b\n");
             }
+        }
+    }
+
+    /// CR.1: `diff_get_effect` wraps a covering `compute_get_edit`
+    /// outcome into `Effect::ApplyEdit` targeting the ACTIVE buffer
+    /// (diff-get rewrites the cursor's side) with the post-edit cursor
+    /// row; the carried edit equals the `compute_get_edit` plan's edit.
+    #[test]
+    fn diff_get_effect_wraps_edit_for_active_buffer() {
+        let (sub, key) = fixture_with_baseline("base-a\nbase-b\n");
+        publish_hunks(
+            &sub,
+            key,
+            vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![lr(0, 2), lr(3, 5)],
+            }],
+        );
+        let plan_edit = sub.compute_get_edit(key, 3, None).into_plan().unwrap().edit;
+        match sub.diff_get_effect(key, 3, None) {
+            Some(lattice_grammar::Effect::ApplyEdit {
+                target,
+                edit,
+                cursor,
+            }) => {
+                assert_eq!(target, key, "diff-get edits the active (cursor) buffer");
+                assert_eq!(cursor, Some(3));
+                assert_eq!(edit, plan_edit);
+            }
+            other => panic!("expected ApplyEdit, got {other:?}"),
+        }
+    }
+
+    /// CR.1: no covering hunk → `diff_get_effect` is `None` (silent
+    /// no-op), mirroring `compute_get_edit`'s `Nothing`.
+    #[test]
+    fn diff_get_effect_none_when_no_hunk() {
+        let (sub, key) = fixture_with_baseline("base-a\n");
+        assert!(sub.diff_get_effect(key, 0, None).is_none());
+    }
+
+    /// CR.1: `diff_put_effect` against an inline baseline (the baseline
+    /// side is a `StaticSource`, not a live buffer) yields the error
+    /// `Echo` — preserving the pre-CR.1 `do_diff_put` wording verbatim —
+    /// not an `ApplyEdit`.
+    #[test]
+    fn diff_put_effect_inline_baseline_yields_error_echo() {
+        let (sub, key) = fixture_with_baseline("base-a\nbase-b\n");
+        publish_hunks(
+            &sub,
+            key,
+            vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![lr(0, 2), lr(3, 5)],
+            }],
+        );
+        match sub.diff_put_effect(key, 3, None) {
+            Some(lattice_grammar::Effect::Echo { text, .. }) => {
+                assert_eq!(text, "dp: baseline is not a buffer; use :write");
+            }
+            other => panic!("expected an error Echo, got {other:?}"),
         }
     }
 

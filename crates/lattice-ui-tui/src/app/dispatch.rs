@@ -382,19 +382,12 @@ impl App {
             // navigation is mode-owned (`active-snippet-mode`'s
             // `ActionHandlerRegistry` closures); the
             // `Action::SnippetNext/PrevPlaceholder` variants are gone.
-            // D.5.b (2026-05-30): diff-mode `do` is
-            // host-resident — `Editor::do_diff_get` resolves
-            // the hunk under cursor and replaces the
-            // current side via `apply_edit_blocking`.
-            | Action::DiffGet
-            // D.5.c (2026-05-30): diff-mode `dp` is
-            // host-resident — `Editor::do_diff_put` resolves
-            // the hunk under cursor and pushes the current
-            // side's text into the peer buffer.
-            | Action::DiffPut
+            // CR.1 (2026-06-24): `Action::DiffGet`/`DiffPut` deleted; the
+            // diff `do`/`dp` chords flow through `Action::ApplyEdit` below
+            // (mode-owned `DiffMode::action_handlers()` → `Effect::ApplyEdit`).
             // CR.0: generic edit-apply primitive. Host-resident body in
-            // `Editor::handle_action` (`apply_targeted_edit`); grouped
-            // no-op here like its `DiffGet`/`DiffPut` peers.
+            // `Editor::handle_action` (`apply_edit_effect_inline`); grouped
+            // no-op here.
             | Action::ApplyEdit { .. }
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter

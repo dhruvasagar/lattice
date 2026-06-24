@@ -2199,40 +2199,24 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // `ActionHandlerRegistry` closures); the
         // `Action::SnippetNext/PrevPlaceholder` arms + the
         // `Editor::do_snippet_*` bodies are gone.
-        // D.5.b: diff-mode `do` — resolve the hunk under
-        // the cursor and rewrite the current side to match
-        // the baseline.
-        Action::DiffGet => editor.do_diff_get(None),
-        // D.5.c: diff-mode `dp` — push the current side's
-        // hunk into the peer buffer.
-        Action::DiffPut => editor.do_diff_put(None),
+        // CR.1 (2026-06-24): the diff-mode `do`/`dp` chords are now
+        // mode-owned (`DiffMode::action_handlers()` → `Effect::ApplyEdit`);
+        // the `Action::DiffGet`/`DiffPut` variants + `Editor::do_diff_*`
+        // bodies are deleted. The chord flows handler → `Effect::ApplyEdit`
+        // → this `Action::ApplyEdit` arm.
+        //
         // CR.0: generic edit-apply primitive. A mode handler computed
         // `edit` against `target` (a diff hunk get/put, a conflict
-        // resolution); apply it through `apply_targeted_edit` (active-
-        // document pipeline vs peer-buffer handle) and park the active
-        // cursor when the handler supplied a row. On a recoverable
-        // apply error, log + leave the cursor put — the
-        // `do_diff_get`/`do_diff_put` failure shape this subsumes in
-        // CR.1.
+        // resolution); apply it through `apply_edit_effect_inline`
+        // (`apply_targeted_edit`: active-document pipeline vs peer-buffer
+        // handle) and park the active cursor when the handler supplied a
+        // row. On a recoverable apply error, it logs + leaves the cursor
+        // put.
         Action::ApplyEdit {
             target,
             edit,
             cursor,
-        } => match editor.apply_targeted_edit(target, edit) {
-            Ok(_) => {
-                if let Some(row) = cursor {
-                    editor.cursor = lattice_protocol::position::Position::new(row, 0);
-                }
-            }
-            Err(err) => {
-                tracing::debug!(
-                    target: "lattice_host::edit",
-                    ?target,
-                    ?err,
-                    "Effect::ApplyEdit apply failed; cursor unchanged"
-                );
-            }
-        },
+        } => editor.apply_edit_effect_inline(target, edit, cursor),
         // M.10.7 (2026-06-03): four Action arms removed —
         // `MultibufferExpand`, `SearchTrigger`,
         // `SearchJumpToSource`, `SearchRefresh`. All four
@@ -3011,16 +2995,23 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.do_diffsplit(path, remote);
         }
         Effect::DiffGetCmd { target } => {
-            // D.6.d: `:diffget [<bufnr>]` — pull the hunk
-            // under the cursor from the named (or
-            // auto-resolved) buffer side. Same
-            // computation as the `do` chord, but
-            // target-aware: explicit `<bufnr>` resolves
-            // three-way ambiguity and unlocks Conflict
-            // resolution. No-arg semantics match the
-            // chord (None ⇒ peer in 2-way, "target
-            // required" error in 3-way).
-            editor.do_diff_get(target.map(lattice_core::BufferId));
+            // D.6.d / CR.1: `:diffget [<bufnr>]` — pull the hunk under
+            // the cursor from the named (or auto-resolved) buffer side.
+            // Same resolver as the `do` chord (`DiffSubsystem::diff_get_effect`),
+            // but target-aware: explicit `<bufnr>` resolves three-way
+            // ambiguity. CR.1 retired `Editor::do_diff_get`, so the
+            // ex-command computes the `Effect` here and applies it
+            // synchronously (`apply_diff_effect_inline`) — preserving the
+            // pre-CR.1 synchronous behaviour without depending on the
+            // ex-command effect-drain path forwarding `next_actions`.
+            // (CR.4 rehomes the ex-command registration into lattice-diff.)
+            let target = target.map(lattice_core::BufferId);
+            let eff = editor.diff_subsystem.diff_get_effect(
+                editor.document_buffer_id,
+                editor.cursor.line,
+                target,
+            );
+            editor.apply_diff_effect_inline(eff, out);
         }
         Effect::DiffAccept => {
             // D.6.e: `:diff-accept` — resolve the active
@@ -3035,11 +3026,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             editor.do_diff_reject();
         }
         Effect::DiffPutCmd { target } => {
-            // D.6.d: `:diffput [<bufnr>]` — push the hunk
-            // under the cursor into the named (or
-            // auto-resolved) buffer side. Mirror of
-            // `:diffget` for the put direction.
-            editor.do_diff_put(target.map(lattice_core::BufferId));
+            // D.6.d / CR.1: `:diffput [<bufnr>]` — push the hunk under
+            // the cursor into the named (or auto-resolved) buffer side.
+            // Mirror of `:diffget` for the put direction; same CR.1
+            // synchronous-apply rationale.
+            let target = target.map(lattice_core::BufferId);
+            let eff = editor.diff_subsystem.diff_put_effect(
+                editor.document_buffer_id,
+                editor.cursor.line,
+                target,
+            );
+            editor.apply_diff_effect_inline(eff, out);
         }
         Effect::NextHunk => {
             // D.3.c: `]c` — jump cursor to next hunk start
@@ -3158,12 +3155,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         } => {
             // CR.0: a mode handler computed a pending edit against an
             // explicit target buffer. Defer the apply through
-            // `out.next_actions` (the same round-trip
-            // `AppEffect::DiffGet → Action::DiffGet` uses) so the edit +
-            // cursor land in the action dispatch where every other
-            // buffer mutation lives — and records exactly once through
-            // `publish_document_changed` (risk #1). Translating here
-            // (not applying) keeps `handle_effect` side-effect-light.
+            // `out.next_actions` (the same deferral the `AppEffect → Action`
+            // round-trip uses) so the edit + cursor land in the action
+            // dispatch where every other buffer mutation lives — and
+            // records exactly once through `publish_document_changed`
+            // (risk #1). Translating here (not applying) keeps
+            // `handle_effect` side-effect-light.
             out.next_actions.push(Action::ApplyEdit {
                 target,
                 edit,
@@ -5713,8 +5710,14 @@ impl Editor {
             AppEffect::SnippetPrevPlaceholder => {}
             // SN.3c.2 (2026-06-14): `AppEffect::SnippetLeave` removed —
             // `<Esc>` no longer round-trips through a host Action.
-            AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
-            AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
+            // CR.1 (2026-06-24): `do`/`dp` are mode-owned
+            // (`DiffMode::action_handlers()` → `Effect::ApplyEdit`), so the
+            // `action:diff-*` CommandSpec's `AppEffect` is now only the
+            // FALLBACK reached when no handler is registered (the
+            // ActionHandlerRegistry is consulted first in `dispatch`). The
+            // arm is emptied to a silent no-op — the `Action::DiffGet`/
+            // `DiffPut` variants it used to push are deleted. (risk #2)
+            AppEffect::DiffGet | AppEffect::DiffPut => {}
             AppEffect::TutorAdvance => {
                 out.renderer_signals.extend(self.do_tutor_advance());
             }
@@ -12938,6 +12941,58 @@ impl Editor {
         Ok(applied)
     }
 
+    /// CR.0/CR.1: apply a resolved `Effect::ApplyEdit` synchronously —
+    /// the shared body the `Action::ApplyEdit` arm and the
+    /// `:diffget`/`:diffput` ex-command path both call. Routes through
+    /// [`Self::apply_targeted_edit`] (active-document pipeline vs peer
+    /// handle) and parks the active cursor when the handler supplied a
+    /// row. On a recoverable apply error, logs + leaves the cursor put.
+    pub fn apply_edit_effect_inline(
+        &mut self,
+        target: lattice_core::BufferId,
+        edit: lattice_protocol::edit::Edit,
+        cursor: Option<u32>,
+    ) {
+        match self.apply_targeted_edit(target, edit) {
+            Ok(_) => {
+                if let Some(row) = cursor {
+                    self.cursor = lattice_protocol::position::Position::new(row, 0);
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "lattice_host::edit",
+                    ?target,
+                    ?err,
+                    "Effect::ApplyEdit apply failed; cursor unchanged"
+                );
+            }
+        }
+    }
+
+    /// CR.1: apply the `Option<Effect>` a `DiffSubsystem::diff_*_effect`
+    /// resolver returned, for the `:diffget`/`:diffput` ex-command path.
+    /// An `Effect::ApplyEdit` applies synchronously (preserving the
+    /// pre-CR.1 `do_diff_*` behaviour without relying on the ex-command
+    /// effect drain to forward `next_actions`); any other effect (the
+    /// error `Echo` for `TargetRequired` / `NoPeerBuffer`) routes through
+    /// the host's `handle_effect`; `None` is a silent no-op.
+    pub fn apply_diff_effect_inline(
+        &mut self,
+        eff: Option<Effect>,
+        out: &mut DispatchOutcome,
+    ) {
+        match eff {
+            Some(Effect::ApplyEdit {
+                target,
+                edit,
+                cursor,
+            }) => self.apply_edit_effect_inline(target, edit, cursor),
+            Some(other) => handle_effect(self, other, out),
+            None => {}
+        }
+    }
+
     /// 5.5.E.7.3: apply a single [`Edit`] to the active oil
     /// buffer's rope (`oil.content`). Returns the `AppliedEdit` with
     /// the inserted-range / removed-text fields populated, same
@@ -16290,161 +16345,14 @@ impl Editor {
 /// mode that owns the chords now owns the handler bodies
 /// (`feedback_mode_owns_its_surface`).
 impl Editor {
-    /// D.5.b (2026-05-30): handler for the diff-mode `do`
-    /// (diff-get) chord. Reads the active document's cursor
-    /// row, asks the diff subsystem to compute the get-edit
-    /// for the hunk under the cursor, applies it via the
-    /// standard `apply_edit_blocking` pipeline, and parks the
-    /// cursor at the hunk's start line.
-    ///
-    /// Silent no-op when there's no session, no descriptor,
-    /// no hunk under the cursor, or the matched hunk is a
-    /// three-way `Conflict` — the binding is invisible in
-    /// those states. K.1.c per-buffer gating already ensures
-    /// the chord doesn't fire on buffers without `diff-mode`
-    /// active, so a `compute_get_edit` returning `None` here
-    /// means the buffer *had* diff-mode active but the
-    /// session's hunks haven't published yet (mid-recompute)
-    /// or the cursor sits outside every hunk.
-    pub fn do_diff_get(&mut self, target: Option<lattice_core::BufferId>) {
-        let buffer_id = self.document_buffer_id;
-        let cursor_row = self.cursor.line;
-        match self
-            .diff_subsystem
-            .compute_get_edit(buffer_id, cursor_row, target)
-        {
-            crate::diff::subsystem::DiffGetOutcome::Edit {
-                edit,
-                post_cursor_row,
-                ..
-            } => {
-                // The edit cascades through `apply_edit_blocking`
-                // which fires `DocumentChanged` on the bus; the diff
-                // subsystem's debouncer collapses the burst into one
-                // recompute and republishes a fresh `HunkIndex`.
-                match self.apply_edit_blocking(edit) {
-                    Ok(_) => {
-                        self.cursor = lattice_protocol::position::Position::new(post_cursor_row, 0);
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            target: "lattice_host::diff::mode",
-                            ?buffer_id,
-                            ?err,
-                            "diff-mode `do` apply_edit_blocking failed; cursor unchanged"
-                        );
-                    }
-                }
-            }
-            crate::diff::subsystem::DiffGetOutcome::TargetRequired { available_targets } => {
-                // D.6.d: three-way merge needs an explicit
-                // bufnr. Surface a clear error pointing the
-                // user at the available choices.
-                let avail = available_targets
-                    .iter()
-                    .map(|b| b.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.set_message(
-                    EchoLevel::Error,
-                    format!(
-                        "diffget: target required for three-way merge; \
-                         use :diffget <bufnr> (one of: {avail})"
-                    ),
-                );
-            }
-            crate::diff::subsystem::DiffGetOutcome::Nothing => {}
-        }
-    }
-
-    /// D.5.c (2026-05-30): handler for the diff-mode `dp`
-    /// (diff-put) chord. Reads the active document's cursor
-    /// row, asks the subsystem for a put-plan, then:
-    /// - **Two-pane peer:** applies the carried edit to the
-    ///   peer buffer via the registry's `RopeDocumentHandle`,
-    ///   publishes `DocumentChanged` on the peer's id so its
-    ///   diff session recomputes through the standard
-    ///   pipeline, and parks the cursor at the hunk start on
-    ///   the current side.
-    /// - **No peer buffer (inline file-on-disk; D.7 git):**
-    ///   emits a clear error message — `dp` only makes sense
-    ///   when there's a live buffer to push into. Vim
-    ///   behaviour for `:diff <file>` against a non-buffer
-    ///   baseline is identical: `dp` fails with a clear
-    ///   diagnostic, not a silent no-op.
-    /// - **Nothing under cursor:** silent no-op (matches
-    ///   `do_diff_get`'s no-hunk semantics).
-    pub fn do_diff_put(&mut self, target: Option<lattice_core::BufferId>) {
-        let buffer_id = self.document_buffer_id;
-        let cursor_row = self.cursor.line;
-        match self
-            .diff_subsystem
-            .compute_put_plan(buffer_id, cursor_row, target)
-        {
-            crate::diff::subsystem::DiffPutOutcome::Edit {
-                target_buffer_id,
-                edit,
-                post_cursor_row,
-            } => {
-                let Some(handle) = self.buffers.document_handle(target_buffer_id) else {
-                    // Descriptor named a target that has since
-                    // closed (race with auto-drop). Silent
-                    // no-op — the session is on its way out.
-                    return;
-                };
-                match block_on(handle.apply_edit(edit)) {
-                    Ok(applied) => {
-                        // Fan out a DocumentChanged for the
-                        // target on the event bus. The
-                        // target's diff session (sharing the
-                        // same key) wakes its debouncer and
-                        // recomputes.
-                        let snap = handle.snapshot();
-                        let path = snap.path().map(|p| p.to_path_buf());
-                        let edit_event = lattice_protocol::event::AppliedEdit {
-                            original_range: applied.original_range,
-                            inserted_range: applied.inserted_range,
-                            replaced_text: applied.replaced_text.clone(),
-                            inserted_text: applied.inserted_text.clone(),
-                        };
-                        self.event_bus.publish(Event::DocumentChanged {
-                            id: snap.id,
-                            path,
-                            version: snap.version,
-                            edits: vec![edit_event],
-                        });
-                        self.cursor = lattice_protocol::position::Position::new(post_cursor_row, 0);
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            target: "lattice_host::diff::mode",
-                            ?target_buffer_id,
-                            ?err,
-                            "diff-mode `dp` target apply_edit failed; cursor unchanged"
-                        );
-                    }
-                }
-            }
-            crate::diff::subsystem::DiffPutOutcome::NoPeerBuffer => {
-                self.set_message(EchoLevel::Error, "dp: baseline is not a buffer; use :write");
-            }
-            crate::diff::subsystem::DiffPutOutcome::TargetRequired { available_targets } => {
-                let avail = available_targets
-                    .iter()
-                    .map(|b| b.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.set_message(
-                    EchoLevel::Error,
-                    format!(
-                        "diffput: target required for three-way merge; \
-                         use :diffput <bufnr> (one of: {avail})"
-                    ),
-                );
-            }
-            crate::diff::subsystem::DiffPutOutcome::Nothing => {}
-        }
-    }
+    // CR.1 (2026-06-24): `Editor::do_diff_get` / `do_diff_put` deleted.
+    // The `do`/`dp` chord bodies are now mode-owned in `lattice-diff`
+    // (`DiffMode::action_handlers()` → `DiffSubsystem::diff_get_effect` /
+    // `diff_put_effect` → `Effect::ApplyEdit`), and the `:diffget`/`:diffput`
+    // ex-commands call the same `diff_*_effect` resolver + the shared host
+    // `apply_diff_effect_inline` applier. Zero host-side diff handler
+    // bodies + zero `Action::Diff*` variants — the mode-ownership acid test
+    // (`feedback_mode_owns_its_surface`).
 
     /// Active buffer's snippet language id. Maps the active
     /// document's filename extension to a language string the
@@ -29260,6 +29168,35 @@ mod tests {
         editor
     }
 
+    /// CR.1 test driver: the post-migration replacement for the deleted
+    /// `editor.do_diff_get(target)`. Drives the SAME path the `do` chord
+    /// now takes — `DiffSubsystem::diff_get_effect` (the resolver
+    /// `DiffMode::action_handlers()` calls) → the host's
+    /// `apply_diff_effect_inline` applier (`Effect::ApplyEdit` →
+    /// `apply_targeted_edit`, or the error `Echo` → `set_message`).
+    fn drive_diff_get(editor: &mut Editor, target: Option<lattice_core::BufferId>) {
+        let eff = editor.diff_subsystem.diff_get_effect(
+            editor.document_buffer_id,
+            editor.cursor.line,
+            target,
+        );
+        let mut out = DispatchOutcome::default();
+        editor.apply_diff_effect_inline(eff, &mut out);
+    }
+
+    /// CR.1 test driver: the post-migration replacement for the deleted
+    /// `editor.do_diff_put(target)`. Mirror of [`drive_diff_get`] for the
+    /// put direction (`diff_put_effect`).
+    fn drive_diff_put(editor: &mut Editor, target: Option<lattice_core::BufferId>) {
+        let eff = editor.diff_subsystem.diff_put_effect(
+            editor.document_buffer_id,
+            editor.cursor.line,
+            target,
+        );
+        let mut out = DispatchOutcome::default();
+        editor.apply_diff_effect_inline(eff, &mut out);
+    }
+
     /// `do` on a Change hunk rewrites the current side's
     /// lines to match the baseline and parks the cursor at
     /// the hunk start. Verifies the full
@@ -29289,7 +29226,7 @@ mod tests {
 
         // Park cursor in the middle of the hunk.
         editor.cursor = lattice_protocol::position::Position::new(1, 0);
-        editor.do_diff_get(None);
+        drive_diff_get(&mut editor, None);
 
         // Buffer now matches the baseline.
         let snapshot = editor.document.snapshot();
@@ -29312,7 +29249,7 @@ mod tests {
         let cursor_before = editor.cursor;
         let snapshot_before = editor.document.snapshot().buffer.to_rope().to_string();
 
-        editor.do_diff_get(None);
+        drive_diff_get(&mut editor, None);
 
         let snapshot_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
@@ -29423,7 +29360,7 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
-        editor.do_diff_put(None);
+        drive_diff_put(&mut editor, None);
 
         // Peer (baseline) buffer now holds the current
         // side's content.
@@ -29490,7 +29427,7 @@ mod tests {
 
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
         let text_before = editor.document.snapshot().buffer.to_rope().to_string();
-        editor.do_diff_put(None);
+        drive_diff_put(&mut editor, None);
 
         // Error message surfaced, no document mutation.
         let msg = editor.last_message.as_ref().expect("error message set");
@@ -29530,7 +29467,7 @@ mod tests {
 
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
         let snapshot_before = editor.document.snapshot().buffer.to_rope().to_string();
-        editor.do_diff_get(None);
+        drive_diff_get(&mut editor, None);
         let snapshot_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
         assert_eq!(editor.cursor.line, 2);
@@ -32211,7 +32148,7 @@ mod tests {
 
         // The canonical case: `:diffput <remote-bufnr>`
         // pushes local's content into remote's range.
-        editor.do_diff_put(Some(remote_buffer));
+        drive_diff_put(&mut editor, Some(remote_buffer));
 
         // Remote buffer's row 1 should now contain
         // local's "LOCAL-bbb" (replacing "REMOTE-bbb").

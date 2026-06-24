@@ -83,12 +83,32 @@ the side with `:diffget <bufnr>` / `:diffput <bufnr>`.
 
 ## Three-way merge
 
-`:diffsplit <local> <remote>` sets up *local*, *base* (the current
-buffer), and *remote*. Regions where both local and remote changed
-the same base lines render as **conflict** hunks (distinctly tinted).
-Work through them with `do` / `dp` to assemble the result, then
-`:diff-accept` to resolve the session with the merged content (or
-`:diff-reject` to abandon it).
+`:diffsplit <base> <remote>` turns the current buffer into the editable
+*local* (= "ours") side and opens *base* and *remote* in vertical
+splits, forming a three-way session (`[base, local, remote]`). Regions
+where both local and remote changed the same base lines render as
+**conflict** hunks (distinctly tinted, with a `?` sign).
+
+Resolve each conflict from the **local** buffer with the vim-fugitive
+3-way chords:
+
+| Chord | Action |
+| --- | --- |
+| `d3o` | **keep-theirs** — replace the conflict region with the remote side |
+| `dB`  | **keep-both** — splice ours then theirs into local |
+| `d3p` | **put-theirs** — push the local side into remote |
+| `d2o` / `d2p` | **keep-ours / put-ours** — local already holds ours, so these echo a note rather than editing |
+
+`]c` / `[c` walk between hunks, conflicts included. `:diffget <bufnr>` /
+`:diffput <bufnr>` are the ex-command equivalents with an explicit target
+side. When the result looks right, `:diff-accept` resolves the session
+with the merged content (or `:diff-reject` abandons it).
+
+> **Why `d2o` / `d2p` only echo:** Lattice's three-way model is
+> marker-free — the local buffer already contains *your* version, so
+> "keep ours" has nothing to apply (there are no conflict markers to
+> strip). `d3o` (take theirs) and `dB` (keep both) are the chords that
+> actually edit the buffer.
 
 ---
 

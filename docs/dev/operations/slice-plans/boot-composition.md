@@ -252,8 +252,12 @@ migration is **behaviour-pinned before it moves**.
   lattice-diff tests + 560 host lib + 7 DX.1 / 14 BC.2 pins; full build (TUI +
   GPUI). **Post-BC.6:** MO.x ✅ (2026-06-24) migrated the diff `do`/`dp` keymap
   to `DiffMode::keymap()` (host K.2.4 pass owns the push; explicit host push +
-  `diff_mode_layer_bindings` retired). Remaining follow-up (NOT BC.6):
-  `diff-conflict-mode` resolution chords + bridge activation.
+  `diff_mode_layer_bindings` retired). Follow-up (NOT BC.6) **✅ landed in CR.x**
+  (2026-06-24): `diff-conflict-mode` resolution chords
+  (`d2o`/`d3o`/`d2p`/`d3p`/`dB`) + bridge-driven activation — see
+  `slice-plans/diff-conflict-resolution.md`. CR.1 also fully mode-owned `do`/`dp`
+  (deleted `Editor::do_diff_*` + `Action::Diff*`), closing the diff
+  mode-ownership acid test.
 
 - **BC.7 … BC.N — Migrate the remaining subsystems, one per slice.** multibuffer
   → LSP (LSP last: largest surface — its inbound buses [`InboundShowDocument`,

@@ -91,13 +91,19 @@ abstractions).
 - **`diff-conflict-mode`** (smerge-style): activates only when the session has
   conflict regions (`DiffSignKind::Conflict`), contributing conflict-resolution
   chords (keep-ours / keep-theirs / keep-both / next-conflict) + conflict gutter.
-  Today "conflict" exists only as a sign kind; this mode is where conflict
-  *resolution* becomes a first-class, separately-activatable surface. **Partly
-  forward-looking** — at DX.8, if conflict-resolution actions don't exist yet,
-  establish the mode shell + the activation predicate only, and track the
-  resolution chords as a follow-up. Do NOT invent behaviour to justify the mode;
-  the decomposition (separating conflict resolution from 2-way diffing) is the
-  win.
+  this mode is where conflict *resolution* is a first-class,
+  separately-activatable surface. DX.8 established the mode shell + the
+  `sign_map_has_conflicts` activation predicate only (forward-looking); the
+  resolution itself **landed in CR.x** (2026-06-24) — see
+  `slice-plans/diff-conflict-resolution.md`. The chords are the vim-fugitive
+  3-way family `d2o`/`d3o`/`d2p`/`d3p`/`dB` (keep-ours / keep-theirs /
+  put-ours / put-theirs / keep-both) + `]c`/`[c` (next/prev hunk, conflicts
+  included), mode-owned via `DiffConflictMode::keymap()` +
+  `action_handlers()`; activation is bridge-driven off the published sign map
+  (`DiffModeBridge::note_conflict_state`). In the marker-free model the cursor
+  sits on `local` (= ours), so `d2o`/`d2p` are degenerate self-targets that
+  echo rather than edit (decided with Dhruva). The decomposition (separating
+  conflict resolution from 2-way diffing) is the win.
 
 > **UX (higher court):** no runtime-UX change — the move is structural; the same
 > gutter signs, modeline element, overlay/filler rows, and `do`/`dp` chords

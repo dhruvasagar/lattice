@@ -1,6 +1,6 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3 ✅; CR.4 ✅; CR.5 planned. Builds on
+**Status:** ✅ COMPLETE (2026-06-24). CR.0–CR.5 all landed. Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -151,11 +151,24 @@ Two threads, decided with Dhruva (2026-06-24):
   residue. Green: `diff_ex_commands_resolve_at_boot` extended to cover
   `:diff-accept`/`:diff-reject` (9 diff pins) + the conflict-nav test + 562 host
   lib.
-- **CR.5 — four artefacts + cleanup.** Cross-renderer parity (conflict gutter
-  already renders — confirm both peers); design `diff-extraction.md` §4 → landed;
-  user docs (the `:diffget`/`:diffput` optional-target + the fugitive chords);
-  bench (no hot-path change — confirm). Mark CR ✅; update the diff-conflict-mode
-  follow-up in `boot-composition.md` + memory.
+- **CR.5 ✅ — four artefacts + cleanup.** Landed:
+  - **Cross-renderer parity — confirmed (no edit):** the `Conflict` gutter already
+    renders in BOTH peers (DX.8) — TUI `render.rs` (`?` sign +
+    `diff_conflict_line_bg`/`diff_conflict_sign_style`) and GPUI `window.rs`
+    (`GutterDiffKind::Conflict` → `?` + conflict bg). The conflict resolvers add
+    no new `Effect`/`DiffSignKind` variant, so there was nothing to propagate.
+  - **Design** `diff-extraction.md` §4 → updated from "forward-looking" to "landed
+    in CR.x" with the chord set + activation mechanism.
+  - **User docs** `docs/user/diff.md` → rewrote "Three-way merge": fixed the
+    inverted `:diffsplit` roles (it's `:diffsplit <base> <remote>`, current buffer
+    = local/ours), added the fugitive chord table + the `d2o`/`d2p` echo
+    rationale + the `:diffget`/`:diffput <bufnr>` optional-target note.
+  - **Bench — confirmed no hot-path change:** the resolvers run on chord/ex-command
+    press, not per-frame; `sync_diff_conflict_activation` is transition-only and
+    reads the already-computed active sign map (same O(signs) cost class as the
+    existing `sync_diff_modeline_element`, on the actor — never the render thread).
+  - **Cleanup:** `boot-composition.md` follow-up marked ✅ landed; memory
+    `[[project_boot_composition]]` updated.
 
 ## Risks / open questions
 

@@ -52,10 +52,10 @@
 
 use std::sync::Arc;
 
-use lattice_diff::HunkIndex;
+use crate::HunkIndex;
 
-use crate::diff::subsystem::DiffSession;
-use crate::pane_group::RowMapper;
+use crate::subsystem::DiffSession;
+use lattice_core::ui::pane::RowMapper;
 
 /// D.4.b / D.6.b: maps rows between two or three sides of a
 /// diff session.
@@ -290,7 +290,7 @@ fn apply_shift(row: u32, shift: i32) -> u32 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use lattice_diff::{DiffAlgorithm, Hunk, HunkKind, LineRange};
+    use crate::{DiffAlgorithm, Hunk, HunkKind, LineRange};
     use smallvec::smallvec;
 
     fn hunk(kind: HunkKind, baseline: LineRange, current: LineRange) -> Hunk {
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn unfamiliar_member_pair_falls_back_to_identity() {
-        use crate::pane_group::RowMapper;
+        use lattice_core::ui::pane::RowMapper;
         // We don't have a real DiffSession in the test;
         // but the (from, to) != (baseline, current) branch
         // never touches the session — it returns `row`
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn round_trip_through_session_uses_published_hunks() {
-        use crate::pane_group::RowMapper;
+        use lattice_core::ui::pane::RowMapper;
         let session = Arc::new(DiffSession::new(
             lattice_core::BufferId(1),
             DiffAlgorithm::Histogram,
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn three_pane_mapper_dispatches_all_six_member_pair_directions() {
-        use crate::pane_group::RowMapper;
+        use lattice_core::ui::pane::RowMapper;
         let session = Arc::new(DiffSession::new(
             lattice_core::BufferId(1),
             DiffAlgorithm::Histogram,
@@ -701,7 +701,7 @@ mod tests {
         // three-pane mapper: any direction involving pane 2
         // (remote) skips the hunk (missing range) and returns
         // identity (no shifts accumulate).
-        use crate::pane_group::RowMapper;
+        use lattice_core::ui::pane::RowMapper;
         let session = Arc::new(DiffSession::new(
             lattice_core::BufferId(1),
             DiffAlgorithm::Histogram,

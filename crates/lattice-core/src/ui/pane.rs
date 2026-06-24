@@ -61,6 +61,24 @@ impl PaneGroupId {
     }
 }
 
+/// D.4.a: pluggable row-mapping function for a pane group.
+///
+/// Indices are positions in the host `PaneGroup::members` vector
+/// (stable across pane re-ordering). Mappers consult their own state to
+/// translate; the identity mapper returns its input.
+///
+/// DX.3 (BC.6 diff extraction): moved DOWN from
+/// `lattice-host::pane_group` so `lattice-diff`'s `HunkRowMapper` can
+/// impl it without the host. The trait references only primitive types
+/// (`usize` / `u32`), so it sits cleanly at the bottom of the graph
+/// beside its `PaneGroupId` / `PaneId` identity siblings. The host keeps
+/// the `PaneGroup` registry + the `Identity`/`Offset` impls; it
+/// re-exports this trait so existing `crate::pane_group::RowMapper` call
+/// sites are unchanged.
+pub trait RowMapper: Send + Sync {
+    fn map_row(&self, from_member_idx: usize, to_member_idx: usize, row: u32) -> u32;
+}
+
 /// One leaf in the pane tree. Carries the per-pane viewport state
 /// for its content buffer; switching the active pane swaps these
 /// fields with `App::cursor` / `App::scroll` so motion code

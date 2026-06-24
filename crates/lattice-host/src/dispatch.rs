@@ -12636,6 +12636,18 @@ impl Editor {
             .lock()
             .expect("fold_registry poisoned");
         if matches!(fm, FoldMethod::Manual) && fold_reg.overlays().count() == 0 {
+            // DX.3-C7 (2026-06-24): overlays are mode-owned now and drop
+            // to zero when their owning mode deactivates (e.g. `:diffoff`
+            // → diff-mode off → `HunkFoldSource` removed). Manual
+            // foldmethod preserves hand-curated `zf` folds (always
+            // `identity: None`) verbatim, but must DROP any stale
+            // overlay-sourced folds (`identity: Some`) left behind by a
+            // now-removed `FoldSource` — otherwise `:diffoff` would
+            // strand hunk folds. (Pre-C7 the always-on pre-seed kept
+            // overlays ≥ 1, so this early-return branch was never
+            // reached.)
+            drop(fold_reg);
+            self.folds.retain(|f| f.identity.is_none());
             return;
         }
         // D.3.f.0 (2026-05-29): registry dispatch. The primary
@@ -12661,23 +12673,17 @@ impl Editor {
                 None
             }
         };
-        // D.3.f.1 (2026-05-29): load the active diff session's
-        // currently-published `HunkIndex` for the buffer (lock-
-        // free `ArcSwap::load_full`). When no session is
-        // registered, `lookup` returns `None` and the
-        // HunkFoldProvider falls through to emitting nothing.
-        let diff_hunks: Option<std::sync::Arc<lattice_diff::HunkIndex>> = self
-            .diff_subsystem
-            .lookup(self.document_buffer_id)
-            .map(|s| s.current_hunks());
-
+        // DX.3-C7 (2026-06-24): diff hunk folds are no longer loaded into
+        // `FoldContext` here. They are a mode-owned `HunkFoldSource`
+        // (registered by `diff-mode::on_activate` via the
+        // `FoldOverlayService`) that reads its own `DiffSession`, run
+        // through the overlay loop below like any other `FoldSource`.
         let ctx = crate::fold_provider::FoldContext {
             buffer: &snapshot.buffer,
             buffer_id: self.document_buffer_id,
             path: path_buf.as_deref(),
             syntax: syntax_snapshot.as_deref(),
             lsp_folds: lsp_folds_vec.as_deref(),
-            diff_hunks: diff_hunks.as_deref(),
         };
 
         let mut next: Vec<Fold> = Vec::new();
@@ -29385,20 +29391,21 @@ mod tests {
         assert_eq!(editor.cursor, before);
     }
 
-    // ── D.3.f.1: hunk folds overlay through recompute_folds ─
+    // ── D.3.f.1 / DX.3-C7: mode-owned hunk folds through recompute_folds ─
 
-    /// End-to-end: a registered diff session with a multi-line
-    /// Add hunk produces a hunk fold in `editor.folds` after
-    /// `recompute_folds()`. Verifies the registry overlay
-    /// path: HunkFoldProvider seeded by `with_builtins`,
-    /// `FoldContext::diff_hunks` populated from the session,
-    /// fold appended alongside whatever the primary produces.
-    #[test]
-    fn recompute_folds_adds_hunk_fold_when_session_publishes() {
+    /// End-to-end: a diff session on the active buffer + diff-mode active
+    /// produces a hunk fold in `editor.folds` after `recompute_folds()`.
+    /// DX.3-C7: the `HunkFoldSource` is registered by
+    /// `diff-mode::on_activate` (not a pre-seeded provider), so this
+    /// exercises the full service-lookup → `FoldOverlayService::add_source`
+    /// path. Boots a real editor so the fold + diff services are wired.
+    #[tokio::test]
+    async fn recompute_folds_adds_hunk_fold_when_diff_mode_active() {
         use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
         use smallvec::smallvec;
 
-        let mut editor = Editor::default();
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(12)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -29411,6 +29418,13 @@ mod tests {
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
         }));
+        // Activate diff-mode on the buffer (the bridge change the dispatch
+        // tail drains). `on_activate` registers the HunkFoldSource.
+        editor
+            .diff_subsystem
+            .mode_bridge()
+            .note_session_opened(bid, &[bid]);
+        editor.apply_pending_diff_mode_changes();
 
         editor.recompute_folds();
 
@@ -29420,7 +29434,8 @@ mod tests {
             .find(|f| f.start_line == 3 && f.end_line == 6);
         assert!(
             hunk_fold.is_some(),
-            "expected one hunk fold at lines 3..=6 after recompute_folds, got {:?}",
+            "expected one hunk fold at lines 3..=6 after diff-mode activation + \
+             recompute, got {:?}",
             editor.folds
         );
         assert_eq!(
@@ -29430,16 +29445,17 @@ mod tests {
         );
     }
 
-    /// Closing the diff session drops the hunk fold on the
-    /// next `recompute_folds()`. Verifies that the overlay
-    /// gating on `ctx.diff_hunks` (Some vs None) flips
-    /// correctly when the session goes away.
-    #[test]
-    fn recompute_folds_drops_hunk_fold_when_session_closes() {
+    /// Closing the diff session deactivates diff-mode, whose `DiffModeGuard`
+    /// Drop removes the `HunkFoldSource`; the next `recompute_folds()` drops
+    /// the hunk fold (the Manual-foldmethod early-return clears stale
+    /// overlay-sourced folds — DX.3-C7).
+    #[tokio::test]
+    async fn recompute_folds_drops_hunk_fold_when_session_closes() {
         use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
         use smallvec::smallvec;
 
-        let mut editor = Editor::default();
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(12)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -29452,13 +29468,21 @@ mod tests {
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
         }));
+        editor
+            .diff_subsystem
+            .mode_bridge()
+            .note_session_opened(bid, &[bid]);
+        editor.apply_pending_diff_mode_changes();
         editor.recompute_folds();
         assert!(
             editor.folds.iter().any(|f| f.identity.is_some()),
-            "sanity: session active → hunk fold present"
+            "sanity: diff-mode active → hunk fold present"
         );
 
+        // `:diffoff` path — `drop_session` notifies the bridge to deactivate
+        // diff-mode; the guard's Drop removes the fold source.
         editor.diff_subsystem.drop_session(bid);
+        editor.apply_pending_diff_mode_changes();
         editor.recompute_folds();
 
         assert!(
@@ -29466,7 +29490,7 @@ mod tests {
                 .folds
                 .iter()
                 .all(|f| f.identity != Some(crate::diff::fold::hunk_fold_identity(0, 3))),
-            "after drop_session, the hunk fold must be gone"
+            "after :diffoff (diff-mode off → source removed), the hunk fold must be gone"
         );
     }
 
@@ -29971,17 +29995,25 @@ mod tests {
     /// Closed-state survives a republish that produces the
     /// same hunk span. The identity hash namespaces by span;
     /// the carry-over loop in `recompute_folds` matches old
-    /// → new by identity and preserves `closed`.
-    #[test]
-    fn hunk_fold_closed_state_survives_republish() {
+    /// → new by identity and preserves `closed`. DX.3-C7: the
+    /// hunk fold source is registered by `diff-mode::on_activate`.
+    #[tokio::test]
+    async fn hunk_fold_closed_state_survives_republish() {
         use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
         use smallvec::smallvec;
 
-        let mut editor = Editor::default();
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(6)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
             .register(bid, DiffAlgorithm::Histogram);
+        // Activate diff-mode so `on_activate` registers the HunkFoldSource.
+        editor
+            .diff_subsystem
+            .mode_bridge()
+            .note_session_opened(bid, &[bid]);
+        editor.apply_pending_diff_mode_changes();
         let mk = |rev| {
             std::sync::Arc::new(HunkIndex {
                 hunks: vec![Hunk {

@@ -55,7 +55,13 @@ pub const ROLE_MODE: &str = "modeline.mode";
 pub const ROLE_PATH: &str = "modeline.path";
 pub const ROLE_POSITION: &str = "modeline.position";
 pub const ROLE_LANG: &str = "modeline.lang";
-pub const ROLE_MODE_ITEM: &str = "modeline.mode_item";
+// DX.4 (BC.6): `ROLE_MODE_ITEM` moved DOWN to `lattice-mode`'s modeline
+// module (it is the role *modes* tag contributed content with, so
+// `lattice-diff` can reach it without the host). Re-exported here so
+// renderer style maps (`ml::ROLE_MODE_ITEM`) + `crate::modeline` call
+// sites are unchanged; diff's import flips to `lattice_mode::modeline`
+// at DX.6.
+pub use lattice_mode::modeline::ROLE_MODE_ITEM;
 
 /// Register the host's built-in modeline descriptors. Called once at
 /// boot against the shared service (the same instance the renderers

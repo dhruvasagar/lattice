@@ -381,11 +381,10 @@ impl Editor {
         // N.1.1 (2026-06-10): narrow provider-minor mode (marker
         // for narrow views). First-class — no feature gate.
         lattice_multibuffer::providers::narrow::register_narrow_mode(boot.modes_mut());
-        // D.5.a (2026-05-30): `diff-mode` minor — marker bit
-        // consulted by K.1.c per-keystroke lookup so D.5.b/c
-        // `do`/`dp` chords gate on per-buffer diff
-        // participation.
-        crate::diff::mode::register_diff_modes(boot.modes_mut());
+        // BC.6/DX.7: `diff-mode` registration moved into
+        // `lattice_diff::install(boot)` (Phase-B install list below),
+        // alongside terminal + claude-code. K.1.c still gates the
+        // `do`/`dp` chords on per-buffer diff participation.
         // BC.5: `emacs-keys-mode` is now a `lattice-mode` builtin — registered
         // with the foundation set by `register_foundation_modes` above, not
         // here. The host keeps only its keymap-layer push (keymap block below).
@@ -415,6 +414,15 @@ impl Editor {
         // service block below) and its invocation runner stays host-side (the
         // shared invocation-runner mechanism) — see `lattice_terminal::install`.
         lattice_terminal::install(&mut boot);
+        // diff (BC.6/DX.7): `diff-mode` registration. Three touch-points stay
+        // host-side and are NOT mode-ownership violations — the `DiffSubsystem`
+        // bind (uses the host `BufferRegistryDocumentResolver`; produces the
+        // `diff_subsystem` / `diff_subscription_guard` / `diff_forwarders`
+        // actor-loop fields below), the name-based keymap-layer push (the
+        // emacs-keys pattern; host owns the live `KeymapHandle`), and the
+        // `+N ~M` modeline element (its `ModelineService` is created after this
+        // list) — see `lattice_diff::install` for the full rationale.
+        lattice_diff::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
@@ -1319,6 +1327,13 @@ impl Editor {
         let fold_svc: lattice_core::FoldOverlayServiceHandle =
             Arc::new(crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()));
         boot.register_service::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
+        // DX.3-C7 (2026-06-24): publish the diff subsystem so
+        // `DiffMode::on_activate` can look up a buffer's session and
+        // register its `HunkFoldSource` via the fold service above
+        // (mode-owned hunk folds, mirroring multibuffer's
+        // `MultibufferRegistryHandle`). Same `Arc` as the
+        // `Editor.diff_subsystem` field.
+        boot.register_service::<crate::diff::subsystem::DiffSubsystemHandle>(diff_subsystem.clone());
         // SN.2: register the live snippet session so `SnippetActiveMode`'s
         // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
         // as the `Editor.snippet_session` field (set below).
@@ -1474,7 +1489,10 @@ impl Editor {
                         crate::diff::mode::DiffMode::mode_id(),
                     ),
                     "diff-mode",
-                    crate::diff::mode::diff_mode_layer_bindings(&action_ids),
+                    // DX.5 (C10): the builder resolves `action:diff-*`
+                    // by name against the registry (emacs-keys pattern),
+                    // so it carries no host `ActionIds` dependency.
+                    crate::diff::mode::diff_mode_layer_bindings(&registry),
                 );
                 // emacs-keys (S1): push the `<C-x>` leader layer once.
                 // K.1.c's filter gates the chords to buffers where the

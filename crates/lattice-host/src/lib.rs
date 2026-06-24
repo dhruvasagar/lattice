@@ -58,8 +58,9 @@ pub mod folds;
 // D.3.f.0 (2026-05-29): FoldProvider trait + registry. See
 // `docs/dev/architecture/fold-architecture.md`. Substrate-only
 // slice; the five existing fold methods become Primary
-// providers wrapping today's `compute_*_folds` helpers. The
-// first overlay consumer (`HunkFoldProvider`) lands in D.3.f.1.
+// providers wrapping today's `compute_*_folds` helpers.
+// Overlays are mode-owned (DX.3-C7): `diff-mode` registers a
+// `HunkFoldSource` via the `FoldOverlayService`.
 pub mod fold_provider;
 // Diff subsystem (D.1–D.5+) lives under `crate::diff::*` as
 // a submodule group; see `diff/mod.rs` for the per-submodule

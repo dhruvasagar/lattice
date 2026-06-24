@@ -89,6 +89,17 @@ impl ModelineRole {
     }
 }
 
+/// DX.4 (BC.6): the modeline role a *mode* tags content with when it
+/// contributes a segment to the modeline (e.g. diff-mode's `+N ~M`
+/// stats). Lives in `lattice-mode` (not host) because it is the role
+/// modes reach for — `ModelineRole::new(ROLE_MODE_ITEM)` — so it belongs
+/// with the mode-contribution substrate, letting `lattice-diff` reach it
+/// without the host. The host's own element roles (`modeline.path`,
+/// `modeline.position`, `modeline.lang`, `modeline.mode`) stay host-side;
+/// the host re-exports this one so renderer style maps + `crate::modeline`
+/// call sites are unchanged.
+pub const ROLE_MODE_ITEM: &str = "modeline.mode_item";
+
 /// A styled run of text within an element's content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {

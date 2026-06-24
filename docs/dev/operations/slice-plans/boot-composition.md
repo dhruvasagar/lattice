@@ -227,19 +227,31 @@ migration is **behaviour-pinned before it moves**.
   `emacs_keys_dispatch` + 123 `lattice-mode` (+6 moved) + 750 `lattice-host` lib
   + full workspace incl. GPUI.
 
-- **BC.6 — `diff` extraction.** 🗒 DECIDED + planned in its own slice plan:
-  **`docs/dev/operations/slice-plans/diff-extraction.md`** (DX.0–DX.final). The
+- **BC.6 — `diff` extraction.** ✅ COMPLETE (DX.0–DX.final ✅, 2026-06-24). Slice
+  plan: **`docs/dev/operations/slice-plans/diff-extraction.md`**; design
+  fragment: **`docs/dev/architecture/diff-extraction.md`**. The
   own-crate-vs-builtin fork resolved to **extract the whole diff subsystem into
   the existing `lattice-diff` crate** (Dhruva, 2026-06-23) — diff is a real
   subsystem (DiffSubsystem + resolver + overlay/fold/filler render providers +
   modeline element + bridge), too machinery-heavy for a `lattice-mode` builtin.
-  It installs through the BC `SubsystemBoot` seam (`lattice_diff::install(boot)`,
-  the DX.7 slice closes BC.6) and decomposes into `diff-mode` +
-  `diff-conflict-mode`. The cross-cutting prep (move `resolve_syntax_style` →
-  lattice-theme; fold/RowMapper traits → lattice-core; `ROLE_MODE_ITEM` →
-  lattice-mode; diff owns its `action:diff-*` + name-based keymap) lands as
-  DX.2–DX.5 before the file move. See that plan for the full coupling table +
-  sequence.
+  It now installs through the `SubsystemBoot` seam (`lattice_diff::install(&mut
+  boot)`, one Phase-B line) and decomposes into `diff-mode` +
+  `diff-conflict-mode`. **What landed:** DX.1 regression-pin gate (7 + 2 pins);
+  DX.2–DX.5 cross-cutting prep (move-down-first: `resolve_syntax_style` →
+  **lattice-syntax** [not lattice-theme — the planned home was falsified on
+  merit], RowMapper → lattice-core, `HunkFoldProvider` → mode-owned
+  `HunkFoldSource` [C7], `ROLE_MODE_ITEM` → lattice-mode, name-based diff keymap
+  [C10/DX.5]); **DX.6** the 6-file `git mv` into lattice-diff (façade
+  re-export, since dispatch.rs alone has 119 `crate::diff::` refs — rewiring is
+  deferred) with the C6 resolver split (traits travel, `BufferRegistry`-backed
+  impls stay host in `diff/resolver.rs`); **DX.7** `lattice_diff::install`
+  (terminal pattern — modes via install; keymap-push + subsystem-bind +
+  modeline element stay host-side as documented residue, NOT half-migrations);
+  **DX.8** the `diff-conflict-mode` shell + `DiffSignKind::Conflict` activation
+  predicate (forward-looking — resolution chords deferred). **Green:** 228
+  lattice-diff tests + 560 host lib + 7 DX.1 / 14 BC.2 pins; full build (TUI +
+  GPUI). **Tracked follow-ups (NOT BC.6):** MO.x keymap → `Mode::keymap()`;
+  conflict resolution chords + bridge activation.
 
 - **BC.7 … BC.N — Migrate the remaining subsystems, one per slice.** multibuffer
   → LSP (LSP last: largest surface — its inbound buses [`InboundShowDocument`,
@@ -282,7 +294,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 🚧 · BC.7+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7+ 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -291,12 +303,15 @@ registry-param `install`); **3-a** — claude-code's I3 write bus rebases onto t
 generic `boot.inbound::<T>` (delete `ClaudeCodeInboundBus`). Boot-time only; zero
 UX/perf impact.
 
-**Next: BC.6 — `diff` extraction → the `lattice-diff` crate.** The fork is
-settled (extract the subsystem into the existing `lattice-diff` crate; decompose
-into `diff-mode` + `diff-conflict-mode`) and fully planned in
-**`docs/dev/operations/slice-plans/diff-extraction.md`** (DX.0–DX.final, with the
-coupling table, cycle-safety proof, and per-slice green bars). Start there with
-DX.1 (the diff regression pins). After BC.6, **BC.7+** migrate multibuffer → LSP
+**BC.6 ✅ COMPLETE (2026-06-24)** — the diff subsystem is extracted into
+`lattice-diff` as `diff-mode` + `diff-conflict-mode`, installed via
+`lattice_diff::install(&mut boot)`. See
+**`docs/dev/operations/slice-plans/diff-extraction.md`** for the DX.0–DX.final
+record (coupling table, the DX.2 lattice-syntax deviation, the DX.6 façade +
+C6 resolver split, the DX.7 terminal-pattern residue).
+
+**Next: BC.7+** migrate
+multibuffer → LSP
 (LSP last, largest: its `InboundShowDocument`/`InboundApplyEdit`/configuration
 buses become `boot.inbound::<T>`, its `set_wake`/L1c forwarders become
 `boot.wake_on_event`); each green against its BC.2 pins, one `install(boot)` per

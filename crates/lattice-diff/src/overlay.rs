@@ -1,6 +1,6 @@
 //! D.3.a (2026-05-29) — `DiffOverlayVirtualRowProvider`.
 //!
-//! Bridges [`crate::diff::subsystem::DiffSession`]'s published
+//! Bridges [`crate::subsystem::DiffSession`]'s published
 //! `HunkIndex` to the `virtual_rows_worker`'s
 //! [`lattice_cells::VirtualRowProvider`] surface. One provider
 //! per active diff session; registered with
@@ -48,7 +48,7 @@
 //!
 //! `version()` returns the session's currently-published
 //! `HunkIndex::revision`. Bumps on every successful publish
-//! through [`crate::diff::subsystem::DiffSession::try_publish_if_newer`];
+//! through [`crate::subsystem::DiffSession::try_publish_if_newer`];
 //! the `virtual_rows_worker`'s fingerprint pass picks up the
 //! change on its next wake and triggers a recompute.
 //! D.3.a.1's `:diff` ex-command also wires a wake forwarder
@@ -59,13 +59,13 @@
 use std::sync::{Arc, Mutex};
 
 use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
-use lattice_diff::{HunkIndex, HunkKind};
+use crate::{HunkIndex, HunkKind};
 
 use lattice_core::BufferId;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::diff::subsystem::{DiffParticipantSource, DiffSession};
+use crate::subsystem::{DiffParticipantSource, DiffSession};
 
 // ──────────────────────────────────────────────────────────────
 // D.3.d.0 (2026-05-29): per-line sign classification.
@@ -319,7 +319,7 @@ impl DiffOverlayVirtualRowProvider {
         });
         let default_fg: u32 = syntax
             .map(|ctx| {
-                let s = crate::ui::theme::resolve_syntax_style(
+                let s = lattice_syntax::resolve_syntax_style(
                     &ctx.resolved,
                     &ctx.ids,
                     lattice_syntax::Style::Default,
@@ -387,9 +387,9 @@ pub struct SyntaxContext {
     /// deletion-block highlighter resolves syntax colours through
     /// (replaces the old `theme: Theme` field — the only thing it
     /// was used for was `Theme::syntax_style`, now
-    /// `crate::ui::theme::resolve_syntax_style`).
-    pub resolved: Arc<crate::ui::theme::ResolvedTheme>,
-    pub ids: crate::ui::theme::BuiltinElementIds,
+    /// `lattice_syntax::resolve_syntax_style`).
+    pub resolved: Arc<lattice_theme::ResolvedTheme>,
+    pub ids: lattice_theme::BuiltinElementIds,
 }
 
 /// D.3.b: render one source line of `rope` as a sequence of
@@ -441,7 +441,7 @@ fn render_baseline_line(
                 })
                 .map(|s| s.style)
                 .unwrap_or(lattice_syntax::Style::Default);
-            let s = crate::ui::theme::resolve_syntax_style(&ctx.resolved, &ctx.ids, style);
+            let s = lattice_syntax::resolve_syntax_style(&ctx.resolved, &ctx.ids, style);
             s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(default_fg)
         } else {
             0
@@ -579,7 +579,7 @@ mod tests {
     use std::sync::Arc;
 
     use lattice_core::BufferId;
-    use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
+    use crate::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
     use smallvec::smallvec;
 
     fn bid(n: u32) -> BufferId {
@@ -625,7 +625,7 @@ mod tests {
     // The pure render path is `render_rows(session, baseline)`;
     // tests below exercise it directly so they stay sync.
 
-    use crate::diff::subsystem::StaticSource;
+    use crate::subsystem::StaticSource;
     use ropey::Rope;
 
     fn render(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
@@ -640,10 +640,10 @@ mod tests {
     fn render_with_syntax(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
         let base = StaticSource::new(Rope::from(baseline_text));
         let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
-        let reg = crate::ui::theme::InMemoryThemeRegistry::with_defaults();
-        use crate::ui::theme::ThemeRegistry as _;
+        let reg = lattice_theme::InMemoryThemeRegistry::with_defaults();
+        use lattice_theme::ThemeRegistry as _;
         let resolved = reg.resolved();
-        let ids = crate::ui::theme::BuiltinElementIds::capture(&reg);
+        let ids = lattice_theme::BuiltinElementIds::capture(&reg);
         let ctx = SyntaxContext {
             lang: lattice_syntax::Lang::Rust,
             registry,

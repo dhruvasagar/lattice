@@ -35,12 +35,14 @@ pub struct PaneGroupMember {
 
 /// D.4.a: pluggable row-mapping function for a pane group.
 ///
-/// Indices are positions in `PaneGroup::members` (stable
-/// across pane re-ordering). Mappers consult their own
-/// state to translate; identity returns its input.
-pub trait RowMapper: Send + Sync {
-    fn map_row(&self, from_member_idx: usize, to_member_idx: usize, row: u32) -> u32;
-}
+/// DX.3 (BC.6 diff extraction): the trait moved DOWN to
+/// [`lattice_core::ui::pane::RowMapper`] so `lattice-diff`'s
+/// `HunkRowMapper` can impl it without the host. Re-exported here so
+/// every `crate::pane_group::RowMapper` call site (the `PaneGroup`
+/// registry below, `HunkRowMapper`, the dispatch propagation path) is
+/// unchanged; the host keeps the `PaneGroup` registry + the
+/// `Identity`/`Offset` impls.
+pub use lattice_core::ui::pane::RowMapper;
 
 /// D.4.a: default mapper for `:set scrollbind` parity.
 /// Maps every row to itself.

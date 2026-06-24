@@ -681,8 +681,10 @@ pub struct Editor {
     /// D.3.f.0 (2026-05-29): fold-provider registry. Holds the
     /// five built-in `Primary` providers (Manual / Indent /
     /// Markdown / Syntax / Lsp) and the list of registered
-    /// `Overlay` providers (HunkFoldProvider lands in D.3.f.1;
-    /// excerpt + file-boundary providers land in M.7 / M.8).
+    /// `Overlay` providers, which are mode-owned (DX.3-C7):
+    /// `diff-mode`'s `HunkFoldSource`, multibuffer's excerpt +
+    /// file-boundary sources, all registered via the
+    /// `FoldOverlayService` on mode activation).
     /// See `docs/dev/architecture/fold-architecture.md`.
     /// M.7: shared behind `Arc<Mutex>` so `FoldOverlayServiceImpl`
     /// can call `add_overlay`/`remove_overlay` from mode-activation

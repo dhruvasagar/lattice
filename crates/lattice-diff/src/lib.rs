@@ -37,5 +37,26 @@ pub mod compute;
 pub mod patch;
 pub mod types;
 
+// BC.6 / DX.6 (2026-06-24): the host-attached diff *subsystem*, moved
+// in from `lattice-host::diff`. The pure data layer above
+// (`compute`/`types`/`patch`) stays the bottom of the crate; these
+// layer the sessions + `diff-mode` + presentation providers on top.
+// `lattice-host` re-exports these modules under `crate::diff::*` (the
+// façade) so existing call sites are unchanged; DX.7 collapses the boot
+// wiring into `lattice_diff::install(boot)`.
+pub mod filler;
+pub mod fold;
+pub mod mode;
+pub mod overlay;
+pub mod pane_group;
+pub mod subsystem;
+
+// BC.6 / DX.7: the crate-owned `install(boot)` entry point — one Phase-B
+// line in `editor_boot` (`lattice_diff::install(&mut boot)`), the terminal /
+// claude-code shape. Registers the diff modes; the subsystem bind + keymap
+// push + modeline element stay host-side (see `install` docs for why).
+pub mod install;
+
 pub use compute::{compute_diff, DiffEngineError};
+pub use install::install;
 pub use types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};

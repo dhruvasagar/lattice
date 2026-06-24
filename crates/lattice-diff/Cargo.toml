@@ -5,11 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# D.1 (in design ledger): pure data layer for Lattice's diff
-# subsystem. Two-way and three-way hunk computation over
-# `&ropey::Rope` inputs, backed by `imara-diff` (Histogram by
-# default; Myers + Patience also wired). No host integration,
-# no actor plumbing -- those land in D.2.
+# D.1 (in design ledger): the diff subsystem crate. The pure
+# data layer (`compute`/`types`/`patch`) computes two-way and
+# three-way hunks over `&ropey::Rope` inputs, backed by
+# `imara-diff` (Histogram by default; Myers + Patience also
+# wired). BC.6/DX.6 layered the host-attached *subsystem*
+# (sessions, `diff-mode`, presentation providers) on top within
+# the same crate — see `../../docs/dev/architecture/diff-extraction.md`.
 #
 # See `../../docs/dev/architecture/diff-system.md` §3.1 for the
 # type model this crate exposes.
@@ -22,9 +24,34 @@ smallvec = { workspace = true }
 # entry. Derive-only crate, zero runtime impact.
 thiserror = { workspace = true }
 
+# BC.6 / DX.6 (2026-06-24): the host-side diff *subsystem* (sessions +
+# bridge + `diff-mode` + the overlay/filler/fold/pane-group presentation
+# providers) moves in from `lattice-host`, so this crate gains the
+# substrate it reaches for. Every dep points DOWN the graph — none of
+# these crates depend on `lattice-diff` (the `lattice-diff` token in
+# `lattice-syntax/Cargo.toml` is a comment, not a dep), so the move is
+# cycle-free. The pure data layer keeps its minimal footprint; the
+# subsystem layers on top within the same crate (mirroring
+# `lattice-multibuffer`, which holds both data + mode).
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-cells = { path = "../lattice-cells" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-keymap = { path = "../lattice-keymap" }
+lattice-syntax = { path = "../lattice-syntax" }
+lattice-theme = { path = "../lattice-theme" }
+arc-swap = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
+# DX.6: the moved subsystem tests use `#[tokio::test(start_paused = true)]`
+# (deterministic debounce-timer advance), which needs tokio's `test-util`.
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "sync", "time"] }
 
 [[bench]]
 name = "recompute"

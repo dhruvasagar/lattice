@@ -3447,12 +3447,24 @@ dependencies = [
 name = "lattice-diff"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "criterion",
  "imara-diff",
+ "lattice-cells",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-keymap",
+ "lattice-mode",
+ "lattice-protocol",
+ "lattice-runtime",
+ "lattice-syntax",
+ "lattice-theme",
  "proptest",
  "ropey",
  "smallvec",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3701,6 +3713,7 @@ dependencies = [
  "lattice-grammar",
  "lattice-mode",
  "lattice-protocol",
+ "lattice-theme",
  "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",

@@ -24,6 +24,14 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-protocol = { path = "../lattice-protocol" }
+# DX.2 (BC.6 diff extraction): the syntax->theme-element style bridge
+# (`resolve_syntax_style` / `syntax_element_id`) moves here from
+# `lattice-host` so `lattice-diff` can reach it without the host. The
+# bridge is syntax-aware (takes a `lattice_syntax::Style`), so it lives
+# in this higher crate depending DOWN on the `lattice-theme` leaf —
+# keeping `lattice-theme` a minimal renderer-hot-path leaf. Cycle-free:
+# `lattice-theme` deps only arc-swap + tracing.
+lattice-theme = { path = "../lattice-theme" }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }

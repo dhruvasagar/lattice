@@ -58,6 +58,9 @@ pub mod registry;
 pub mod style;
 pub mod syntax;
 pub mod text_objects;
+// DX.2 (BC.6): the syntax->theme-element style bridge, moved down from
+// `lattice-host::ui::theme` so `lattice-diff` can reach it.
+pub mod theme_style;
 
 pub use crate::handle::SyntaxHandle;
 pub use crate::lang::Lang;
@@ -71,3 +74,4 @@ pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};
 pub use crate::text_objects::{SyntaxTextObjectIds, register_syntax_text_objects};
+pub use crate::theme_style::{resolve_syntax_style, syntax_element_id};

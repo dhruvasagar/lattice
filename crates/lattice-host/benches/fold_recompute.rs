@@ -1,4 +1,4 @@
-//! D.3.f.2 (2026-05-29): fold-recompute hot-path bench.
+//! D.3.f.2 (2026-05-29) / DX.3-C7 (2026-06-24): fold-recompute hot-path bench.
 //!
 //! Three workloads back the §6.5 / `fold-architecture.md`
 //! claims that the registry indirection + hunk-overlay
@@ -8,26 +8,25 @@
 //!
 //! - **`overlay_only_at_n_hunks`** — `Editor::recompute_folds`
 //!   with foldmethod=Manual (primary returns `vec![]`),
-//!   a published `HunkIndex` of N hunks, and the always-on
-//!   `HunkFoldProvider` overlay. Measures the registry
-//!   dispatch + overlay emission + carry-over loop cost
-//!   end-to-end against the production hot-path entry. The
-//!   numbers here are the marginal cost of D.3.f.0 + D.3.f.1
-//!   over the pre-refactor `recompute_folds` early-return on
-//!   Manual.
+//!   a published `HunkIndex` of N hunks, and the mode-owned
+//!   `HunkFoldSource` overlay (registered by
+//!   `diff-mode::on_activate` via the `FoldOverlayService`).
+//!   Measures the registry dispatch + overlay emission +
+//!   carry-over loop cost end-to-end against the production
+//!   hot-path entry.
 //!
-//! - **`hunk_provider_compute_pure`** — direct
-//!   [`HunkFoldProvider::compute`] call with a constructed
-//!   [`FoldContext`] carrying N hunks. Isolates the per-hunk
+//! - **`hunk_source_compute_pure`** — direct
+//!   [`HunkFoldSource::compute_folds`] call over a session
+//!   carrying N published hunks. Isolates the per-hunk
 //!   allocation + identity-hash cost from the Editor seam
-//!   and the carry-over merge. Establishes the provider's
+//!   and the carry-over merge. Establishes the source's
 //!   inherent floor so changes in the integration cost can
 //!   be attributed to either the registry plumbing or the
-//!   provider itself.
+//!   source itself.
 //!
 //! - **`fold_identity_hash`** — raw `hunk_fold_identity`
 //!   cost. Sanity check that the `DefaultHasher` salt is
-//!   cheap enough to amortise per-hunk in the provider's
+//!   cheap enough to amortise per-hunk in the source's
 //!   per-emit loop.
 //!
 //! Run:
@@ -46,11 +45,11 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use smallvec::smallvec;
 
-use lattice_core::{BufferId, Fold, ProviderId};
+use lattice_core::{BufferId, Fold, FoldSource};
 use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
-use lattice_host::diff::fold::{HunkFoldProvider, hunk_fold_identity};
+use lattice_host::diff::fold::{HUNK_FOLD_NAMESPACE, HunkFoldSource, hunk_fold_identity};
+use lattice_host::diff::subsystem::DiffSession;
 use lattice_host::editor::Editor;
-use lattice_host::fold_provider::{FoldContext, FoldProvider};
 
 /// Build a synthetic `HunkIndex` with `n` Add hunks of 4
 /// current-side lines each, spaced 16 lines apart. Matches
@@ -78,11 +77,13 @@ fn make_hunks(n: u32) -> Arc<HunkIndex> {
 fn bench_overlay_only_at_n_hunks(c: &mut Criterion) {
     let mut group = c.benchmark_group("overlay_only_at_n_hunks");
     for &n in &[0u32, 10, 100, 1_000] {
-        // Build a fresh editor + session per N. Re-use across
-        // iterations — `recompute_folds` is idempotent for a
-        // fixed `HunkIndex` so steady-state cost is the
-        // measurement.
-        let mut editor = Editor::default();
+        // DX.3-C7: hunk folds are mode-owned. Boot a real editor (wires
+        // the fold-overlay + diff-subsystem services), register a session
+        // + activate diff-mode so `on_activate` registers the
+        // `HunkFoldSource`, then measure steady-state `recompute_folds`
+        // (idempotent for a fixed `HunkIndex`). Setup is per-N, outside
+        // the measured loop.
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -90,6 +91,11 @@ fn bench_overlay_only_at_n_hunks(c: &mut Criterion) {
         if n > 0 {
             session.publish(make_hunks(n));
         }
+        editor
+            .diff_subsystem
+            .mode_bridge()
+            .note_session_opened(bid, &[bid]);
+        editor.apply_pending_diff_mode_changes();
         group.bench_with_input(BenchmarkId::new("hunks", n), &(), |b, _| {
             b.iter(|| {
                 editor.recompute_folds();
@@ -100,24 +106,17 @@ fn bench_overlay_only_at_n_hunks(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_hunk_provider_compute_pure(c: &mut Criterion) {
-    use lattice_core::Buffer;
-    let buffer = Buffer::empty();
-    let mut group = c.benchmark_group("hunk_provider_compute_pure");
+fn bench_hunk_source_compute_pure(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hunk_source_compute_pure");
     for &n in &[0u32, 10, 100, 1_000] {
-        let hunks = make_hunks(n);
-        let ctx = FoldContext {
-            buffer: &buffer,
-            buffer_id: BufferId(1),
-            path: None,
-            syntax: None,
-            lsp_folds: None,
-            diff_hunks: Some(&hunks),
-        };
-        let provider = HunkFoldProvider;
+        let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
+        if n > 0 {
+            session.publish(make_hunks(n));
+        }
+        let source = HunkFoldSource::new(session, BufferId(1));
         group.bench_with_input(BenchmarkId::new("hunks", n), &(), |b, _| {
             b.iter(|| {
-                let out: Vec<Fold> = provider.compute(black_box(&ctx));
+                let out: Vec<Fold> = black_box(&source).compute_folds();
                 black_box(out);
             });
         });
@@ -131,15 +130,15 @@ fn bench_fold_identity_hash(c: &mut Criterion) {
     });
 }
 
-// Sanity: the `HunkFoldProvider`'s id is the constant we
+// Sanity: the per-buffer hunk-fold id namespace is the constant we
 // expect (would fail to compile if the API drifted).
 #[allow(dead_code)]
-const _ASSERT_OVERLAY_ID: ProviderId = lattice_host::diff::fold::HUNK_FOLD_PROVIDER_ID;
+const _ASSERT_OVERLAY_NS: u64 = HUNK_FOLD_NAMESPACE;
 
 criterion_group!(
     benches,
     bench_overlay_only_at_n_hunks,
-    bench_hunk_provider_compute_pure,
+    bench_hunk_source_compute_pure,
     bench_fold_identity_hash
 );
 criterion_main!(benches);

@@ -1,46 +1,36 @@
-//! Host-side diff subsystem and its presentation companions.
+//! Host façade over the diff subsystem, which now lives in the
+//! `lattice-diff` crate (moved out of `lattice-host` at BC.6/DX.6).
 //!
-//! Layering: the pure algorithm (`Hunk`, `HunkIndex`,
-//! `compute_diff`) lives in the
-//! `lattice-diff` crate so it stays reusable by non-editor
-//! consumers. Everything in this module is host-attached —
-//! it reaches for [`crate::buffer_registry::BufferRegistry`],
-//! the [`lattice_runtime::EventBus`], the
-//! [`lattice_mode::registry::ModeRegistry`], and tokio. See
-//! `docs/dev/architecture/diff-system.md` §3 for the cut and
-//! `docs/dev/operations/slice-plans/diff-system.md` for the
-//! slice sequencing.
+//! The pure algorithm (`Hunk`, `HunkIndex`, `compute_diff`) and — since
+//! DX.6 — the host-attached *subsystem* (`DiffSubsystem` + `DiffSession`
+//! lifecycle, `diff-mode`, and the overlay/filler/fold/pane-group
+//! presentation providers) both live in `lattice-diff`. This module
+//! re-exports those crate modules under the historical `crate::diff::*`
+//! paths so existing host call sites (dispatch, boot, the TUI + GPUI
+//! renderers) are unchanged. DX.7 collapses the boot wiring into
+//! `lattice_diff::install(boot)` and begins retiring these shims.
 //!
-//! Submodules:
-//! - [`subsystem`] — `DiffSubsystem` + `DiffSession` lifecycle
-//!   (D.2.a–D.2.e). Process-wide registry keyed by
-//!   `BufferId`; sessions publish `Arc<HunkIndex>` via
-//!   `ArcSwap`; debounce + bus subscription per §3.4.
-//! - [`mode`] — `diff-mode` minor mode + the host-side bridge
-//!   that toggles it on participating buffers as
-//!   `DiffSession`s open and close (D.5.a). See §3.4.7.
-//! - [`overlay`] — inline diff overlay's `VirtualRowProvider`
-//!   impl (D.3.a). Converts the active session's
-//!   `HunkIndex` to deletion-block `VirtualRow`s anchored
-//!   above the current-side hunk start. See §3.3.
-//! - [`fold`] — `HunkFoldProvider` overlay (D.3.f.1). Emits
-//!   one fold per non-empty current-side hunk range; the
-//!   standard fold vocabulary (`za` / `zo` / …) covers
-//!   hunks identically to syntactic folds. See §6.5 and
-//!   `fold-architecture.md`.
-//! - [`pane_group`] — `HunkRowMapper` (D.4.b). `RowMapper`
-//!   impl that translates rows between the baseline and
-//!   current sides of a two-way diff via cumulative-shift
-//!   walks over the published `HunkIndex`. See
-//!   `pane-groups.md`.
-//! - [`filler`] — `FillerRowProvider` (D.4.c). Emits blank
-//!   virtual rows on whichever side of a side-by-side diff
-//!   is shorter for each hunk so hunks align visually
-//!   between the two panes. One provider per side.
+//! The one piece that stays host-side is [`resolver`]: the
+//! `BufferRegistry`-backed impls of the subsystem's
+//! `BufferTextProvider` / `DocumentBufferResolver` seams (coupling C6;
+//! they reference the host `BufferRegistry`, so they can't move). They
+//! are re-exported under [`subsystem`] so
+//! `crate::diff::subsystem::BufferRegistry{TextProvider,DocumentResolver}`
+//! still resolves everywhere.
+//!
+//! See `docs/dev/architecture/diff-extraction.md` for the cut and
+//! `docs/dev/operations/slice-plans/diff-extraction.md` for sequencing.
 
-pub mod filler;
-pub mod fold;
-pub mod mode;
-pub mod overlay;
-pub mod pane_group;
-pub mod subsystem;
+pub use lattice_diff::{filler, fold, mode, overlay, pane_group};
+
+pub mod resolver;
+
+/// `crate::diff::subsystem` — the moved `lattice_diff::subsystem`
+/// surface PLUS the host-owned `BufferRegistry`-backed resolver impls,
+/// so every `crate::diff::subsystem::*` call site (including
+/// `BufferRegistryTextProvider` / `BufferRegistryDocumentResolver`)
+/// resolves unchanged after the DX.6 move.
+pub mod subsystem {
+    pub use crate::diff::resolver::{BufferRegistryDocumentResolver, BufferRegistryTextProvider};
+    pub use lattice_diff::subsystem::*;
+}

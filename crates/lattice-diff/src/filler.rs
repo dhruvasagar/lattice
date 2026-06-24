@@ -7,7 +7,7 @@
 //! hunks align visually across all panes.
 //!
 //! Composes with D.4.a ([`crate::pane_group`]), D.4.b
-//! ([`crate::diff::pane_group`]), and D.0a virtual rows
+//! ([`crate::pane_group`]), and D.0a virtual rows
 //! ([`lattice_cells::VirtualRowProvider`]); consumed by
 //! D.4.d (`:diffsplit` / `:diffthis` two-way) and D.6.c
 //! (three-way `:diffsplit base remote`).
@@ -54,9 +54,9 @@ use std::sync::Arc;
 
 use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
 use lattice_core::BufferId;
-use lattice_diff::{HunkIndex, HunkKind};
+use crate::{HunkIndex, HunkKind};
 
-use crate::diff::subsystem::DiffSession;
+use crate::subsystem::DiffSession;
 
 /// Which pane of a side-by-side session this provider
 /// emits rows for. Each variant maps to a slot index in
@@ -257,7 +257,7 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use lattice_diff::{DiffAlgorithm, Hunk, LineRange};
+    use crate::{DiffAlgorithm, Hunk, LineRange};
     use smallvec::smallvec;
 
     fn hunk(kind: HunkKind, baseline: LineRange, current: LineRange) -> Hunk {
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn provider_id_does_not_collide_with_overlay_namespace() {
         let bid = BufferId(7);
-        let overlay = crate::diff::overlay::diff_overlay_provider_id(bid);
+        let overlay = crate::overlay::diff_overlay_provider_id(bid);
         assert_ne!(diff_filler_provider_id(bid, Side::Baseline), overlay);
         assert_ne!(diff_filler_provider_id(bid, Side::Current), overlay);
     }
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn remote_provider_id_does_not_collide_with_overlay_namespace() {
         let bid = BufferId(7);
-        let overlay = crate::diff::overlay::diff_overlay_provider_id(bid);
+        let overlay = crate::overlay::diff_overlay_provider_id(bid);
         assert_ne!(diff_filler_provider_id(bid, Side::Remote), overlay);
     }
 

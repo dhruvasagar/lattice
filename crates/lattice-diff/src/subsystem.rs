@@ -72,7 +72,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use lattice_core::BufferId;
-use lattice_diff::{DiffAlgorithm, HunkIndex, HunkKind, LineRange, compute_diff};
+use crate::{DiffAlgorithm, HunkIndex, HunkKind, LineRange, compute_diff};
 use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
@@ -233,58 +233,14 @@ pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
     fn buffer_rope(&self, id: BufferId) -> Option<Rope>;
 }
 
-/// D.3.a (2026-05-29): the production [`BufferTextProvider`]
-/// impl. Bridges the trait to the host's [`crate::buffer_registry::BufferRegistry`]:
-/// `buffer_rope(id)` walks `BufferRegistry::document_handle(id)
-/// -> RopeDocumentHandle::snapshot() -> snapshot.buffer.to_rope()`.
-///
-/// All operations are RCU-style reads (registry mutex held only
-/// long enough to clone an `Arc<DocumentSnapshot>`; rope clone
-/// is `Arc`-share of chunks). Safe to call from
-/// `spawn_blocking`. Returns `None` for non-document buffers
-/// or for ids the registry has dropped — the diff subsystem's
-/// [`BufferSource`] impl maps `None` to an empty rope per its
-/// documented contract.
-#[derive(Clone, Debug)]
-pub struct BufferRegistryTextProvider {
-    registry: crate::buffer_registry::BufferRegistry,
-}
-
-impl BufferRegistryTextProvider {
-    pub fn new(registry: crate::buffer_registry::BufferRegistry) -> Self {
-        Self { registry }
-    }
-}
-
-impl BufferTextProvider for BufferRegistryTextProvider {
-    fn buffer_rope(&self, id: BufferId) -> Option<Rope> {
-        let handle = self.registry.document_handle(id)?;
-        Some(handle.snapshot().buffer.to_rope())
-    }
-}
-
-/// D.3.a.1 (2026-05-29): production [`DocumentBufferResolver`]
-/// impl. Bridges `DocumentId` → `BufferId` via
-/// `BufferRegistry::buffer_id_for_document`. Stored on `Editor`
-/// for the editor's lifetime and handed to
-/// `DiffSubsystem::bind` so the drainer task can translate
-/// bus events.
-#[derive(Clone, Debug)]
-pub struct BufferRegistryDocumentResolver {
-    registry: crate::buffer_registry::BufferRegistry,
-}
-
-impl BufferRegistryDocumentResolver {
-    pub fn new(registry: crate::buffer_registry::BufferRegistry) -> Self {
-        Self { registry }
-    }
-}
-
-impl DocumentBufferResolver for BufferRegistryDocumentResolver {
-    fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId> {
-        self.registry.buffer_id_for_document(document_id)
-    }
-}
+// DX.6 (2026-06-24): the production `BufferTextProvider` /
+// `DocumentBufferResolver` impls (`BufferRegistryTextProvider` /
+// `BufferRegistryDocumentResolver`) reference the host's
+// `BufferRegistry`, so they CANNOT live in this crate — they stay
+// in `lattice-host` (`crate::diff::resolver`, re-exported under
+// `crate::diff::subsystem`). The TRAITS above are the seam: this
+// crate depends only on the abstraction; the host supplies the
+// `BufferRegistry`-backed impls. See `diff-extraction.md` (C6).
 
 /// D.8.b (2026-05-31): live-rope participant backed by a
 /// buffer. Replaces the prior `BufferSource` +
@@ -334,7 +290,7 @@ impl DiffParticipantSource for BufferSource {
 ///
 /// `sources` is an arity-agnostic vector of N participant
 /// sources, one per slot in `Hunk::ranges`. The engine
-/// (`lattice_diff::compute_diff`) dispatches by
+/// (`crate::compute_diff`) dispatches by
 /// `sources.len()` — N=2 is two-way (slot 0 = baseline /
 /// from, slot 1 = current / to), N=3 is three-way merge
 /// (slot 0 = base, slot 1 = local, slot 2 = remote), N≥4
@@ -600,7 +556,7 @@ pub enum MembershipError {
     #[error("buffer {0:?} is not a participant of this session")]
     NotParticipant(BufferId),
     #[error("engine rejected new arity: {0}")]
-    EngineRejected(#[from] lattice_diff::DiffEngineError),
+    EngineRejected(#[from] crate::DiffEngineError),
 }
 
 /// D.5.b (2026-05-30): describes the edit the diff-mode `do`
@@ -862,7 +818,7 @@ fn find_covering_hunk<'a>(
     active_pane: usize,
     cursor_row: u32,
     allow_conflict: bool,
-) -> Option<&'a lattice_diff::Hunk> {
+) -> Option<&'a crate::Hunk> {
     index.hunks.iter().find(|h| {
         if !allow_conflict && matches!(h.kind, HunkKind::Conflict) {
             return false;
@@ -916,12 +872,12 @@ pub struct DiffSession {
     /// classification derived from the current `HunkIndex`.
     /// Renderers read via `sign_map()` (lock-free `ArcSwap`
     /// load) per-frame; the
-    /// [`crate::diff::overlay::DiffOverlayRefreshTask`] writes
+    /// [`crate::overlay::DiffOverlayRefreshTask`] writes
     /// this cell on every hunk publish, keeping it in lockstep
     /// with `hunks`. Initialised to an empty map at session
     /// construction; first refresh populates it once the
     /// initial recompute completes.
-    sign_map: ArcSwap<crate::diff::overlay::DiffSignMap>,
+    sign_map: ArcSwap<crate::overlay::DiffSignMap>,
     /// D.4.d.3.a (2026-05-30): linkage from a two-pane diff
     /// session to its `PaneGroup` (the scroll-binding
     /// mechanism with `HunkRowMapper`). `None` for inline
@@ -956,7 +912,7 @@ impl DiffSession {
             hunks: ArcSwap::from_pointee(HunkIndex::empty(algorithm)),
             next_revision: AtomicU64::new(1),
             publish_notify: Arc::new(tokio::sync::Notify::new()),
-            sign_map: ArcSwap::from_pointee(crate::diff::overlay::DiffSignMap::default()),
+            sign_map: ArcSwap::from_pointee(crate::overlay::DiffSignMap::default()),
             pane_group_id: Mutex::new(None),
             completion: Mutex::new(None),
         }
@@ -1020,8 +976,8 @@ impl DiffSession {
     /// D.3.d.0 (2026-05-29): snapshot the latest published
     /// `DiffSignMap`. Lock-free `ArcSwap::load_full`; renderer
     /// hot path. The map is refreshed in lockstep with
-    /// `hunks` by [`crate::diff::overlay::DiffOverlayRefreshTask`].
-    pub fn sign_map(&self) -> Arc<crate::diff::overlay::DiffSignMap> {
+    /// `hunks` by [`crate::overlay::DiffOverlayRefreshTask`].
+    pub fn sign_map(&self) -> Arc<crate::overlay::DiffSignMap> {
         self.sign_map.load_full()
     }
 
@@ -1032,7 +988,7 @@ impl DiffSession {
     /// landing isn't possible from the refresh-task side.
     /// Direct callers (tests, future consumers) bear the
     /// ordering responsibility.
-    pub fn publish_sign_map(&self, map: Arc<crate::diff::overlay::DiffSignMap>) {
+    pub fn publish_sign_map(&self, map: Arc<crate::overlay::DiffSignMap>) {
         self.sign_map.store(map);
     }
 
@@ -1224,7 +1180,7 @@ pub struct DiffSubsystem {
     /// bridge. Created on `Default` so the subsystem is the
     /// single owner of the bridge identity; the editor accesses
     /// it via [`Self::mode_bridge`] for the dispatch-tail drain.
-    mode_bridge: Arc<crate::diff::mode::DiffModeBridge>,
+    mode_bridge: Arc<crate::mode::DiffModeBridge>,
 }
 
 impl Default for DiffSubsystem {
@@ -1236,10 +1192,20 @@ impl Default for DiffSubsystem {
             secondary_index: Mutex::new(HashMap::new()),
             debouncers: Mutex::new(HashMap::new()),
             debounce_window: DEFAULT_DEBOUNCE_WINDOW,
-            mode_bridge: Arc::new(crate::diff::mode::DiffModeBridge::new()),
+            mode_bridge: Arc::new(crate::mode::DiffModeBridge::new()),
         }
     }
 }
+
+/// Cheap-clone service handle for the diff subsystem. DX.3/C7 (BC.6):
+/// registered in the `ServiceRegistry` at boot so `diff-mode`'s
+/// `on_activate` can reach the session for a buffer
+/// (`ctx.service::<DiffSubsystemHandle>()`) and register a
+/// `HunkFoldSource` via the `FoldOverlayService` — mirroring how
+/// `MultibufferMode` reaches its `MultibufferRegistryHandle`. Follows the
+/// Arc/TypeId convention: register `Arc<DiffSubsystem>`, look up
+/// `Arc<DiffSubsystem>`.
+pub type DiffSubsystemHandle = Arc<DiffSubsystem>;
 
 impl DiffSubsystem {
     pub fn new() -> Self {
@@ -1266,7 +1232,7 @@ impl DiffSubsystem {
     /// bridge so the editor's dispatch tail can drain queued
     /// activations. The subsystem owns the bridge identity; the
     /// returned `Arc` is a cheap reference clone, not a take.
-    pub fn mode_bridge(&self) -> Arc<crate::diff::mode::DiffModeBridge> {
+    pub fn mode_bridge(&self) -> Arc<crate::mode::DiffModeBridge> {
         Arc::clone(&self.mode_bridge)
     }
 
@@ -1743,7 +1709,7 @@ impl DiffSubsystem {
             // untouched.
             if proposed >= 4 {
                 return Err(MembershipError::EngineRejected(
-                    lattice_diff::DiffEngineError::Unsupported { n: proposed },
+                    crate::DiffEngineError::Unsupported { n: proposed },
                 ));
             }
             proposed
@@ -1962,7 +1928,7 @@ impl DiffSubsystem {
         // Reject N≥4 atomically before any mutation.
         if descriptor.arity() >= 4 {
             return Err(MembershipError::EngineRejected(
-                lattice_diff::DiffEngineError::Unsupported {
+                crate::DiffEngineError::Unsupported {
                     n: descriptor.arity(),
                 },
             ));
@@ -2551,7 +2517,7 @@ mod tests {
 
     #[test]
     fn recompute_blocking_on_changed_ropes_produces_change_hunk() {
-        use lattice_diff::HunkKind;
+        use crate::HunkKind;
         let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
         let a = Rope::from("alpha\nbeta\ngamma\n");
         let b = Rope::from("alpha\nBETA\ngamma\n");
@@ -3307,7 +3273,7 @@ mod tests {
 
     // ── D.5.b: compute_get_edit ────────────────────────────────
 
-    use lattice_diff::Hunk;
+    use crate::Hunk;
     use smallvec::smallvec;
 
     /// Build a session with a [`StaticSource`] for testing
@@ -3918,7 +3884,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(MembershipError::EngineRejected(
-                lattice_diff::DiffEngineError::Unsupported { n: 4 }
+                crate::DiffEngineError::Unsupported { n: 4 }
             ))
         ));
 
@@ -4135,7 +4101,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(MembershipError::EngineRejected(
-                lattice_diff::DiffEngineError::Unsupported { n: 4 }
+                crate::DiffEngineError::Unsupported { n: 4 }
             ))
         ));
         // Old descriptor still arity 3.

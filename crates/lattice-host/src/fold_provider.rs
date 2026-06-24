@@ -11,15 +11,15 @@
 //!
 //! This module ships the trait + the registry; the five
 //! built-in primary providers wrap the existing
-//! [`crate::folds`] helpers. The first overlay consumer
-//! (`HunkFoldProvider`) lands in D.3.f.1.
+//! [`crate::folds`] helpers. Overlays are mode-owned (DX.3-C7):
+//! `diff-mode` registers a `HunkFoldSource` and `MultibufferMode`
+//! its excerpt / file-boundary sources via the `FoldOverlayService`.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use lattice_core::{Buffer, BufferId, Fold, FoldMethod, ProviderId, ProviderKind};
-use lattice_diff::HunkIndex;
 use lattice_syntax::SyntaxSnapshot;
 
 /// D.3.f.0: per-recompute inputs passed to every provider.
@@ -30,13 +30,20 @@ use lattice_syntax::SyntaxSnapshot;
 /// `Option` because not every provider needs every input
 /// (the indent provider ignores `syntax`; the LSP provider
 /// reads only `lsp_folds`; etc.).
+///
+/// DX.3-C7 (2026-06-24): the `diff_hunks` field is GONE. Diff hunk folds
+/// are no longer a context-driven primary/overlay reading
+/// `FoldContext::diff_hunks`; they are a mode-owned
+/// [`lattice_core::FoldSource`] (`HunkFoldSource`) that holds its own
+/// `DiffSession`, registered by `diff-mode::on_activate` via the
+/// `FoldOverlayService`. The host fold substrate no longer depends on
+/// `lattice-diff`.
 pub struct FoldContext<'a> {
     pub buffer: &'a Buffer,
     pub buffer_id: BufferId,
     pub path: Option<&'a Path>,
     pub syntax: Option<&'a SyntaxSnapshot>,
     pub lsp_folds: Option<&'a [Fold]>,
-    pub diff_hunks: Option<&'a HunkIndex>,
 }
 
 /// D.3.f.0: a registered source of folds.
@@ -88,15 +95,13 @@ impl FoldRegistry {
         primaries.insert(FoldMethod::Markdown, Arc::new(MarkdownPrimary));
         primaries.insert(FoldMethod::Syntax, Arc::new(SyntaxPrimary));
         primaries.insert(FoldMethod::Lsp, Arc::new(LspPrimary));
-        // D.3.f.1 (2026-05-29): the hunk fold overlay is
-        // always-on — `compute()` is gated by `ctx.diff_hunks`
-        // being `Some`, so it's inert when no diff session
-        // backs the active buffer. Pre-seeding here means
-        // `Editor::default()` (used by tests) gets the same
-        // composition as the editor-boot path without a
-        // manual `add_overlay` call.
-        let overlays: Vec<Arc<dyn FoldProvider>> =
-            vec![Arc::new(crate::diff::fold::HunkFoldProvider)];
+        // DX.3-C7 (2026-06-24): NO overlays pre-seeded. Overlay fold
+        // sources are mode-owned — `diff-mode::on_activate` registers the
+        // per-buffer `HunkFoldSource` via the `FoldOverlayService`, and
+        // `MultibufferMode` registers its excerpt / file-boundary sources
+        // the same way. The registry starts empty; each subsystem adds
+        // its overlays when its mode activates and removes them on Drop.
+        let overlays: Vec<Arc<dyn FoldProvider>> = Vec::new();
         Self {
             primaries,
             overlays,
@@ -111,9 +116,10 @@ impl FoldRegistry {
         self.primaries.get(&method)
     }
 
-    /// Register an overlay provider. Called by subsystems
-    /// when they come online (e.g. `DiffSubsystem` registers
-    /// `HunkFoldProvider` on `open_session`). Returns the
+    /// Register an overlay provider. Called by the
+    /// `FoldOverlayService` when a mode activates (e.g.
+    /// `diff-mode::on_activate` registers a `HunkFoldSource`,
+    /// `MultibufferMode` its excerpt sources). Returns the
     /// provider's `ProviderId` so the caller can later
     /// remove it.
     pub fn add_overlay(&mut self, provider: Arc<dyn FoldProvider>) -> ProviderId {
@@ -248,8 +254,9 @@ mod tests {
     #[test]
     fn overlay_add_and_remove_round_trip() {
         let mut r = FoldRegistry::with_builtins();
-        // `with_builtins` pre-seeds the always-on
-        // HunkFoldProvider (D.3.f.1) — baseline is 1, not 0.
+        // DX.3-C7: `with_builtins` no longer pre-seeds any overlay
+        // (baseline is 0); overlays are mode-owned. Computing `baseline`
+        // keeps the assertions robust regardless.
         let baseline = r.overlays().count();
         let id = r.add_overlay(Arc::new(StaticOverlay {
             id: ProviderId(42),
@@ -286,13 +293,14 @@ mod tests {
     }
 
     #[test]
-    fn with_builtins_pre_seeds_hunk_overlay() {
-        // D.3.f.1: HunkFoldProvider lives at id 100.
+    fn with_builtins_has_no_overlays() {
+        // DX.3-C7: overlays are mode-owned now — the hunk-fold source is
+        // registered by `diff-mode::on_activate`, not pre-seeded here.
         let r = FoldRegistry::with_builtins();
-        assert!(
-            r.overlays()
-                .any(|p| p.id() == crate::diff::fold::HUNK_FOLD_PROVIDER_ID),
-            "HunkFoldProvider must be pre-seeded so `Editor::default()` matches editor-boot composition"
+        assert_eq!(
+            r.overlays().count(),
+            0,
+            "with_builtins must pre-seed no overlays; they are mode-owned"
         );
     }
 }

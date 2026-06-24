@@ -49,7 +49,7 @@
 //! it; the bridge enqueues a `Deactivate` change only when
 //! the bucket empties.
 
-use lattice_core::BufferId;
+use lattice_core::{BufferId, FoldOverlayServiceHandle, ProviderId};
 use lattice_mode::registry::ModeRegistry;
 use lattice_mode::{
     DecorationCtx, ElementContent, ElementId, GutterDecoration, GutterDiffKind, LifecycleFuture,
@@ -57,7 +57,10 @@ use lattice_mode::{
     Zone,
 };
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use crate::fold::HunkFoldSource;
+use crate::subsystem::DiffSubsystemHandle;
 
 // ──────────────────────────────────────────────────────────────
 // DiffMode — the minor mode itself
@@ -67,7 +70,7 @@ use std::sync::Mutex;
 /// the active buffer's diff sign map; injected by the renderer only for
 /// the active-document buffer (sign_map is active-doc only).
 pub struct DiffDecorationData {
-    pub sign_map: std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+    pub sign_map: std::sync::Arc<crate::overlay::DiffSignMap>,
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -96,8 +99,8 @@ pub fn register_diff_modeline_element(svc: &ModelineService) {
 /// formatter the diff subsystem owns — moved here from the retired
 /// `DiffMode::status_line_items`. Empty content (no adds/changes) ⇒
 /// hidden this frame (the caller's `apply` clears the slot).
-pub fn diff_content(sign_map: &crate::diff::overlay::DiffSignMap) -> ElementContent {
-    use crate::diff::overlay::DiffSignKind;
+pub fn diff_content(sign_map: &crate::overlay::DiffSignMap) -> ElementContent {
+    use crate::overlay::DiffSignKind;
     let mut added = 0u32;
     let mut changed = 0u32;
     for (_line, kind) in sign_map.entries() {
@@ -118,7 +121,7 @@ pub fn diff_content(sign_map: &crate::diff::overlay::DiffSignMap) -> ElementCont
     if changed > 0 {
         parts.push(format!("~{changed}"));
     }
-    ElementContent::text(parts.join(" "), ModelineRole::new(crate::modeline::ROLE_MODE_ITEM))
+    ElementContent::text(parts.join(" "), ModelineRole::new(lattice_mode::modeline::ROLE_MODE_ITEM))
 }
 
 /// `diff-mode` minor. Empty marker in v1 (D.5.a): the bit other
@@ -133,8 +136,27 @@ impl DiffMode {
     }
 }
 
+/// DX.3-C7 (2026-06-24): deregisters the buffer's [`HunkFoldSource`] when
+/// `diff-mode` deactivates (the diff session closed, or the buffer's mode
+/// set changed). `Drop` fires from the mode guard store when
+/// `deactivate_minor` runs — the same Drop-based lifecycle multibuffer's
+/// `MultibufferModeGuard` uses for its excerpt/file-boundary fold sources.
+/// Empty when the fold service / diff subsystem weren't registered (some
+/// test harnesses) — Drop is then a no-op.
+pub struct DiffModeGuard {
+    fold_registrations: Vec<(FoldOverlayServiceHandle, ProviderId)>,
+}
+
+impl Drop for DiffModeGuard {
+    fn drop(&mut self) {
+        for (svc, id) in self.fold_registrations.drain(..) {
+            svc.remove_source(id);
+        }
+    }
+}
+
 impl Mode for DiffMode {
-    type Guard = ();
+    type Guard = DiffModeGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -145,7 +167,7 @@ impl Mode for DiffMode {
     // registered modeline element (`register_diff_modeline_element` /
     // `diff_content`), pushed via the actor's `sync_diff_modeline_element`.
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
-        use crate::diff::overlay::DiffSignKind;
+        use crate::overlay::DiffSignKind;
         let Some(data) = ctx.service::<DiffDecorationData>() else {
             return Vec::new();
         };
@@ -164,18 +186,132 @@ impl Mode for DiffMode {
             .collect()
     }
 
+    /// DX.3-C7 (2026-06-24): register the buffer's hunk-fold source.
+    ///
+    /// Mirrors `MultibufferMode::on_activate`: pull the
+    /// `FoldOverlayService` + the data handle (here the
+    /// `DiffSubsystemHandle`) from the service registry, look up the diff
+    /// session for this buffer, build a [`HunkFoldSource`] over it, and
+    /// register it. The returned [`DiffModeGuard`]'s `Drop` removes it
+    /// when the mode deactivates. Missing service / no session just skips
+    /// (returns an empty guard) — folds are inactive, never a panic.
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, DiffModeGuard> {
+        Box::pin(async move {
+            // lattice-host maps lattice_core::BufferId →
+            // lattice_protocol::ids::BufferId via `new(id.0 as u64)`;
+            // invert here to key into the diff subsystem.
+            let core_buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+
+            // Both handle types are `Arc<dyn Trait>` / `Arc<T>` aliases;
+            // `ctx.service::<T>()` returns `Option<Arc<T>>`, so clone
+            // through the outer Arc to obtain the inner handle.
+            let fold_service = ctx
+                .service::<FoldOverlayServiceHandle>()
+                .map(|outer| (*outer).clone());
+            let diff_subsystem = ctx
+                .service::<DiffSubsystemHandle>()
+                .map(|outer| (*outer).clone());
+
+            let mut fold_registrations = Vec::new();
+
+            match (fold_service, diff_subsystem) {
+                (Some(svc), Some(sub)) => match sub.lookup(core_buffer_id) {
+                    Some(session) => {
+                        let source = Arc::new(HunkFoldSource::new(session, core_buffer_id));
+                        let id = svc.add_source(source, core_buffer_id);
+                        fold_registrations.push((svc, id));
+                    }
+                    None => {
+                        tracing::debug!(
+                            "DiffMode::on_activate: no diff session for buffer {:?}; \
+                             hunk folds inactive",
+                            core_buffer_id
+                        );
+                    }
+                },
+                _ => {
+                    tracing::debug!(
+                        "DiffMode::on_activate: fold service or diff subsystem not \
+                         registered; hunk folds inactive (expected in some tests)"
+                    );
+                }
+            }
+
+            Ok(DiffModeGuard { fold_registrations })
+        })
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// DiffConflictMode (DX.8) — smerge-style conflict-resolution surface
+// ──────────────────────────────────────────────────────────────
+
+/// `diff-conflict-mode` (smerge-style) minor — DX.8 shell (2026-06-24).
+///
+/// Separates conflict *resolution* from the 2-way `diff-mode` surface
+/// (design `diff-extraction.md` §4): it should activate **only** on
+/// buffers whose diff session carries conflict regions
+/// ([`crate::overlay::DiffSignKind::Conflict`]), and will contribute the
+/// conflict-resolution chords (keep-ours / keep-theirs / keep-both /
+/// next-conflict) + a conflict gutter.
+///
+/// v1 is a deliberate marker **shell**: the activation predicate is
+/// [`sign_map_has_conflicts`]; the resolution chords and the
+/// bridge-driven activation wiring are a tracked follow-up. Conflict
+/// *resolution* actions don't exist yet, so DX.8 establishes the
+/// separately-activatable surface **without inventing behaviour** — the
+/// decomposition (conflict resolution ≠ 2-way diffing) is the win, not a
+/// premature chord set. `Guard = ()`: it allocates no per-buffer
+/// resources until the resolution chords land.
+pub struct DiffConflictMode;
+
+impl DiffConflictMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("diff-conflict-mode")
+    }
+}
+
+impl Mode for DiffConflictMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
 }
 
-/// Register `diff-mode` against `registry`. Called from the
-/// editor boot path alongside the other feature-crate
-/// `register_*_modes` helpers.
+/// DX.8 (2026-06-24): the `diff-conflict-mode` activation predicate.
+///
+/// A diff session warrants conflict resolution iff its published sign map
+/// carries at least one [`crate::overlay::DiffSignKind::Conflict`] region.
+/// A pure function over the sign map — trivially testable and safe to
+/// consult anywhere — so the bridge can gate `diff-conflict-mode`
+/// activation on it (follow-up) the same way `DiffModeBridge` gates
+/// `diff-mode` on session participation.
+pub fn sign_map_has_conflicts(sign_map: &crate::overlay::DiffSignMap) -> bool {
+    use crate::overlay::DiffSignKind;
+    sign_map
+        .entries()
+        .iter()
+        .any(|(_line, kind)| matches!(kind, DiffSignKind::Conflict))
+}
+
+/// Register the diff modes against `registry`. Called from
+/// [`crate::install::install`] (the Phase-B install list) alongside the
+/// other feature-crate `register_*_modes` helpers. Registers both
+/// `diff-mode` (the 2-way base surface) and the `diff-conflict-mode`
+/// shell (DX.8).
 pub fn register_diff_modes(registry: &mut ModeRegistry) {
     registry
         .register(DiffMode)
         .expect("diff-mode must register without conflict");
+    registry
+        .register(DiffConflictMode)
+        .expect("diff-conflict-mode must register without conflict");
 }
 
 /// D.5.b/c (2026-05-30): chord bindings for the `diff-mode`
@@ -186,6 +322,18 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
 /// - `dp` → `action:diff-put` (D.5.c): push the current
 ///   side's hunk into the peer buffer.
 ///
+/// DX.5 (2026-06-24, C10): each target is resolved **by name**
+/// against the `CommandRegistry` — the `emacs_keys_layer_bindings`
+/// pattern (BC.5) — rather than read off the host's `ActionIds`
+/// struct. This drops the builder's only host-type dependency, so
+/// it moves to `lattice-diff` with the mode at DX.6 unchanged. The
+/// resolved `CommandId` is identical to `ActionIds::diff_get` /
+/// `diff_put` (`register_simple` registered them under these exact
+/// names), so the DX.1 chord pins are preserved. An unregistered
+/// action name skips that one binding with a `warn!` — a missing
+/// action drops its chord, never a boot panic (graceful
+/// degradation).
+///
 /// The layer is pushed once at editor boot under
 /// `PushLayerKind::MinorMode(diff-mode)`; K.1.c's
 /// per-keystroke filter gates the bindings so they only
@@ -194,11 +342,12 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
 /// fall through to the normal `d`-operator resolution — the
 /// diff-mode bindings are invisible to them.
 pub fn diff_mode_layer_bindings(
-    actions: &crate::actions::ActionIds,
-) -> std::collections::HashMap<crate::keymap::BindingMode, crate::keymap_trie::KeymapTrie> {
-    use crate::chord::{KeyChord, KeyKind, KeyMods};
-    use crate::keymap::BindingMode;
-    use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
+    registry: &lattice_grammar::CommandRegistry,
+) -> std::collections::HashMap<lattice_mode::BindingMode, lattice_keymap::KeymapTrie> {
+    use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
+    use lattice_mode::BindingMode;
+    use lattice_keymap::{BoundCommand, KeymapLayer, KeymapTrie};
+    use lattice_protocol::ChordPattern;
     use lattice_grammar::CommandInvocation;
     use lattice_grammar::source::SourceLocation;
     use std::collections::HashMap;
@@ -211,24 +360,30 @@ pub fn diff_mode_layer_bindings(
         })
     }
 
+    // (suffix-after-`d`, action canonical name). The full chord is
+    // `d` + the suffix; both target a host-registered `action:diff-*`
+    // command resolved by name.
+    const BINDINGS: &[(char, &str)] = &[
+        ('o', "action:diff-get"), // do — diff-get
+        ('p', "action:diff-put"), // dp — diff-put
+    ];
+
     let layer = KeymapLayer::MinorMode(DiffMode::mode_id());
     let mut trie = KeymapTrie::new();
-    trie.insert(
-        &[lit_char('d'), lit_char('o')],
-        Arc::new(BoundCommand::from_invocation(
-            CommandInvocation::of(actions.diff_get),
-            SourceLocation::builtin_file(file!(), line!()),
-            layer,
-        )),
-    );
-    trie.insert(
-        &[lit_char('d'), lit_char('p')],
-        Arc::new(BoundCommand::from_invocation(
-            CommandInvocation::of(actions.diff_put),
-            SourceLocation::builtin_file(file!(), line!()),
-            layer,
-        )),
-    );
+    for (suffix, command) in BINDINGS.iter().copied() {
+        let Some(id) = registry.id_by_name(command) else {
+            tracing::warn!(command, "diff-mode: skipping binding -- command not registered");
+            continue;
+        };
+        trie.insert(
+            &[lit_char('d'), lit_char(suffix)],
+            Arc::new(BoundCommand::from_invocation(
+                CommandInvocation::of(id),
+                SourceLocation::builtin_file(file!(), line!()),
+                layer,
+            )),
+        );
+    }
 
     let mut modes = HashMap::new();
     modes.insert(BindingMode::Normal, trie);
@@ -440,11 +595,129 @@ mod tests {
         BufferId(n)
     }
 
+    /// DX.8: the `diff-conflict-mode` activation predicate fires iff the
+    /// session's sign map carries a `Conflict` region — not for a clean,
+    /// add-only, or change/remove-only map. This is the gate a future
+    /// bridge consults to toggle the mode.
+    #[test]
+    fn conflict_predicate_detects_conflict_regions() {
+        use crate::overlay::{DiffSignKind, DiffSignMap};
+
+        let with_conflict = DiffSignMap::from_entries(vec![
+            (1, DiffSignKind::Add),
+            (3, DiffSignKind::Conflict),
+        ]);
+        assert!(sign_map_has_conflicts(&with_conflict));
+
+        // Add / Change / Remove are 2-way diff signs, NOT conflicts.
+        let no_conflict = DiffSignMap::from_entries(vec![
+            (1, DiffSignKind::Add),
+            (2, DiffSignKind::Change),
+            (5, DiffSignKind::Remove),
+        ]);
+        assert!(!sign_map_has_conflicts(&no_conflict));
+
+        // A clean buffer has no conflict.
+        assert!(!sign_map_has_conflicts(&DiffSignMap::default()));
+    }
+
+    /// DX.8: `register_diff_modes` registers BOTH `diff-mode` and the new
+    /// `diff-conflict-mode` shell (the mode decomposition, design §4)
+    /// without a registration conflict — and both carry the `-mode` suffix
+    /// the registry enforces.
+    #[test]
+    fn register_diff_modes_registers_base_and_conflict_modes() {
+        let mut registry = ModeRegistry::new();
+        register_diff_modes(&mut registry);
+        assert!(registry.is_registered(DiffMode::mode_id()), "diff-mode registered");
+        assert!(
+            registry.is_registered(DiffConflictMode::mode_id()),
+            "diff-conflict-mode registered"
+        );
+        assert!(DiffConflictMode::mode_id().as_str().ends_with("-mode"));
+    }
+
+    /// DX.5 (C10): a registry with the two diff actions registered under
+    /// their canonical names, mirroring `emacs_keys_mode::tests::registry`.
+    /// `diff_mode_layer_bindings` only needs `id_by_name` to resolve them,
+    /// so a minimal no-op `ActionSpec` suffices (the real `apply` closures
+    /// — `AppEffect::Diff{Get,Put}` — live in host `actions::populate`).
+    fn diff_registry() -> lattice_grammar::CommandRegistry {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        for name in ["action:diff-get", "action:diff-put"] {
+            r.register_action(
+                name,
+                "test diff action",
+                lattice_grammar::registry::ActionSpec {
+                    apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                    args_schema: vec![],
+                },
+            );
+        }
+        r
+    }
+
+    /// DX.5 (C10): `do`/`dp` bind on the `MinorMode(diff-mode)` layer,
+    /// resolved by name against the registry, and each targets the
+    /// correct `action:diff-*` command (catches a name swap).
+    #[test]
+    fn layer_binds_get_and_put_by_name() {
+        use lattice_mode::BindingMode;
+        use lattice_keymap::LookupResult;
+        use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
+
+        fn ch(c: char) -> KeyChord {
+            KeyChord { key: KeyKind::Char(c), mods: KeyMods::NONE }
+        }
+
+        let reg = diff_registry();
+        let modes = diff_mode_layer_bindings(&reg);
+        let trie = modes.get(&BindingMode::Normal).expect("Normal trie");
+
+        for (full, name) in [
+            (['d', 'o'], "action:diff-get"),
+            (['d', 'p'], "action:diff-put"),
+        ] {
+            let seq = [ch(full[0]), ch(full[1])];
+            let LookupResult::Bound { command, .. } = trie.lookup(&seq) else {
+                panic!("`{}{}` should be bound", full[0], full[1]);
+            };
+            assert_eq!(
+                command.command.command,
+                reg.id_by_name(name).expect("registered action"),
+                "`{}{}` must target {name}",
+                full[0],
+                full[1],
+            );
+        }
+        // The bare `d` prefix is a pending partial (waits for the suffix).
+        assert!(matches!(trie.lookup(&[ch('d')]), LookupResult::Partial));
+    }
+
+    /// DX.5 (C10): graceful degradation — an empty registry resolves no
+    /// names, so the builder yields an empty Normal trie (the chords fall
+    /// through to the plain `d`-operator) rather than panicking on boot.
+    #[test]
+    fn missing_actions_degrade_to_empty_layer_no_panic() {
+        use lattice_mode::BindingMode;
+        use lattice_keymap::LookupResult;
+        use lattice_protocol::chord::{KeyChord, KeyKind, KeyMods};
+
+        let reg = lattice_grammar::CommandRegistry::new();
+        let modes = diff_mode_layer_bindings(&reg);
+        let trie = modes.get(&BindingMode::Normal).expect("Normal trie");
+        let seq = [
+            KeyChord { key: KeyKind::Char('d'), mods: KeyMods::NONE },
+            KeyChord { key: KeyKind::Char('o'), mods: KeyMods::NONE },
+        ];
+        assert!(matches!(trie.lookup(&seq), LookupResult::Unbound));
+    }
+
     /// ML.3b: the formatter counts adds vs changes (Change/Conflict/Remove
     /// fold into `~`), and yields empty (hidden) content for a clean map.
     #[test]
     fn diff_content_counts_adds_and_changes() {
-        use crate::diff::overlay::{DiffSignKind, DiffSignMap};
+        use crate::overlay::{DiffSignKind, DiffSignMap};
         let map = DiffSignMap::from_entries(vec![
             (1, DiffSignKind::Add),
             (2, DiffSignKind::Add),
@@ -474,6 +747,57 @@ mod tests {
         assert_eq!(el.zone, Zone::Left);
         assert_eq!(el.priority, 20);
         assert_eq!(el.scope, Scope::Global);
+    }
+
+    /// DX.1 (BC.6 gate): `DiffMode::gutter_decorations` projects the active
+    /// buffer's `DiffSignMap` into one `GutterDecoration::Diff` per signed line,
+    /// mapping each `DiffSignKind` to its `GutterDiffKind`. This is the
+    /// sign-gutter contract the extraction must preserve; it lives in `mode.rs`
+    /// (mode-owned) so it moves with the mode into `lattice-diff` at DX.6.
+    #[test]
+    fn gutter_decorations_emit_diff_signs_from_sign_map() {
+        use crate::overlay::{DiffSignKind, DiffSignMap};
+        use lattice_mode::ServiceRegistry;
+
+        let sign_map = std::sync::Arc::new(DiffSignMap::from_entries(vec![
+            (0, DiffSignKind::Add),
+            (2, DiffSignKind::Change),
+            (5, DiffSignKind::Remove),
+            (7, DiffSignKind::Conflict),
+        ]));
+        let mut services = ServiceRegistry::new();
+        services.register(DiffDecorationData { sign_map });
+
+        let ctx = DecorationCtx::new(bid(1), &services);
+        let decos = DiffMode.gutter_decorations(&ctx);
+
+        let expected = [
+            (0u32, GutterDiffKind::Add),
+            (2, GutterDiffKind::Change),
+            (5, GutterDiffKind::Remove),
+            (7, GutterDiffKind::Conflict),
+        ];
+        assert_eq!(decos.len(), expected.len(), "one decoration per signed line");
+        for (deco, (eline, ekind)) in decos.iter().zip(expected) {
+            match deco {
+                GutterDecoration::Diff { line, kind } => {
+                    assert_eq!(*line, eline);
+                    assert_eq!(*kind, ekind);
+                }
+                other => panic!("expected a Diff gutter decoration, got {other:?}"),
+            }
+        }
+    }
+
+    /// DX.1: without a `DiffDecorationData` service (the renderer injects it
+    /// only for the active diff buffer), the gutter contributes nothing — a
+    /// non-diff buffer has no diff signs.
+    #[test]
+    fn gutter_decorations_empty_without_decoration_service() {
+        use lattice_mode::ServiceRegistry;
+        let services = ServiceRegistry::new();
+        let ctx = DecorationCtx::new(bid(1), &services);
+        assert!(DiffMode.gutter_decorations(&ctx).is_empty());
     }
 
     #[test]

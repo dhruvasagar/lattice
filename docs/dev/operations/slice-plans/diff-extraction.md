@@ -1,202 +1,275 @@
 # Diff extraction — slice plan (`lattice-host::diff` → the `lattice-diff` crate, as diff modes)
 
-**Status:** 🗒 planned (not started). This is **BC.6** of the boot-composition
-initiative (`docs/dev/operations/slice-plans/boot-composition.md`), carved into
-its own file because it is a multi-slice cross-crate extraction, not a one-line
-`install` migration like BC.3b/BC.4/BC.5.
+**Status:** ✅ COMPLETE (DX.0–DX.final ✅, 2026-06-24). This is **BC.6** of the
+boot-composition initiative (`docs/dev/operations/slice-plans/boot-composition.md`),
+carved into its own file because it is a multi-slice cross-crate extraction, not
+a one-line `install` migration like BC.3b/BC.4/BC.5. The host-side diff
+subsystem (7 files) now lives in `lattice-diff` as `diff-mode` +
+`diff-conflict-mode`, installed through the `SubsystemBoot` seam
+(`lattice_diff::install(&mut boot)`). Two follow-ups are tracked (NOT part of
+BC.6): MO.x (migrate the diff keymap to `Mode::keymap()`, retiring the host's
+explicit push) and the `diff-conflict-mode` resolution chords + bridge-driven
+activation (DX.8 left the shell + predicate).
 
 **Directive (Dhruva, 2026-06-23):** "properly extract all diff related
 functionality into diff modes within `lattice-diff`" — and "identify any
 specialized diff features to be modelled within separate minor modes, wherever
 it makes sense." Mode decomposition **confirmed**: `diff-mode` +
-`diff-conflict-mode` (§4).
+`diff-conflict-mode`.
 
-A design fragment (`docs/dev/architecture/diff-extraction.md`) should be split
-out from the "Design context & decisions" sections below when execution starts
-(project discipline: design = what/why, slice plan = when/how). It is inlined
-here so this single doc is self-sufficient to take forward into a new session.
+**Design fragment (the what/why):** `docs/dev/architecture/diff-extraction.md`
+— split out at DX.1 (2026-06-23) per project discipline (design = what/why,
+slice plan = when/how). The goal, the crate-vs-builtin rationale + cycle-safety
+proof, the full coupling-resolution table (C1–C10), the mode decomposition, and
+the module inventory live there. This file owns sequencing + status only;
+slice rows below reference the C-couplings by id.
 
 ---
 
-## 1. Goal
-
-Move the entire diff **subsystem** out of `lattice-host` (`crate::diff`, 7 files)
-into the **existing `lattice-diff` crate** (today the pure diff *algorithm*), so
-`lattice-diff` becomes the full diff crate (algorithm + subsystem + modes), and
-diff installs into the editor through the BC `SubsystemBoot` seam
-(`lattice_diff::install(boot)`) — the same shape as claude-code (BC.3b) and
-terminal (BC.4). Decompose the diff feature surface into minor modes (§4). When
-done, **diff's only footprint in `editor_boot` is one Phase-B install-list
-line**, and the host retains only the host-owned *impls* of the traits diff
-abstracts over (the buffer resolver) — not diff logic.
-
-## 2. Why a crate (not a `lattice-mode` builtin like emacs-keys)
-
-BC.5 made `emacs-keys-mode` a `lattice-mode` builtin because it is a marker mode
-+ a keymap whose every type lives below `lattice-mode`. **Diff is the opposite:**
-it is a real subsystem — a `DiffSubsystem` with a debounced event drainer + a
-document resolver, overlay/fold/filler **render providers**, a modeline element,
-a `DiffModeBridge`, and per-session forwarders. Too large and machinery-heavy to
-be a foundation builtin; it deserves its own crate. (Heuristic #1: the
-genuinely-better long-term home for a self-contained subsystem with its own
-algorithm + rendering + lifecycle is a crate, not the shared mode substrate.)
-
-### Crate target + cycle-safety (verified 2026-06-23)
-
-- `lattice-diff` already exists: `compute`/`patch`/`types`
-  (`compute_diff`, `DiffAlgorithm`, `Hunk`, `HunkIndex`, `HunkKind`, `LineRange`).
-  Deps today: only `imara-diff` / `ropey` / `smallvec` / `thiserror` (no
-  `lattice-*`). **Reverse-deps: only `lattice-host`.**
-- Moving the subsystem in grows `lattice-diff`'s deps to: `lattice-core`,
-  `lattice-protocol`, `lattice-runtime`, `lattice-mode`, `lattice-grammar`,
-  `lattice-keymap`, `lattice-cells`, `lattice-theme` (+ the existing four).
-- **No cycle:** nothing below `lattice-host` depends on `lattice-diff`, so it may
-  freely depend on those mid-level crates. (Re-confirm at execution time:
-  `grep -rl 'lattice-diff' crates/*/Cargo.toml` should list only `lattice-diff`
-  + `lattice-host` before DX.6.)
-
-## 3. Coupling resolution — the host references that must be severed
-
-`lattice-host → lattice-diff`, so the moved code must contain **no** `crate::`
-(host) reference. Each coupling found in the 7 files and its resolution:
-
-| # | Host coupling (file) | What diff uses | Real definition | Resolution |
-|---|---|---|---|---|
-| C1 | `keymap_trie::*` (mode) | `BoundCommand`, `KeymapTrie`, `KeymapLayer` | `lattice-keymap` (host re-export shim) | **(A)** import `lattice_keymap` directly |
-| C2 | `chord::*` (mode) | `ChordPattern`, `KeyChord`, … | `lattice-protocol` (shim) | **(A)** import `lattice_protocol` directly |
-| C3 | `keymap::BindingMode` (mode) | `BindingMode` | `lattice-keymap` via `lattice-mode` | **(A)** `lattice_mode::BindingMode` |
-| C4 | `ui::theme::{ResolvedTheme, BuiltinElementIds}` (overlay) | the two types | `lattice-theme` | **(A)** import `lattice_theme` directly |
-| C5 | `ui::theme::resolve_syntax_style` (overlay) | the fn | host `crates/lattice-host/src/ui/theme.rs:78` | **(C) move down** → relocate to `lattice-theme` (pure styling fn over lattice-theme types) — **DX.2** |
-| C6 | `buffer_registry::BufferRegistry` (subsystem, mod) | `BufferRegistryTextProvider`, the `DocumentBufferResolver` impl | host concrete type | **(B) trait** → `DocumentBufferResolver` + the text-provider trait live in `lattice-diff`; the `BufferRegistry…` impls **stay in `lattice-host`** (resolver pattern, like terminal's `TerminalStore`) — **DX.6/DX.7** |
-| C7 | `fold_provider::{FoldProvider, FoldContext}` (fold) | the provider trait + ctx | host `fold_provider.rs` | **(B/C)** move the provider trait to `lattice-core` (where `FoldOverlayServiceHandle` lives); diff's `HunkFoldProvider` impl rides along — **DX.3** |
-| C8 | `pane_group::RowMapper` (pane_group, filler) | the `RowMapper` trait | host `pane_group.rs` | **(B/C)** move the `RowMapper` trait to a shared crate (`lattice-core`/`lattice-cells`); host keeps any host-specific impl — **DX.3** |
-| C9 | `modeline::ROLE_MODE_ITEM` (mode) | a `&str` const | host `modeline.rs:58` | **(C-trivial)** move const to `lattice-mode`'s modeline module — **DX.4** |
-| C10 | `actions::ActionIds` (mode — `diff_mode_layer_bindings(&ActionIds)`) | `ids.diff_get` / `ids.diff_put` | host `actions.rs` registers `action:diff-get`/`-put` | **(C) move** → diff registers its own `action:diff-*` commands in `lattice-diff`; the keymap builder resolves them **by name** against `&CommandRegistry` (the emacs-keys pattern), dropping the typed `ActionIds` dep — **DX.5** |
-
-C1–C4 are the **same shims** the emacs-keys move used — clean. The real work is
-C5–C10 (three small type-relocations + diff owning its actions + two trait
-abstractions).
-
-## 4. Mode decomposition — DECIDED (Dhruva, 2026-06-23)
-
-`diff-mode` + `diff-conflict-mode`:
-
-- **`diff-mode`** (base, 2-way diff): a buffer participates in a diff session →
-  sign gutter (`DiffSignKind` Add/Remove/Change), `+N ~M` modeline element, and
-  the `do`/`dp` hunk get/put chords. **It owns its render providers** — the
-  hunk-fold (`HunkFoldProvider`), filler-row (`FillerRowProvider`), and overlay
-  virtual-row (`DiffOverlayVirtualRowProvider`) providers register from
-  `diff-mode`'s `on_activate` (via the fold-overlay-service +
-  virtual-row-provider-registry services), NOT from host boot. They are render
-  providers, not activatable feature surfaces, so they stay mode-owned rather
-  than becoming pseudo-modes.
-- **`diff-conflict-mode`** (smerge-style): activates only when the session has
-  conflict regions (`DiffSignKind::Conflict`), contributing conflict-resolution
-  chords (keep-ours / keep-theirs / keep-both / next-conflict) + conflict gutter.
-  Today "conflict" exists only as a sign kind; this mode is where conflict
-  *resolution* becomes a first-class, separately-activatable surface. **Partly
-  forward-looking** — at DX.8, if conflict-resolution actions don't exist yet,
-  establish the mode shell + the activation predicate only, and track the
-  resolution chords as a follow-up. Do NOT invent behaviour to justify the mode;
-  the decomposition (separating conflict resolution from 2-way diffing) is the
-  win.
-
-> **Heuristic #1 (long-term fit):** separating conflict-resolution matches the
-> cross-editor convention (vim diff vs `smerge`/conflict modes; magit) and keeps
-> `diff-mode` focused; render providers stay mode-owned (not over-split).
-> **Heuristic #3 (third option) — considered + rejected:** a monolithic single
-> `diff-mode` is simpler but bundles conflict resolution into the 2-way surface,
-> muddying activation (conflicts aren't always present).
-
-## 5. Diff module inventory (what moves + what the host consumes)
-
-**Files (move all 7 into `lattice-diff/src/`):** `mod.rs`, `mode.rs`,
-`subsystem.rs`, `overlay.rs`, `fold.rs`, `filler.rs`, `pane_group.rs`.
-
-**Public items the host consumes (must stay `pub`; host keeps calling via
-`lattice_diff::`):**
-- subsystem: `DiffSession`, `DiffSubsystem`, `DiffDescriptor`,
-  `BufferRegistryTextProvider`*, `BufferSource`, `OnDiskSource`,
-  `DiffParticipantSource`, `DocumentBufferResolver`,
-  `BufferRegistryDocumentResolver`*  (*the `BufferRegistry…` impls stay host-side,
-  see C6)
-- overlay: `DiffOverlayVirtualRowProvider`, `DiffOverlayRefreshTask`,
-  `SyntaxContext`, `diff_overlay_provider_id`, `DiffSignMap`, `DiffSignKind`,
-  `DiffOutcome`
-- mode: `DiffMode`, `diff_mode_layer_bindings`, `register_diff_modes`,
-  `register_diff_modeline_element`, `diff_content`, `DIFF_ELEMENT`,
-  `DiffModeBridge`, `DiffModeChange`, `DiffModeAction`, `DiffDecorationData`
-- fold: `HunkFoldProvider`, `HUNK_FOLD_PROVIDER_ID`
-- filler: `FillerRowProvider`, `Side`, `diff_filler_provider_id`
-- pane_group: `HunkRowMapper`
-
-(Source: 2026-06-23 coupling scan. Re-verify the exact set with `grep -rn
-'crate::diff::' crates/lattice-host/src` excluding `src/diff/` at DX.1 — the
-host consumer sites to rewire are `editor_boot.rs` [register + subsystem bind +
-modeline element + keymap push + the `diff_subsystem` / `diff_subscription_guard`
-/ `diff_forwarders` Editor fields], `dispatch.rs` [`apply_pending_diff_mode_changes`
-+ the `:diff`/`:diffoff` ex-commands], `render_state.rs`, `fold_provider.rs`.)
-
-## 6. Slice sequence
+## Slice sequence
 
 Each slice lands green + behaviour-pinned. Migrate by *moving types down first*
 (so the big file-move in DX.6 is a clean import swap), then the file move, then
 the host rewire, then the mode decomposition.
 
-- **DX.0 — design fragment + this slice plan.** ✅ (this doc; split the design
-  fragment out when DX.1 starts).
-- **DX.1 — diff regression pins (the gate).** A `crates/lattice-host/tests/
-  diff_regression_pins.rs` (BC.2 style) pinning current behaviour BEFORE any
-  move: `diff-mode` registered; `:diff`/`:diffoff` resolve; `DiffSubsystem`
-  bound + its `DocumentChanged`/`DocumentClosed` drain wakes; the `+N ~M`
-  modeline element registered; `do`/`dp` chords bound on a diff buffer; sign
-  gutter decorations present. These are the arbiter for every later slice
-  ("no behaviour change").
-- **DX.2 — move `resolve_syntax_style` → `lattice-theme`** (C5). Pure relocation;
-  host + overlay call `lattice_theme::resolve_syntax_style`. Green: workspace
-  build + theme tests.
-- **DX.3 — move the `FoldProvider`/`FoldContext` + `RowMapper` traits →
-  `lattice-core`** (C7, C8). Host fold/pane-group impls re-point to the moved
-  traits; diff's `HunkFoldProvider` / `HunkRowMapper` impl the moved traits at
-  DX.6. Green: workspace build + host fold/pane tests.
-- **DX.4 — move `ROLE_MODE_ITEM` → `lattice-mode` modeline module** (C9). Trivial
-  const relocation; update host + (future) diff references.
-- **DX.5 — diff owns its actions** (C10). Register `action:diff-get`/`-put` from
-  diff (initially still host-side, moved into `lattice-diff` at DX.6) and convert
-  `diff_mode_layer_bindings` to resolve **by name** against `&CommandRegistry`
-  (drop the `&ActionIds` param) — the emacs-keys pattern. Green: `do`/`dp` still
-  bind (DX.1 pins); name resolution works.
-- **DX.6 — move the 7 files into `lattice-diff` + sever couplings.** Add the
-  Cargo deps (§2). Fix imports (C1–C4 → direct lower-crate paths; C5/C9 → moved
-  homes; C7/C8 → impl the lattice-core traits). Trait-abstract the resolver: the
-  `DocumentBufferResolver` (+ text-provider) trait lives in `lattice-diff`; the
-  `BufferRegistryDocumentResolver` / `BufferRegistryTextProvider` impls **stay in
-  `lattice-host`** (host owns `BufferRegistry`). Green: `lattice-diff` builds
-  standalone (`cargo build -p lattice-diff`); host builds against `lattice_diff::`.
-- **DX.7 — rewire host onto `lattice_diff::` via `install(boot)`.** Add
-  `lattice_diff::install(boot: &mut impl SubsystemBoot)` collapsing diff's
-  editor_boot wiring (register modes + register actions + push the name-based
-  keymap layer + register the modeline element + bind the subsystem with a
-  host-provided resolver) into **one Phase-B install-list line** alongside
-  claude-code + terminal. The resolver is host-provided (the
-  `BufferRegistryDocumentResolver` passed via a `boot.service::<…>()` lookup or a
-  registered handle — decide at execution, mirroring terminal's
-  `TerminalStoreHandle` host-published primitive). The `diff_subsystem` /
-  `diff_subscription_guard` / `diff_forwarders` Editor fields + the
-  `apply_pending_diff_mode_changes` dispatch tail stay host-side (host actor-loop
-  state) but read `lattice_diff::` types. Green: DX.1 pins + the `:diff`
-  end-to-end path; **this also closes BC.6**.
-- **DX.8 — mode decomposition** (§4). Make the render providers mode-owned
-  (registered from `diff-mode::on_activate`, not host boot). Add
-  `diff-conflict-mode` (shell + activation predicate at minimum; resolution
-  chords per §4 note). Green: pins + new mode tests.
-- **DX.final — four artefacts + cleanup.** Promote the design fragment
-  (`architecture/diff-extraction.md`); add/confirm benches if the move touched a
-  hot path (overlay build is viewport-bounded — confirm no regression); ensure
-  graceful error handling on the resolver/provider seams (log + skip, never
-  panic on the actor loop); mark BC.6 ✅ in `boot-composition.md`.
+- **DX.0 — design fragment + this slice plan.** ✅ Design + sequence captured.
+- **DX.1 — diff regression pins (the gate).** ✅ Landed (2026-06-23) as
+  `crates/lattice-host/tests/diff_regression_pins.rs` (7 integration pins, BC.2
+  style) + 2 mode-owned unit pins in `crates/lattice-host/src/diff/mode.rs`.
+  Pins the current behaviour BEFORE any move:
+  - `diff-mode` registered at boot;
+  - the `:diff` family resolves via `excommand::resolve_command_name_or_alias`
+    (`diff`/`diffoff`/`diffthis`/`diffsplit`/`diffget`/`diffput`/`describe-diff`);
+  - the `+N ~M` modeline element (`DIFF_ELEMENT`) registered at boot;
+  - `do`/`dp` resolve on the `MinorMode(diff-mode)` keymap layer to the
+    diff-get/diff-put actions **and** are INACTIVE when diff-mode is not active
+    (K.1.c gating) — via `keymap.resolve_trace`;
+  - `DiffSubsystem` bound at boot (`diff_subscription_guard.is_some()`) **and**
+    an end-to-end `#[tokio::test]`: publishing `DocumentClosed` on
+    `editor.event_bus` for the active buffer's `DocumentId` drains to
+    `note_buffer_closed` (proves the bind targets the editor's bus + the real
+    `BufferRegistryDocumentResolver`, which a bare `is_some()` could not);
+  - sign-gutter decorations: `DiffMode::gutter_decorations` projects a
+    `DiffSignMap` into `GutterDecoration::Diff` per signed line (mode-owned unit
+    test, moves with the mode into `lattice-diff` at DX.6).
 
-## 7. Risks / open questions (carry into the slices)
+  The drain *mechanism* itself stays unit-pinned in `diff/subsystem.rs`
+  (`bind_routes_document_changed_to_debounced_recompute` /
+  `bind_routes_document_closed_to_drop_session`), which move with the file.
+  **Green:** 7 + 2 new pins + 188 diff lib tests + the 14 BC.2 boot pins. These
+  are the arbiter for every later slice ("no behaviour change").
+
+- **DX.2 — move `resolve_syntax_style` → `lattice-syntax`** (C5). ✅ Landed
+  (2026-06-23). **Deviation from the planned home, decided on merit:** C5 said
+  relocate to `lattice-theme` "(pure styling fn over lattice-theme types)" — but
+  that reason is FALSE (risk #1 anticipated this): `resolve_syntax_style` /
+  `syntax_element_id` take a `lattice_syntax::Style` and map it to a theme
+  `ElementId`. Putting them in `lattice-theme` would force the deliberately-tiny
+  renderer-hot-path leaf (deps: only arc-swap + tracing) to depend UP on the
+  heavy `lattice-syntax` (tree-sitter, lattice-mode, …). The bridge is
+  syntax-aware, so it belongs in the higher crate (`lattice-syntax`) depending
+  DOWN onto the theme leaf — cycle-free (`lattice-syntax` did not dep
+  `lattice-theme`; theme is a pure leaf). Moved both fns + their colour-identity
+  tests to `lattice-syntax/src/theme_style.rs`; host keeps a **façade re-export**
+  (`pub use lattice_syntax::{resolve_syntax_style, syntax_element_id}` in
+  `ui/theme.rs`) so all `lattice_host::ui::theme::` / `crate::ui::theme::` call
+  sites (cell builder, both renderers, the diff overlay) are unchanged — the
+  overlay's import flips to `lattice_syntax::` for free at DX.6.
+  **Consequence for the design §2 dep list:** `lattice-diff` must add
+  `lattice-syntax` (the overlay already uses `lattice_syntax::{Lang,
+  LangRegistry, oneshot_highlight_lines, StyledSpan, Style}`) — the §2 list
+  omitted it. **Green:** `lattice-syntax` builds standalone (no cycle); host +
+  `lattice-ui-tui` + `lattice-ui-gpui` build; 4 moved bridge tests + 7 DX.1 pins
+  + 33 TUI cell-render tests pass.
+- **DX.3 — split into C8 (✅) + C7 (re-scoped).**
+  - **C8 — `RowMapper` → `lattice-core`.** ✅ Landed (2026-06-23). The trait is
+    `map_row(&self, usize, usize, u32) -> u32` — zero lattice-type coupling — so
+    it sits in `lattice_core::ui::pane` beside its `PaneGroupId`/`PaneId`
+    identity siblings. Host `pane_group.rs` re-exports it
+    (`pub use lattice_core::ui::pane::RowMapper`); the `PaneGroup` registry +
+    `Identity`/`Offset` impls stay host-side; `HunkRowMapper` impls the moved
+    trait (its import flips to `lattice_core::ui::pane::RowMapper` at DX.6).
+    **Green:** `lattice-core` + host build; 27 pane-group tests.
+  - **C7 — `FoldProvider`/`FoldContext` → `lattice-core`: BLOCKED as planned;
+    re-scoped.** `FoldContext` carries `lattice_syntax::SyntaxSnapshot` +
+    `lattice_diff::HunkIndex`; `lattice-core` (bottom of the graph, deps only
+    `lattice-protocol`) cannot reference either without a cycle (`lattice-syntax`
+    already deps `lattice-core`; `lattice-diff` will at DX.6). **Real
+    resolution:** the only non-host `FoldProvider` impl is `HunkFoldProvider`;
+    `lattice-core` already has a `FoldSource` trait
+    (`compute_folds(&self) -> Vec<Fold>`, no context) that multibuffer's fold
+    providers impl, wrapped by the host's `FoldSourceAdapter` + registered via
+    `FoldOverlayService`. So C7 becomes: convert `HunkFoldProvider` from a
+    context-driven host `FoldProvider` into a self-contained
+    `lattice_core::FoldSource` (holding a diff-session handle), registered via
+    `FoldOverlayService` — the multibuffer pattern, and exactly DX.8's
+    "render providers mode-owned". `FoldProvider`/`FoldContext` then stay
+    host-side; nothing relocates. ✅ **Landed (2026-06-24).** Dhruva chose
+    **fully mode-owned now** (`diff-mode::on_activate`, pulling DX.8's fold
+    work into C7). What changed:
+    - `diff/fold.rs`: `HunkFoldProvider` (context-driven `FoldProvider`) →
+      `HunkFoldSource` (`lattice_core::FoldSource` holding `Arc<DiffSession>`,
+      per-buffer id via `HUNK_FOLD_NAMESPACE`); `compute_folds` reads
+      `session.current_hunks()`. `fold_from_hunk` kept as the tested core.
+    - `diff/mode.rs`: `DiffMode::Guard = DiffModeGuard { fold_registrations }`
+      + `Drop` removes the source; `on_activate` pulls
+      `FoldOverlayServiceHandle` + the new `DiffSubsystemHandle` from
+      `ctx.service`, looks up the session, registers the source (mirrors
+      `MultibufferMode::on_activate`).
+    - `diff/subsystem.rs` + `editor_boot.rs`: `DiffSubsystemHandle =
+      Arc<DiffSubsystem>` registered as a Phase-A service.
+    - `fold_provider.rs`: pre-seed removed from `with_builtins`;
+      `FoldContext.diff_hunks` field + the `lattice_diff` import GONE (the host
+      fold substrate no longer depends on `lattice-diff`); pre-seed test
+      inverted.
+    - `dispatch.rs`: `recompute_folds` drops the `diff_hunks` load. **Behaviour
+      preservation:** the `Manual && overlays==0` early-return (DEAD pre-C7 —
+      the pre-seed kept overlays ≥ 1) now drops stale overlay-sourced folds
+      (`identity: Some`) while preserving hand-curated `zf` folds
+      (`identity: None`), so `:diffoff` doesn't strand hunk folds. The 3 fold
+      integration tests migrated to `Editor::boot` + diff-mode activation are
+      the no-behaviour-change pin.
+    - `benches/fold_recompute.rs` rewritten to the `FoldSource` path.
+    **Green:** full `lattice-host` lib suite (747) + DX.1 (7) + BC.2 (14) pins +
+    host/TUI/GPUI/`lattice-diff` build.
+- **DX.4 — move `ROLE_MODE_ITEM` → `lattice-mode` modeline module** (C9). ✅
+  Landed (2026-06-24). The role *modes* tag contributed modeline content with
+  (diff's `+N ~M`) now lives in `lattice-mode/src/modeline.rs` beside
+  `ModelineRole`; the host's own element roles (`modeline.path`/`position`/
+  `lang`/`mode`) stay host-side. Host re-exports it
+  (`pub use lattice_mode::modeline::ROLE_MODE_ITEM`) so renderer style maps
+  (`ml::ROLE_MODE_ITEM`) + the modeline bench + `crate::modeline` call sites are
+  unchanged; diff's import flips to `lattice_mode::modeline` at DX.6. **Green:**
+  mode + host + TUI + GPUI build; modeline (10) + diff-mode (13) tests.
+- **DX.5 — diff owns its actions** (C10). ✅ Landed (2026-06-24). Converted
+  `diff_mode_layer_bindings(actions: &crate::actions::ActionIds)` →
+  `diff_mode_layer_bindings(registry: &lattice_grammar::CommandRegistry)`,
+  resolving `action:diff-get`/`action:diff-put` **by name** (`id_by_name`) — the
+  `emacs_keys_layer_bindings` pattern (BC.5), with the same graceful-skip-on-
+  unregistered-name `warn!`. This drops the builder's only host-type dependency
+  (`crate::actions::ActionIds`), so it moves to `lattice-diff` with the mode at
+  DX.6 unchanged. The call site (`editor_boot.rs`) passes `&registry` (already in
+  scope, populated by `actions::populate` above). **Scope note:** the action
+  *registration* (`action:diff-get`/`-put` → `AppEffect::Diff{Get,Put}`) stays in
+  host `actions::populate` — `AppEffect` is the host-owned effect vocabulary
+  (`feedback_effect_vocabulary_is_host_boundary`), so the registration can't move
+  to `lattice-diff` without an effect seam (a deferred WASM-stage concern). The
+  `ActionIds::diff_get`/`diff_put` fields remain (consumed by the DX.1 pin's
+  CommandId assertion + the `populate` reverse-map test); the diff module no
+  longer reads them. This faithfully mirrors emacs-keys, which resolves
+  host-registered pane actions by name without owning their registration.
+  **Green:** 7 DX.1 pins (incl. `diff_get_put_chords_bound_on_diff_mode_layer`,
+  asserting the name-resolved id equals `action_ids.diff_get`/`diff_put`) + 2 new
+  mode-owned unit pins (`layer_binds_get_and_put_by_name`,
+  `missing_actions_degrade_to_empty_layer_no_panic`) + `lattice-host` builds.
+- **DX.6 — move the 6 source files into `lattice-diff` + sever couplings.** ✅
+  Landed (2026-06-24). Moved `filler`/`fold`/`mode`/`overlay`/`pane_group`/
+  `subsystem` via `git mv`; host `diff/mod.rs` is now a **façade** over them
+  (the locked DX.2/DX.4 re-export pattern). Chosen over rewiring consumers
+  because dispatch.rs alone has **119** `crate::diff::` refs + the TUI/GPUI
+  renderers consume `lattice_host::diff::*` — rewiring all those to
+  `lattice_diff::` is DX.7's job, not DX.6's. **What landed:**
+  - **Cargo deps** (design §2): lattice-diff gained `lattice-core`,
+    `lattice-protocol`, `lattice-cells`, `lattice-runtime`, `lattice-mode`,
+    `lattice-grammar`, `lattice-keymap`, `lattice-syntax`, `lattice-theme`,
+    `arc-swap`, `tokio`, `tracing` (+ `tokio` `test-util` dev-dep for the
+    `start_paused` debounce tests). Cycle-free: the `lattice-diff` token in
+    `lattice-syntax/Cargo.toml` is a comment, not a dep (verified) — the
+    syntax→theme style bridge moved to lattice-syntax at DX.2 *precisely* so
+    lattice-diff could reach it.
+  - **Coupling severance (compiler-verified, not by inspection):**
+    - C1–C4 / Bucket-B host re-exports → true lower-crate homes:
+      `crate::chord::*`→`lattice_protocol::chord::*`;
+      `crate::keymap::BindingMode`→`lattice_mode::BindingMode`;
+      `crate::keymap_trie::{BoundCommand,KeymapLayer,KeymapTrie,LookupResult}`→
+      `lattice_keymap::*` and `::ChordPattern`→`lattice_protocol::ChordPattern`;
+      `crate::ui::theme::{resolve_syntax_style}`→`lattice_syntax::` (C5/DX.2),
+      `crate::ui::theme::{ResolvedTheme,BuiltinElementIds,InMemoryThemeRegistry,
+      ThemeRegistry}`→`lattice_theme::`;
+      `crate::modeline::ROLE_MODE_ITEM`→`lattice_mode::modeline::` (C9/DX.4);
+      `crate::pane_group::RowMapper`→`lattice_core::ui::pane::RowMapper` (C8/DX.3).
+    - Bucket-D intra-module `crate::diff::X`→`crate::X`; self-refs
+      `lattice_diff::X`→`crate::X`.
+    - **C6 resolver split:** the `BufferTextProvider` / `DocumentBufferResolver`
+      traits travel with `subsystem.rs`; the two `BufferRegistry`-backed impls
+      (`BufferRegistryTextProvider` / `BufferRegistryDocumentResolver`)
+      extracted to a NEW host file `crates/lattice-host/src/diff/resolver.rs`
+      (they reference the host `BufferRegistry`), re-exported under
+      `crate::diff::subsystem::*` so all ~10 construction call sites
+      (editor_boot + dispatch) are unchanged.
+  - **No Bucket-C surprises:** subsystem.rs's ONLY host references were the two
+    resolver impls; no `Editor`/`App`/`AppEffect`/`dispatch` reference in any of
+    the 6 files' non-test code. The test modules use only `super::*` +
+    `lattice_diff` + an in-module `MockResolver`, so they moved wholesale.
+  - **Green:** `cargo build -p lattice-diff` standalone + **226 lattice-diff
+    tests** (incl. the moved mode/overlay/fold/subsystem suites); host lib **560
+    passed / 0 failed** (was 747 — ~187 diff tests now live in lattice-diff);
+    TUI + GPUI build; all benches compile in both crates; **7 DX.1 pins + 14
+    BC.2 pins** + diff dispatch/fold tests green.
+- **DX.7 — host installs diff via `install(boot)`** (closes BC.6). ✅ Landed
+  (2026-06-24). Added `lattice_diff::install(boot: &mut impl SubsystemBoot)`
+  (`crates/lattice-diff/src/install.rs`) and a one-line Phase-B entry
+  `lattice_diff::install(&mut boot)` alongside claude-code + terminal; the
+  Phase-A `register_diff_modes` call (editor_boot ~388) is gone.
+  **Scope decided at execution — the terminal pattern, NOT the full collapse**
+  the entry above sketched. `SubsystemBoot` deliberately exposes no
+  keymap-push or modeline primitive, and the Phase-B install list runs
+  *before* the `ModelineService` is created (boot ordering), so three diff
+  touch-points stay host-side and are **documented in `install.rs` as
+  deliberate, not mode-ownership violations**:
+  - the **name-based keymap-layer push** (the emacs-keys/BC.5 pattern: the host
+    owns the live `KeymapHandle` + reads the registry; the mode owns the
+    binding choice + builder + `do_diff_*` handler bodies);
+  - the **`DiffSubsystem` bind** (uses the host `BufferRegistryDocumentResolver`
+    via the C6 seam, produces the `diff_subsystem` / `diff_subscription_guard` /
+    `diff_forwarders` actor-loop Editor fields) — same category as terminal's
+    invocation runner; the subsystem handle is still published as
+    `DiffSubsystemHandle` for the mode's `on_activate`;
+  - the **`+N ~M` modeline element** registration (ordering — its service is
+    created after the install list). The descriptor + formatter are mode-owned;
+    only the registration *call* is host-sequenced.
+  install itself registers the modes (`register_diff_modes`). Migrating the
+  keymap to `Mode::keymap()` (so the K.2.4 pass owns the push, retiring the
+  explicit push) is the tracked **MO.x** follow-up — deferred to avoid the
+  minor-mode→`MinorMode`-layer path risk; the emacs-keys host-push is the
+  proven, lower-risk shape and is NOT a half-migration. **Green:** lattice-diff
+  + host build; **7 DX.1 pins + 14 BC.2 pins** (incl. `diff_mode_registered_at_boot`,
+  the arbiter that the install-list move preserved registration).
+- **DX.8 — mode decomposition** (design §4). ✅ Landed (2026-06-24). The
+  render-provider mode-ownership half was already done at **DX.3-C7**
+  (`HunkFoldSource` registered from `diff-mode::on_activate`). DX.8 adds the
+  **`diff-conflict-mode` shell + activation predicate** — `DiffConflictMode`
+  (marker minor, `Guard = ()`, `mode_id = "diff-conflict-mode"`) registered
+  alongside `diff-mode` in `register_diff_modes`, plus the pure activation
+  predicate `sign_map_has_conflicts(&DiffSignMap) -> bool` (true iff a
+  `DiffSignKind::Conflict` region is present). **Deliberately forward-looking
+  per design §4:** conflict-*resolution* actions don't exist yet, so DX.8
+  establishes the separately-activatable surface **without inventing
+  behaviour** — the resolution chords (keep-ours/keep-theirs/keep-both/
+  next-conflict) + the bridge-driven activation wiring (consulting the
+  predicate the way `DiffModeBridge` gates `diff-mode`) are the tracked
+  follow-up. **Green:** 2 new mode tests (`conflict_predicate_detects_conflict_regions`,
+  `register_diff_modes_registers_base_and_conflict_modes`) + 14 BC.2 / 7 DX.1
+  pins unperturbed by the extra mode.
+- **DX.final — four artefacts + cleanup.** ✅ Landed (2026-06-24).
+  - **Architecture doc:** `architecture/diff-extraction.md` §4 (mode
+    decomposition) + the C6/C10 coupling rows confirmed landed.
+  - **Benches:** the overlay/fold/filler/pane-group hot paths were a **pure
+    move** (no algorithm change), so viewport-boundedness (paramount #1) is
+    preserved by construction; bench coverage is present + compiling in both
+    crates — `lattice-diff/benches/recompute.rs` and host
+    `diff_subsystem.rs` / `pane_group.rs` / `fold_recompute.rs`.
+  - **Graceful error handling:** preserved on the moved seams — the resolver
+    `buffer_rope` returns `Option` (None → empty rope, never panics on a
+    dropped buffer); `DiffMode::on_activate` logs + skips on a missing fold
+    service / diff subsystem / session (`tracing::debug!`, returns an empty
+    guard). No actor-loop panic path introduced.
+  - **Final verification:** full build (lattice-cli TUI + GPUI peer + diff +
+    host); **228 lattice-diff tests** + **560 host lib** + **7 DX.1 / 14 BC.2**
+    pins all green.
+  - **BC.6 marked ✅** in `boot-composition.md`.
+
+## Risks / open questions (carry into the slices)
 
 1. **`resolve_syntax_style` move (DX.2)** — confirm its body only touches
    `lattice-theme` types (it takes `&ResolvedTheme`, `&BuiltinElementIds`, a
@@ -221,12 +294,12 @@ the host rewire, then the mode decomposition.
    theme-field touched in the move updates both peers in the same slice
    (`feedback_tui_gpui_parity`).
 
-## 8. Cross-references
+## Cross-references
 
+- **Design fragment (what/why + coupling table C1–C10):**
+  `docs/dev/architecture/diff-extraction.md`.
 - Parent initiative + the `SubsystemBoot` seam diff installs through:
   `docs/dev/operations/slice-plans/boot-composition.md` (BC.6) +
   `docs/dev/architecture/boot-composition.md`.
-- Diff design/behaviour (existing): `crates/lattice-host/src/diff/*` module docs
-  (move with the files).
 - The emacs-keys move (BC.5) is the template for C1–C4 + the name-based keymap
   builder (C10): `crates/lattice-mode/src/emacs_keys_mode.rs`.

@@ -50,8 +50,14 @@ Restructure boot into two ordered phases:
   does all of its wiring against the Phase-A primitives. Order-independent: every
   primitive already exists, so there is no "late handle" and no deferred install.
 
-`editor_boot.rs` collapses to two lists: build the primitives, then
-`for s in subsystems { s.install(boot) }`.
+`editor_boot.rs` converges to **three parts**: (1) build the Phase-A primitives,
+(2) register the host-native **builtins** (the vim grammar, ex-commands, the
+foundation / language / oil / file-tree / snippet / tutor / buffer-kind modes,
+host actions — via the `*_mut` registry seams), then (3) the Phase-B
+`subsystem.install(boot)` list. The BC.final review (2026-06-25) corrected an
+earlier "two lists, `*_mut` removed" framing: the builtins are host-native, not
+subsystems, so they register inline by design and the `*_mut` seam is permanent.
+The acid test (below) governs part 3.
 
 ## 3. Move 2 — a `BootContext` that hands over primitives *and* bakes in robustness
 
@@ -66,6 +72,14 @@ that cannot be wired without their safety property*:
   (validate → map to existing `Effect` → resolve oneshot). This generalizes
   LSP's hand-rolled inbound buses *and* the Claude Code peer's `ClaudeCodeInbound`
   into one primitive.
+- `inbound_raw::<T>() -> (Sender<T>, Receiver<T>)` — the **host-drained** variant
+  (BC.8d/e). Same wake-baked sender, but returns the raw receiver instead of a
+  handler-drain closure: for server-initiated work whose apply is irreducibly
+  `&mut Editor` and carries types that can't cross the `Effect` boundary (LSP
+  `workspace/applyEdit`; the `showMessageRequest` picker — a deferred user
+  choice), the host seats the receiver on the `Editor` and drains it itself,
+  while `send` still wakes off-keystroke. Keeps the irreducible apply host-side
+  without an internal-pump `Effect`.
 - `wake_on_event::<E>()` — subscribe a typed event and wake `async_landed`;
   generalizes the `MultibufferExcerptsReady` / L1c forwarder tasks.
 - `tick_callback(closure)` — register a per-tick drain (the I1 registry).

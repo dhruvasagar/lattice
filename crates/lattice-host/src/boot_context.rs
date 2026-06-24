@@ -71,9 +71,15 @@ use tokio::sync::{Notify, mpsc};
 /// subsystem registers its modes / commands / services through `boot` — the
 /// [`SubsystemBoot`] surface ([`modes_mut`](SubsystemBoot::modes_mut) /
 /// [`commands_mut`](SubsystemBoot::commands_mut) /
-/// [`register_service`](SubsystemBoot::register_service)); host-internal
-/// `editor_boot` code uses the same seam until every subsystem has migrated
-/// (BC.final removes the `*_mut` accessors once nothing inline remains). The
+/// [`register_service`](SubsystemBoot::register_service)); host-native
+/// **builtins** (the native vim grammar, ex-commands, foundation / language /
+/// oil / file-tree / snippet / tutor / buffer-kind modes, host actions,
+/// mode-toggle commands, syntax text objects) register through the SAME seam.
+/// **BC.final finding (2026-06-25):** the `*_mut` accessors are NOT transitional
+/// — those builtins are host-native (not subsystems, never installed), so the
+/// accessors are the *permanent* builtin-registration seam, kept by design. The
+/// mode-ownership acid test ("a new SUBSYSTEM touches boot in one place")
+/// governs the Phase-B `install` list, not the host's own builtins. The
 /// registries are held
 /// behind `Option` and *taken* on [`freeze_command_registry`](Self::freeze_command_registry)
 /// / [`freeze_mode_registry`](Self::freeze_mode_registry) /

@@ -476,11 +476,31 @@ migration is **behaviour-pinned before it moves**.
   *spec* in the crate but its *binding* host-side at `Builtin`, resolved by name
   [BC.7].)
 
-- **BC.final — Remove dead scaffolding.** Retire the hardcoded `run_tick_pending`
-  drains the tick-callback registry now subsumes, and the ad-hoc wake forwarders
-  the `inbound` / `wake_on_event` primitives replace. Confirm `editor_boot.rs` is
-  the two-list shape (primitives, then the Phase-B `install` list). Confirm the
-  acid test holds: a hypothetical new subsystem touches boot in one place.
+- **BC.final — Confirm the converged end-state.** ✅ COMPLETE (2026-06-25).
+  **Finding (re-evaluated on inspection, per the slice-plan rule):** there was no
+  dead scaffolding left to remove — each migration (BC.3b–BC.8e) deleted its own
+  drain / receiver field / wake-forwarder as it landed, so `cargo build -p
+  lattice-host` is dead-code-clean (Rust warns on unused private items; only the
+  unrelated `lattice-config::insert_erased` warning remains). The ad-hoc LSP
+  refresh forwarders became `wake_on_event` in BC.8a; the configuration drain
+  moved to the tick-callback registry in BC.8b; the rest of the inbound buses are
+  the host-drained `make_inbound_raw` whose drains are *intentional* host
+  residue, not scaffolding. **The "retire the `*_mut` accessors / two-list shape"
+  goal was falsified:** the `*_mut` accessors are the permanent registration seam
+  for host-native **builtins** (the vim grammar, ex-commands, foundation /
+  language / oil / file-tree / snippet / tutor / buffer-kind modes, host actions,
+  mode-toggle commands, syntax text objects) — these are not subsystems and never
+  install, so removing the accessors would break the build. `editor_boot` is
+  honestly **three parts**: Phase-A primitives → inline host builtins (via
+  `*_mut`) → Phase-B `install` list. **Acid test confirmed:** the Phase-B list
+  (`claude_code` / `terminal` / `diff` / `multibuffer` / `lsp`) is the single
+  subsystem touch-point — a new subsystem adds ONE `install(&mut boot)` line,
+  guarded by the 14 BC.2 pins (modes/services/wakes present at boot). BC.final
+  was therefore a **verify + doc-correction** slice (no code deletion): corrected
+  the falsified premise in `boot_context.rs`, `editor_boot.rs`, the design
+  fragment (`architecture/boot-composition.md` — three-part framing + the
+  `inbound_raw` primitive), and this plan. **Green:** unchanged — 14 BC.2 pins +
+  full workspace build incl. GPUI (no code change).
 
 ## Risks / decisions (carry into the slices)
 
@@ -515,7 +535,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8 ✅ (8a–8e all complete — LSP fully migrated, no bespoke inbound bus remains) · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8 ✅ (8a–8e all complete — LSP fully migrated, no bespoke inbound bus remains) · BC.final ✅ — **boot-composition initiative COMPLETE** (2026-06-25)
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -592,8 +612,15 @@ four LSP server-initiated buses (configuration / show-document / apply-edit /
 show-message-request) ride the generic `InboundBus` with a structural wake; no
 bespoke inbound bus remains.
 
-**Next: BC.final** — retire the `*_mut` transitional accessors + the hardcoded
-`run_tick_pending` drains the `inbound`/`wake_on_event`/tick-callback primitives
-subsume, leaving `editor_boot` as the two-list shape (Phase-A primitives, then
-the Phase-B `install` list). Confirm the acid test: a hypothetical new subsystem
-touches boot in one place.
+**BC.final ✅ COMPLETE (2026-06-25) — boot-composition initiative DONE.** A
+verify + doc-correction slice: no dead scaffolding remained (each migration
+removed its own as it landed; the build is dead-code-clean). The "retire `*_mut`
+/ two-list" goal was falsified — the `*_mut` accessors are the permanent seam for
+host-native builtins (grammar / ex-commands / foundation+language+oil+file-tree+
+snippet+tutor+buffer-kind modes / host actions), which are not subsystems.
+`editor_boot` is honestly three parts (Phase-A primitives → inline builtins →
+Phase-B `install` list); the acid test (a new subsystem = one `install` line,
+guarded by the 14 BC.2 pins) holds for Phase B. Doc corrections landed in
+`boot_context.rs`, `editor_boot.rs`, `architecture/boot-composition.md`, and this
+plan. Per Dhruva 2026-06-24 the agreed next focus is back to claude-code IDE work
+([[project_ide_protocol_status]]).

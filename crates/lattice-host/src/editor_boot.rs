@@ -440,8 +440,15 @@ impl Editor {
         // enumerates the registry, and while both registries are still open.
         // As each remaining subsystem migrates (terminal → emacs-keys → diff →
         // multibuffer → LSP, newest→oldest) its inline wiring collapses into an
-        // `install` here; at BC.final this list + the Phase-A primitives are the
-        // whole of `editor_boot`.
+        // `install` here. **BC.final (2026-06-25):** all subsystems are migrated;
+        // this list is the single Phase-B touch-point (the acid test — a new
+        // subsystem adds ONE `install` line, guarded by the BC.2 pins). NOTE:
+        // `editor_boot` is THREE parts, not two — Phase-A primitives, the inline
+        // host-native *builtins* (grammar / ex-commands / foundation+language+
+        // oil+file-tree+snippet+tutor+buffer-kind modes / host actions, via
+        // `boot.{commands,modes}_mut()`), and this Phase-B `install` list. The
+        // builtins are not subsystems and register inline by design — the
+        // earlier "two-list, `*_mut` removed" goal was falsified on inspection.
         //
         // claude-code (I-series): server spawn + `:claude-code-*` ex-commands +
         // `claude-code-mode` + the `ClaudeCodeServerHandle` service + the I2

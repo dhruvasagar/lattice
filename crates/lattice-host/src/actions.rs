@@ -214,18 +214,9 @@ pub struct ActionIds {
     /// Slice 8.i.4.e: active-snippet overlay actions
     /// (registered into a minor-mode layer pushed when a
     /// snippet activates; popped on exit).
-    /// D.5.b (2026-05-30): `do` chord under
-    /// `MinorMode(diff-mode)`. Resolves the hunk under cursor
-    /// on the current side and rewrites it to match the
-    /// baseline. Per K.1.c the binding only fires on buffers
-    /// where diff-mode is in `ActiveModes.minors()`.
-    pub diff_get: CommandId,
-    /// D.5.c (2026-05-30): `dp` chord under
-    /// `MinorMode(diff-mode)`. Mirror of [`Self::diff_get`]:
-    /// pushes current-side hunk text into the peer buffer
-    /// for two-pane sessions; emits a clear error for
-    /// inline file-on-disk baselines (no peer to push to).
-    pub diff_put: CommandId,
+    // CR.6 (2026-06-24): `diff_get`/`diff_put` ActionIds removed — the diff
+    // actions (incl. `action:diff-get`/`-put`) are registered by
+    // `lattice_diff::install()` now, not host `actions.rs`.
     pub snippet_next_placeholder: CommandId,
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
@@ -244,27 +235,9 @@ pub struct ActionIds {
 /// after `lattice_grammar::builtins::populate` and
 /// `lattice_grammar::ex_commands::populate`.
 pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionIds {
-    // CR.3 (2026-06-24): conflict-resolution action shells. The bodies are
-    // mode-owned (`DiffConflictMode::action_handlers()`); these CommandSpecs
-    // exist only so the `d2o`/`d3o`/`d2p`/`d3p`/`dB` chord names resolve at
-    // keymap-translate time and the handlers key to them. Registered as
-    // discarded ids — the names, not the ids, drive both the translate pass
-    // and `register_mode_action_handlers`.
-    for (name, doc) in [
-        ("action:diff-keep-ours", "diff-conflict `d2o`: keep the local (ours) side."),
-        (
-            "action:diff-keep-theirs",
-            "diff-conflict `d3o`: take the remote (theirs) side into local.",
-        ),
-        ("action:diff-put-ours", "diff-conflict `d2p`: put local into the ours side."),
-        (
-            "action:diff-put-theirs",
-            "diff-conflict `d3p`: put local into the remote (theirs) side.",
-        ),
-        ("action:diff-keep-both", "diff-conflict `dB`: keep both — splice ours then theirs."),
-    ] {
-        register_mode_owned(registry, name, doc);
-    }
+    // CR.6 (2026-06-24): the diff conflict-resolution action shells moved to
+    // `lattice_diff::install()` (the "modes register commands" pattern) —
+    // they no longer register here.
     ActionIds {
         match_bracket: register_simple(
             registry,
@@ -1132,18 +1105,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Completion-popup `<C-Space>`: clear the active source filter.",
             AppEffect::CompletionFilterClear,
         ),
-        diff_get: register_simple(
-            registry,
-            "action:diff-get",
-            "diff-mode `do`: rewrite the current side's hunk to match the baseline.",
-            AppEffect::DiffGet,
-        ),
-        diff_put: register_simple(
-            registry,
-            "action:diff-put",
-            "diff-mode `dp`: push the current side's hunk into the peer buffer.",
-            AppEffect::DiffPut,
-        ),
+        // CR.6: `action:diff-get`/`-put` registered by lattice_diff::install().
         snippet_next_placeholder: register_simple(
             registry,
             "action:snippet-next-placeholder",
@@ -1293,23 +1255,9 @@ fn register_simple(
     )
 }
 
-/// CR.3 (2026-06-24): register a pure-shell action whose body lives
-/// entirely in a mode's `action_handlers()` (the `ActionHandlerRegistry`
-/// is consulted before this CommandSpec in dispatch). The `apply`
-/// fallback is `Effect::None`, reached only if no handler is registered.
-/// Used for the conflict-resolution chords (`action:diff-keep-*` /
-/// `action:diff-put-*`), which — unlike `do`/`dp` — have no host
-/// `AppEffect` fallback to share.
-fn register_mode_owned(registry: &mut CommandRegistry, name: &str, doc: &str) -> CommandId {
-    registry.register_action(
-        name,
-        doc,
-        ActionSpec {
-            apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
-            args_schema: vec![],
-        },
-    )
-}
+// CR.6 (2026-06-24): `register_mode_owned` removed — the diff conflict
+// action shells it served are now registered in `lattice_diff::install()`
+// (the "modes register commands" pattern).
 
 #[cfg(test)]
 mod tests {
@@ -1526,8 +1474,6 @@ mod tests {
                 "action:snippet-prev-placeholder",
             ),
             (ids.snippet_leave, "action:snippet-leave"),
-            (ids.diff_get, "action:diff-get"),
-            (ids.diff_put, "action:diff-put"),
         ] {
             let spec = registry
                 .lookup(id)

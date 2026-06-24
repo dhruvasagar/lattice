@@ -465,17 +465,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("options", "ex:options"),
     ("describe-events", "ex:describe-events"),
     ("describe-event", "ex:describe-event"),
-    ("describe-diff", "ex:describe-diff"),
-    ("diff", "ex:diff"),
-    ("diffoff", "ex:diffoff"),
-    ("diffthis", "ex:diffthis"),
-    ("diffsplit", "ex:diffsplit"),
-    ("diffget", "ex:diffget"),
-    ("diffput", "ex:diffput"),
-    ("diff-accept", "ex:diff-accept"),
-    ("diff-reject", "ex:diff-reject"),
-    ("hunk-next", "ex:hunk-next"),
-    ("hunk-prev", "ex:hunk-prev"),
+    // CR.6 (2026-06-24): the diff/hunk commands no longer need aliases —
+    // `lattice_diff::install()` registers them under their plain canonical
+    // names (`diff`, `diffsplit`, `hunk-next`, …), so `:diff` resolves
+    // directly (the multibuffer pattern). No host `ex:diff*` shim remains.
     ("list-modes", "ex:list-modes"),
     ("describe-mode", "ex:describe-mode"),
     (

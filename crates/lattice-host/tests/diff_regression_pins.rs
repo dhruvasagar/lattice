@@ -129,10 +129,13 @@ fn diff_layer_hit<'a>(res: &'a KeymapResolution) -> Option<&'a LayerHit> {
 fn diff_get_put_chords_bound_on_diff_mode_layer() {
     let editor = boot();
     let active = [DiffMode::mode_id()];
-    for (second, expected) in [
-        ('o', editor.action_ids.diff_get),
-        ('p', editor.action_ids.diff_put),
-    ] {
+    // CR.6: the diff actions are registered by `lattice_diff::install()` now
+    // (not host `ActionIds`), so resolve them by name like the conflict pin.
+    for (second, name) in [('o', "action:diff-get"), ('p', "action:diff-put")] {
+        let expected = editor
+            .registry
+            .id_by_name(name)
+            .unwrap_or_else(|| panic!("`{name}` must be registered at boot"));
         let chords = [KeyChord::char('d'), KeyChord::char(second)];
         let res = editor
             .keymap

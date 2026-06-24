@@ -312,11 +312,56 @@ migration is **behaviour-pinned before it moves**.
   build incl. the GPUI peer. Zero behaviour change; boot-time-only, no UX/perf
   impact.
 
-- **BC.8 … BC.N — Migrate the remaining subsystem.** LSP last (largest surface —
-  its inbound buses [`InboundShowDocument`, `InboundApplyEdit`, configuration]
-  become `inbound::<T>` calls, its `set_wake` / L1c forwarders become
-  `wake_on_event`). Green against LSP's BC.2 pin tests; one `install(boot)`
-  replaces its scattered calls.
+- **BC.8 — LSP migration (last + largest, sub-sliced BC.8a–e).** LSP is too
+  large + intricate for one slice; sub-sliced so risk is contained per slice.
+
+  **Design finding (re-evaluated at execution, per the slice-plan rule):** the
+  original plan said "its inbound buses [`InboundApplyEdit`, `InboundShowDocument`,
+  configuration] become `inbound::<T>` calls." Reading the code falsified the
+  *uniform* version of that on merit — the four inbound drains
+  (`drain_inbound_apply_edits` → `Vec<RendererSignal>`, `…show_documents`,
+  `…show_message_requests`, `…configuration_requests`) are **deep `&mut Editor`
+  methods** (apply workspace edits to the user's buffers, open docs, drive a
+  picker), and the buses carry **no wake** today. The four are **heterogeneous in
+  reply shape**: configuration = pure read→reply; show-document = optimistic-ack
+  → `OpenBufferAt`; apply-edit = real-outcome reply (optimistic-ack with
+  pre-validation, a documented fidelity trade); show-message-request = **deferred
+  user choice** via a picker (the optimistic-ack `Vec<Effect>` shape does NOT fit
+  — forcing it would be unsound). **Decision (Dhruva, 2026-06-24): full reshape —
+  behaviour change is acceptable; the test is soundness + mode-ownership, not the
+  no-behaviour-change contract.** The reshape *extends* the blessed claude-code I3
+  pattern (inbound request → mode-owned handler maps to a generic `Effect` +
+  resolves the oneshot); the Effect-boundary layering (no `lsp_types` in
+  `lattice-grammar`) is respected because the handler resolves the oneshot and
+  emits existing generic Effects. **UX/perf:** off the keystroke hot path
+  (server-initiated); the new wakes are a UX *improvement* (off-keystroke
+  repaint, not a regression); perf is sub-µs registry relocation. UX risk
+  concentrates in BC.8d (apply-edit mutates user buffers) + BC.8e (interactive
+  picker), behaviour-pinned per slice.
+
+  Sub-slices:
+  - **BC.8a — foundation.** ✅ COMPLETE (2026-06-24). `lattice_lsp::install(&mut
+    boot)` (`crates/lattice-lsp/src/install.rs`): the LSP modes
+    (`register_lsp_log_modes` + `register_lsp_completion_mode`, which reads the
+    `LspSupervisorHandle` via `boot.service::<…>()` — the handle is a host-created
+    Phase-A service, the diff `DiffSubsystem`-bind residue class) + the four
+    `workspace/*/refresh` wakes → `boot.wake_on_event::<E>()` (byte-identical to
+    the retired L1c `wake_on` forwarders). Behaviour-preserving. Residue
+    host-side: `build_lsp_subsystem` (produces Editor fields), the host-created
+    services (logger / diagnostics-query), the four inbound buses + drains
+    (reshaped in BC.8b–e). **Green:** 14 BC.2 pins (incl. `lsp_modes_registered`,
+    `lsp_services_present`, `lsp_refresh_event_wakes_async_landed`) + full
+    `lattice-lsp` suite + 562 host lib + full GPUI build.
+  - **BC.8b — configuration** (cleanest: handler captures a config handle, reads,
+    resolves the oneshot, emits no Effect; proves the handler-resolves path).
+  - **BC.8c — show-document** (optimistic-ack → `Effect::OpenBufferAt`).
+  - **BC.8d — apply-edit** (UX-sensitive: mutates user buffers; logic-preserving
+    move into `handle_effect`; optimistic-ack with target pre-validation; heavy
+    behaviour pins).
+  - **BC.8e — show-message-request** (the genuine wall: deferred user choice →
+    needs a **host-published choice/picker primitive** that `lattice-lsp` drives;
+    forcing optimistic-ack would be unsound. Mechanism to be settled when reached.)
+
   (Residual classes seen so far: host-published primitives a mode merely
   consumes stay host-side [BC.4]; a default-on builtin with no owning crate
   becomes a `lattice-mode` builtin, not a subsystem install [BC.5]; a real
@@ -353,11 +398,19 @@ migration is **behaviour-pinned before it moves**.
    tests are the arbiter. A slice that changes behaviour is a bug, not progress.
 4. `inbound::<T>` must keep the *optimistic-ack + validation* semantics the I3
    drain uses (ok=true on valid map, ok=false on unknown target) so the
-   claude-code rebase is behaviour-preserving.
+   claude-code rebase is behaviour-preserving. **BC.8 caveat:** the LSP inbound
+   buses are NOT uniform optimistic-ack — see the BC.8 design finding. config =
+   pure read→reply; show-document/apply-edit = optimistic-ack (apply-edit with
+   target pre-validation, a documented fidelity trade); show-message-request =
+   deferred user choice (does NOT fit optimistic-ack → host-published picker
+   primitive). The "no behaviour change" contract (#3) is *waived* for BC.8 by
+   Dhruva's decision (full reshape adds off-keystroke wakes); the BC.2 LSP pins
+   still guard modes/services/refresh-wakes, and each inbound sub-slice adds its
+   own behaviour pins.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8 (LSP) 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b–e (LSP inbound reshape) 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -383,9 +436,18 @@ Decision A: the universal `zn` binding resolves `operator:narrow` by name
 host-side (severs id-threading); residue host-side = the universal `zn` *binding*
 at `Builtin` + the `AppEffect::{Search,Narrow,MultibufferExpand}` dispatch arms.
 
-**Next: BC.8 (LSP)** — last + largest: its `InboundShowDocument` /
-`InboundApplyEdit` / configuration buses become `boot.inbound::<T>`, its
-`set_wake` / L1c forwarders become `boot.wake_on_event`; green against its BC.2
-pins, one `install(boot)`. **BC.final** then retires the `*_mut` transitional
-accessors + the hardcoded `run_tick_pending` drains, leaving `editor_boot` as the
-two-list shape (Phase-A primitives, then the Phase-B install list).
+**BC.8a ✅ COMPLETE (2026-06-24)** — LSP foundation: `lattice_lsp::install(&mut
+boot)` registers the LSP modes (completion mode reads `LspSupervisorHandle` via
+`boot.service`, a host-created Phase-A service) + the four `workspace/*/refresh`
+wakes → `boot.wake_on_event`. Behaviour-preserving; 14 BC.2 pins + lattice-lsp
+suite + 562 host lib + GPUI build green. The inbound-bus reshape (the design
+finding: 4 heterogeneous `&mut Editor` drains, Dhruva's full-reshape decision) is
+sub-sliced BC.8b–e.
+
+**Next: BC.8b (configuration)** — the cleanest inbound bus (pure read→reply, no
+Effect); proves the handler-resolves-oneshot path. Then BC.8c (show-document,
+optimistic-ack → `OpenBufferAt`), BC.8d (apply-edit, UX-sensitive), BC.8e
+(show-message-request — host-published picker primitive). **BC.final** then
+retires the `*_mut` transitional accessors + the hardcoded `run_tick_pending`
+drains, leaving `editor_boot` as the two-list shape (Phase-A primitives, then the
+Phase-B install list).

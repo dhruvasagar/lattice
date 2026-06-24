@@ -69,6 +69,7 @@ pub mod file_watcher;
 pub mod folding_sync;
 pub mod framing;
 pub mod help_views;
+pub mod install;
 /// JSON-RPC 2.0 message types now live in `lattice-protocol` (IDE-protocol
 /// Risk 3 lift) so `lattice-claude-code` can share them. Re-exported here
 /// as `lattice_lsp::jsonrpc` so existing `crate::jsonrpc::*` paths,
@@ -87,6 +88,7 @@ pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
+pub use install::install;
 pub use buffer_names::{
     LSP_SUBSYSTEM_LOG_NAME, lsp_server_log_name, lsp_server_trace_log_name,
     parse_lsp_server_log_name, parse_lsp_trace_log_name,

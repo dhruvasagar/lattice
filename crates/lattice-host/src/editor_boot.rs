@@ -296,6 +296,14 @@ impl Editor {
             lsp_show_document_rx,
             lsp_show_message_request_rx,
         ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
+        // BC.8a: register the supervisor handle as a Phase-A service HERE (moved
+        // up from the late service block) so `lattice_lsp::install` below can
+        // read it via `boot.service::<LspSupervisorHandle>()` to register
+        // `lsp-completion-mode`. The handle is host-created (the supervisor +
+        // its four server-initiated buses live in `build_lsp_subsystem`, which
+        // produces Editor fields — the diff `DiffSubsystem`-bind residue), so it
+        // is registered host-side; `install` only reads it. Same `Arc` identity.
+        boot.register_service(lsp.clone());
 
         // BC.3b: the Claude Code IDE peer is no longer hand-wired here. Its
         // server spawn, ex-commands, mode, service handle, and read/write tools
@@ -344,10 +352,11 @@ impl Editor {
         // `let mr = { … }` block.
         lattice_mode::register_foundation_modes(boot.modes_mut());
         lattice_syntax::register_language_modes(boot.modes_mut());
-        lattice_lsp::modes::register_lsp_log_modes(boot.modes_mut());
-        // CSM.8a: lsp-completion-mode needs the supervisor
-        // handle (its contributed source captures it).
-        lattice_lsp::completion::register_lsp_completion_mode(boot.modes_mut(), lsp.clone());
+        // BC.8a: the LSP modes (`register_lsp_log_modes` + the
+        // supervisor-handle-bound `lsp-completion-mode`) moved into
+        // `lattice_lsp::install(boot)` (Phase-B list below). The completion mode
+        // reads the supervisor handle via `boot.service::<LspSupervisorHandle>()`
+        // (registered in Phase A above), so no host-side handle threading.
         lattice_oil::register_oil_modes(boot.modes_mut());
         lattice_file_tree::register_file_tree_modes(boot.modes_mut());
         snippet_activation_policy =
@@ -416,6 +425,16 @@ impl Editor {
         // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
         // `lattice_multibuffer::install` for the full rationale.
         lattice_multibuffer::install(&mut boot);
+        // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
+        // modes (`lsp-completion-mode` reads the supervisor handle via
+        // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the
+        // four `workspace/*/refresh` off-keystroke wakes (`boot.wake_on_event`).
+        // Residue staying host-side (NOT violations): `build_lsp_subsystem`
+        // (produces Editor fields — the diff `DiffSubsystem`-bind class), the
+        // host-created services (logger / diagnostics-query), and the four
+        // inbound buses + drains (reshaped onto `boot.inbound::<T>` in BC.8b–e).
+        // See `lattice_lsp::install` for the full rationale.
+        lattice_lsp::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
@@ -1047,24 +1066,14 @@ impl Editor {
             // are gone — those events now reach the screen through the
             // `lattice_lsp::modeline` forwarder, which folds them and
             // publishes `ModelineElementUpdate`; the modeline wake below
-            // fires `async_landed` for that push. The `*/refresh`
-            // notifications still drain host-side, so they keep their wake.
-            let (inlay_tx, inlay_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
-            event_bus.subscribe_typed(inlay_tx);
-            runtime_handle.spawn(wake_on(inlay_rx, async_landed.clone()));
-            let (sem_tx, sem_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspSemanticTokensRefresh>();
-            event_bus.subscribe_typed(sem_tx);
-            runtime_handle.spawn(wake_on(sem_rx, async_landed.clone()));
-            let (diag_tx, diag_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
-            event_bus.subscribe_typed(diag_tx);
-            runtime_handle.spawn(wake_on(diag_rx, async_landed.clone()));
-            let (lens_tx, lens_rx) =
-                mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
-            event_bus.subscribe_typed(lens_tx);
-            runtime_handle.spawn(wake_on(lens_rx, async_landed.clone()));
+            // fires `async_landed` for that push.
+            // BC.8a: the four `workspace/*/refresh` wake forwarders
+            // (`LspInlayHintRefresh` / `LspSemanticTokensRefresh` /
+            // `LspDiagnosticRefresh` / `LspCodeLensRefresh`) moved into
+            // `lattice_lsp::install(boot)` as `boot.wake_on_event::<E>()`
+            // (byte-identical: subscribe-typed + spawn a notify task). The
+            // per-type drain channels (host-side `pending_*_refresh_rx`) still
+            // do the cache-eviction in `run_tick_pending` — those stay here.
             // ML.3: a pushed modeline-element content update repaints
             // off-keystroke. Same shape as the LSP forwarders above: a
             // dedicated subscription whose only job is to fire
@@ -1218,7 +1227,9 @@ impl Editor {
         // / `boot.services_mut()` (decision 2-b). `freeze_service_registry`
         // hands back the shared `Arc<ServiceRegistry>` the literal seats.
         // Registration order preserved verbatim from the old block.
-        boot.register_service(lsp.clone());
+        // BC.8a: `boot.register_service(lsp.clone())` moved up to Phase A
+        // (right after `build_lsp_subsystem`) so `lattice_lsp::install` can read
+        // the supervisor handle for `lsp-completion-mode` registration.
         // ML.0b-2: same Arc as `Editor.modeline` below, so modes
         // register/update the instance the renderer snapshots.
         boot.register_service(modeline_service.clone());

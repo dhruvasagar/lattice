@@ -1007,6 +1007,10 @@ impl GpuiApp {
             // renderer to do.
             Effect::None
             | Effect::Edits(_)
+            // CR.0: host's `handle_effect` translates `ApplyEdit` into
+            // `Action::ApplyEdit`; the renderer has nothing to do (parity
+            // with the TUI peer per [[feedback_tui_gpui_parity]]).
+            | Effect::ApplyEdit { .. }
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::Yank { .. }

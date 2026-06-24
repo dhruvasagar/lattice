@@ -2206,6 +2206,33 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // D.5.c: diff-mode `dp` — push the current side's
         // hunk into the peer buffer.
         Action::DiffPut => editor.do_diff_put(None),
+        // CR.0: generic edit-apply primitive. A mode handler computed
+        // `edit` against `target` (a diff hunk get/put, a conflict
+        // resolution); apply it through `apply_targeted_edit` (active-
+        // document pipeline vs peer-buffer handle) and park the active
+        // cursor when the handler supplied a row. On a recoverable
+        // apply error, log + leave the cursor put — the
+        // `do_diff_get`/`do_diff_put` failure shape this subsumes in
+        // CR.1.
+        Action::ApplyEdit {
+            target,
+            edit,
+            cursor,
+        } => match editor.apply_targeted_edit(target, edit) {
+            Ok(_) => {
+                if let Some(row) = cursor {
+                    editor.cursor = lattice_protocol::position::Position::new(row, 0);
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "lattice_host::edit",
+                    ?target,
+                    ?err,
+                    "Effect::ApplyEdit apply failed; cursor unchanged"
+                );
+            }
+        },
         // M.10.7 (2026-06-03): four Action arms removed —
         // `MultibufferExpand`, `SearchTrigger`,
         // `SearchJumpToSource`, `SearchRefresh`. All four
@@ -3123,6 +3150,25 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // through the chokepoint so LSP `didChange`, syntax
             // reparse, and highlight byte-shifts all see the deltas.
             editor.handle_edits(&edits);
+        }
+        Effect::ApplyEdit {
+            target,
+            edit,
+            cursor,
+        } => {
+            // CR.0: a mode handler computed a pending edit against an
+            // explicit target buffer. Defer the apply through
+            // `out.next_actions` (the same round-trip
+            // `AppEffect::DiffGet → Action::DiffGet` uses) so the edit +
+            // cursor land in the action dispatch where every other
+            // buffer mutation lives — and records exactly once through
+            // `publish_document_changed` (risk #1). Translating here
+            // (not applying) keeps `handle_effect` side-effect-light.
+            out.next_actions.push(Action::ApplyEdit {
+                target,
+                edit,
+                cursor,
+            });
         }
         Effect::EnterMode(mode) => {
             // 5.5.G.23.macros: operators that flip mode (`c` ->
@@ -12835,6 +12881,61 @@ impl Editor {
             self.publish_document_changed(applied);
         }
         result
+    }
+
+    /// CR.0: apply `edit` to an explicit `target` buffer — the host
+    /// counterpart of [`lattice_grammar::Effect::ApplyEdit`]. Two
+    /// routes, distinguished by whether `target` is the focused buffer:
+    ///
+    /// - **`target == active document`** → [`Self::apply_edit_blocking`],
+    ///   so the edit cascades through the full active-document pipeline
+    ///   (LSP `didChange`, syntax reparse, highlight byte-shift,
+    ///   `publish_document_changed`). This is the diff-get / keep-ours /
+    ///   keep-theirs / keep-both direction — conflict resolution always
+    ///   targets the editable local side under the cursor.
+    /// - **`target` is a peer buffer** → apply via the registry's
+    ///   document handle and fan out a `DocumentChanged` for the peer so
+    ///   *its* diff session / LSP / syntax recompute through the standard
+    ///   pipeline. This is the diff-put direction (push the current
+    ///   side's hunk into the other buffer); it mirrors `do_diff_put`'s
+    ///   peer path exactly so CR.1's relocation is behaviour-preserving.
+    ///
+    /// Returns the `AppliedEdit` or a `RuntimeError` (including
+    /// `Cancelled` when the peer target has since closed — a benign race
+    /// with diff-session auto-drop). The caller owns cursor placement;
+    /// this method never moves the cursor.
+    pub fn apply_targeted_edit(
+        &mut self,
+        target: lattice_core::BufferId,
+        edit: lattice_protocol::edit::Edit,
+    ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
+        if target == self.document_buffer_id {
+            return self.apply_edit_blocking(edit);
+        }
+        let Some(handle) = self.buffers.document_handle(target) else {
+            // The descriptor named a target that has since closed
+            // (race with auto-drop). Surface as Cancelled; the caller
+            // logs + leaves the cursor put.
+            return Err(lattice_runtime::RuntimeError::Core(
+                lattice_core::CoreError::Cancelled,
+            ));
+        };
+        let applied = block_on(handle.apply_edit(edit))?;
+        let snap = handle.snapshot();
+        let path = snap.path().map(|p| p.to_path_buf());
+        let edit_event = lattice_protocol::event::AppliedEdit {
+            original_range: applied.original_range,
+            inserted_range: applied.inserted_range,
+            replaced_text: applied.replaced_text.clone(),
+            inserted_text: applied.inserted_text.clone(),
+        };
+        self.event_bus.publish(Event::DocumentChanged {
+            id: snap.id,
+            path,
+            version: snap.version,
+            edits: vec![edit_event],
+        });
+        Ok(applied)
     }
 
     /// 5.5.E.7.3: apply a single [`Edit`] to the active oil
@@ -26112,6 +26213,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
     use lattice_grammar::Effect;
     match effect {
         Effect::Edits(_) | Effect::Yank { .. } => true,
+        // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
+        Effect::ApplyEdit { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
@@ -26215,6 +26318,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
     use lattice_grammar::Effect;
     match effect {
         Effect::Edits(_) => true,
+        // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
+        Effect::ApplyEdit { .. } => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.
@@ -29212,6 +29317,60 @@ mod tests {
         let snapshot_after = editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
         assert_eq!(editor.cursor, cursor_before);
+    }
+
+    /// CR.0: `Effect::ApplyEdit` against the active document edits the
+    /// buffer + parks the cursor, end-to-end through the
+    /// `handle_effect → Action::ApplyEdit → apply_targeted_edit`
+    /// round-trip. `handle_effect` only TRANSLATES (defers the apply via
+    /// `next_actions`); the edit lands when the action dispatches — proving
+    /// the single-apply contract (risk #1). This is the generic primitive
+    /// CR.1 migrates `do_diff_get`/`do_diff_put` onto.
+    #[tokio::test]
+    async fn apply_edit_effect_edits_active_buffer_and_parks_cursor() {
+        let document = lattice_core::Document::from_text("alpha\nbeta\ngamma\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let target = editor.document_buffer_id;
+
+        // Replace the whole second line ("beta") with "BETA".
+        let edit = lattice_protocol::edit::Edit::replace(
+            lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(1, 0),
+                lattice_protocol::position::Position::new(1, 4),
+            ),
+            "BETA",
+        );
+
+        // handle_effect translates ApplyEdit → Action::ApplyEdit on
+        // next_actions; it does NOT apply the edit itself.
+        let outcome = editor.handle_effect(lattice_grammar::Effect::ApplyEdit {
+            target,
+            edit,
+            cursor: Some(1),
+        });
+        assert!(
+            matches!(outcome.next_actions.as_slice(), [Action::ApplyEdit { .. }]),
+            "handle_effect should translate ApplyEdit into one \
+             Action::ApplyEdit, got {:?}",
+            outcome.next_actions
+        );
+        // Still unapplied — the action is pending.
+        assert_eq!(
+            editor.document.snapshot().buffer.to_rope().to_string(),
+            "alpha\nbeta\ngamma\n"
+        );
+
+        // Drain the deferred action through the normal dispatch path.
+        for action in outcome.next_actions {
+            let _ = editor.dispatch(action);
+        }
+
+        assert_eq!(
+            editor.document.snapshot().buffer.to_rope().to_string(),
+            "alpha\nBETA\ngamma\n"
+        );
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 0);
     }
 
     /// D.5.c: `dp` on a Change hunk pushes the current side's

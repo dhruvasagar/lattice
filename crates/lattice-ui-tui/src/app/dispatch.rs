@@ -392,6 +392,10 @@ impl App {
             // the hunk under cursor and pushes the current
             // side's text into the peer buffer.
             | Action::DiffPut
+            // CR.0: generic edit-apply primitive. Host-resident body in
+            // `Editor::handle_action` (`apply_targeted_edit`); grouped
+            // no-op here like its `DiffGet`/`DiffPut` peers.
+            | Action::ApplyEdit { .. }
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore
@@ -933,6 +937,10 @@ impl App {
             | Effect::DeleteCurrentLine
             | Effect::Substitute { .. }
             | Effect::RecordJump
+            // CR.0: host's `handle_effect` translates `ApplyEdit` into
+            // `Action::ApplyEdit` on `out.next_actions` (drained by the
+            // dispatch wrapper); nothing renderer-coupled here.
+            | Effect::ApplyEdit { .. }
             | Effect::Edits(_) => {}
             // 5.5.E.7.7: `Edits` migrated to `Editor::handle_effect`;
             // routed through the grouped no-op above. `handle_edits`
@@ -1173,6 +1181,8 @@ impl App {
 fn effect_mutates_or_yanks(effect: &Effect) -> bool {
     match effect {
         Effect::Edits(_) | Effect::Yank { .. } => true,
+        // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
+        Effect::ApplyEdit { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
@@ -1275,6 +1285,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
 fn effect_mutates(effect: &Effect) -> bool {
     match effect {
         Effect::Edits(_) => true,
+        // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
+        Effect::ApplyEdit { .. } => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.

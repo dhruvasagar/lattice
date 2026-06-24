@@ -1,8 +1,9 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 planned (2026-06-24). Builds on BC.6 (diff extraction → `lattice-diff`)
-+ MO.x (diff keymap mode-owned). Design context: `docs/dev/architecture/diff-extraction.md`
-§4 (mode decomposition). This plan owns sequencing + status.
+**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1–CR.5 planned. Builds on
+BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
+context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
+plan owns sequencing + status.
 
 ## Why this exists
 
@@ -63,12 +64,24 @@ Two threads, decided with Dhruva (2026-06-24):
 
 ## Slice sequence
 
-- **CR.0 — generic `Effect::ApplyEdit { target: BufferId, edit, cursor: Option<u32> }`.**
-  Add to `lattice-grammar` effect vocab + host `Action::ApplyEdit` + the
-  `Effect::ApplyEdit → Action::ApplyEdit` translation + the applier arm
-  (`apply_edit_blocking`/batch on the target buffer + set cursor). Replay/macro:
-  the applied edit records through the existing `publish_document_changed` path.
-  Green: a unit/integration test applying an edit via the effect; full build.
+- **CR.0 ✅ — generic `Effect::ApplyEdit { target: BufferId, edit, cursor: Option<u32> }`.**
+  Landed: `lattice-grammar` effect vocab + host `Action::ApplyEdit` + the
+  `Effect::ApplyEdit → Action::ApplyEdit` translation (in `handle_effect`, queued
+  on `out.next_actions` — the `AppEffect::DiffGet → Action::DiffGet` round-trip, so
+  the edit lands once in the action dispatch) + the applier arm
+  (`handle_action` → new `Editor::apply_targeted_edit`). The applier routes
+  **active-document** targets through `apply_edit_blocking` (full LSP/syntax/
+  highlight pipeline) and **peer** targets through the registry handle + a peer
+  `DocumentChanged` (mirrors `do_diff_put`'s peer path, so CR.1's relocation is
+  behaviour-preserving); `cursor` parks the active cursor. Cross-renderer parity:
+  both `effect_mutates`/`effect_mutates_or_yanks` classifiers (host + TUI) +
+  TUI `apply`/`apply_effect_app_arms` no-op bands + GPUI `apply_effect_gpui` band
+  updated in the same patch. Error handling: `apply_targeted_edit` returns
+  `Result`; the arm logs + leaves the cursor put on failure (peer-closed race →
+  `Cancelled`). No hot-path/bench change (not yet wired to a keystroke). Green:
+  new `apply_edit_effect_edits_active_buffer_and_parks_cursor` (host lib, proves
+  translate-then-apply single-apply) + 561 host lib + 227 lattice-diff + 14 BC.2
+  + 7 DX.1 + 15 diff get/put behaviour tests.
 - **CR.1 — migrate `do_diff_get`/`do_diff_put` to `DiffMode::action_handlers()`.**
   Closures in `lattice-diff` read cursor/buffer/subsystem from `ActionContext`,
   call `compute_get_edit`/`compute_put`, return `Effect::ApplyEdit` (or `Echo` on

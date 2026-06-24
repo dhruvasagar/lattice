@@ -350,6 +350,20 @@ pub enum Action {
     /// `Editor::do_diff_put` and
     /// `crate::diff::subsystem::DiffSubsystem::compute_put_plan`.
     DiffPut,
+    /// CR.0: host counterpart of [`lattice_grammar::Effect::ApplyEdit`].
+    /// Applies a mode-computed `edit` to `target` (routing through the
+    /// active-document pipeline when `target` is the focused buffer, or
+    /// the peer-buffer registry handle otherwise) and, when `cursor` is
+    /// `Some`, parks the active cursor at that row. `handle_effect`
+    /// translates the `Effect` into this `Action` and queues it on
+    /// `out.next_actions`; the applier arm in `handle_action` calls
+    /// `Editor::apply_targeted_edit`. The generic primitive the diff
+    /// (and future) modes drive instead of host `do_<x>` methods.
+    ApplyEdit {
+        target: lattice_core::BufferId,
+        edit: lattice_protocol::edit::Edit,
+        cursor: Option<u32>,
+    },
     // M.10.7 (2026-06-03): four dead Action variants deleted —
     // `MultibufferExpand`, `SearchTrigger`, `SearchJumpToSource`,
     // `SearchRefresh`. All four are now mode-owned via the

@@ -109,6 +109,31 @@ pub enum QuitScope {
 pub enum Effect {
     None,
     Edits(Vec<AppliedEdit>),
+    /// CR.0: a generic "apply this edit to this buffer" primitive.
+    ///
+    /// Mode-contributed action handlers (the snippet / lsp
+    /// `action_handlers()` pattern) compute an edit against their own
+    /// state — a diff hunk get/put, a conflict resolution — and hand it
+    /// back through this effect. The host applies `edit` to `target`,
+    /// routing through the active-document pipeline (LSP `didChange` +
+    /// syntax reparse + highlight shift) when `target` is the focused
+    /// buffer, or the peer-buffer registry handle otherwise; when
+    /// `cursor` is `Some`, it then parks the active cursor at that row.
+    ///
+    /// Distinct from [`Effect::Edits`], which carries `AppliedEdit`s the
+    /// grammar dispatcher already applied to the active document (routed
+    /// only for side effects). `ApplyEdit` carries a *pending* `Edit` the
+    /// host has yet to apply, addressed at an explicit `target`.
+    ///
+    /// The Effect *vocabulary* is the host boundary by design
+    /// (`feedback_effect_vocabulary_is_host_boundary`): this lets a mode
+    /// drive an arbitrary document edit without the host growing a
+    /// feature-specific `Action` variant + `do_<x>` method per feature.
+    ApplyEdit {
+        target: lattice_core::BufferId,
+        edit: lattice_protocol::edit::Edit,
+        cursor: Option<u32>,
+    },
     SelectionChange(SelectionSet),
     Yank {
         register: Register,

@@ -518,10 +518,9 @@ impl App {
     /// these under an `[lsp.<server>]` umbrella so multiple
     /// servers' keys don't collide. The drain prepends `lsp.` to
     /// the requested section before walking the tree.
-    pub fn drain_inbound_configuration_requests(&mut self) {
-        // 5.8.AA.d: migrated to host.
-        self.mutate_editor(|e| e.drain_inbound_configuration_requests());
-    }
+    // BC.8b: `drain_inbound_configuration_requests` wrapper removed — the
+    // `workspace/configuration` bus drains via the generic inbound tick-callback
+    // (mode-owned handler), run inside `run_tick_pending`; no host/TUI method.
 
     /// 4.4.k: fan out `workspace/didChangeConfiguration` to
     /// every running actor with the given `server_id`. Called
@@ -5273,96 +5272,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn drain_inbound_configuration_walks_cached_tree_at_lsp_prefix() {
-        // Stash an `[lsp.rust-analyzer.cargo]` block in the
-        // App's cached tree (mimics what
-        // `load_persistent_config` does after parsing user
-        // TOML). Drain receives a request for
-        // `"rust-analyzer.cargo.features"` and the
-        // `"rust-analyzer.checkOnSave"` -- both surface from
-        // the tree.
-        let mut a = app_with("", 5);
-        let toml_text = "[lsp.rust-analyzer.cargo]\n\
-                         features = [\"foo\", \"bar\"]\n\
-                         [lsp.rust-analyzer]\n\
-                         checkOnSave = true\n";
-        a.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
-        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
-        let req = lattice_lsp::InboundConfigurationRequest {
-            server_id: std::sync::Arc::from("rust-analyzer"),
-            workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            sections: vec![
-                "rust-analyzer.cargo.features".into(),
-                "rust-analyzer.checkOnSave".into(),
-            ],
-            response: resp_tx,
-        };
-        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
-        bus.dispatch(req).expect("dispatch");
-        a.editor.pending_configuration_rx = Some(new_rx);
-        a.drain_inbound_configuration_requests();
-        let values = resp_rx.try_recv().expect("drain replied");
-        assert_eq!(values.len(), 2);
-        // First: features array.
-        let arr = values[0].as_array().expect("array");
-        assert_eq!(arr[0].as_str(), Some("foo"));
-        assert_eq!(arr[1].as_str(), Some("bar"));
-        // Second: bool.
-        assert_eq!(values[1].as_bool(), Some(true));
-    }
-
-    #[test]
-    fn drain_inbound_configuration_returns_null_for_missing_section() {
-        let mut a = app_with("", 5);
-        // No tree populated -> every lookup is null.
-        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
-        let req = lattice_lsp::InboundConfigurationRequest {
-            server_id: std::sync::Arc::from("rust-analyzer"),
-            workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            sections: vec!["rust-analyzer.cargo.features".into()],
-            response: resp_tx,
-        };
-        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
-        bus.dispatch(req).expect("dispatch");
-        a.editor.pending_configuration_rx = Some(new_rx);
-        a.drain_inbound_configuration_requests();
-        let values = resp_rx.try_recv().expect("drain replied");
-        assert_eq!(values.len(), 1);
-        assert!(values[0].is_null());
-    }
-
-    #[test]
-    fn drain_inbound_configuration_empty_section_returns_whole_lsp_subtree() {
-        // A server requesting `section: null` (or empty) wants
-        // the whole `lsp` sub-tree -- our convention serves
-        // this from the namespaced top.
-        let mut a = app_with("", 5);
-        let toml_text = "[lsp.rust-analyzer]\nchecker = \"clippy\"\n";
-        a.editor.lsp_config_tree = toml_text.parse().unwrap();
-        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
-        let req = lattice_lsp::InboundConfigurationRequest {
-            server_id: std::sync::Arc::from("rust-analyzer"),
-            workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            sections: vec![String::new()],
-            response: resp_tx,
-        };
-        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
-        bus.dispatch(req).expect("dispatch");
-        a.editor.pending_configuration_rx = Some(new_rx);
-        a.drain_inbound_configuration_requests();
-        let values = resp_rx.try_recv().expect("drain replied");
-        // Whole `lsp` sub-tree comes back as a JSON object.
-        let obj = values[0].as_object().expect("object");
-        assert!(obj.contains_key("rust-analyzer"));
-    }
-
-    #[test]
-    fn drain_inbound_configuration_no_op_when_channel_empty() {
-        let mut a = app_with("", 5);
-        a.drain_inbound_configuration_requests();
-        assert!(a.editor.pending_configuration_rx.is_some());
-    }
+    // BC.8b: the four `drain_inbound_configuration_*` TUI tests were removed.
+    // The `workspace/configuration` flow is now the mode-owned
+    // `lattice_lsp::configuration::make_handler` (a pure read → reply over the
+    // shared `lsp.*` tree), drained via the generic inbound tick-callback — no
+    // host/TUI drain method to exercise. The section-resolution behaviour they
+    // covered (prefix walk, null-for-missing, empty-section → whole subtree) is
+    // tested at its new home in `lattice-lsp/src/configuration.rs`.
 
     #[test]
     fn drain_inbound_apply_edits_no_op_when_channel_empty() {

@@ -10999,27 +10999,11 @@ impl Editor {
         }
     }
 
-    /// Drain server-initiated `workspace/configuration` requests.
-    /// Phase 5.8.AA.d: hoisted from TUI App. Uses host-resident
-    /// `lookup_lsp_config_section` to resolve each section.
-    pub fn drain_inbound_configuration_requests(&mut self) {
-        let Some(mut rx) = self.pending_configuration_rx.take() else {
-            return;
-        };
-        let mut requests: Vec<lattice_lsp::InboundConfigurationRequest> = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            requests.push(req);
-        }
-        self.pending_configuration_rx = Some(rx);
-        for req in requests {
-            let values: Vec<serde_json::Value> = req
-                .sections
-                .iter()
-                .map(|section| self.lookup_lsp_config_section(section))
-                .collect();
-            let _ = req.response.send(values);
-        }
-    }
+    // BC.8b: `drain_inbound_configuration_requests` removed. The
+    // `workspace/configuration` bus is now the generic `InboundBus`, drained
+    // per-tick through the mode-owned `lattice_lsp::configuration::make_handler`
+    // (registered via `boot.inbound`), which reads the shared `lsp_config_tree`
+    // and resolves each request's oneshot — no host `Editor` method needed.
 
     /// 4.4.j: drain `workspace/diagnostic/refresh` events; evict
     /// per-buffer result_id caches so the next pump re-pulls.
@@ -11316,7 +11300,8 @@ impl Editor {
         self.drain_lsp_log_events();
         self.drain_modeline_element_updates();
         self.drain_lsp_detach_events();
-        self.drain_inbound_configuration_requests();
+        // BC.8b: configuration requests now drain via the generic inbound
+        // tick-callback (mode-owned handler), registered through `boot.inbound`.
         self.drain_inbound_show_message_requests();
         self.drain_message_events();
         signals.extend(self.drain_inbound_show_documents());
@@ -12354,7 +12339,11 @@ impl Editor {
         } else {
             format!("lsp.{section}")
         };
-        let toml_value = match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); read the current
+        // snapshot. The `Guard` lives to the end of the fn so the borrowed
+        // `toml_value` stays valid until the clone in `to_value`.
+        let tree = self.lsp_config_tree.load();
+        let toml_value = match lattice_config::lookup_dotted_path(&tree, &path) {
             Some(v) => v,
             None => return serde_json::Value::Null,
         };
@@ -23003,11 +22992,12 @@ impl Editor {
     /// `lsp_logger`; only `set_message` made it App-specific
     /// pre-hoist, and that's host-resident.
     pub fn apply_persistent_lsp_editor_options(&mut self) {
-        let canonical =
-            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp-mode.log-level")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-        let legacy = lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); snapshot once.
+        let tree = self.lsp_config_tree.load();
+        let canonical = lattice_config::lookup_dotted_path(&tree, "lsp-mode.log-level")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let legacy = lattice_config::lookup_dotted_path(&tree, "lsp.log-level")
             .and_then(|v| v.as_str())
             .map(String::from);
         let (key, level) = match (canonical, legacy) {
@@ -23101,8 +23091,10 @@ impl Editor {
             self.pending_config_structural_sections.insert(k, v);
         }
         // Cache the merged TOML tree so workspace/configuration
-        // can walk server-namespaced keys.
-        self.lsp_config_tree = outcome.raw_tree;
+        // can walk server-namespaced keys. BC.8b: shared (`Arc<ArcSwap>`), so
+        // `store` the new tree — the mode-owned configuration handler holding a
+        // clone of the same `ArcSwap` immediately sees the reloaded values.
+        self.lsp_config_tree.store(std::sync::Arc::new(outcome.raw_tree));
         self.apply_persistent_lsp_editor_options();
         // Emit a single echo summarising loader diagnostics.
         if !outcome.messages.is_empty() {

@@ -14,6 +14,9 @@ lattice-mode = { path = "../lattice-mode" }
 # import path explicit.
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-config = { path = "../lattice-config" }
+# BC.8b: the mode-owned `workspace/configuration` handler reads the merged
+# `lsp.*` tree via `lattice_config::lookup_dotted_path(&toml::Table, …)`.
+toml = { workspace = true }
 # CSM.8: lsp-completion-mode contributes the LSP completion
 # source through `lattice-completion::AsyncCompletionSource`.
 # Edge already exists transitively (lattice-mode ->

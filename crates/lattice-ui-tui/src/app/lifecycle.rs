@@ -1114,7 +1114,10 @@ mod tests {
         // M.6.5: canonical `lsp-mode.log-level` key.
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"debug\"\n";
-        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
         app.apply_persistent_lsp_editor_options();
         // Effect: a Debug-level record on an unattached server lands
         // in the ring. Default min-level is Info; without the TOML
@@ -1143,7 +1146,10 @@ mod tests {
         // minor version; emits a deprecation warn before applying.
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"debug\"\n";
-        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("deprecation warn");
         assert_eq!(msg.level, crate::app::EchoLevel::Warn);
@@ -1178,7 +1184,10 @@ mod tests {
         // is a leftover).
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"trace\"\n[lsp-mode]\nlog-level = \"debug\"\n";
-        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
         app.apply_persistent_lsp_editor_options();
         // No deprecation echo when canonical is present.
         assert!(
@@ -1192,7 +1201,10 @@ mod tests {
     fn persistent_lsp_log_level_warns_on_unknown_value() {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
-        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
+        // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("warn echo");
         assert!(
@@ -1207,7 +1219,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.editor.last_message = None;
         // Empty tree: nothing under [lsp].
-        app.editor.lsp_config_tree = toml::Table::new();
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(toml::Table::new()));
         app.apply_persistent_lsp_editor_options();
         assert!(
             app.editor.last_message.is_none(),

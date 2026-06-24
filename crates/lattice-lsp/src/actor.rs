@@ -1847,7 +1847,10 @@ async fn handle_configuration_request(
         sections,
         response: response_tx,
     };
-    if bus.dispatch(inbound).is_err() {
+    // BC.8b: the configuration bus is now the generic `InboundBus`; `send`
+    // wakes the editor (off-keystroke reply) — same `Result<(), payload>` shape
+    // as the retired `ConfigurationBus::dispatch`.
+    if bus.send(inbound).is_err() {
         let arr: Vec<Value> = (0..count).map(|_| Value::Null).collect();
         return Response::ok(req_id, Value::Array(arr));
     }

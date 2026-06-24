@@ -1392,7 +1392,11 @@ pub struct Editor {
     /// downstream UI-redraw signal fired after a worker publishes.
     pub async_landed: std::sync::Arc<tokio::sync::Notify>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
-    pub lsp_config_tree: toml::Table,
+    /// Merged user+project `lsp.*` config tree. BC.8b: shared
+    /// (`Arc<ArcSwap<…>>`) so the mode-owned `workspace/configuration` inbound
+    /// handler (`lattice_lsp::configuration::make_handler`) reads the *current*
+    /// tree; the host re-`store`s it on config reload.
+    pub lsp_config_tree: std::sync::Arc<arc_swap::ArcSwap<toml::Table>>,
     /// Perf plan B.4.b: wrapped in [`Versioned`] so the buffers
     /// sub-state cache can elide the per-publish HashMap clone.
     /// Mutators (`buffer_uris.insert/remove`) autoref `&mut`,
@@ -1401,8 +1405,9 @@ pub struct Editor {
     // ---- LSP server-initiated channels ----
     pub pending_apply_edit_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
-    pub pending_configuration_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>>,
+    // BC.8b: `pending_configuration_rx` removed — the `workspace/configuration`
+    // bus is now the generic `InboundBus`, drained per-tick through the
+    // mode-owned handler (`boot.inbound`), not a host `Editor` receiver field.
     pub pending_show_document_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
     pub pending_show_message_request_rx:

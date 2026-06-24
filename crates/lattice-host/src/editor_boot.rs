@@ -30,7 +30,7 @@ use lattice_grammar::CommandRegistry;
 use lattice_grammar::builtins::populate as grammar_builtins_populate;
 use lattice_lsp::{
     ApplyEditBus, ConfigurationBus, DiagnosticsLayer, InboundApplyEdit,
-    InboundConfigurationRequest, InboundShowDocument, InboundShowMessageRequest, LspLogger,
+    InboundShowDocument, InboundShowMessageRequest, LspLogger,
     LspSupervisor, LspSupervisorHandle, ShowDocumentBus, ShowMessageRequestBus,
 };
 use lattice_mode::{ModeRegistry, ServiceRegistry, SubsystemBoot};
@@ -60,12 +60,17 @@ use crate::pane::{PaneId, PaneState, PaneTree};
 fn build_lsp_subsystem(
     event_bus: Arc<EventBus>,
     runtime_handle: &tokio::runtime::Handle,
+    // BC.8b: the configuration bus is now the generic `InboundBus` (wired via
+    // `boot.inbound` in Phase A so its `send` wakes the editor + its drain runs
+    // the mode-owned handler). Passed in pre-spawn so the supervisor fans it out
+    // to its (lazily-spawned) actors. The other three buses stay bespoke until
+    // their BC.8c–e sub-slices.
+    configuration_bus: ConfigurationBus,
 ) -> (
     LspSupervisorHandle,
     DiagnosticsLayer,
     LspLogger,
     tokio::sync::mpsc::UnboundedReceiver<InboundApplyEdit>,
-    tokio::sync::mpsc::UnboundedReceiver<InboundConfigurationRequest>,
     tokio::sync::mpsc::UnboundedReceiver<InboundShowDocument>,
     tokio::sync::mpsc::UnboundedReceiver<InboundShowMessageRequest>,
 ) {
@@ -75,7 +80,8 @@ fn build_lsp_subsystem(
     let diagnostics = sup.diagnostics().clone();
     let (apply_edit_bus, apply_edit_rx) = ApplyEditBus::new();
     sup.set_apply_edit_bus(apply_edit_bus);
-    let (configuration_bus, configuration_rx) = ConfigurationBus::new();
+    // BC.8b: the configuration bus is the generic `InboundBus` passed in (no
+    // bespoke `ConfigurationBus::new()` / host-drained `rx`).
     sup.set_configuration_bus(configuration_bus);
     let (show_document_bus, show_document_rx) = ShowDocumentBus::new();
     sup.set_show_document_bus(show_document_bus);
@@ -94,7 +100,6 @@ fn build_lsp_subsystem(
         diagnostics,
         logger,
         apply_edit_rx,
-        configuration_rx,
         show_document_rx,
         show_message_request_rx,
     )
@@ -287,15 +292,31 @@ impl Editor {
         // claude-code's read tools; registered once here, not in the late block.
         boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
 
+        // BC.8b: the merged `lsp.*` config tree is shared (`Arc<ArcSwap>`) so the
+        // mode-owned configuration inbound handler reads the *current* tree (the
+        // host re-`store`s it on reload). Built empty here; populated by the
+        // config loader post-construction (`store`), exactly as the old
+        // `toml::Table` field was assigned. The SAME `Arc` is seated in the
+        // `Editor.lsp_config_tree` field below (NOT `Editor::default()`'s fresh
+        // one), so the handler and the editor observe one tree.
+        let lsp_config_tree =
+            std::sync::Arc::new(ArcSwap::from_pointee(toml::Table::new()));
+        // BC.8b: wire the `workspace/configuration` bus as the generic inbound
+        // primitive — `send` wakes the editor; the per-tick drain runs the
+        // mode-owned `make_handler` (a pure read → reply, no Effect). Done in
+        // Phase A (pre-spawn) because the supervisor fans the bus out to its
+        // actors; the drain token rides `into_registrations` onto the Editor.
+        let lsp_configuration_bus = boot.inbound::<lattice_lsp::InboundConfigurationRequest, _>(
+            lattice_lsp::configuration::make_handler(lsp_config_tree.clone()),
+        );
         let (
             lsp,
             lsp_diagnostics,
             lsp_logger,
             lsp_apply_edit_rx,
-            lsp_configuration_rx,
             lsp_show_document_rx,
             lsp_show_message_request_rx,
-        ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
+        ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle, lsp_configuration_bus);
         // BC.8a: register the supervisor handle as a Phase-A service HERE (moved
         // up from the late service block) so `lattice_lsp::install` below can
         // read it via `boot.service::<LspSupervisorHandle>()` to register
@@ -1643,7 +1664,11 @@ impl Editor {
             lsp_progress_store: lsp_progress_store.clone(),
             modeline_update_rx: Some(modeline_update_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
-            pending_configuration_rx: Some(lsp_configuration_rx),
+            // BC.8b: `pending_configuration_rx` removed (the generic inbound
+            // drain replaces the host receiver). The SHARED config tree is
+            // seated below (overriding `..Editor::default()`'s fresh Arc) so the
+            // mode-owned handler + the editor observe one tree.
+            lsp_config_tree,
             pending_show_document_rx: Some(lsp_show_document_rx),
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),

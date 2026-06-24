@@ -352,8 +352,23 @@ migration is **behaviour-pinned before it moves**.
     (reshaped in BC.8b–e). **Green:** 14 BC.2 pins (incl. `lsp_modes_registered`,
     `lsp_services_present`, `lsp_refresh_event_wakes_async_landed`) + full
     `lattice-lsp` suite + 562 host lib + full GPUI build.
-  - **BC.8b — configuration** (cleanest: handler captures a config handle, reads,
-    resolves the oneshot, emits no Effect; proves the handler-resolves path).
+  - **BC.8b — configuration.** ✅ COMPLETE (2026-06-24). Reshaped onto
+    `boot.inbound::<InboundConfigurationRequest, _>` — the pattern-setter. The
+    bespoke `ConfigurationBus` is now a type alias for the generic
+    `lattice_mode::inbound::InboundBus<InboundConfigurationRequest>` (its `send`
+    wakes the editor → off-keystroke reply); the drain logic moved into the
+    mode-owned `lattice_lsp::configuration::make_handler` (pure read → reply over
+    the shared `lsp.*` tree, **no Effect**), registered via `boot.inbound` in
+    Phase A (pre-spawn so the supervisor fans the bus to its actors). Deleted:
+    `Editor::drain_inbound_configuration_requests` + `pending_configuration_rx`
+    field + the TUI drain wrapper + 4 TUI tests (coverage moved to lattice-lsp).
+    `lsp_config_tree` is now shared (`Arc<ArcSwap<toml::Table>>`) so the handler
+    reads current config (loader `store`s on reload). **Pattern for c/d/e:** bus
+    → `InboundBus<T>` alias; `dispatch`→`send`; `build_lsp_subsystem` takes the
+    bus param (drops the `*_rx` return); host wires `boot.inbound(make_handler)`
+    in Phase A; delete the Editor drain + field. **Green:** 14 BC.2 pins +
+    lattice-lsp 195 (3 new handler tests) + 562 host lib + TUI 185 lsp / 5
+    lifecycle-config + full GPUI build.
   - **BC.8c — show-document** (optimistic-ack → `Effect::OpenBufferAt`).
   - **BC.8d — apply-edit** (UX-sensitive: mutates user buffers; logic-preserving
     move into `handle_effect`; optimistic-ack with target pre-validation; heavy
@@ -410,7 +425,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b–e (LSP inbound reshape) 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8a ✅ · BC.8b ✅ · BC.8c–e (LSP inbound: show-doc / apply-edit / show-message) 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -444,10 +459,17 @@ suite + 562 host lib + GPUI build green. The inbound-bus reshape (the design
 finding: 4 heterogeneous `&mut Editor` drains, Dhruva's full-reshape decision) is
 sub-sliced BC.8b–e.
 
-**Next: BC.8b (configuration)** — the cleanest inbound bus (pure read→reply, no
-Effect); proves the handler-resolves-oneshot path. Then BC.8c (show-document,
-optimistic-ack → `OpenBufferAt`), BC.8d (apply-edit, UX-sensitive), BC.8e
-(show-message-request — host-published picker primitive). **BC.final** then
+**BC.8b ✅ COMPLETE (2026-06-24)** — configuration reshaped onto
+`boot.inbound::<T>`; the pattern-setter for c/d/e (bus → `InboundBus<T>` alias,
+`dispatch`→`send`, `build_lsp_subsystem` takes the bus param, host wires
+`boot.inbound(make_handler)` in Phase A, delete the Editor drain + `*_rx` field).
+mode-owned handler in `lattice_lsp::configuration`; `lsp_config_tree` shared
+(`Arc<ArcSwap>`). Green across BC.2 pins + lattice-lsp + host lib + TUI + GPUI.
+
+**Next: BC.8c (show-document)** — same shape as 8b but the handler emits
+`Effect::OpenBufferAt` (optimistic-ack reply) instead of a pure read. Then BC.8d
+(apply-edit, UX-sensitive — mutates user buffers), BC.8e (show-message-request —
+needs a host-published picker primitive). **BC.final** then
 retires the `*_mut` transitional accessors + the hardcoded `run_tick_pending`
 drains, leaving `editor_boot` as the two-list shape (Phase-A primitives, then the
 Phase-B install list).

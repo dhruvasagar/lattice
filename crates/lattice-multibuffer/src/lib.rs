@@ -42,12 +42,14 @@
 //! * **M.5–M.8** — expand-context, provider trait + first
 //!   consumer, fold providers.
 
+pub mod install;
 pub mod mode;
 pub mod motions;
 pub mod providers;
 pub mod registry;
 pub mod view;
 
+pub use crate::install::install;
 pub use crate::mode::{
     MultibufferMode, register_multibuffer_ex_commands, register_multibuffer_modes,
 };

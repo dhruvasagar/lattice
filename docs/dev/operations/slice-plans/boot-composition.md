@@ -259,15 +259,72 @@ migration is **behaviour-pinned before it moves**.
   (deleted `Editor::do_diff_*` + `Action::Diff*`), closing the diff
   mode-ownership acid test.
 
-- **BC.7 … BC.N — Migrate the remaining subsystems, one per slice.** multibuffer
-  → LSP (LSP last: largest surface — its inbound buses [`InboundShowDocument`,
-  `InboundApplyEdit`, configuration] become `inbound::<T>` calls, its `set_wake`
-  / L1c forwarders become `wake_on_event`). Each slice: green against that
-  subsystem's BC.2 pin tests; one `install(boot)` replaces its scattered calls.
+- **BC.7 — `multibuffer` migration.** ✅ COMPLETE (2026-06-24). multibuffer was
+  *already its own crate* (`lattice-multibuffer`), so — unlike BC.6 — there is
+  **no extraction**; BC.7 is the lighter terminal/diff-shaped migration. The
+  host's ~6 scattered `editor_boot` sites collapse into one Phase-B line
+  (`lattice_multibuffer::install(&mut boot)`, in
+  `crates/lattice-multibuffer/src/install.rs`):
+  - **modes** — `register_multibuffer_modes` (+ its `DocumentClosed` cleanup
+    subscriber), `register_narrow_mode`, `register_project_search_mode`;
+  - **commands** — the excerpt-jump motions (`]e`/`[e`/`]E`/`[E`), the
+    `:multibuffer-*` / `:narrow` / `:widen` / `:search` ex-commands, and the
+    `zn` narrow operator SPEC;
+  - **services** — the `MultibufferRegistryHandle` + the project-search service;
+  - **wake** — the `MultibufferExcerptsReady`→`async_landed` forwarder becomes
+    `boot.wake_on_event::<MultibufferExcerptsReady>()` (the wake is now a
+    property of the primitive, not a hand-rolled mpsc task).
+
+  Search-provider registrations move behind the **crate's own**
+  `#[cfg(feature="search")]` (the gate travels to the code it guards; the host's
+  `install(boot)` call is unconditional).
+
+  **New residual class — a crate-owned registry handle created *inside*
+  `install`.** The `MultibufferRegistryHandle` carries **no host-state
+  dependency** (unlike diff's resolver-backed `DiffSubsystemHandle` or terminal's
+  host-`BufferRegistry`-backed `TerminalStoreHandle`, both of which the host must
+  construct), so `install` creates it locally and publishes it as a service; the
+  host reads it back via `services.get::<MultibufferRegistryHandle>()` at dispatch
+  time (`Editor::resolve_narrow_target`). This is *better* than the host-published
+  pattern where there's no host-state tie.
+
+  **Decision A (the one fork, locked with Dhruva 2026-06-24):** the host's
+  universal `zn` operator-pending binding resolves its `OperatorId` **by name**
+  (`registry.id_by_name("operator:narrow")`) instead of threading the
+  registration return value — the K.2.5 motion name-resolution pattern. This
+  severs the id-threading coupling and lets the operator SPEC live entirely in
+  `install`.
+
+  **Residue staying host-side (NOT mode-ownership violations):** (1) the
+  universal `zn` operator *binding* at the `Builtin` operator-pending layer — `zn`
+  is universal grammar (composes with the resolved `Builtins`), the same category
+  as `lattice-syntax`'s structural text objects (N.1.4c); the *spec* is
+  mode-owned, only the binding is host-side, and there is no single owning mode
+  for a universal operator. (2) `Editor::resolve_narrow_target` + the
+  `AppEffect::{SearchTrigger,NarrowTrigger,NarrowLines,NarrowWiden,MultibufferExpand}`
+  dispatch arms — Effect-vocabulary-is-the-host-boundary (diff's `do_diff_*`
+  precedent); the trigger substrate fns are crate-owned helpers those arms call.
+  (3) the generic `event_bus` *service* stays a Phase-A host primitive (many
+  subsystems consume it). **Green:** 14 BC.2 pins (4 multibuffer, incl. the
+  `wake_on_event`-migrated `multibuffer_excerpts_ready_wakes_async_landed_off_keystroke`)
+  + 118 `lattice-multibuffer` + 562 `lattice-host` lib + 9
+  `multibuffer_is_a_regular_buffer` + 14 `diff_regression_pins` + full workspace
+  build incl. the GPUI peer. Zero behaviour change; boot-time-only, no UX/perf
+  impact.
+
+- **BC.8 … BC.N — Migrate the remaining subsystem.** LSP last (largest surface —
+  its inbound buses [`InboundShowDocument`, `InboundApplyEdit`, configuration]
+  become `inbound::<T>` calls, its `set_wake` / L1c forwarders become
+  `wake_on_event`). Green against LSP's BC.2 pin tests; one `install(boot)`
+  replaces its scattered calls.
   (Residual classes seen so far: host-published primitives a mode merely
   consumes stay host-side [BC.4]; a default-on builtin with no owning crate
   becomes a `lattice-mode` builtin, not a subsystem install [BC.5]; a real
-  subsystem living in-host gets extracted to its own crate [BC.6].)
+  subsystem living in-host gets extracted to its own crate [BC.6]; a crate-owned
+  handle with **no** host-state dependency is created *inside* `install`, not
+  host-published [BC.7]; a universal-grammar operator/text-object keeps its
+  *spec* in the crate but its *binding* host-side at `Builtin`, resolved by name
+  [BC.7].)
 
 - **BC.final — Remove dead scaffolding.** Retire the hardcoded `run_tick_pending`
   drains the tick-callback registry now subsumes, and the ad-hoc wake forwarders
@@ -300,7 +357,7 @@ migration is **behaviour-pinned before it moves**.
 
 ## Status
 
-BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7+ 🗒 · BC.final 🗒
+BC.0 ✅ · BC.1 ✅ · BC.2 ✅ · BC.3a ✅ · BC.3b ✅ · BC.4 ✅ · BC.5 ✅ · BC.6 ✅ · BC.7 ✅ · BC.8 (LSP) 🗒 · BC.final 🗒
 
 **Decisions locked (2026-06-23):** BC.3 split into BC.3a (hoist) + BC.3b
 (claude-code); **2-b** — `BootContext` owns the three registries + typed
@@ -316,11 +373,19 @@ UX/perf impact.
 record (coupling table, the DX.2 lattice-syntax deviation, the DX.6 façade +
 C6 resolver split, the DX.7 terminal-pattern residue).
 
-**Next: BC.7+** migrate
-multibuffer → LSP
-(LSP last, largest: its `InboundShowDocument`/`InboundApplyEdit`/configuration
-buses become `boot.inbound::<T>`, its `set_wake`/L1c forwarders become
-`boot.wake_on_event`); each green against its BC.2 pins, one `install(boot)` per
-subsystem. **BC.final** then retires the `*_mut` transitional accessors + the
-hardcoded `run_tick_pending` drains, leaving `editor_boot` as the two-list shape
-(Phase-A primitives, then the Phase-B install list).
+**BC.7 ✅ COMPLETE (2026-06-24)** — multibuffer (already its own crate; no
+extraction) migrated to `lattice_multibuffer::install(&mut boot)`: modes +
+commands (motions, `:narrow`/`:widen`/`:search`, the `zn` operator SPEC) +
+services (`MultibufferRegistryHandle`, project-search) + the
+`MultibufferExcerptsReady` wake (now `boot.wake_on_event::<…>()`). The registry
+handle is crate-owned (created *inside* install — no host-state dependency).
+Decision A: the universal `zn` binding resolves `operator:narrow` by name
+host-side (severs id-threading); residue host-side = the universal `zn` *binding*
+at `Builtin` + the `AppEffect::{Search,Narrow,MultibufferExpand}` dispatch arms.
+
+**Next: BC.8 (LSP)** — last + largest: its `InboundShowDocument` /
+`InboundApplyEdit` / configuration buses become `boot.inbound::<T>`, its
+`set_wake` / L1c forwarders become `boot.wake_on_event`; green against its BC.2
+pins, one `install(boot)`. **BC.final** then retires the `*_mut` transitional
+accessors + the hardcoded `run_tick_pending` drains, leaving `editor_boot` as the
+two-list shape (Phase-A primitives, then the Phase-B install list).

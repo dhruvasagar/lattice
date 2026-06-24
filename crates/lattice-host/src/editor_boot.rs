@@ -330,15 +330,6 @@ impl Editor {
         let snippet_registry_handle: Arc<ArcSwap<SnippetRegistry>> =
             Arc::new(ArcSwap::from_pointee(SnippetRegistry::new()));
 
-        // M.2.b.2 (2026-06-01): build the multibuffer registry
-        // handle before the mode registry so
-        // `register_multibuffer_modes` can capture a clone for
-        // its `DocumentClosed` cleanup subscriber AND the
-        // services block below can register the same Arc'd
-        // handle for provider lookups.
-        let multibuffer_registry_handle: lattice_multibuffer::MultibufferRegistryHandle =
-            lattice_multibuffer::InMemoryMultibufferRegistry::handle();
-
         // M.5.1 (mode-architecture §9.6.1): build the mode
         // registry first so we can iterate it and register a
         // `:<mode-name>` toggle ex-command per mode. The mode
@@ -364,23 +355,13 @@ impl Editor {
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
-        // M.2.b.2 (2026-06-01): register `multibuffer-mode`
-        // + wire its `DocumentClosed` cleanup subscriber. The
-        // mode is H.2 kind-bound to `BufferKind::Multibuffer`.
-        lattice_multibuffer::register_multibuffer_modes(
-            boot.modes_mut(),
-            &event_bus,
-            multibuffer_registry_handle.clone(),
-        );
-        // M.6 (2026-06-01): register the project-search
-        // provider-minor mode. The service handle is
-        // registered separately in the ServiceRegistry block
-        // below.
-        #[cfg(feature = "search")]
-        lattice_multibuffer::providers::search::register_project_search_mode(boot.modes_mut());
-        // N.1.1 (2026-06-10): narrow provider-minor mode (marker
-        // for narrow views). First-class — no feature gate.
-        lattice_multibuffer::providers::narrow::register_narrow_mode(boot.modes_mut());
+        // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
+        // cleanup subscriber), `narrow-minor-mode`, and the project-search
+        // provider mode moved into `lattice_multibuffer::install(boot)`
+        // (Phase-B install list below), alongside its commands + services +
+        // the `MultibufferExcerptsReady` wake. The registry handle is now
+        // crate-owned (created inside `install`); the host reads it back via
+        // `services.get::<MultibufferRegistryHandle>()` in `resolve_narrow_target`.
         // BC.6/DX.7: `diff-mode` registration moved into
         // `lattice_diff::install(boot)` (Phase-B install list below),
         // alongside terminal + claude-code. K.1.c still gates the
@@ -423,6 +404,18 @@ impl Editor {
         // is fully mode-owned (MO.x): `DiffMode::keymap()` + the K.2.4 pass —
         // see `lattice_diff::install` for the full rationale.
         lattice_diff::install(&mut boot);
+        // multibuffer (BC.7): `multibuffer-mode` + `narrow-minor-mode` + the
+        // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
+        // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
+        // the `MultibufferRegistryHandle` + project-search services, and the
+        // `MultibufferExcerptsReady` off-keystroke wake. The registry handle is
+        // crate-owned (no host-state dependency). Residue staying host-side
+        // (NOT mode-ownership violations): the universal `zn` operator BINDING
+        // at the `Builtin` operator-pending layer (resolved by name below —
+        // BC.7 decision A) and the `AppEffect::{Search,Narrow,MultibufferExpand}`
+        // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
+        // `lattice_multibuffer::install` for the full rationale.
+        lattice_multibuffer::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
@@ -440,42 +433,14 @@ impl Editor {
         // build typed `CommandInvocation`s for chord bindings.
         let action_ids = crate::actions::populate(boot.commands_mut(), &builtins);
 
-        // M.2.b.3 (2026-06-01): register multibuffer excerpt-jump
-        // motions (`]e` / `[e` / `]E` / `[E`) against the command
-        // registry. Handlers capture the multibuffer registry
-        // handle so they reach the typed view by buffer id at
-        // dispatch time.
-        //
-        // K.2.5 (2026-06-02): the returned `MultibufferMotionIds`
-        // is no longer consumed here — the multibuffer-mode
-        // keymap now references the motions by canonical name
-        // (`multibuffer.next-excerpt-start` etc.) via
-        // `MultibufferMode::keymap()`, resolved at host
-        // translation time. The registration side-effect (motion
-        // names in `CommandRegistry`) is what keeps the keymap's
-        // name lookup successful.
-        let _ = lattice_multibuffer::register_multibuffer_motions(
-            boot.commands_mut(),
-            multibuffer_registry_handle.clone(),
-        );
-
-        // K.2.5 (2026-06-02): ex-commands moved to
-        // lattice-multibuffer in the migration that retires the
-        // host-side `multibuffer_keymap.rs` glue. Behaviour
-        // preserved verbatim; the new home sits next to the
-        // modes that use them.
-        lattice_multibuffer::register_multibuffer_ex_commands(boot.commands_mut());
-        #[cfg(feature = "search")]
-        lattice_multibuffer::providers::search::register_search_ex_command(boot.commands_mut());
-        // N.1.1 (2026-06-10): `:narrow` + `:widen`. First-class — no
-        // feature gate.
-        lattice_multibuffer::providers::narrow::register_narrow_ex_commands(boot.commands_mut());
-        // N.1.3 (2026-06-10): register the `zn` narrow operator SPEC
-        // (owned by the narrow provider) and capture its OperatorId;
-        // the `zn` chord is wired into the universal operator-pending
-        // layer below, right after `register_normal_bindings`.
-        let narrow_operator_id =
-            lattice_multibuffer::providers::narrow::register_narrow_operator(boot.commands_mut());
+        // BC.7 (2026-06-24): the multibuffer excerpt-jump motions
+        // (`]e`/`[e`/`]E`/`[E`), the `:multibuffer-*` / `:narrow` / `:widen` /
+        // `:search` ex-commands, AND the `zn` narrow operator SPEC are all
+        // registered by `lattice_multibuffer::install(boot)` above. The host no
+        // longer threads the operator's `OperatorId` from registration to the
+        // `zn` binding — the binding resolves `operator:narrow` by name (the
+        // K.2.5 motion name-resolution pattern); see the
+        // `register_operator_bindings` call below.
 
         // N.1.4c: register the structural (tree-sitter) text objects
         // (`af`/`if`/`ac`/`ic`/`aa`/`ia`/`al`/`il`) -- owned by
@@ -1048,25 +1013,14 @@ impl Editor {
             });
         }
 
-        // MultibufferExcerptsReady: fired by the project-search
-        // forwarder after each batch of excerpts is appended.
-        // Only fires async_landed so the actor calls
-        // publish_render_state (picking up the new excerpt_syntax
-        // entries). The actor then publishes AsyncRenderStatePublished
-        // via the event bus; the bridge below wakes cells_wake AFTER
-        // the ArcSwap store — no race possible.
-        #[cfg(feature = "search")]
-        {
-            use tokio::sync::mpsc;
-            let (tx, mut rx) = mpsc::unbounded_channel::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>();
-            event_bus.subscribe_typed::<lattice_multibuffer::providers::search::MultibufferExcerptsReady>(tx);
-            let al = async_landed.clone();
-            runtime_handle.spawn(async move {
-                while rx.recv().await.is_some() {
-                    al.notify_one();
-                }
-            });
-        }
+        // BC.7 (2026-06-24): the `MultibufferExcerptsReady` →
+        // `async_landed` wake forwarder moved into
+        // `lattice_multibuffer::install(boot)` as `boot.wake_on_event::<…>()`
+        // (the wake is now baked into the primitive). Behaviour unchanged:
+        // each appended batch fires `async_landed` so the actor republishes
+        // render state (picking up the new excerpt_syntax entries) and the
+        // `AsyncRenderStatePublished` → cells bridge below wakes `cells_wake`
+        // AFTER the ArcSwap store — same ordering, no race.
 
         // L1c: wake the render pipeline when render-relevant LSP
         // events arrive off-keystroke. Without this, `$/progress` and
@@ -1289,19 +1243,18 @@ impl Editor {
         // reach it via `boot.service::<DiagnosticsQueryHandle>()`. Not re-registered here.
         // (BC.3b: the claude-code `install_services` read/write wiring moved into
         // `lattice_claude_code::install` in the Phase-B list above.)
-        // M.2.b.2 (2026-06-01): expose the typed multibuffer-handle lookup so
-        // providers (`create_multibuffer_view`, the `:search` minor) reach it
-        // via `services().get::<MultibufferRegistryHandle>()`.
-        boot.register_service(multibuffer_registry_handle.clone());
-        // M.4 (2026-06-01): expose the EventBus so multibuffer views (and
-        // future provider triggers) can subscribe to source events + publish
-        // typed events (`MultibufferSourceClosed`, `MultibufferHeaderlineChanged`)
-        // via `services().get::<EventBus>()`.
+        // BC.7 (2026-06-24): the `MultibufferRegistryHandle` + the
+        // project-search services moved into `lattice_multibuffer::install(boot)`
+        // (registered via `boot.register_service` / `boot.services_mut()`
+        // there). The host still reads the registry handle back via
+        // `services.get::<MultibufferRegistryHandle>()` at dispatch time
+        // (`resolve_narrow_target`).
+        // M.4 (2026-06-01): expose the EventBus as a generic Phase-A primitive —
+        // multibuffer views subscribe to source events + publish typed events
+        // (`MultibufferSourceClosed`, `MultibufferHeaderlineChanged`) via
+        // `services().get::<EventBus>()`, and other subsystems consume it too.
+        // Host-owned (not multibuffer-owned), so it stays here.
         boot.register_service(event_bus.clone());
-        // M.6 (2026-06-01): register the project-search service handle so
-        // `project_search` triggers can look it up.
-        #[cfg(feature = "search")]
-        lattice_multibuffer::providers::search::register_project_search_service(boot.services_mut());
         // M.10.1.b (2026-06-03): action-handler registry — mode-contributed
         // chord/ex-command handler closures. Modes register from `on_activate`
         // via `ctx.service::<ActionHandlerRegistryHandle>()`; one Arc serves
@@ -1451,6 +1404,18 @@ impl Editor {
                 // are owned by `lattice-multibuffer::providers::narrow`;
                 // only this chord-wiring lives host-side (it needs the
                 // resolved `Builtins`).
+                //
+                // BC.7 (2026-06-24, decision A): the SPEC is registered by
+                // `lattice_multibuffer::install(boot)`; the host resolves its
+                // `OperatorId` by name here (the K.2.5 motion name-resolution
+                // pattern) rather than threading the registration return value.
+                // `operator:narrow` is registered above install, so the lookup
+                // is infallible at this point.
+                let narrow_operator_id = lattice_grammar::registry::OperatorId(
+                    registry
+                        .id_by_name("operator:narrow")
+                        .expect("operator:narrow registered by lattice_multibuffer::install"),
+                );
                 crate::keymap_normal::register_operator_bindings(
                     &h,
                     &[

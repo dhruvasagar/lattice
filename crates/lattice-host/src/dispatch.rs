@@ -533,6 +533,9 @@ impl Editor {
         // from its session sign map (counted on the actor, not the render
         // thread — paramount #1) before snapshotting the content store.
         self.sync_diff_modeline_element();
+        // CR.3: reconcile diff-conflict-mode activation off the same sign
+        // map (transition-only; drained at the dispatch tail).
+        self.sync_diff_conflict_activation();
         // Perf plan A.2 slice A.2b.2: build the gated inlay-hint
         // list once and pair it with its content hash. The hash
         // becomes the `VisibleHighlightsKey.inlay_version` axis the
@@ -3605,10 +3608,18 @@ impl Editor {
         if changes.is_empty() {
             return;
         }
-        let diff_mode_id = crate::diff::mode::DiffMode::mode_id();
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+            // CR.3: the change names which diff minor mode it toggles —
+            // `diff-mode` (any participant) or `diff-conflict-mode` (only
+            // conflict-bearing sessions). Resolve to the concrete ModeId.
+            let mode_id = match change.kind {
+                crate::diff::mode::DiffModeKind::Base => crate::diff::mode::DiffMode::mode_id(),
+                crate::diff::mode::DiffModeKind::Conflict => {
+                    crate::diff::mode::DiffConflictMode::mode_id()
+                }
+            };
             let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
             let res = match change.action {
                 crate::diff::mode::DiffModeAction::Activate => self.mode_registry.activate_minor(
@@ -3618,7 +3629,7 @@ impl Editor {
                     &self.event_bus,
                     &self.services,
                     proto_id,
-                    diff_mode_id,
+                    mode_id,
                     lattice_mode::CapabilitySet::empty(),
                 ),
                 crate::diff::mode::DiffModeAction::Deactivate => {
@@ -3627,7 +3638,7 @@ impl Editor {
                         &self.mode_guards,
                         &self.event_bus,
                         proto_id,
-                        diff_mode_id,
+                        mode_id,
                     )
                 }
             };
@@ -3742,6 +3753,31 @@ impl Editor {
             }),
             None => self.modeline.clear(lattice_mode::ModelineKey::Global, &id),
         }
+    }
+
+    /// CR.3 (2026-06-24): reconcile `diff-conflict-mode` activation for
+    /// the active session against its published sign map. Runs each
+    /// publish cycle alongside [`Self::sync_diff_modeline_element`] (which
+    /// already reads the same `DiffSignMap`). `DiffModeBridge::note_conflict_state`
+    /// is transition-only, so re-running every cycle is cheap + idempotent;
+    /// the queued toggles drain through
+    /// [`Self::apply_pending_diff_mode_changes`] at the dispatch tail. Only
+    /// the active session is reconciled here — a background session's
+    /// conflict state catches up when it next becomes active (acceptable
+    /// for v1: conflicts are resolved on the focused buffer).
+    fn sync_diff_conflict_activation(&self) {
+        let Some(session) = self.diff_subsystem.lookup(self.document_buffer_id) else {
+            return;
+        };
+        let session_key = session.buffer_id();
+        let has_conflicts = crate::diff::mode::sign_map_has_conflicts(&session.sign_map());
+        let participants = self
+            .diff_subsystem
+            .session_participants(session_key)
+            .unwrap_or_default();
+        self.diff_subsystem
+            .mode_bridge()
+            .note_conflict_state(session_key, &participants, has_conflicts);
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —

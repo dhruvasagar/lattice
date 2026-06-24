@@ -324,6 +324,59 @@ impl Mode for DiffConflictMode {
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
     }
+    /// CR.3 (2026-06-24): the conflict-resolution chords, contributed
+    /// through the standard `Mode::keymap()` seam (the `diff-mode`
+    /// `do`/`dp` pattern). Vim-fugitive 3-way family — `d2o`/`d3o`
+    /// (keep-ours / keep-theirs), `d2p`/`d3p` (put-ours / put-theirs),
+    /// `dB` (keep-both). The host's K.2.4 translate pass resolves each
+    /// `cmd` name and pushes the layer under
+    /// `MinorMode(diff-conflict-mode)`, gated by K.1.c to
+    /// conflict-mode-active buffers.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(diff_conflict_mode_keymap_entries())
+    }
+    /// CR.3: the conflict-chord handler bodies, mode-owned. Bound globally
+    /// at boot by `register_mode_action_handlers` (same rationale as
+    /// [`DiffMode::action_handlers`]). Each reads the active buffer +
+    /// cursor from the `ActionContext` and the `DiffSubsystemHandle`
+    /// service and calls the matching `DiffSubsystem::diff_*_effect`
+    /// resolver, which resolves "theirs" from the session and returns
+    /// `Effect::ApplyEdit` — or, for the degenerate keep-ours / put-ours
+    /// self-targets, an informative `Echo` (Dhruva 2026-06-24).
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        macro_rules! conflict_handler {
+            ($method:ident) => {{
+                let h: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+                    let sub = ctx.services.get::<DiffSubsystemHandle>()?;
+                    let active = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+                    sub.$method(active, ctx.cursor.line)
+                });
+                h
+            }};
+        }
+        vec![
+            ActionHandlerContribution {
+                action_name: "action:diff-keep-ours",
+                handler: conflict_handler!(diff_keep_ours_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:diff-keep-theirs",
+                handler: conflict_handler!(diff_keep_theirs_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:diff-put-ours",
+                handler: conflict_handler!(diff_put_ours_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:diff-put-theirs",
+                handler: conflict_handler!(diff_put_theirs_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:diff-keep-both",
+                handler: conflict_handler!(diff_keep_both_effect),
+            },
+        ]
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
@@ -395,6 +448,54 @@ fn diff_mode_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// CR.3 (2026-06-24): the `diff-conflict-mode` keymap entries — the
+/// vim-fugitive 3-way conflict-resolution family, contributed through
+/// `DiffConflictMode::keymap()` and pushed under
+/// `MinorMode(diff-conflict-mode)` by the host's K.2.4 translate pass.
+/// K.1.c gates them to buffers where `diff-conflict-mode` is active (i.e.
+/// the session carries a `Conflict` region), so on a clean / 2-way buffer
+/// `d2o` etc. fall through to the normal `d`-operator resolution.
+///
+/// - `d2o` → keep-ours, `d3o` → keep-theirs (diffget from local/remote);
+/// - `d2p` → put-ours, `d3p` → put-theirs (diffput to local/remote);
+/// - `dB` → keep-both (ours⌢theirs).
+///
+/// In the marker-free 3-way model the cursor sits on `local` (= ours), so
+/// `d2o`/`d2p` are degenerate self-targets that emit an informative echo
+/// (see the `diff_*_effect` resolvers).
+fn diff_conflict_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "d2o",
+                doc: "conflict keep-ours: keep the local side for the conflict under the cursor",
+                cmd: "action:diff-keep-ours"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "d3o",
+                doc: "conflict keep-theirs: take the remote side into local",
+                cmd: "action:diff-keep-theirs"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "d2p",
+                doc: "conflict put-ours: push local into the ours side",
+                cmd: "action:diff-put-ours"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "d3p",
+                doc: "conflict put-theirs: push local into the remote side",
+                cmd: "action:diff-put-theirs"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "dB",
+                doc: "conflict keep-both: splice ours then theirs into local",
+                cmd: "action:diff-keep-both"
+            },
+        ]
+    })
+}
+
 // ──────────────────────────────────────────────────────────────
 // DiffModeBridge — refcount + cross-thread queue
 // ──────────────────────────────────────────────────────────────
@@ -408,12 +509,25 @@ pub enum DiffModeAction {
     Deactivate,
 }
 
+/// CR.3 (2026-06-24): which diff minor mode a [`DiffModeChange`] toggles.
+/// `Base` = `diff-mode` (every session participant); `Conflict` =
+/// `diff-conflict-mode` (only sessions whose sign map carries a
+/// `Conflict` region). The host's `apply_pending_diff_mode_changes` maps
+/// the kind to the concrete `ModeId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffModeKind {
+    Base,
+    Conflict,
+}
+
 /// One queued toggle. Buffered until the dispatch tail drains
 /// the bridge and applies them through the mode registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffModeChange {
     pub buffer: BufferId,
     pub action: DiffModeAction,
+    /// CR.3: which mode (`diff-mode` vs `diff-conflict-mode`) to toggle.
+    pub kind: DiffModeKind,
 }
 
 #[derive(Debug, Default)]
@@ -427,6 +541,17 @@ struct BridgeState {
     /// participant buffer → set of session keys currently
     /// holding it active. Refcount via vec length.
     refcounts: HashMap<BufferId, Vec<BufferId>>,
+    /// CR.3: sessions currently flagged conflict-bearing → the
+    /// participants their conflict state activated `diff-conflict-mode`
+    /// for. Mirrors `sessions` but for the conflict overlay mode, so
+    /// `note_session_closed` can decrement them without re-reading the
+    /// (already-removed) sign map.
+    conflict_sessions: HashMap<BufferId, Vec<BufferId>>,
+    /// CR.3: per-buffer `diff-conflict-mode` refcount, keyed by the
+    /// session keys currently holding it conflict-active. A buffer may
+    /// hold `diff-mode` (always, while in a session) without holding
+    /// `diff-conflict-mode` (only while a conflict region exists).
+    conflict_refcounts: HashMap<BufferId, Vec<BufferId>>,
     /// Pending toggle queue drained from the dispatch tail.
     pending: Vec<DiffModeChange>,
 }
@@ -475,11 +600,19 @@ impl DiffModeBridge {
     /// `:diffoff`).
     pub fn note_session_closed(&self, session_key: BufferId) {
         let mut state = self.state.lock().expect("DiffModeBridge mutex poisoned");
-        let Some(participants) = state.sessions.remove(&session_key) else {
-            return;
-        };
-        for b in participants {
-            Self::dec_refcount(&mut state, session_key, b);
+        if let Some(participants) = state.sessions.remove(&session_key) {
+            for b in participants {
+                Self::dec_refcount(&mut state, session_key, b);
+            }
+        }
+        // CR.3: also clear any `diff-conflict-mode` activation this
+        // session held, so the conflict overlay deactivates on close
+        // (e.g. `:diffoff` / doc-close auto-drop) even if the recompute
+        // never published a no-conflict sign map first.
+        if let Some(participants) = state.conflict_sessions.remove(&session_key) {
+            for b in participants {
+                Self::dec_conflict(&mut state, session_key, b);
+            }
         }
     }
 
@@ -565,6 +698,7 @@ impl DiffModeBridge {
             state.pending.push(DiffModeChange {
                 buffer,
                 action: DiffModeAction::Activate,
+                kind: DiffModeKind::Base,
             });
         }
     }
@@ -581,6 +715,73 @@ impl DiffModeBridge {
             state.pending.push(DiffModeChange {
                 buffer,
                 action: DiffModeAction::Deactivate,
+                kind: DiffModeKind::Base,
+            });
+        }
+    }
+
+    /// CR.3 (2026-06-24): reconcile `diff-conflict-mode` activation for
+    /// `session_key` against its latest sign map. `has_conflicts` comes
+    /// from [`sign_map_has_conflicts`]; the host calls this each cycle off
+    /// the active session's published sign map. Idempotent on an unchanged
+    /// state (no transition → nothing queued), so per-cycle calls are
+    /// cheap. On the `false → true` transition it queues a `Conflict`
+    /// Activate for each participant (refcounted, so a buffer shared by
+    /// two conflict sessions stays active until the last clears); on
+    /// `true → false` it queues a Deactivate for each whose conflict
+    /// refcount hits zero.
+    pub fn note_conflict_state(
+        &self,
+        session_key: BufferId,
+        participants: &[BufferId],
+        has_conflicts: bool,
+    ) {
+        let mut state = self.state.lock().expect("DiffModeBridge mutex poisoned");
+        let currently = state.conflict_sessions.contains_key(&session_key);
+        if has_conflicts && !currently {
+            let owned: Vec<BufferId> = participants.to_vec();
+            state.conflict_sessions.insert(session_key, owned.clone());
+            for b in owned {
+                Self::inc_conflict(&mut state, session_key, b);
+            }
+        } else if !has_conflicts && currently {
+            if let Some(parts) = state.conflict_sessions.remove(&session_key) {
+                for b in parts {
+                    Self::dec_conflict(&mut state, session_key, b);
+                }
+            }
+        }
+    }
+
+    fn inc_conflict(state: &mut BridgeState, session_key: BufferId, buffer: BufferId) {
+        let bucket = state.conflict_refcounts.entry(buffer).or_default();
+        if bucket.contains(&session_key) {
+            return;
+        }
+        let was_empty = bucket.is_empty();
+        bucket.push(session_key);
+        if was_empty {
+            state.pending.push(DiffModeChange {
+                buffer,
+                action: DiffModeAction::Activate,
+                kind: DiffModeKind::Conflict,
+            });
+        }
+    }
+
+    fn dec_conflict(state: &mut BridgeState, session_key: BufferId, buffer: BufferId) {
+        let Some(bucket) = state.conflict_refcounts.get_mut(&buffer) else {
+            return;
+        };
+        if let Some(pos) = bucket.iter().position(|k| *k == session_key) {
+            bucket.swap_remove(pos);
+        }
+        if bucket.is_empty() {
+            state.conflict_refcounts.remove(&buffer);
+            state.pending.push(DiffModeChange {
+                buffer,
+                action: DiffModeAction::Deactivate,
+                kind: DiffModeKind::Conflict,
             });
         }
     }
@@ -675,6 +876,99 @@ mod tests {
             .map(|c| c.action_name)
             .collect();
         assert_eq!(names, vec!["action:diff-get", "action:diff-put"]);
+    }
+
+    /// CR.3: `DiffConflictMode` keymap maps the 5 vim-fugitive chords to
+    /// the conflict action names, in order (catches a name swap / dropped
+    /// chord). End-to-end layer resolution is pinned host-side by the
+    /// DX.1-style `diff_conflict_chords_bound_on_conflict_mode_layer`.
+    #[test]
+    fn conflict_keymap_entries_map_chords_to_actions() {
+        let pairs: Vec<(&str, Option<&str>)> = diff_conflict_mode_keymap_entries()
+            .iter()
+            .map(|e| (e.chord, e.command))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("d2o", Some("action:diff-keep-ours")),
+                ("d3o", Some("action:diff-keep-theirs")),
+                ("d2p", Some("action:diff-put-ours")),
+                ("d3p", Some("action:diff-put-theirs")),
+                ("dB", Some("action:diff-keep-both")),
+            ],
+        );
+    }
+
+    /// CR.3: `DiffConflictMode` contributes the 5 conflict handler bodies,
+    /// keyed to the matching action names.
+    #[test]
+    fn conflict_action_handlers_contribute_five() {
+        let names: Vec<&str> = DiffConflictMode
+            .action_handlers()
+            .iter()
+            .map(|c| c.action_name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "action:diff-keep-ours",
+                "action:diff-keep-theirs",
+                "action:diff-put-ours",
+                "action:diff-put-theirs",
+                "action:diff-keep-both",
+            ],
+        );
+    }
+
+    /// CR.3: `note_conflict_state` queues a Conflict Activate per
+    /// participant on the false→true transition, a Deactivate on
+    /// true→false, and nothing on repeated same-state calls (so the
+    /// host's per-cycle reconcile is cheap + idempotent).
+    #[test]
+    fn conflict_state_activates_and_deactivates_per_transition() {
+        let bridge = DiffModeBridge::new();
+        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
+        let changes = bridge.drain_pending();
+        assert_eq!(changes.len(), 2);
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.kind == DiffModeKind::Conflict
+                    && c.action == DiffModeAction::Activate)
+        );
+        // Idempotent: still conflict-bearing → nothing queued.
+        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
+        assert!(bridge.drain_pending().is_empty());
+        // Cleared → one Deactivate per participant.
+        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], false);
+        let changes = bridge.drain_pending();
+        assert_eq!(changes.len(), 2);
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.kind == DiffModeKind::Conflict
+                    && c.action == DiffModeAction::Deactivate)
+        );
+    }
+
+    /// CR.3: closing a session also clears its conflict-mode activation,
+    /// even if a no-conflict sign map was never published first
+    /// (`:diffoff` / doc-close auto-drop).
+    #[test]
+    fn closing_session_clears_conflict_activation() {
+        let bridge = DiffModeBridge::new();
+        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
+        let _ = bridge.drain_pending();
+        bridge.note_session_closed(bid(2));
+        let changes = bridge.drain_pending();
+        assert_eq!(changes.len(), 2);
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.kind == DiffModeKind::Conflict
+                    && c.action == DiffModeAction::Deactivate)
+        );
     }
 
     /// ML.3b: the formatter counts adds vs changes (Change/Conflict/Remove

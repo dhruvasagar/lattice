@@ -1782,6 +1782,135 @@ impl DiffSubsystem {
         }
     }
 
+    /// CR.3 (2026-06-24): the participant buffers of the session keyed by
+    /// `session_key`, in slot order (`[base, local, remote]` for a
+    /// three-way). Used by the host to drive `diff-conflict-mode`
+    /// activation off the published sign map.
+    pub fn session_participants(&self, session_key: BufferId) -> Option<Vec<BufferId>> {
+        self.lookup_descriptor(session_key)
+            .map(|d| d.participants.clone())
+    }
+
+    /// CR.3: resolve "theirs" (the remote side) for the three-way
+    /// conflict session active on `active_buffer`. In the
+    /// `[base, local, remote]` model the cursor sits on `local` (= ours =
+    /// `active_buffer`); "theirs" is the non-base (slot ≠ 0), non-active
+    /// participant. `None` for a non-three-way session (no distinct theirs
+    /// to resolve against).
+    fn conflict_theirs(&self, active_buffer: BufferId) -> Option<BufferId> {
+        let session = self.lookup_session_for(active_buffer)?;
+        let descriptor = self.lookup_descriptor(session.buffer_id())?;
+        if descriptor.participants.len() < 3 {
+            return None;
+        }
+        descriptor
+            .participants
+            .iter()
+            .enumerate()
+            .find(|(i, b)| *i != 0 && **b != active_buffer)
+            .map(|(_, b)| *b)
+    }
+
+    /// CR.3: is there a `Conflict` hunk under `cursor_row` on the active
+    /// side? Gates the degenerate keep-ours / put-ours echoes so they
+    /// only fire over an actual conflict region (off-hunk → silent).
+    fn conflict_hunk_under_cursor(&self, active_buffer: BufferId, cursor_row: u32) -> bool {
+        let Some(session) = self.lookup_session_for(active_buffer) else {
+            return false;
+        };
+        let Some(descriptor) = self.lookup_descriptor(session.buffer_id()) else {
+            return false;
+        };
+        let Some(active_pane) = pane_index_of(&descriptor, active_buffer) else {
+            return false;
+        };
+        let hunks = session.current_hunks();
+        find_covering_hunk(&hunks, active_pane, cursor_row, true)
+            .is_some_and(|h| matches!(h.kind, HunkKind::Conflict))
+    }
+
+    /// CR.3 `d2o` keep-ours: the local side already holds ours, so there
+    /// is nothing to apply — but the chord is a recognised resolution
+    /// command (Dhruva 2026-06-24: full fugitive set, degenerate →
+    /// informative echo, not a silent no-op). Echoes over a conflict
+    /// region; `None` off-hunk (silent, like the other chords).
+    pub fn diff_keep_ours_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        self.conflict_hunk_under_cursor(active_buffer, cursor_row)
+            .then(|| lattice_grammar::Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "keep-ours: the local side already holds your version; nothing to apply"
+                    .to_string(),
+            })
+    }
+
+    /// CR.3 `d3o` keep-theirs: pull theirs (remote) into the local range
+    /// — `compute_get_edit` with `target = theirs` (already
+    /// conflict-capable). `None` when there's no three-way session, no
+    /// covering conflict, etc.
+    pub fn diff_keep_theirs_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let theirs = self.conflict_theirs(active_buffer)?;
+        self.diff_get_effect(active_buffer, cursor_row, Some(theirs))
+    }
+
+    /// CR.3 `d2p` put-ours: the local side IS ours, so there is nothing
+    /// to push — informative echo over a conflict region (degenerate
+    /// self-target), else `None`.
+    pub fn diff_put_ours_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        self.conflict_hunk_under_cursor(active_buffer, cursor_row)
+            .then(|| lattice_grammar::Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "diffput ours: the local side is already your version; nothing to push"
+                    .to_string(),
+            })
+    }
+
+    /// CR.3 `d3p` put-theirs: push the local side's hunk into theirs
+    /// (remote) — `compute_put_plan` with `target = theirs`.
+    pub fn diff_put_theirs_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let theirs = self.conflict_theirs(active_buffer)?;
+        self.diff_put_effect(active_buffer, cursor_row, Some(theirs))
+    }
+
+    /// CR.3 `dB` keep-both: splice ours⌢theirs into the local range via
+    /// [`Self::compute_keep_both_edit`], returning an `Effect::ApplyEdit`
+    /// targeting the active (local) buffer. `None` when there's no
+    /// three-way session or no covering conflict.
+    pub fn diff_keep_both_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let theirs = self.conflict_theirs(active_buffer)?;
+        match self.compute_keep_both_edit(active_buffer, cursor_row, theirs) {
+            DiffGetOutcome::Edit {
+                edit,
+                post_cursor_row,
+                ..
+            } => Some(lattice_grammar::Effect::ApplyEdit {
+                target: active_buffer,
+                edit,
+                cursor: Some(post_cursor_row),
+            }),
+            _ => None,
+        }
+    }
+
     /// D.2.c: snapshot of the inverse routing index for
     /// `watched_buffer`. Returns the session keys whose
     /// descriptors include `watched_buffer` in their `watch`
@@ -4705,6 +4834,108 @@ mod tests {
             sub.compute_keep_both_edit(local, 0, bid(99)),
             DiffGetOutcome::Nothing
         ));
+    }
+
+    /// CR.3 `d3o`: keep-theirs pulls REMOTE into the active (local)
+    /// range via the conflict-aware `diff_get_effect` path — no explicit
+    /// target needed at the call site (resolved to "theirs").
+    #[test]
+    fn diff_keep_theirs_effect_pulls_remote_into_local() {
+        let (sub, _base, local, _remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        match sub.diff_keep_theirs_effect(local, 0) {
+            Some(lattice_grammar::Effect::ApplyEdit { target, edit, cursor }) => {
+                assert_eq!(target, local, "keep-theirs edits the active/local side");
+                assert_eq!(cursor, Some(0));
+                match edit.kind {
+                    lattice_protocol::edit::EditKind::Replace { ref text } => {
+                        assert_eq!(text, "REMOTE\n");
+                    }
+                }
+            }
+            other => panic!("expected ApplyEdit, got {other:?}"),
+        }
+    }
+
+    /// CR.3 `dB`: keep-both effect wraps the splice into an
+    /// `Effect::ApplyEdit` targeting the active (local) buffer.
+    #[test]
+    fn diff_keep_both_effect_splices_into_local() {
+        let (sub, _base, local, _remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        match sub.diff_keep_both_effect(local, 0) {
+            Some(lattice_grammar::Effect::ApplyEdit { target, edit, .. }) => {
+                assert_eq!(target, local);
+                match edit.kind {
+                    lattice_protocol::edit::EditKind::Replace { ref text } => {
+                        assert_eq!(text, "LOCAL\nREMOTE\n");
+                    }
+                }
+            }
+            other => panic!("expected ApplyEdit, got {other:?}"),
+        }
+    }
+
+    /// CR.3 `d2o`: keep-ours over a conflict region is the degenerate
+    /// self-target — an informative `Echo`, not a silent no-op (Dhruva's
+    /// "full set, degenerate → echo" choice). Off-hunk → `None`.
+    #[test]
+    fn diff_keep_ours_effect_echoes_over_conflict_else_none() {
+        let (sub, _base, local, _remote) = fixture_three_pane("a\nb\n", "LOCAL\nb\n", "REMOTE\nb\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        assert!(matches!(
+            sub.diff_keep_ours_effect(local, 0),
+            Some(lattice_grammar::Effect::Echo { .. })
+        ));
+        // Row 1 is outside the conflict hunk → silent None.
+        assert!(sub.diff_keep_ours_effect(local, 1).is_none());
+    }
+
+    /// CR.3 `d3p`: put-theirs pushes the local side's hunk INTO remote —
+    /// the edit targets the remote buffer.
+    #[test]
+    fn diff_put_theirs_effect_pushes_local_into_remote() {
+        let (sub, _base, local, remote) = fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+        publish_hunks(
+            &sub,
+            local,
+            vec![Hunk {
+                kind: HunkKind::Conflict,
+                ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+            }],
+        );
+        match sub.diff_put_theirs_effect(local, 0) {
+            Some(lattice_grammar::Effect::ApplyEdit { target, edit, .. }) => {
+                assert_eq!(target, remote, "put-theirs edits the remote buffer");
+                match edit.kind {
+                    lattice_protocol::edit::EditKind::Replace { ref text } => {
+                        assert_eq!(text, "LOCAL\n");
+                    }
+                }
+            }
+            other => panic!("expected ApplyEdit, got {other:?}"),
+        }
     }
 
     /// Target buffer that isn't a participant → `Nothing`.

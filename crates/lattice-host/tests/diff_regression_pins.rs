@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 
 use lattice_core::Document as CoreDocument;
 use lattice_diff::DiffAlgorithm;
-use lattice_host::diff::mode::{DIFF_ELEMENT, DiffMode};
+use lattice_host::diff::mode::{DIFF_ELEMENT, DiffConflictMode, DiffMode};
 use lattice_host::editor::Editor;
 use lattice_host::excommand;
 use lattice_keymap::{BindingMode, KeymapLayer, KeymapResolution, LayerHit};
@@ -156,6 +156,79 @@ fn diff_chords_inactive_when_diff_mode_not_active() {
                 "`d{second}` must be inactive when diff-mode is not active (K.1.c gating)"
             );
         }
+    }
+}
+
+// ── CR.3: conflict-resolution chords on the diff-conflict-mode layer ─────────
+
+/// The diff-conflict-mode minor-mode layer hit for `chords`, if bound.
+fn conflict_layer_hit<'a>(res: &'a KeymapResolution) -> Option<&'a LayerHit> {
+    res.hits.iter().find(
+        |h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == DiffConflictMode::mode_id()),
+    )
+}
+
+#[test]
+fn diff_conflict_chords_bound_on_conflict_mode_layer() {
+    let editor = boot();
+    let active = [DiffConflictMode::mode_id()];
+    // `d2o`/`d3o`/`d2p`/`d3p` are 3-key; `dB` is 2-key (shift folds into
+    // the case, so the chord is `d` then `B`).
+    let cases: [(&[KeyChord], &str); 5] = [
+        (
+            &[KeyChord::char('d'), KeyChord::char('2'), KeyChord::char('o')],
+            "action:diff-keep-ours",
+        ),
+        (
+            &[KeyChord::char('d'), KeyChord::char('3'), KeyChord::char('o')],
+            "action:diff-keep-theirs",
+        ),
+        (
+            &[KeyChord::char('d'), KeyChord::char('2'), KeyChord::char('p')],
+            "action:diff-put-ours",
+        ),
+        (
+            &[KeyChord::char('d'), KeyChord::char('3'), KeyChord::char('p')],
+            "action:diff-put-theirs",
+        ),
+        (
+            &[KeyChord::char('d'), KeyChord::char('B')],
+            "action:diff-keep-both",
+        ),
+    ];
+    for (chords, name) in cases {
+        let expected = editor
+            .registry
+            .id_by_name(name)
+            .unwrap_or_else(|| panic!("`{name}` must be registered at boot"));
+        let res = editor
+            .keymap
+            .resolve_trace(BindingMode::Normal, chords, &active);
+        let hit = conflict_layer_hit(&res)
+            .unwrap_or_else(|| panic!("`{name}` chord must bind on the diff-conflict-mode layer"));
+        assert!(
+            hit.active,
+            "`{name}` must be active when diff-conflict-mode is active"
+        );
+        assert_eq!(
+            hit.command.command.command, expected,
+            "`{name}` chord must target its action"
+        );
+    }
+}
+
+#[test]
+fn diff_conflict_chords_inactive_when_mode_not_active() {
+    // K.1.c gating: the conflict-mode layer is pushed globally at boot, but
+    // its bindings only fire on buffers where diff-conflict-mode is active.
+    let editor = boot();
+    let chords = [KeyChord::char('d'), KeyChord::char('B')];
+    let res = editor.keymap.resolve_trace(BindingMode::Normal, &chords, &[]);
+    if let Some(hit) = conflict_layer_hit(&res) {
+        assert!(
+            !hit.active,
+            "`dB` must be inactive when diff-conflict-mode is not active (K.1.c gating)"
+        );
     }
 }
 

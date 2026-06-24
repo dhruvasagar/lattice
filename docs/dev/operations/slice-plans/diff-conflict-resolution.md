@@ -1,6 +1,6 @@
 # Diff conflict resolution + full mode-ownership — slice plan (CR.x)
 
-**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3–CR.5 planned. Builds on
+**Status:** 🚧 in progress (2026-06-24). CR.0 ✅; CR.1 ✅; CR.2 ✅; CR.3 ✅; CR.4–CR.5 planned. Builds on
 BC.6 (diff extraction → `lattice-diff`) + MO.x (diff keymap mode-owned). Design
 context: `docs/dev/architecture/diff-extraction.md` §4 (mode decomposition). This
 plan owns sequencing + status.
@@ -112,11 +112,29 @@ Two threads, decided with Dhruva (2026-06-24):
   the existing `compute_get_edit_three_way_with_target_resolves_conflict`. Green:
   3 new keep-both unit tests + 228 lattice-diff. (Effect wrapper + chords land in
   CR.3.)
-- **CR.3 — `diff-conflict-mode` chords + activation.** `d2o`/`d3o`/`d2p`/`d3p`/`dB`
-  via `DiffConflictMode::keymap()` (`keymap_entry!`, name-resolved, MO.x pattern)
-  + `action_handlers()` for `dB`; bridge-driven activation (consume
-  `sign_map_has_conflicts` in `DiffModeBridge` so the mode toggles on
-  conflict-bearing sessions). New mode tests + a DX.1-style pin.
+- **CR.3 ✅ — `diff-conflict-mode` chords + activation.** Landed (decision
+  2026-06-24: full fugitive set, degenerate self-targets → informative echo).
+  `lattice-diff`: 5 conflict resolvers on `DiffSubsystem` —
+  `diff_keep_theirs_effect`/`diff_put_theirs_effect` (reuse `diff_get_effect`/
+  `diff_put_effect` with `theirs` resolved from the session via `conflict_theirs`),
+  `diff_keep_both_effect` (wraps CR.2's `compute_keep_both_edit`), and
+  `diff_keep_ours_effect`/`diff_put_ours_effect` (degenerate — `local` IS ours in
+  the marker-free `[base, local, remote]` model where the cursor sits on local —
+  so they emit an `Echo` over a conflict region, `None` off-hunk). All return
+  `Option<Effect>`. `DiffConflictMode::keymap()` (`d2o`/`d3o`/`d2p`/`d3p`/`dB` →
+  `action:diff-{keep,put}-{ours,theirs}` / `diff-keep-both`, MO.x name-resolved,
+  auto-pushed by the K.2.4 translate walk) + `action_handlers()` (5 closures,
+  auto-registered by `register_mode_action_handlers`). Activation:
+  `DiffModeChange` gains a `kind: DiffModeKind { Base, Conflict }`; the bridge
+  gains a parallel conflict refcount + `note_conflict_state(session, parts,
+  has_conflicts)` (transition-only); the host drives it per-cycle from
+  `sync_diff_conflict_activation` off `sign_map_has_conflicts`, and
+  `apply_pending_diff_mode_changes` maps `kind`→`ModeId`. The 5 action shells
+  register host-side via a new `register_mode_owned` (`Effect::None` fallback, no
+  `AppEffect`). Green: 8 new lattice-diff tests (resolvers + conflict keymap/
+  handlers shape + bridge transitions) + 2 new DX.1-style host pins
+  (`diff_conflict_chords_bound_on_conflict_mode_layer` + inactive-gating) + 236
+  lattice-diff + 561 host lib + 9 diff pins. Both renderer peers compile.
 - **CR.4 — conflict nav + ex-command rehoming.** `]c`/`[c` confirmed/filtered to
   land on conflicts in a 3-way session; migrate `:diffget`/`:diffput`/`:diffsplit`/
   `:diff-accept`/`:diff-reject` registration to be diff-owned (or confirm they

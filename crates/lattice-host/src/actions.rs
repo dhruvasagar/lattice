@@ -244,6 +244,27 @@ pub struct ActionIds {
 /// after `lattice_grammar::builtins::populate` and
 /// `lattice_grammar::ex_commands::populate`.
 pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionIds {
+    // CR.3 (2026-06-24): conflict-resolution action shells. The bodies are
+    // mode-owned (`DiffConflictMode::action_handlers()`); these CommandSpecs
+    // exist only so the `d2o`/`d3o`/`d2p`/`d3p`/`dB` chord names resolve at
+    // keymap-translate time and the handlers key to them. Registered as
+    // discarded ids — the names, not the ids, drive both the translate pass
+    // and `register_mode_action_handlers`.
+    for (name, doc) in [
+        ("action:diff-keep-ours", "diff-conflict `d2o`: keep the local (ours) side."),
+        (
+            "action:diff-keep-theirs",
+            "diff-conflict `d3o`: take the remote (theirs) side into local.",
+        ),
+        ("action:diff-put-ours", "diff-conflict `d2p`: put local into the ours side."),
+        (
+            "action:diff-put-theirs",
+            "diff-conflict `d3p`: put local into the remote (theirs) side.",
+        ),
+        ("action:diff-keep-both", "diff-conflict `dB`: keep both — splice ours then theirs."),
+    ] {
+        register_mode_owned(registry, name, doc);
+    }
     ActionIds {
         match_bracket: register_simple(
             registry,
@@ -1267,6 +1288,24 @@ fn register_simple(
         doc,
         ActionSpec {
             apply: Box::new(move |_ctx| Ok(lattice_grammar::Effect::AppAction(effect.clone()))),
+            args_schema: vec![],
+        },
+    )
+}
+
+/// CR.3 (2026-06-24): register a pure-shell action whose body lives
+/// entirely in a mode's `action_handlers()` (the `ActionHandlerRegistry`
+/// is consulted before this CommandSpec in dispatch). The `apply`
+/// fallback is `Effect::None`, reached only if no handler is registered.
+/// Used for the conflict-resolution chords (`action:diff-keep-*` /
+/// `action:diff-put-*`), which — unlike `do`/`dp` — have no host
+/// `AppEffect` fallback to share.
+fn register_mode_owned(registry: &mut CommandRegistry, name: &str, doc: &str) -> CommandId {
+    registry.register_action(
+        name,
+        doc,
+        ActionSpec {
+            apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
             args_schema: vec![],
         },
     )

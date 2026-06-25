@@ -9,7 +9,7 @@ handle is created. This is a maintainability + *correctness-by-discipline* smell
 It is **not** a runtime-UX cost (boot runs once; the per-tick drain aggregate is
 sub-µs, see `benchmarks.md` I1.1) — but it makes good UX a less *reliable*
 outcome and the host harder to evolve. This fragment specifies the restructure.
-Sequencing: `docs/dev/operations/slice-plans/boot-composition.md`.
+Sequencing: `docs/dev/operations/slice-plans/archive/boot-composition.md`.
 
 ## 1. The two concrete pains
 

@@ -1,7 +1,7 @@
 # Diff extraction — slice plan (`lattice-host::diff` → the `lattice-diff` crate, as diff modes)
 
 **Status:** ✅ COMPLETE (DX.0–DX.final ✅, 2026-06-24). This is **BC.6** of the
-boot-composition initiative (`docs/dev/operations/slice-plans/boot-composition.md`),
+boot-composition initiative (`docs/dev/operations/slice-plans/archive/boot-composition.md`),
 carved into its own file because it is a multi-slice cross-crate extraction, not
 a one-line `install` migration like BC.3b/BC.4/BC.5. The host-side diff
 subsystem (7 files) now lives in `lattice-diff` as `diff-mode` +
@@ -306,7 +306,7 @@ the host rewire, then the mode decomposition.
 - **Design fragment (what/why + coupling table C1–C10):**
   `docs/dev/architecture/diff-extraction.md`.
 - Parent initiative + the `SubsystemBoot` seam diff installs through:
-  `docs/dev/operations/slice-plans/boot-composition.md` (BC.6) +
+  `docs/dev/operations/slice-plans/archive/boot-composition.md` (BC.6) +
   `docs/dev/architecture/boot-composition.md`.
 - The emacs-keys move (BC.5) is the template for C1–C4 + the name-based keymap
   builder (C10): `crates/lattice-mode/src/emacs_keys_mode.rs`.

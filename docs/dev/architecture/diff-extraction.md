@@ -159,7 +159,7 @@ modeline element + keymap push + the `diff_subsystem` / `diff_subscription_guard
 - **Slice plan (when + how + status):**
   `docs/dev/operations/slice-plans/archive/diff-extraction.md` (DX.0–DX.final).
 - Parent initiative + the `SubsystemBoot` seam diff installs through:
-  `docs/dev/operations/slice-plans/boot-composition.md` (BC.6) +
+  `docs/dev/operations/slice-plans/archive/boot-composition.md` (BC.6) +
   `docs/dev/architecture/boot-composition.md`.
 - Existing diff *algorithm/subsystem* design (not the extraction):
   `docs/dev/architecture/diff-system.md`; the moved module docs in

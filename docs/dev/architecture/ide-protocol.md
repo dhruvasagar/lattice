@@ -188,4 +188,4 @@ dropped host receiver yields a JSON-RPC error to the agent, never a hang or pani
 - **claude-code-specific host drain / event→Invocation writes** — see §2.
 
 See the slice plan for sequencing:
-`docs/dev/operations/slice-plans/ide-protocol.md`.
+`docs/dev/operations/slice-plans/archive/ide-protocol.md`.

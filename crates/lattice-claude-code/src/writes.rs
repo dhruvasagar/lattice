@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use crate::inbound::{ClaudeCodeInboundRequest, InboundKind};
+use lattice_grammar::Utf16Pos;
 use lattice_mode::inbound::InboundBus;
-use lattice_protocol::Position;
 
 /// Backstop so a write tool can never hang the agent connection even if the
 /// editor never resolves the oneshot (it always should — the drain resolves
@@ -34,7 +34,7 @@ pub async fn open_file(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args:
         bus,
         InboundKind::OpenFile {
             path: PathBuf::from(path),
-            position: parse_position(args),
+            column: parse_position(args),
         },
     )
     .await
@@ -89,20 +89,18 @@ async fn run_write(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, kind: Inb
     }
 }
 
-/// Parse an optional `selection.start` (`{line, character}`) into a byte-based
-/// `Position`. PROVISIONAL: `character` is taken as a byte offset (matches the
-/// read side), to be reconciled with the VS Code UTF-16 contract vs a live CLI.
-fn parse_position(args: &Value) -> Position {
-    let start = args.get("selection").and_then(|s| s.get("start"));
-    let line = start
-        .and_then(|s| s.get("line"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-    let byte = start
-        .and_then(|s| s.get("character"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-    Position::new(line, byte)
+/// Parse an optional `selection.start` (`{line, character}`) into a UTF-16
+/// column for [`Effect::OpenBufferAtColumn`](lattice_grammar::Effect::OpenBufferAtColumn)
+/// — the host converts it to a byte offset against the *opened* line. The
+/// agent's `character` is VS Code-style UTF-16, passed through verbatim (BC.8c
+/// retired the earlier provisional byte interpretation). Returns `None` when the
+/// agent sent no selection: the file opens without forcing the cursor (so
+/// re-opening an already-open file keeps its position).
+fn parse_position(args: &Value) -> Option<Utf16Pos> {
+    let start = args.get("selection").and_then(|s| s.get("start"))?;
+    let line = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let col = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    Some(Utf16Pos { line, col })
 }
 
 /// The write-tool result body. `success` mirrors the drain's optimistic-ack.
@@ -132,10 +130,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_position_reads_selection_start_else_zero() {
-        assert_eq!(parse_position(&json!({})), Position::ZERO);
+    fn parse_position_reads_selection_start_else_none() {
+        // No selection → None (open only, don't force the cursor).
+        assert_eq!(parse_position(&json!({})), None);
+        // A selection's `character` is a UTF-16 column, passed through verbatim.
         let p = parse_position(&json!({ "selection": { "start": { "line": 4, "character": 2 } } }));
-        assert_eq!(p, Position::new(4, 2));
+        assert_eq!(p, Some(Utf16Pos { line: 4, col: 2 }));
     }
 
     #[tokio::test]

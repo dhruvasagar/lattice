@@ -55,6 +55,18 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
   existing Effects (`OpenBufferAt`, save, close) and resolves oneshots. **Tests:**
   request→Effect mapping; oneshot round-trip; unknown path/tab → `ok=false`;
   dropped receiver → graceful error to agent.
+  - **I3 fix (2026-06-25, BC.8c follow-up):** `openFile` mapped to the
+    *peer-applied* `Effect::OpenBufferAt`, which the inbound tick path discards
+    (BC.8c finding: `drain_tick_callbacks` drops `out.effects`; host
+    `handle_effect` no-ops `OpenBufferAt`) — so openFile **never actually
+    opened** (the I3 test only asserted the oneshot). Now maps to the
+    host-applied `Effect::OpenBufferAtColumn` (BC.8c), which opens host-side on
+    the tick path. Also dropped the provisional "`character` as a byte" hack:
+    the agent's `character` is VS Code utf16, carried verbatim as a `Utf16Pos`
+    (`column = None` when no selection → open without forcing the cursor). The
+    host does do_edit + the utf16→byte conversion against the opened line.
+    Self-contained in `lattice-claude-code` (no host change — the effect already
+    exists). Green: lattice-claude-code 41 lib + 3 ws_roundtrip + 14 BC.2 pins.
 
 - **I4 — openDiff (blocking).** `tools/diff.rs` + diff-subsystem registration
   (`StaticSource` agent-text vs `OnDiskSource` baseline, `bind_completion`); the

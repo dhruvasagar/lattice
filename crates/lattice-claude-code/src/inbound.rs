@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use lattice_grammar::effect::Effect;
-use lattice_protocol::Position;
+use lattice_grammar::Utf16Pos;
 use tokio::sync::oneshot;
 
 use crate::snapshot::ReadStateHandle;
@@ -30,8 +30,16 @@ use crate::snapshot::ReadStateHandle;
 /// A write request's payload.
 #[derive(Debug)]
 pub enum InboundKind {
-    /// Open `path`, placing the cursor at `position`.
-    OpenFile { path: PathBuf, position: Position },
+    /// Open `path`. `column` (a UTF-16 cursor position from the agent's
+    /// `selection.start`, `None` when absent) is carried unconverted — the host
+    /// resolves it to a byte offset against the opened line. BC.8c follow-up:
+    /// maps to the HOST-APPLIED `OpenBufferAtColumn`, not the peer-applied
+    /// `OpenBufferAt` (which the inbound tick path discards, so openFile never
+    /// actually opened before this fix).
+    OpenFile {
+        path: PathBuf,
+        column: Option<Utf16Pos>,
+    },
     /// Save the document for `path` (option C: only when it's the active buffer).
     SaveDocument { path: PathBuf },
     /// Close the tab named `tab_name` (option C: only the active buffer in I3;
@@ -96,10 +104,14 @@ fn active_path(cache: &ReadStateHandle) -> Option<PathBuf> {
 /// Map a write request to an existing Effect + an optimistic reply.
 fn map_request(kind: &InboundKind, cache: &ReadStateHandle) -> (Option<Effect>, InboundReply) {
     match kind {
-        InboundKind::OpenFile { path, position } => (
-            Some(Effect::OpenBufferAt {
+        InboundKind::OpenFile { path, column } => (
+            // BC.8c follow-up: host-applied open (works on the inbound tick
+            // path, where peer-applied `OpenBufferAt` is discarded). The host
+            // does do_edit + the UTF-16→byte cursor conversion against the
+            // opened line; `column = None` opens without forcing the cursor.
+            Some(Effect::OpenBufferAtColumn {
                 path: Some(path.clone()),
-                position: *position,
+                column: *column,
                 force: false,
             }),
             InboundReply::ok(),
@@ -161,16 +173,39 @@ mod tests {
     }
 
     #[test]
-    fn open_file_maps_to_open_buffer_at_ok() {
+    fn open_file_maps_to_host_applied_open_ok() {
+        // No selection → column None (open only). Maps to the HOST-APPLIED
+        // OpenBufferAtColumn so it actually opens on the inbound tick path.
         let (e, r) = map_request(
             &InboundKind::OpenFile {
                 path: PathBuf::from("/a.rs"),
-                position: Position::ZERO,
+                column: None,
             },
             &empty_cache(),
         );
-        assert!(matches!(e, Some(Effect::OpenBufferAt { .. })));
+        assert!(matches!(
+            e,
+            Some(Effect::OpenBufferAtColumn { column: None, .. })
+        ));
         assert!(r.ok);
+    }
+
+    #[test]
+    fn open_file_with_selection_carries_utf16_column() {
+        let (e, _r) = map_request(
+            &InboundKind::OpenFile {
+                path: PathBuf::from("/a.rs"),
+                column: Some(Utf16Pos { line: 3, col: 7 }),
+            },
+            &empty_cache(),
+        );
+        assert!(matches!(
+            e,
+            Some(Effect::OpenBufferAtColumn {
+                column: Some(Utf16Pos { line: 3, col: 7 }),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -230,7 +265,7 @@ mod tests {
         bus.send(ClaudeCodeInboundRequest {
             kind: InboundKind::OpenFile {
                 path: PathBuf::from("/a.rs"),
-                position: Position::ZERO,
+                column: None,
             },
             response: resp_tx,
         })

@@ -326,6 +326,28 @@ impl std::fmt::Debug for SessionBackedMinor {
     }
 }
 
+/// I4 (openDiff) D-fix.1: the pane/buffer bookkeeping needed to tear a
+/// programmatic side-by-side diff down cleanly — close the two transient diff
+/// panes and return focus to the pane the `openDiff` was launched from (the
+/// `:claude` terminal). Recorded by
+/// [`Editor::open_programmatic_diff`](crate::dispatch), consumed by
+/// `Editor::finish_programmatic_diff_panes` on `:diff-accept` / `:diff-reject`.
+/// Keyed in [`Editor::programmatic_diff_panes`] by the session's primary
+/// (proposed / right) `BufferId`.
+#[derive(Debug, Clone)]
+pub struct ProgrammaticDiffPanes {
+    /// The pane that was active when `openDiff` fired (the `:claude` terminal
+    /// pane). Focus returns here on resolve — Option A: claude stays put while
+    /// the diff opens in transient panes to its right.
+    pub origin_pane: lattice_core::ui::pane::PaneId,
+    /// The transient baseline + proposed panes opened for the diff; both closed
+    /// on resolve. The `origin_pane` is never in this list.
+    pub diff_panes: Vec<lattice_core::ui::pane::PaneId>,
+    /// The throwaway in-memory baseline + proposed buffers; removed from the
+    /// registry on resolve so they don't linger in `:ls`.
+    pub diff_buffers: Vec<lattice_core::BufferId>,
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Perf plan B.4: identity-preserving sub-state cache for
@@ -1370,6 +1392,14 @@ pub struct Editor {
     /// `FILE_SAVED` contract: the review *is* the save). Removed on teardown.
     pub programmatic_diff_accept_paths:
         std::collections::HashMap<lattice_core::BufferId, std::path::PathBuf>,
+    /// I4 (openDiff) D-fix.1: per programmatic-diff-session pane teardown info,
+    /// keyed by the session's primary (proposed) `BufferId`. Recorded by
+    /// `open_programmatic_diff`; consumed by `finish_programmatic_diff_panes`
+    /// on `:diff-accept` / `:diff-reject` to close the transient diff panes and
+    /// return focus to the originating (`:claude`) pane. Populated/cleared in
+    /// lockstep with `programmatic_diff_accept_paths`.
+    pub programmatic_diff_panes:
+        std::collections::HashMap<lattice_core::BufferId, ProgrammaticDiffPanes>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

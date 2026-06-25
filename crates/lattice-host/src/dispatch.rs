@@ -3836,22 +3836,79 @@ impl Editor {
     /// invokes `:diff-accept`, this method fires the
     /// `Accept` signal on the channel.
     pub fn do_diff_accept(&mut self) {
+        // D-fix.1: capture the resolving session's primary BEFORE teardown drops
+        // it, so `finish_programmatic_diff_panes` can close the transient diff
+        // panes + refocus the claude pane after the outcome fires + the save
+        // lands. No-op for non-programmatic (`:diffsplit` / `:Gdiff`) sessions.
+        let primary = self
+            .diff_subsystem
+            .lookup_session_for(self.document_buffer_id)
+            .map(|s| s.buffer_id());
         self.tear_down_active_diff_session(
             false,
             Some(crate::diff::subsystem::DiffOutcome::Accept),
             "Diff accepted",
         );
+        if let Some(primary) = primary {
+            self.finish_programmatic_diff_panes(primary);
+        }
     }
 
     /// D.6.e (2026-05-31): resolve the active pane's diff
     /// session with [`DiffOutcome::Reject`]. v1 semantics:
     /// equivalent to `:diffoff!` + signal Reject.
     pub fn do_diff_reject(&mut self) {
+        // D-fix.1: see `do_diff_accept` — capture before teardown, finish after.
+        let primary = self
+            .diff_subsystem
+            .lookup_session_for(self.document_buffer_id)
+            .map(|s| s.buffer_id());
         self.tear_down_active_diff_session(
             true,
             Some(crate::diff::subsystem::DiffOutcome::Reject),
             "Diff rejected",
         );
+        if let Some(primary) = primary {
+            self.finish_programmatic_diff_panes(primary);
+        }
+    }
+
+    /// I4 (openDiff) D-fix.1: after a programmatic diff resolves
+    /// (`:diff-accept` / `:diff-reject`), close the two transient diff panes and
+    /// return focus to the pane `openDiff` was launched from (the `:claude`
+    /// terminal), then drop the throwaway in-memory baseline/proposed buffers so
+    /// they don't linger in `:ls`. A no-op for non-programmatic sessions (the
+    /// `primary` won't be in `programmatic_diff_panes`), so `:diffsplit` /
+    /// `:Gdiff` teardown is unchanged. Called AFTER
+    /// `tear_down_active_diff_session` has fired the outcome + dropped the pane
+    /// group binding + the session.
+    fn finish_programmatic_diff_panes(&mut self, primary: BufferId) {
+        let Some(info) = self.programmatic_diff_panes.remove(&primary) else {
+            return;
+        };
+        // Close each transient diff pane (the claude `origin_pane` is never in
+        // this list). PaneIds are stable across removals, so re-resolve the
+        // index each iteration; `close_active` collapses the split.
+        for pane in &info.diff_panes {
+            if let Some(idx) = self.pane_tree.index_of(*pane) {
+                self.pane_tree.set_active(idx);
+                self.pane_tree.close_active();
+            }
+        }
+        // Return focus to the originating (`:claude`) pane and re-sync the
+        // Editor's active document to its buffer (restores `active_buffer` kind +
+        // terminal-mode so keystrokes — including `<Esc>` to interrupt — reach
+        // the claude PTY again). `close_active` leaves `active` at index 0, so
+        // the explicit refocus is required.
+        if let Some(idx) = self.pane_tree.index_of(info.origin_pane) {
+            self.pane_tree.set_active(idx);
+            let buf = self.pane_tree.active().buffer_id;
+            self.activate_buffer(buf);
+        }
+        // Drop the throwaway baseline/proposed buffers from the registry.
+        for buf in &info.diff_buffers {
+            self.buffers.remove(*buf);
+        }
     }
 
     /// D.4.d.3.a / D.6.e / D.6.g shared teardown helper.
@@ -4789,14 +4846,17 @@ impl Editor {
     /// [`DiffOutcome`](crate::diff::subsystem::DiffOutcome) on
     /// `:diff-accept` / `:diff-reject` (or a close-tab cancel).
     ///
-    /// Layout (the locked I4 UX decision): the baseline file's on-disk content
-    /// fills a read-only-by-intent left buffer; the proposed text fills the
-    /// editable right buffer (carrying `new_file_path` so an Accept can save it).
-    /// `split_active(Vertical)` keeps the original active leaf on the LEFT and
-    /// puts the new leaf on the RIGHT, so original→left / proposed→right matches
-    /// the VS Code contract. Built on [`Self::register_pane_group_diff`] (slot 0
-    /// = baseline/left, slot 1 = current/right), so hunk compute + filler rows +
-    /// `do`/`dp` all reuse the existing two-pane machinery.
+    /// Layout (D-fix.1, Option A — the persistent-panel convention shared by VS
+    /// Code / Cursor / Zed): the originating pane (the `:claude` terminal) STAYS
+    /// put; the diff opens in two fresh splits to its right — `claude | baseline
+    /// | proposed`. The baseline file's on-disk content fills the left diff
+    /// buffer; the proposed text fills the editable right buffer (carrying
+    /// `new_file_path` so an Accept can save it). Built on
+    /// [`Self::register_pane_group_diff`] (slot 0 = baseline/left, slot 1 =
+    /// current/right), so hunk compute + filler rows + `do`/`dp` all reuse the
+    /// existing two-pane machinery. The transient panes + buffers are recorded
+    /// in `programmatic_diff_panes`; `finish_programmatic_diff_panes` closes them
+    /// and returns focus to the claude pane on `:diff-accept` / `:diff-reject`.
     ///
     /// On open failure (pane-group registration error) the response sender is
     /// dropped, which the producer's `await` surfaces as a reject — never a hang.
@@ -4830,19 +4890,28 @@ impl Editor {
             .map(|n| format!("{} (baseline)", n.to_string_lossy()))
             .unwrap_or_else(|| "(baseline)".to_string());
 
-        // LEFT (original / baseline) into the current active pane.
+        // D-fix.1 (Option A): keep the originating pane (the `:claude` terminal)
+        // exactly where it is — record it so teardown can refocus it — and open
+        // BOTH diff buffers in fresh splits to its right. The old behaviour
+        // clobbered the active (claude) pane with the baseline; now claude stays
+        // visible on the left while `baseline | proposed` open beside it.
+        let origin_pane = self.pane_tree.active().id;
+
+        // LEFT (original / baseline): split a new pane off the claude pane and
+        // load the baseline into it. `split_active` keeps the original (claude)
+        // leaf active and returns the NEW leaf's index, so we focus it first.
+        let left_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(left_idx);
         let left_id = self.create_inmemory_document(&original, None, Some(base_label));
         if self.activate_buffer(left_id) {
             signals.extend(self.activate_buffer_state());
         }
         let left_pane = self.pane_tree.active().id;
 
-        // Vertical split → new leaf on the RIGHT, made active.
-        let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
-        self.pane_tree.set_active(new_idx);
-
-        // RIGHT (proposed) into the new pane, carrying `new_file_path` so Accept
-        // can save it (I4.1).
+        // RIGHT (proposed): a further split to the right of the baseline,
+        // carrying `new_file_path` so Accept can save it (I4.1).
+        let right_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(right_idx);
         let right_id =
             self.create_inmemory_document(&new_contents, Some(new_file_path.clone()), None);
         if self.activate_buffer(right_id) {
@@ -4859,22 +4928,45 @@ impl Editor {
             buffer: right_id,
         };
         if let Err(msg) = self.register_pane_group_diff(vec![left_member, right_member]) {
-            // Roll the new (right) pane back so the user isn't stranded in a
-            // half-open diff, and drop `response` → the producer's await rejects.
-            self.pane_tree.close_active();
+            // Roll BOTH new panes back, refocus the claude pane so the user isn't
+            // stranded in a half-open diff, drop the throwaway buffers, and drop
+            // `response` → the producer's await rejects.
+            for pane in [right_pane, left_pane] {
+                if let Some(idx) = self.pane_tree.index_of(pane) {
+                    self.pane_tree.set_active(idx);
+                    self.pane_tree.close_active();
+                }
+            }
+            if let Some(idx) = self.pane_tree.index_of(origin_pane) {
+                self.pane_tree.set_active(idx);
+                let buf = self.pane_tree.active().buffer_id;
+                self.activate_buffer(buf);
+            }
+            self.buffers.remove(left_id);
+            self.buffers.remove(right_id);
             self.set_message(EchoLevel::Error, format!("openDiff: {msg}"));
             drop(response);
             return signals;
         }
 
         // Bind the completion oneshot to the session (primary = the right /
-        // current buffer) + record the Accept save target. The existing
-        // `tear_down_single_diff_session` fires the bound outcome on
-        // `:diff-accept` / `:diff-reject`; I4.1 honors the save target on Accept.
+        // current buffer) + record the Accept save target AND the D-fix.1 pane
+        // teardown info. The existing `tear_down_single_diff_session` fires the
+        // bound outcome on `:diff-accept` / `:diff-reject`;
+        // `finish_programmatic_diff_panes` then closes the transient panes and
+        // refocuses claude.
         if let Some(session) = self.diff_subsystem.lookup_session_for(right_id) {
             session.bind_completion(response);
             self.programmatic_diff_accept_paths
                 .insert(right_id, new_file_path);
+            self.programmatic_diff_panes.insert(
+                right_id,
+                crate::editor::ProgrammaticDiffPanes {
+                    origin_pane,
+                    diff_panes: vec![left_pane, right_pane],
+                    diff_buffers: vec![left_id, right_id],
+                },
+            );
         } else {
             // Should not happen (we just registered it); drop → reject.
             drop(response);
@@ -24978,11 +25070,14 @@ impl Editor {
         // `programmatic_diff_accept_paths`) so regular `:diff` / `:diffsplit`
         // participant deletion is unchanged.
         if let Some(session) = self.diff_subsystem.lookup_session_for(to_remove) {
-            if self
-                .programmatic_diff_accept_paths
-                .contains_key(&session.buffer_id())
-            {
+            let primary = session.buffer_id();
+            if self.programmatic_diff_accept_paths.contains_key(&primary) {
                 self.tear_down_single_diff_session(&session, None);
+                // D-fix.1: drop the pane-teardown record too. The bdelete flow
+                // closes the participant's own pane + picks a successor; we just
+                // prevent a `programmatic_diff_panes` leak (no pane choreography
+                // here — that's the `:diff-accept` / `:diff-reject` path).
+                self.programmatic_diff_panes.remove(&primary);
                 self.virtual_rows_wake.0.notify_one();
             }
         }
@@ -28727,6 +28822,10 @@ mod tests {
         // doesn't panic (production registers these at boot).
         editor.config.init_from_linkme();
         assert_eq!(editor.pane_tree.len(), 1, "starts single-pane");
+        // D-fix.1: the starting pane stands in for the `:claude` terminal pane —
+        // it must SURVIVE the diff (Option A: claude stays put).
+        let origin_pane = editor.pane_tree.active().id;
+        let origin_buf = editor.active_pane_buffer_id();
 
         let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
         editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
@@ -28737,21 +28836,32 @@ mod tests {
             response: tx,
         });
 
-        // Side-by-side: a second pane opened; the active (right) pane holds
-        // the proposed buffer, which is the session's primary.
-        assert_eq!(editor.pane_tree.len(), 2, "openDiff opens a second pane");
+        // D-fix.1 (Option A): the origin (claude) pane is preserved and the diff
+        // opens in TWO fresh panes to its right → `origin | baseline | proposed`.
+        assert_eq!(
+            editor.pane_tree.len(),
+            3,
+            "openDiff keeps the claude pane and opens baseline + proposed beside it"
+        );
+        assert_eq!(
+            editor.pane_tree.leaves()[0].id,
+            origin_pane,
+            "the origin (claude) pane survives at slot 0"
+        );
+        assert_eq!(
+            editor.pane_tree.leaves()[0].buffer_id,
+            origin_buf,
+            "the origin pane still holds the claude buffer (not clobbered by baseline)"
+        );
         let right_id = editor.active_pane_buffer_id();
         assert_eq!(
-            editor.pane_tree.leaves()[1].buffer_id,
+            editor.pane_tree.leaves()[2].buffer_id,
             right_id,
-            "proposed buffer is the RIGHT pane (split_active keeps the original \
-             leaf left, new leaf right)"
+            "proposed buffer is the RIGHTmost pane and is active"
         );
-        assert_ne!(
-            editor.pane_tree.leaves()[0].buffer_id,
-            right_id,
-            "the left pane holds the distinct baseline buffer"
-        );
+        let baseline_id = editor.pane_tree.leaves()[1].buffer_id;
+        assert_ne!(baseline_id, right_id, "the middle pane holds the baseline");
+        assert_ne!(baseline_id, origin_buf, "baseline is distinct from claude");
         let session = editor
             .diff_subsystem
             .lookup_session_for(right_id)
@@ -28771,6 +28881,30 @@ mod tests {
         );
         let outcome = rx.await.expect("completion fired before the sender dropped");
         assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
+
+        // D-fix.1: the diff closes on accept and focus returns to claude.
+        assert_eq!(
+            editor.pane_tree.len(),
+            1,
+            "both diff panes close on accept — only the claude pane remains"
+        );
+        assert_eq!(
+            editor.active_pane_buffer_id(),
+            origin_buf,
+            "focus returns to the claude pane after accept"
+        );
+        assert!(
+            editor.buffers.kind_of(baseline_id).is_none(),
+            "the throwaway baseline buffer is removed from the registry"
+        );
+        assert!(
+            editor.buffers.kind_of(right_id).is_none(),
+            "the throwaway proposed buffer is removed from the registry"
+        );
+        assert!(
+            editor.programmatic_diff_panes.is_empty(),
+            "the pane-teardown record is cleaned on accept"
+        );
 
         // FILE_SAVED contract: the accept wrote the proposed content to disk.
         assert_eq!(
@@ -28797,6 +28931,7 @@ mod tests {
 
         let mut editor = Editor::default();
         editor.config.init_from_linkme();
+        let origin_buf = editor.active_pane_buffer_id();
         let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
         editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
             old_file_path: path.clone(),
@@ -28805,11 +28940,25 @@ mod tests {
             tab_name: "demo".to_string(),
             response: tx,
         });
+        assert_eq!(editor.pane_tree.len(), 3, "claude pane + baseline + proposed");
 
         editor.do_diff_reject();
         let outcome = rx.await.expect("completion fired before the sender dropped");
         assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Reject);
         assert!(editor.diff_subsystem.is_empty());
+
+        // D-fix.1: reject also closes the diff and returns focus to claude.
+        assert_eq!(
+            editor.pane_tree.len(),
+            1,
+            "both diff panes close on reject — only the claude pane remains"
+        );
+        assert_eq!(
+            editor.active_pane_buffer_id(),
+            origin_buf,
+            "focus returns to the claude pane after reject"
+        );
+        assert!(editor.programmatic_diff_panes.is_empty());
 
         // Reject discards: the baseline file is untouched, the map is cleaned.
         assert_eq!(
@@ -28855,6 +29004,10 @@ mod tests {
         assert!(
             editor.diff_subsystem.is_empty(),
             "session torn down when its participant is closed"
+        );
+        assert!(
+            editor.programmatic_diff_panes.is_empty(),
+            "D-fix.1: the pane-teardown record is cleaned on cancel (no leak)"
         );
         assert!(
             editor.programmatic_diff_accept_paths.is_empty(),

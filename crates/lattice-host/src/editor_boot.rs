@@ -1718,6 +1718,7 @@ impl Editor {
             // accept-path map (the sender was registered as a service above).
             pending_programmatic_diff_rx: Some(programmatic_diff_rx),
             programmatic_diff_accept_paths: std::collections::HashMap::new(),
+            programmatic_diff_panes: std::collections::HashMap::new(),
             // BC.8b: `pending_configuration_rx` removed (the generic inbound
             // drain replaces the host receiver). The SHARED config tree is
             // seated below (overriding `..Editor::default()`'s fresh Arc) so the

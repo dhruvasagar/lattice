@@ -1,0 +1,68 @@
+# Lesson 7 exercises — themes, options, customize, modeline.
+# All manual_advance: these exercises run commands (colorscheme picker,
+# :set, :options, :customize, modeline layout) whose effect is on editor
+# state, not on the anchor line's text — so they cannot be validated by
+# inspecting a single anchor line after one edit.
+
+[[exercises]]
+id          = "7.1.1"
+description = "Open the live-preview theme picker:  :colorscheme"
+anchor      = "---> Run :colorscheme  with no argument to open the live-preview picker."
+success     = "manual_advance"
+hint        = ":colorscheme with no arg opens a picker; j/k preview, <Enter> keeps"
+
+[[exercises]]
+id          = "7.1.2"
+description = "Switch to a named theme:  :colorscheme gruvbox"
+anchor      = "---> Run :colorscheme gruvbox  to switch themes directly."
+success     = "manual_advance"
+hint        = ":colorscheme NAME switches instantly; :colo is the short alias"
+
+[[exercises]]
+id          = "7.2.1"
+description = "Turn on line numbers:  :set number"
+anchor      = "---> Run :set number  to turn on line numbers."
+success     = "manual_advance"
+hint        = ":set number turns the boolean on; :set nonumber turns it off (nu alias)"
+
+[[exercises]]
+id          = "7.2.2"
+description = "Set the tab width:  :set tabstop=4"
+anchor      = "---> Run :set tabstop=4  to set the tab width."
+success     = "manual_advance"
+hint        = "value options use =, no spaces; :set tabstop=4 (ts alias)"
+
+[[exercises]]
+id          = "7.3"
+description = "Browse the option registry:  :options"
+anchor      = "---> Run :options  to browse the typed option registry."
+success     = "manual_advance"
+hint        = ":options opens every option as a buffer; navigate with j/k, search with /"
+
+[[exercises]]
+id          = "7.4.1"
+description = "Open the customize browser:  :customize"
+anchor      = "---> Run :customize  to open the customize browser."
+success     = "manual_advance"
+hint        = ":customize is the type-aware option editor (emacs M-x customize)"
+
+[[exercises]]
+id          = "7.4.2"
+description = "Filter customize to the modeline group:  :customize modeline"
+anchor      = "---> Run :customize modeline  to see the modeline options."
+success     = "manual_advance"
+hint        = ":customize GROUP filters to one area, e.g. modeline / editor / lsp"
+
+[[exercises]]
+id          = "7.5.1"
+description = "Lay out the modeline right zone:  :set ui.modeline.right=…"
+anchor      = "---> Run :set ui.modeline.right=core.position,core.lang  to lay out the right zone."
+success     = "manual_advance"
+hint        = "zones take a comma-separated list of element ids: core.mode/path/position/lang"
+
+[[exercises]]
+id          = "7.5.2"
+description = "Set the modeline separator:  :set ui.modeline.separator=|"
+anchor      = "---> Run :set ui.modeline.separator=|  to separate modeline elements."
+success     = "manual_advance"
+hint        = ":set ui.modeline.separator=GLYPH draws GLYPH between zone elements"

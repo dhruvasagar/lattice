@@ -1,0 +1,82 @@
+# Lesson 6 exercises — text objects, narrowing, folding, soft-wrap.
+# All manual_advance: these exercises involve tree-sitter text-object
+# operators, narrow/widen multi-buffer state changes, fold toggles, and
+# display-line motions — none are validatable by a single anchor line's
+# text after one edit.
+
+[[exercises]]
+id          = "6.1.1"
+description = "Delete a function:  d a f"
+anchor      = "---> Place the cursor inside a function and press d a f to delete it."
+success     = "manual_advance"
+hint        = "af = a function (signature + body); daf deletes the whole thing"
+
+[[exercises]]
+id          = "6.1.2"
+description = "Delete an argument:  d a a"
+anchor      = "---> Place the cursor on an argument and press d a a to delete it."
+success     = "manual_advance"
+hint        = "aa = an argument; daa removes the parameter and its comma"
+
+[[exercises]]
+id          = "6.1.3"
+description = "Select a class:  v a c"
+anchor      = "---> Place the cursor in a class and press v a c to select it."
+success     = "manual_advance"
+hint        = "ac = a class/struct/enum/trait/impl; vac selects it in Visual mode"
+
+[[exercises]]
+id          = "6.2.1"
+description = "Narrow to a function:  z n a f"
+anchor      = "---> Place the cursor in a function and press z n a f to narrow to it."
+success     = "manual_advance"
+hint        = "zn is the narrow operator; znaf = narrow to the af text object"
+
+[[exercises]]
+id          = "6.2.2"
+description = "Restore the buffer:  :widen"
+anchor      = "---> Run :widen to restore the full buffer."
+success     = "manual_advance"
+hint        = ":widen closes the narrow view and restores the full source"
+
+[[exercises]]
+id          = "6.3.1"
+description = "Toggle a fold:  z a"
+anchor      = "---> Press z a to toggle the fold under the cursor."
+success     = "manual_advance"
+hint        = "za toggles open/closed; zo opens, zc closes the fold under the cursor"
+
+[[exercises]]
+id          = "6.3.2"
+description = "Close all, then open all folds:  z M  /  z R"
+anchor      = "---> Press z M to close all folds, then z R to open them all."
+success     = "manual_advance"
+hint        = "zM closes every fold; zR opens every fold in the buffer"
+
+[[exercises]]
+id          = "6.3.3"
+description = "Navigate folds:  z j  /  z k"
+anchor      = "---> Press z j to jump to the next fold start."
+success     = "manual_advance"
+hint        = "zj jumps to the next fold start; zk jumps to the previous one"
+
+[[exercises]]
+id          = "6.4.1"
+description = "Enable soft-wrap:  :set wrap"
+anchor      = "---> Run :set wrap to wrap long lines visually."
+success     = "manual_advance"
+hint        = ":set wrap wraps long lines; :set nowrap turns it back off"
+
+[[exercises]]
+id          = "6.4.2"
+description = "Move by display line:  g j"
+anchor      = "---> Press g j to move down one display line."
+success     = "manual_advance"
+hint        = "gj/gk move by display line; j/k still move by buffer line"
+
+[[exercises]]
+id          = "6.4.3"
+description = "Disable soft-wrap:  :set nowrap"
+anchor      = "---> Run :set nowrap to turn soft-wrap off again."
+success     = "manual_advance"
+hint        = ":set nowrap restores horizontal scrolling for long lines"

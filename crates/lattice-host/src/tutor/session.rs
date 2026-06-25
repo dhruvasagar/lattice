@@ -291,7 +291,7 @@ impl lattice_mode::BufferLocal for TutorSession {
 mod tests {
     use super::*;
 
-    const TOTAL: u32 = 5;
+    const TOTAL: u32 = 7;
 
     // T.2: verify that all shipped sidecar files parse correctly and
     // that every anchor text is present in the matching lesson file.
@@ -317,6 +317,8 @@ mod tests {
     sidecar_roundtrip!(all_anchors_found_lesson3, 3);
     sidecar_roundtrip!(all_anchors_found_lesson4, 4);
     sidecar_roundtrip!(all_anchors_found_lesson5, 5);
+    sidecar_roundtrip!(all_anchors_found_lesson6, 6);
+    sidecar_roundtrip!(all_anchors_found_lesson7, 7);
 
     fn lesson_text() -> &'static str {
         "Header line\n\

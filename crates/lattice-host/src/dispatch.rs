@@ -19584,11 +19584,19 @@ impl Editor {
                 include_str!("../../../docs/user/tutor/lesson-5.md"),
                 include_str!("../../../docs/user/tutor/lesson-5.exercises.toml"),
             ),
+            6 => (
+                include_str!("../../../docs/user/tutor/lesson-6.md"),
+                include_str!("../../../docs/user/tutor/lesson-6.exercises.toml"),
+            ),
+            7 => (
+                include_str!("../../../docs/user/tutor/lesson-7.md"),
+                include_str!("../../../docs/user/tutor/lesson-7.exercises.toml"),
+            ),
             n => {
                 self.set_message(
                     EchoLevel::Error,
                     format!(
-                        "lesson {n} doesn't exist (lessons 1-5 available); \
+                        "lesson {n} doesn't exist (lessons 1-7 available); \
                          contributions welcome"
                     ),
                 );
@@ -19616,7 +19624,7 @@ impl Editor {
         // on the buffer that was just opened (now self.document_buffer_id).
         let buffer_id = self.document_buffer_id;
         let mut session =
-            match crate::tutor::TutorSession::load(lesson_num, 5, lesson_text, exercises_toml) {
+            match crate::tutor::TutorSession::load(lesson_num, 7, lesson_text, exercises_toml) {
                 Ok(s) => s,
                 Err(e) => {
                     self.set_message(

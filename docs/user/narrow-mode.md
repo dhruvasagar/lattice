@@ -63,8 +63,11 @@ and `+N` / `-N` offsets.
 The view's header row shows what you're looking at:
 
 ```
-[narrow] <name> <path>:<start>–<end>
+[narrow] <label> L<start>–<end>
 ```
+
+`<label>` is the file or symbol name when one is known (otherwise it's
+omitted); `<start>`/`<end>` are 1-based source line numbers.
 
 Edits land in the view and propagate to the source buffer
 asynchronously — nothing blocks while you type. `:w` **saves the source

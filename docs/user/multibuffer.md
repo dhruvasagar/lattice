@@ -13,10 +13,10 @@ features that look different on the surface but are the same
 mechanism underneath.
 
 > **Status:** the multibuffer substrate — excerpts, headers, the
-> excerpt motions, context expand/contract, and edit-propagation —
-> is shipped (M-series). Excerpt / file folding (`za` over an
-> excerpt or a whole file) and the richer headerline status line are
-> tracked but not all landed yet; this doc marks those inline.
+> excerpt motions, context expand/contract, edit-propagation, and
+> excerpt / file folding (`za` over an excerpt or a whole file) — is
+> shipped (M-series, through M.8). The richer headerline status line
+> is tracked but not all landed yet; this doc marks that inline.
 
 ---
 
@@ -130,11 +130,12 @@ contract that would invert the range is a no-op.
   through normal `:w`. There is no separate "multibuffer mode" you
   have to learn — the vim grammar applies unchanged. See
   [buffers.md](buffers.md).
-- **Folding** *(tracked)* — the `z*` vocabulary will fold an excerpt
-  to its header row, and fold a whole file's excerpts to a single
-  summary row, so a 50-file view collapses to a 50-row outline. This
-  rides the standard fold commands (see [folding.md](folding.md));
-  the excerpt/file fold providers are not all landed yet.
+- **Folding** — the `z*` vocabulary folds an excerpt to its header
+  row, and folds a whole file's excerpts to a single summary row, so a
+  50-file view collapses to a 50-row outline. This rides the standard
+  fold commands (see [folding.md](folding.md)); the per-excerpt (M.7)
+  and per-file (M.8) fold providers register automatically when a
+  multibuffer is active.
 - **Async status** — providers that build a view in the background
   (search) report progress on the view's **headerline** (a header
   row at the top), not in the status line or as a notification.

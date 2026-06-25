@@ -21,10 +21,11 @@ vim's familiar `vimdiff` vocabulary (`]c` / `[c`, `do` / `dp`).
 
 | Command / keystroke         | Meaning                                                                 |
 |-----------------------------|-------------------------------------------------------------------------|
+| `:diff`                     | Diff the active document against its **on-disk** content (inline session) |
 | `:diffthis`                 | Stage the active pane for a diff; run it again in another pane to pair them |
-| `:diffsplit <file>`         | Open `<file>` in a vertical split and diff it against the current buffer |
-| `:diffsplit <local> <remote>` | Three-way: open `<local>` and `<remote>` as splits against the base    |
-| `:diffoff`                  | End the active diff session (tear down the pairing)                     |
+| `:diffsplit <base>`         | Open `<base>` in a vertical split and diff it against the current buffer |
+| `:diffsplit <base> <remote>` | Three-way: open `<base>` (common ancestor) and `<remote>` as splits; the current pane is *local* |
+| `:diffoff` / `:diffoff!`    | End the active diff session (tear down the pairing); `!` forces         |
 | `]c` / `[c`                 | Jump to the next / previous changed **hunk** (wraps)                    |
 | `do`                        | **Diff get** — pull the hunk under the cursor from the other side       |
 | `dp`                        | **Diff put** — push the hunk under the cursor to the other side         |
@@ -50,9 +51,14 @@ Two ways in:
 2. **Diff against a file.** `:diffsplit path/to/other.rs` opens that
    file in a vertical split and starts a two-way diff immediately.
 
-For a three-way merge, `:diffsplit <local> <remote>` opens both
-alongside the current buffer (the common base), in vim's
-`vimdiff a b c` ordering.
+3. **Diff against disk.** `:diff` (no arguments) starts an inline diff
+   of the active document against its own on-disk content — the fast
+   way to see your unsaved edits as hunks without opening a second
+   pane.
+
+For a three-way merge, `:diffsplit <base> <remote>` opens the common
+base and the remote alongside the current buffer (which becomes the
+editable *local* side), in vim's `vimdiff a b c` ordering.
 
 ## The sign column
 

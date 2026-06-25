@@ -49,7 +49,9 @@ Center is sacrificed first, then Right, then Left.
 | `core.lang`     | detected language                      | Right        |
 
 Modes contribute their own ids — `lsp` (server / progress badge),
-`diff` (`+N ~M` hunk counts) — and plugins will register more. Any
+`diff` (`+N ~M` hunk counts), `claude-code` (the IDE server status on
+the agent terminal: `claude :PORT` + connection count, see
+[claude-code.md](claude-code.md)) — and plugins will register more. Any
 registered id can be placed in any zone.
 
 ## The modal tag and the echo

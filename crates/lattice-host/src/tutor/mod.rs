@@ -1,5 +1,6 @@
 //! Tutor subsystem — session data, minor mode, headerline, and score persistence.
 
+pub mod engine;
 pub mod mode;
 pub mod scores;
 pub mod session;

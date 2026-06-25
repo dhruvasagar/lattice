@@ -26,6 +26,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // `apply` drives the handle directly) + `claude-code-mode`.
     commands::register_claude_code_ex_commands(boot.commands_mut(), handle.clone());
     modes::register_claude_code_modes(boot.modes_mut());
+    // I7 note: the `claude-code` modeline descriptor is registered lazily in
+    // `claude-code-mode::on_activate` (idempotent, last-write-wins), NOT here —
+    // this `install` runs in Phase B before the host registers the
+    // `ModelineServiceHandle` service, so the service isn't readable yet. By the
+    // time the mode activates (runtime) it is.
 
     // I2 read tools: the generic buffer-store (trait accessor) + the LSP
     // diagnostics handle (reached via the generic service lookup, so this crate

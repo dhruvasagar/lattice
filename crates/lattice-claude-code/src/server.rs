@@ -13,7 +13,10 @@
 //! wait-free [`ServerState`] snapshot.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use tokio::sync::Notify;
 
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
@@ -98,6 +101,12 @@ pub struct ClaudeCodeServerHandle {
     /// WS writer. A dropped/lagged receiver is pruned by the channel itself —
     /// no manual connection registry.
     notify_tx: broadcast::Sender<String>,
+    /// I7: the connection counter + status wake (drives the modeline segment).
+    signals: StatusSignals,
+    /// I7: buffers showing the `claude-code` status segment (the agent
+    /// terminals). `claude-code-mode`'s `on_activate` registers its buffer; the
+    /// Guard unregisters on deactivate. The status publisher reads this set.
+    ide_buffers: crate::status::IdeBuffers,
 }
 
 impl ClaudeCodeServerHandle {
@@ -140,6 +149,7 @@ impl ClaudeCodeServerHandle {
             running: true,
             port: Some(port),
         }));
+        self.signals.fire(); // repaint the status segment (running + port)
         if self
             .cmd_tx
             .send(ServerCmd::Start { listener, token })
@@ -177,10 +187,33 @@ impl ClaudeCodeServerHandle {
         self.notify_tx.clone()
     }
 
-    /// I7: number of currently-connected agents (subscribed broadcast
-    /// receivers). Surfaced in the `claude-code-mode` status.
+    /// I7: number of currently-connected agents. Surfaced in the
+    /// `claude-code-mode` status. Counted explicitly (a `ConnGuard` per
+    /// connection) so it is exact the instant a connection ends, rather than
+    /// lagging the broadcast receiver drop.
     pub fn connection_count(&self) -> usize {
-        self.notify_tx.receiver_count()
+        self.signals.conn_count.load(Ordering::Relaxed)
+    }
+
+    /// I7: register `buf` (an agent terminal) to show the `claude-code` status
+    /// segment, and wake the publisher to paint it immediately. Called from
+    /// `claude-code-mode`'s `on_activate`.
+    pub fn register_status_buffer(&self, buf: lattice_core::BufferId) {
+        self.ide_buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(buf);
+        self.signals.fire();
+    }
+
+    /// I7: stop showing the status on `buf` (the mode's Guard `Drop` on
+    /// deactivate). The publisher clears the element on its next wake.
+    pub fn unregister_status_buffer(&self, buf: lattice_core::BufferId) {
+        self.ide_buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buf);
+        self.signals.fire();
     }
 
     /// BC.3b: the crate-owned read cache. `install()` clones it to build the
@@ -254,12 +287,27 @@ pub fn spawn(
     // selection_changed / didChangeActiveEditor frames. Crate-owned (reads the
     // same generic event bus + read cache the read tools use).
     crate::notifications::spawn_notifier(&event_bus, notify_tx.clone(), cache.clone(), rt);
+    // I7: the modeline status segment. The publisher republishes running/port +
+    // conn-count to each registered IDE buffer when the wake fires (start/stop,
+    // a connection open/close, a buffer register/unregister).
+    let signals = StatusSignals::new();
+    let ide_buffers: crate::status::IdeBuffers =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    crate::status::spawn_status_publisher(
+        event_bus.clone(),
+        state.clone(),
+        signals.conn_count.clone(),
+        ide_buffers.clone(),
+        signals.changed.clone(),
+        rt,
+    );
     rt.spawn(supervisor_main(
         config.clone(),
         cmd_rx,
         state.clone(),
         dispatch_ctx.clone(),
         notify_tx.clone(),
+        signals.clone(),
     ));
     ClaudeCodeServerHandle {
         cmd_tx,
@@ -268,6 +316,47 @@ pub fn spawn(
         workspace_folders: config.workspace_folders,
         dispatch_ctx,
         notify_tx,
+        signals,
+        ide_buffers,
+    }
+}
+
+/// I7: the live connection counter + the "status changed" wake, shared between
+/// the accept path (which bumps the count), the handle (start/stop + buffer
+/// (un)register fire the wake), and the status publisher (reads both).
+#[derive(Clone)]
+struct StatusSignals {
+    conn_count: Arc<AtomicUsize>,
+    changed: Arc<Notify>,
+}
+
+impl StatusSignals {
+    fn new() -> Self {
+        Self {
+            conn_count: Arc::new(AtomicUsize::new(0)),
+            changed: Arc::new(Notify::new()),
+        }
+    }
+
+    /// Wake the status publisher. `notify_one` (not `notify_waiters`) so a fire
+    /// that lands *before* the single publisher task parks on `notified()`
+    /// stores a permit and isn't lost — the publisher then wakes immediately on
+    /// its next await. There is exactly one publisher task, so one permit is
+    /// enough; bursts coalesce (each wake re-reads the live state).
+    fn fire(&self) {
+        self.changed.notify_one();
+    }
+}
+
+/// Decrements the live connection count + fires the status wake when a
+/// connection task ends. `Drop` runs on a normal end, an error, or a panic, so
+/// the count can never leak high. Held by `serve_connection`.
+struct ConnGuard(StatusSignals);
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.conn_count.fetch_sub(1, Ordering::SeqCst);
+        self.0.fire();
     }
 }
 
@@ -296,6 +385,7 @@ async fn supervisor_main(
     state: Arc<ArcSwap<ServerState>>,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     notify_tx: broadcast::Sender<String>,
+    signals: StatusSignals,
 ) {
     let mut running: Option<RunningServer> = None;
     while let Some(cmd) = cmd_rx.recv().await {
@@ -310,6 +400,7 @@ async fn supervisor_main(
                     token,
                     dispatch_ctx.clone(),
                     notify_tx.clone(),
+                    signals.clone(),
                 ) {
                     Ok(server) => {
                         // `start()` already published running+port optimistically.
@@ -327,6 +418,7 @@ async fn supervisor_main(
                 if running.take().is_some() {
                     // RunningServer::drop aborts accept + unlinks lockfile.
                     state.store(Arc::new(ServerState::default()));
+                    signals.fire(); // hide the status segment (server stopped)
                     tracing::info!("claude-code IDE server stopped");
                 }
             }
@@ -346,6 +438,7 @@ fn start_accepting(
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     notify_tx: broadcast::Sender<String>,
+    signals: StatusSignals,
 ) -> Result<RunningServer> {
     let port = std_listener.local_addr()?.port();
     let lockfile = Lockfile::write(
@@ -372,6 +465,7 @@ fn start_accepting(
         dispatch_ctx,
         notify_tx,
         shutdown_tx.clone(),
+        signals,
     ));
     Ok(RunningServer {
         _lockfile: lockfile,
@@ -386,20 +480,27 @@ async fn accept_loop(
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     notify_tx: broadcast::Sender<String>,
     shutdown_tx: broadcast::Sender<()>,
+    signals: StatusSignals,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 let token = token.clone();
                 let ctx = dispatch_ctx.clone();
-                // I6: each connection subscribes its own broadcast receiver;
-                // `receiver_count()` on the sender is the live connection count.
+                // I6: each connection subscribes its own broadcast receiver.
                 let notify_rx = notify_tx.subscribe();
                 // I7: and a shutdown receiver — closed when the server stops.
                 let shutdown_rx = shutdown_tx.subscribe();
+                // I7: bump the live connection count + wake the status segment;
+                // the `ConnGuard` decrements + wakes again when this connection
+                // ends (drop runs on a normal end, error, or panic).
+                signals.conn_count.fetch_add(1, Ordering::SeqCst);
+                signals.fire();
+                let conn_guard = ConnGuard(signals.clone());
                 tokio::spawn(async move {
                     if let Err(e) =
-                        serve_connection(stream, token, ctx, notify_rx, shutdown_rx).await
+                        serve_connection(stream, token, ctx, notify_rx, shutdown_rx, conn_guard)
+                            .await
                     {
                         tracing::debug!(error = %e, "claude-code connection ended with error");
                     }
@@ -420,6 +521,9 @@ async fn serve_connection(
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     mut notify_rx: broadcast::Receiver<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    // I7: held for the connection's lifetime; its `Drop` decrements the live
+    // connection count + wakes the status segment when this connection ends.
+    _conn_guard: ConnGuard,
 ) -> Result<()> {
     let ws = transport::accept(stream, &token).await?;
     let (mut write, mut read) = ws.split();

@@ -39,6 +39,9 @@ pub mod protocol;
 pub mod reads;
 pub mod server;
 pub mod snapshot;
+// I7: the `claude-code` modeline status segment (running/port/conns) shown on
+// the agent terminal's modeline. Mode-owned (registered by claude-code-mode).
+pub mod status;
 pub mod transport;
 pub mod writes;
 

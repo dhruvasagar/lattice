@@ -215,12 +215,19 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
     `wrong_token_is_rejected`, malformed-frame-no-panic (dispatch unit test),
     idempotent-restart (server unit test). The status DATA is exposed via
     `handle.snapshot()` (running/port) + `handle.connection_count()`.
-  - **Deferred (🗒):** the modeline **status segment** (running/port/conns shown
-    on the IDE buffer's modeline). Needs a per-IDE-buffer `ModelineElementUpdate`
-    publisher tied to server-state + conn-count changes (+ likely a themed
-    `ModelineRole`), following the `lattice-lsp::modeline` pattern. Deferred
-    because the render can't be visually validated headless (TUI not runnable
-    here); the status data is already queryable, so this is UI polish.
+  - **Status segment ✅ (`status.rs`):** the `claude-code` modeline element on the
+    agent terminal — `claude :PORT [· N conns]` when running, hidden when
+    stopped. Mode-owned: `claude-code-mode::on_activate` registers the descriptor
+    (idempotent; here not at install — the `ModelineServiceHandle` isn't
+    registered until after the Phase-B install list) + its buffer, the Guard's
+    Drop unregisters. An off-thread publisher republishes per-buffer **only on
+    change** via the generic ML.3 bus path (`publish_typed ModelineElementUpdate`,
+    role `modeline.mode_item`) — same as `lattice-lsp::modeline`, so no renderer
+    change. Live conn-count via a per-connection `ConnGuard` (Drop decrements +
+    wakes); `fire()` uses `notify_one` (permit-stored, no lost wake). Tests:
+    `status_content` (stopped/running/conn-count) + a publisher-pushes-on-register
+    integration test. **Render not visually verified headless** — the only thing
+    a live-CLI / GUI session would confirm.
 
 ## Risks / decisions (carry into the slices)
 
@@ -236,15 +243,14 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 ✅ · I6 ✅ · I7 ✅* (status segment 🗒)
+I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 ✅ · I6 ✅ · I7 ✅
 
-\* I7 hardening + clean teardown (incl. conn-close-on-stop) done + tested; the
-modeline status *segment* is deferred (UI polish; status data exposed). The
-whole I-series is now functionally complete end-to-end: `:claude` launches the
+The whole I-series is functionally complete end-to-end: `:claude` launches the
 agent, which attaches and drives the editor through the read/write/openDiff
-tools and receives selection/at-mention notifications. Remaining open items are
-all PROVISIONAL wire-shape validation against a live `claude` CLI + the deferred
-status segment.
+tools, receives selection/at-mention notifications, and the agent terminal shows
+a `claude-code` modeline status segment (running/port/conns). The only remaining
+open item is PROVISIONAL wire-shape validation against a live `claude` CLI (tool
+replies + notification payloads) — plus the optional `--ide` CLI flag.
 
 **I5 landed (2026-06-25):** I5.0 `SpawnConfig.env` + the env-reaches-child
 integration test; I5.1a server pre-bind (`start() -> Option<u16>`, sync

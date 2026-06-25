@@ -1,5 +1,5 @@
 * Features
-- [ ] diagnostics under cursor
+- [X] diagnostics under cursor
 - [X] Terminal
 - [X] ligatures
 - [X] variable size fonts in GUI, first consumer markdown
@@ -12,7 +12,7 @@
 - [ ] ! filter operator
 - [ ] :.! shell execution and replace range
 - [ ] enhanced mini-buffer
-- [ ] enhanced, configurable mode-line
+- [X] enhanced, configurable mode-line
 - [ ] language support
 - [ ] transient like menu
 - [ ] compilation-mode
@@ -51,12 +51,12 @@
 - [ ] Spell Check
 - [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
 - [ ] <C-=>, <C--> for zooming (font-size) in GPUI
-- [ ] Implement basic emacs style <C-x> bindings
-  - [ ] <C-x>b :buffer
-  - [ ] <C-x><C-s> for :write
-  - [ ] <C-x><C-f> file :files
-  - [ ] <C-x>0 :close
-  - [ ] <C-x>1 :only
+- [X] Implement basic emacs style <C-x> bindings
+  - [X] <C-x>b :buffer
+  - [X] <C-x><C-s> for :write
+  - [X] <C-x><C-f> file :files
+  - [X] <C-x>0 :close
+  - [X] <C-x>1 :only
 
 * Plugins
 - [ ] plugin manager

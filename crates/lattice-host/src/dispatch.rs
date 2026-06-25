@@ -4839,6 +4839,62 @@ impl Editor {
         id
     }
 
+    /// I4 (openDiff) D-fix.2: give an in-memory diff buffer the same
+    /// tree-sitter syntax setup a real file open gets, so BOTH diff panes
+    /// highlight. Mirrors `do_edit`'s syntax install: detect the language,
+    /// build a `Syntax` for it, run the initial synchronous `parse_at`, and
+    /// wrap it in a `SyntaxHandle` whose reparse callback wakes the render
+    /// loop. The handle is stashed into the buffer's `DocumentSyntax` local
+    /// (overriding the empty one `create_inmemory_document` seeded) so
+    /// `activate_buffer` promotes it into `self.syntax` for the active pane and
+    /// `document_syntax_for` reads it for the inactive pane.
+    ///
+    /// The language is detected from `language_path` — the path the *content*
+    /// came from — NOT the buffer's own registry path, because the baseline
+    /// buffer deliberately has no path (an in-place edit would collide with the
+    /// proposed buffer's path), yet still needs the file's language.
+    ///
+    /// Best-effort: a language with no registered grammar (or a bare
+    /// `LangRegistry`) yields `DocumentSyntax(None)` — no highlighting, no
+    /// panic, exactly as a plain-text open behaves.
+    fn install_inmemory_syntax(
+        &mut self,
+        id: BufferId,
+        text: &str,
+        language_path: &std::path::Path,
+    ) {
+        let lang = lattice_syntax::Lang::detect_from_path(Some(language_path));
+        let version = self
+            .buffers
+            .document_handle(id)
+            .map(|h| h.text_version())
+            .unwrap_or(0);
+        let handle: Option<lattice_syntax::SyntaxHandle> =
+            match lattice_syntax::Syntax::for_language_with_registry(
+                lang,
+                self.lang_registry.clone(),
+            ) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(text, version);
+                    let al = self.async_landed.clone();
+                    let eb = self.event_bus.clone();
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        lattice_runtime::runtime::lsp_runtime().handle(),
+                        Some(std::sync::Arc::new(move || {
+                            al.notify_one();
+                            eb.publish_typed(crate::events::SyntaxReparsed);
+                        })),
+                    ))
+                }
+                _ => None,
+            };
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(handle));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+    }
+
     /// I4 (Claude Code IDE peer, `openDiff`): open an interactive side-by-side
     /// diff for one [`lattice_diff::ProgrammaticDiffRequest`] and bind its
     /// completion oneshot to the resulting session, so the producer (the IDE
@@ -4903,6 +4959,10 @@ impl Editor {
         let left_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
         self.pane_tree.set_active(left_idx);
         let left_id = self.create_inmemory_document(&original, None, Some(base_label));
+        // D-fix.2: highlight the baseline using the OLD file's language (the
+        // baseline buffer has no registry path, so detect from `old_file_path`).
+        // Seed BEFORE activation so `activate_buffer` promotes the handle.
+        self.install_inmemory_syntax(left_id, &original, &old_file_path);
         if self.activate_buffer(left_id) {
             signals.extend(self.activate_buffer_state());
         }
@@ -4914,6 +4974,8 @@ impl Editor {
         self.pane_tree.set_active(right_idx);
         let right_id =
             self.create_inmemory_document(&new_contents, Some(new_file_path.clone()), None);
+        // D-fix.2: highlight the proposed side using the new file's language.
+        self.install_inmemory_syntax(right_id, &new_contents, &new_file_path);
         if self.activate_buffer(right_id) {
             signals.extend(self.activate_buffer_state());
         }
@@ -28916,6 +28978,47 @@ mod tests {
         assert!(
             editor.programmatic_diff_accept_paths.is_empty(),
             "the accept save target is removed on teardown"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// D-fix.2: BOTH diff panes (baseline + proposed) get a tree-sitter syntax
+    /// handle for the file's language, so each highlights — not just the active
+    /// one. Baseline highlights via its buffer-local (it's the inactive pane).
+    #[tokio::test]
+    async fn open_programmatic_diff_highlights_both_panes() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-i4-open-diff-syntax.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        // The derived `Editor::default()` carries an empty `lang_registry`;
+        // install the standard one (as boot does) so the Rust grammar resolves
+        // for `.rs`. Without this, both handles would be None (plain-text).
+        editor.lang_registry =
+            lattice_syntax::LangRegistry::standard().expect("standard lang registry");
+
+        let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "fn main() { todo!() }\n".to_string(),
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        let proposed_id = editor.active_pane_buffer_id();
+        let baseline_id = editor.pane_tree.leaves()[1].buffer_id;
+        assert!(
+            editor.document_syntax_for(proposed_id).is_some(),
+            "the active (proposed) pane has a syntax handle"
+        );
+        assert!(
+            editor.document_syntax_for(baseline_id).is_some(),
+            "the inactive (baseline) pane ALSO highlights (via its buffer-local)"
         );
 
         let _ = std::fs::remove_file(&path);

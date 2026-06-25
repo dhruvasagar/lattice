@@ -240,6 +240,26 @@ pub enum Effect {
         column: Option<Utf16Pos>,
         force: bool,
     },
+    /// I5.1 (Claude Code IDE peer): spawn a child process in a new
+    /// `BufferKind::Terminal` buffer, optionally injecting extra environment
+    /// and activating a minor mode on the new buffer. Host-applied (the open is
+    /// irreducibly `&mut Editor`): the host calls `do_terminal_spawn` with
+    /// `cmd_line` + `env`, then activates `activate_minor` (a minor mode, by its
+    /// mode-id name) on the spawned buffer when set. `:terminal` reaches the
+    /// same host path via the host-side `AppEffect::TerminalSpawn`; this grammar
+    /// variant lets crate-owned ex-commands — the IDE peer's `:claude`, which
+    /// must inject `CLAUDE_CODE_SSE_PORT` + `ENABLE_IDE_INTEGRATION` — request
+    /// the spawn through the Effect vocabulary (the host boundary) instead of a
+    /// bespoke channel.
+    SpawnTerminal {
+        /// Command line (`program [args...]`); `None` spawns `$SHELL`.
+        cmd_line: Option<String>,
+        /// Extra environment injected on top of the inherited parent env.
+        env: Vec<(String, String)>,
+        /// Minor mode to activate on the spawned buffer, by mode-id name (e.g.
+        /// `"claude-code-mode"`); `None` leaves the buffer mode-bare.
+        activate_minor: Option<String>,
+    },
     /// `:set <option>` -- the host parses the option spec; the closure
     /// just hands the raw text through.
     SetOption {

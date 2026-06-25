@@ -1064,6 +1064,8 @@ impl GpuiApp {
             // `Editor::handle_effect` (TUI/GPUI parity); the peer no-ops them.
             | Effect::OpenExternalUri { .. }
             | Effect::OpenBufferAtColumn { .. }
+            // I5.1: terminal spawn is host-applied; the peer no-ops it.
+            | Effect::SpawnTerminal { .. }
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write).
             | Effect::SaveBuffer { .. }
             | Effect::RecordJump => {}

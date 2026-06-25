@@ -222,4 +222,18 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 🗒 · I6 🗒 · I7 🗒
+I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 ✅ · I6 🗒 · I7 🗒
+
+**I5 landed (2026-06-25):** I5.0 `SpawnConfig.env` + the env-reaches-child
+integration test; I5.1a server pre-bind (`start() -> Option<u16>`, sync
+`std::net::TcpListener` bind handed to the supervisor via `from_std`,
+idempotent); I5.1b `Effect::SpawnTerminal { cmd_line, env, activate_minor }`
+in the grammar Effect vocab, host-applied in the effect handler
+(`do_terminal_spawn` gained an `env` param; `activate_mode_by_id` for the minor
+mode) + the TUI×3 / GPUI×1 no-op parity arms; I5.1c the `:claude` ex-command
+(start → port → emit `SpawnTerminal` with `CLAUDE_CODE_SSE_PORT` +
+`ENABLE_IDE_INTEGRATION` + `activate_minor:"claude-code-mode"`); I5.2 tests
+(`:claude` emits the right effect + starts the server; `start()` returns a port
++ idempotent). Green across grammar/host/terminal/claude-code + workspace +
+GPUI build. **Not done (optional / deferred):** the `--ide` CLI flag; richer
+running/port/conns status is I7.

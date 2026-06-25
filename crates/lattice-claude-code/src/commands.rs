@@ -69,6 +69,45 @@ pub fn register_claude_code_ex_commands(
         },
     );
 
+    // I5.1: `:claude` — launch the agent CLI wired to this editor. Starts the
+    // IDE server (pre-bind → port), then emits `Effect::SpawnTerminal` so the
+    // host spawns `claude` in a terminal buffer with `CLAUDE_CODE_SSE_PORT` +
+    // `ENABLE_IDE_INTEGRATION` injected (so the agent connects back) and
+    // `claude-code-mode` activated. Mode-ownership-compliant: the binding +
+    // the body both live here; the host action is requested via the Effect
+    // vocabulary (the host boundary), not a bespoke channel.
+    let claude_server = server.clone();
+    registry.register_ex_command(
+        "claude",
+        "Launch the `claude` agent CLI in a terminal buffer wired to this \
+         editor's IDE server: starts the server, injects CLAUDE_CODE_SSE_PORT + \
+         ENABLE_IDE_INTEGRATION, and activates claude-code-mode on the terminal.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(move |_ctx| {
+                let Some(port) = claude_server.start() else {
+                    return Ok(Effect::Echo {
+                        level: EchoLevel::Error,
+                        text: "claude: failed to start the IDE server".to_string(),
+                    });
+                };
+                Ok(Effect::SpawnTerminal {
+                    cmd_line: Some("claude".to_string()),
+                    env: vec![
+                        ("CLAUDE_CODE_SSE_PORT".to_string(), port.to_string()),
+                        ("ENABLE_IDE_INTEGRATION".to_string(), "true".to_string()),
+                    ],
+                    activate_minor: Some("claude-code-mode".to_string()),
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let stop_server = server;
     registry.register_ex_command(
         "claude-code-stop",
@@ -89,4 +128,76 @@ pub fn register_claude_code_ex_commands(
             surface_form: SurfaceForm::Keyword,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::server::{self, ServerConfig};
+    use lattice_grammar::registry::ExCommandContext;
+    use lattice_grammar::{CancellationToken, Count, Register};
+    use lattice_runtime::EventBus;
+    use std::sync::Arc;
+
+    /// The `:claude` apply ignores its context, so any valid one works.
+    fn empty_ctx() -> ExCommandContext {
+        ExCommandContext {
+            bang: false,
+            args: Args::None,
+            range: None,
+            register: Register::default(),
+            count: Count::default(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    /// I5.1: `:claude` starts the IDE server and emits an `Effect::SpawnTerminal`
+    /// that launches `claude` with `CLAUDE_CODE_SSE_PORT` (the bound port) +
+    /// `ENABLE_IDE_INTEGRATION=true` injected and `claude-code-mode` activated.
+    #[tokio::test]
+    async fn claude_command_starts_server_and_emits_spawn_terminal() {
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+
+        let id = registry.id_by_name("claude").expect("`:claude` is registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        let effect = (spec.apply)(&empty_ctx()).expect("apply ok");
+
+        match effect {
+            Effect::SpawnTerminal {
+                cmd_line,
+                env,
+                activate_minor,
+            } => {
+                assert_eq!(cmd_line.as_deref(), Some("claude"));
+                let port = env
+                    .iter()
+                    .find(|(k, _)| k == "CLAUDE_CODE_SSE_PORT")
+                    .expect("CLAUDE_CODE_SSE_PORT injected");
+                assert!(port.1.parse::<u16>().is_ok(), "port is numeric: {}", port.1);
+                assert!(
+                    env.iter()
+                        .any(|(k, v)| k == "ENABLE_IDE_INTEGRATION" && v == "true"),
+                    "ENABLE_IDE_INTEGRATION=true injected"
+                );
+                assert_eq!(activate_minor.as_deref(), Some("claude-code-mode"));
+            }
+            other => panic!("expected SpawnTerminal, got {other:?}"),
+        }
+
+        // `:claude` started the server: it's now running on the bound port.
+        let snap = handle.snapshot();
+        assert!(snap.running, "server running after :claude");
+        assert!(snap.port.is_some(), "bound port recorded");
+        handle.stop();
+    }
 }

@@ -939,6 +939,8 @@ impl App {
             // forwarded); the peer no-ops them here.
             | Effect::OpenExternalUri { .. }
             | Effect::OpenBufferAtColumn { .. }
+            // I5.1: terminal spawn is host-applied; the peer no-ops it.
+            | Effect::SpawnTerminal { .. }
             // CR.0: host's `handle_effect` translates `ApplyEdit` into
             // `Action::ApplyEdit` on `out.next_actions` (drained by the
             // dispatch wrapper); nothing renderer-coupled here.
@@ -1203,6 +1205,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         // non-yanking, same as OpenBuffer / OpenBufferAt.
         | Effect::OpenExternalUri { .. }
         | Effect::OpenBufferAtColumn { .. }
+        // I5.1: terminal spawn opens a new buffer — non-mutating, non-yanking.
+        | Effect::SpawnTerminal { .. }
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
@@ -1311,6 +1315,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         // non-yanking, same as OpenBuffer / OpenBufferAt.
         | Effect::OpenExternalUri { .. }
         | Effect::OpenBufferAtColumn { .. }
+        // I5.1: terminal spawn opens a new buffer — non-mutating, non-yanking.
+        | Effect::SpawnTerminal { .. }
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }

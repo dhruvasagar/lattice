@@ -2131,7 +2131,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::GoToTab(n) => editor.do_goto_tab(n),
         Action::NewTab => editor.do_new_tab(),
         Action::NewTabAt(path) => editor.do_new_tab_at(std::path::PathBuf::from(path)),
-        Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd),
+        Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd, Vec::new()),
         Action::TerminalInput(bytes) => editor.do_terminal_input(&bytes),
         Action::EnterTerminalInsert => editor.do_enter_terminal_insert(),
         Action::ExitTerminalInsert => editor.do_exit_terminal_insert(),
@@ -3260,6 +3260,24 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // open line (the conversion the handler couldn't do pre-open).
             if let Some(lattice_grammar::Utf16Pos { line, col }) = column {
                 editor.move_cursor_to_utf16_column(line, col);
+            }
+        }
+        // I5.1 (Claude Code IDE peer): host-applied terminal spawn with
+        // injected env + optional minor-mode activation. Host-applied (not
+        // peer-applied) because the spawn mutates `&mut Editor` (pane tree +
+        // buffer registry) and the `:claude` ex-command that emits this has no
+        // `&mut Editor`. After the spawn the new terminal is the active buffer,
+        // so the minor mode (e.g. `claude-code-mode`) activates on it by name.
+        Effect::SpawnTerminal {
+            cmd_line,
+            env,
+            activate_minor,
+        } => {
+            editor.do_terminal_spawn(cmd_line, env);
+            if let Some(name) = activate_minor {
+                let buf = editor.active_pane_buffer_id();
+                let signals = editor.activate_mode_by_id(buf, lattice_mode::ModeId::new(&name));
+                out.renderer_signals.extend(signals);
             }
         }
         // Catch-all: any Effect variant not yet migrated from
@@ -17151,7 +17169,7 @@ impl Editor {
     /// - Activate the new buffer in the active pane (T4
     ///   may honor `terminal.display`).
     /// - On spawn failure: echo an error; no buffer created.
-    pub fn do_terminal_spawn(&mut self, cmd_line: Option<String>) {
+    pub fn do_terminal_spawn(&mut self, cmd_line: Option<String>, env: Vec<(String, String)>) {
         // Resolve program + args.
         let (program, args) = match cmd_line.as_deref().map(str::trim) {
             Some(s) if !s.is_empty() => {
@@ -17211,9 +17229,9 @@ impl Editor {
             program: program.clone(),
             args: args.clone(),
             cwd: cwd.clone(),
-            // Ordinary `:terminal` injects no extra env (I5.0); `:claude` (I5.1)
-            // is the env-injecting launch path.
-            env: Vec::new(),
+            // I5.1: env injected by the caller — empty for `:terminal`, the
+            // CLAUDE_CODE_SSE_PORT + ENABLE_IDE_INTEGRATION pair for `:claude`.
+            env,
             rows,
             cols,
             scrollback_lines,
@@ -26355,6 +26373,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // yanks (the open swaps the active slot; no edit/register write).
         | Effect::OpenExternalUri { .. }
         | Effect::OpenBufferAtColumn { .. }
+        // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
+        | Effect::SpawnTerminal { .. }
         | Effect::AppAction(_) => false,
     }
 }
@@ -26464,6 +26484,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         // yanks (the open swaps the active slot; no edit/register write).
         | Effect::OpenExternalUri { .. }
         | Effect::OpenBufferAtColumn { .. }
+        // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
+        | Effect::SpawnTerminal { .. }
         | Effect::AppAction(_) => false,
     }
 }

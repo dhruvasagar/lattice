@@ -400,4 +400,25 @@ mod tests {
             "the write bus is installed"
         );
     }
+
+    /// I5.1a: `start()` pre-binds synchronously and returns the bound port; a
+    /// second call while running is idempotent (same port, no re-bind).
+    #[tokio::test]
+    async fn start_returns_port_and_is_idempotent() {
+        let handle = spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        let p1 = handle.start().expect("start binds + returns a port");
+        let p2 = handle.start().expect("idempotent re-start returns a port");
+        assert_eq!(p1, p2, "second start returns the same port (no re-bind)");
+        let snap = handle.snapshot();
+        assert_eq!(snap.port, Some(p1), "snapshot reflects the bound port");
+        assert!(snap.running, "server is running after start");
+        handle.stop();
+    }
 }

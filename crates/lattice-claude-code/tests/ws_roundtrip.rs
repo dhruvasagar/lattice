@@ -212,6 +212,63 @@ async fn broadcast_notification_reaches_a_connected_client() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_closes_live_connections() {
+    // I7: `:claude-code-stop` must disconnect a live agent, not leave it
+    // functional against a stopped server. Dropping `RunningServer` drops the
+    // shutdown sender → the connection's read-loop select closes the socket.
+    let dir = unique_dir("close");
+    let handle = spawn(
+        ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: dir.clone(),
+        },
+        bus(),
+        &tokio::runtime::Handle::current(),
+    );
+    handle.start();
+    let (port, token) = wait_for_lockfile(&dir).await;
+
+    let mut request = format!("ws://127.0.0.1:{port}")
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert(AUTH_HEADER, HeaderValue::from_str(&token).unwrap());
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("authorized connect succeeds");
+
+    // Wait until the connection is established (subscribed its receivers).
+    for _ in 0..500 {
+        if handle.connection_count() >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(handle.connection_count() >= 1, "connection established");
+
+    handle.stop();
+
+    // The client's read stream ends (or errors / receives a close frame) — the
+    // server closed the connection.
+    let closed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match ws.next().await {
+                None => return true,                          // stream ended
+                Some(Err(_)) => return true,                  // socket error
+                Some(Ok(f)) if f.is_close() => return true,   // close frame
+                Some(Ok(_)) => continue,                      // ignore stray frames
+            }
+        }
+    })
+    .await
+    .expect("the connection closes within the timeout");
+    assert!(closed, "stop closed the live connection");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_token_is_rejected() {
     let dir = unique_dir("auth");
     let handle = spawn(

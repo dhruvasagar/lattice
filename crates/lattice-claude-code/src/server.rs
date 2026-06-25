@@ -276,6 +276,12 @@ pub fn spawn(
 struct RunningServer {
     _lockfile: Lockfile,
     accept_task: JoinHandle<()>,
+    /// I7: clean teardown on stop/quit. Live connections hold a receiver
+    /// subscribed off this sender; dropping it (when the server stops) makes
+    /// their `recv()` return `Closed`, which the connection's read loop selects
+    /// on to close the socket — so `:claude-code-stop` actually disconnects the
+    /// agent instead of leaving it functional against a stopped server.
+    _shutdown_tx: broadcast::Sender<()>,
 }
 
 impl Drop for RunningServer {
@@ -355,10 +361,22 @@ fn start_accepting(
         },
     )?;
     let listener = TcpListener::from_std(std_listener)?;
-    let accept_task = tokio::spawn(accept_loop(listener, token, dispatch_ctx, notify_tx));
+    // I7: the shutdown signal — held here (in `RunningServer`) so it lives as
+    // long as the server runs; the accept loop subscribes a receiver per
+    // connection. Dropping `RunningServer` on stop drops this sender → live
+    // connections see `Closed` and close.
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    let accept_task = tokio::spawn(accept_loop(
+        listener,
+        token,
+        dispatch_ctx,
+        notify_tx,
+        shutdown_tx.clone(),
+    ));
     Ok(RunningServer {
         _lockfile: lockfile,
         accept_task,
+        _shutdown_tx: shutdown_tx,
     })
 }
 
@@ -367,6 +385,7 @@ async fn accept_loop(
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     notify_tx: broadcast::Sender<String>,
+    shutdown_tx: broadcast::Sender<()>,
 ) {
     loop {
         match listener.accept().await {
@@ -376,8 +395,12 @@ async fn accept_loop(
                 // I6: each connection subscribes its own broadcast receiver;
                 // `receiver_count()` on the sender is the live connection count.
                 let notify_rx = notify_tx.subscribe();
+                // I7: and a shutdown receiver — closed when the server stops.
+                let shutdown_rx = shutdown_tx.subscribe();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_connection(stream, token, ctx, notify_rx).await {
+                    if let Err(e) =
+                        serve_connection(stream, token, ctx, notify_rx, shutdown_rx).await
+                    {
                         tracing::debug!(error = %e, "claude-code connection ended with error");
                     }
                 });
@@ -396,6 +419,7 @@ async fn serve_connection(
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
     mut notify_rx: broadcast::Receiver<String>,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let ws = transport::accept(stream, &token).await?;
     let (mut write, mut read) = ws.split();
@@ -439,8 +463,16 @@ async fn serve_connection(
     // Read loop: handle incoming MCP frames; responses ride the same writer.
     // Capture the result so teardown runs on both the ok and error paths.
     let result: Result<()> = async {
-        while let Some(frame) = read.next().await {
-            let frame = frame?;
+        loop {
+            let frame = tokio::select! {
+                maybe = read.next() => match maybe {
+                    Some(f) => f?,
+                    None => break, // peer closed the socket
+                },
+                // I7: the server stopped — the shutdown sender dropped, so
+                // `recv()` returns `Closed`. Either arm closes this connection.
+                _ = shutdown_rx.recv() => break,
+            };
             if frame.is_close() {
                 break;
             }

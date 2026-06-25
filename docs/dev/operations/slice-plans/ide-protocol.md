@@ -202,11 +202,25 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
   `at_mentioned` via `:claude-send`/`@`. **Tests:** `Event::SelectionsChanged` →
   frame to all conns; dead-conn pruning; coalescing.
 
-- **I7 — Status + hardening.** Headerline/modeline status (running/port/conns) +
-  `*messages*` log; loopback-only bind enforced; token gating audited; clean
-  teardown (lockfile unlink, conn close) on `:claude-code-stop`/quit; idempotent restart.
-  **Tests:** status reflects state; non-loopback refused; lockfile removed on stop;
-  never panics on the WS thread.
+- **I7 — Status + hardening.** ✅ (hardening + teardown) · 🗒 (status segment deferred).
+  - **Done:** loopback-only bind (`127.0.0.1` — structural; nothing to "refuse"
+    elsewhere); token gating (`x-claude-code-ide-authorization`, constant-time);
+    lockfile RAII-unlink on stop; **idempotent restart** (`start()` returns the
+    existing port, I5.1a); **conn-close on stop** (NEW — `RunningServer` holds a
+    `broadcast::Sender<()>` shutdown signal; dropping it on stop makes each
+    connection's read-loop `select!` close the socket, so `:claude-code-stop`
+    disconnects the agent instead of leaving it functional); `*messages*`
+    lifecycle log (the server `info!`s start/stop). **Tests (ws_roundtrip):**
+    `stop_closes_live_connections`, `start_writes_lockfile_and_stop_removes_it`,
+    `wrong_token_is_rejected`, malformed-frame-no-panic (dispatch unit test),
+    idempotent-restart (server unit test). The status DATA is exposed via
+    `handle.snapshot()` (running/port) + `handle.connection_count()`.
+  - **Deferred (🗒):** the modeline **status segment** (running/port/conns shown
+    on the IDE buffer's modeline). Needs a per-IDE-buffer `ModelineElementUpdate`
+    publisher tied to server-state + conn-count changes (+ likely a themed
+    `ModelineRole`), following the `lattice-lsp::modeline` pattern. Deferred
+    because the render can't be visually validated headless (TUI not runnable
+    here); the status data is already queryable, so this is UI polish.
 
 ## Risks / decisions (carry into the slices)
 
@@ -222,7 +236,15 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 ✅ · I6 🗒 · I7 🗒
+I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 ✅ · I6 ✅ · I7 ✅* (status segment 🗒)
+
+\* I7 hardening + clean teardown (incl. conn-close-on-stop) done + tested; the
+modeline status *segment* is deferred (UI polish; status data exposed). The
+whole I-series is now functionally complete end-to-end: `:claude` launches the
+agent, which attaches and drives the editor through the read/write/openDiff
+tools and receives selection/at-mention notifications. Remaining open items are
+all PROVISIONAL wire-shape validation against a live `claude` CLI + the deferred
+status segment.
 
 **I5 landed (2026-06-25):** I5.0 `SpawnConfig.env` + the env-reaches-child
 integration test; I5.1a server pre-bind (`start() -> Option<u16>`, sync

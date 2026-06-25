@@ -48,11 +48,14 @@ same surface).
 | Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
 | Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
 | Modeline (per-pane status row: zones, the modal tag + showmode echo, `ui.modeline.*` layout config)         | [modeline.md](modeline.md)          | ✅     |
+| Themes & colours (`:colorscheme` + the live-preview picker, the builtin theme catalog, `:customize`, `register_theme`) | [themes.md](themes.md)   | ✅     |
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
 | Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
 | Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |
 | LSP (servers, capabilities, attach lifecycle, every `:lsp-*` command in context)                            | [lsp.md](lsp.md)                    | ✅     |
 | `lsp-mode` (the umbrella minor + 9 sub-modes that gate per-feature LSP traffic)                             | [lsp-mode.md](lsp-mode.md)          | ✅     |
+| `emacs-keys-mode` (the `<C-x>` leader: emacs-style buffer / file / window chords layered over vim)          | [emacs-keys-mode.md](emacs-keys-mode.md) | ✅ |
+| Claude Code (the `:claude` agent IDE peer: reads context, edits via reviewable side-by-side diffs; wire shapes provisional) | [claude-code.md](claude-code.md) | ✅ |
 | Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
 | Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
 | Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |

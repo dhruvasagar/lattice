@@ -337,6 +337,20 @@ impl Editor {
         // off-keystroke.
         let (lsp_show_message_request_bus, lsp_show_message_request_rx) =
             boot.inbound_raw::<InboundShowMessageRequest>();
+        // I4 (Claude Code IDE peer, `openDiff`): the programmatic-diff bus is the
+        // host-drained generic `InboundBus`, same shape as BC.8d apply-edit. The
+        // host seats the receiver on the Editor (`pending_programmatic_diff_rx`)
+        // and drains it in `run_tick_pending` (`open_programmatic_diff` is
+        // irreducibly `&mut Editor` + lattice-diff types, so it can't be a
+        // mode-owned `Effect` handler). The sender is registered as a Phase-A
+        // service so the IDE peer's `install(boot)` reads it via
+        // `boot.service::<ProgrammaticDiffBus>()` — keeping the host free of any
+        // IDE-peer reference (the bus is a generic diff-subsystem type). This is
+        // diff-subsystem residue (alongside the `DiffSubsystem` bind below), not
+        // an LSP channel.
+        let (programmatic_diff_bus, programmatic_diff_rx) =
+            boot.inbound_raw::<lattice_diff::ProgrammaticDiffRequest>();
+        boot.register_service::<lattice_diff::ProgrammaticDiffBus>(programmatic_diff_bus);
         let (lsp, lsp_diagnostics) = build_lsp_subsystem(
             event_bus.clone(),
             &runtime_handle,
@@ -1700,6 +1714,10 @@ impl Editor {
             lsp_progress_store: lsp_progress_store.clone(),
             modeline_update_rx: Some(modeline_update_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
+            // I4: seat the host-drained programmatic-diff receiver + its
+            // accept-path map (the sender was registered as a service above).
+            pending_programmatic_diff_rx: Some(programmatic_diff_rx),
+            programmatic_diff_accept_paths: std::collections::HashMap::new(),
             // BC.8b: `pending_configuration_rx` removed (the generic inbound
             // drain replaces the host receiver). The SHARED config tree is
             // seated below (overriding `..Editor::default()`'s fresh Arc) so the

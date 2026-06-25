@@ -3925,6 +3925,28 @@ impl Editor {
             .map(|d| d.watch.clone())
             .unwrap_or_else(|| vec![primary]);
 
+        // I4 (Claude Code IDE peer, openDiff): honor the programmatic-diff
+        // Accept save target. On `Accept`, write the proposed (right / primary)
+        // side's LIVE content (so user edits to the proposed side are persisted)
+        // to the recorded path BEFORE firing the outcome, so the producer's
+        // `FILE_SAVED` reply is truthful — the review IS the save. The entry is
+        // removed on ANY teardown (Accept, Reject, or a verdict-less `:diffoff`)
+        // so it never leaks. A write failure is surfaced to the user but does not
+        // suppress the outcome (the user did accept); the agent's reply may then
+        // overstate the save, an acceptable rare degradation.
+        if let Some(save_path) = self.programmatic_diff_accept_paths.remove(&primary) {
+            if matches!(outcome, Some(crate::diff::subsystem::DiffOutcome::Accept)) {
+                if let Some(handle) = self.buffers.document_handle(primary) {
+                    if let Err(e) = std::fs::write(&save_path, handle.text()) {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!("openDiff accept: failed to write {}: {e}", save_path.display()),
+                        );
+                    }
+                }
+            }
+        }
+
         // D.6.e: fire the completion signal first, before
         // any teardown. If the sender's receiver was
         // dropped (plugin gave up), `send` returns Err —
@@ -4683,6 +4705,165 @@ impl Editor {
                 );
             }
         }
+    }
+
+    /// I4 (Claude Code IDE peer, `openDiff`): drain host-drained programmatic
+    /// diff requests and open each on the actor thread. Mirrors
+    /// [`Self::drain_inbound_apply_edits`] — the receiver is `take`n, drained,
+    /// and restored so the host owns it across ticks (the open is irreducibly
+    /// `&mut Editor` + lattice-diff types, hence host-drained rather than a
+    /// mode-owned `Effect` handler).
+    pub fn drain_inbound_programmatic_diffs(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_programmatic_diff_rx.take() else {
+            return Vec::new();
+        };
+        let mut requests: Vec<lattice_diff::ProgrammaticDiffRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_programmatic_diff_rx = Some(rx);
+        let mut signals = Vec::new();
+        for req in requests {
+            signals.extend(self.open_programmatic_diff(req));
+        }
+        signals
+    }
+
+    /// I4: create a fresh in-memory Document buffer holding `content` (NOT read
+    /// from disk), optionally carrying `path` (so a later save knows its target)
+    /// and a synthetic `name` (display label), WITHOUT activating it. Returns the
+    /// new `BufferId`. The buffer-creation half of [`Self::do_edit`]'s Opened
+    /// path, minus the disk read + active-document swap — the caller activates it
+    /// into a pane via [`Self::activate_buffer`].
+    fn create_inmemory_document(
+        &mut self,
+        content: &str,
+        path: Option<std::path::PathBuf>,
+        name: Option<String>,
+    ) -> BufferId {
+        let mut builder = lattice_core::DocumentBuilder::default().with_text(content);
+        if let Some(p) = path {
+            builder = builder.with_path(p);
+        }
+        let doc = builder.build();
+        let id = lattice_core::BufferId::next();
+        let handle = lattice_runtime::spawn_document(id, doc, self.registry.clone());
+        let handle_arc: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id,
+            flags: lattice_core::BufferFlags::default(),
+            data: crate::buffer_registry::BufferData::Document(
+                crate::buffer_registry::DocumentEntry {
+                    id,
+                    handle: handle_arc,
+                },
+            ),
+            name,
+        });
+        self.seed_empty_document_locals(id);
+        id
+    }
+
+    /// I4 (Claude Code IDE peer, `openDiff`): open an interactive side-by-side
+    /// diff for one [`lattice_diff::ProgrammaticDiffRequest`] and bind its
+    /// completion oneshot to the resulting session, so the producer (the IDE
+    /// peer's `openDiff` call) unblocks with the user's
+    /// [`DiffOutcome`](crate::diff::subsystem::DiffOutcome) on
+    /// `:diff-accept` / `:diff-reject` (or a close-tab cancel).
+    ///
+    /// Layout (the locked I4 UX decision): the baseline file's on-disk content
+    /// fills a read-only-by-intent left buffer; the proposed text fills the
+    /// editable right buffer (carrying `new_file_path` so an Accept can save it).
+    /// `split_active(Vertical)` keeps the original active leaf on the LEFT and
+    /// puts the new leaf on the RIGHT, so original→left / proposed→right matches
+    /// the VS Code contract. Built on [`Self::register_pane_group_diff`] (slot 0
+    /// = baseline/left, slot 1 = current/right), so hunk compute + filler rows +
+    /// `do`/`dp` all reuse the existing two-pane machinery.
+    ///
+    /// On open failure (pane-group registration error) the response sender is
+    /// dropped, which the producer's `await` surfaces as a reject — never a hang.
+    ///
+    /// NOTE (I4.0 scope): the left baseline buffer is a plain editable Document
+    /// for now (mirroring `:diffsplit`, which makes neither side read-only); the
+    /// read-only-baseline refinement lands in I4.1 alongside accept-writes-to-disk.
+    pub fn open_programmatic_diff(
+        &mut self,
+        req: lattice_diff::ProgrammaticDiffRequest,
+    ) -> Vec<RendererSignal> {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let lattice_diff::ProgrammaticDiffRequest {
+            old_file_path,
+            new_file_path,
+            new_contents,
+            tab_name,
+            response,
+        } = req;
+
+        let mut signals = Vec::new();
+
+        // Baseline = the on-disk content of `old_file_path`. A missing/unreadable
+        // file degrades to an empty baseline (all-Add hunks) — the same
+        // defensible degradation `OnDiskSource::snapshot` chooses — rather than
+        // failing the whole open.
+        let original = std::fs::read_to_string(&old_file_path).unwrap_or_default();
+        let base_label = old_file_path
+            .file_name()
+            .map(|n| format!("{} (baseline)", n.to_string_lossy()))
+            .unwrap_or_else(|| "(baseline)".to_string());
+
+        // LEFT (original / baseline) into the current active pane.
+        let left_id = self.create_inmemory_document(&original, None, Some(base_label));
+        if self.activate_buffer(left_id) {
+            signals.extend(self.activate_buffer_state());
+        }
+        let left_pane = self.pane_tree.active().id;
+
+        // Vertical split → new leaf on the RIGHT, made active.
+        let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(new_idx);
+
+        // RIGHT (proposed) into the new pane, carrying `new_file_path` so Accept
+        // can save it (I4.1).
+        let right_id =
+            self.create_inmemory_document(&new_contents, Some(new_file_path.clone()), None);
+        if self.activate_buffer(right_id) {
+            signals.extend(self.activate_buffer_state());
+        }
+        let right_pane = self.pane_tree.active().id;
+
+        let left_member = crate::pane_group::PaneGroupMember {
+            pane: left_pane,
+            buffer: left_id,
+        };
+        let right_member = crate::pane_group::PaneGroupMember {
+            pane: right_pane,
+            buffer: right_id,
+        };
+        if let Err(msg) = self.register_pane_group_diff(vec![left_member, right_member]) {
+            // Roll the new (right) pane back so the user isn't stranded in a
+            // half-open diff, and drop `response` → the producer's await rejects.
+            self.pane_tree.close_active();
+            self.set_message(EchoLevel::Error, format!("openDiff: {msg}"));
+            drop(response);
+            return signals;
+        }
+
+        // Bind the completion oneshot to the session (primary = the right /
+        // current buffer) + record the Accept save target. The existing
+        // `tear_down_single_diff_session` fires the bound outcome on
+        // `:diff-accept` / `:diff-reject`; I4.1 honors the save target on Accept.
+        if let Some(session) = self.diff_subsystem.lookup_session_for(right_id) {
+            session.bind_completion(response);
+            self.programmatic_diff_accept_paths
+                .insert(right_id, new_file_path);
+        } else {
+            // Should not happen (we just registered it); drop → reject.
+            drop(response);
+        }
+
+        self.set_message(EchoLevel::Info, format!("openDiff: {tab_name}"));
+        signals
     }
 
     /// Surface a one-line message in the echo area. Replaces the
@@ -11282,6 +11463,10 @@ impl Editor {
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
         signals.extend(self.drain_inbound_apply_edits());
+        // I4 (Claude Code IDE peer, `openDiff`): drain programmatic side-by-side
+        // diff requests, opening each on the actor thread (host-drained, same as
+        // apply-edit above).
+        signals.extend(self.drain_inbound_programmatic_diffs());
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
         // 5.8.AF.5: `refresh_lsp_file_watcher` is now a
@@ -25062,6 +25247,22 @@ impl Editor {
             );
             return false;
         }
+        // I4 (openDiff cancel): closing a buffer that participates in a
+        // *programmatic* diff (openDiff) tears that session down first —
+        // dropping its bound completion sender so the awaiting producer
+        // (the agent's openDiff call) sees a reject, never a hang. Scoped to
+        // programmatic diffs (the session's primary is in
+        // `programmatic_diff_accept_paths`) so regular `:diff` / `:diffsplit`
+        // participant deletion is unchanged.
+        if let Some(session) = self.diff_subsystem.lookup_session_for(to_remove) {
+            if self
+                .programmatic_diff_accept_paths
+                .contains_key(&session.buffer_id())
+            {
+                self.tear_down_single_diff_session(&session, None);
+                self.virtual_rows_wake.0.notify_one();
+            }
+        }
         // Successor preference: another *listed* buffer if any,
         // else any other buffer (including unlisted synthetics).
         let mut successor = listed.iter().copied().find(|id| *id != to_remove);
@@ -28778,6 +28979,222 @@ mod tests {
         assert!(editor.diff_subsystem.is_empty());
         let outcome = rx.await.expect("sender fired before drop");
         assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Reject);
+    }
+
+    // ── I4 (Claude Code IDE peer, openDiff): programmatic diff ──
+
+    /// `open_programmatic_diff` opens a two-pane side-by-side diff
+    /// (original left / proposed right), binds the request's completion
+    /// oneshot to the registered session, and records the Accept save
+    /// target. `:diff-accept` fires `Accept` back to the awaiting
+    /// producer — the openDiff blocking-await contract.
+    #[tokio::test]
+    async fn open_programmatic_diff_side_by_side_accept_fires_completion() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-i4-open-diff-accept.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        // Register core options so `activate_buffer_state`'s option resolution
+        // doesn't panic (production registers these at boot).
+        editor.config.init_from_linkme();
+        assert_eq!(editor.pane_tree.len(), 1, "starts single-pane");
+
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "fn main() { todo!() }\n".to_string(),
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        // Side-by-side: a second pane opened; the active (right) pane holds
+        // the proposed buffer, which is the session's primary.
+        assert_eq!(editor.pane_tree.len(), 2, "openDiff opens a second pane");
+        let right_id = editor.active_pane_buffer_id();
+        assert_eq!(
+            editor.pane_tree.leaves()[1].buffer_id,
+            right_id,
+            "proposed buffer is the RIGHT pane (split_active keeps the original \
+             leaf left, new leaf right)"
+        );
+        assert_ne!(
+            editor.pane_tree.leaves()[0].buffer_id,
+            right_id,
+            "the left pane holds the distinct baseline buffer"
+        );
+        let session = editor
+            .diff_subsystem
+            .lookup_session_for(right_id)
+            .expect("a diff session is registered for the proposed buffer");
+        assert_eq!(session.buffer_id(), right_id, "primary = the proposed buffer");
+        assert_eq!(
+            editor.programmatic_diff_accept_paths.get(&right_id),
+            Some(&path),
+            "the Accept save target is recorded against the proposed buffer"
+        );
+
+        // The producer is awaiting `rx`; :diff-accept fires Accept + tears down.
+        editor.do_diff_accept();
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "session torn down after accept"
+        );
+        let outcome = rx.await.expect("completion fired before the sender dropped");
+        assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
+
+        // FILE_SAVED contract: the accept wrote the proposed content to disk.
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("baseline file readable"),
+            "fn main() { todo!() }\n",
+            "accept persists the proposed (right) side to old_file_path"
+        );
+        // The accept-path map entry was cleaned up on teardown.
+        assert!(
+            editor.programmatic_diff_accept_paths.is_empty(),
+            "the accept save target is removed on teardown"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `:diff-reject` on a programmatic diff fires `Reject` to the producer.
+    #[tokio::test]
+    async fn open_programmatic_diff_reject_fires_completion() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-i4-open-diff-reject.rs");
+        std::fs::write(&path, "old\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "new\n".to_string(),
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        editor.do_diff_reject();
+        let outcome = rx.await.expect("completion fired before the sender dropped");
+        assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Reject);
+        assert!(editor.diff_subsystem.is_empty());
+
+        // Reject discards: the baseline file is untouched, the map is cleaned.
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("baseline file readable"),
+            "old\n",
+            "reject leaves old_file_path unchanged"
+        );
+        assert!(editor.programmatic_diff_accept_paths.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Closing the proposed buffer mid-diff (the agent's `close_tab`, or `:bd`)
+    /// cancels the openDiff: the session is torn down, the accept-path map is
+    /// cleaned, and the bound completion sender drops WITHOUT a verdict — so the
+    /// awaiting producer sees a recv error it maps to a reject (never a hang).
+    #[tokio::test]
+    async fn open_programmatic_diff_close_tab_cancels_with_reject() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-i4-open-diff-cancel.rs");
+        std::fs::write(&path, "old\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "new\n".to_string(),
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+        let proposed = editor.active_pane_buffer_id();
+        assert!(
+            editor.diff_subsystem.lookup_session_for(proposed).is_some(),
+            "session is live before the close"
+        );
+
+        // Close the proposed buffer mid-diff (force past the dirty guard).
+        editor.do_buffer_delete(true);
+
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "session torn down when its participant is closed"
+        );
+        assert!(
+            editor.programmatic_diff_accept_paths.is_empty(),
+            "accept save target cleaned on cancel"
+        );
+        assert!(
+            rx.await.is_err(),
+            "the bound sender dropped with no verdict → the producer rejects"
+        );
+        // Nothing was written: the baseline is unchanged.
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("baseline file readable"),
+            "old\n"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// User edits to the proposed (right) side during review ARE persisted on
+    /// Accept: the accept hook writes the buffer's LIVE content (read via the
+    /// registry handle, which shares the active document's backing actor), not
+    /// the original `new_contents`. So a human can tweak the agent's proposal in
+    /// the diff and have those tweaks land on disk.
+    #[tokio::test]
+    async fn open_programmatic_diff_persists_user_edits_to_the_proposed_side() {
+        use lattice_protocol::edit::Edit;
+        use lattice_protocol::position::Position;
+        use tokio::sync::oneshot;
+
+        let mut path = std::env::temp_dir();
+        path.push("lattice-i4-open-diff-user-edit.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            // Proposed starts equal to the baseline; the *user* is the one who
+            // changes it below.
+            new_contents: "fn main() {}\n".to_string(),
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        // The proposed (right) buffer is the active document after open. The
+        // user edits it — insert a line at the top (the same path real
+        // keystrokes take through `apply_edit_blocking`).
+        let proposed = editor.active_pane_buffer_id();
+        editor
+            .apply_edit_blocking(Edit::insert(Position::ZERO, "// human tweak\n"))
+            .expect("edit applies to the editable proposed buffer");
+
+        // Accept writes the LIVE (edited) content, not the original proposal.
+        editor.do_diff_accept();
+        let outcome = rx.await.expect("completion fired");
+        assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
+
+        let saved = std::fs::read_to_string(&path).expect("baseline file readable");
+        assert_eq!(
+            saved, "// human tweak\nfn main() {}\n",
+            "the user's edit to the proposed side is what gets saved (buffer {})",
+            proposed.0
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Sessions without a bound completion are still

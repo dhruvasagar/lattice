@@ -132,12 +132,29 @@ The exact lockfile JSON field set is provisional until verified against a live
    a `oneshot` reply. `O(pending)` `try_recv`, same bounded shape as LSP's
    existing inbound drains. All I/O + JSON parse happens off-thread on the WS
    task; only the bounded apply touches the editor thread.
-3. **`openDiff` (blocking)** — reuse the diff subsystem: register a session with
-   the agent's proposed text as a `StaticSource` against the on-disk baseline as
-   an `OnDiskSource`, then `bind_completion(oneshot<DiffOutcome>)`. The agent's
-   `tools/call` blocks *on its own WS task* awaiting the oneshot, which fires on
-   `:diff-accept` / `:diff-reject`. The diff recompute already runs in
-   `spawn_blocking`; the renderer is never blocked — only the agent connection.
+3. **`openDiff` (blocking)** — reuse the diff subsystem, but via a SECOND,
+   *host-drained* bus, not the I3 write bus: `openDiff` is blocking AND its open
+   is irreducibly `&mut Editor` + lattice-diff types that can't cross the
+   `Effect` boundary, so it mirrors BC.8d apply-edit. A
+   `lattice_diff::ProgrammaticDiffRequest` (a *generic* diff-subsystem type, so
+   the host references no IDE-peer internals) carries `old_file_path` /
+   `new_file_contents` / `new_file_path` / `tab_name` + a `oneshot<DiffOutcome>`;
+   it rides `ProgrammaticDiffBus` (built with `boot.inbound_raw`, registered as a
+   service the IDE peer reads). The host drains it per tick and opens a
+   **side-by-side two-pane diff** — original (left, baseline) / proposed (right)
+   — by creating two in-memory `Document` buffers and reusing
+   `register_pane_group_diff` (so the left buffer *is* the baseline; no
+   `StaticSource`/`OnDiskSource` needed), then `bind_completion(response)`. Both
+   sides are editable (like `:diffsplit`); Accept writes the proposed side's
+   *live* content, so a human can tweak the agent's proposal in the diff and have
+   the tweaks persist. The
+   agent's `tools/call` blocks *on its own WS task* awaiting the oneshot, which
+   fires on `:diff-accept` / `:diff-reject` (or a close-tab cancel → the dropped
+   sender surfaces as a reject). On **Accept the host writes the proposed side to
+   `old_file_path`** before firing the outcome (the review IS the save), so the
+   reply is `FILE_SAVED`; Reject → `DIFF_REJECTED`. The diff recompute already
+   runs in `spawn_blocking`; the renderer is never blocked — only the agent
+   connection. (Reply shape PROVISIONAL until validated vs a live CLI.)
 
 **Graceful degradation is structural:** every WS-thread failure logs-and-skips; a
 dropped host receiver yields a JSON-RPC error to the agent, never a hang or panic.

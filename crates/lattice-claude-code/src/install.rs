@@ -42,7 +42,17 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // rides `boot.into_registrations()` into the Editor for the program
     // lifetime.
     let writes = boot.inbound::<ClaudeCodeInboundRequest, _>(make_handler(handle.read_cache()));
-    handle.install_services(buffer_store, diagnostics, writes);
+
+    // I4 openDiff: the host registered the programmatic-diff bus (the openDiff
+    // producer side) as a Phase-A service so this crate names no host internals.
+    // Read it; `None` if absent → `openDiff` reports a graceful "not
+    // initialized". The host owns the matching receiver + drains it (the open is
+    // irreducibly `&mut Editor` + lattice-diff types).
+    let diff = boot
+        .service::<lattice_diff::ProgrammaticDiffBus>()
+        .map(|h| (*h).clone());
+
+    handle.install_services(buffer_store, diagnostics, writes, diff);
 
     // Expose the handle so `claude-code-mode`'s `on_activate` (I5) reaches it.
     boot.register_service::<ClaudeCodeServerHandle>(handle);

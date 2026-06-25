@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+use lattice_diff::ProgrammaticDiffBus;
 use lattice_mode::inbound::InboundBus;
 use lattice_runtime::EventBus;
 
@@ -118,6 +119,7 @@ impl ClaudeCodeServerHandle {
         buffer_store: Option<lattice_mode::BufferStoreHandle>,
         diagnostics: Option<lattice_lsp::modes::DiagnosticsQueryHandle>,
         writes: InboundBus<ClaudeCodeInboundRequest>,
+        diff: Option<ProgrammaticDiffBus>,
     ) {
         self.dispatch_ctx.store(Arc::new(DispatchContext {
             reads: ReadContext {
@@ -127,6 +129,7 @@ impl ClaudeCodeServerHandle {
                 workspace_folders: self.workspace_folders.clone(),
             },
             writes: Some(writes),
+            diff,
         }));
     }
 }
@@ -155,6 +158,9 @@ pub fn spawn(
         // I3.2 wires the real inbound bus here; until then write tools report
         // a graceful "not initialized".
         writes: None,
+        // I4: the openDiff bus is wired by `install_services`; until then
+        // `openDiff` reports a graceful "not initialized".
+        diff: None,
     }));
     rt.spawn(supervisor_main(
         config.clone(),
@@ -335,7 +341,7 @@ mod tests {
             Arc::new(Notify::new()),
             make_handler(handle.read_cache()),
         );
-        handle.install_services(None, None, bus);
+        handle.install_services(None, None, bus, None);
         assert!(
             handle.dispatch_ctx.load().writes.is_some(),
             "the write bus is installed"

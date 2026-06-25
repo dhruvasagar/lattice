@@ -1351,6 +1351,25 @@ pub struct Editor {
             std::collections::HashMap<lattice_core::BufferId, tokio::task::JoinHandle<()>>,
         >,
     >,
+    /// I4 (Claude Code IDE peer, `openDiff`): host-drained inbound receiver for
+    /// programmatic side-by-side diff requests. An off-thread producer (the IDE
+    /// peer) `send`s a [`lattice_diff::ProgrammaticDiffRequest`] on the matching
+    /// [`lattice_diff::ProgrammaticDiffBus`] (registered as a boot service); the
+    /// `send` wakes the editor, and [`Self::drain_inbound_programmatic_diffs`]
+    /// drains this receiver per tick, opening each diff on the actor thread. The
+    /// open is irreducibly `&mut Editor` + lattice-diff types, so — like LSP
+    /// `workspace/applyEdit` (`pending_apply_edit_rx`) — it is host-drained, not
+    /// a mode-owned `Effect` handler.
+    pub pending_programmatic_diff_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_diff::ProgrammaticDiffRequest>>,
+    /// I4: per-session "save the current (right) side to this path on Accept"
+    /// map, keyed by the session's primary `BufferId` (the proposed/right
+    /// buffer). Set when [`Self::open_programmatic_diff`] registers a session;
+    /// honored in `tear_down_single_diff_session` (a `DiffOutcome::Accept` writes
+    /// the buffer here before firing the bound oneshot — the openDiff
+    /// `FILE_SAVED` contract: the review *is* the save). Removed on teardown.
+    pub programmatic_diff_accept_paths:
+        std::collections::HashMap<lattice_core::BufferId, std::path::PathBuf>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

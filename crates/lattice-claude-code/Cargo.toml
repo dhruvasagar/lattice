@@ -19,6 +19,10 @@ lattice-runtime = { path = "../lattice-runtime" }
 # legitimate semantic dep (the IDE reports LSP diagnostics to the agent).
 lattice-core = { path = "../lattice-core" }
 lattice-lsp = { path = "../lattice-lsp" }
+# I4 (openDiff): the programmatic-diff request type + bus + `DiffOutcome` the
+# `openDiff` tool produces and awaits. A network-peer → diff-subsystem edge, the
+# same shape as the ide→lsp edge above the read tools already use.
+lattice-diff = { path = "../lattice-diff" }
 tokio = { workspace = true, features = [
 	"sync",
 	"rt",

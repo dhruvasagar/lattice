@@ -109,6 +109,53 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
     VS Code contract; whether the modified scratch buffer is editable
     (`do`/`dp` apply) or read-only before Accept.
 
+  - **I4 implementation (landed; decisions resolved with Dhruva).** Two UX
+    decisions were confirmed before build: **side-by-side (2 panes)** —
+    original left / proposed right (UX convention: VS Code / Zed / vimdiff) —
+    and **the IDE writes on Accept → `FILE_SAVED`** (the review IS the save).
+    The captured `original-as-path-vs-text` question was settled by the wire
+    schema: `openDiff` sends `old_file_path` (a path) + `new_file_contents`
+    (text), so the baseline is the path's on-disk content and the proposed side
+    is the inline text.
+    - **I4.0** — `lattice_diff::ProgrammaticDiffRequest` + `ProgrammaticDiffBus`
+      (new `lattice-diff/src/programmatic.rs`); the host-drained bus is created
+      in `editor_boot` Phase A (`boot.inbound_raw`), its sender registered as a
+      service, its receiver seated on `Editor::pending_programmatic_diff_rx` and
+      drained in `run_tick_pending` via `drain_inbound_programmatic_diffs`
+      (mirrors BC.8d apply-edit). `Editor::open_programmatic_diff` creates two
+      in-memory `Document` buffers (baseline = `old_file_path`'s on-disk content;
+      proposed = `new_file_contents`, carrying `new_file_path`), `split_active`
+      (original→left, proposed→right), and reuses `register_pane_group_diff`
+      (slot 0 = baseline, slot 1 = current) — so the left buffer IS the
+      baseline (no `StaticSource`/`OnDiskSource` needed). `bind_completion` ties
+      the request's oneshot to the session.
+    - **I4.1** — the accept-writes-to-disk hook lives in
+      `tear_down_single_diff_session`: on `Accept`, the proposed (primary) side's
+      LIVE content is written to the recorded `new_file_path` (a host-side
+      `programmatic_diff_accept_paths` map, removed on any teardown) BEFORE the
+      bound outcome fires, so the `FILE_SAVED` reply is truthful. claude-code:
+      new `lattice-diff` dep, `diff.rs` (the `openDiff` tool — send + await with
+      NO timeout + the `FILE_SAVED` / `DIFF_REJECTED` content envelope, bypassing
+      `tool_text_result`), `DispatchContext.diff` + `openDiff` routing, the
+      service read in `install`, and the 4th `install_services` arg.
+    - **I4.2** — close-tab cancel: `do_buffer_delete` tears down a *programmatic*
+      diff session for the closed participant (scoped via the accept-paths map so
+      regular `:diff` is unchanged), dropping the bound sender → the awaiting
+      producer rejects (never hangs). Tests cover Accept (file written) / Reject
+      (unchanged) / cancel (sender dropped) / user-edits-to-the-proposed-side
+      persist on Accept + the side-by-side orientation + `openDiff` reply shapes.
+    - **Architecture note (BC.3b preserved):** the request type is a *generic
+      diff-subsystem* type in `lattice-diff` (the `DiffSession::bind_completion`
+      doc already names "AI proposal flows" / "WorkspaceEdit previews" as
+      consumers), so the host's new `pending_*_rx` + drain reference NO
+      claude-code internals; claude-code reads the bus as a service, like the
+      diagnostics handle.
+    - **Reply shape is PROVISIONAL** until validated against a live `claude` CLI.
+    - **Both diff sides are editable by design** (Dhruva, 2026-06-25): like
+      `:diffsplit`, neither side is read-only. Accept/reject/save target the
+      proposed (right) side; the user may also edit the baseline (left) if they
+      want — the diff recomputes either way.
+
 - **I5 — Terminal launch + the IDE buffer.** Add `env: Vec<(String,String)>` to
   `SpawnConfig` (spawner.rs:24 — confirmed absent; thread into `CommandBuilder`).
   `:claude` spawns `claude` in a `BufferKind::Terminal` buffer with
@@ -142,4 +189,4 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
 
 ## Status
 
-I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 🗒 · I5 🗒 · I6 🗒 · I7 🗒
+I0 ✅ · I1 ✅ · I2 ✅ · I3 ✅ · I4 ✅ · I5 🗒 · I6 🗒 · I7 🗒

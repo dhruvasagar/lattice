@@ -18,7 +18,9 @@ use lattice_protocol::jsonrpc::{
 
 use crate::inbound::ClaudeCodeInboundRequest;
 use crate::protocol;
+use lattice_diff::ProgrammaticDiffBus;
 use lattice_mode::inbound::InboundBus;
+use crate::diff;
 use crate::reads;
 use crate::writes;
 
@@ -34,6 +36,12 @@ pub struct DispatchContext {
     /// the server is fully wired (and in dispatch tests) — write tools then
     /// return a graceful `success: false`.
     pub writes: Option<InboundBus<ClaudeCodeInboundRequest>>,
+    /// I4 `openDiff` host-drained bus ([`ProgrammaticDiffBus`]). `None` until
+    /// boot wires it (and in dispatch tests) — `openDiff` then returns a
+    /// graceful `isError: true`. Separate from `writes` because `openDiff` is
+    /// blocking + carries lattice-diff types that can't cross the `Effect`
+    /// boundary (so it can't ride the I3 handler bus).
+    pub diff: Option<ProgrammaticDiffBus>,
 }
 
 /// A frame the server should send back to the agent in response to an
@@ -99,6 +107,16 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
     let empty = json!({});
     let arguments = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
     let bus = ctx.writes.as_ref();
+
+    // I4: `openDiff` is blocking and returns its OWN `CallToolResult` envelope
+    // (the FILE_SAVED / DIFF_REJECTED markers are the contract), so it bypasses
+    // the `tool_text_result` JSON-blob wrapper the reads/writes use.
+    if name == "openDiff" {
+        return Response::ok(
+            req.id.clone(),
+            diff::open_diff(ctx.diff.as_ref(), arguments).await,
+        );
+    }
 
     let result = match name {
         // Reads (sync, off-thread cache + ArcSwap snapshots).
@@ -173,6 +191,7 @@ mod tests {
                 workspace_folders: vec!["/work".to_string()],
             },
             writes: None,
+            diff: None,
         }
     }
 

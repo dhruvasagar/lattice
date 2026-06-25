@@ -20,6 +20,10 @@
 
 pub mod auth;
 pub mod commands;
+// I4 (openDiff): the blocking interactive-diff tool. Sends a
+// `ProgrammaticDiffRequest` on the host-drained bus and awaits the user's
+// verdict (no timeout) to shape the FILE_SAVED / DIFF_REJECTED reply.
+pub mod diff;
 pub mod dispatch;
 pub mod error;
 pub mod inbound;

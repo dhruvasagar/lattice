@@ -57,6 +57,14 @@ pub mod subsystem;
 // push + modeline element stay host-side (see `install` docs for why).
 pub mod install;
 
+// I4 (Claude Code IDE peer, openDiff): the host-drained "open a diff and await
+// the user's verdict" request + its inbound bus. The host drains it and opens a
+// side-by-side diff bound to the request's completion oneshot; the IDE peer (or
+// any in-tree consumer: an LSP WorkspaceEdit preview, a magit-style plugin)
+// produces it.
+pub mod programmatic;
+
 pub use compute::{compute_diff, DiffEngineError};
 pub use install::install;
+pub use programmatic::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
 pub use types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};

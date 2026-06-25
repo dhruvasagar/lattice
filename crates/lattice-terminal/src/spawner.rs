@@ -29,6 +29,12 @@ pub struct SpawnConfig {
     pub args: Vec<String>,
     /// Spawn working directory. `None` = inherit parent's cwd.
     pub cwd: Option<PathBuf>,
+    /// I5: extra environment variables to inject into the child, in addition to
+    /// the inherited parent environment. Applied as `CommandBuilder::env(k, v)`
+    /// per pair. Empty for an ordinary `:terminal`; the Claude Code IDE launch
+    /// (`:claude`) injects `CLAUDE_CODE_SSE_PORT` + `ENABLE_IDE_INTEGRATION` so
+    /// the spawned agent connects back to this editor's IDE server.
+    pub env: Vec<(String, String)>,
     /// Initial PTY size (rows, cols).
     pub rows: u16,
     pub cols: u16,
@@ -99,6 +105,7 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         program,
         args,
         cwd,
+        env,
         rows,
         cols,
         scrollback_lines,
@@ -121,6 +128,10 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
     }
     if let Some(cwd_path) = cwd {
         cmd.cwd(cwd_path);
+    }
+    // I5: inject extra environment on top of the inherited parent env.
+    for (key, value) in &env {
+        cmd.env(key, value);
     }
 
     // Spawn the child on the slave side of the pair.

@@ -17211,6 +17211,9 @@ impl Editor {
             program: program.clone(),
             args: args.clone(),
             cwd: cwd.clone(),
+            // Ordinary `:terminal` injects no extra env (I5.0); `:claude` (I5.1)
+            // is the env-injecting launch path.
+            env: Vec::new(),
             rows,
             cols,
             scrollback_lines,

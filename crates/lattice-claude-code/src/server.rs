@@ -58,7 +58,16 @@ pub struct ServerState {
 
 /// Command to the supervisor task.
 enum ServerCmd {
-    Start,
+    /// I5.1: the pre-bound listener (bound synchronously in [`start`] so the
+    /// caller learns the port immediately) + the auth token. The supervisor
+    /// writes the discovery lockfile, wraps the listener for tokio, and runs
+    /// the accept loop.
+    ///
+    /// [`start`]: ClaudeCodeServerHandle::start
+    Start {
+        listener: std::net::TcpListener,
+        token: String,
+    },
     Stop,
 }
 
@@ -81,11 +90,55 @@ pub struct ClaudeCodeServerHandle {
 }
 
 impl ClaudeCodeServerHandle {
-    /// Request the server start (bind + lockfile + accept). Idempotent and
-    /// non-blocking: one `cmd_tx` send applied on the supervisor task. A
-    /// dropped supervisor makes this a no-op.
-    pub fn start(&self) {
-        let _ = self.cmd_tx.send(ServerCmd::Start);
+    /// Start the server and return the bound loopback **port**, or `None` on
+    /// failure. Idempotent: a second call while already running returns the
+    /// existing port without re-binding.
+    ///
+    /// I5.1: the listener is pre-bound *synchronously here* (not async on the
+    /// supervisor) so `:claude` learns the port immediately and can inject
+    /// `CLAUDE_CODE_SSE_PORT` into the agent's environment before spawning it.
+    /// The bind + the supervisor's subsequent lockfile write are one-shot (a
+    /// user command, never the render loop), so the brief sync work is fine.
+    pub fn start(&self) -> Option<u16> {
+        let current = self.state.load();
+        if current.running {
+            return current.port; // idempotent — already bound
+        }
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::debug!(error = %e, "claude-code: pre-bind failed");
+                return None;
+            }
+        };
+        let port = listener.local_addr().ok()?.port();
+        if let Err(e) = listener.set_nonblocking(true) {
+            tracing::debug!(error = %e, "claude-code: set_nonblocking failed");
+            return None;
+        }
+        let token = match auth::generate_token() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(error = %e, "claude-code: token generation failed");
+                return None;
+            }
+        };
+        // Optimistic running state so a re-entrant `start()` doesn't double-bind;
+        // the supervisor rolls it back if it can't take the listener over.
+        self.state.store(Arc::new(ServerState {
+            running: true,
+            port: Some(port),
+        }));
+        if self
+            .cmd_tx
+            .send(ServerCmd::Start { listener, token })
+            .is_err()
+        {
+            // Supervisor gone — roll the optimistic state back.
+            self.state.store(Arc::new(ServerState::default()));
+            return None;
+        }
+        Some(port)
     }
 
     /// Request the server stop (unbind + unlink lockfile + drop conns).
@@ -199,20 +252,19 @@ async fn supervisor_main(
     let mut running: Option<RunningServer> = None;
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            ServerCmd::Start => {
+            ServerCmd::Start { listener, token } => {
                 if running.is_some() {
-                    continue; // idempotent restart
+                    continue; // idempotent (start() also guards via state)
                 }
-                match start_listener(&config, dispatch_ctx.clone()).await {
-                    Ok((server, port)) => {
-                        state.store(Arc::new(ServerState {
-                            running: true,
-                            port: Some(port),
-                        }));
+                match start_accepting(&config, listener, token, dispatch_ctx.clone()) {
+                    Ok(server) => {
+                        // `start()` already published running+port optimistically.
                         running = Some(server);
-                        tracing::info!(port, "claude-code IDE server started");
+                        tracing::info!("claude-code IDE server accepting");
                     }
                     Err(e) => {
+                        // Roll back the optimistic running state set by `start()`.
+                        state.store(Arc::new(ServerState::default()));
                         tracing::debug!(error = %e, "claude-code IDE server failed to start");
                     }
                 }
@@ -228,16 +280,19 @@ async fn supervisor_main(
     }
 }
 
-async fn start_listener(
+/// I5.1: take over the pre-bound listener — write the discovery lockfile, wrap
+/// the listener for tokio, and spawn the accept loop. Runs on the supervisor
+/// task (inside the IDE runtime), so `from_std` + `tokio::spawn` have a runtime
+/// context. The std listener was already set non-blocking in [`start`].
+///
+/// [`start`]: ClaudeCodeServerHandle::start
+fn start_accepting(
     config: &ServerConfig,
+    std_listener: std::net::TcpListener,
+    token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
-) -> Result<(RunningServer, u16)> {
-    // Bind an ephemeral loopback port. Linux ephemeral ports fall inside
-    // the dynamic 10000-65535 range the contract specifies; explicit
-    // range selection is a refinement, not needed for I1.
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let port = listener.local_addr()?.port();
-    let token = auth::generate_token()?;
+) -> Result<RunningServer> {
+    let port = std_listener.local_addr()?.port();
     let lockfile = Lockfile::write(
         &config.lock_dir,
         port,
@@ -250,14 +305,12 @@ async fn start_listener(
             running_in_windows: false,
         },
     )?;
+    let listener = TcpListener::from_std(std_listener)?;
     let accept_task = tokio::spawn(accept_loop(listener, token, dispatch_ctx));
-    Ok((
-        RunningServer {
-            _lockfile: lockfile,
-            accept_task,
-        },
-        port,
-    ))
+    Ok(RunningServer {
+        _lockfile: lockfile,
+        accept_task,
+    })
 }
 
 async fn accept_loop(

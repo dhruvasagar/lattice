@@ -156,13 +156,46 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
       proposed (right) side; the user may also edit the baseline (left) if they
       want — the diff recomputes either way.
 
-- **I5 — Terminal launch + the IDE buffer.** Add `env: Vec<(String,String)>` to
-  `SpawnConfig` (spawner.rs:24 — confirmed absent; thread into `CommandBuilder`).
-  `:claude` spawns `claude` in a `BufferKind::Terminal` buffer with
-  `CLAUDE_CODE_SSE_PORT`+`ENABLE_IDE_INTEGRATION` injected, activates `claude-code-mode` on
-  it, and starts the server. `--ide` CLI flag optional. **TUI+GPUI parity** for any
-  new effect. **Tests:** `SpawnConfig.env` reaches the child; `:claude` injects both
-  vars + activates `claude-code-mode`; lockfile exists while running.
+- **I5 — Terminal launch + the IDE buffer.** `:claude` spawns the `claude` CLI
+  in a `BufferKind::Terminal` buffer wired to talk back to this editor.
+
+  - **I5.0 — `SpawnConfig.env` (foundation).** Add `env: Vec<(String,String)>` to
+    `SpawnConfig` (spawner.rs:24 — confirmed absent; derives Clone/Debug, no
+    `Default`), thread it into `CommandBuilder` (`cmd.env(k,v)` per pair).
+    Construction-site audit (Risk 4): exactly ONE site —
+    `Editor::do_terminal_spawn` (dispatch.rs:17210) — gets `env: Vec::new()`.
+    **Test (lattice-terminal):** spawn a child with `env`, assert it reaches the
+    process (e.g. `sh -c 'printf %s "$VAR"'` echoes the injected value).
+
+  - **I5.1 — `:claude` ex-command (the IDE launch).** A crate-owned bare-dashed
+    ex-command in `lattice-claude-code` (like `:claude-code-start`) whose `apply`
+    captures the server handle: start the server, obtain the bound **port**,
+    spawn `claude` in a Terminal buffer with `env` = `CLAUDE_CODE_SSE_PORT=<port>`
+    + `ENABLE_IDE_INTEGRATION=true` (+ `TERM`, inherited otherwise). **KEY
+    DECISION (port sequencing):** `ClaudeCodeServerHandle::start()` is a
+    non-blocking `cmd_tx` send; the supervisor binds the listener
+    asynchronously, so the port is NOT known at `:claude` time. Resolution
+    (recommend **A**): pre-bind a `std::net::TcpListener` synchronously when the
+    handle starts (`TcpListener::bind("127.0.0.1:0")` → read `local_addr().port()`
+    → `set_nonblocking(true)` → hand to the supervisor via
+    `tokio::net::TcpListener::from_std`), so `start()` returns the port
+    immediately. Rejected: (B) lockfile-only discovery (race — the CLI may start
+    before `~/.claude/ide/<port>.lock` exists) and (C) deferred spawn via a tick
+    callback polling `ServerState.port` (more moving parts for the same result).
+    Because spawning a terminal needs `&mut Editor` and lives in the host, the
+    ex-command can't open the terminal directly (an ex-command `apply` gets no
+    `&mut Editor`); route the terminal-spawn-with-env through an existing host
+    primitive or a new host-applied `Effect` — TBD at implementation (the
+    `:claude-code-start` precedent only sends a `cmd_tx`; opening a buffer is the
+    new bit, mirror `do_terminal_spawn`). **Confirm with Dhruva before building
+    I5.1** (touches the server start API + a host terminal-open path).
+
+  - **I5.2 — mode activation + status + tests + parity.** Activate
+    `claude-code-mode` (the minor mode) on the spawned Terminal buffer via the
+    mode's `on_activate`. Optional `--ide` CLI flag. **TUI+GPUI parity** for any
+    new `Effect`. **Tests:** `:claude` injects both env vars + activates
+    `claude-code-mode`; the lockfile exists while running; clean teardown on
+    buffer close / `:claude-code-stop`.
 
 - **I6 — Notifications.** `notifications.rs` + event-bus subscriber:
   `selection_changed` (coalesced — fires per cursor move), `didChangeActiveEditor`,

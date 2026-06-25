@@ -263,11 +263,20 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `O`: open a new line above and enter Insert.",
             AppEffect::OpenLineAbove,
         ),
-        lsp_hover_request: register_simple(
-            registry,
+        // L7: `K` is mode-owned. The `CommandId` still resolves (the
+        // chord binding + the `lsp-mode` handler registration key on it),
+        // but the `apply` is a dead `Effect::None` — the
+        // `ActionHandlerRegistry` closure intercepts first and emits
+        // `Effect::Lsp(LspRequest::Hover)`. Same shape as `snippet_expand`
+        // / `lsp_diagnostic_popup`.
+        lsp_hover_request: registry.register_action(
             "action:lsp-hover",
-            "`K`: send `textDocument/hover` to every attached LSP server.",
-            AppEffect::LspHoverRequest,
+            "`K`: send `textDocument/hover` to attached LSP servers \
+             (mode-owned; `lsp-mode`'s handler emits `Effect::Lsp(LspRequest::Hover)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         search_next: register_simple(
             registry,
@@ -449,41 +458,64 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `P`: paste the unnamed register's contents before the cursor.",
             AppEffect::PasteBefore,
         ),
-        lsp_definition_request: register_simple(
-            registry,
+        // L7: the 6 nav chords are mode-owned. Each `CommandId` still
+        // resolves (chord binding + `lsp-mode` handler registration key on
+        // it) but carries a dead `Effect::None` apply — the
+        // `ActionHandlerRegistry` closure intercepts first and emits
+        // `Effect::Lsp(LspRequest::…)`. Same shape as `snippet_expand`.
+        lsp_definition_request: registry.register_action(
             "action:lsp-definition",
-            "`gd`: send `textDocument/definition` to attached LSP servers.",
-            AppEffect::LspDefinitionRequest,
+            "`gd`: send `textDocument/definition` to attached LSP servers \
+             (mode-owned; emits `Effect::Lsp(LspRequest::Definition)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
-        lsp_declaration_request: register_simple(
-            registry,
+        lsp_declaration_request: registry.register_action(
             "action:lsp-declaration",
-            "`gD`: send `textDocument/declaration` to attached LSP servers.",
-            AppEffect::LspDeclarationRequest,
+            "`gD`: send `textDocument/declaration` to attached LSP servers \
+             (mode-owned; emits `Effect::Lsp(LspRequest::Declaration)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
-        lsp_type_definition_request: register_simple(
-            registry,
+        lsp_type_definition_request: registry.register_action(
             "action:lsp-type-definition",
-            "`gy`: send `textDocument/typeDefinition` to attached LSP servers.",
-            AppEffect::LspTypeDefinitionRequest,
+            "`gy`: send `textDocument/typeDefinition` to attached LSP servers \
+             (mode-owned; emits `Effect::Lsp(LspRequest::TypeDefinition)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
-        lsp_implementation_request: register_simple(
-            registry,
+        lsp_implementation_request: registry.register_action(
             "action:lsp-implementation",
-            "`gI`: send `textDocument/implementation` to attached LSP servers.",
-            AppEffect::LspImplementationRequest,
+            "`gI`: send `textDocument/implementation` to attached LSP servers \
+             (mode-owned; emits `Effect::Lsp(LspRequest::Implementation)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
-        lsp_references_request: register_simple(
-            registry,
+        lsp_references_request: registry.register_action(
             "action:lsp-references",
-            "`gr`: send `textDocument/references` to attached LSP servers.",
-            AppEffect::LspReferencesRequest,
+            "`gr`: send `textDocument/references` to attached LSP servers \
+             (mode-owned; emits `Effect::Lsp(LspRequest::References)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
-        lsp_follow_link_at_cursor: register_simple(
-            registry,
+        lsp_follow_link_at_cursor: registry.register_action(
             "action:lsp-follow-link",
-            "`gx`: follow the `textDocument/documentLink` covering the cursor.",
-            AppEffect::LspFollowLinkAtCursor,
+            "`gx`: follow the `textDocument/documentLink` covering the cursor \
+             (mode-owned; emits `Effect::Lsp(LspRequest::FollowLink)`).",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
         ),
         enter_append: register_simple(
             registry,

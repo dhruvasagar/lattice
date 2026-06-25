@@ -1103,6 +1103,112 @@ closure bound to the mode's `ActionId`. No host `Action` variant, no
 
 ---
 
+## 16. Mode ownership of the nav surface (the `Effect::Lsp` boundary)
+
+The seven LSP **navigation** chords -- `K` (hover), `gd` (definition),
+`gD` (declaration), `gy` (typeDefinition), `gI` (implementation), `gr`
+(references), `gx` (follow documentLink) -- are owned by `lsp-mode`:
+both the binding (`LspMode::keymap()`, scoped by K.1.c to
+lsp-attached buffers) AND the handler body (`LspMode::action_handlers()`
+closures). This is L4b's `gl` pattern (§15) generalised from one
+synchronous chord to the seven async ones.
+
+### The complication: nav is async, `gl` was not
+
+`gl` reads the local diagnostics layer synchronously and returns
+`Effect::ShowDiagnosticsPopup` in one call. The nav chords instead fire
+an **async** LSP request (hover → popup, definition → jump, references →
+picker) whose result lands dozens of milliseconds later, off-keystroke.
+A handler closure has only a borrowed `&ActionContext` (cursor, buffer,
+services, events) -- it cannot drive the request, because the request
+substrate is irreducibly `&mut Editor`: popup State-A/B focus
+promotion, the sub-mode gate, URI resolution, UTF-8→UTF-16 position
+conversion, the cancellation-token lifecycle, the result channel + the
+popup anchor stash, `spawn_on_lsp_runtime`, and the `paint_request`
+wake. Plus the off-keystroke `drain_pending_*` that opens the
+popup / jumps / opens the picker when the response arrives.
+
+### The split: mode decides, host executes
+
+That substrate is **legitimate shared host machinery** -- the direct
+analogue of the cells / overlay workers (§12, `display-line.md`):
+generic execution that modes *trigger* but do not *own*. By the
+substrate-vs-mode-helper rule (CLAUDE.md), its consumer is the generic
+Effect-apply + actor drain loop, which is uniform host machinery, so it
+stays host. The mode owns only the **decision** ("fire request X"),
+expressed by returning a host-owned Effect:
+
+	// lattice-grammar -- pure data, no lsp_types, no lattice-lsp dep.
+	pub enum LspRequest {
+		Hover, Definition, Declaration, TypeDefinition,
+		Implementation, References, FollowLink,
+	}
+	// one new Effect arm carrying the request kind.
+	Effect::Lsp(LspRequest)
+
+Flow:
+
+	gd
+	  → LspMode::keymap()                "action:lsp-definition"   (mode-owned)
+	  → ActionHandlerRegistry intercept  → LspMode::action_handlers() closure
+	  → Some(Effect::Lsp(LspRequest::Definition))
+	  → host apply_effect_host           → editor.lsp_request(req)   (host substrate dispatcher)
+	  → editor.lsp_nav_request(Definition)  spawn + token + anchor   (unchanged)
+	  → drain_pending_definitions()      off-keystroke: jump / picker (unchanged)
+
+The handler reads no position -- the substrate reads live `Editor`
+state (`self.cursor`, `self.scroll`) exactly as it does today, so the
+anchor pins to the symbol the chord fired on. `Effect::Lsp` is
+host-applied: both renderers list it on the host-handled no-op branch
+of their effect classifiers (parity with `ShowDiagnosticsPopup`), and
+it is non-mutating / non-yanking. `LspRequest::FollowLink` is the one
+nav that returns `RendererSignal`s synchronously (it opens a buffer or
+delegates to the OS handler); `lsp_request` returns those and the apply
+arm extends `out.renderer_signals`.
+
+### Why `Effect::Lsp`, not seven Effects (option (c) over (a))
+
+A single data-carrying `Effect::Lsp(LspRequest)` -- not seven
+per-method Effect arms -- is the form that makes the acid test pass
+cleanly: a future LSP method (or a future provider crate's LSP-ish
+chord) adds one `LspRequest` **data** arm, *not* a new Effect variant,
+*not* a new host `Action` variant, *not* a new `Editor::do_*` bound to a
+chord. It also collapses the effect-classifier threading both renderers
+carry from seven arms to one. This is the Effect-vocabulary-as-host-
+boundary principle (`feedback_effect_vocabulary_is_host_boundary`): the
+Effect enum is the host-owned typed seam for the plugin/replay/async
+boundary, so encoding the request *as data inside one Effect* is the
+right grain.
+
+### Rejected: mode-side async (option (b))
+
+Driving the async lifecycle inside the mode (spawn / cancel via the
+M-async Guard machinery, drain mode-side) was rejected on heuristic #1:
+it rewrites proven substrate for no merit win and would either duplicate
+the spawn/anchor/wake plumbing (a second path that can silently miss the
+`paint_request` wake -- the L1/L6 off-keystroke-repaint bug class, a UX
+regression with no user upside) or force the deep `&mut Editor` request
+state out through a large new service surface. The async request
+machinery is shared substrate, not mode-specific behaviour.
+
+### What stays host (and why that is not a half-migration)
+
+`editor.lsp_request` + `lsp_hover_request` / `lsp_nav_request` /
+`lsp_references_request` / `do_lsp_follow_link_at_cursor` + the
+`drain_pending_*` family remain host substrate. The seven
+`register_action` registrations keep a dead `Effect::None` apply (the
+handler intercepts first) purely so the `CommandId` resolves for the
+chord binding + handler registration -- the `snippet-expand` / `gl`
+shape. The mode owns the full *decision surface* (binding + handler
+body); the host owns the *generic execution*. That is the documented
+correct split, not a half-migration: a half-migration would leave the
+binding in the mode while a host `Editor::do_*` stayed bound to the
+chord -- which is exactly what this slice removes.
+
+See the slice plan (L7) for sequencing.
+
+---
+
 ## See also
 
 - [design.md §5.4](design.md) -- canonical design.

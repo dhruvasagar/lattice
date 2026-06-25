@@ -1025,6 +1025,8 @@ impl GpuiApp {
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
             | Effect::ShowDiagnosticsPopup { .. }
+            // L7: LSP nav requests are host-applied (`editor.lsp_request`).
+            | Effect::Lsp(_)
             | Effect::EchoRegisters
             | Effect::EchoMarks
             | Effect::ListBuffers

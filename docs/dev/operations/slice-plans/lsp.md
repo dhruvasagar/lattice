@@ -304,48 +304,103 @@ publish; keystroke path unchanged (`keystroke_publish_ratchet` green).
 *parity* — host-side only; both renderers consume `paint_request`
 identically (no peer-specific code). **Deps:** L1/L2.
 
-### L7 — LSP nav surface → full mode-ownership  🗒
+### L7 — LSP nav surface → full mode-ownership  ✅
 
 **Goal:** finish the half-migration. `gd` / `gD` / `gy` / `gI` / `gr` /
 `gx` / `K` have their KEYMAP in the mode (`lsp_mode_keymap_entries()`,
-`modes.rs:455`, `cmd: "action:lsp-*"`) but their HANDLERS are host
-ActionIds in `actions.rs` (`ids.lsp_hover_request`, `lsp_definition_request`,
-… ~266/452/1267). L4b made `gl`/`]d`/`[d` the FIRST fully mode-owned LSP
-surface; this slice brings the nav surface to the same standard
+`modes.rs:456`, `cmd: "action:lsp-*"`) but their HANDLER BODIES are host
+`AppEffect::Lsp*Request` → `Action::Lsp*Request` → `editor.lsp_*()`. L4b
+made `gl`/`]d`/`[d` the FIRST fully mode-owned LSP surface; this slice
+brings the nav surface to the same standard
 (`feedback_mode_owns_its_surface`).
 
-**The complication (why this needs design, not a mechanical move):**
-unlike `gl` (a synchronous read of the local diagnostics layer), the nav
-actions fire ASYNC LSP requests (hover → popup, definition → jump,
-references → picker). The L4b shape (handler closure returns an `Effect`
-synchronously) doesn't map 1:1. Open questions to resolve first:
-- What is the right Effect/handler shape for an async request? Options:
-  (a) handler returns an `Effect::Lsp<Request>` the host spawns +
-  drains (the request substrate `maybe_request_*` / `drain_pending_*`
-  stays host — it IS legitimate shared substrate, like the cells
-  worker); (b) richer mode-side async via the M-async Guard machinery.
-  Decide which keeps the acid test (zero `Editor::do_*` bound to a
-  chord, zero new host `Action` variants) without duplicating the async
-  request plumbing.
-- The existing `actions.rs` `lsp_*_request` ActionIds: do they become
-  command-name-only registrations with dead applies (the `snippet-expand`
-  / `lsp-diagnostic-popup` pattern), with the real body moving to
-  `LspMode::action_handlers()` closures? Or do they stay as the
-  host-substrate request triggers? This is the crux.
-- Reuse from L4b: the `DiagnosticsQuery`-style service pattern for any
-  data the closures need (cursor/buffer/uri via the render-state
-  snapshot); the Effect-classifier threading discipline.
+**Design:** lsp-architecture.md **§16** (the `Effect::Lsp` boundary).
 
-**Files:** `lattice-lsp/src/modes.rs` (add `LspMode::action_handlers()`);
-`lattice-host/src/actions.rs` (the `lsp_*_request` ActionIds);
-`dispatch.rs` (the async request + drain substrate); both renderers'
-Effect classifiers if new Effects are added.
+**Locked decision (2026-06-25): option (c)** — the unified
+`Effect::Lsp(LspRequest)` form of option (a). The mode handler returns
+`Effect::Lsp(LspRequest::X)`; the host substrate (`editor.lsp_request`
+→ existing `lsp_hover_request` / `lsp_nav_request` /
+`lsp_references_request` / `do_lsp_follow_link_at_cursor` +
+`drain_pending_*`) spawns + drains, unchanged. Rationale (heuristic #1 +
+the Effect-vocabulary-as-host-boundary rule): the async request
+machinery is legitimate shared substrate — the cells-worker analogue —
+that modes *trigger* but don't *own*; encoding *which* request as data
+inside one host-owned Effect makes the acid test pass with one data arm
+per future method, not a new Effect/`Action`/`do_*`. Option (b)
+(mode-side async via M-async Guards) rejected: rewrites proven substrate
+for no merit win + risks the L1/L6 off-keystroke-wake bug class. The
+`AppEffect::Lsp*Request` (7) + `Action::Lsp*Request` (7) variants are
+**deleted**.
+
+#### L7.1 — the cutover (atomic; can't compile mid-cutover)  ✅
+**Landed 2026-06-25.** One slice because removing `AppEffect::Lsp*Request`
+breaks the `register_simple` calls and the dispatch arms simultaneously —
+there is no green intermediate without dead-code allows. Four-artefacts
+shipped together. Green: 199 grammar + 198 lsp + 569 host + 1490 TUI
+lib tests; GPUI `--features window` builds; clippy clean on the new code.
+Acid test holds (new LSP method = one `LspRequest` data arm + a mode
+handler closure; zero new `Editor::do_*`/`Action`/Effect variants).
+
+- **lattice-grammar:** new `LspRequest` enum (`Hover` / `Definition` /
+  `Declaration` / `TypeDefinition` / `Implementation` / `References` /
+  `FollowLink`; `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`, no
+  serde — `Effect` derives only `Debug, Clone`); new
+  `Effect::Lsp(LspRequest)` variant. Remove the 7
+  `AppEffect::Lsp*Request` variants from `app_effect.rs`.
+- **lattice-host/action.rs:** remove the 7 `Action::Lsp*Request`
+  variants (the non-nav `LspSignatureHelpRequest` /
+  `LspCompletionRequest` / `LspDocumentSymbolRequest` /
+  `LspWorkspaceSymbolRequest` / `LspOnTypeFormattingRequest` /
+  `LspInsertCompletionRequest` are ex-command / insert-autopilot
+  triggered, NOT the nav chords — leave them).
+- **lattice-host/dispatch.rs:** remove the 7
+  `AppEffect::Lsp*Request => next_actions.push(Action::…)` arms + the 7
+  `Action::Lsp*Request => editor.lsp_*()` arms; add
+  `editor.lsp_request(req: LspRequest) -> Vec<RendererSignal>`
+  (dispatches to the unchanged substrate; `FollowLink` returns its
+  signals, the rest `vec![]`); add the `Effect::Lsp(req) => { let s =
+  editor.lsp_request(req); out.renderer_signals.extend(s); }` apply arm
+  (next to `ShowDiagnosticsPopup`, ~2649); add `Effect::Lsp(_) => false`
+  to both `effect_mutates_or_yanks` (~25986) + `effect_mutates`
+  (~26096).
+- **lattice-host/actions.rs:** convert the 7 `register_simple(…
+  AppEffect::Lsp*Request)` to `register_action(… dead Effect::None)`
+  (the `snippet_expand` / `lsp_diagnostic_popup` shape); keep the
+  `ActionId` fields + the `action_id → name` map (handlers + chord
+  binding resolve through them).
+- **lattice-lsp/modes.rs:** add `LspMode::action_handlers()` returning 7
+  `ActionHandlerContribution`s (`action:lsp-hover` →
+  `Effect::Lsp(LspRequest::Hover)`, etc.). Picked up automatically by
+  the boot walk (`register_mode_action_handlers`, walks every registered
+  mode; `LspMode` is registered at `modes.rs:1031`).
+- **renderers (parity, same patch):** TUI — add `| Effect::Lsp { .. }`
+  to the host-handled no-op list (`app/dispatch.rs:~889`) + two
+  `Effect::Lsp(_) => false` classifier arms (~1196, ~1305). GPUI — add
+  `| Effect::Lsp { .. }` to the host-handled no-op list
+  (`lib.rs:~1027`). End-of-slice grep:
+  `grep -rn "Effect::Lsp" crates/lattice-ui-gpui/` non-empty.
+
+**Artefacts:**
+- *test* — `lattice-lsp`: `LspMode::action_handlers()` contributes the 7
+  nav action names + each handler returns the expected
+  `Effect::Lsp(LspRequest::X)` (mirror the L4b `gl` handler test,
+  `modes.rs:1217`). `lattice-host`: `Effect::Lsp(_)` classifies
+  non-mutating / non-yanking. The substrate behaviour tests
+  (`lattice-ui-tui/app/lsp.rs` — `lsp_hover_request_*`,
+  `drain_pending_definitions_*`) are UNCHANGED (they call the substrate
+  directly) and must stay green.
+- *doc* — §16 (done) + this slice.
+- *bench* — n/a; the keystroke path stays O(1) (chord → closure →
+  Effect), covered by `keystroke_publish_ratchet`. Async spawn + drain
+  unchanged.
+- *error handling* — unknown `action_name` at boot → `debug!` skip
+  (existing `register_mode_action_handlers` behaviour); no URI / no
+  server arms in the substrate unchanged (echo + bail).
 
 **Acid test:** a future provider crate adds an LSP-ish chord with ZERO
 `Editor::` additions in `lattice-host` and ZERO new host `Action`
-variants. **Deps:** L4b (the pattern). **Confirm the Effect/handler
-shape with Dhruva before coding** — present the (a)/(b) options mapped
-to the heuristics.
+variants — a new `LspRequest` data arm + a mode handler closure suffice.
+**Deps:** L4b (the pattern).
 
 ---
 

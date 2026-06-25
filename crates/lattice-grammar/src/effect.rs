@@ -117,6 +117,36 @@ pub struct Utf16Pos {
     pub col: u32,
 }
 
+/// L7 (lsp-architecture.md §16): which LSP **navigation** request a
+/// mode-owned nav chord (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`)
+/// wants the host to fire. Pure data — no `lsp_types`, no `lattice-lsp`
+/// dependency — so it can ride inside the host-owned [`Effect::Lsp`]
+/// boundary. `lsp-mode`'s `action_handlers()` closure returns
+/// `Effect::Lsp(LspRequest::X)`; the host's `editor.lsp_request`
+/// dispatcher maps each arm onto the existing (unchanged) async request
+/// substrate (`lsp_hover_request` / `lsp_nav_request` /
+/// `lsp_references_request` / `do_lsp_follow_link_at_cursor`). The
+/// handler carries no position — the substrate reads live `Editor`
+/// cursor/scroll, so the popup/jump anchors to the symbol the chord
+/// fired on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspRequest {
+    /// `K` -- `textDocument/hover`.
+    Hover,
+    /// `gd` -- `textDocument/definition`.
+    Definition,
+    /// `gD` -- `textDocument/declaration`.
+    Declaration,
+    /// `gy` -- `textDocument/typeDefinition`.
+    TypeDefinition,
+    /// `gI` -- `textDocument/implementation`.
+    Implementation,
+    /// `gr` -- `textDocument/references`.
+    References,
+    /// `gx` -- follow the `textDocument/documentLink` covering the cursor.
+    FollowLink,
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     None,
@@ -305,6 +335,17 @@ pub enum Effect {
     ShowDiagnosticsPopup {
         lines: Vec<(String, u8)>,
     },
+    /// L7 (lsp-architecture.md §16): fire a mode-owned LSP **navigation**
+    /// request (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`). The
+    /// owning `lsp-mode` `action_handlers()` closure decides *which*
+    /// request via [`LspRequest`]; the host's `editor.lsp_request`
+    /// dispatcher runs the (unchanged) async request substrate
+    /// host-side. Host-applied — both renderers treat it as a
+    /// host-handled no-op in their effect classifiers, and it neither
+    /// mutates nor yanks. `LspRequest::FollowLink` is the one variant
+    /// that yields `RendererSignal`s synchronously (open buffer / OS
+    /// handler); the apply arm extends `out.renderer_signals`.
+    Lsp(LspRequest),
     /// `:reg[isters]` -- the host formats and displays its own register
     /// state.
     EchoRegisters,

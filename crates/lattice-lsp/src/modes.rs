@@ -30,7 +30,7 @@ use lattice_mode::{
     Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
     Subscription, keymap_entry,
 };
-use lattice_grammar::effect::Effect;
+use lattice_grammar::effect::{Effect, LspRequest};
 use lattice_runtime::EventBus;
 
 use crate::supervisor::LspSupervisorHandle;
@@ -551,6 +551,38 @@ impl Mode for LspMode {
     /// Scoped to lsp-mode buffers by K.1.c; absent at the Builtin layer.
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(lsp_mode_keymap_entries())
+    }
+    /// L7 (lsp-architecture.md §16): the handler bodies for the 7 nav
+    /// chords. Each closure decides only *which* request to fire and
+    /// returns the host-owned `Effect::Lsp(LspRequest::…)`; the host's
+    /// `editor.lsp_request` dispatcher runs the (unchanged) async request
+    /// substrate. The closures read nothing from the `ActionContext` —
+    /// the substrate reads live `Editor` cursor/scroll at apply time, so
+    /// the popup/jump anchors to the symbol the chord fired on. Global
+    /// (buffer-agnostic): registered once at boot by the
+    /// `register_mode_action_handlers` walk; K.1.c scopes *where* the
+    /// chords fire. This is L4b's `gl` pattern generalised across the
+    /// nav surface (`feedback_mode_owns_its_surface`).
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        fn nav(action_name: &'static str, req: LspRequest) -> ActionHandlerContribution {
+            let handler: ActionHandler =
+                std::sync::Arc::new(move |_ctx: &ActionContext<'_>| -> Option<Effect> {
+                    Some(Effect::Lsp(req))
+                });
+            ActionHandlerContribution {
+                action_name,
+                handler,
+            }
+        }
+        vec![
+            nav("action:lsp-hover", LspRequest::Hover),
+            nav("action:lsp-definition", LspRequest::Definition),
+            nav("action:lsp-declaration", LspRequest::Declaration),
+            nav("action:lsp-type-definition", LspRequest::TypeDefinition),
+            nav("action:lsp-implementation", LspRequest::Implementation),
+            nav("action:lsp-references", LspRequest::References),
+            nav("action:lsp-follow-link", LspRequest::FollowLink),
+        ]
     }
     fn options(&self) -> OptionOverrideSet {
         OptionOverrideSet::default()
@@ -1171,6 +1203,48 @@ mod tests {
         let m = LspMode::new();
         assert_eq!(m.kind(), ModeKind::Minor);
         assert_eq!(m.required_capabilities(), CapabilitySet::empty());
+    }
+
+    // ── L7: lsp-mode owns the nav handlers (Effect::Lsp boundary) ────────────
+
+    #[test]
+    fn lsp_mode_action_handlers_map_each_nav_chord_to_its_request() {
+        // The 7 nav chords are mode-owned: each handler closure returns
+        // the host-owned `Effect::Lsp(LspRequest::…)` the host dispatches
+        // onto the request substrate. Mirrors L4b's `gl` handler test.
+        let handlers = LspMode::new().action_handlers();
+        assert_eq!(handlers.len(), 7, "expected one handler per nav chord");
+
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(0),
+            cursor: lattice_protocol::position::Position::ZERO,
+            services: &services,
+            events: &events,
+        };
+
+        let expected: &[(&str, LspRequest)] = &[
+            ("action:lsp-hover", LspRequest::Hover),
+            ("action:lsp-definition", LspRequest::Definition),
+            ("action:lsp-declaration", LspRequest::Declaration),
+            ("action:lsp-type-definition", LspRequest::TypeDefinition),
+            ("action:lsp-implementation", LspRequest::Implementation),
+            ("action:lsp-references", LspRequest::References),
+            ("action:lsp-follow-link", LspRequest::FollowLink),
+        ];
+        for (name, req) in expected {
+            let contribution = handlers
+                .iter()
+                .find(|c| c.action_name == *name)
+                .unwrap_or_else(|| panic!("missing handler for {name}"));
+            match (contribution.handler)(&ctx) {
+                Some(Effect::Lsp(got)) => {
+                    assert_eq!(got, *req, "handler {name} fired the wrong request")
+                }
+                other => panic!("handler {name} returned {other:?}, want Effect::Lsp({req:?})"),
+            }
+        }
     }
 
     // ── L4b: lsp-diagnostics-mode owns gl / ]d / [d + the popup ──────────────

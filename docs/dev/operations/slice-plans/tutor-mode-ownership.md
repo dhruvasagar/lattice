@@ -6,7 +6,29 @@ principle is the standing rule this plan applies. This file owns the *when /
 in what order* of relocating the tutor's engine off the host and into
 `TutorMode`.
 
-Status: 🗒 planned (audit done 2026-06-25; implementation NOT started).
+Status: ✅ done via TM.1 cohesion-relocation (2026-06-25, commit `b6795c45`).
+
+> **CORRECTION (2026-06-25, on starting the work).** Reading the engine revealed
+> the original target below (a mode-owned per-buffer store + tick-callback + "zero
+> `Editor::` methods" acid test) **over-reached**. The tutor is a **host-native
+> builtin that keeps its `&mut Editor` seam** (BC.final lists "tutor" explicitly),
+> and its engine is irreducibly cursor/document/buffer-local-coupled on the
+> keystroke path — a tick-callback (`FnMut() -> Vec<Effect>`) genuinely cannot
+> reach that state. So "ownership" here is **cohesion-relocation**: move the engine
+> `impl Editor` methods out of `dispatch.rs` into the tutor module's own
+> `tutor/engine.rs` (the methods STAY `Editor` methods, so call sites are
+> unchanged). **Done in one slice** (`b6795c45`): all 7 methods (`do_tutor`,
+> `do_tutor_advance`/`retreat`, `tutor_after_advance`/`open_next`/`update_headerline`,
+> `check_tutor_session`) moved to `tutor/engine.rs`; `dispatch.rs` went from ~137
+> tutor refs to **5** thin call-site hooks (the hot-loop check, the
+> `ex:tutor-next`/`-prev` routing) — the acceptable host-builtin seam. Green: host
+> lib 568 · tutor 20 · BC.2 pins 14.
+>
+> The TM.2–TM.5 mode-store slices below are **superseded** (kept as the rejected
+> heavier alternative). The HUD *rendering* was already mode-side (`tutor/mode.rs`);
+> the tutor module is now self-contained. If a future need arises to make the
+> tutor a *true* mode-store subsystem (e.g. a WASM-plugin tutor), revisit — but for
+> a host-builtin, cohesion-relocation is the fit.
 
 ## Context — the audit (the inversion to fix)
 

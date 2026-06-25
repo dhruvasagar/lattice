@@ -1064,6 +1064,8 @@ impl GpuiApp {
             // `Editor::handle_effect` (TUI/GPUI parity); the peer no-ops them.
             | Effect::OpenExternalUri { .. }
             | Effect::OpenBufferAtColumn { .. }
+            // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write).
+            | Effect::SaveBuffer { .. }
             | Effect::RecordJump => {}
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force, scope } => {
@@ -1078,10 +1080,11 @@ impl GpuiApp {
                     e.set_cursor(position);
                 });
             }
-            // Phase 5.8.AD.3: `:w` save with full LSP fan-out
-            // (BeforeSave / willSave / willSaveWaitUntil /
-            // didSave / didCreateFiles) is now host-resident.
-            Effect::SaveBuffer { path } => self.mutate_editor(move |e| e.do_write(path)),
+            // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in
+            // `Editor::handle_effect` (reuses `do_write`; works on the
+            // off-keystroke inbound tick path) — the peer arm is retired to the
+            // grouped no-op above (TUI/GPUI parity). `:w`'s full LSP fan-out
+            // (BeforeSave / willSave / didSave / …) was already host-resident.
             // Phase 5.8.AD.2: LSP commands whose bodies migrated.
             Effect::LspStatus => {
                 let signals = self.mutate_editor_with(|e| e.do_lsp_status());

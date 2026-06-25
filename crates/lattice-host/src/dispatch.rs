@@ -3091,6 +3091,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
+        // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
+        // `Editor::do_write`), joining BufferDelete below — so it works on the
+        // off-keystroke inbound tick path (claude-code `saveDocument`), where
+        // peer-applied effects are discarded. `do_write` does the save + LSP
+        // didSave fan-out host-side and returns no renderer signals; the
+        // keystroke `:w` path is unchanged (the peers now no-op SaveBuffer).
+        Effect::SaveBuffer { path } => editor.do_write(path),
         Effect::BufferDelete { force } => {
             // 5.5.F.4.4: `:bd[elete]` -- close the active buffer. The
             // host-side path handles successor selection, LSP detach,

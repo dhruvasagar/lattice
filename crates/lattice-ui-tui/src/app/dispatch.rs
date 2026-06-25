@@ -882,6 +882,9 @@ impl App {
             // `lattice_host::dispatch::handle_effect`.
             Effect::None
             | Effect::ClearSearchHighlight
+            // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write,
+            // joins BufferDelete); peer no-ops it.
+            | Effect::SaveBuffer { .. }
             | Effect::Echo { .. }
             | Effect::ShowDiagnosticsPopup { .. }
             | Effect::EchoMarks
@@ -953,7 +956,9 @@ impl App {
             // --- Ex-command effects (DESIGN.md §5.2.1 unified dispatch). ---
             // These come from ex-command apply closures registered in the
             // grammar registry; the host owns the side effects.
-            Effect::SaveBuffer { path } => self.do_write(path),
+            // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in
+            // `Editor::handle_effect` (so it works on the off-keystroke inbound
+            // tick path); the peer arm is retired → grouped no-op below.
             Effect::QuitEditor { force, scope } => self.do_quit(force, scope),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
             // M.10.3 bug fix (2026-06-03): atomic open-and-position.

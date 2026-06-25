@@ -74,3 +74,27 @@ fn open_buffer_at_column_none_opens_without_forcing_cursor() {
 // be a side-effecting, flaky test (could pop a browser; differs per host). Its
 // request → effect mapping is pinned in `lattice-lsp`'s show_document handler
 // tests; the spawn itself is a thin fire-and-forget OS call.
+
+/// I3 / BC.8c follow-up: `Effect::SaveBuffer` is HOST-applied in `handle_effect`
+/// (reusing the existing `Editor::do_write`, joining `BufferDelete`), so
+/// claude-code's `saveDocument` actually saves on the off-keystroke inbound
+/// tick path — where peer-applied effects are discarded. Proof: emitting
+/// `SaveBuffer` with a target path writes the active buffer's content to disk
+/// with no renderer peer involved.
+#[test]
+fn save_buffer_is_host_applied_and_writes_to_disk() {
+    let path = std::env::temp_dir().join("lattice-savebuffer-host-applied.txt");
+    let _ = std::fs::remove_file(&path);
+
+    let mut editor = Editor::boot(CoreDocument::from_text("agent wrote this\n"));
+    // `:w <path>` semantics — save the active (scratch) buffer to `path`.
+    editor.handle_effect(Effect::SaveBuffer {
+        path: Some(path.clone()),
+    });
+
+    let on_disk =
+        std::fs::read_to_string(&path).expect("SaveBuffer wrote the file host-side (no peer)");
+    assert_eq!(on_disk, "agent wrote this\n");
+
+    let _ = std::fs::remove_file(&path);
+}

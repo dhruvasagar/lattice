@@ -32,6 +32,9 @@ pub mod inbound;
 pub mod install;
 pub mod lockfile;
 pub mod modes;
+// I6: server-initiated notifications (selection_changed / didChangeActiveEditor)
+// — a task coalesces SelectionsChanged + broadcasts frames to connected agents.
+pub mod notifications;
 pub mod protocol;
 pub mod reads;
 pub mod server;

@@ -108,6 +108,54 @@ pub fn register_claude_code_ex_commands(
         },
     );
 
+    // I6.2: `:claude-send` (the `@`-mention) — push the current file + selected
+    // line range into the attached agent's context. Reads the crate-owned read
+    // cache (the active selection + its path) and broadcasts an `at_mentioned`
+    // notification frame to every connection via the server handle.
+    let send_server = server.clone();
+    registry.register_ex_command(
+        "claude-send",
+        "Send the current file + selection to the attached `claude` agent as an \
+         @-mention (adds it to the agent's context).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(move |_ctx| {
+                let cache = send_server.read_cache();
+                let frame = {
+                    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.active.as_ref().map(|active| {
+                        let path = guard
+                            .open_buffers
+                            .get(&active.buffer)
+                            .and_then(|b| b.path.clone());
+                        crate::notifications::at_mentioned_frame(
+                            &active.selections,
+                            path.as_deref(),
+                        )
+                    })
+                };
+                match frame {
+                    Some(f) => {
+                        send_server.notify(f);
+                        Ok(Effect::Echo {
+                            level: EchoLevel::Info,
+                            text: "claude-send: sent the current selection".to_string(),
+                        })
+                    }
+                    None => Ok(Effect::Echo {
+                        level: EchoLevel::Error,
+                        text: "claude-send: no active selection to send".to_string(),
+                    }),
+                }
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let stop_server = server;
     registry.register_ex_command(
         "claude-code-stop",
@@ -198,6 +246,59 @@ mod tests {
         let snap = handle.snapshot();
         assert!(snap.running, "server running after :claude");
         assert!(snap.port.is_some(), "bound port recorded");
+        handle.stop();
+    }
+
+    /// I6.2: `:claude-send` errors with no active selection, and once a
+    /// selection exists it broadcasts an at-mention (Info echo).
+    #[tokio::test]
+    async fn claude_send_requires_an_active_selection() {
+        use lattice_protocol::ids::DocumentId;
+        use lattice_protocol::{Event, SelectionSet};
+
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+        let id = registry
+            .id_by_name("claude-send")
+            .expect("`:claude-send` is registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+
+        // No active selection → an error echo (nothing to send).
+        match (spec.apply)(&empty_ctx()).expect("apply ok") {
+            Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Error),
+            other => panic!("expected an echo, got {other:?}"),
+        }
+
+        // Seed the read cache with an active selection.
+        {
+            let cache = handle.read_cache();
+            let mut g = cache.lock().unwrap();
+            g.apply_event(&Event::DocumentOpened {
+                id: DocumentId::new(1),
+                path: Some(std::path::PathBuf::from("/work/a.rs")),
+                version: 1,
+                text: String::new(),
+            });
+            g.apply_event(&Event::SelectionsChanged {
+                id: DocumentId::new(1),
+                version: 1,
+                selections: SelectionSet::default(),
+            });
+        }
+
+        // Now there's something to mention → Info echo.
+        match (spec.apply)(&empty_ctx()).expect("apply ok") {
+            Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
+            other => panic!("expected an echo, got {other:?}"),
+        }
         handle.stop();
     }
 }

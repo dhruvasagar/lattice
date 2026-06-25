@@ -153,6 +153,65 @@ async fn ws_handshake_initialize_and_tools_list() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn broadcast_notification_reaches_a_connected_client() {
+    // I6.0: a server-initiated frame pushed via `handle.notify` is delivered to
+    // a connected client over the same writer that carries responses.
+    let dir = unique_dir("notify");
+    let handle = spawn(
+        ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: dir.clone(),
+        },
+        bus(),
+        &tokio::runtime::Handle::current(),
+    );
+    handle.start();
+    let (port, token) = wait_for_lockfile(&dir).await;
+
+    let mut request = format!("ws://127.0.0.1:{port}")
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert(AUTH_HEADER, HeaderValue::from_str(&token).unwrap());
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("authorized connect succeeds");
+
+    // Wait until the connection has subscribed its broadcast receiver (the
+    // subscribe happens in the accept loop right after accept).
+    let mut subscribed = false;
+    for _ in 0..500 {
+        if handle.connection_count() >= 1 {
+            subscribed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(subscribed, "the connection subscribed a broadcast receiver");
+
+    // Push a server-initiated notification frame; the client receives it.
+    let frame = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "method": "selection_changed",
+        "params": { "marker": "i6-broadcast" }
+    }))
+    .unwrap();
+    handle.notify(frame);
+
+    let received = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("a frame arrives within the timeout")
+        .expect("a frame")
+        .expect("ok frame");
+    let text = received.to_text().expect("text frame");
+    assert!(text.contains("i6-broadcast"), "got {text}");
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_token_is_rejected() {
     let dir = unique_dir("auth");
     let handle = spawn(

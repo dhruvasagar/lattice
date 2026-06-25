@@ -18,7 +18,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -36,6 +36,11 @@ use crate::{auth, transport};
 
 /// IDE name reported in the discovery lockfile.
 const IDE_NAME: &str = "Lattice";
+
+/// I6: capacity of the server-initiated notification broadcast. A connection
+/// that falls this far behind a burst skips the dropped frames (acceptable —
+/// selection notifications coalesce to "latest wins").
+const NOTIFY_CAPACITY: usize = 64;
 
 /// Static config the server binds with.
 #[derive(Debug, Clone)]
@@ -87,6 +92,12 @@ pub struct ClaudeCodeServerHandle {
     /// services (cache + config only); `install_services` upgrades it once
     /// boot has wired the buffer-store / diagnostics handles + the write bus.
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    /// I6: broadcast channel for server-initiated notification frames. The
+    /// notification task (`notifications.rs`) + `:claude-send` publish frames
+    /// here; each connection subscribes a receiver and forwards frames to its
+    /// WS writer. A dropped/lagged receiver is pruned by the channel itself —
+    /// no manual connection registry.
+    notify_tx: broadcast::Sender<String>,
 }
 
 impl ClaudeCodeServerHandle {
@@ -152,6 +163,26 @@ impl ClaudeCodeServerHandle {
         self.state.load_full()
     }
 
+    /// I6: broadcast a server-initiated notification frame to every connected
+    /// agent. A no-op (the frame is dropped) when no connections are
+    /// subscribed. Used by `:claude-send`; the notification task uses its own
+    /// [`Self::notify_sender`] clone.
+    pub fn notify(&self, frame: String) {
+        let _ = self.notify_tx.send(frame);
+    }
+
+    /// I6.1: a clone of the broadcast sender for the notification task to
+    /// publish `selection_changed` / `didChangeActiveEditor` frames through.
+    pub fn notify_sender(&self) -> broadcast::Sender<String> {
+        self.notify_tx.clone()
+    }
+
+    /// I7: number of currently-connected agents (subscribed broadcast
+    /// receivers). Surfaced in the `claude-code-mode` status.
+    pub fn connection_count(&self) -> usize {
+        self.notify_tx.receiver_count()
+    }
+
     /// BC.3b: the crate-owned read cache. `install()` clones it to build the
     /// inbound handler ([`crate::inbound::make_handler`]) — the per-item closure
     /// the generic `boot.inbound` bus drains, which maps write requests against
@@ -215,11 +246,20 @@ pub fn spawn(
         // `openDiff` reports a graceful "not initialized".
         diff: None,
     }));
+    // I6: the server-initiated notification broadcast. Bounded — a lagged
+    // connection skips dropped frames (coalescing is fine for selection
+    // notifications, where only the latest matters).
+    let (notify_tx, _) = broadcast::channel::<String>(NOTIFY_CAPACITY);
+    // I6.1: the notification task — coalesces SelectionsChanged + broadcasts
+    // selection_changed / didChangeActiveEditor frames. Crate-owned (reads the
+    // same generic event bus + read cache the read tools use).
+    crate::notifications::spawn_notifier(&event_bus, notify_tx.clone(), cache.clone(), rt);
     rt.spawn(supervisor_main(
         config.clone(),
         cmd_rx,
         state.clone(),
         dispatch_ctx.clone(),
+        notify_tx.clone(),
     ));
     ClaudeCodeServerHandle {
         cmd_tx,
@@ -227,6 +267,7 @@ pub fn spawn(
         cache,
         workspace_folders: config.workspace_folders,
         dispatch_ctx,
+        notify_tx,
     }
 }
 
@@ -248,6 +289,7 @@ async fn supervisor_main(
     mut cmd_rx: mpsc::UnboundedReceiver<ServerCmd>,
     state: Arc<ArcSwap<ServerState>>,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    notify_tx: broadcast::Sender<String>,
 ) {
     let mut running: Option<RunningServer> = None;
     while let Some(cmd) = cmd_rx.recv().await {
@@ -256,7 +298,13 @@ async fn supervisor_main(
                 if running.is_some() {
                     continue; // idempotent (start() also guards via state)
                 }
-                match start_accepting(&config, listener, token, dispatch_ctx.clone()) {
+                match start_accepting(
+                    &config,
+                    listener,
+                    token,
+                    dispatch_ctx.clone(),
+                    notify_tx.clone(),
+                ) {
                     Ok(server) => {
                         // `start()` already published running+port optimistically.
                         running = Some(server);
@@ -291,6 +339,7 @@ fn start_accepting(
     std_listener: std::net::TcpListener,
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    notify_tx: broadcast::Sender<String>,
 ) -> Result<RunningServer> {
     let port = std_listener.local_addr()?.port();
     let lockfile = Lockfile::write(
@@ -306,7 +355,7 @@ fn start_accepting(
         },
     )?;
     let listener = TcpListener::from_std(std_listener)?;
-    let accept_task = tokio::spawn(accept_loop(listener, token, dispatch_ctx));
+    let accept_task = tokio::spawn(accept_loop(listener, token, dispatch_ctx, notify_tx));
     Ok(RunningServer {
         _lockfile: lockfile,
         accept_task,
@@ -317,14 +366,18 @@ async fn accept_loop(
     listener: TcpListener,
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    notify_tx: broadcast::Sender<String>,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 let token = token.clone();
                 let ctx = dispatch_ctx.clone();
+                // I6: each connection subscribes its own broadcast receiver;
+                // `receiver_count()` on the sender is the live connection count.
+                let notify_rx = notify_tx.subscribe();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_connection(stream, token, ctx).await {
+                    if let Err(e) = serve_connection(stream, token, ctx, notify_rx).await {
                         tracing::debug!(error = %e, "claude-code connection ended with error");
                     }
                 });
@@ -342,31 +395,80 @@ async fn serve_connection(
     stream: TcpStream,
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    mut notify_rx: broadcast::Receiver<String>,
 ) -> Result<()> {
     let ws = transport::accept(stream, &token).await?;
     let (mut write, mut read) = ws.split();
     // Load the current dispatch context once per connection (installed at
     // boot before any start, so it carries the generic read services).
     let ctx = dispatch_ctx.load_full();
-    while let Some(frame) = read.next().await {
-        let frame = frame?;
-        if frame.is_close() {
-            break;
+
+    // I6: one WS sink can't be written from two tasks, so a single outbound
+    // channel funnels BOTH request responses (from the read loop) and pushed
+    // server-initiated notifications (from the broadcast) to one writer task.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+
+    // Writer: drain the outbound channel → WS. Ends when every `out_tx` clone
+    // drops (read loop done + forwarder gone) or the peer write fails.
+    let writer = tokio::spawn(async move {
+        while let Some(payload) = out_rx.recv().await {
+            if write.send(WsMessage::Text(payload)).await.is_err() {
+                break; // peer gone
+            }
         }
-        // MCP frames are JSON text; ignore binary / ping / pong (pings are
-        // auto-ponged by the stream's read machinery).
-        let Ok(text) = frame.to_text() else {
-            continue;
-        };
-        for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
-            let payload = match &outgoing {
-                Outgoing::Response(r) => serde_json::to_string(r)?,
-                Outgoing::Notification(n) => serde_json::to_string(n)?,
+    });
+
+    // Forwarder: broadcast → outbound. A `Lagged` receiver (fell behind a
+    // burst) skips the dropped frames — coalescing is the intended behaviour
+    // for selection notifications (latest wins).
+    let notif_out = out_tx.clone();
+    let forwarder = tokio::spawn(async move {
+        loop {
+            match notify_rx.recv().await {
+                Ok(frame) => {
+                    if notif_out.send(frame).is_err() {
+                        break; // writer gone
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    // Read loop: handle incoming MCP frames; responses ride the same writer.
+    // Capture the result so teardown runs on both the ok and error paths.
+    let result: Result<()> = async {
+        while let Some(frame) = read.next().await {
+            let frame = frame?;
+            if frame.is_close() {
+                break;
+            }
+            // MCP frames are JSON text; ignore binary / ping / pong (pings are
+            // auto-ponged by the stream's read machinery).
+            let Ok(text) = frame.to_text() else {
+                continue;
             };
-            write.send(WsMessage::Text(payload)).await?;
+            for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
+                let payload = match &outgoing {
+                    Outgoing::Response(r) => serde_json::to_string(r)?,
+                    Outgoing::Notification(n) => serde_json::to_string(n)?,
+                };
+                if out_tx.send(payload).is_err() {
+                    return Ok(()); // writer gone — connection is finished
+                }
+            }
         }
+        Ok(())
     }
-    Ok(())
+    .await;
+
+    // Teardown: dropping the read loop's `out_tx` + the forwarder's clone ends
+    // the writer; abort the forwarder so its `notify_rx` is released promptly.
+    drop(out_tx);
+    forwarder.abort();
+    let _ = writer.await;
+    result
 }
 
 #[cfg(test)]

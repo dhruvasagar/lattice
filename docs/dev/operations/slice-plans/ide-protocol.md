@@ -74,6 +74,41 @@ via the diff subsystem. See the design fragment §2/§3/§5 for the rationale.
   **Tests:** Accept/Reject → correct reply; `close_tab` mid-diff → session dropped
   + Rejected; pane orientation matches the VS Code contract.
 
+  - **I4.0 design (captured 2026-06-25 from investigation; implement fresh).**
+    **Architecture finding:** openDiff is *blocking* (awaits `DiffOutcome`) AND
+    opens a diff — irreducibly `&mut Editor` + carries lattice-diff types
+    (`StaticSource`/`OnDiskSource`) that **cannot cross the `Effect` boundary**.
+    So it does NOT fit the I3 generic-handler write bus (which maps each request
+    to an `Effect`); it mirrors **BC.8d apply-edit** → use the **host-drained**
+    inbound (`lattice_mode::inbound::make_inbound_raw`). Shape: a new
+    `OpenDiffRequest { original, modified, tab_name, response:
+    oneshot<DiffOutcome> }` on a host-drained bus; the host drains it, opens the
+    diff session, and `bind_completion(response)`. The agent's openDiff call
+    **awaits `response` directly** (NOT the optimistic-ack reply) with **no 5s
+    timeout** (the user reviews at their own pace; connection-drop → graceful).
+    **REUSE (no new diff machinery):** `StaticSource::new(rope)` (agent text),
+    `OnDiskSource::new(path)` (baseline), `DiffSession::bind_completion` /
+    `take_completion`, `DiffOutcome::{Accept,Reject}`, the EXISTING
+    `do_diff_accept` / `do_diff_reject` teardown (already fires the bound
+    oneshot — zero new accept/reject code), `lookup_session_for` / `drop_session`
+    (close-tab-mid-diff → drop + the dropped sender surfaces as `Reject`).
+    **NEW code (the real work):** (1) a *scratch-buffer* diff-open path — open a
+    buffer holding the agent's modified text + register a 2-way session against
+    the `OnDiskSource` baseline; modeled on `do_diffsplit` (dispatch.rs:4558,
+    ~150 lines of pane/session structure) BUT with a `StaticSource` side instead
+    of a second on-disk file (so it is NOT a drop-in reuse of `do_diffsplit`);
+    (2) the host-drained inbound wiring (claude-code gets a SECOND bus, alongside
+    the I3 handler write bus); (3) `tools/diff.rs` marshalling + the blocking
+    await + the VS Code openDiff reply shape (PROVISIONAL until validated vs a
+    live CLI). **Sub-steps:** I4.0 = `OpenDiffRequest` + host-drained bus +
+    host scratch-buffer diff-open handler (reusing `bind_completion`); I4.1 =
+    `tools/diff.rs` + blocking await (no timeout) + reply shape; I4.2 =
+    close-tab-mid-diff cancel + tests (Accept/Reject reply, cancel→Rejected, pane
+    orientation). **Open decisions for implementation:** original-as-path vs
+    original-as-text (the MCP openDiff may send either); pane orientation vs the
+    VS Code contract; whether the modified scratch buffer is editable
+    (`do`/`dp` apply) or read-only before Accept.
+
 - **I5 — Terminal launch + the IDE buffer.** Add `env: Vec<(String,String)>` to
   `SpawnConfig` (spawner.rs:24 — confirmed absent; thread into `CommandBuilder`).
   `:claude` spawns `claude` in a `BufferKind::Terminal` buffer with

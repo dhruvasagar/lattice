@@ -119,12 +119,17 @@ refresh lands without a paint-wake — the L1/L6 class) and/or the map is empty.
 **Deps:** D-fix.1/.2. Touches lattice-diff (public API) + render-state +
 both renderers → cross-crate; walk the approach before bulk edits.
 
-### D-fix.4 — interrupt ergonomics  🗒
-`:claude` is a PTY terminal; focusing its pane and pressing `<Esc>` already
-forwards `\x1b` to the CLI (native interrupt). D-fix.1 made focus return to
-claude on resolve, so this works today. **Optional polish:** a `:claude-interrupt`
-ex-command that sends `\x1b` to the claude terminal from any pane (so you don't
-have to switch first). Land only if Dhruva wants it.
+### D-fix.4 — `:claude-interrupt` (forward `<Esc>` to the CLI)  ✅
+**Landed (`a4abf0d9`).** **Correction (Dhruva, runtime):** pressing `<Esc>` in
+the claude terminal is consumed by the terminal's modal layer (Insert→Normal —
+the desired vim flow), so it NEVER reaches the PTY. There was therefore no way
+to interrupt the running agent — `:claude-interrupt` is **required**, not polish.
+New host-owned `Effect::TerminalInput(Vec<u8>)` → `do_terminal_input` (active
+pane's terminal PTY); `:claude-interrupt` emits `TerminalInput([0x1b])`.
+Renderer parity (both no-op classifier lists). Flow: in the claude terminal,
+`<Esc>` → Normal, then `:claude-interrupt` forwards the interrupt. Test:
+`claude_interrupt_emits_esc_terminal_input`. Green: 58 claude-code + 569 host +
+1490 TUI; GPUI `--features window`.
 
 ### D-fix.5 — fold unchanged regions + jump to first change  🗒 LOCKED (C)
 **Goal (Dhruva, 2026-06-26):** in a diff, show only the changes — fold the

@@ -3625,6 +3625,18 @@ impl Editor {
         if changes.is_empty() {
             return;
         }
+        // D-fix.5 fix: buffers whose `diff-mode` (Base) toggled this drain.
+        // `DiffMode::on_activate` registers its fold sources SYNCHRONOUSLY (no
+        // `.await`, so `activate_minor`'s try-sync path completes inline), so
+        // once the loop below runs we can recompute folds for these buffers
+        // with the sources present. This is the ONLY place an INACTIVE diff
+        // participant (the baseline pane of a side-by-side openDiff) gets its
+        // folds — `recompute_folds` only ever folds the active buffer, and the
+        // per-tick `refresh_diff_folds` runs *before* this activation, so on the
+        // open tick it computed empty folds + stamped the revision seen,
+        // blocking a later re-fold. Recomputing here (right after the source
+        // registers) closes that gap so BOTH panes fold in lockstep.
+        let mut base_toggled: Vec<BufferId> = Vec::new();
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
@@ -3669,6 +3681,19 @@ impl Editor {
                 );
             }
             self.active_modes.insert(buffer_id, active);
+            if matches!(change.kind, crate::diff::mode::DiffModeKind::Base) {
+                base_toggled.push(buffer_id);
+            }
+        }
+        // D-fix.5 fix: now that the fold sources are registered (Activate) or
+        // removed (Deactivate), recompute each toggled buffer's folds so the
+        // unchanged-region folds appear/clear on BOTH the active pane
+        // (`self.folds`) and any inactive participant (its `DocumentFolds`).
+        // Clear the seen-revision so the per-tick `refresh_diff_folds` stays
+        // consistent (it will no-op-recompute at the same revision, idempotent).
+        for buffer_id in base_toggled {
+            self.recompute_folds_for_buffer(buffer_id);
+            self.diff_fold_seen_revisions.remove(&buffer_id);
         }
     }
 
@@ -30337,6 +30362,81 @@ mod tests {
         // Cursor stays at the hunk start on the current side.
         assert_eq!(editor.cursor.line, 0);
         assert_eq!(editor.cursor.byte, 0);
+    }
+
+    /// D-fix.5 regression: BOTH sides of a side-by-side diff fold their
+    /// unchanged regions — including the INACTIVE pane. The bug Dhruva hit:
+    /// only the active buffer folded; the inactive baseline stayed expanded,
+    /// desyncing the side-by-side view. Root cause: the inactive participant
+    /// only ever folds via the activation-triggered recompute in
+    /// `apply_pending_diff_mode_changes` (the active pane recovers via other
+    /// `recompute_folds` triggers), and that recompute was missing — the
+    /// per-tick `refresh_diff_folds` runs *before* the fold sources register
+    /// and stamps the revision seen, blocking a later re-fold. The fix
+    /// recomputes folds for each diff-mode-toggled buffer right after the
+    /// source registers.
+    #[tokio::test]
+    async fn both_diff_panes_fold_unchanged_after_activation() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        // 30-line baseline; the current side changes line 15. Plenty of
+        // unchanged context above/below → unchanged folds on BOTH sides.
+        let baseline: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        let mut cur_lines: Vec<String> = (0..30).map(|i| format!("line{i}")).collect();
+        cur_lines[15] = "CHANGED".to_string();
+        let current: String = cur_lines.iter().map(|l| format!("{l}\n")).collect();
+
+        let file = write_temp(&current, "dfix5-bothfold");
+        let document = lattice_core::Document::from_text(&baseline);
+        let mut editor = crate::editor::Editor::boot(document);
+        let baseline_buffer = editor.document_buffer_id;
+        editor.do_diffsplit(file.0.clone(), None);
+        let current_buffer = editor.pane_tree.active().buffer_id;
+        assert_ne!(current_buffer, baseline_buffer);
+
+        // Let the diffsplit's async recompute settle, then publish the final
+        // hunks + per-slot line counts (slot 0 = baseline, slot 1 = current).
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let session = editor
+            .diff_subsystem
+            .lookup(current_buffer)
+            .expect("session keyed under current buffer");
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![LineRange::new(15, 16), LineRange::new(15, 16)],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+        session.publish_slot_line_counts(vec![31, 31]);
+
+        // Activate diff-mode on both participants (the dispatch-tail drain).
+        // The fix recomputes folds here, right after the sources register.
+        editor.apply_pending_diff_mode_changes();
+
+        // Active (current) side: folds live in `self.folds`.
+        assert!(
+            editor.folds.iter().any(|f| f.closed && f.end_line < 15),
+            "active pane has a closed unchanged fold above the change, got {:?}",
+            editor.folds
+        );
+        // INACTIVE (baseline) side: folds live in its `DocumentFolds`. This is
+        // the regression — before the fix it was empty.
+        let baseline_folds = editor
+            .buffer_locals
+            .get(&baseline_buffer)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        assert!(
+            baseline_folds.iter().any(|f| f.closed && f.end_line < 15),
+            "INACTIVE baseline pane folds its unchanged regions too, got {:?}",
+            baseline_folds
+        );
     }
 
     /// D.5.c: `dp` against an inline (file-on-disk) baseline

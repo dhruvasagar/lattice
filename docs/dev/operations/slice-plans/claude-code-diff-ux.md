@@ -65,7 +65,17 @@ read per-pane syntax (the `:diffsplit` path). Best-effort: no grammar →
 *Test:* `open_programmatic_diff_highlights_both_panes` (standard lang registry →
 both panes resolve a handle).
 
-### D-fix.3 — full in-buffer diff highlighting (both panes, theme-based)  🚧
+### D-fix.3 — full in-buffer diff highlighting (both panes, theme-based)  ✅
+**Landed:** 3a (`b2cf708d`) — publish the sign map for EVERY session at the
+`recompute_blocking` choke point (was inline-only). 3b (`b4e32042`) — both-pane,
+theme-based: baseline-side sign map (`compute_baseline_diff_sign_map`) +
+`diff.remove.line` theme element (reuses `diff.deletion.bg`, all 21 themes
+covered) + per-buffer `RenderState.diff.sign_maps` read per-pane by both
+renderers (drop the active-doc-only gate, removed lines tint red) + a wake
+forwarder for pane-group recomputes (off-keystroke). Tests: recompute publishes
+sign map; baseline-side sign geometry. Green: 239 diff + 569 host + 53 theme;
+GPUI `--features window` (parity). Intra-line/word diff stays a future stretch.
+
 **Scope (Dhruva, 2026-06-26):** NOT just the gutter column — proper in-buffer
 diff highlighting (line-background tints) on BOTH panes, colours from the theme.
 Confirmed at runtime: D-fix.1/.2 work; the diff shows **no** tints or signs.
@@ -173,6 +183,28 @@ scroll.
 **Deps:** D-fix.1/.2 (the openDiff buffers); benefits from D-fix.3 first (folding
 unchanged code is most useful once the visible changes are tinted, and both hinge
 on `diff-mode` actually activating on the openDiff buffers — D-fix.3 candidate (c)).
+
+### D-fix.6 — CLI-side reject/close tears down the diff  🚧
+**Symptom (Dhruva, runtime):** saying "no" in the claude CLI does NOT behave
+like `:diff-reject` — the diff buffers don't close. Editor→agent works
+(`:diff-accept`/`:diff-reject` fire the bound oneshot → `FILE_SAVED`/
+`DIFF_REJECTED`); the **agent→editor** direction is the gap.
+
+**Root cause:** the CLI's close path arrives as `close_tab { tab_name }`, but
+`inbound.rs` only acts when `tab_name == the active buffer's file PATH` — and
+openDiff's `tab_name` is the label `"openDiff"`, not a path → never matches →
+nothing happens. Even if it matched it emits a generic `BufferDelete`, not the
+programmatic-diff teardown (fire `DiffOutcome::Reject` on the oneshot +
+`finish_programmatic_diff_panes` to close both panes + refocus claude). The real
+CLI may also send `closeAllDiffTabs` (unhandled → `METHOD_NOT_FOUND`, dropped).
+
+**Plan:** match an open programmatic diff by its session/tab (not active-path);
+route the CLI close → reject the bound oneshot + `finish_programmatic_diff_panes`;
+handle `closeAllDiffTabs` the same way. Owned by `lattice-claude-code` (the
+inbound bus) + the host teardown primitive. **Provisional wire-shape:** confirm
+what the live CLI actually sends on "no" (`close_tab` vs `closeAllDiffTabs`) —
+the same validation item flagged in the ide-protocol status.
+**Deps:** D-fix.1 (`finish_programmatic_diff_panes`).
 
 ---
 

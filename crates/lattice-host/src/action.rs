@@ -178,6 +178,12 @@ pub enum Action {
     OpenAllFolds,
     /// Vim's `zM` -- close all folds.
     CloseAllFolds,
+    /// org-cycle `z<Space>` / `:fold-cycle` -- cycle the fold under the
+    /// cursor through FOLDED → CHILDREN → SUBTREE.
+    CycleFoldAtCursor,
+    /// org-cycle `z<Tab>` / `:fold-cycle-global` -- cycle the whole buffer
+    /// through OVERVIEW → CONTENTS → SHOW-ALL.
+    CycleFoldsGlobal,
     /// Vim's `zd` -- delete the fold containing the cursor.
     DeleteFoldAtCursor,
     /// Vim's `zj` -- move cursor to the start of the next fold.

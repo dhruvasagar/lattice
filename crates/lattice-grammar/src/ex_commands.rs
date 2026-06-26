@@ -250,6 +250,38 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // org-cycle fold commands. Plain names (the `:diff` pattern — no `ex:`
+    // prefix / host alias); `:fold-cycle` resolves directly. Carry the
+    // `AppEffect` to the host fold handlers, same as the `z<Space>` /
+    // `z<Tab>` keymap chords.
+    let _fold_cycle = registry.register_ex_command(
+        "fold-cycle",
+        "org-cycle: cycle the fold under the cursor through \
+         FOLDED → CHILDREN → SUBTREE (`z<Space>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldAtCursor))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _fold_cycle_global = registry.register_ex_command(
+        "fold-cycle-global",
+        "org-cycle: cycle the whole buffer through \
+         OVERVIEW → CONTENTS → SHOW-ALL (`z<Tab>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldsGlobal))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let no_hlsearch = registry.register_ex_command(
         "ex:nohlsearch",
         "Clear the search-highlight overlay (`:noh[lsearch]`).",

@@ -153,6 +153,13 @@ pub enum AppEffect {
     /// Vim's `zM`. Close every fold in the buffer.
     /// Promoted from `Action::CloseAllFolds` in slice 8.i.1.c.
     CloseAllFolds,
+    /// org-cycle `z<Space>` / `:fold-cycle`. Cycle the heading/fold under
+    /// the cursor through emacs org-mode's local states
+    /// FOLDED → CHILDREN → SUBTREE.
+    CycleFoldAtCursor,
+    /// org-cycle `z<Tab>` / `:fold-cycle-global`. Cycle the WHOLE buffer
+    /// through OVERVIEW → CONTENTS → SHOW-ALL.
+    CycleFoldsGlobal,
     /// Vim's `zd`. Delete the fold containing the cursor (drop
     /// it from the manual fold table; structure-driven folds
     /// reappear on the next reparse). Promoted from

@@ -2045,6 +2045,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::ToggleFoldAtCursor => editor.do_set_fold_state_at_cursor(None),
         Action::OpenAllFolds => editor.do_set_all_folds(false),
         Action::CloseAllFolds => editor.do_set_all_folds(true),
+        Action::CycleFoldAtCursor => editor.do_cycle_fold_at_cursor(),
+        Action::CycleFoldsGlobal => editor.do_cycle_folds_global(),
         Action::DeleteFoldAtCursor => editor.do_delete_fold_at_cursor(),
         Action::GotoNextFold => editor.do_goto_fold(true),
         Action::GotoPrevFold => editor.do_goto_fold(false),
@@ -6104,6 +6106,8 @@ impl Editor {
             AppEffect::ToggleFoldAtCursor => out.next_actions.push(Action::ToggleFoldAtCursor),
             AppEffect::OpenAllFolds => out.next_actions.push(Action::OpenAllFolds),
             AppEffect::CloseAllFolds => out.next_actions.push(Action::CloseAllFolds),
+            AppEffect::CycleFoldAtCursor => out.next_actions.push(Action::CycleFoldAtCursor),
+            AppEffect::CycleFoldsGlobal => out.next_actions.push(Action::CycleFoldsGlobal),
             AppEffect::DeleteFoldAtCursor => out.next_actions.push(Action::DeleteFoldAtCursor),
             AppEffect::GotoNextFold => out.next_actions.push(Action::GotoNextFold),
             AppEffect::GotoPrevFold => out.next_actions.push(Action::GotoPrevFold),
@@ -14224,6 +14228,117 @@ impl Editor {
     pub fn do_set_all_folds(&mut self, closed: bool) {
         for fold in self.folds.iter_mut() {
             fold.closed = closed;
+        }
+    }
+
+    /// org-cycle (`z<Tab>`): cycle the heading/fold under the cursor through
+    /// emacs org-mode's three local states —
+    /// **FOLDED → CHILDREN → SUBTREE → FOLDED**:
+    /// - **FOLDED**: the whole subtree collapsed (just the heading row).
+    /// - **CHILDREN**: the heading open, its *direct* children visible but
+    ///   their bodies + deeper descendants folded.
+    /// - **SUBTREE**: the heading + everything under it fully expanded.
+    ///
+    /// The subtree root is the innermost fold containing the cursor. Nesting
+    /// is derived by range containment (the markdown / syntax providers emit
+    /// nested subtree folds); the state is **inferred** from the current
+    /// `closed` flags (stateless, like `za`). A leaf heading (no descendants)
+    /// degenerates to a FOLDED ↔ open toggle, matching org.
+    pub fn do_cycle_fold_at_cursor(&mut self) {
+        let line = self.cursor.line;
+        let Some(root_idx) = innermost_fold_idx(&self.folds, line, |_| true) else {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            return;
+        };
+        let (rs, re) = (self.folds[root_idx].start_line, self.folds[root_idx].end_line);
+        // Snapshot ranges so containment math doesn't fight the borrow checker.
+        let ranges: Vec<(u32, u32)> =
+            self.folds.iter().map(|f| (f.start_line, f.end_line)).collect();
+        let contains = |(os, oe): (u32, u32), (is_, ie): (u32, u32)| {
+            os <= is_ && ie <= oe && !(os == is_ && oe == ie)
+        };
+        // Descendants of the root: strictly inside it.
+        let descendants: Vec<usize> = (0..ranges.len())
+            .filter(|&i| i != root_idx && contains((rs, re), ranges[i]))
+            .collect();
+        // Direct children: descendants not contained by any *other* descendant.
+        let direct_children: Vec<usize> = descendants
+            .iter()
+            .copied()
+            .filter(|&ci| {
+                !descendants
+                    .iter()
+                    .any(|&oi| oi != ci && contains(ranges[oi], ranges[ci]))
+            })
+            .collect();
+
+        // Infer the current state → pick the next. FOLDED→CHILDREN→SUBTREE→…
+        let root_closed = self.folds[root_idx].closed;
+        let children_state = !direct_children.is_empty()
+            && direct_children.iter().all(|&i| self.folds[i].closed);
+        if root_closed {
+            // FOLDED → CHILDREN: open the root, fold every descendant so only
+            // the direct children's heading rows show.
+            self.folds[root_idx].closed = false;
+            for &i in &descendants {
+                self.folds[i].closed = true;
+            }
+        } else if children_state {
+            // CHILDREN → SUBTREE: open everything under the root.
+            for &i in &descendants {
+                self.folds[i].closed = false;
+            }
+        } else {
+            // SUBTREE (or anything else) → FOLDED.
+            self.folds[root_idx].closed = true;
+        }
+    }
+
+    /// org-cycle global (`z<S-Tab>`): cycle the WHOLE buffer through org's
+    /// three global states — **OVERVIEW → CONTENTS → SHOW-ALL → OVERVIEW**:
+    /// - **OVERVIEW**: every fold closed (only top-level headings show — a
+    ///   closed parent hides its nested headings).
+    /// - **CONTENTS**: structural headings open, *leaf* folds closed — the
+    ///   table-of-contents view (all heading levels, no leaf bodies).
+    /// - **SHOW-ALL**: every fold open.
+    ///
+    /// A *leaf* is a fold containing no other fold. With no nesting (a flat
+    /// fold list) OVERVIEW and CONTENTS coincide, so the cycle degenerates to
+    /// OVERVIEW ↔ SHOW-ALL. Inferred from the current flags, like the local
+    /// cycle.
+    pub fn do_cycle_folds_global(&mut self) {
+        if self.folds.is_empty() {
+            self.set_message(EchoLevel::Error, "no folds to cycle".to_string());
+            return;
+        }
+        let ranges: Vec<(u32, u32)> =
+            self.folds.iter().map(|f| (f.start_line, f.end_line)).collect();
+        let is_leaf = |i: usize| -> bool {
+            let (s, e) = ranges[i];
+            !ranges.iter().enumerate().any(|(j, &(os, oe))| {
+                j != i && s <= os && oe <= e && !(s == os && e == oe)
+            })
+        };
+        let has_nonleaf = (0..ranges.len()).any(|i| !is_leaf(i));
+        let all_closed = self.folds.iter().all(|f| f.closed);
+        // CONTENTS pattern: each fold closed iff it is a leaf.
+        let is_contents = (0..self.folds.len()).all(|i| self.folds[i].closed == is_leaf(i));
+
+        if all_closed && has_nonleaf {
+            // OVERVIEW → CONTENTS.
+            for i in 0..self.folds.len() {
+                self.folds[i].closed = is_leaf(i);
+            }
+        } else if (is_contents && has_nonleaf) || (all_closed && !has_nonleaf) {
+            // CONTENTS → SHOW-ALL (or, for a flat list, OVERVIEW → SHOW-ALL).
+            for f in self.folds.iter_mut() {
+                f.closed = false;
+            }
+        } else {
+            // SHOW-ALL (or any mixed state) → OVERVIEW.
+            for f in self.folds.iter_mut() {
+                f.closed = true;
+            }
         }
     }
 

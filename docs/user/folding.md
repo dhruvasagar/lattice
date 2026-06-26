@@ -37,6 +37,8 @@ detection.
 | `zc`                | Close the fold under cursor                                                |
 | `zR`                | Open every fold in the buffer                                              |
 | `zM`                | Close every fold in the buffer                                             |
+| `z<Space>` / `:fold-cycle` | **Org-cycle** the heading under the cursor: FOLDED → CHILDREN → SUBTREE |
+| `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer: OVERVIEW → CONTENTS → SHOW-ALL  |
 | `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
 | `zj` / `zk`         | Jump to the next / previous fold start                                     |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
@@ -110,6 +112,46 @@ ones by identity and transfers their open / closed state. So:
 - Two headings with identical text at the same depth share the
   same identity and the same open / closed state. v1 documented
   limitation; same as vim.
+
+---
+
+## Org-style cycling
+
+Beyond vim's binary `za` (open ↔ closed), lattice has emacs **org-mode
+cycling** — one key that walks a heading (or the whole buffer) through
+progressive visibility levels. It works on any nested fold structure
+(markdown headings, `syntax` folds, indent folds), deriving the
+hierarchy from fold containment.
+
+**Local — `z<Space>`** (or `:fold-cycle`) cycles the heading/fold under
+the cursor:
+
+| State | What shows |
+|-------|------------|
+| **FOLDED** | Just the heading row — the whole subtree collapsed |
+| **CHILDREN** | The heading open, its *direct* children's headings visible, their bodies + deeper levels folded |
+| **SUBTREE** | The heading and everything under it, fully expanded |
+
+Repeated presses cycle FOLDED → CHILDREN → SUBTREE → FOLDED. A heading
+with no sub-headings (a leaf) just toggles FOLDED ↔ open.
+
+**Global — `z<Tab>`** (or `:fold-cycle-global`) cycles the whole buffer:
+
+| State | What shows |
+|-------|------------|
+| **OVERVIEW** | Only the top-level headings (every fold closed) |
+| **CONTENTS** | All heading levels, no leaf bodies — a table of contents |
+| **SHOW-ALL** | Everything expanded |
+
+The cycle state is **inferred from what's currently folded** (there's no
+hidden mode flag), so it composes cleanly with `za`/`zo`/`zR` — after a
+manual tweak, the next cycle press picks up from the current view, just
+like org. `<Tab>` here is a `z`-prefixed chord, distinct from the bare
+`<Tab>` jump-list-forward.
+
+> One difference from emacs: because a heading's fold spans its whole
+> subtree, the heading's own intro text (above its first child) stays
+> visible in CHILDREN / CONTENTS, where org hides it.
 
 ---
 

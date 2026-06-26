@@ -675,6 +675,25 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.close_all_folds),
         source(),
     );
+    // org-cycle: `z<Space>` cycles the fold under the cursor
+    // (FOLDED→CHILDREN→SUBTREE); `z<Tab>` cycles the whole buffer
+    // (OVERVIEW→CONTENTS→SHOW-ALL). Both also reachable as `:fold-cycle` /
+    // `:fold-cycle-global`. `<Tab>` here is a `z`-prefixed chord, distinct
+    // from the bare `<Tab>` jump-list-forward binding.
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char(' ')],
+        CommandInvocation::of(actions.cycle_fold_at_cursor),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_special(SpecialKey::Tab)],
+        CommandInvocation::of(actions.cycle_folds_global),
+        source(),
+    );
     handle.bind(
         layer,
         mode,

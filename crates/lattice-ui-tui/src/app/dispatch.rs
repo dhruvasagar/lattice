@@ -288,6 +288,8 @@ impl App {
             | Action::ToggleFoldAtCursor
             | Action::OpenAllFolds
             | Action::CloseAllFolds
+            | Action::CycleFoldAtCursor
+            | Action::CycleFoldsGlobal
             | Action::DeleteFoldAtCursor
             | Action::GotoNextFold
             | Action::GotoPrevFold

@@ -1055,4 +1055,100 @@ mod tests {
         assert_eq!(a.foldmethod(), FoldMethod::Manual);
         assert!(a.editor.last_message.is_some());
     }
+
+    // ---- org-cycle (z<Space> / z<Tab>) ----
+
+    /// Nested folds: a parent heading [0..=10] with two child sub-headings
+    /// [2..=4] and [6..=8]. Cursor on the parent heading (line 0).
+    fn org_nested_app() -> App {
+        let mut a = app_with(&"x\n".repeat(12), 20);
+        for (s, e) in [(0u32, 10u32), (2, 4), (6, 8)] {
+            a.editor.folds.push(Fold {
+                start_line: s,
+                end_line: e,
+                closed: false,
+                identity: None,
+            });
+        }
+        a.editor.cursor = Position::new(0, 0);
+        a
+    }
+
+    fn closed_at(a: &App, start: u32) -> bool {
+        a.editor
+            .folds
+            .iter()
+            .find(|f| f.start_line == start)
+            .unwrap()
+            .closed
+    }
+
+    #[test]
+    fn org_local_cycle_folded_children_subtree() {
+        let mut a = org_nested_app();
+        // Fully shown → FOLDED (parent closed, hiding everything).
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(closed_at(&a, 0), "FOLDED: parent closed");
+        // → CHILDREN: parent open, both children closed (only their headings show).
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(
+            !closed_at(&a, 0) && closed_at(&a, 2) && closed_at(&a, 6),
+            "CHILDREN: parent open, children closed"
+        );
+        // → SUBTREE: everything open.
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(
+            !closed_at(&a, 0) && !closed_at(&a, 2) && !closed_at(&a, 6),
+            "SUBTREE: all open"
+        );
+        // → back to FOLDED.
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(closed_at(&a, 0), "cycles back to FOLDED");
+    }
+
+    #[test]
+    fn org_local_cycle_on_leaf_is_a_toggle() {
+        // A leaf heading (no descendants) degenerates to FOLDED ↔ open.
+        let mut a = app_with(&"x\n".repeat(6), 10);
+        a.editor.folds.push(Fold {
+            start_line: 0,
+            end_line: 4,
+            closed: false,
+            identity: None,
+        });
+        a.editor.cursor = Position::new(0, 0);
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(a.editor.folds[0].closed, "leaf folds");
+        a.apply(Action::CycleFoldAtCursor);
+        assert!(!a.editor.folds[0].closed, "leaf re-opens");
+    }
+
+    #[test]
+    fn org_global_cycle_overview_contents_showall() {
+        let mut a = org_nested_app(); // parent[0,10] non-leaf; [2,4]/[6,8] leaves.
+        // Mixed/shown → OVERVIEW (all closed).
+        a.apply(Action::CycleFoldsGlobal);
+        assert!(a.editor.folds.iter().all(|f| f.closed), "OVERVIEW: all closed");
+        // → CONTENTS: structural (parent) open, leaves closed.
+        a.apply(Action::CycleFoldsGlobal);
+        assert!(
+            !closed_at(&a, 0) && closed_at(&a, 2) && closed_at(&a, 6),
+            "CONTENTS: parent open, leaves closed"
+        );
+        // → SHOW-ALL: all open.
+        a.apply(Action::CycleFoldsGlobal);
+        assert!(a.editor.folds.iter().all(|f| !f.closed), "SHOW-ALL: all open");
+        // → back to OVERVIEW.
+        a.apply(Action::CycleFoldsGlobal);
+        assert!(a.editor.folds.iter().all(|f| f.closed), "cycles back to OVERVIEW");
+    }
+
+    #[test]
+    fn org_local_cycle_no_fold_emits_e490() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.editor.cursor = Position::new(1, 0);
+        a.apply(Action::CycleFoldAtCursor);
+        let msg = a.editor.last_message.as_ref().expect("message").text.clone();
+        assert!(msg.contains("E490"), "expected E490, got {msg:?}");
+    }
 }

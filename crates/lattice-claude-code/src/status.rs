@@ -49,19 +49,45 @@ pub fn register_status_descriptor(svc: &ModelineService) {
 /// Build the status content for the current server state. Empty when the server
 /// is stopped (the element hides itself — no stale "off" badge cluttering the
 /// modeline when the IDE isn't running).
-pub fn status_content(state: &ServerState, conns: usize) -> ElementContent {
+///
+/// Format: `<glyph> claude · <project> :<port> · <conns>`, e.g.
+/// `● claude · lattice :8123 · 1 conn` (an agent attached) or
+/// `○ claude · lattice :8123` (server up, waiting for an agent). The leading
+/// glyph is a universal BMP shape (`●` connected / `○` waiting — same cell
+/// width, renders in every monospace font, per the icon-palette rule). The
+/// project segment is omitted when no workspace folder is known.
+pub fn status_content(state: &ServerState, conns: usize, project: &str) -> ElementContent {
     if !state.running {
         return ElementContent::default();
     }
+    // ● = an agent is attached; ○ = running but no agent yet.
+    let glyph = if conns > 0 { '●' } else { '○' };
     let port = state.port.map(|p| p.to_string()).unwrap_or_default();
-    let text = if conns == 0 {
-        format!("claude :{port}")
-    } else if conns == 1 {
-        format!("claude :{port} · 1 conn")
+    let proj = if project.is_empty() {
+        String::new()
     } else {
-        format!("claude :{port} · {conns} conns")
+        format!(" · {project}")
     };
+    let conn = match conns {
+        0 => String::new(),
+        1 => " · 1 conn".to_string(),
+        n => format!(" · {n} conns"),
+    };
+    let text = format!("{glyph} claude{proj} :{port}{conn}");
     ElementContent::text(text, ModelineRole::new(ROLE_MODE_ITEM))
+}
+
+/// The project name shown in the status segment — the basename of the first
+/// workspace folder (e.g. `/home/me/src/lattice` → `lattice`). Empty when no
+/// workspace folder is configured, in which case the project segment is hidden.
+pub fn project_name(workspace_folders: &[String]) -> String {
+    workspace_folders
+        .first()
+        .map(|f| f.trim_end_matches('/'))
+        .filter(|f| !f.is_empty())
+        .and_then(|f| std::path::Path::new(f).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Spawn the status publisher task. Wakes on `changed` (start/stop, a
@@ -72,6 +98,9 @@ pub fn spawn_status_publisher(
     bus: Arc<EventBus>,
     state: Arc<ArcSwap<ServerState>>,
     conn_count: Arc<AtomicUsize>,
+    // D-fix follow-up: the project the agent runs for (static per server —
+    // the workspace basename), shown in the segment. Empty ⇒ omitted.
+    project: String,
     ide_buffers: IdeBuffers,
     changed: Arc<Notify>,
     rt: &tokio::runtime::Handle,
@@ -80,7 +109,8 @@ pub fn spawn_status_publisher(
         let id = ElementId::new(STATUS_ELEMENT);
         let mut last: HashMap<BufferId, ElementContent> = HashMap::new();
         loop {
-            let content = status_content(&state.load(), conn_count.load(Ordering::Relaxed));
+            let content =
+                status_content(&state.load(), conn_count.load(Ordering::Relaxed), &project);
             let bufs: Vec<BufferId> = {
                 let g = ide_buffers.lock().unwrap_or_else(|e| e.into_inner());
                 g.iter().copied().collect()
@@ -125,17 +155,32 @@ mod tests {
 
     #[test]
     fn stopped_server_has_empty_content() {
-        assert!(status_content(&state(false, None), 0).is_empty());
+        assert!(status_content(&state(false, None), 0, "lattice").is_empty());
     }
 
     #[test]
-    fn running_server_shows_port_and_conn_count() {
-        let c = status_content(&state(true, Some(8123)), 0);
-        assert_eq!(c.plain(), "claude :8123");
-        let c1 = status_content(&state(true, Some(8123)), 1);
-        assert_eq!(c1.plain(), "claude :8123 · 1 conn");
-        let c2 = status_content(&state(true, Some(8123)), 3);
-        assert_eq!(c2.plain(), "claude :8123 · 3 conns");
+    fn running_server_shows_glyph_project_port_and_conn_count() {
+        // ○ = waiting (no agent), ● = connected. Project after `claude`.
+        let c = status_content(&state(true, Some(8123)), 0, "lattice");
+        assert_eq!(c.plain(), "○ claude · lattice :8123");
+        let c1 = status_content(&state(true, Some(8123)), 1, "lattice");
+        assert_eq!(c1.plain(), "● claude · lattice :8123 · 1 conn");
+        let c2 = status_content(&state(true, Some(8123)), 3, "lattice");
+        assert_eq!(c2.plain(), "● claude · lattice :8123 · 3 conns");
+    }
+
+    #[test]
+    fn empty_project_is_omitted() {
+        let c = status_content(&state(true, Some(8123)), 1, "");
+        assert_eq!(c.plain(), "● claude :8123 · 1 conn");
+    }
+
+    #[test]
+    fn project_name_takes_workspace_basename() {
+        assert_eq!(project_name(&["/home/me/src/lattice".to_string()]), "lattice");
+        assert_eq!(project_name(&["/home/me/src/lattice/".to_string()]), "lattice");
+        assert_eq!(project_name(&[]), "");
+        assert_eq!(project_name(&["".to_string()]), "");
     }
 
     #[tokio::test]
@@ -162,6 +207,7 @@ mod tests {
             bus.clone(),
             server_state,
             conn_count,
+            "lattice".to_string(),
             ide_buffers,
             changed,
             &tokio::runtime::Handle::current(),
@@ -173,6 +219,7 @@ mod tests {
             .expect("the publisher pushed an update");
         assert_eq!(update.key, ModelineKey::Buffer(buf));
         assert_eq!(update.id, ElementId::new(STATUS_ELEMENT));
-        assert_eq!(update.content.plain(), "claude :9001");
+        // 0 conns → ○ waiting glyph, project shown.
+        assert_eq!(update.content.plain(), "○ claude · lattice :9001");
     }
 }

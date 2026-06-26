@@ -303,6 +303,9 @@ pub fn spawn(
         event_bus.clone(),
         state.clone(),
         signals.conn_count.clone(),
+        // The project the agent runs for — the workspace basename, static
+        // for the server's lifetime.
+        crate::status::project_name(&config.workspace_folders),
         ide_buffers.clone(),
         signals.changed.clone(),
         rt,

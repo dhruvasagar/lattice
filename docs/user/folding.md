@@ -37,8 +37,8 @@ detection.
 | `zc`                | Close the fold under cursor                                                |
 | `zR`                | Open every fold in the buffer                                              |
 | `zM`                | Close every fold in the buffer                                             |
-| `z<Space>` / `:fold-cycle` | **Org-cycle** the heading under the cursor: FOLDED → CHILDREN → SUBTREE |
-| `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer: OVERVIEW → CONTENTS → SHOW-ALL  |
+| `z<Space>` / `:fold-cycle` | **Org-cycle**: the heading under the cursor (FOLDED → CHILDREN → SUBTREE), or — when not on a fold — the whole buffer |
+| `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer explicitly: OVERVIEW → CONTENTS → SHOW-ALL |
 | `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
 | `zj` / `zk`         | Jump to the next / previous fold start                                     |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
@@ -134,6 +134,12 @@ the cursor:
 
 Repeated presses cycle FOLDED → CHILDREN → SUBTREE → FOLDED. A heading
 with no sub-headings (a leaf) just toggles FOLDED ↔ open.
+
+`z<Space>` is a single **contextual** key: when the cursor isn't inside
+any fold (a preamble before the first heading, a flat region), it
+cycles the whole buffer instead — so one key covers both the local and
+the global cycle. Use `z<Tab>` (below) when you want the global cycle
+*while* sitting on a heading.
 
 **Global — `z<Tab>`** (or `:fold-cycle-global`) cycles the whole buffer:
 

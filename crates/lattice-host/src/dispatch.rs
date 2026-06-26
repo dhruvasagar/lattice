@@ -14244,10 +14244,18 @@ impl Editor {
     /// nested subtree folds); the state is **inferred** from the current
     /// `closed` flags (stateless, like `za`). A leaf heading (no descendants)
     /// degenerates to a FOLDED ↔ open toggle, matching org.
+    ///
+    /// When the cursor is NOT inside any fold, this falls back to the global
+    /// cycle ([`Self::do_cycle_folds_global`]) — so `z<Space>` is a single
+    /// contextual key: cycle the heading you're on, or the whole buffer when
+    /// you're not on one.
     pub fn do_cycle_fold_at_cursor(&mut self) {
         let line = self.cursor.line;
         let Some(root_idx) = innermost_fold_idx(&self.folds, line, |_| true) else {
-            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            // No fold under the cursor → fall back to the GLOBAL cycle, so a
+            // single key (`z<Space>`) serves both: cycle the heading you're on,
+            // or the whole buffer when the cursor isn't inside any fold.
+            self.do_cycle_folds_global();
             return;
         };
         let (rs, re) = (self.folds[root_idx].start_line, self.folds[root_idx].end_line);

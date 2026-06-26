@@ -1144,11 +1144,28 @@ mod tests {
     }
 
     #[test]
-    fn org_local_cycle_no_fold_emits_e490() {
-        let mut a = app_with("a\nb\nc", 10);
-        a.editor.cursor = Position::new(1, 0);
+    fn org_cycle_off_a_fold_falls_back_to_global() {
+        // `z<Space>` is one contextual key: with the cursor NOT inside any
+        // fold, it cycles the WHOLE buffer (global) instead of erroring.
+        let mut a = app_with(&"x\n".repeat(10), 20);
+        a.editor.folds.push(Fold {
+            start_line: 2,
+            end_line: 4,
+            closed: false,
+            identity: None,
+        });
+        a.editor.folds.push(Fold {
+            start_line: 6,
+            end_line: 8,
+            closed: false,
+            identity: None,
+        });
+        a.editor.cursor = Position::new(0, 0); // outside both folds
         a.apply(Action::CycleFoldAtCursor);
-        let msg = a.editor.last_message.as_ref().expect("message").text.clone();
-        assert!(msg.contains("E490"), "expected E490, got {msg:?}");
+        // Global cycle from all-open → OVERVIEW: every fold closed.
+        assert!(
+            a.editor.folds.iter().all(|f| f.closed),
+            "off-fold z<Space> runs the global cycle (OVERVIEW)"
+        );
     }
 }

@@ -694,6 +694,15 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.cycle_folds_global),
         source(),
     );
+    // `zp`: go to the parent heading (one level up the fold hierarchy) —
+    // emacs `outline-up-heading`. Distinct from `zj`/`zk` (next/prev fold edge).
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('p')],
+        CommandInvocation::of(actions.goto_parent_fold),
+        source(),
+    );
     handle.bind(
         layer,
         mode,

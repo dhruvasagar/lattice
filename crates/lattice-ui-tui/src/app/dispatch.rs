@@ -293,6 +293,7 @@ impl App {
             | Action::DeleteFoldAtCursor
             | Action::GotoNextFold
             | Action::GotoPrevFold
+            | Action::GotoParentFold
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
             // SN.3c.2 (2026-06-14): `Action::SnippetLeave` removed —

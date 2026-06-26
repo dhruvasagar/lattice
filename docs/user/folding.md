@@ -41,6 +41,7 @@ detection.
 | `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer explicitly: OVERVIEW → CONTENTS → SHOW-ALL |
 | `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
 | `zj` / `zk`         | Jump to the next / previous fold start                                     |
+| `zp` / `:fold-goto-parent` | Jump to the **parent** heading (one level up the fold hierarchy)    |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
 | `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |
 
@@ -158,6 +159,12 @@ like org. `<Tab>` here is a `z`-prefixed chord, distinct from the bare
 > One difference from emacs: because a heading's fold spans its whole
 > subtree, the heading's own intro text (above its first child) stays
 > visible in CHILDREN / CONTENTS, where org hides it.
+
+**Navigating the outline.** `zp` (or `:fold-goto-parent`) jumps to the
+**parent** heading — one level up the fold hierarchy — like emacs
+`outline-up-heading` (evil-org's `gh`). It's distinct from `zj` / `zk`,
+which step to the next / previous fold *edge* among siblings: `zp` climbs
+*out*, `zj`/`zk` move *across*.
 
 ---
 

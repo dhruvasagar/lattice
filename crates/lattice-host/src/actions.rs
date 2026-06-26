@@ -61,6 +61,7 @@ pub struct ActionIds {
     pub close_all_folds: CommandId,
     pub cycle_fold_at_cursor: CommandId,
     pub cycle_folds_global: CommandId,
+    pub goto_parent_fold: CommandId,
     pub delete_fold_at_cursor: CommandId,
     pub goto_next_fold: CommandId,
     pub goto_prev_fold: CommandId,
@@ -356,6 +357,13 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "org-cycle (`z<Tab>`): cycle the whole buffer through \
              OVERVIEW → CONTENTS → SHOW-ALL.",
             AppEffect::CycleFoldsGlobal,
+        ),
+        goto_parent_fold: register_simple(
+            registry,
+            "action:fold-goto-parent",
+            "Move the cursor to the parent heading, one level up the fold \
+             hierarchy (`zp`).",
+            AppEffect::GotoParentFold,
         ),
         delete_fold_at_cursor: register_simple(
             registry,
@@ -1314,6 +1322,7 @@ mod tests {
             (ids.close_all_folds, "action:close-all-folds"),
             (ids.cycle_fold_at_cursor, "action:fold-cycle"),
             (ids.cycle_folds_global, "action:fold-cycle-global"),
+            (ids.goto_parent_fold, "action:fold-goto-parent"),
             (ids.delete_fold_at_cursor, "action:delete-fold-at-cursor"),
             (ids.goto_next_fold, "action:goto-next-fold"),
             (ids.goto_prev_fold, "action:goto-prev-fold"),

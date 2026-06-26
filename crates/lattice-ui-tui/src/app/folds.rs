@@ -1168,4 +1168,41 @@ mod tests {
             "off-fold z<Space> runs the global cycle (OVERVIEW)"
         );
     }
+
+    // ---- zp: go to parent heading ----
+
+    #[test]
+    fn zp_goes_to_parent_heading() {
+        let mut a = org_nested_app(); // parent[0,10], childA[2,4], childB[6,8]
+        a.editor.cursor = Position::new(3, 0); // inside childA's range
+        a.apply(Action::GotoParentFold);
+        assert_eq!(
+            a.editor.cursor.line, 0,
+            "zp from inside a child jumps to the parent heading"
+        );
+        // At the top-level heading, there's no parent: stay put + message.
+        a.apply(Action::GotoParentFold);
+        assert_eq!(a.editor.cursor.line, 0, "zp at the top level stays put");
+        let msg = a.editor.last_message.as_ref().unwrap().text.clone();
+        assert!(msg.contains("no parent"), "expected no-parent note, got {msg:?}");
+    }
+
+    #[test]
+    fn zp_climbs_one_level_at_a_time() {
+        // # [0..=20] ⊃ ## [5..=15] ⊃ ### [8..=12]. Cursor inside ###.
+        let mut a = app_with(&"x\n".repeat(22), 30);
+        for (s, e) in [(0u32, 20u32), (5, 15), (8, 12)] {
+            a.editor.folds.push(Fold {
+                start_line: s,
+                end_line: e,
+                closed: false,
+                identity: None,
+            });
+        }
+        a.editor.cursor = Position::new(10, 0); // inside ###
+        a.apply(Action::GotoParentFold);
+        assert_eq!(a.editor.cursor.line, 5, "### → ## (one level up)");
+        a.apply(Action::GotoParentFold);
+        assert_eq!(a.editor.cursor.line, 0, "## → # (one more level)");
+    }
 }

@@ -268,6 +268,14 @@ falls back to the global cycle, so one key serves both; `z<Tab>` is the
 explicit-global escape hatch (the contextual key does the *local* cycle
 while on a heading).
 
+**Outline navigation companion.** `zp` / `:fold-goto-parent`
+(`do_goto_parent_fold`) moves the cursor *up* one level — emacs
+`outline-up-heading` — using the same containment derivation: the
+innermost fold containing the cursor, then the start of the innermost
+fold strictly containing *that*. It's a cursor move (no fold-state
+change), distinct from `zj`/`zk` (which step to a sibling fold edge), and
+wired the same `AppEffect → Action → Editor::do_*` way.
+
 **The one deviation from emacs.** Because the providers emit
 *subtree-spanning* folds (a heading's fold covers its whole subtree, not
 just its body), CHILDREN / CONTENTS leave the heading's own intro text

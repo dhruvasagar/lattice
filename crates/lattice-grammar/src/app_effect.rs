@@ -160,6 +160,9 @@ pub enum AppEffect {
     /// org-cycle `z<Tab>` / `:fold-cycle-global`. Cycle the WHOLE buffer
     /// through OVERVIEW → CONTENTS → SHOW-ALL.
     CycleFoldsGlobal,
+    /// `zp` / `:fold-goto-parent`. Move the cursor to the parent heading
+    /// (one level up the fold hierarchy) — emacs `outline-up-heading`.
+    GotoParentFold,
     /// Vim's `zd`. Delete the fold containing the cursor (drop
     /// it from the manual fold table; structure-driven folds
     /// reappear on the next reparse). Promoted from

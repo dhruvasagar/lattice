@@ -184,6 +184,9 @@ pub enum Action {
     /// org-cycle `z<Tab>` / `:fold-cycle-global` -- cycle the whole buffer
     /// through OVERVIEW → CONTENTS → SHOW-ALL.
     CycleFoldsGlobal,
+    /// `zp` / `:fold-goto-parent` -- move the cursor to the parent heading
+    /// (one level up the fold hierarchy).
+    GotoParentFold,
     /// Vim's `zd` -- delete the fold containing the cursor.
     DeleteFoldAtCursor,
     /// Vim's `zj` -- move cursor to the start of the next fold.

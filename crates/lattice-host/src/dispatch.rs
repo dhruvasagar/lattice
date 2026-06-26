@@ -2047,6 +2047,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CloseAllFolds => editor.do_set_all_folds(true),
         Action::CycleFoldAtCursor => editor.do_cycle_fold_at_cursor(),
         Action::CycleFoldsGlobal => editor.do_cycle_folds_global(),
+        Action::GotoParentFold => editor.do_goto_parent_fold(),
         Action::DeleteFoldAtCursor => editor.do_delete_fold_at_cursor(),
         Action::GotoNextFold => editor.do_goto_fold(true),
         Action::GotoPrevFold => editor.do_goto_fold(false),
@@ -6108,6 +6109,7 @@ impl Editor {
             AppEffect::CloseAllFolds => out.next_actions.push(Action::CloseAllFolds),
             AppEffect::CycleFoldAtCursor => out.next_actions.push(Action::CycleFoldAtCursor),
             AppEffect::CycleFoldsGlobal => out.next_actions.push(Action::CycleFoldsGlobal),
+            AppEffect::GotoParentFold => out.next_actions.push(Action::GotoParentFold),
             AppEffect::DeleteFoldAtCursor => out.next_actions.push(Action::DeleteFoldAtCursor),
             AppEffect::GotoNextFold => out.next_actions.push(Action::GotoNextFold),
             AppEffect::GotoPrevFold => out.next_actions.push(Action::GotoPrevFold),
@@ -14371,6 +14373,47 @@ impl Editor {
             self.cursor = lattice_protocol::position::Position::new(t, 0);
         } else {
             self.set_message(EchoLevel::Error, "no more folds".to_string());
+        }
+    }
+
+    /// `zp` / `:fold-goto-parent`: move the cursor to the **parent** heading —
+    /// emacs `outline-up-heading` (evil-org's `gh`). One level *up* the fold
+    /// hierarchy, derived by range containment: find the innermost fold
+    /// containing the cursor (the current section), then jump to the start of
+    /// the innermost fold that *strictly contains* it. Distinct from `zj`/`zk`,
+    /// which step to the next/previous fold edge among siblings. No-op message
+    /// when the cursor isn't in a fold, or is already under a top-level heading.
+    pub fn do_goto_parent_fold(&mut self) {
+        let line = self.cursor.line;
+        let Some(cur_idx) = innermost_fold_idx(&self.folds, line, |_| true) else {
+            self.set_message(EchoLevel::Error, "no fold under the cursor".to_string());
+            return;
+        };
+        let cur = self.folds[cur_idx];
+        // Parent = the INNERMOST fold strictly containing `cur` — among the
+        // containing folds, the one with the largest start (then tightest end).
+        let parent_start = self
+            .folds
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| {
+                *i != cur_idx
+                    && f.start_line <= cur.start_line
+                    && cur.end_line <= f.end_line
+                    && !(f.start_line == cur.start_line && f.end_line == cur.end_line)
+            })
+            .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+            .map(|(_, f)| f.start_line);
+        match parent_start {
+            Some(p) => {
+                self.cursor = lattice_protocol::position::Position::new(p, 0);
+            }
+            None => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no parent heading (already at the top level)".to_string(),
+                );
+            }
         }
     }
 

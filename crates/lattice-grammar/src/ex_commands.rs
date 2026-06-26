@@ -282,6 +282,20 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _fold_goto_parent = registry.register_ex_command(
+        "fold-goto-parent",
+        "Move the cursor to the parent heading, one level up the fold \
+         hierarchy (`zp`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::GotoParentFold))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let no_hlsearch = registry.register_ex_command(
         "ex:nohlsearch",
         "Clear the search-highlight overlay (`:noh[lsearch]`).",

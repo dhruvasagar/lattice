@@ -1166,6 +1166,17 @@ impl DiffSession {
             revision,
         });
         if self.try_publish_if_newer(Arc::clone(&idx)) {
+            // D-fix.3a (2026-06-26): publish the current-side sign map in
+            // lockstep with the hunks, here at the single recompute choke
+            // point, so EVERY session gets line tints + gutter signs — inline
+            // `:diff` AND pane-group (`:diffsplit` / Claude Code `openDiff`).
+            // Previously only `DiffOverlayRefreshTask` (spawned solely on the
+            // inline `:diff` path) published the sign map, so pane-group diffs
+            // computed hunks but left `sign_map()` empty → no in-buffer diff
+            // highlighting. (The refresh task still owns deletion-block
+            // overlay rendering for inline diffs; this publish is idempotent
+            // with its own, computed from the same hunks.)
+            self.publish_sign_map(Arc::new(crate::overlay::compute_diff_sign_map(&idx)));
             Some(idx)
         } else {
             None
@@ -2906,6 +2917,29 @@ mod tests {
         assert_eq!(idx.len(), 1);
         assert_eq!(idx.hunks[0].kind, HunkKind::Change);
         assert_eq!(idx.revision, 1);
+    }
+
+    #[test]
+    fn recompute_blocking_publishes_sign_map_for_changed_ropes() {
+        // D-fix.3a: the sign map is published in lockstep with the hunks at the
+        // recompute choke point, so pane-group diffs (which never spawn the
+        // inline `DiffOverlayRefreshTask`) still get in-buffer tints + gutter
+        // signs — not just inline `:diff`.
+        let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+        assert!(
+            s.sign_map().sign_at(1).is_none(),
+            "no signs before the first recompute"
+        );
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\nBETA\ngamma\n");
+        s.recompute_blocking(&[a, b]).expect("first publish takes");
+        let signs = s.sign_map();
+        assert_eq!(
+            signs.sign_at(1),
+            Some(crate::overlay::DiffSignKind::Change),
+            "changed current-side line 1 is signed Change after recompute"
+        );
+        assert!(signs.sign_at(0).is_none(), "unchanged line 0 has no sign");
     }
 
     #[test]

@@ -3030,6 +3030,20 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // signal, and tear down.
             editor.do_diff_reject();
         }
+        Effect::CloseSessionDiffs {
+            origin_session,
+            tab_name,
+        } => {
+            // D-fix.6: an IDE-peer `close_tab` — reject the diff(s) THIS
+            // connection opened (scoped by `origin_session`, presentation-
+            // agnostic), else the legacy active-buffer file-close.
+            editor.do_close_session_tab(origin_session, &tab_name);
+        }
+        Effect::CloseAllSessionDiffs { origin_session } => {
+            // D-fix.6: an IDE-peer `closeAllDiffTabs` — reject every diff
+            // THIS connection opened (diff-only, no file-close fallback).
+            editor.do_close_session_diffs(origin_session);
+        }
         Effect::DiffPutCmd { target } => {
             // D.6.d / CR.1: `:diffput [<bufnr>]` — push the hunk under
             // the cursor into the named (or auto-resolved) buffer side.
@@ -3911,6 +3925,69 @@ impl Editor {
         );
         if let Some(primary) = primary {
             self.finish_programmatic_diff_panes(primary);
+        }
+    }
+
+    /// D-fix.6: tear down every *programmatic* diff opened by IDE-peer
+    /// connection `origin_session`, as a Reject — fires each session's bound
+    /// completion oneshot with [`DiffOutcome::Reject`] (the agent's blocked
+    /// `openDiff` returns `DIFF_REJECTED`), then closes its transient panes +
+    /// refocuses the origin pane (`finish_programmatic_diff_panes`). Returns
+    /// the count torn down.
+    ///
+    /// **Session-scoped (the load-bearing isolation):** only diffs whose
+    /// `ProgrammaticDiffPanes.origin_session` equals `origin_session` are
+    /// touched — a diff opened by a *different* agent connection (or a
+    /// non-IDE producer, `origin_session == 0`) is never affected. This is
+    /// what lets multiple concurrent agent sessions each cancel their OWN
+    /// diffs without disturbing the others. Presentation-agnostic: it matches
+    /// on the connection id, not on the diff's tab/window/split.
+    pub fn do_close_session_diffs(&mut self, origin_session: u64) -> usize {
+        // `0` is the "no originating session" sentinel (a non-IDE producer's
+        // diff); a real connection is always ≥ 1, so this never matches `0`
+        // and a stray close can't sweep every diff.
+        if origin_session == 0 {
+            return 0;
+        }
+        // Snapshot the matching primaries before the `&mut self` teardown (we
+        // can't hold the `programmatic_diff_panes` borrow across it).
+        let primaries: Vec<BufferId> = self
+            .programmatic_diff_panes
+            .iter()
+            .filter(|(_, info)| info.origin_session == origin_session)
+            .map(|(primary, _)| *primary)
+            .collect();
+        let count = primaries.len();
+        for primary in primaries {
+            // `lookup_session_for(primary)` resolves the session (primary is its
+            // key). Fire Reject + drop it, then close the panes + refocus.
+            if let Some(session) = self.diff_subsystem.lookup_session_for(primary) {
+                self.tear_down_single_diff_session(
+                    &session,
+                    Some(crate::diff::subsystem::DiffOutcome::Reject),
+                );
+            }
+            self.finish_programmatic_diff_panes(primary);
+        }
+        if count > 0 {
+            // One wake after the batch so the virtual-rows worker republishes
+            // empty matrices (the `tear_down_active_diff_session` pattern).
+            self.virtual_rows_wake.0.notify_one();
+        }
+        count
+    }
+
+    /// D-fix.6 `Effect::CloseSessionDiffs`: reject connection
+    /// `origin_session`'s diff(s); if it opened none, fall back to the legacy
+    /// I3 active-buffer file-close when `tab_name` equals the active buffer's
+    /// path (the only remaining `tab_name` use — orthogonal to the
+    /// presentation-agnostic diff teardown above).
+    pub fn do_close_session_tab(&mut self, origin_session: u64, tab_name: &str) {
+        if self.do_close_session_diffs(origin_session) > 0 {
+            return;
+        }
+        if self.document.path().as_deref() == Some(std::path::Path::new(tab_name)) {
+            self.do_buffer_delete(false);
         }
     }
 
@@ -4999,6 +5076,7 @@ impl Editor {
             new_file_path,
             new_contents,
             tab_name,
+            origin_session,
             response,
         } = req;
 
@@ -5095,6 +5173,9 @@ impl Editor {
                     origin_pane,
                     diff_panes: vec![left_pane, right_pane],
                     diff_buffers: vec![left_id, right_id],
+                    // D-fix.6: tag the diff with its originating connection so a
+                    // session-scoped close tears down only this session's diffs.
+                    origin_session,
                 },
             );
             // D-fix.5: compute the diff synchronously NOW so the first
@@ -26472,6 +26553,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        // D-fix.6: a session-scoped diff close tears down panes/sessions —
+        // it neither mutates the active buffer nor yanks.
+        | Effect::CloseSessionDiffs { .. }
+        | Effect::CloseAllSessionDiffs { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -26584,6 +26669,10 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        // D-fix.6: a session-scoped diff close tears down panes/sessions —
+        // it neither mutates the active buffer nor yanks.
+        | Effect::CloseSessionDiffs { .. }
+        | Effect::CloseAllSessionDiffs { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -29150,6 +29239,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: "fn main() { todo!() }\n".to_string(),
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
 
@@ -29262,6 +29352,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: "fn main() { todo!() }\n".to_string(),
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
 
@@ -29304,6 +29395,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: proposed,
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
 
@@ -29342,6 +29434,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: proposed,
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
 
@@ -29400,6 +29493,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: "new\n".to_string(),
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
         assert_eq!(editor.pane_tree.len(), 3, "claude pane + baseline + proposed");
@@ -29452,6 +29546,7 @@ mod tests {
             new_file_path: path.clone(),
             new_contents: "new\n".to_string(),
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
         let proposed = editor.active_pane_buffer_id();
@@ -29488,6 +29583,116 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// D-fix.6: a session-scoped close tears down ONLY the issuing
+    /// connection's diffs, never another session's. This is the load-bearing
+    /// isolation guarantee for concurrent agent sessions — connection 1's
+    /// `close_tab` / `closeAllDiffTabs` must not touch connection 2's diff.
+    #[tokio::test]
+    async fn close_session_diffs_is_scoped_to_its_connection() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-dfix6-scope.rs");
+        std::fs::write(&path, "base\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+
+        // Connection 1 opens a diff.
+        let (tx1, mut rx1) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "one\n".to_string(),
+            tab_name: "conn1".to_string(),
+            origin_session: 1,
+            response: tx1,
+        });
+        let prop1 = editor.active_pane_buffer_id();
+
+        // Connection 2 opens a SECOND diff.
+        let (tx2, mut rx2) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "two\n".to_string(),
+            tab_name: "conn2".to_string(),
+            origin_session: 2,
+            response: tx2,
+        });
+        let prop2 = editor.active_pane_buffer_id();
+        assert_ne!(prop1, prop2);
+        assert_eq!(editor.programmatic_diff_panes.len(), 2, "both diffs registered");
+
+        // Close connection 1's diffs only.
+        let closed = editor.do_close_session_diffs(1);
+        assert_eq!(closed, 1, "exactly connection 1's one diff torn down");
+
+        // Connection 1: rejected + cleaned.
+        assert_eq!(
+            rx1.try_recv(),
+            Ok(crate::diff::subsystem::DiffOutcome::Reject),
+            "connection 1's openDiff resolves Reject"
+        );
+        assert!(
+            editor.diff_subsystem.lookup_session_for(prop1).is_none(),
+            "conn1 session gone"
+        );
+        assert!(
+            !editor.programmatic_diff_panes.contains_key(&prop1),
+            "conn1 pane record removed"
+        );
+
+        // Connection 2: UNTOUCHED — still open, oneshot still pending.
+        assert!(
+            matches!(rx2.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "conn2's openDiff is still pending (not rejected by conn1's close)"
+        );
+        assert!(
+            editor.diff_subsystem.lookup_session_for(prop2).is_some(),
+            "conn2 session alive"
+        );
+        assert!(
+            editor.programmatic_diff_panes.contains_key(&prop2),
+            "conn2 pane record intact"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// D-fix.6: the `0` sentinel (a non-IDE producer's diff) and an unknown
+    /// connection match nothing — a stray / mis-scoped close can never sweep
+    /// every diff.
+    #[tokio::test]
+    async fn close_session_diffs_ignores_zero_and_unknown_sessions() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-dfix6-zero.rs");
+        std::fs::write(&path, "base\n").expect("write baseline");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "x\n".to_string(),
+            tab_name: "no-session".to_string(),
+            origin_session: 0, // a non-IDE producer
+            response: tx,
+        });
+        assert_eq!(editor.programmatic_diff_panes.len(), 1);
+
+        assert_eq!(editor.do_close_session_diffs(0), 0, "the 0 sentinel matches nothing");
+        assert_eq!(editor.do_close_session_diffs(5), 0, "an unknown connection matches nothing");
+        assert_eq!(
+            editor.programmatic_diff_panes.len(),
+            1,
+            "the diff is untouched by a non-matching close"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// User edits to the proposed (right) side during review ARE persisted on
     /// Accept: the accept hook writes the buffer's LIVE content (read via the
     /// registry handle, which shares the active document's backing actor), not
@@ -29513,6 +29718,7 @@ mod tests {
             // changes it below.
             new_contents: "fn main() {}\n".to_string(),
             tab_name: "demo".to_string(),
+            origin_session: 0,
             response: tx,
         });
 

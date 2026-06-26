@@ -239,6 +239,9 @@ impl ClaudeCodeServerHandle {
         diff: Option<ProgrammaticDiffBus>,
     ) {
         self.dispatch_ctx.store(Arc::new(DispatchContext {
+            // Shared template; `serve_connection` clones this and stamps each
+            // connection's own `conn_id` (D-fix.6).
+            conn_id: 0,
             reads: ReadContext {
                 cache: self.cache.clone(),
                 buffer_store,
@@ -266,6 +269,9 @@ pub fn spawn(
     // `install_read_services` upgrades it once boot wires the generic
     // buffer-store / diagnostics handles.
     let dispatch_ctx = Arc::new(ArcSwap::from_pointee(DispatchContext {
+        // Shared template; per-connection `conn_id` stamped in
+        // `serve_connection` (D-fix.6).
+        conn_id: 0,
         reads: ReadContext {
             cache: cache.clone(),
             buffer_store: None,
@@ -482,9 +488,16 @@ async fn accept_loop(
     shutdown_tx: broadcast::Sender<()>,
     signals: StatusSignals,
 ) {
+    // D-fix.6: monotonic per-connection id. The accept loop is a single
+    // sequential task, so a plain counter (no atomic) is race-free; `0` is
+    // reserved for the shared/boot context + non-IDE diff producers, so start
+    // at 1. Wraps after u64::MAX connections (never reached in practice).
+    let mut next_conn_id: u64 = 1;
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                let conn_id = next_conn_id;
+                next_conn_id = next_conn_id.wrapping_add(1).max(1);
                 let token = token.clone();
                 let ctx = dispatch_ctx.clone();
                 // I6: each connection subscribes its own broadcast receiver.
@@ -498,9 +511,10 @@ async fn accept_loop(
                 signals.fire();
                 let conn_guard = ConnGuard(signals.clone());
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        serve_connection(stream, token, ctx, notify_rx, shutdown_rx, conn_guard)
-                            .await
+                    if let Err(e) = serve_connection(
+                        stream, token, ctx, conn_id, notify_rx, shutdown_rx, conn_guard,
+                    )
+                    .await
                     {
                         tracing::debug!(error = %e, "claude-code connection ended with error");
                     }
@@ -519,6 +533,10 @@ async fn serve_connection(
     stream: TcpStream,
     token: String,
     dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    // D-fix.6: this connection's unique id, stamped into the per-connection
+    // dispatch context so `openDiff` tags its diff and the close tools scope
+    // teardown to THIS session.
+    conn_id: u64,
     mut notify_rx: broadcast::Receiver<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
     // I7: held for the connection's lifetime; its `Drop` decrements the live
@@ -528,8 +546,11 @@ async fn serve_connection(
     let ws = transport::accept(stream, &token).await?;
     let (mut write, mut read) = ws.split();
     // Load the current dispatch context once per connection (installed at
-    // boot before any start, so it carries the generic read services).
-    let ctx = dispatch_ctx.load_full();
+    // boot before any start, so it carries the generic read services), and
+    // stamp THIS connection's id onto it (D-fix.6). Cheap clone — all fields
+    // are Arc-based handles or small values.
+    let mut ctx = (*dispatch_ctx.load_full()).clone();
+    ctx.conn_id = conn_id;
 
     // I6: one WS sink can't be written from two tasks, so a single outbound
     // channel funnels BOTH request responses (from the read loop) and pushed

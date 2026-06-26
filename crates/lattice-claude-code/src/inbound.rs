@@ -19,7 +19,7 @@
 //! on an unknown / non-active target (option C, design §2: per-buffer save/close
 //! targeting lands with the diff/tab work).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use lattice_grammar::effect::Effect;
 use lattice_grammar::Utf16Pos;
@@ -42,9 +42,20 @@ pub enum InboundKind {
     },
     /// Save the document for `path` (option C: only when it's the active buffer).
     SaveDocument { path: PathBuf },
-    /// Close the tab named `tab_name` (option C: only the active buffer in I3;
-    /// `tab_name` is treated as a file path).
-    CloseTab { tab_name: String },
+    /// D-fix.6: close the tab from connection `origin_session`. Maps to the
+    /// host-applied [`Effect::CloseSessionDiffs`] — the host rejects that
+    /// connection's programmatic diff session(s) (presentation-agnostic; keyed
+    /// on `origin_session`, NOT `tab_name`), falling back to the legacy
+    /// active-buffer file-close only when `tab_name` matches the active path
+    /// and no diff was torn down.
+    CloseTab {
+        origin_session: u64,
+        tab_name: String,
+    },
+    /// D-fix.6: `closeAllDiffTabs` from connection `origin_session` — reject
+    /// every programmatic diff that connection opened. Maps to
+    /// [`Effect::CloseAllSessionDiffs`].
+    CloseAllDiffTabs { origin_session: u64 },
 }
 
 /// The drain's reply to the WS task. Optimistic-ack: `ok` reflects whether the
@@ -128,16 +139,28 @@ fn map_request(kind: &InboundKind, cache: &ReadStateHandle) -> (Option<Effect>, 
                 )
             }
         }
-        InboundKind::CloseTab { tab_name } => {
-            if active_path(cache).as_deref() == Some(Path::new(tab_name)) {
-                (Some(Effect::BufferDelete { force: false }), InboundReply::ok())
-            } else {
-                (
-                    None,
-                    InboundReply::fail("close_tab: only the active buffer can be closed in I3"),
-                )
-            }
-        }
+        // D-fix.6: the diff-vs-buffer decision is HOST-side now (only the host
+        // knows the open programmatic diffs + their `origin_session`). Emit the
+        // host-applied effect carrying the connection id; the host rejects that
+        // connection's diff session(s), else falls back to the active-buffer
+        // file-close via `tab_name`. Optimistic-ack `ok` (the close is
+        // fire-and-forget; the host does the right thing regardless).
+        InboundKind::CloseTab {
+            origin_session,
+            tab_name,
+        } => (
+            Some(Effect::CloseSessionDiffs {
+                origin_session: *origin_session,
+                tab_name: tab_name.clone(),
+            }),
+            InboundReply::ok(),
+        ),
+        InboundKind::CloseAllDiffTabs { origin_session } => (
+            Some(Effect::CloseAllSessionDiffs {
+                origin_session: *origin_session,
+            }),
+            InboundReply::ok(),
+        ),
     }
 }
 
@@ -233,24 +256,41 @@ mod tests {
     }
 
     #[test]
-    fn close_active_maps_to_delete_else_ok_false() {
+    fn close_tab_maps_to_session_scoped_diff_teardown() {
+        // D-fix.6: close_tab now ALWAYS maps to the host-applied
+        // `CloseSessionDiffs` carrying the connection id (the host decides
+        // diff-vs-buffer with its diff state). Optimistic-ack ok.
         let (e, r) = map_request(
             &InboundKind::CloseTab {
+                origin_session: 7,
                 tab_name: "/a.rs".to_string(),
             },
             &cache_with_active("/a.rs"),
         );
-        assert!(matches!(e, Some(Effect::BufferDelete { .. })));
+        match e {
+            Some(Effect::CloseSessionDiffs {
+                origin_session,
+                tab_name,
+            }) => {
+                assert_eq!(origin_session, 7, "scoped to the originating connection");
+                assert_eq!(tab_name, "/a.rs");
+            }
+            other => panic!("expected CloseSessionDiffs, got {other:?}"),
+        }
         assert!(r.ok);
+    }
 
-        let (e2, r2) = map_request(
-            &InboundKind::CloseTab {
-                tab_name: "/nope.rs".to_string(),
-            },
-            &cache_with_active("/a.rs"),
+    #[test]
+    fn close_all_diff_tabs_maps_to_session_scoped_bulk_teardown() {
+        let (e, r) = map_request(
+            &InboundKind::CloseAllDiffTabs { origin_session: 9 },
+            &empty_cache(),
         );
-        assert!(e2.is_none());
-        assert!(!r2.ok);
+        assert!(matches!(
+            e,
+            Some(Effect::CloseAllSessionDiffs { origin_session: 9 })
+        ));
+        assert!(r.ok);
     }
 
     #[test]

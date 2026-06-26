@@ -49,8 +49,18 @@ pub struct ProgrammaticDiffRequest {
     pub new_file_path: PathBuf,
     /// The proposed text — the editable right side.
     pub new_contents: String,
-    /// Display label for the diff (the agent's tab name).
+    /// Display label for the diff (the agent's tab name). Presentation only —
+    /// the teardown is keyed on [`origin_session`](Self::origin_session), NOT
+    /// this label (a diff may show as a tab today, a window/split tomorrow).
     pub tab_name: String,
+    /// D-fix.6: the originating session — the IDE-peer connection id that
+    /// produced this diff. The host stores it with the opened diff so a
+    /// session-scoped close (a `close_tab` / `closeAllDiffTabs` from THAT
+    /// connection) tears down only the diffs that connection opened, never
+    /// another session's. `0` means "no originating session" (a non-IDE
+    /// producer — an LSP `WorkspaceEdit` preview, a plugin); such diffs are
+    /// matched by no connection's close.
+    pub origin_session: u64,
     /// Resolved with the user's verdict when the diff is torn down. A dropped
     /// receiver (the producer gave up) makes the teardown's `send` a no-op; a
     /// dropped sender (the session was cancelled without an explicit outcome)

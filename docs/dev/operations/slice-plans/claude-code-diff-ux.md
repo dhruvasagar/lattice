@@ -237,7 +237,58 @@ scroll.
 unchanged code is most useful once the visible changes are tinted, and both hinge
 on `diff-mode` actually activating on the openDiff buffers — D-fix.3 candidate (c)).
 
-### D-fix.6 — CLI-side reject/close tears down the diff  🚧
+### D-fix.6 — CLI-side reject/close tears down the diff  ✅ (session-scoped)
+**Landed (2026-06-26).**
+
+**Execution-time redesign (Dhruva, 2026-06-26): scope by connection, not
+`tab_name`.** Two corrections to the original plan:
+1. **Multi-session isolation (hard requirement).** Multiple agent sessions (and
+   other AI sessions) can each have openDiffs in flight. A close from session A
+   must tear down ONLY A's diffs, never B's. The original "match by tab_name"
+   can't scope `closeAllDiffTabs` and risks cross-session interference.
+2. **Don't key on presentation.** A diff might show as a tab today, a
+   window/split/inline tomorrow — keying teardown on `tab_name` is a shape
+   assumption that rots. The **connection id IS the association**: a close from
+   a connection tears down the diff session(s) that connection opened,
+   regardless of where/how they're displayed.
+
+**Shipped:**
+- **conn_id plumbing** — the server assigns a unique `conn_id` per WS connection
+  (sequential counter; `0` reserved for the shared/boot context + non-IDE
+  producers), stamped into a per-connection `DispatchContext` clone
+  (`serve_connection`). `openDiff` tags its `ProgrammaticDiffRequest.origin_session`
+  with it; the host stores it on `ProgrammaticDiffPanes.origin_session`.
+- **session-scoped teardown** — `Editor::do_close_session_diffs(origin_session)`
+  rejects every programmatic diff whose `origin_session` matches (fires each
+  bound oneshot `Reject` → the agent's blocked `openDiff` returns
+  `DIFF_REJECTED`, then `finish_programmatic_diff_panes`). `0` and unknown
+  connections match nothing (no stray sweep). Presentation-agnostic.
+- **two host effects** — `Effect::CloseSessionDiffs { origin_session, tab_name }`
+  (`close_tab`: reject the connection's diffs, else legacy active-buffer
+  file-close via `tab_name` — the ONLY remaining `tab_name` use) +
+  `Effect::CloseAllSessionDiffs { origin_session }` (`closeAllDiffTabs`:
+  diff-only). Both renderer effect-classifiers (TUI + GPUI) carry the new
+  host-applied no-op variants (parity, the `TerminalInput` precedent).
+- **inbound + tool** — `InboundKind::CloseTab` gains `origin_session`; new
+  `CloseAllDiffTabs`; the `closeAllDiffTabs` MCP tool registered + routed
+  (`writes::close_all_diff_tabs`). The diff-vs-buffer decision moved host-side
+  (only the host knows the open diffs + their `origin_session`).
+
+**Tests:** the isolation guarantee (two connections; closing conn 1 rejects only
+its diff, conn 2's session + oneshot intact); the `0`/unknown-connection guard;
+inbound mapping (`close_tab`→`CloseSessionDiffs`, `closeAllDiffTabs`→
+`CloseAllSessionDiffs`); the tool catalog. Green: 64 claude-code, 573 host lib;
+all four Effect-consuming crates (host, TUI, GPUI, claude-code) compile.
+
+**Provisional wire-shape (UNVERIFIED — validate live):** I could not confirm
+against a live CLI whether "no" sends `close_tab` (and with which `tab_name`) or
+`closeAllDiffTabs`. BOTH are handled defensively, and both reduce to "reject this
+connection's diffs," so the exact message + label don't matter for correctness;
+worst case (a message we don't handle) is a graceful no-op. Confirm the real
+frames when dogfooding.
+
+_Original symptom / root-cause / plan retained below._
+
 **Symptom (Dhruva, runtime):** saying "no" in the claude CLI does NOT behave
 like `:diff-reject` — the diff buffers don't close. Editor→agent works
 (`:diff-accept`/`:diff-reject` fire the bound oneshot → `FILE_SAVED`/

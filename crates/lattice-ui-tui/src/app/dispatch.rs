@@ -921,6 +921,8 @@ impl App {
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept
             | Effect::DiffReject
+            | Effect::CloseSessionDiffs { .. }
+            | Effect::CloseAllSessionDiffs { .. }
             | Effect::NextHunk
             | Effect::PrevHunk
             | Effect::BufferNext
@@ -1283,6 +1285,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        | Effect::CloseSessionDiffs { .. }
+        | Effect::CloseAllSessionDiffs { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -1395,6 +1399,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        | Effect::CloseSessionDiffs { .. }
+        | Effect::CloseAllSessionDiffs { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes

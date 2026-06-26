@@ -28,7 +28,15 @@ use crate::writes;
 /// [`ReadContext`](crate::reads::ReadContext) + the write bus. Built once at
 /// server spawn and shared (behind an `Arc`) across connections. The I1
 /// methods (`initialize` / `tools/list` / `prompts/list`) ignore it.
+#[derive(Clone)]
 pub struct DispatchContext {
+    /// D-fix.6: the originating connection id — assigned per WS connection by
+    /// the server (`serve_connection` clones the shared context and stamps
+    /// this). Carried into `openDiff` (tags the diff's `origin_session`) and
+    /// the close tools (scopes teardown to THIS connection's diffs), so one
+    /// agent session can never tear down another's diffs. `0` for the shared
+    /// boot context + dispatch tests (no real connection).
+    pub conn_id: u64,
     /// Read-tool services (cache + generic buffer-store / diagnostics +
     /// workspace config).
     pub reads: reads::ReadContext,
@@ -114,7 +122,9 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
     if name == "openDiff" {
         return Response::ok(
             req.id.clone(),
-            diff::open_diff(ctx.diff.as_ref(), arguments).await,
+            // D-fix.6: tag the opened diff with THIS connection's id so a later
+            // session-scoped close tears down only this session's diffs.
+            diff::open_diff(ctx.diff.as_ref(), arguments, ctx.conn_id).await,
         );
     }
 
@@ -129,7 +139,11 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
         // oneshot the per-tick drain resolves).
         "openFile" => Some(writes::open_file(bus, arguments).await),
         "saveDocument" => Some(writes::save_document(bus, arguments).await),
-        "close_tab" => Some(writes::close_tab(bus, arguments).await),
+        // D-fix.6: both close paths are scoped to THIS connection (`ctx.conn_id`)
+        // — they tear down the diff session(s) this agent session opened,
+        // regardless of how/where the diff is displayed, never another session's.
+        "close_tab" => Some(writes::close_tab(bus, arguments, ctx.conn_id).await),
+        "closeAllDiffTabs" => Some(writes::close_all_diff_tabs(bus, ctx.conn_id).await),
         _ => None,
     };
 
@@ -182,6 +196,7 @@ mod tests {
     /// it; the read tools degrade to empty results.
     fn test_ctx() -> DispatchContext {
         DispatchContext {
+            conn_id: 0,
             reads: crate::reads::ReadContext {
                 cache: std::sync::Arc::new(std::sync::Mutex::new(
                     crate::snapshot::ClaudeCodeReadState::default(),
@@ -221,6 +236,7 @@ mod tests {
             "openFile",
             "saveDocument",
             "close_tab",
+            "closeAllDiffTabs",
             "openDiff",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");

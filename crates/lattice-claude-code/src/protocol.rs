@@ -113,6 +113,13 @@ pub fn tool_catalog() -> Vec<ToolDescriptor> {
                 "required": ["tab_name"]
             }),
         ),
+        // D-fix.6: close every diff this session opened (used when the agent
+        // abandons a proposed edit). Scoped to the calling connection.
+        ToolDescriptor::new(
+            "closeAllDiffTabs",
+            "Close all diff tabs opened by this session.",
+            json!({ "type": "object", "properties": {} }),
+        ),
         // Blocking (I4).
         ToolDescriptor::new(
             "openDiff",

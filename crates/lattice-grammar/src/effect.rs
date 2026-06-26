@@ -732,6 +732,34 @@ pub enum Effect {
     /// consuming the outcome should revert any
     /// pre-session state. D.6.e.
     DiffReject,
+    /// D-fix.6: an IDE-peer connection's `close_tab` — tear down (as a
+    /// Reject) every *programmatic* diff session that THIS connection
+    /// (`origin_session`) opened, regardless of how/where it is
+    /// displayed. Host-applied: it fires each matching session's bound
+    /// completion oneshot with [`DiffOutcome::Reject`] and closes its
+    /// panes (the `:diff-reject` teardown, but targeted by
+    /// `origin_session` rather than the active pane). If the connection
+    /// opened no diff, the host falls back to closing the active buffer
+    /// when `tab_name` matches its path (the legacy I3 file-close — the
+    /// only remaining `tab_name` use, orthogonal to the diff teardown).
+    CloseSessionDiffs {
+        /// The originating connection id; only diffs tagged with it are
+        /// torn down (`0` = none — a non-IDE producer's diff is never
+        /// matched). Cross-session isolation: connection A's close can
+        /// never affect connection B's diffs.
+        origin_session: u64,
+        /// The agent's close-tab label, used ONLY for the legacy
+        /// active-buffer file-close fallback when no diff matched.
+        tab_name: String,
+    },
+    /// D-fix.6: an IDE-peer connection's `closeAllDiffTabs` — tear down
+    /// (as a Reject) every programmatic diff session `origin_session`
+    /// opened. Same scoping as [`Self::CloseSessionDiffs`] but with no
+    /// file-close fallback (it is unambiguously a diff-only bulk close).
+    CloseAllSessionDiffs {
+        /// The originating connection id; scopes the bulk teardown.
+        origin_session: u64,
+    },
     NextHunk,
     /// `[c` / `:hunk-prev` -- jump cursor to the start of the
     /// previous diff hunk on the current side. Wraps to

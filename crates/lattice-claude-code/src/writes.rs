@@ -54,15 +54,36 @@ pub async fn save_document(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, a
     .await
 }
 
-/// `close_tab`: close the tab named `tab_name`.
-pub async fn close_tab(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
+/// `close_tab`: close the tab named `tab_name`, scoped to connection
+/// `conn_id` (D-fix.6) — the host rejects THAT connection's diff session(s).
+pub async fn close_tab(
+    bus: Option<&InboundBus<ClaudeCodeInboundRequest>>,
+    args: &Value,
+    conn_id: u64,
+) -> Value {
     let Some(tab) = args.get("tab_name").and_then(|v| v.as_str()) else {
         return result(false, "close_tab: missing tab_name");
     };
     run_write(
         bus,
         InboundKind::CloseTab {
+            origin_session: conn_id,
             tab_name: tab.to_string(),
+        },
+    )
+    .await
+}
+
+/// D-fix.6 `closeAllDiffTabs`: reject every programmatic diff connection
+/// `conn_id` opened. Takes no args (the connection id IS the scope).
+pub async fn close_all_diff_tabs(
+    bus: Option<&InboundBus<ClaudeCodeInboundRequest>>,
+    conn_id: u64,
+) -> Value {
+    run_write(
+        bus,
+        InboundKind::CloseAllDiffTabs {
+            origin_session: conn_id,
         },
     )
     .await
@@ -125,7 +146,7 @@ mod tests {
         let v = open_file(None, &json!({})).await;
         assert_eq!(v["success"], false);
         assert!(v["message"].as_str().unwrap().contains("missing filePath"));
-        let v = close_tab(None, &json!({})).await;
+        let v = close_tab(None, &json!({}), 0).await;
         assert!(v["message"].as_str().unwrap().contains("missing tab_name"));
     }
 

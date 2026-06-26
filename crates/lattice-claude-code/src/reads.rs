@@ -28,6 +28,7 @@ use crate::snapshot::ReadStateHandle;
 /// from boot-provided handles and held behind an `Arc` in the dispatch
 /// context. Any field may be absent (headless / test harness), in which
 /// case the dependent tool degrades to an empty result, never an error.
+#[derive(Clone)]
 pub struct ReadContext {
     /// Crate-owned read-state cache (open set + active selection).
     pub cache: ReadStateHandle,

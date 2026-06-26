@@ -35,7 +35,13 @@ use lattice_diff::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
 /// `tool_text_result`, since the content markers are the contract). Every
 /// failure path is graceful — missing args, an absent bus, or a dropped
 /// receiver all return a result rather than hanging or panicking.
-pub async fn open_diff(bus: Option<&ProgrammaticDiffBus>, args: &Value) -> Value {
+pub async fn open_diff(
+    bus: Option<&ProgrammaticDiffBus>,
+    args: &Value,
+    // D-fix.6: the originating connection id — tags the diff so a later
+    // session-scoped close from THIS connection tears it down.
+    conn_id: u64,
+) -> Value {
     let Some(bus) = bus else {
         return error_result("openDiff unavailable: IDE server not fully initialized");
     };
@@ -62,6 +68,7 @@ pub async fn open_diff(bus: Option<&ProgrammaticDiffBus>, args: &Value) -> Value
         new_file_path: PathBuf::from(new_path),
         new_contents: contents.to_string(),
         tab_name: tab.to_string(),
+        origin_session: conn_id,
         response: tx,
     };
     if bus.send(request).is_err() {
@@ -125,6 +132,7 @@ mod tests {
         let v = open_diff(
             None,
             &json!({ "old_file_path": "/a.rs", "new_file_contents": "x" }),
+            0,
         )
         .await;
         assert_eq!(v["isError"], true);
@@ -138,14 +146,14 @@ mod tests {
     async fn missing_required_args_are_graceful_errors() {
         let (bus, _rx) = make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
         // Missing new_file_contents.
-        let v = open_diff(Some(&bus), &json!({ "old_file_path": "/a.rs" })).await;
+        let v = open_diff(Some(&bus), &json!({ "old_file_path": "/a.rs" }), 0).await;
         assert_eq!(v["isError"], true);
         assert!(v["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("missing new_file_contents"));
         // Missing old_file_path.
-        let v = open_diff(Some(&bus), &json!({ "new_file_contents": "x" })).await;
+        let v = open_diff(Some(&bus), &json!({ "new_file_contents": "x" }), 0).await;
         assert!(v["content"][0]["text"]
             .as_str()
             .unwrap()
@@ -165,6 +173,7 @@ mod tests {
                         "new_file_contents": "new",
                         "tab_name": "demo",
                     }),
+                    0,
                 )
                 .await
             }
@@ -195,6 +204,7 @@ mod tests {
                         "new_file_contents": "new",
                         "tab_name": "the-tab",
                     }),
+                    0,
                 )
                 .await
             }
@@ -223,6 +233,7 @@ mod tests {
                         "new_file_contents": "new",
                         "tab_name": "cancelled",
                     }),
+                    0,
                 )
                 .await
             }

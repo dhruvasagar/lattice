@@ -346,6 +346,13 @@ pub struct ProgrammaticDiffPanes {
     /// The throwaway in-memory baseline + proposed buffers; removed from the
     /// registry on resolve so they don't linger in `:ls`.
     pub diff_buffers: Vec<lattice_core::BufferId>,
+    /// D-fix.6: the IDE-peer connection that opened this diff (its
+    /// `ProgrammaticDiffRequest.origin_session`). A session-scoped close
+    /// (`close_tab` / `closeAllDiffTabs` from that same connection) tears
+    /// down only the diffs whose `origin_session` matches — so one agent
+    /// session can never close another's diffs. `0` = no originating session
+    /// (a non-IDE producer), matched by no connection's close.
+    pub origin_session: u64,
 }
 
 #[derive(Debug, Default)]

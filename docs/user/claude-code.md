@@ -184,9 +184,28 @@ Security is enforced at two layers:
   connection without the right token is rejected. The lockfile is
   removed when the server stops.
 
-`claude-code-mode` shows a status segment on the agent terminal's
-modeline while the server is running: `claude :PORT` plus the live
-connection count. It's hidden when the server is stopped.
+## The status segment
+
+While the server is running, `claude-code-mode` shows a status segment
+on the agent terminal's [modeline](modeline.md). It reads at a glance
+and is hidden entirely when the server is stopped:
+
+```
+● claude · lattice :8123 · 1 conn · ◆ review · @sent
+```
+
+| Part | Meaning |
+|------|---------|
+| `●` / `○` | An agent is **attached** (`●`) vs the server is up but **waiting** for one (`○`) |
+| `claude · lattice` | The agent and the **project** it's running for (the workspace folder name) |
+| `:8123` | The loopback port the server bound |
+| `· N conn(s)` | How many agents are attached (omitted when none) |
+| `· ◆ review` | An openDiff is **awaiting your accept/reject** — the agent is blocked on you (`◆ N reviews` for several) |
+| `· @sent` | Briefly shown after `:claude-send` pushes context to the agent |
+
+The segment updates off-keystroke (it never costs you typing latency),
+and the `◆ review` / `@sent` indicators clear themselves when the review
+resolves or the echo times out.
 
 ---
 

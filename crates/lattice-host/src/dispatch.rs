@@ -1280,6 +1280,8 @@ impl Editor {
             // `rs.diff.sign_map.sign_at(line)`.
             diff: std::sync::Arc::new(crate::render_state::DiffRenderState {
                 sign_map: self.diff_signs_for_active().unwrap_or_default(),
+                // D-fix.3b: per-buffer sign maps so BOTH diff panes tint.
+                sign_maps: self.diff_sign_maps_by_buffer(),
                 // D.3.g (2026-05-29): expose hunk count so the
                 // modeline diff segment can render
                 // `[diff: N hunks]` without holding an Editor
@@ -3729,6 +3731,38 @@ impl Editor {
         Some(session.sign_map())
     }
 
+    /// D-fix.3b: build the per-buffer sign-map snapshot for EVERY live diff
+    /// session so a side-by-side diff tints BOTH panes. For each session the
+    /// primary (current/proposed/right) buffer maps to the current-side
+    /// `sign_map()`; the baseline (left) buffer — slot 0 of a multi-pane
+    /// session's `watch` list, when distinct from the primary — maps to the
+    /// `baseline_sign_map()`. Inline `:diff` (single watched buffer) contributes
+    /// only the current-side entry. Lock-free `ArcSwap` reads; renderer-hot.
+    fn diff_sign_maps_by_buffer(
+        &self,
+    ) -> std::sync::Arc<
+        std::collections::HashMap<BufferId, std::sync::Arc<crate::diff::overlay::DiffSignMap>>,
+    > {
+        let mut map: std::collections::HashMap<
+            BufferId,
+            std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+        > = std::collections::HashMap::new();
+        for session in self.diff_subsystem.iter_sessions() {
+            let primary = session.buffer_id();
+            map.insert(primary, session.sign_map());
+            // The baseline (left) pane is slot 0 of a multi-pane session's
+            // watch list; tint it from the baseline-side map.
+            if let Some(desc) = self.diff_subsystem.lookup_descriptor(primary) {
+                if let Some(&baseline) = desc.watch.first() {
+                    if baseline != primary {
+                        map.insert(baseline, session.baseline_sign_map());
+                    }
+                }
+            }
+        }
+        std::sync::Arc::new(map)
+    }
+
     /// ML.3b: refresh the `diff` modeline element's content from the
     /// active document's session sign map. `Scope::Global`, so the
     /// renderer paints it on the active pane only (modeline.md §7); the
@@ -4611,6 +4645,33 @@ impl Editor {
                     sides[slot],
                 ));
             self.virtual_row_providers.register(m.buffer, provider);
+        }
+
+        // D-fix.3b.4: pane-group diffs don't spawn the inline
+        // `DiffOverlayRefreshTask`, so nothing wakes the render when an async
+        // recompute publishes fresh hunks + sign maps — the tints/signs would
+        // only appear on the next keystroke. Spawn a lightweight forwarder
+        // that, on every publish, fires the actor's off-keystroke wake
+        // (`async_landed` → re-runs `build_render_state` → rebuilds
+        // `diff.sign_maps`) plus the virtual-rows wake (fillers). Stored in
+        // `diff_forwarders` so teardown aborts it. Mirrors the inline path's
+        // forwarder, minus the overlay render (fillers own the visuals here).
+        {
+            let publish_notify = session.publish_notify();
+            let async_landed = self.async_landed.clone();
+            let virtual_rows_wake = self.virtual_rows_wake.0.clone();
+            let forwarder = tokio::spawn(async move {
+                loop {
+                    publish_notify.notified().await;
+                    async_landed.notify_one();
+                    virtual_rows_wake.notify_one();
+                }
+            });
+            if let Ok(mut map) = self.diff_forwarders.lock() {
+                if let Some(prev) = map.insert(primary, forwarder) {
+                    prev.abort();
+                }
+            }
         }
 
         // Kick the initial compute so hunks publish without

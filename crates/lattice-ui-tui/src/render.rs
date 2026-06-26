@@ -3652,10 +3652,13 @@ pub(crate) fn compose_pane_lines(
         };
         let mut services = ServiceRegistry::new();
         let rs_deco = app.render_state.load();
-        // DiffDecorationData: active-doc only (sign_map is per active doc).
-        if ctx.buffer_id == app.ad().document_buffer_id {
+        // D-fix.3b: per-pane gutter signs — register THIS pane's buffer's
+        // sign map (proposed→current-side, baseline→baseline-side), so both
+        // panes of a side-by-side diff show gutter signs, not just the active
+        // one. `None` (no session for this buffer) → no signs.
+        if let Some(sign_map) = rs_deco.diff.sign_maps.get(&ctx.buffer_id) {
             services.register(lattice_host::diff::mode::DiffDecorationData {
-                sign_map: rs_deco.diff.sign_map.clone(),
+                sign_map: sign_map.clone(),
             });
         }
         // LspDiagnosticsData: gated on lsp_diagnostics_enabled (M.5.6).
@@ -4386,7 +4389,7 @@ pub(crate) fn compose_pane_lines(
         // preserve every fg / modifier the upstream overlays
         // set. Conditional on the active-document sign map;
         // no-session / no-hunk-on-line → no allocation.
-        let body = match diff_tint_bg(view, line_idx) {
+        let body = match diff_tint_bg(view, ctx.buffer_id, line_idx) {
             Some(bg) => apply_diff_tint(body, bg),
             None => body,
         };
@@ -5122,16 +5125,25 @@ fn render_virtual_row(
 /// integration routes through `DiffAdd` / `DiffChange` /
 /// `DiffRemove` theme entries (deferred to the theme
 /// expansion slice).
-fn diff_tint_bg(view: &FrameView<'_>, line_idx: u32) -> Option<Color> {
+fn diff_tint_bg(
+    view: &FrameView<'_>,
+    buffer_id: crate::buffers::BufferId,
+    line_idx: u32,
+) -> Option<Color> {
     use lattice_host::diff::overlay::DiffSignKind;
     let rs = view.app.render_state.load();
-    match rs.diff.sign_map.sign_at(line_idx)? {
+    // D-fix.3b: tint each pane from ITS buffer's sign map (per-pane), so a
+    // side-by-side diff colours BOTH sides — baseline (left) shows
+    // removed/changed, proposed (right) shows added/changed. Colours resolve
+    // from the active theme.
+    let sign_map = rs.diff.sign_maps.get(&buffer_id)?;
+    match sign_map.sign_at(line_idx)? {
         // D.3.b.3: read tint colours from the theme.
         DiffSignKind::Add => Some(view.app.theme.diff_add_line_bg),
         DiffSignKind::Change => Some(view.app.theme.diff_change_line_bg),
-        // Remove hunks have no current-side row to tint;
-        // D.3.b's deletion block is the visible surface.
-        DiffSignKind::Remove => None,
+        // D-fix.3b: the baseline pane's removed lines tint red (was None —
+        // only the current side was ever shown before pane-group tints).
+        DiffSignKind::Remove => Some(view.app.theme.diff_remove_line_bg),
         // D.6.f (2026-05-31): three-way Conflict gets its
         // own tint so a 30-row file with one conflict block
         // is readable at a glance.

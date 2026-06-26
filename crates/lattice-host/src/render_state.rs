@@ -282,6 +282,16 @@ impl VirtualRowsRenderState {
 #[derive(Clone, Debug, Default)]
 pub struct DiffRenderState {
     pub sign_map: Arc<crate::diff::overlay::DiffSignMap>,
+    /// D-fix.3b: per-buffer sign maps for EVERY live diff session, so a
+    /// side-by-side diff tints BOTH panes — each pane reads its own
+    /// buffer's map by `BufferId`. The proposed/current (right) buffer maps
+    /// to the current-side `sign_map()`; the baseline (left) buffer maps to
+    /// the `baseline_sign_map()`. Renderers look up `sign_maps.get(buffer_id)`
+    /// per pane; the legacy single `sign_map` above stays the active-doc map
+    /// for the modeline hunk count.
+    pub sign_maps: Arc<
+        std::collections::HashMap<lattice_core::BufferId, Arc<crate::diff::overlay::DiffSignMap>>,
+    >,
     /// D.3.g (2026-05-29): hunk count for the active
     /// document's `DiffSession`, if any. `None` means no
     /// session is open for the active buffer. `Some(0)` means

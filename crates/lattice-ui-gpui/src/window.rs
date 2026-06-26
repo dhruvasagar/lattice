@@ -1500,10 +1500,12 @@ impl EditorView {
                 ServiceRegistry,
             };
             let mut services = ServiceRegistry::new();
-            // DiffDecorationData: active-doc only (sign_map is per active doc).
-            if pane.buffer_id == ad.document_buffer_id {
+            // D-fix.3b: per-pane gutter signs — register THIS pane's buffer's
+            // sign map (proposed→current-side, baseline→baseline-side) so both
+            // panes of a side-by-side diff show signs, not just the active one.
+            if let Some(sign_map) = rs_guard.diff.sign_maps.get(&pane.buffer_id) {
                 services.register(lattice_host::diff::mode::DiffDecorationData {
-                    sign_map: rs_guard.diff.sign_map.clone(),
+                    sign_map: sign_map.clone(),
                 });
             }
             // LspDiagnosticsData: inject when URI resolves (lsp-mode gate is
@@ -1636,30 +1638,41 @@ impl EditorView {
         // current-side row to tint (deletion block is the
         // visual surface). Order parallels `gutter_meta` so
         // `rel_row` indexes both arrays.
+        // D-fix.3b: per-pane — tint from THIS pane's buffer's sign map so a
+        // side-by-side diff colours both sides. `None` ⇒ no diff session for
+        // this buffer ⇒ no tints.
+        let pane_sign_map = rs_guard.diff.sign_maps.get(&pane.buffer_id).cloned();
         let diff_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
-                    use lattice_host::diff::overlay::DiffSignKind;
-                    // T.4.b: read line tint colours from the resolved
-                    // table's `bg` channel (`None` ⇒ no tint).
-                    match kind {
-                        DiffSignKind::Add => resolved_theme
-                            .get(theme_ids.diff_add_line)
-                            .bg
-                            .map(|c| c.to_rgb_u32(0)),
-                        DiffSignKind::Change => resolved_theme
-                            .get(theme_ids.diff_change_line)
-                            .bg
-                            .map(|c| c.to_rgb_u32(0)),
-                        DiffSignKind::Remove => None,
-                        // D.6.f (2026-05-31): three-way Conflict tint.
-                        DiffSignKind::Conflict => resolved_theme
-                            .get(theme_ids.diff_conflict_line)
-                            .bg
-                            .map(|c| c.to_rgb_u32(0)),
-                    }
-                })
+                pane_sign_map
+                    .as_ref()
+                    .and_then(|sm| sm.sign_at(line_idx as u32))
+                    .and_then(|kind| {
+                        use lattice_host::diff::overlay::DiffSignKind;
+                        // T.4.b: read line tint colours from the resolved
+                        // table's `bg` channel (`None` ⇒ no tint).
+                        match kind {
+                            DiffSignKind::Add => resolved_theme
+                                .get(theme_ids.diff_add_line)
+                                .bg
+                                .map(|c| c.to_rgb_u32(0)),
+                            DiffSignKind::Change => resolved_theme
+                                .get(theme_ids.diff_change_line)
+                                .bg
+                                .map(|c| c.to_rgb_u32(0)),
+                            // D-fix.3b: baseline removed lines tint red.
+                            DiffSignKind::Remove => resolved_theme
+                                .get(theme_ids.diff_remove_line)
+                                .bg
+                                .map(|c| c.to_rgb_u32(0)),
+                            // D.6.f (2026-05-31): three-way Conflict tint.
+                            DiffSignKind::Conflict => resolved_theme
+                                .get(theme_ids.diff_conflict_line)
+                                .bg
+                                .map(|c| c.to_rgb_u32(0)),
+                        }
+                    })
             })
             .collect();
 

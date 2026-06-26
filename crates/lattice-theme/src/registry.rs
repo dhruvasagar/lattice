@@ -714,6 +714,12 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Changed-line background tint.",
     );
     reg_one(
+        "diff.remove.line",
+        spec().bg("diff.deletion.bg"),
+        "Removed-line background tint (baseline/left pane of a side-by-side diff). \
+         Reuses the deletion-block palette role for a consistent red.",
+    );
+    reg_one(
         "diff.deletion_block",
         spec().bg("diff.deletion.bg"),
         "Deletion-block virtual-row background tint.",
@@ -918,6 +924,8 @@ pub struct BuiltinElementIds {
     pub diff_conflict_sign: ElementId,
     pub diff_add_line: ElementId,
     pub diff_change_line: ElementId,
+    /// D-fix.3b: removed-line tint for the baseline/left pane.
+    pub diff_remove_line: ElementId,
     pub diff_deletion_block: ElementId,
     pub diff_conflict_line: ElementId,
     // T.4.c — pane chrome + file tree (writer-free elements only;
@@ -1020,6 +1028,7 @@ impl Default for BuiltinElementIds {
             diff_conflict_sign: ElementId::INVALID,
             diff_add_line: ElementId::INVALID,
             diff_change_line: ElementId::INVALID,
+            diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
@@ -1115,6 +1124,7 @@ impl BuiltinElementIds {
             diff_conflict_sign: id("diff.conflict.sign"),
             diff_add_line: id("diff.add.line"),
             diff_change_line: id("diff.change.line"),
+            diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),
             diff_conflict_line: id("diff.conflict.line"),
             pane_status_active: id("pane.status.active"),

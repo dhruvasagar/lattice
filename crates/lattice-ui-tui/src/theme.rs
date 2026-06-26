@@ -163,6 +163,10 @@ pub struct Theme {
     /// Background tint applied to lines changed in the current
     /// side (D.3.e).
     pub diff_change_line_bg: Color,
+    /// D-fix.3b: background tint for lines removed on the baseline
+    /// (left) side of a side-by-side diff. Reuses the deletion-block
+    /// palette role (red).
+    pub diff_remove_line_bg: Color,
     /// Background tint applied to deletion-block virtual rows
     /// (D.3.b.1 / D.3.b.2). Sits behind the baseline-text cells
     /// in the deletion block.
@@ -241,6 +245,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),
+            diff_remove_line_bg: Color::Rgb(60, 0, 0),
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
             diff_conflict_line_bg: Color::Rgb(60, 0, 60),
         }
@@ -497,6 +502,7 @@ pub fn build_tui_theme(
             diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
             diff_add_line_bg: resolved_bg(ids.diff_add_line),
             diff_change_line_bg: resolved_bg(ids.diff_change_line),
+            diff_remove_line_bg: resolved_bg(ids.diff_remove_line),
             diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
             diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
     }

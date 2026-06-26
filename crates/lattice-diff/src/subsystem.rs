@@ -928,6 +928,13 @@ pub struct DiffSession {
     /// construction; first refresh populates it once the
     /// initial recompute completes.
     sign_map: ArcSwap<crate::overlay::DiffSignMap>,
+    /// D-fix.3b (2026-06-26): the BASELINE-side sign map (hunks'
+    /// `ranges[0]`: `Remove`→removed, `Change`→changed). `sign_map`
+    /// above covers the current/proposed (right) pane; this covers the
+    /// baseline (left) pane so a side-by-side diff tints BOTH sides.
+    /// Published in lockstep with `sign_map` by `recompute_blocking`.
+    /// Empty for inline `:diff` (no separate baseline pane).
+    baseline_sign_map: ArcSwap<crate::overlay::DiffSignMap>,
     /// D.4.d.3.a (2026-05-30): linkage from a two-pane diff
     /// session to its `PaneGroup` (the scroll-binding
     /// mechanism with `HunkRowMapper`). `None` for inline
@@ -963,6 +970,7 @@ impl DiffSession {
             next_revision: AtomicU64::new(1),
             publish_notify: Arc::new(tokio::sync::Notify::new()),
             sign_map: ArcSwap::from_pointee(crate::overlay::DiffSignMap::default()),
+            baseline_sign_map: ArcSwap::from_pointee(crate::overlay::DiffSignMap::default()),
             pane_group_id: Mutex::new(None),
             completion: Mutex::new(None),
         }
@@ -1040,6 +1048,19 @@ impl DiffSession {
     /// ordering responsibility.
     pub fn publish_sign_map(&self, map: Arc<crate::overlay::DiffSignMap>) {
         self.sign_map.store(map);
+    }
+
+    /// D-fix.3b: snapshot the latest published BASELINE-side sign map
+    /// (the left/baseline pane of a side-by-side diff). Lock-free
+    /// `ArcSwap::load_full`; renderer hot path. Empty for inline `:diff`.
+    pub fn baseline_sign_map(&self) -> Arc<crate::overlay::DiffSignMap> {
+        self.baseline_sign_map.load_full()
+    }
+
+    /// D-fix.3b: publish a freshly-computed baseline-side sign map.
+    /// Stored in lockstep with `publish_sign_map` by `recompute_blocking`.
+    pub fn publish_baseline_sign_map(&self, map: Arc<crate::overlay::DiffSignMap>) {
+        self.baseline_sign_map.store(map);
     }
 
     /// D.3.a.1: shared `Notify` fired on every successful
@@ -1177,6 +1198,10 @@ impl DiffSession {
             // overlay rendering for inline diffs; this publish is idempotent
             // with its own, computed from the same hunks.)
             self.publish_sign_map(Arc::new(crate::overlay::compute_diff_sign_map(&idx)));
+            // D-fix.3b: the baseline-side map (left pane) in lockstep.
+            self.publish_baseline_sign_map(Arc::new(
+                crate::overlay::compute_baseline_diff_sign_map(&idx),
+            ));
             Some(idx)
         } else {
             None

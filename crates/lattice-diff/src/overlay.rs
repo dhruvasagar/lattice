@@ -202,6 +202,44 @@ pub fn compute_diff_sign_map(hunks: &HunkIndex) -> DiffSignMap {
     }
 }
 
+/// D-fix.3b: derive the BASELINE-side `DiffSignMap` from a `HunkIndex`.
+///
+/// The mirror of [`compute_diff_sign_map`], walking each hunk's
+/// baseline-side range (`ranges[0]`) instead of the current side — so the
+/// baseline (left) pane of a side-by-side diff tints the lines that were
+/// removed / changed relative to the proposed text:
+/// - `Remove` → every baseline line in the range gets `Remove` (these are
+///   the deleted lines; they DO exist on the baseline side, unlike the
+///   current side where `compute_diff_sign_map` skips them).
+/// - `Change` / `Conflict` → every baseline line gets `Change` / `Conflict`.
+/// - `Add` → no baseline-side line exists (the addition isn't in the
+///   baseline), so it contributes nothing here.
+///
+/// Entries are sorted by line so `DiffSignMap::sign_at` binary-searches.
+pub fn compute_baseline_diff_sign_map(hunks: &HunkIndex) -> DiffSignMap {
+    let mut entries: Vec<(u32, DiffSignKind)> = Vec::new();
+    for hunk in &hunks.hunks {
+        let Some(baseline_range) = hunk.ranges.first() else {
+            continue;
+        };
+        let kind = match hunk.kind {
+            HunkKind::Remove => DiffSignKind::Remove,
+            HunkKind::Change => DiffSignKind::Change,
+            HunkKind::Conflict => DiffSignKind::Conflict,
+            // An `Add` has no baseline-side line to sign.
+            HunkKind::Add => continue,
+        };
+        for line in baseline_range.start..baseline_range.end {
+            entries.push((line, kind));
+        }
+    }
+    entries.sort_by_key(|(l, _)| *l);
+    DiffSignMap {
+        entries,
+        revision: hunks.revision,
+    }
+}
+
 /// D.3.a.1 (2026-05-29): the [`ProviderId`] this slice uses
 /// for a given session's overlay provider. Exposed as a free
 /// function so `:diffoff` can unregister without holding the
@@ -911,6 +949,43 @@ mod tests {
         };
         let map = compute_diff_sign_map(&idx);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn baseline_sign_map_signs_removed_and_changed_on_the_baseline_side() {
+        // D-fix.3b: the baseline-side map tints the LEFT pane. Removed lines
+        // (which have NO current-side row, so `compute_diff_sign_map` emits
+        // nothing) DO appear here on their baseline `ranges[0]` lines; a
+        // Change signs its baseline lines; an Add (no baseline line)
+        // contributes nothing.
+        let idx = HunkIndex {
+            hunks: vec![
+                Hunk {
+                    kind: HunkKind::Remove,
+                    ranges: smallvec![LineRange::new(5, 8), LineRange::new(10, 10)],
+                },
+                Hunk {
+                    kind: HunkKind::Change,
+                    ranges: smallvec![LineRange::new(0, 2), LineRange::new(20, 22)],
+                },
+                Hunk {
+                    kind: HunkKind::Add,
+                    ranges: smallvec![LineRange::new(3, 3), LineRange::new(30, 33)],
+                },
+            ],
+            algorithm: DiffAlgorithm::Histogram,
+            revision: 1,
+        };
+        let map = compute_baseline_diff_sign_map(&idx);
+        // Removed baseline lines 5,6,7 are signed Remove (the current-side
+        // map emits nothing for a Remove).
+        assert_eq!(map.sign_at(5), Some(DiffSignKind::Remove));
+        assert_eq!(map.sign_at(7), Some(DiffSignKind::Remove));
+        // Changed baseline lines 0,1 are signed Change.
+        assert_eq!(map.sign_at(0), Some(DiffSignKind::Change));
+        assert_eq!(map.sign_at(1), Some(DiffSignKind::Change));
+        // The Add has an empty baseline range → no baseline-side sign.
+        assert_eq!(map.sign_at(3), None);
     }
 
     /// D.6.f (2026-05-31): three-way Conflict hunks now

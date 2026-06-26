@@ -76,6 +76,24 @@ The active provider is governed by `foldmethod` (the option
 explained below). The default is `syntax` with a cascading
 fallback: tree-sitter → markdown (for `.md`) → indent.
 
+#### Overlay folds (diff, multibuffer)
+
+On top of whatever `foldmethod` is active, some features contribute
+their own **overlay** folds — they're added to the fold set rather than
+replacing the primary provider, and they come and go with the feature:
+
+- A [diff](diff.md) session adds **hunk folds** (collapse a change, open
+  by default) and **unchanged-region folds** (collapse the code between
+  changes, closed by default — so a diff opens showing only the
+  changes). See [Folding the unchanged
+  code](diff.md#folding-the-unchanged-code).
+- A [multibuffer](multibuffer.md) view adds excerpt and file-boundary
+  folds.
+
+Overlay folds use the same `z*` vocabulary as everything else — `za` on
+a hunk collapses it, `zR` opens all of them — and they disappear when
+the diff or multibuffer closes.
+
 ### Identity, not position
 
 When the buffer changes, folds get recomputed. To keep your

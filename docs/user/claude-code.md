@@ -1,6 +1,6 @@
 ---
 summary: "Claude Code IDE integration: :claude launches the agent wired to this editor, it reads/edits via reviewable side-by-side diffs you accept or reject with :diff-accept / :diff-reject."
-related: [claude, claude-send, claude-code-start, claude-code-stop]
+related: [claude, claude-send, claude-interrupt, claude-code-start, claude-code-stop]
 ---
 
 # Claude Code IDE integration
@@ -32,6 +32,7 @@ executes in lattice's address space.
 |---|---|
 | `:claude` | Start the IDE server (if needed) and launch the `claude` CLI in a terminal buffer wired to this editor |
 | `:claude-send` | Send the current file + selection to the attached agent as an `@`-mention (adds it to the agent's context) |
+| `:claude-interrupt` | Interrupt the agent mid-turn (send the equivalent of `Ctrl-C` to the running `claude` CLI) |
 | `:claude-code-start` | Start the IDE server explicitly (no terminal) |
 | `:claude-code-stop` | Stop the IDE server and disconnect the agent |
 
@@ -109,9 +110,17 @@ look at the lines you're staring at without describing them in prose.
 
 When the agent proposes a change, lattice opens it as a **side-by-side
 two-pane diff** — the original file on the **left** and the agent's
-proposed change on the **right**. This is the same diff engine
-described in [Diff & merge](diff.md), so the sign column, hunk tints,
-and `]c` / `[c` hunk navigation all work as usual.
+proposed change on the **right** — in fresh splits to the right of the
+`:claude` terminal, which stays put. This is the same diff engine
+described in [Diff & merge](diff.md), so the sign column, both-pane
+hunk tints, and `]c` / `[c` hunk navigation all work as usual.
+
+To keep review fast, the diff opens **folded to just the changes**
+(unchanged code collapsed, both panes in lockstep) with the cursor
+already on the **first change** — see
+[Folding the unchanged code](diff.md#folding-the-unchanged-code). `zR`
+shows the whole file; `ui.diff.fold-unchanged` / `ui.diff.context` tune
+or disable it.
 
 You resolve the proposal with:
 
@@ -121,14 +130,40 @@ You resolve the proposal with:
 | `:diff-reject` | Discard the proposal — nothing is written, and the agent is told the diff was rejected |
 
 The agent's request blocks until you resolve it; there's no timeout —
-review at your own pace. Closing the diff tab mid-review counts as a
-reject.
+review at your own pace. Closing the diff mid-review counts as a
+reject, and so does the **agent** abandoning the proposal — if you tell
+`claude` "no" in the terminal, it withdraws the edit and lattice tears
+the diff down for you (same outcome as `:diff-reject`). That teardown is
+**scoped to the agent session that opened the diff**: if you have more
+than one `claude` running, one session closing its diff never touches
+another's.
 
 **Both sides are editable.** Just like `:diffsplit`, neither pane is
 read-only. You can tweak the agent's proposal on the right (or adjust
 the baseline on the left) before accepting — accept writes the
 proposed side's **live** content, so your edits to the proposal
 persist. The review *is* the save: there's no separate write step.
+
+---
+
+## Interrupting the agent
+
+To stop the agent mid-turn — it's heading down the wrong path, or
+you've seen enough — use:
+
+```
+:claude-interrupt
+```
+
+It sends the interrupt (the equivalent of `Ctrl-C`) to the running
+`claude` CLI, the same as pressing `Ctrl-C` in a normal terminal.
+
+Why a command instead of a key? The agent runs in a [terminal
+buffer](terminal.md), and in that buffer `<Esc>` is **modal** — it
+leaves Terminal-Insert and drops you into Normal mode (so you can
+scroll the agent's output with vim motions). That `<Esc>` never reaches
+the agent, so it can't interrupt. `:claude-interrupt` is the explicit,
+unambiguous way to signal the running turn.
 
 ---
 

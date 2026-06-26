@@ -74,9 +74,46 @@ Vim/Helix/Zed/VSCode convention):
 
 The line itself also gets a subtle background **tint** matching the
 hunk kind, layered behind syntax highlighting and any selection /
-search highlight so everything stays legible. The sign column is
-reserved whenever a diff is active so the layout doesn't shift as
-hunks come and go.
+search highlight so everything stays legible. Both sides of a
+side-by-side diff are tinted — additions/changes on the right, the
+matching removals on the left. The sign column is reserved whenever a
+diff is active so the layout doesn't shift as hunks come and go.
+
+## Folding the unchanged code
+
+By default a diff **folds away the unchanged code** so only the changes
+(plus a few lines of context around each) stay on screen — vimdiff's
+`foldmethod=diff`, VS Code's "Collapse Unchanged Regions". On a
+side-by-side diff **both panes fold in lockstep**, so the two stay
+vertically aligned as you scroll. When a diff opens, the cursor also
+**jumps to the first change** so you start at something that matters
+instead of the top of the file.
+
+These are just folds — the normal [fold](folding.md) vocabulary drives
+them:
+
+- `zR` opens every fold (show the whole file); `zM` re-collapses to the
+  changes.
+- `zo` / `za` on a folded region expands that one gap to read the
+  surrounding code; `zc` closes it again.
+- Hunk folds and unchanged folds coexist: `za` on a *change* collapses
+  that hunk; the closed folds between changes are the unchanged gaps.
+
+Two options tune it (set with `:set`, inspect with `:describe-option`):
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `ui.diff.fold-unchanged` | `on` | Fold the unchanged regions when a diff opens. Set `=false` to open diffs fully expanded. |
+| `ui.diff.context` | `6` | How many unchanged lines to keep visible around each change (vimdiff's `diffopt context:N`). `0` collapses right up to the change. |
+
+```vim
+:set ui.diff.fold-unchanged=false   " show the whole file, no folding
+:set ui.diff.context=3              " tighter — 3 lines of context per change
+```
+
+A change is never hidden, and very small gaps between nearby changes
+stay visible rather than collapsing to a fold marker that hides almost
+nothing. A clean diff (no changes) folds nothing and doesn't scroll.
 
 ## Navigating and transferring hunks
 

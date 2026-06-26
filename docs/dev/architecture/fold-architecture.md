@@ -206,8 +206,8 @@ Mostly the rules vim already uses, generalised:
 
 ## 6. Grammar surface impact
 
-**None.** This is the whole point. The `z*` family, the
-`:foldopen` / `:foldclose` ex-commands, the
+**None — from the provider refactor.** That is the whole point. The
+`z*` family, the `:foldopen` / `:foldclose` ex-commands, the
 `foldmethod=` / `foldlevel=` options — all unchanged. The
 refactor is purely under-the-hood.
 
@@ -218,6 +218,80 @@ future means adding a `FoldMethod` variant *and* a
 `FoldProvider` impl; the enum stays the user-facing surface.
 Adding an overlay needs no enum or option work — the
 subsystem owns lifecycle.
+
+(The one *later* feature that did add `z`-grammar — org-mode
+cycling — is §6.1. It adds keys/commands but no new provider,
+method, option, or `Fold` field.)
+
+### 6.1 Org-mode visibility cycling
+
+`za` toggles a fold between two states (open / closed). Org-mode
+**cycling** walks a heading — or the whole buffer — through *three*
+progressive states with one key. It is an **operation over the fold
+list**, not a new provider or `FoldMethod`: it lives host-side beside
+`do_set_fold_state_at_cursor` (`za`) / `do_set_all_folds` (`zR`/`zM`)
+as `Editor::do_cycle_fold_at_cursor` / `do_cycle_folds_global`, wired
+through the same `AppEffect → Action → Editor::do_*` path. Universal
+`z*` grammar (Builtin layer), so no mode owns it.
+
+**No new `Fold` state — hierarchy by containment, state by inference.**
+This is the load-bearing design choice:
+
+- `Fold` is unchanged (`{start_line, end_line, closed, identity}`). There
+  is **no depth field**. Parent/child is derived on demand by *range
+  containment* — `A` is `B`'s ancestor iff `A.start ≤ B.start && B.end ≤
+  A.end` — the same derivation `:set foldlevel=N` already does. Direct
+  children of a fold are its descendants not contained by any *other*
+  descendant; a *leaf* is a fold containing no other fold.
+- The cycle **state is inferred from the current `closed` flags**, not
+  stored. The local cycle reads the root + its descendants; the global
+  cycle reads the whole list. Statelessness is the win: it needs no
+  reconciliation across recompute (the providers re-emit folds every
+  edit; a stored cycle-state would fight the `identity` carry-over), and
+  it composes cleanly with `za`/`zo`/`zR` — a manual tweak just changes
+  what the next cycle press infers, exactly like emacs.
+
+**The states** (each is a `closed`-flag pattern the operation *writes*):
+
+- **Local** (`z<Space>` / `:fold-cycle`), on the innermost fold under the
+  cursor (the "root"): **FOLDED** (root closed) → **CHILDREN** (root
+  open, every descendant closed) → **SUBTREE** (root + descendants open).
+  A leaf root degenerates to FOLDED ↔ open (a toggle), matching org.
+- **Global** (`z<Tab>` / `:fold-cycle-global`), over every fold:
+  **OVERVIEW** (all closed) → **CONTENTS** (each fold closed *iff* it is a
+  leaf — structural headings open, leaf bodies folded) → **SHOW-ALL** (all
+  open). With no nesting (a flat list) OVERVIEW and CONTENTS coincide, so
+  the cycle degenerates to OVERVIEW ↔ SHOW-ALL.
+
+`z<Space>` is **contextual**: when the cursor is not inside any fold it
+falls back to the global cycle, so one key serves both; `z<Tab>` is the
+explicit-global escape hatch (the contextual key does the *local* cycle
+while on a heading).
+
+**The one deviation from emacs.** Because the providers emit
+*subtree-spanning* folds (a heading's fold covers its whole subtree, not
+just its body), CHILDREN / CONTENTS leave the heading's own intro text
+(above its first child) visible, where org hides it. Closing that gap
+would need the providers to emit a separate *body* fold per heading — a
+deliberate non-goal (more folds, more recompute) for a cosmetic
+difference.
+
+**Performance.** The cycle is a **one-shot per keypress**, off the render
+path (a command, like `za` — not per-frame). Cost is `O(n²)` containment
+math over `n` = folds *in the buffer*, which §4 bounds at ≈≤300 even at
+extreme scale — microseconds, the same class as the existing
+`innermost_fold_idx` / `outermost_fold_idx` scans and the `foldlevel`
+depth walk. A fold op already forces a one-shot display-matrix recompute
+(fold elision) that dwarfs it. (If `n` ever justified it, the global
+`is_leaf` could drop to `O(n log n)` with a sort + stack; premature for
+≤300.)
+
+**Rejected alternative — store depth / cycle-state on `Fold`.** It would
+make the inference trivial but adds per-fold bookkeeping that must be
+recomputed and reconciled with `identity` on every provider re-emit, and
+a stored state desyncs from reality the moment the user runs a plain
+`za`. Heuristic #1: the genuinely-better long-term design is the
+stateless one; the derivation cost is negligible (above).
 
 ## 7. Plugin path (forward-looking)
 
@@ -281,6 +355,11 @@ This fragment owns *what* and *why*; the slice plan owns
 - **Bench** (D.3.f.2): `fold_recompute_p99_us` at 100
   hunks overlaid on top of a syntax primary. CI gate
   catches registry-indirection regression.
+- **Org-cycle** (§6.1): on a nested parent + children fold set, the
+  local cycle walks FOLDED → CHILDREN → SUBTREE → FOLDED via the
+  `closed`-flag patterns; a leaf root toggles; the global cycle walks
+  OVERVIEW → CONTENTS → SHOW-ALL; off-fold `z<Space>` falls back to the
+  global cycle. (Tests in `lattice-ui-tui::app::folds`.)
 
 ## 11. Risks
 
@@ -315,8 +394,13 @@ This fragment owns *what* and *why*; the slice plan owns
   `compute_markdown_folds` / `compute_syntax_folds`.
 - `lattice-host/src/dispatch.rs` — `Editor::recompute_folds`
   drives the registry; LSP fold cache plumbing stays put.
-- `crates/lattice-ui-tui/src/app/folds.rs` — unchanged;
-  reads `self.folds` source-agnostically.
+  `do_cycle_fold_at_cursor` / `do_cycle_folds_global` (§6.1)
+  live here beside the `za` / `zR` handlers.
+- `crates/lattice-ui-tui/src/app/folds.rs` — unchanged for the
+  provider model (reads `self.folds` source-agnostically); also
+  holds the org-cycle tests (§6.1).
+- `docs/user/folding.md` — the user-facing folding guide,
+  including the "Org-style cycling" section (§6.1's surface).
 - `docs/dev/architecture/diff-system.md` §6.5 — first
   overlay consumer (hunk folds).
 - `docs/dev/architecture/multibuffer-views.md` §6.5 — M.7

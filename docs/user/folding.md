@@ -539,6 +539,10 @@ chooses the glyph based on `app.fold_state_at(line)`:
   rollout progress.
 - [`../dev/architecture/design.md`](../dev/architecture/design.md) §15:18 — fold storage / interaction
   open question (resolved by the design here).
+- [`../dev/architecture/fold-architecture.md`](../dev/architecture/fold-architecture.md) — the fold
+  engine design (providers, overlays, the recompute pipeline);
+  §6.1 covers the org-cycle internals (containment-derived
+  hierarchy, stateless `closed`-flag inference).
 - vim's `:help folding` — the reference we model strict semantics
   on (with the syntax-highlight-preserving improvement noted in
   this doc).

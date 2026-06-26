@@ -1,9 +1,15 @@
 # Claude Code openDiff — review-UX overhaul (D-fix series) — slice plan
 
+> **✅ ARCHIVED COMPLETE (2026-06-26).** All slices D-fix.1–D-fix.6 landed.
+> Design contracts live on in `diff-system.md` (§6.5.1 unchanged-region
+> folding) + `fold-architecture.md`; the IDE-peer status is in the
+> `project_ide_protocol_status` memory. Kept for the slice history + the
+> execution-time corrections (D-fix.5 both-sides, D-fix.6 session-scoping).
+
 Sequencing + status for the `:claude` (Claude Code IDE peer) interactive
 **openDiff** review UX. **Design contracts** for the diff substrate live in
-[`../../architecture/diff-system.md`](../../architecture/diff-system.md) and
-[`../../architecture/fold-architecture.md`](../../architecture/fold-architecture.md);
+[`../../../architecture/diff-system.md`](../../../architecture/diff-system.md) and
+[`../../../architecture/fold-architecture.md`](../../../architecture/fold-architecture.md);
 the IDE-peer protocol lives in the (archived) `ide-protocol` plan. This file
 owns *when* and *in what order* for the dogfooding fixes Dhruva hit using
 `:claude` to review agent-proposed edits.

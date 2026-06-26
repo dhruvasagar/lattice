@@ -800,7 +800,8 @@ line regions and compose through the same registry — no new `z*` surface.
   substrate; it touches no effect classifier / sign render / match arm.
 
 Sequencing + status: the D-fix series slice plan
-(`../operations/slice-plans/claude-code-diff-ux.md`).
+(`../operations/slice-plans/archive/claude-code-diff-ux.md`, archived
+complete 2026-06-26).
 
 ### 6.6 Deletion-block content — syntax highlighting
 

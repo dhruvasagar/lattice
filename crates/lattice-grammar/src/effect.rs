@@ -260,6 +260,16 @@ pub enum Effect {
         /// `"claude-code-mode"`); `None` leaves the buffer mode-bare.
         activate_minor: Option<String>,
     },
+    /// D-fix.4 (Claude Code IDE peer): write raw bytes to the focused
+    /// terminal's PTY. Host-applied (`do_terminal_input`, irreducibly
+    /// `&mut Editor` + the terminal registry). The IDE peer's
+    /// `:claude-interrupt` emits `TerminalInput(vec![0x1b])` to forward an
+    /// `<Esc>` to the running `claude` CLI — `<Esc>` can't be sent by typing
+    /// because the terminal's modal layer consumes it for Insert→Normal, so
+    /// an ex-command is the only interrupt path. Targets the active pane's
+    /// terminal (the focused claude session); a no-op (logged) when the
+    /// active buffer isn't a terminal.
+    TerminalInput(Vec<u8>),
     /// `:set <option>` -- the host parses the option spec; the closure
     /// just hands the raw text through.
     SetOption {

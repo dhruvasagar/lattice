@@ -176,6 +176,28 @@ pub fn register_claude_code_ex_commands(
             surface_form: SurfaceForm::Keyword,
         },
     );
+
+    // D-fix.4: forward `<Esc>` to the focused `claude` terminal to interrupt
+    // the running agent. Required (not polish): pressing `<Esc>` directly is
+    // consumed by the terminal's modal layer (Insert→Normal, the desired
+    // flow), so it never reaches the PTY — this ex-command is the only
+    // interrupt path. Emits the host-owned `Effect::TerminalInput`, which the
+    // host writes to the active pane's terminal PTY.
+    registry.register_ex_command(
+        "claude-interrupt",
+        "Send `<Esc>` to the focused `claude` terminal to interrupt the running \
+         agent (typing `<Esc>` is consumed by the terminal's modal layer, so \
+         this is the way to forward an interrupt).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::TerminalInput(vec![0x1b]))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -246,6 +268,32 @@ mod tests {
         let snap = handle.snapshot();
         assert!(snap.running, "server running after :claude");
         assert!(snap.port.is_some(), "bound port recorded");
+        handle.stop();
+    }
+
+    /// D-fix.4: `:claude-interrupt` emits `Effect::TerminalInput([0x1b])` to
+    /// forward an `<Esc>` interrupt to the focused claude terminal — the only
+    /// path, since typing `<Esc>` is consumed by the terminal's modal layer.
+    #[tokio::test]
+    async fn claude_interrupt_emits_esc_terminal_input() {
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+        let id = registry
+            .id_by_name("claude-interrupt")
+            .expect("`:claude-interrupt` is registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        match (spec.apply)(&empty_ctx()).expect("apply ok") {
+            Effect::TerminalInput(bytes) => assert_eq!(bytes, vec![0x1b]),
+            other => panic!("expected TerminalInput([0x1b]), got {other:?}"),
+        }
         handle.stop();
     }
 

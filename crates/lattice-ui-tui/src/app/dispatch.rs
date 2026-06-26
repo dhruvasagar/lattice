@@ -941,6 +941,8 @@ impl App {
             | Effect::OpenBufferAtColumn { .. }
             // I5.1: terminal spawn is host-applied; the peer no-ops it.
             | Effect::SpawnTerminal { .. }
+            // D-fix.4: terminal input (`:claude-interrupt`) is host-applied.
+            | Effect::TerminalInput(_)
             // CR.0: host's `handle_effect` translates `ApplyEdit` into
             // `Action::ApplyEdit` on `out.next_actions` (drained by the
             // dispatch wrapper); nothing renderer-coupled here.
@@ -1207,6 +1209,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenBufferAtColumn { .. }
         // I5.1: terminal spawn opens a new buffer — non-mutating, non-yanking.
         | Effect::SpawnTerminal { .. }
+        // D-fix.4: terminal input is not a buffer mutation/yank.
+        | Effect::TerminalInput(_)
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }
@@ -1317,6 +1321,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenBufferAtColumn { .. }
         // I5.1: terminal spawn opens a new buffer — non-mutating, non-yanking.
         | Effect::SpawnTerminal { .. }
+        // D-fix.4: terminal input is not a buffer mutation/yank.
+        | Effect::TerminalInput(_)
         | Effect::SetOption { .. }
         | Effect::SetLocalOption { .. }
         | Effect::SetGlobalOption { .. }

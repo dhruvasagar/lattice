@@ -3282,6 +3282,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 out.renderer_signals.extend(signals);
             }
         }
+        Effect::TerminalInput(bytes) => {
+            // D-fix.4: forward raw bytes (e.g. `<Esc>` = 0x1b) to the focused
+            // terminal's PTY. `:claude-interrupt`'s path to send an interrupt
+            // to the running `claude` CLI — `<Esc>` can't be typed through
+            // because the modal layer consumes it for Insert→Normal.
+            editor.do_terminal_input(&bytes);
+        }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -26295,6 +26302,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenBufferAtColumn { .. }
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
+        | Effect::TerminalInput(_)
         | Effect::AppAction(_) => false,
     }
 }
@@ -26406,6 +26414,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenBufferAtColumn { .. }
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
+        | Effect::TerminalInput(_)
         | Effect::AppAction(_) => false,
     }
 }

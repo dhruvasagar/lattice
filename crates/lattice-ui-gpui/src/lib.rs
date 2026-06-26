@@ -1066,6 +1066,8 @@ impl GpuiApp {
             | Effect::OpenBufferAtColumn { .. }
             // I5.1: terminal spawn is host-applied; the peer no-ops it.
             | Effect::SpawnTerminal { .. }
+            // D-fix.4: terminal input (`:claude-interrupt`) is host-applied.
+            | Effect::TerminalInput(_)
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write).
             | Effect::SaveBuffer { .. }
             | Effect::RecordJump => {}

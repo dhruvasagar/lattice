@@ -59,9 +59,10 @@ providers, uniform downstream.
             │                          │
             │                          │
             ▼                          ▼
-       Manual / Indent /          Hunk (D.3.f),
-       Markdown / Syntax /        Excerpt (M.7),
-       Lsp                        FileBoundary (M.8),
+       Manual / Indent /          Hunk + Unchanged
+       Markdown / Syntax /        (D.3.f / D-fix.5),
+       Lsp                        Excerpt (M.7),
+                                  FileBoundary (M.8),
                                   plugin overlays
 ```
 

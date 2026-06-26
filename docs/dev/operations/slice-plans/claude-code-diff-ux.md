@@ -131,9 +131,57 @@ Renderer parity (both no-op classifier lists). Flow: in the claude terminal,
 `claude_interrupt_emits_esc_terminal_input`. Green: 58 claude-code + 569 host +
 1490 TUI; GPUI `--features window`.
 
-### D-fix.5 — fold unchanged regions + jump to first change  🗒 LOCKED (C)
+### D-fix.5 — fold unchanged regions + jump to first change  ✅ (C, both-sides)
+**Landed (2026-06-26): 5a `2f4a8182`, 5b/c `307d42c1`, 5d/e `afc1502b`.**
+
 **Goal (Dhruva, 2026-06-26):** in a diff, show only the changes — fold the
 unchanged code — and auto-scroll to the very first change on open.
+
+**Execution-time correction (both-sides, confirmed 2026-06-26):** the locked
+"register exactly as `HunkFoldSource`" wording was a *matches-pattern*
+justification and hid a latent UX bug — `HunkFoldSource` registers on the
+session's PRIMARY only (`lookup`) and folds `ranges[1]` (current side); it's
+invisible today because hunk folds are open-by-default. A `closed`
+unchanged-fold on one side only would desync the scroll-bound side-by-side
+panes (`HunkRowMapper` aligns rows). Convention-first (vimdiff/VSCode fold BOTH
+sides) + UX-higher-court → register on EVERY participant, each folding its own
+slot. Dhruva chose this over primary-only / defer.
+
+**Shipped:**
+- **5a** — `DiffSession.slot_line_counts` (published at the `recompute_blocking`
+  choke point); `DiffSubsystem::participant_slot` (the buffer's `ranges` slot,
+  resolved from either side via the secondary index) + `first_change_line`.
+- **5b/c** — `UnchangedFoldSource` (slot-aware complement of hunks ± context,
+  `closed`; pure `compute_unchanged_folds` geometry + `>=2`-line floor =
+  VS Code `minimumLineCount`; reads `ui.diff.*` live). `HunkFoldSource` made
+  slot-aware. Options `ui.diff.fold-unchanged`=on + `ui.diff.context`=6 (Display
+  group, `lattice_config::options!` in lattice-diff). `ConfigRegistry::get_int_by_name`.
+  `diff-mode::on_activate` registers BOTH sources for EVERY participant
+  (`lookup_session_for` + `participant_slot`, default slot 1 for sources-less
+  sessions); `DiffModeGuard::drop` removes both.
+- **5d** — `Editor::recompute_folds_for_buffer` (the missing substrate: fold an
+  INACTIVE buffer + stash `DocumentFolds`) + `refresh_diff_folds` in
+  `run_tick_pending` (revision-gated via `diff_fold_seen_revisions`) so folds
+  appear off-keystroke when the async recompute publishes.
+- **5e** — `open_programmatic_diff` computes the diff synchronously (for
+  `first_change_line`) + auto-scrolls the proposed (active) pane to the first
+  change via the generic cursor-move + `do_scroll_cursor_to(Center)` — zero new
+  Action/Effect/`do_*` (acid test held).
+
+**Renderer parity:** none needed — folds flow through the shared per-pane
+`DocumentFolds` → cells worker → `DisplayMatrix` fold-elision pipeline; both TUI
++ GPUI project the already-elided matrix (GPUI `editor_element` "doesn't reach
+into fold caches at paint time"). D-fix.5 touches no effect classifier / sign
+render / match arm.
+
+**Tests:** lattice-diff — slot-count publish, participant-slot both sides,
+first-change per side, per-side hunk fold, complement geometry
+(leading/trailing/merge/min-gap/empty-range-anchor), toggle-off, default-on.
+host — auto-scroll positions the proposed cursor; `recompute_folds_for_buffer`
+stashes closed folds on an inactive baseline. Green: 251 lattice-diff, 47 host
+diff tests.
+
+_Original locked spec (C) retained below for the design rationale._
 
 **Locked (2026-06-26): option (C)** — a `diff-mode`-owned `UnchangedFoldSource`
 applied to ALL diff sessions (vimdiff-style universal `foldmethod=diff`), gated

@@ -742,6 +742,66 @@ applies to keymap surface too.
 
 The slice plan (§9) lists D.3.f as the gate for this.
 
+#### 6.5.1 Unchanged-region folding (D-fix.5)
+
+`HunkFoldSource` folds the *changes* (open by default). D-fix.5 adds its
+**complement** — `UnchangedFoldSource` folds the *unchanged* gaps between
+hunks, **closed by default**, so a diff opens showing only the changes (±
+a context window). This is vimdiff `foldmethod=diff` / VS Code "Collapse
+Unchanged Regions": the universal, muscle-memory convention for reviewing
+a diff. The two overlay sources coexist on the same buffer over disjoint
+line regions and compose through the same registry — no new `z*` surface.
+
+- **Geometry.** For a side's hunks, the "kept visible" set is each hunk's
+  slot range padded by `ui.diff.context` lines (default **6** —
+  vimdiff's `diffopt context:6`), merged. The folds are the complement of
+  that set over `[0, line_count)`. A `>= 2`-line floor (VS Code's
+  `minimumLineCount`) keeps tiny inter-hunk gaps visible. An *empty* slot
+  range (the baseline side of a pure-`Add`) still anchors a kept window
+  at its insertion point so the change marker stays in view. Identity is
+  `hash(("diff:unchanged", slot, start, end))` — distinct from a hunk
+  fold on the same span and per-side, so a user's `zo` survives a
+  republish.
+
+- **Both sides, in lockstep.** Unlike `HunkFoldSource` (registered on the
+  session PRIMARY only, folding `ranges[1]`), `UnchangedFoldSource` is
+  registered on **every participant** — `diff-mode::on_activate` resolves
+  each side's `Hunk::ranges` slot via `DiffSubsystem::participant_slot`
+  (from either side, through the secondary index) and folds *that* side.
+  Folding only one side would desync the scroll-bound (`HunkRowMapper`)
+  side-by-side panes; folding both keeps them aligned. `HunkFoldSource`
+  is made slot-aware to match (it defaults to slot 1 for a sources-less
+  `register()` session that carries no descriptor).
+
+- **Off-keystroke + inactive panes.** `recompute_folds` only ever folds
+  the *active* buffer; the baseline pane of a side-by-side diff is
+  inactive while the proposed pane is reviewed. `Editor::recompute_folds_for_buffer`
+  computes + stashes folds into an inactive buffer's `DocumentFolds`
+  buffer-local (the slot inactive panes render from), and a per-tick
+  `refresh_diff_folds` (revision-gated) recomputes for every visible
+  participant whose session republished — so folds appear without a
+  keystroke when the async recompute lands.
+
+- **Auto-scroll.** On `openDiff` the proposed pane's cursor jumps to the
+  first change (vim positions at the first diff on open):
+  `open_programmatic_diff` computes the diff synchronously so
+  `DiffSubsystem::first_change_line` resolves, then drives the *generic*
+  cursor-move + `do_scroll_cursor_to(Center)` — the decision (line, side)
+  is the diff subsystem's; the host owns no diff-specific scroll action.
+
+- **Options.** `ui.diff.fold-unchanged` (bool, default on) +
+  `ui.diff.context` (uint, default 6), owned by the diff subsystem
+  (registered from `lattice-diff` via `lattice_config::options!`, Display
+  group), read live by the source at compute time.
+
+- **Renderer parity.** None required — folds flow through the shared
+  per-pane `DocumentFolds` → cells worker → `DisplayMatrix` fold-elision
+  pipeline that both the TUI and GPUI peers project. D-fix.5 is host-side
+  substrate; it touches no effect classifier / sign render / match arm.
+
+Sequencing + status: the D-fix series slice plan
+(`../operations/slice-plans/claude-code-diff-ux.md`).
+
 ### 6.6 Deletion-block content — syntax highlighting
 
 D.3.b lands raw baseline-text cells in deletion blocks with

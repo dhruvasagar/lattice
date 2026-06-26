@@ -50,6 +50,11 @@ pub struct DispatchContext {
     /// blocking + carries lattice-diff types that can't cross the `Effect`
     /// boundary (so it can't ride the I3 handler bus).
     pub diff: Option<ProgrammaticDiffBus>,
+    /// D-fix.6 follow-up: the shared pending-review tracker. `openDiff` brackets
+    /// its blocking `await` with `review.begin()`, so the modeline shows a
+    /// `◆ review` badge while the agent is blocked on the user — derived
+    /// entirely from claude-code's own openDiff lifecycle (no host signal).
+    pub review: crate::status::ReviewHandle,
 }
 
 /// A frame the server should send back to the agent in response to an
@@ -124,7 +129,8 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
             req.id.clone(),
             // D-fix.6: tag the opened diff with THIS connection's id so a later
             // session-scoped close tears down only this session's diffs.
-            diff::open_diff(ctx.diff.as_ref(), arguments, ctx.conn_id).await,
+            // The `&ctx.review` guard marks the review pending while we block.
+            diff::open_diff(ctx.diff.as_ref(), arguments, ctx.conn_id, &ctx.review).await,
         );
     }
 
@@ -207,6 +213,7 @@ mod tests {
             },
             writes: None,
             diff: None,
+            review: crate::status::ReviewState::new(std::sync::Arc::new(tokio::sync::Notify::new())),
         }
     }
 

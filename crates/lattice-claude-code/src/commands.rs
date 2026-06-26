@@ -140,6 +140,8 @@ pub fn register_claude_code_ex_commands(
                 match frame {
                     Some(f) => {
                         send_server.notify(f);
+                        // D-fix.6 follow-up: flash the `@sent` echo on the modeline.
+                        send_server.ping_mention();
                         Ok(Effect::Echo {
                             level: EchoLevel::Info,
                             text: "claude-send: sent the current selection".to_string(),

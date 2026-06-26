@@ -107,6 +107,13 @@ pub struct ClaudeCodeServerHandle {
     /// terminals). `claude-code-mode`'s `on_activate` registers its buffer; the
     /// Guard unregisters on deactivate. The status publisher reads this set.
     ide_buffers: crate::status::IdeBuffers,
+    /// D-fix.6 follow-up: the shared pending-review tracker. Held so
+    /// `install_services` can re-seat it on the rebuilt dispatch context (it
+    /// must be the SAME instance the publisher reads + `openDiff` increments).
+    review: crate::status::ReviewHandle,
+    /// D-fix.6 follow-up: the transient `@sent` echo tracker; pinged by
+    /// `:claude-send` via [`Self::ping_mention`].
+    mention: crate::status::MentionHandle,
 }
 
 impl ClaudeCodeServerHandle {
@@ -181,6 +188,13 @@ impl ClaudeCodeServerHandle {
         let _ = self.notify_tx.send(frame);
     }
 
+    /// D-fix.6 follow-up: flash the transient `@sent` echo on the modeline —
+    /// called by `:claude-send` after it broadcasts an at-mention. The echo
+    /// clears itself after a few seconds (the status publisher's timed wake).
+    pub fn ping_mention(&self) {
+        self.mention.ping();
+    }
+
     /// I6.1: a clone of the broadcast sender for the notification task to
     /// publish `selection_changed` / `didChangeActiveEditor` frames through.
     pub fn notify_sender(&self) -> broadcast::Sender<String> {
@@ -250,6 +264,9 @@ impl ClaudeCodeServerHandle {
             },
             writes: Some(writes),
             diff,
+            // D-fix.6 follow-up: re-seat the SAME review tracker so the badge
+            // count is shared across the boot rebuild.
+            review: self.review.clone(),
         }));
     }
 }
@@ -265,6 +282,15 @@ pub fn spawn(
     let state = Arc::new(ArcSwap::from_pointee(ServerState::default()));
     // I2.1: the read cache subscribes to the generic event bus here.
     let cache = crate::snapshot::spawn_read_cache(&event_bus, rt);
+    // I7 / D-fix.6 follow-up: the status wake + the shared pending-review
+    // tracker. Created up front so the dispatch context, the publisher, and
+    // `install_services`'s rebuilt context all share ONE tracker (the count is
+    // global across connections).
+    let signals = StatusSignals::new();
+    let review = crate::status::ReviewState::new(signals.changed.clone());
+    // D-fix.6 follow-up: the transient `@sent` echo tracker (its `ping` wakes
+    // the same status `changed`).
+    let mention = crate::status::MentionState::new(signals.changed.clone());
     // I2.2: start with a deps-less dispatch context (cache + config only);
     // `install_read_services` upgrades it once boot wires the generic
     // buffer-store / diagnostics handles.
@@ -284,6 +310,7 @@ pub fn spawn(
         // I4: the openDiff bus is wired by `install_services`; until then
         // `openDiff` reports a graceful "not initialized".
         diff: None,
+        review: review.clone(),
     }));
     // I6: the server-initiated notification broadcast. Bounded — a lagged
     // connection skips dropped frames (coalescing is fine for selection
@@ -294,9 +321,9 @@ pub fn spawn(
     // same generic event bus + read cache the read tools use).
     crate::notifications::spawn_notifier(&event_bus, notify_tx.clone(), cache.clone(), rt);
     // I7: the modeline status segment. The publisher republishes running/port +
-    // conn-count to each registered IDE buffer when the wake fires (start/stop,
-    // a connection open/close, a buffer register/unregister).
-    let signals = StatusSignals::new();
+    // conn-count + project + pending-review badge to each registered IDE buffer
+    // when the wake fires (start/stop, a connection open/close, a review
+    // begin/end, a buffer register/unregister).
     let ide_buffers: crate::status::IdeBuffers =
         Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     crate::status::spawn_status_publisher(
@@ -306,6 +333,8 @@ pub fn spawn(
         // The project the agent runs for — the workspace basename, static
         // for the server's lifetime.
         crate::status::project_name(&config.workspace_folders),
+        review.count_handle(),
+        mention.clone(),
         ide_buffers.clone(),
         signals.changed.clone(),
         rt,
@@ -327,6 +356,8 @@ pub fn spawn(
         notify_tx,
         signals,
         ide_buffers,
+        review,
+        mention,
     }
 }
 

@@ -41,6 +41,10 @@ pub async fn open_diff(
     // D-fix.6: the originating connection id — tags the diff so a later
     // session-scoped close from THIS connection tears it down.
     conn_id: u64,
+    // D-fix.6 follow-up: the shared pending-review tracker. A guard is held
+    // across the blocking `await` so the modeline shows a `◆ review` badge
+    // while the agent is blocked on the user, cleared on any outcome.
+    review: &crate::status::ReviewHandle,
 ) -> Value {
     let Some(bus) = bus else {
         return error_result("openDiff unavailable: IDE server not fully initialized");
@@ -75,6 +79,11 @@ pub async fn open_diff(
         // Receiver dropped — the editor/server is gone.
         return error_result("openDiff failed: editor not reachable");
     }
+
+    // D-fix.6 follow-up: a review is now pending for the modeline badge. The
+    // guard clears it on ANY exit below — resolve, cancel, or the task being
+    // dropped — so the count can never leak high.
+    let _review = review.begin();
 
     // Block until the user resolves the diff. NO timeout (design §I4): the user
     // reviews at their own pace; a dropped sender (the session was cancelled —
@@ -127,12 +136,18 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Notify;
 
+    /// A throwaway pending-review tracker for the openDiff tests.
+    fn review() -> crate::status::ReviewHandle {
+        crate::status::ReviewState::new(Arc::new(Notify::new()))
+    }
+
     #[tokio::test]
     async fn no_bus_is_graceful_error() {
         let v = open_diff(
             None,
             &json!({ "old_file_path": "/a.rs", "new_file_contents": "x" }),
             0,
+            &review(),
         )
         .await;
         assert_eq!(v["isError"], true);
@@ -146,14 +161,14 @@ mod tests {
     async fn missing_required_args_are_graceful_errors() {
         let (bus, _rx) = make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
         // Missing new_file_contents.
-        let v = open_diff(Some(&bus), &json!({ "old_file_path": "/a.rs" }), 0).await;
+        let v = open_diff(Some(&bus), &json!({ "old_file_path": "/a.rs" }), 0, &review()).await;
         assert_eq!(v["isError"], true);
         assert!(v["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("missing new_file_contents"));
         // Missing old_file_path.
-        let v = open_diff(Some(&bus), &json!({ "new_file_contents": "x" }), 0).await;
+        let v = open_diff(Some(&bus), &json!({ "new_file_contents": "x" }), 0, &review()).await;
         assert!(v["content"][0]["text"]
             .as_str()
             .unwrap()
@@ -174,6 +189,7 @@ mod tests {
                         "tab_name": "demo",
                     }),
                     0,
+                    &review(),
                 )
                 .await
             }
@@ -205,6 +221,7 @@ mod tests {
                         "tab_name": "the-tab",
                     }),
                     0,
+                    &review(),
                 )
                 .await
             }
@@ -234,6 +251,7 @@ mod tests {
                         "tab_name": "cancelled",
                     }),
                     0,
+                    &review(),
                 )
                 .await
             }

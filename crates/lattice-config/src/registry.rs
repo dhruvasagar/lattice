@@ -440,6 +440,21 @@ impl ConfigRegistry {
         erased.downcast_ref::<bool>().copied()
     }
 
+    /// Read an `i64`-typed option's current value by name. Returns
+    /// `None` if the option doesn't exist or its erased current value
+    /// isn't an `i64` (the downcast IS the type check — there's no
+    /// `is_int` predicate, and a wrong-type option simply fails the
+    /// downcast). The `i64` shape covers every integer option (the
+    /// `options!` macro stores counts / sizes as `i64`). Used by
+    /// subsystems that read a numeric option by name without importing
+    /// its decl type — e.g. `lattice-diff`'s `UnchangedFoldSource`
+    /// reading `ui.diff.context`.
+    pub fn get_int_by_name(&self, name: &str) -> std::option::Option<i64> {
+        let spec = self.lookup(name)?;
+        let erased = spec.current_value_erased();
+        erased.downcast_ref::<i64>().copied()
+    }
+
     /// Iterate every registered option in registration order.
     /// Used by completion (`gen:options`) and the customize buffer
     /// view to enumerate.

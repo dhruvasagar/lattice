@@ -47,6 +47,10 @@ pub mod types;
 pub mod filler;
 pub mod fold;
 pub mod mode;
+// D-fix.5: diff-presentation options (`ui.diff.fold-unchanged`,
+// `ui.diff.context`). Self-register via `linkme` at link time; the
+// module exists so the crate links the registrations into the binary.
+pub mod options;
 pub mod overlay;
 pub mod pane_group;
 pub mod subsystem;

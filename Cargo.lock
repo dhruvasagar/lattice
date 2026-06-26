@@ -3452,6 +3452,7 @@ dependencies = [
  "criterion",
  "imara-diff",
  "lattice-cells",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-keymap",

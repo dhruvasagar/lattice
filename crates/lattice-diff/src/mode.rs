@@ -61,7 +61,7 @@ use lattice_mode::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::fold::HunkFoldSource;
+use crate::fold::{HunkFoldSource, UnchangedFoldSource};
 use crate::subsystem::DiffSubsystemHandle;
 
 // ──────────────────────────────────────────────────────────────
@@ -246,15 +246,27 @@ impl Mode for DiffMode {
             .collect()
     }
 
-    /// DX.3-C7 (2026-06-24): register the buffer's hunk-fold source.
+    /// DX.3-C7 (2026-06-24) / D-fix.5 (2026-06-26): register the buffer's
+    /// diff fold sources.
     ///
     /// Mirrors `MultibufferMode::on_activate`: pull the
-    /// `FoldOverlayService` + the data handle (here the
-    /// `DiffSubsystemHandle`) from the service registry, look up the diff
-    /// session for this buffer, build a [`HunkFoldSource`] over it, and
-    /// register it. The returned [`DiffModeGuard`]'s `Drop` removes it
-    /// when the mode deactivates. Missing service / no session just skips
-    /// (returns an empty guard) — folds are inactive, never a panic.
+    /// `FoldOverlayService` + the data handle (`DiffSubsystemHandle`) +
+    /// the `ConfigRegistry` from the service registry, resolve the diff
+    /// session and the buffer's `ranges` slot, and register TWO sources
+    /// over them:
+    /// - [`HunkFoldSource`] — folds the hunks (open by default);
+    /// - [`UnchangedFoldSource`] (D-fix.5) — folds their complement, the
+    ///   unchanged gaps (closed by default; vimdiff `foldmethod=diff`).
+    ///
+    /// D-fix.5 resolves via `lookup_session_for` (not the primary-only
+    /// `lookup`) + `participant_slot`, so EVERY participant — including
+    /// the baseline-side *secondary* buffer — registers sources folding
+    /// its OWN side. Both panes fold in lockstep; under scroll-bind,
+    /// folding only one side would desync the side-by-side view.
+    ///
+    /// The returned [`DiffModeGuard`]'s `Drop` removes both sources when
+    /// the mode deactivates. Missing service / no session / no slot just
+    /// skips (empty guard) — folds inactive, never a panic.
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, DiffModeGuard> {
         Box::pin(async move {
             // lattice-host maps lattice_core::BufferId →
@@ -271,28 +283,61 @@ impl Mode for DiffMode {
             let diff_subsystem = ctx
                 .service::<DiffSubsystemHandle>()
                 .map(|outer| (*outer).clone());
+            // D-fix.5: the `ui.diff.*` reader for the unchanged-fold
+            // source. `ConfigRegistry` is registered as `Arc<ConfigRegistry>`
+            // (the multibuffer precedent), so `ctx.service` yields an
+            // `Arc<Arc<…>>` — unwrap one layer. `None` in test harnesses
+            // without a config service ⇒ the source's defaults apply.
+            let config = ctx
+                .service::<Arc<lattice_config::ConfigRegistry>>()
+                .map(|outer| (*outer).clone());
 
             let mut fold_registrations = Vec::new();
 
             match (fold_service, diff_subsystem) {
-                (Some(svc), Some(sub)) => match sub.lookup(core_buffer_id) {
-                    Some(session) => {
-                        let source = Arc::new(HunkFoldSource::new(session, core_buffer_id));
-                        let id = svc.add_source(source, core_buffer_id);
-                        fold_registrations.push((svc, id));
+                (Some(svc), Some(sub)) => {
+                    // D-fix.5: resolve from EITHER side (`lookup_session_for`,
+                    // not the primary-only `lookup`) so the baseline pane —
+                    // a session *secondary* — also registers its fold
+                    // sources. Both panes then fold in lockstep; with
+                    // scroll-bind on, folding only one side would desync the
+                    // side-by-side view.
+                    match (
+                        sub.lookup_session_for(core_buffer_id),
+                        sub.participant_slot(core_buffer_id),
+                    ) {
+                        (Some(session), Some(slot)) => {
+                            // Hunk folds (open-by-default; `za` collapses a
+                            // change) on this buffer's OWN side.
+                            let hunk_src =
+                                Arc::new(HunkFoldSource::new(Arc::clone(&session), core_buffer_id, slot));
+                            let hunk_id = svc.add_source(hunk_src, core_buffer_id);
+                            fold_registrations.push((svc.clone(), hunk_id));
+                            // Unchanged folds (closed-by-default; the
+                            // complement) on the same side — vimdiff
+                            // `foldmethod=diff`. Reads `ui.diff.*` live.
+                            let unchanged_src = Arc::new(UnchangedFoldSource::new(
+                                session,
+                                core_buffer_id,
+                                slot,
+                                config,
+                            ));
+                            let unchanged_id = svc.add_source(unchanged_src, core_buffer_id);
+                            fold_registrations.push((svc, unchanged_id));
+                        }
+                        _ => {
+                            tracing::debug!(
+                                "DiffMode::on_activate: no diff session / slot for buffer {:?}; \
+                                 diff folds inactive",
+                                core_buffer_id
+                            );
+                        }
                     }
-                    None => {
-                        tracing::debug!(
-                            "DiffMode::on_activate: no diff session for buffer {:?}; \
-                             hunk folds inactive",
-                            core_buffer_id
-                        );
-                    }
-                },
+                }
                 _ => {
                     tracing::debug!(
                         "DiffMode::on_activate: fold service or diff subsystem not \
-                         registered; hunk folds inactive (expected in some tests)"
+                         registered; diff folds inactive (expected in some tests)"
                     );
                 }
             }

@@ -113,7 +113,9 @@ fn bench_hunk_source_compute_pure(c: &mut Criterion) {
         if n > 0 {
             session.publish(make_hunks(n));
         }
-        let source = HunkFoldSource::new(session, BufferId(1));
+        // D-fix.5: `HunkFoldSource` is slot-aware; slot 1 = current side
+        // (the pre-D-fix.5 hard-coded behaviour the bench measured).
+        let source = HunkFoldSource::new(session, BufferId(1), 1);
         group.bench_with_input(BenchmarkId::new("hunks", n), &(), |b, _| {
             b.iter(|| {
                 let out: Vec<Fold> = black_box(&source).compute_folds();

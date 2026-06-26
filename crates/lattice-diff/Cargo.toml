@@ -34,6 +34,7 @@ thiserror = { workspace = true }
 # subsystem layers on top within the same crate (mirroring
 # `lattice-multibuffer`, which holds both data + mode).
 lattice-core = { path = "../lattice-core" }
+lattice-config = { path = "../lattice-config" }
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-cells = { path = "../lattice-cells" }
 lattice-runtime = { path = "../lattice-runtime" }

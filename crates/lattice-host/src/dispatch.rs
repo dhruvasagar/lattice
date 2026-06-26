@@ -5097,6 +5097,36 @@ impl Editor {
                     diff_buffers: vec![left_id, right_id],
                 },
             );
+            // D-fix.5: compute the diff synchronously NOW so the first
+            // change is known for the auto-scroll the instant the diff
+            // opens (`first_change_line` needs published hunks). The
+            // `note_buffer_edited` kick in `register_pane_group_diff` also
+            // republishes async at a higher revision — idempotent. The
+            // ropes are exactly the buffers' content created above, in
+            // descriptor slot order [baseline (left), proposed (right)].
+            //
+            // The unchanged-folds are NOT seeded here on purpose: the
+            // `diff-mode` fold sources only register when
+            // `apply_pending_diff_mode_changes` runs `on_activate` at the
+            // publish tail (after this drain). The per-tick
+            // `refresh_diff_folds` therefore picks the folds up on the
+            // next wake — by which point the sources exist — without us
+            // prematurely stamping `diff_fold_seen_revisions`.
+            session.recompute_blocking(&[
+                ropey::Rope::from(original.as_str()),
+                ropey::Rope::from(new_contents.as_str()),
+            ]);
+            // D-fix.5: auto-scroll the proposed (active) pane to the first
+            // change — vim positions the cursor at the first diff on open.
+            // The decision (which line, which side) is the diff
+            // subsystem's `first_change_line`; the host runs the generic
+            // cursor-move + centre (`zz`) it already has. `None` (a clean
+            // diff) leaves the cursor at the top.
+            if let Some(line) = self.diff_subsystem.first_change_line(right_id) {
+                self.cursor = lattice_protocol::position::Position::new(line, 0);
+                self.clamp_cursor_to_active_buffer();
+                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+            }
         } else {
             // Should not happen (we just registered it); drop → reject.
             drop(response);
@@ -11707,6 +11737,12 @@ impl Editor {
         // diff requests, opening each on the actor thread (host-drained, same as
         // apply-edit above).
         signals.extend(self.drain_inbound_programmatic_diffs());
+        // D-fix.5: refresh diff fold overlays (unchanged + hunk) for any
+        // visible diff participant whose session republished — so a
+        // session's folds appear off-keystroke when the async recompute
+        // lands (`:diff` / `:diffsplit`; openDiff seeds them synchronously
+        // at open). Revision-gated, so unrelated wakes don't re-fold.
+        self.refresh_diff_folds();
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
         // 5.8.AF.5: `refresh_lsp_file_watcher` is now a
@@ -13138,6 +13174,155 @@ impl Editor {
                 .then_with(|| b.end_line.cmp(&a.end_line))
         });
         self.folds = next;
+    }
+
+    /// D-fix.5: recompute fold overlays for a buffer that may NOT be the
+    /// active document, stashing the result into its
+    /// [`crate::modes::DocumentFolds`] buffer-local — the slot inactive
+    /// panes render their folds from. The active-buffer case delegates to
+    /// [`Self::recompute_folds`] (the live `self.folds` slot).
+    ///
+    /// This is the substrate gap the both-sides diff fold needs:
+    /// `recompute_folds` only ever computes the ACTIVE buffer's folds, so
+    /// the baseline pane of a side-by-side diff — inactive while the
+    /// proposed pane is reviewed — would never fold. Here the context is
+    /// built from the buffer's registry snapshot + per-buffer syntax; the
+    /// overlay providers (gated to `buffer_id` by the `FoldSourceAdapter`)
+    /// run; closed-state + the user's `zf` folds carry over from the
+    /// buffer's prior `DocumentFolds`; the result is stashed. Missing
+    /// handle (buffer mid-close) just skips — no panic.
+    ///
+    /// `foldmethod` is read from the active buffer's resolved option as a
+    /// proxy for this buffer's (they share the global default in
+    /// practice; a per-buffer override on a non-active diff buffer is not
+    /// a v1 concern, and the diff folds are overlays regardless of the
+    /// primary).
+    pub fn recompute_folds_for_buffer(&mut self, buffer_id: lattice_core::BufferId) {
+        if buffer_id == self.document_buffer_id
+            && matches!(
+                self.active_buffer,
+                BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+            )
+        {
+            self.recompute_folds();
+            return;
+        }
+        // Inactive buffer: snapshot through the registry. None ⇒ buffer
+        // mid-close; skip rather than panic.
+        let Some(handle) = self.buffers.document_handle(buffer_id) else {
+            return;
+        };
+        let snapshot = handle.snapshot();
+        let path_buf = handle.path();
+        let syntax_snapshot = self.document_syntax_for(buffer_id).map(|h| h.snapshot());
+        let fm = self.foldmethod();
+
+        let fold_reg = self.fold_registry.lock().expect("fold_registry poisoned");
+        // Mirror `recompute_folds`'s Manual short-circuit: with no
+        // overlays, Manual keeps only the user's `zf` (identity:None)
+        // folds. Diff participants always have ≥1 overlay, so this guards
+        // the non-diff inactive case (we don't strand stale overlay folds).
+        if matches!(fm, FoldMethod::Manual) && fold_reg.overlays().count() == 0 {
+            drop(fold_reg);
+            if let Some(locals) = self.buffer_locals.get_mut(&buffer_id) {
+                let kept: Vec<Fold> = locals
+                    .get::<crate::modes::DocumentFolds>()
+                    .map(|df| df.0.iter().copied().filter(|f| f.identity.is_none()).collect())
+                    .unwrap_or_default();
+                locals.insert(crate::modes::DocumentFolds(kept));
+            }
+            return;
+        }
+        let ctx = crate::fold_provider::FoldContext {
+            buffer: &snapshot.buffer,
+            buffer_id,
+            path: path_buf.as_deref(),
+            syntax: syntax_snapshot.as_deref(),
+            lsp_folds: None,
+        };
+        let mut next: Vec<Fold> = Vec::new();
+        if let Some(primary) = fold_reg.primary(fm) {
+            next.extend(primary.compute(&ctx));
+        }
+        for overlay in fold_reg.overlays() {
+            next.extend(overlay.compute(&ctx));
+        }
+        drop(fold_reg);
+
+        // Carry over closed-state (identity, then span) + the user's
+        // manual `zf` folds from the buffer's prior DocumentFolds —
+        // mirrors `recompute_folds`'s carry-over so a `zo` on an inactive
+        // pane survives the next publish.
+        let prev: Vec<Fold> = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        for nf in next.iter_mut() {
+            let matched = nf
+                .identity
+                .and_then(|id| prev.iter().find(|f| f.identity == Some(id)))
+                .or_else(|| {
+                    prev.iter()
+                        .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
+                });
+            if let Some(p) = matched {
+                nf.closed = p.closed;
+            }
+        }
+        for p in &prev {
+            if p.identity.is_none() {
+                next.push(*p);
+            }
+        }
+        next.sort_by(|a, b| {
+            a.start_line
+                .cmp(&b.start_line)
+                .then_with(|| b.end_line.cmp(&a.end_line))
+        });
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(crate::modes::DocumentFolds(next));
+    }
+
+    /// D-fix.5: off-keystroke refresh of diff fold overlays. Run each
+    /// tick (the diff-publish forwarder fires `async_landed` →
+    /// `run_tick_pending`). For every diff-mode participant visible in the
+    /// pane tree whose session published a newer `HunkIndex` revision than
+    /// last seen, recompute that buffer's folds (active → `self.folds`,
+    /// inactive → its `DocumentFolds`) so the unchanged + hunk folds
+    /// appear without a keystroke. Revision-gated via
+    /// `diff_fold_seen_revisions` so unrelated wakes (LSP, syntax reparse)
+    /// don't re-fold.
+    fn refresh_diff_folds(&mut self) {
+        // Gather (buffer_id, revision) for visible diff participants whose
+        // revision moved. Collected before the `&mut self` recompute so we
+        // don't hold the pane-tree / subsystem borrow across it.
+        let mut to_refresh: Vec<(lattice_core::BufferId, u64)> = Vec::new();
+        for leaf in self.pane_tree.leaves() {
+            if !matches!(
+                leaf.buffer,
+                BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+            ) {
+                continue;
+            }
+            let buffer_id = leaf.buffer_id;
+            let Some(session) = self.diff_subsystem.lookup_session_for(buffer_id) else {
+                continue;
+            };
+            let rev = session.current_hunks().revision;
+            let stale = self.diff_fold_seen_revisions.get(&buffer_id).copied() != Some(rev);
+            // Dedupe a buffer shown in two panes (push once).
+            if stale && !to_refresh.iter().any(|(b, _)| *b == buffer_id) {
+                to_refresh.push((buffer_id, rev));
+            }
+        }
+        for (buffer_id, rev) in to_refresh {
+            self.recompute_folds_for_buffer(buffer_id);
+            self.diff_fold_seen_revisions.insert(buffer_id, rev);
+        }
     }
 
     /// 5.5.G.23: blocking grammar-dispatch entry. Drives every
@@ -29091,6 +29276,110 @@ mod tests {
             "the inactive (baseline) pane ALSO highlights (via its buffer-local)"
         );
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// D-fix.5: openDiff auto-scrolls the proposed (active) pane to the
+    /// first change. The synchronous `recompute_blocking` in
+    /// `open_programmatic_diff` publishes the hunks, so
+    /// `first_change_line` resolves immediately and the cursor lands on
+    /// the changed line (vim positions at the first diff on open).
+    #[tokio::test]
+    async fn open_programmatic_diff_scrolls_to_first_change() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-dfix5-autoscroll.txt");
+        // 30 identical lines; the proposed side changes line 15.
+        let baseline: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(&path, &baseline).expect("write baseline");
+        let mut proposed_lines: Vec<String> = (0..30).map(|i| format!("line{i}")).collect();
+        proposed_lines[15] = "CHANGED".to_string();
+        let proposed: String = proposed_lines.iter().map(|l| format!("{l}\n")).collect();
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: proposed,
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        // The active pane is the proposed (right) side; its cursor sits
+        // on the first (only) change at line 15.
+        assert_eq!(
+            editor.cursor.line, 15,
+            "auto-scroll positions the proposed pane's cursor at the first change"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// D-fix.5: `recompute_folds_for_buffer` computes + stashes folds for
+    /// an INACTIVE buffer (the baseline pane of a side-by-side diff). This
+    /// is the substrate gap both-sides folding needs — `recompute_folds`
+    /// only ever folds the active buffer. Register an `UnchangedFoldSource`
+    /// for the inactive baseline, then assert the recompute writes closed
+    /// unchanged folds into its `DocumentFolds` buffer-local.
+    #[tokio::test]
+    async fn recompute_folds_for_inactive_baseline_stashes_unchanged_folds() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-dfix5-inactive-folds.txt");
+        // 30 lines; proposed changes line 15 → a Change hunk both sides.
+        let baseline: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(&path, &baseline).expect("write baseline");
+        let mut proposed_lines: Vec<String> = (0..30).map(|i| format!("line{i}")).collect();
+        proposed_lines[15] = "CHANGED".to_string();
+        let proposed: String = proposed_lines.iter().map(|l| format!("{l}\n")).collect();
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: proposed,
+            tab_name: "demo".to_string(),
+            response: tx,
+        });
+
+        // Baseline (left) is the inactive pane; slot 0.
+        let baseline_id = editor.pane_tree.leaves()[1].buffer_id;
+        let session = editor
+            .diff_subsystem
+            .lookup_session_for(baseline_id)
+            .expect("session for the baseline participant");
+        // The synchronous open compute published hunks + per-slot line
+        // counts; register the unchanged-fold source the mode would
+        // (slot 0, defaults via None) directly through the fold service.
+        let svc = crate::fold_provider::FoldOverlayServiceImpl::new(editor.fold_registry.clone());
+        let source: std::sync::Arc<dyn lattice_core::FoldSource> = std::sync::Arc::new(
+            lattice_diff::fold::UnchangedFoldSource::new(session, baseline_id, 0, None),
+        );
+        lattice_core::FoldOverlayService::add_source(&svc, source, baseline_id);
+
+        // Recompute for the INACTIVE buffer → stashes DocumentFolds.
+        editor.recompute_folds_for_buffer(baseline_id);
+
+        let folds = editor
+            .buffer_locals
+            .get(&baseline_id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        assert!(!folds.is_empty(), "inactive baseline gets unchanged folds stashed");
+        assert!(
+            folds.iter().all(|f| f.closed),
+            "unchanged folds are closed by default"
+        );
+        // The change row (baseline line 15) is within the kept context
+        // window, never inside a fold.
+        assert!(
+            !folds.iter().any(|f| f.start_line <= 15 && 15 <= f.end_line),
+            "the change line stays visible (context kept)"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

@@ -302,11 +302,16 @@ impl Mode for DiffMode {
                     // sources. Both panes then fold in lockstep; with
                     // scroll-bind on, folding only one side would desync the
                     // side-by-side view.
-                    match (
-                        sub.lookup_session_for(core_buffer_id),
-                        sub.participant_slot(core_buffer_id),
-                    ) {
-                        (Some(session), Some(slot)) => {
+                    //
+                    // `participant_slot` is `None` for a sources-less
+                    // session (`DiffSubsystem::register`, no descriptor —
+                    // some test + inline paths). Default to slot 1 (current
+                    // side) there: the pre-D-fix.5 `HunkFoldSource`
+                    // hard-coded `ranges[1]`, so this preserves that
+                    // behaviour for the descriptor-free case.
+                    match sub.lookup_session_for(core_buffer_id) {
+                        Some(session) => {
+                            let slot = sub.participant_slot(core_buffer_id).unwrap_or(1);
                             // Hunk folds (open-by-default; `za` collapses a
                             // change) on this buffer's OWN side.
                             let hunk_src =

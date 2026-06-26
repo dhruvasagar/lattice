@@ -1719,6 +1719,9 @@ impl Editor {
             pending_programmatic_diff_rx: Some(programmatic_diff_rx),
             programmatic_diff_accept_paths: std::collections::HashMap::new(),
             programmatic_diff_panes: std::collections::HashMap::new(),
+            // D-fix.5: empty until the first diff-fold refresh observes a
+            // session's published revision.
+            diff_fold_seen_revisions: std::collections::HashMap::new(),
             // BC.8b: `pending_configuration_rx` removed (the generic inbound
             // drain replaces the host receiver). The SHARED config tree is
             // seated below (overriding `..Editor::default()`'s fresh Arc) so the

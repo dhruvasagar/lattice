@@ -1400,6 +1400,17 @@ pub struct Editor {
     /// lockstep with `programmatic_diff_accept_paths`.
     pub programmatic_diff_panes:
         std::collections::HashMap<lattice_core::BufferId, ProgrammaticDiffPanes>,
+    /// D-fix.5: per diff-participant buffer, the last `HunkIndex`
+    /// revision its folds were recomputed against. `refresh_diff_folds`
+    /// (run each tick on the diff-publish wake) consults this to skip
+    /// buffers whose hunks haven't moved — so a diff session's unchanged
+    /// + hunk folds refresh off-keystroke when the async recompute
+    /// publishes, without re-folding on every unrelated wake. Keyed by
+    /// the participant `BufferId` (each side tracked independently, since
+    /// each folds its own slot). Stale entries are harmless; the buffer's
+    /// `diff-mode` deactivation drops its fold sources, and the next
+    /// recompute simply finds none.
+    pub diff_fold_seen_revisions: std::collections::HashMap<lattice_core::BufferId, u64>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

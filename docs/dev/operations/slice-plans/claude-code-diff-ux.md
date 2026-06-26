@@ -88,9 +88,31 @@ claude on resolve, so this works today. **Optional polish:** a `:claude-interrup
 ex-command that sends `\x1b` to the claude terminal from any pane (so you don't
 have to switch first). Land only if Dhruva wants it.
 
-### D-fix.5 — fold unchanged regions + jump to first change  🗒 (proposed)
+### D-fix.5 — fold unchanged regions + jump to first change  🗒 LOCKED (C)
 **Goal (Dhruva, 2026-06-26):** in a diff, show only the changes — fold the
 unchanged code — and auto-scroll to the very first change on open.
+
+**Locked (2026-06-26): option (C)** — a `diff-mode`-owned `UnchangedFoldSource`
+applied to ALL diff sessions (vimdiff-style universal `foldmethod=diff`), gated
+by `ui.diff.fold-unchanged` (default **on**) + `ui.diff.context` (default **6**,
+vimdiff's default), plus auto-scroll to the first change. Rationale (heuristic #1
++ convention-first): the complement fold source belongs in `diff-mode` beside the
+existing `HunkFoldSource` — fixing the shared substrate once, not special-casing
+the openDiff path (rejected (B) openDiff-only as a half-measure).
+
+**Mode-ownership (Dhruva, 2026-06-26): these are DIFF-SUBSYSTEM changes — owned
+by `diff-mode` / `lattice-diff`, not the host** (`feedback_mode_owns_its_surface`):
+- `UnchangedFoldSource` → `lattice-diff` (beside `HunkFoldSource`); registered in
+  `diff-mode::on_activate` via `FoldOverlayService`, dropped by `DiffModeGuard`.
+- `ui.diff.fold-unchanged` + `ui.diff.context` → registered by the diff
+  subsystem's `install` (NOT host core options).
+- Auto-scroll trigger → diff-mode-driven (it knows the first hunk via the
+  session's `HunkIndex`). The host exposes only the generic cursor/scroll
+  primitive the trigger calls — the *decision* (scroll to first hunk, which pane)
+  is diff-mode's. Acid test: zero new host `Action`/`Effect`/`Editor::do_*`
+  bound to this; the diff subsystem contributes the source + options + the
+  scroll-target, the host runs the generic fold-compute + cursor-move it already
+  has.
 
 **Convention (lead):** vimdiff `foldmethod=diff` folds unchanged lines
 automatically (`diffopt context:N`, default 6, keeps N lines around each change)
@@ -105,23 +127,24 @@ universal convention.
 COMPLEMENT source that folds the unchanged gaps between hunks (minus a context
 window), closed-by-default. The two coexist (disjoint regions).
 
-**Proposed shape (confirm before coding):**
+**Shape (locked):**
 - New `UnchangedFoldSource` (lattice-diff) — complement of (hunks ± context),
-  `closed: true`; mode-owned by `diff-mode` (so ALL diff sessions get it, like
-  vimdiff's universal `foldmethod=diff`), registered via `FoldOverlayService`
-  exactly as `HunkFoldSource` is.
+  `closed: true`; registered in `diff-mode::on_activate` via `FoldOverlayService`
+  exactly as `HunkFoldSource` is, so ALL diff sessions get it.
 - Option-gated: `ui.diff.fold-unchanged` (bool, default on) +
-  `ui.diff.context` (uint, default 6 — vimdiff's default). A `minimum-gap` guard
-  so tiny gaps aren't folded (VS Code's `minimumLineCount`).
-- Auto-scroll: on diff open, move the cursor to the first hunk's current-side
-  line + `do_scroll_cursor_to(Center)` (vim `zz`); for openDiff, in the proposed
-  (right) pane.
+  `ui.diff.context` (uint, default 6 — vimdiff's default), registered by the diff
+  subsystem's `install`. A `minimum-gap` guard so tiny gaps aren't folded (VS
+  Code's `minimumLineCount`).
+- Auto-scroll: diff-mode-driven from the first hunk's current-side line via the
+  generic host cursor-move + `do_scroll_cursor_to(Center)` (vim `zz`); for
+  openDiff, the proposed (right) pane.
 **Artefacts:** design fragment update (diff-system.md / fold-architecture.md),
 fold-source test (complement geometry + context), open-positions-at-first-hunk
 test, bench n/a (fold compute is O(hunks)), graceful: 0 hunks → no folds, no
 scroll.
-**Deps:** D-fix.1/.2 (the openDiff buffers). **Open question for Dhruva:**
-all-diffs (diff-mode-owned, vimdiff-style) vs openDiff-only.
+**Deps:** D-fix.1/.2 (the openDiff buffers); benefits from D-fix.3 first (folding
+unchanged code is most useful once the visible changes are tinted, and both hinge
+on `diff-mode` actually activating on the openDiff buffers — D-fix.3 candidate (c)).
 
 ---
 

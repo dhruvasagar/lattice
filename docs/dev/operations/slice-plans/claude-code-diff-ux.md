@@ -65,21 +65,49 @@ read per-pane syntax (the `:diffsplit` path). Best-effort: no grammar →
 *Test:* `open_programmatic_diff_highlights_both_panes` (standard lang registry →
 both panes resolve a handle).
 
-### D-fix.3 — diff red/green hunk highlighting  🗒
-**Symptom:** the openDiff panes show no added/removed tints or gutter signs.
-**Not** missing computation — `register_pane_group_diff` wires `BufferSource` per
-pane → `register_with_sources` (hunk compute) → diff-mode + overlay/filler
-providers. So it is a rendering/activation gap. Candidates (need a runtime trace
-to disambiguate):
-- **(a)** the per-render `DiffDecorationData` service isn't populated for these
-  panes;
-- **(b)** the async hunk compute lands without an off-keystroke paint-wake (the
-  L1/L6 class — `paint_request` only fires on a content-changing cells decision);
-- **(c)** `diff-mode` doesn't actually activate on the in-memory buffers (it
-  gates BOTH gutter signs and row tints — start here).
-**Plan:** run the GPUI peer, trigger one openDiff, observe → pick the cause →
-fix at the activation/decoration seam (NOT a renderer kind-gate). Ship the
-fix with a test + TUI/GPUI parity if any renderer arm changes.
+### D-fix.3 — full in-buffer diff highlighting (both panes, theme-based)  🚧
+**Scope (Dhruva, 2026-06-26):** NOT just the gutter column — proper in-buffer
+diff highlighting (line-background tints) on BOTH panes, colours from the theme.
+Confirmed at runtime: D-fix.1/.2 work; the diff shows **no** tints or signs.
+
+**Converged root cause (static trace, no runtime needed):** the entire in-buffer
+diff decoration is a SINGLE, active-doc, **current-side** sign map:
+- `RenderState.diff.sign_map` = `Editor::diff_signs_for_active()` = the *active*
+  buffer's session `sign_map()` (one map, dispatch.rs).
+- Row tints: TUI `diff_tint_bg` (render.rs:5128) and GPUI `diff_tint_per_row`
+  (window.rs:1639) read that one `rs.diff.sign_map` for EVERY pane (no per-pane
+  key) → the baseline pane would tint with the proposed buffer's line numbers.
+- Gutter signs: `DiffDecorationData` registered **active-pane-only** (render.rs:3656).
+- The `DiffSignMap` itself is computed **current-side only** (`ranges[1]`,
+  overlay.rs:161) — there is NO baseline-side map. `Remove` hunks emit no
+  current-side sign (deletions surface via filler rows).
+
+So: the left/baseline pane can NEVER show its side; the right/proposed pane only
+tints when that one map is populated AND woken. The user seeing *nothing* means
+the proposed session's `sign_map` isn't reaching the frame (the async overlay
+refresh lands without a paint-wake — the L1/L6 class) and/or the map is empty.
+
+**Plan (5 parts; theme colours retained — `theme.diff_*_line_bg` / GPUI
+`resolved_theme`):**
+1. **lattice-diff:** compute + publish a **baseline-side** sign map (from
+   `ranges[0]`: Remove→red, Change→changed) alongside the current-side map in
+   the overlay refresh task; expose `DiffSession::baseline_sign_map()`. Owned by
+   the diff subsystem.
+2. **render state:** replace the single `diff.sign_map` with a per-buffer map
+   `BufferId → Arc<DiffSignMap>` built from `iter_sessions()` (proposed buffer →
+   current-side map, baseline buffer → baseline-side map). Keep the active hunk
+   count for the modeline.
+3. **renderers (TUI + GPUI, lockstep):** row tints + gutter both read the
+   per-pane map by the pane's `buffer_id`; `DiffDecorationData` registered for
+   EVERY diff pane (drop the active-only gate). Colours stay theme-driven.
+4. **compute wake:** the overlay refresh fires a `paint_request` when it lands
+   so tints appear off-keystroke (close the L1/L6 gap for the diff axis).
+5. **tests + parity:** baseline-side sign geometry test (lattice-diff); per-pane
+   render test (both panes tint from their side); grep both renderers for the
+   per-pane read. Intra-line/word-level diff (vimdiff `DiffText`) does NOT exist
+   today — a separate future stretch, out of D-fix.3 scope.
+**Deps:** D-fix.1/.2. Touches lattice-diff (public API) + render-state +
+both renderers → cross-crate; walk the approach before bulk edits.
 
 ### D-fix.4 — interrupt ergonomics  🗒
 `:claude` is a PTY terminal; focusing its pane and pressing `<Esc>` already

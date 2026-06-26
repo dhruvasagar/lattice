@@ -935,6 +935,17 @@ pub struct DiffSession {
     /// Published in lockstep with `sign_map` by `recompute_blocking`.
     /// Empty for inline `:diff` (no separate baseline pane).
     baseline_sign_map: ArcSwap<crate::overlay::DiffSignMap>,
+    /// D-fix.5 (2026-06-26): per-slot current line count, slot `i` =
+    /// `sources[i].len_lines()` of the rope that produced the latest
+    /// `HunkIndex`. Published in lockstep with `hunks` at the
+    /// [`Self::recompute_blocking`] choke point. The
+    /// `UnchangedFoldSource` reads this to bound its complement-of-hunks
+    /// computation (the trailing unchanged gap runs to a side's EOF, so
+    /// the source needs the line count it can't derive from the hunks
+    /// alone). Empty (`vec![]`) until the first recompute publishes —
+    /// the fold source then emits nothing (graceful: no line count → no
+    /// complement).
+    slot_line_counts: ArcSwap<Vec<u32>>,
     /// D.4.d.3.a (2026-05-30): linkage from a two-pane diff
     /// session to its `PaneGroup` (the scroll-binding
     /// mechanism with `HunkRowMapper`). `None` for inline
@@ -971,6 +982,7 @@ impl DiffSession {
             publish_notify: Arc::new(tokio::sync::Notify::new()),
             sign_map: ArcSwap::from_pointee(crate::overlay::DiffSignMap::default()),
             baseline_sign_map: ArcSwap::from_pointee(crate::overlay::DiffSignMap::default()),
+            slot_line_counts: ArcSwap::from_pointee(Vec::new()),
             pane_group_id: Mutex::new(None),
             completion: Mutex::new(None),
         }
@@ -1055,6 +1067,23 @@ impl DiffSession {
     /// `ArcSwap::load_full`; renderer hot path. Empty for inline `:diff`.
     pub fn baseline_sign_map(&self) -> Arc<crate::overlay::DiffSignMap> {
         self.baseline_sign_map.load_full()
+    }
+
+    /// D-fix.5 (2026-06-26): the line count of the rope at `slot` that
+    /// produced the latest published `HunkIndex`. `None` if no recompute
+    /// has published yet (the slot vector is empty) or `slot` is out of
+    /// range. The `UnchangedFoldSource` for a buffer at this slot reads
+    /// it to bound the complement-of-hunks computation to `[0,
+    /// line_count)`.
+    pub fn slot_line_count(&self, slot: usize) -> Option<u32> {
+        self.slot_line_counts.load().get(slot).copied()
+    }
+
+    /// D-fix.5: publish the per-slot line counts in lockstep with the
+    /// hunks. Called by [`Self::recompute_blocking`] from the rope
+    /// slice it just diffed (slot `i` ⇒ `sources[i].len_lines()`).
+    pub fn publish_slot_line_counts(&self, counts: Vec<u32>) {
+        self.slot_line_counts.store(Arc::new(counts));
     }
 
     /// D-fix.3b: publish a freshly-computed baseline-side sign map.
@@ -1202,6 +1231,15 @@ impl DiffSession {
             self.publish_baseline_sign_map(Arc::new(
                 crate::overlay::compute_baseline_diff_sign_map(&idx),
             ));
+            // D-fix.5: per-slot line counts in lockstep, from the same
+            // ropes that produced the hunks. The `UnchangedFoldSource`
+            // reads slot `i`'s count to bound its complement-of-hunks
+            // fold to the side's EOF. `len_lines()` counts ropey's
+            // trailing phantom line; the fold source's `>= 2`-line floor
+            // + per-hunk context window absorb that off-by-one at EOF.
+            self.publish_slot_line_counts(
+                sources.iter().map(|r| r.len_lines() as u32).collect(),
+            );
             Some(idx)
         } else {
             None
@@ -1486,6 +1524,53 @@ impl DiffSubsystem {
             .expect("DiffSubsystem mutex poisoned")
             .get(&buffer_id)
             .cloned()
+    }
+
+    /// D-fix.5 (2026-06-26): resolve the descriptor of whatever session
+    /// `buffer_id` participates in — primary key *or* a watched
+    /// secondary side. [`Self::lookup_descriptor`] only keys on the
+    /// primary, so a baseline-side buffer needs the
+    /// `secondary_index` → primary hop first (the
+    /// [`Self::lookup_session_for`] shape, for descriptors).
+    fn descriptor_for_participant(&self, buffer_id: BufferId) -> Option<DiffDescriptor> {
+        if let Some(d) = self.lookup_descriptor(buffer_id) {
+            return Some(d);
+        }
+        let primary = self
+            .secondary_index
+            .lock()
+            .expect("DiffSubsystem mutex poisoned")
+            .get(&buffer_id)
+            .copied()?;
+        self.lookup_descriptor(primary)
+    }
+
+    /// D-fix.5: the `Hunk::ranges` slot `buffer_id` occupies in its
+    /// session (0 = baseline / two-way left, 1 = current / right, 2 =
+    /// remote in three-way). The diff modes need this so a per-side
+    /// fold source (`HunkFoldSource`, `UnchangedFoldSource`) folds the
+    /// buffer's OWN side rather than always `ranges[1]`. `None` when the
+    /// buffer participates in no session, or the session was registered
+    /// sources-less (no descriptor). Resolves from either side via
+    /// [`Self::descriptor_for_participant`].
+    pub fn participant_slot(&self, buffer_id: BufferId) -> Option<usize> {
+        let descriptor = self.descriptor_for_participant(buffer_id)?;
+        pane_index_of(&descriptor, buffer_id)
+    }
+
+    /// D-fix.5: the line (on `buffer_id`'s own side) of the first hunk —
+    /// the auto-scroll target on diff open (vim positions the cursor at
+    /// the first diff). `None` when `buffer_id` participates in no
+    /// session, has no descriptor (no resolvable slot), or the published
+    /// `HunkIndex` is empty (a clean diff — nothing to scroll to). The
+    /// host moves the pane's cursor here + centres it (`zz`) through the
+    /// generic cursor primitive; the *decision* (which line, which side)
+    /// is the diff subsystem's.
+    pub fn first_change_line(&self, buffer_id: BufferId) -> Option<u32> {
+        let slot = self.participant_slot(buffer_id)?;
+        let session = self.lookup_session_for(buffer_id)?;
+        let hunks = session.current_hunks();
+        hunks.hunks.first().and_then(|h| h.ranges.get(slot)).map(|r| r.start)
     }
 
     /// D.5.b (2026-05-30): compute the edit the diff-mode `do`
@@ -2965,6 +3050,63 @@ mod tests {
             "changed current-side line 1 is signed Change after recompute"
         );
         assert!(signs.sign_at(0).is_none(), "unchanged line 0 has no sign");
+    }
+
+    #[test]
+    fn slot_line_count_publishes_from_recompute() {
+        // D-fix.5: the per-slot line counts are published in lockstep
+        // with the hunks at the recompute choke point so the
+        // `UnchangedFoldSource` can bound its complement to each side's
+        // EOF. Empty (None) before the first recompute.
+        let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+        assert_eq!(s.slot_line_count(0), None, "no counts before first recompute");
+        assert_eq!(s.slot_line_count(1), None);
+        let a = Rope::from("alpha\nbeta\n"); // len_lines = 3 (incl. trailing)
+        let b = Rope::from("alpha\nBETA\ngamma\ndelta\n"); // len_lines = 5
+        s.recompute_blocking(&[a.clone(), b.clone()]).expect("first publish takes");
+        assert_eq!(s.slot_line_count(0), Some(a.len_lines() as u32));
+        assert_eq!(s.slot_line_count(1), Some(b.len_lines() as u32));
+        assert_eq!(s.slot_line_count(2), None, "no slot 2 in a two-way diff");
+    }
+
+    #[test]
+    fn participant_slot_resolves_each_side() {
+        // D-fix.5: the slot a buffer occupies in `Hunk::ranges` is what
+        // a per-side fold source uses to fold the buffer's OWN side.
+        // Resolves from the primary key (current = slot 1) AND from the
+        // baseline secondary side (slot 0, via the secondary index).
+        let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+        let sub = DiffSubsystem::new();
+        // primary = current = bid(1) at slot 1; baseline = bid(2) at slot 0.
+        let desc = descriptor(&provider, bid(2), bid(1));
+        sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+        assert_eq!(sub.participant_slot(bid(1)), Some(1), "current side = slot 1");
+        assert_eq!(sub.participant_slot(bid(2)), Some(0), "baseline side = slot 0");
+        assert_eq!(sub.participant_slot(bid(99)), None, "non-participant = None");
+    }
+
+    #[test]
+    fn first_change_line_returns_first_hunk_on_buffers_own_side() {
+        // D-fix.5: the auto-scroll target is the first hunk's start on
+        // the queried buffer's OWN side. A Change hunk at baseline
+        // [3,4) / current [5,6) gives line 3 for the baseline buffer and
+        // line 5 for the current buffer.
+        let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+        let sub = DiffSubsystem::new();
+        let desc = descriptor(&provider, bid(2), bid(1));
+        let session = sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+        // Empty hunks → no change line (graceful: clean diff, no scroll).
+        assert_eq!(sub.first_change_line(bid(1)), None);
+        session.publish(Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec::smallvec![LineRange::new(3, 4), LineRange::new(5, 6)],
+            }],
+            algorithm: DiffAlgorithm::Histogram,
+            revision: 1,
+        }));
+        assert_eq!(sub.first_change_line(bid(1)), Some(5), "current side start");
+        assert_eq!(sub.first_change_line(bid(2)), Some(3), "baseline side start");
     }
 
     #[test]

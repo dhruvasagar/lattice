@@ -1593,7 +1593,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} (q / Esc to dismiss) ", help.title));
+        .title(format!(" {} (Esc to dismiss) ", help.title));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -3107,6 +3107,7 @@ fn draw_inactive_document(
         // active pane reads `app.ad()`.
         cursor_line: pane.cursor.line,
         scroll: pane.scroll,
+        leftcol: pane.leftcol,
         // Per-pane composed→source row map: a multibuffer pane shows
         // source line numbers even when inactive; regular Documents
         // return None (identity numbering).
@@ -3409,6 +3410,9 @@ pub(crate) struct PaneComposeCtx {
     pub buffer_id: crate::buffers::BufferId,
     pub cursor_line: u32,
     pub scroll: u32,
+    /// Horizontal scroll: first visible display column. Drives the
+    /// body's left clip when `wrap` is off; ignored under wrap.
+    pub leftcol: u32,
     pub display_line_numbers: Option<Arc<[u32]>>,
 }
 
@@ -3431,6 +3435,7 @@ pub fn compose_visible_lines(
         buffer_id: app.ad().document_buffer_id,
         cursor_line: app.ad().cursor.line,
         scroll: app.ad().scroll,
+        leftcol: app.ad().leftcol,
         display_line_numbers: app.ad().display_line_numbers.clone(),
     };
     compose_pane_lines(&view, snap, height, width, &ctx)
@@ -3606,6 +3611,12 @@ pub(crate) fn compose_pane_lines(
     // buffer-local pattern) and this site stays unchanged.
     let wrap_on = view.wrap_lines;
     let body_trunc_w = if wrap_on { u32::MAX } else { buffer_w };
+    // Horizontal scroll (HS.1): with wrap off, drop the first
+    // `leftcol` display columns of each body line before clipping to
+    // the body width — the cursor-follow clamp (`leftcol`) keeps the
+    // cursor inside `[leftcol, leftcol + buffer_w)`. Under wrap the
+    // host pins `leftcol = 0`, so this is a no-op there regardless.
+    let leftcol_off = if wrap_on { 0 } else { ctx.leftcol };
     // DR.3: composed→source row map + cursor line come from the pane
     // ctx — the active pane passes `app.ad()`'s values, inactive panes
     // pass their own handle's mapping + stashed cursor. Cloned once
@@ -3842,13 +3853,14 @@ pub(crate) fn compose_pane_lines(
                 }
             };
             if spans.is_empty() && !line_text.is_empty() {
-                truncate_spans_to_width(
+                clip_spans_horizontally(
                     vec![Span::raw(line_text.clone())],
+                    leftcol_off,
                     body_trunc_w,
                 )
             } else {
                 body_from_cells = !spans.is_empty();
-                truncate_spans_to_width(spans, body_trunc_w)
+                clip_spans_horizontally(spans, leftcol_off, body_trunc_w)
             }
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
@@ -5480,6 +5492,45 @@ fn messages_line_spans(
 // `cells_render::display_line_to_source_spans`; `truncate_spans_to_width`
 // (below) is still shared by both paths.
 
+/// Horizontal scroll (HS.1): drop the first `skip` display columns
+/// from the body spans, then clip the remainder to `max_width`.
+/// Byte-based, mirroring [`truncate_spans_to_width`]'s ASCII-width
+/// model (the cells path feeds tab-/inlay-expanded text, so byte ≈
+/// column for the common case; non-ASCII width is punted there too).
+/// `skip == 0` is exactly `truncate_spans_to_width`.
+fn clip_spans_horizontally(
+    spans: Vec<Span<'static>>,
+    skip: u32,
+    max_width: u32,
+) -> Vec<Span<'static>> {
+    if skip == 0 {
+        return truncate_spans_to_width(spans, max_width);
+    }
+    let mut remaining = skip as usize;
+    let mut kept: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if remaining == 0 {
+            kept.push(span);
+            continue;
+        }
+        let s = span.content.as_ref();
+        let len = s.len();
+        if len <= remaining {
+            remaining -= len;
+        } else {
+            // Drop `remaining` bytes from the front; land on a char
+            // boundary so the retained tail is valid UTF-8.
+            let mut cut = remaining;
+            while cut < len && !s.is_char_boundary(cut) {
+                cut += 1;
+            }
+            kept.push(Span::styled(s[cut..].to_string(), span.style));
+            remaining = 0;
+        }
+    }
+    truncate_spans_to_width(kept, max_width)
+}
+
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: u32) -> Vec<Span<'static>> {
     // Naive byte-based truncation. Adequate for ASCII; non-ASCII display
     // width is a real problem we punt on until we own a width-aware shaping
@@ -5889,7 +5940,20 @@ fn cursor_screen_position_at(
             .map(|cell| cell.load_full().sticky_rows().count() as u32)
             .unwrap_or(0)
     };
-    let col = DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH + gutter_w + body_col;
+    // Horizontal scroll (HS.1): shift the body column left by
+    // `leftcol` so the cursor tracks the scrolled view. Wrap off
+    // only — under wrap the host pins `leftcol = 0`. `saturating_sub`
+    // guards the (transient) case where the cursor sits left of the
+    // anchor before the next `ensure_cursor_horizontally_visible`.
+    let leftcol = if view.app.ad().option_cache.wrap_lines {
+        0
+    } else {
+        view.app.ad().leftcol
+    };
+    let col = DIAG_GUTTER_WIDTH
+        + DIFF_SIGN_GUTTER_WIDTH
+        + gutter_w
+        + body_col.saturating_sub(leftcol);
     let row = row_in_view.saturating_add(own_segment).saturating_add(sticky_count);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
@@ -6437,6 +6501,36 @@ mod tests {
             !texts.iter().any(|t| t.contains('↪')),
             "wrap off ⇒ no continuation rows, got {texts:?}"
         );
+    }
+
+    #[test]
+    fn clip_spans_horizontally_skips_then_truncates() {
+        // "abcdefghij", skip 3, width 4 ⇒ "defg".
+        let spans = vec![Span::raw("abcdefghij".to_string())];
+        let out = clip_spans_horizontally(spans, 3, 4);
+        let joined: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "defg");
+    }
+
+    #[test]
+    fn clip_spans_horizontally_skip_zero_is_truncate() {
+        let spans = vec![Span::raw("abcdef".to_string())];
+        let out = clip_spans_horizontally(spans, 0, 3);
+        let joined: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "abc");
+    }
+
+    #[test]
+    fn clip_spans_horizontally_skip_spans_whole_first_span() {
+        // Skip crosses a span boundary: ["ab","cdef"], skip 3 ⇒ drop
+        // "ab" entirely + 1 byte of "cdef" ⇒ "def" (width 8).
+        let spans = vec![
+            Span::raw("ab".to_string()),
+            Span::raw("cdef".to_string()),
+        ];
+        let out = clip_spans_horizontally(spans, 3, 8);
+        let joined: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "def");
     }
 
     #[test]
@@ -7231,6 +7325,7 @@ mod tests {
             buffer_id: app.ad().document_buffer_id,
             cursor_line: app.ad().cursor.line,
             scroll: app.ad().scroll,
+            leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),
         };
         let lines = compose_pane_lines(&view, &app.ad().snapshot.clone(), 6, 40, &ctx);

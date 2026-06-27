@@ -126,7 +126,7 @@ pub use core_options::{
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
     ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
     NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
-    SignatureDisplay,
+    Sidescroll, Sidescrolloff, SignatureDisplay,
     TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
     WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };

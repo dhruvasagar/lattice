@@ -345,6 +345,9 @@ pub struct ActiveDocumentRenderState {
     pub cursor: lattice_protocol::position::Position,
     /// First visible buffer line. Drives the viewport's top.
     pub scroll: u32,
+    /// First visible display column (horizontal scroll). Drives the
+    /// body's left clip when `wrap` is off; 0 under wrap.
+    pub leftcol: u32,
     /// Viewport height in screen-cell rows (active pane's
     /// content area). Set by the renderer; read back here for
     /// motions, scroll math, and the gutter.
@@ -518,6 +521,7 @@ impl Default for ActiveDocumentRenderState {
             active_pane_buffer_id: lattice_core::BufferId(0),
             cursor: lattice_protocol::position::Position::ZERO,
             scroll: 0,
+            leftcol: 0,
             viewport_height: 0,
             modal: lattice_grammar::ModalState::Normal,
             visual_anchor: None,

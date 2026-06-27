@@ -3603,7 +3603,7 @@ impl Render for EditorView {
                 rgb(theme.popup_border)
             };
             let header_hint = if popup_focused {
-                " (j/k scroll · q/Esc dismiss)"
+                " (j/k scroll · Esc dismiss)"
             } else {
                 " (K to focus · Esc dismiss)"
             };

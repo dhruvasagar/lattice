@@ -758,6 +758,7 @@ impl Editor {
                 active_pane_buffer_id: self.active_pane_buffer_id(),
                 cursor: self.cursor,
                 scroll: self.scroll,
+                leftcol: self.leftcol,
                 viewport_height: self.viewport_height,
                 modal: self.modal,
                 visual_anchor: self.visual_anchor,
@@ -5334,6 +5335,112 @@ impl Editor {
         if self.scroll < min_scroll {
             self.scroll = min_scroll;
         }
+        // Horizontal axis: keep the cursor's column on-screen when
+        // `wrap` is off (no-op under wrap). Same call-site coverage
+        // as the vertical clamp — every `ensure_cursor_visible`
+        // caller gets both axes for free.
+        self.ensure_cursor_horizontally_visible();
+    }
+
+    /// Horizontal analog of [`Self::ensure_cursor_visible`]: with
+    /// `wrap` off, keep the cursor's display column inside the
+    /// visible body window `[leftcol, leftcol + body_w)` by adjusting
+    /// [`Self::leftcol`]. Vim semantics — `sidescroll == 0`
+    /// jump-scrolls so the cursor lands at the window centre;
+    /// `sidescroll > 0` scrolls in that many-column steps;
+    /// `sidescrolloff` keeps that many columns of context on each
+    /// side. No-op when `wrap` is on (the body reflows, so nothing is
+    /// off-screen-right) or when the renderer hasn't published a pane
+    /// width yet (`body_w == 0`, the same "no draw recorded" guard the
+    /// vertical clamp uses).
+    pub fn ensure_cursor_horizontally_visible(&mut self) {
+        if self.option_cache.wrap_lines {
+            self.leftcol = 0;
+            return;
+        }
+        let body_w = self.body_text_width();
+        if body_w == 0 {
+            return;
+        }
+        let cc = self.cursor_display_col();
+        self.leftcol = horizontal_leftcol(
+            self.leftcol,
+            cc,
+            body_w,
+            self.option_cache.sidescroll,
+            self.option_cache.sidescrolloff,
+        );
+    }
+
+    /// Body (text) column width of the active pane: the published
+    /// pane width minus the gutter (line-number column + diagnostic
+    /// + diff-sign cells). Mirrors the TUI renderer's `buffer_w`
+    /// derivation (`lattice-ui-tui::render`: `gutter_width + DIAG +
+    /// DIFF`), which reduces to `digits + 5` non-body columns with
+    /// line numbers on, or `4` with them off. Returns 0 when the
+    /// renderer hasn't published a pane width yet (pre-first-frame),
+    /// matching the vertical clamp's `viewport_height == 0` guard.
+    ///
+    /// Kept deliberately in step with the renderer's gutter layout;
+    /// when gutter geometry moves to a shared crate this duplication
+    /// folds away. The `horizontal_leftcol` clamp is robust to a
+    /// few columns of slack, so a transient gutter-width disagreement
+    /// degrades gracefully (the cursor stays visible, the centre is
+    /// off by the gutter delta) rather than hiding the cursor.
+    fn body_text_width(&self) -> u32 {
+        let full = self.pane_tree.active().viewport_width;
+        if full == 0 {
+            return 0;
+        }
+        // gutter_width(n) = digits(n) + 1 (leading pad) +
+        // GUTTER_TRAILING_PAD(2); DIAG + DIFF sign cells add 2 more.
+        let gutter = if self.option_cache.show_line_numbers {
+            let total_lines = self.document.snapshot().buffer.line_count().max(1);
+            let digits = total_lines.ilog10() + 1;
+            digits + 5
+        } else {
+            // Bare 2-cell margin (`:set nonumber`) + DIAG(1) + DIFF(1).
+            4
+        };
+        full.saturating_sub(gutter)
+    }
+
+    /// The cursor's display column (tab- and inlay-expanded) on its
+    /// current line, used by the horizontal scroll clamp. Reads the
+    /// active buffer's cell matrix when the cursor's row is built
+    /// (the accurate path that matches what the renderer paints);
+    /// falls back to a tab-expanded scan of the line text when the
+    /// row is outside the built window.
+    fn cursor_display_col(&self) -> u32 {
+        let bid = self.active_buffer_id();
+        if let Some(col) = self
+            .cells_matrix_for(bid)
+            .load_full()
+            .row_at_source_line(self.cursor.line)
+            .map(|row| row.byte_to_combined_col(self.cursor.byte))
+        {
+            return col;
+        }
+        // Fallback: tab-expanded char scan (no inlay accounting —
+        // the row isn't built, so there are no inlays to mirror).
+        let snap = self.document.snapshot();
+        let ts = self.option_cache.tabstop.max(1);
+        let text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let mut col = 0u32;
+        let mut byte = 0usize;
+        let cursor_byte = self.cursor.byte as usize;
+        for ch in text.chars() {
+            if byte >= cursor_byte {
+                break;
+            }
+            if ch == '\t' {
+                col = (col / ts + 1) * ts;
+            } else {
+                col += 1;
+            }
+            byte += ch.len_utf8();
+        }
+        col
     }
 
     /// The top-most `scroll` (smallest document line) such that the
@@ -5365,18 +5472,44 @@ impl Editor {
         let buffer_id = self.active_buffer_id();
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
         let cells = self.cells_matrix_for(buffer_id).load_full();
-        // Display rows a single source `line` occupies:
+        // Fold geometry. Unlike soft-wrap / virtual rows — which only
+        // ADD display rows to a source line — a closed fold REMOVES
+        // them: its hidden body collapses onto the single visible head
+        // row. The `1`-per-line seam below holds only for *visible*
+        // lines, so the walk must skip a fold's body entirely. Without
+        // this, accumulating `1` per collapsed line burns the row
+        // budget on invisible content and forces a scroll even though
+        // the unfolded text already fits — the reported `j`-scrolls-a-
+        // fully-folded-buffer bug. Empty / `nofoldenable` ⇒ every
+        // predicate is `false`, degrading to the historical walk.
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        // Display rows a single *visible* source `line` occupies:
         //   segment_count(line) + virtual_rows_anchored_at(line)
         // W.3 (soft-wrap): `segment_count` is the published wrap
         // geometry (⌈col_count / wrap_width⌉, or `1` when
         // `wrap_width == 0`). The virtual-row term is the `M.V`
         // excerpt-header fix. With wrap off and no virtual rows
-        // every line costs exactly `1`, so the result is
-        // byte-identical to the historical doc-line clamp.
+        // every visible line costs exactly `1`. Folded body lines
+        // never reach here — the walk hops over them to their head.
         let line_cost = |line: u32| -> u32 {
             cells
                 .segment_count(line)
                 .saturating_add(vrows.virtual_rows_in_line_range(line, line))
+        };
+        // The previous *visible* line above `line`: hop straight to a
+        // closed fold's head instead of iterating its collapsed body,
+        // climbing out of nested folds head-by-head. O(log folds) per
+        // step, so the walk stays O(budget · log folds) regardless of
+        // how many lines a fold hides.
+        let prev_visible = |line: u32| -> Option<u32> {
+            if line == 0 {
+                return None;
+            }
+            let mut cand = line - 1;
+            while let Some((start, _)) = fold_idx.enclosing_closed_fold(cand) {
+                cand = start;
+            }
+            Some(cand)
         };
         // Walk UP from `target_line`, accumulating display rows,
         // and stop at the topmost line that still fits in `budget`.
@@ -5387,11 +5520,13 @@ impl Editor {
         // virtual rows). If `target_line` alone exceeds the budget
         // (a line taller than the viewport), `scroll` stays at
         // `target_line` and the line overflows below — matching
-        // vim.
-        let mut scroll = target_line;
-        let mut used = line_cost(target_line);
-        while scroll > 0 {
-            let cand = scroll - 1;
+        // vim. Anchor on the target's visible head if scrolloff
+        // pushed it into a fold body.
+        let mut scroll = fold_idx
+            .enclosing_closed_fold(target_line)
+            .map_or(target_line, |(start, _)| start);
+        let mut used = line_cost(scroll);
+        while let Some(cand) = prev_visible(scroll) {
             let cost = line_cost(cand);
             if used.saturating_add(cost) > budget {
                 break;
@@ -15097,6 +15232,49 @@ impl Editor {
     }
 }
 
+/// Pure horizontal-scroll clamp: given the current `leftcol`, the
+/// cursor display column `cc`, the visible body width `w`, and the
+/// `sidescroll` / `sidescrolloff` options, return the new `leftcol`
+/// that keeps `cc` inside `[leftcol + so, leftcol + w - 1 - so]`.
+///
+/// Already-visible cursors return `leftcol` unchanged (the view
+/// never scrolls when it doesn't have to — the horizontal mirror of
+/// `ensure_cursor_visible`'s no-op-when-visible). On a violation:
+/// `sidescroll == 0` jumps so the cursor lands at the window centre
+/// (`cc - w/2`, vim's default); `sidescroll > 0` scrolls the minimal
+/// whole number of `sidescroll`-column steps to satisfy the margin.
+/// Pure + total (saturating arithmetic) so it unit-tests without any
+/// renderer or matrix state.
+fn horizontal_leftcol(leftcol: u32, cc: u32, w: u32, sidescroll: u32, sidescrolloff: u32) -> u32 {
+    let w = w.max(1);
+    // The margin can't exceed half the window or the two sides fight;
+    // clamp it (vim centres the cursor once sidescrolloff >= w/2).
+    let so = sidescrolloff.min(w.saturating_sub(1) / 2);
+    let right_edge = leftcol + w - 1;
+    let too_left = cc < leftcol.saturating_add(so);
+    let too_right = cc > right_edge.saturating_sub(so);
+    if !too_left && !too_right {
+        return leftcol;
+    }
+    if sidescroll == 0 {
+        // Jump-scroll: cursor to the window centre.
+        return cc.saturating_sub(w / 2);
+    }
+    if too_left {
+        // Want leftcol <= cc - so; step left by whole `sidescroll`s.
+        let target = cc.saturating_sub(so);
+        let delta = leftcol - target; // > 0 because too_left holds
+        let steps = delta.div_ceil(sidescroll);
+        leftcol.saturating_sub(steps * sidescroll)
+    } else {
+        // too_right: want leftcol >= cc + so + 1 - w.
+        let target = (cc + so + 1).saturating_sub(w);
+        let delta = target - leftcol; // > 0 because too_right holds
+        let steps = delta.div_ceil(sidescroll);
+        leftcol + steps * sidescroll
+    }
+}
+
 /// True if `line_idx` is empty or whitespace-only. Used by the
 /// fold-aware j/k snap to swallow trailing blanks between sibling
 /// folds (so `j` from a closed fold's heading lands on the next
@@ -18220,6 +18398,7 @@ impl Editor {
             buffer_id: self.pane_tree.active().buffer_id,
             cursor: self.cursor,
             scroll: self.scroll,
+            leftcol: self.leftcol,
             viewport_height: self.viewport_height,
             viewport_width: 0,
         };
@@ -18274,6 +18453,7 @@ impl Editor {
             buffer_id: captured_id,
             cursor: captured_cursor,
             scroll: captured_scroll,
+            leftcol: 0,
             viewport_height: captured_height,
             viewport_width: 0,
         };
@@ -23711,9 +23891,9 @@ impl Editor {
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrollbind, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
-            WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing,
-            Wrap,
+            Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff, Tabstop,
+            TerminalEscExits, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
+            WhitespaceTab, WhitespaceTrailing, Wrap,
         };
         let buffer = self.document_buffer_id;
         // M.7.3.a: parse a typed-option `String` into a single
@@ -23728,6 +23908,8 @@ impl Editor {
             foldenable: *self.resolved_option::<FoldEnable>(buffer),
             foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
             scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
+            sidescroll: *self.resolved_option::<Sidescroll>(buffer) as u32,
+            sidescrolloff: *self.resolved_option::<Sidescrolloff>(buffer) as u32,
             completion_auto_insert_single: *self
                 .resolved_option::<CompletionAutoInsertSingle>(buffer),
             show_whitespace: *self.resolved_option::<Whitespace>(buffer),
@@ -25223,6 +25405,7 @@ impl Editor {
     pub fn snapshot_active_pane(&mut self) {
         let cursor = self.cursor;
         let scroll = self.scroll;
+        let leftcol = self.leftcol;
         let pane_id = self.pane_tree.active().buffer_id;
         match self.active_buffer {
             BufferKind::Help => {
@@ -25262,6 +25445,7 @@ impl Editor {
         let active = self.pane_tree.active_mut();
         active.cursor = cursor;
         active.scroll = scroll;
+        active.leftcol = leftcol;
     }
 
     /// 5.5.F.4.1: stash the active document's hot-path mode-state
@@ -25305,6 +25489,7 @@ impl Editor {
         self.active_buffer = pane.buffer;
         self.cursor = pane.cursor;
         self.scroll = pane.scroll;
+        self.leftcol = pane.leftcol;
         if matches!(pane.buffer, BufferKind::Help)
             && self.popup_buffer != Some(pane.buffer_id)
             && self.buffers.contains_help(pane.buffer_id)
@@ -31765,6 +31950,141 @@ mod tests {
         // zt unchanged: cursor at top.
         editor.do_scroll_cursor_to(lattice_grammar::ScrollPos::Top);
         assert_eq!(editor.scroll, 11, "zt keeps cursor-at-top");
+    }
+
+    /// A closed fold hiding a large body. Lines `0..=90` collapse to
+    /// one visible head row; only `0` + `91..=99` (10 display rows)
+    /// are visible — comfortably inside a 20-row viewport. Moving the
+    /// cursor through the visible tail must NOT scroll: the unfolded
+    /// content already fits. The pre-fix walk counted each collapsed
+    /// line as one display row, exhausting the budget over invisible
+    /// content and forcing `scroll` down to ~73 — the reported
+    /// `j`-scrolls-a-fully-folded-buffer bug.
+    #[test]
+    fn folded_body_does_not_scroll_when_visible_content_fits() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(100));
+        editor.viewport_height = 20;
+        editor.option_cache.foldenable = true;
+        editor.option_cache.scrolloff = 0;
+        editor.scroll = 0;
+        editor.folds.push(lattice_core::Fold {
+            start_line: 0,
+            end_line: 90,
+            closed: true,
+            identity: None,
+        });
+        // Cursor on a visible tail line, as after `j` past the fold.
+        editor.cursor = lattice_protocol::position::Position::new(92, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(
+            editor.scroll, 0,
+            "collapsed fold body must not consume the row budget"
+        );
+    }
+
+    /// The correctness guard for the fix: when the *visible* content
+    /// genuinely overflows the viewport, the bottom anchor still
+    /// scrolls — and counts the fold head as exactly one row, not the
+    /// 90 lines it hides. Fold `0..=90` closed, tail `91..=99` visible,
+    /// viewport 5: the last line pins `scroll = 95` (rows 95..=99),
+    /// the fold head correctly scrolled off the top.
+    #[test]
+    fn bottom_anchor_still_scrolls_past_folds_when_content_overflows() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(100));
+        editor.viewport_height = 5;
+        editor.option_cache.foldenable = true;
+        editor.option_cache.scrolloff = 0;
+        editor.scroll = 0;
+        editor.folds.push(lattice_core::Fold {
+            start_line: 0,
+            end_line: 90,
+            closed: true,
+            identity: None,
+        });
+        editor.cursor = lattice_protocol::position::Position::new(99, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(
+            editor.scroll, 95,
+            "visible tail overflows ⇒ scroll to show the last 5 rows"
+        );
+    }
+
+    // ── Horizontal scroll (HS.1) ────────────────────────────
+
+    #[test]
+    fn horizontal_leftcol_visible_cursor_does_not_scroll() {
+        // cc=10 inside [0, 19] ⇒ no change.
+        assert_eq!(horizontal_leftcol(0, 10, 20, 0, 0), 0);
+        assert_eq!(horizontal_leftcol(5, 10, 20, 0, 0), 5);
+    }
+
+    #[test]
+    fn horizontal_leftcol_jump_centres_on_right_overflow() {
+        // cc=50 past right edge (leftcol 0, w 20) ⇒ centre: 50 - 10 = 40.
+        assert_eq!(horizontal_leftcol(0, 50, 20, 0, 0), 40);
+    }
+
+    #[test]
+    fn horizontal_leftcol_jump_centres_on_left_underflow() {
+        // cc=5 left of the window (leftcol 40) ⇒ centre 5 - 10 saturates to 0.
+        assert_eq!(horizontal_leftcol(40, 5, 20, 0, 0), 0);
+        // A mid-line underflow centres without saturating.
+        assert_eq!(horizontal_leftcol(40, 30, 20, 0, 0), 20);
+    }
+
+    #[test]
+    fn horizontal_leftcol_sidescroll_steps_minimally() {
+        // sidescroll=1: cc=20 just past the right edge ⇒ leftcol 1.
+        assert_eq!(horizontal_leftcol(0, 20, 20, 1, 0), 1);
+        // sidescroll=4: cc=25, leftcol 0, w 20 ⇒ need leftcol>=6,
+        // ceil(6/4)=2 steps ⇒ 8.
+        assert_eq!(horizontal_leftcol(0, 25, 20, 4, 0), 8);
+        // Stepping left: cc=3, leftcol 10, so=0 ⇒ need leftcol<=3,
+        // delta 7, sidescroll 4 ⇒ 2 steps ⇒ 10-8 = 2.
+        assert_eq!(horizontal_leftcol(10, 3, 20, 4, 0), 2);
+    }
+
+    #[test]
+    fn horizontal_leftcol_sidescrolloff_keeps_margin() {
+        // so=3: cursor must stay 3 cols inside each edge. cc=17,
+        // leftcol 0, w 20 ⇒ right margin starts at 16, so cc=17 is a
+        // violation ⇒ jump-centre to 17 - 10 = 7.
+        assert_eq!(horizontal_leftcol(0, 17, 20, 0, 3), 7);
+        // so clamped to half-window: w=4 ⇒ so capped at 1, cc=2
+        // (inside [1,2]) ⇒ no scroll.
+        assert_eq!(horizontal_leftcol(0, 2, 4, 0, 9), 0);
+    }
+
+    /// End-to-end: a long line with the cursor far to the right and
+    /// `wrap` off must scroll the viewport right (`leftcol > 0`) so
+    /// the cursor stays visible. Mirrors the vertical
+    /// `ensure_cursor_visible` integration tests.
+    #[test]
+    fn ensure_cursor_horizontally_visible_follows_cursor_right() {
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+        editor.option_cache.wrap_lines = false;
+        editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
+        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.leftcol = 0;
+        editor.cursor = lattice_protocol::position::Position::new(0, 200);
+        editor.ensure_cursor_horizontally_visible();
+        // body width = 76; cc=200 past the edge ⇒ centre = 200 - 38 = 162.
+        assert_eq!(editor.leftcol, 162);
+    }
+
+    /// With `wrap` on there is no horizontal scroll — `leftcol` is
+    /// pinned to 0 even with the cursor far right.
+    #[test]
+    fn ensure_cursor_horizontally_visible_noop_under_wrap() {
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+        editor.option_cache.wrap_lines = true;
+        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.leftcol = 25; // stale from a previous nowrap view
+        editor.cursor = lattice_protocol::position::Position::new(0, 200);
+        editor.ensure_cursor_horizontally_visible();
+        assert_eq!(editor.leftcol, 0, "wrap reflows ⇒ no horizontal scroll");
     }
 
     /// `scrolloff` keeps N document lines below the cursor visible

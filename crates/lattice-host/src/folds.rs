@@ -518,6 +518,43 @@ impl FoldIndex {
             .map(|i| self.closed[i])
     }
 
+    /// The innermost closed fold whose *interior* contains `line`
+    /// (`start_line < line <= end_line`), or `None`. The interior
+    /// excludes the start row — the fold head stays visible — so a
+    /// head line reports `None` here even though it bounds a fold.
+    ///
+    /// Used by the fold-aware scroll walk
+    /// (`Editor::bottom_anchored_scroll`) to hop from a hidden body
+    /// line straight up to its visible head in one step, instead of
+    /// iterating every collapsed line. `line_inside_closed_fold`
+    /// answers the same question as a bool; this returns the range
+    /// so the caller can jump.
+    pub fn enclosing_closed_fold(&self, line: u32) -> Option<(u32, u32)> {
+        if !self.foldenable {
+            return None;
+        }
+        // `closed` is sorted by start_line ascending. The rightmost
+        // entry with `start < line` is the innermost candidate; for
+        // non-overlapping / properly-nested folds (the common case)
+        // it is also the only one that can enclose `line`.
+        let idx = self.closed.partition_point(|(s, _)| *s < line);
+        if idx == 0 {
+            return None;
+        }
+        let (s, e) = self.closed[idx - 1];
+        if e >= line {
+            return Some((s, e));
+        }
+        // Slow path: only reachable when folds overlap (rare — e.g.
+        // user manually `:fold`s overlapping ranges). Walk left for
+        // the nearest encloser.
+        self.closed[..idx - 1]
+            .iter()
+            .rev()
+            .find(|(_, e)| *e >= line)
+            .copied()
+    }
+
     /// True iff `line` falls strictly inside the interior of some closed
     /// fold (`start_line < line <= end_line`). Matches the existing
     /// `Editor::line_inside_closed_fold` semantics.
@@ -1267,6 +1304,56 @@ impl Buffer {
         let folds = vec![closed(2, 5)];
         let idx = FoldIndex::from_folds(&folds, false);
         assert_eq!(idx.closed_fold_at(2), None);
+    }
+
+    #[test]
+    fn fold_index_enclosing_closed_fold_returns_innermost_range() {
+        // Non-overlapping: the body of each closed fold reports its
+        // own range; heads and gaps report None.
+        let folds = vec![closed(2, 5), open(8, 12), closed(15, 20)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.enclosing_closed_fold(3), Some((2, 5)));
+        assert_eq!(idx.enclosing_closed_fold(5), Some((2, 5)));
+        assert_eq!(idx.enclosing_closed_fold(2), None, "head row is not interior");
+        assert_eq!(idx.enclosing_closed_fold(6), None, "gap after fold");
+        assert_eq!(idx.enclosing_closed_fold(10), None, "open fold body excluded");
+        assert_eq!(idx.enclosing_closed_fold(18), Some((15, 20)));
+    }
+
+    #[test]
+    fn fold_index_enclosing_closed_fold_prefers_inner_then_climbs_to_outer() {
+        // Nested closed folds: a body line resolves to the innermost
+        // fold; jumping to that fold's start then resolves to the
+        // outer (the scroll walk climbs head-to-head this way).
+        let folds = vec![closed(0, 10), closed(3, 7)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.enclosing_closed_fold(5), Some((3, 7)), "innermost first");
+        assert_eq!(
+            idx.enclosing_closed_fold(3),
+            Some((0, 10)),
+            "inner head is itself inside the outer ⇒ climb out"
+        );
+        assert_eq!(idx.enclosing_closed_fold(0), None, "outer head is visible");
+        // A line inside only the outer (past the inner's end).
+        assert_eq!(idx.enclosing_closed_fold(9), Some((0, 10)));
+    }
+
+    #[test]
+    fn fold_index_enclosing_closed_fold_overlap_slow_path() {
+        // Overlapping (manually created) folds: line 6 is outside the
+        // inner (2..=4) but inside the outer (0..=8); the fast path's
+        // rightmost candidate misses, the slow path finds the outer.
+        let folds = vec![closed(0, 8), closed(2, 4)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.enclosing_closed_fold(6), Some((0, 8)));
+        assert_eq!(idx.enclosing_closed_fold(3), Some((2, 4)), "innermost on overlap");
+    }
+
+    #[test]
+    fn fold_index_enclosing_closed_fold_respects_foldenable_off() {
+        let folds = vec![closed(2, 5)];
+        let idx = FoldIndex::from_folds(&folds, false);
+        assert_eq!(idx.enclosing_closed_fold(3), None);
     }
 
     #[test]

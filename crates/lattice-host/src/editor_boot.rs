@@ -883,6 +883,7 @@ impl Editor {
             buffer_id: document_buffer_id,
             cursor: Position::ZERO,
             scroll: 0,
+            leftcol: 0,
             // Populated by the renderer's per-frame layout pass
             // (Issue #25, 2026-05-22). Zero at boot is safe — the
             // first frame's `set_viewport_*` calls update before

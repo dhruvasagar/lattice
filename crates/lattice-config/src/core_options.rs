@@ -85,6 +85,25 @@ fn validate_scrolloff(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_sidescroll(i: &i64) -> Result<(), String> {
+    // 0 = jump-scroll (cursor to the middle of the window), matching
+    // vim's default. Positive values step that many columns at a
+    // time. Upper bound mirrors vim's practical ceiling.
+    if (0..=1024).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("sidescroll out of range [0, 1024]: {i}"))
+    }
+}
+
+fn validate_sidescrolloff(i: &i64) -> Result<(), String> {
+    if (0..=1024).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("sidescrolloff out of range [0, 1024]: {i}"))
+    }
+}
+
 fn validate_modeline_padding(i: &i64) -> Result<(), String> {
     if (0..=16).contains(i) {
         Ok(())
@@ -211,6 +230,21 @@ crate::options! {
     #[aliases("so")]
     #[validate(validate_scrolloff)]
     pub Scrolloff: i64 = 0;
+
+    /// Columns to scroll horizontally when the cursor moves off the
+    /// edge with `wrap` off. `0` (vim default) jumps so the cursor
+    /// lands in the middle of the window; a positive value scrolls
+    /// that many columns at a time. No effect when `wrap` is on.
+    #[aliases("ss")]
+    #[validate(validate_sidescroll)]
+    pub Sidescroll: i64 = 0;
+
+    /// Minimum columns kept to the left and right of the cursor when
+    /// the view scrolls horizontally (`wrap` off). Horizontal analog
+    /// of `scrolloff`. Clamped to half the body width at use.
+    #[aliases("siso")]
+    #[validate(validate_sidescrolloff)]
+    pub Sidescrolloff: i64 = 0;
 
     /// Show whitespace glyphs (trailing spaces, tabs, leading
     /// indentation) as visible markers. Vim's `:set list`.

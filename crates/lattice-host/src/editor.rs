@@ -1034,6 +1034,12 @@ pub struct Editor {
     pub goal_col: Option<u32>,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
+    /// First visible display column in the viewport (0-based) —
+    /// horizontal scroll for the active pane. Mirrors the active
+    /// `PaneState::leftcol`; maintained by
+    /// `ensure_cursor_horizontally_visible`. Always 0 when `wrap`
+    /// is on (the body reflows, nothing is off-screen-right).
+    pub leftcol: u32,
     /// Quit flag. The main loop reads this and tears down
     /// after the next paint. Set by `:q` / `:qa` / `Ctrl-C`
     /// / SIGINT.

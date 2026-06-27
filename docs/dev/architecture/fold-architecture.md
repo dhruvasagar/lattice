@@ -204,6 +204,28 @@ Mostly the rules vim already uses, generalised:
   hashes are namespaced per provider so true identity
   collisions across providers don't occur in practice.
 
+### 5.1 Fold-aware viewport scrolling
+
+The host scroll model keys `scroll` on a **source** line and
+measures the visible window in **display** rows
+(`Editor::bottom_anchored_scroll`). Soft-wrap and virtual rows
+(excerpt headers, HUDs) only ever *add* display rows to a source
+line, so the historical `1`-per-source-line cost held with an
+upward `+segment_count` term bolted on. A closed fold is the one
+construct that goes the other way: it *removes* rows — the whole
+body collapses onto the single visible head row.
+
+So the bottom-anchor walk skips a closed fold's body entirely. It
+hops from a hidden line straight up to the fold head via
+`FoldIndex::enclosing_closed_fold`, counting the head as one row
+and the body as zero. Counting collapsed lines as one row each
+burns the row budget on invisible content and scrolls a buffer
+whose unfolded text already fits — `j` over a deeply-folded
+document jumping the viewport for no reason. The walk stays
+`O(budget · log folds)` regardless of how many lines a fold hides;
+`nofoldenable` / no closed folds degrade it to the historical
+per-line walk byte-for-byte.
+
 ## 6. Grammar surface impact
 
 **None — from the provider refactor.** That is the whole point. The

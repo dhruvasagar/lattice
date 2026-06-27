@@ -69,6 +69,11 @@ pub struct OptionCache {
     pub foldenable: bool,
     pub foldmethod: FoldMethod,
     pub scrolloff: u32,
+    /// Horizontal scroll step (`:set sidescroll`). `0` jump-scrolls
+    /// the cursor to the window centre; positive scrolls N columns.
+    pub sidescroll: u32,
+    /// Horizontal scroll-off margin (`:set sidescrolloff`).
+    pub sidescrolloff: u32,
     pub completion_auto_insert_single: bool,
     pub show_whitespace: bool,
     pub current_line_highlight: bool,
@@ -100,6 +105,8 @@ impl Default for OptionCache {
             foldenable: true,
             foldmethod: FoldMethod::Manual,
             scrolloff: 0,
+            sidescroll: 0,
+            sidescrolloff: 0,
             completion_auto_insert_single: true,
             show_whitespace: false,
             current_line_highlight: false,

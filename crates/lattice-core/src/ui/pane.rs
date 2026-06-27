@@ -95,6 +95,11 @@ pub struct PaneState {
     /// First visible line in the pane. Loaded into `App::scroll`
     /// when active.
     pub scroll: u32,
+    /// First visible *display column* in the pane (horizontal
+    /// scroll). 0 = the line's first column is at the left edge.
+    /// Only meaningful when `wrap` is off; forced to 0 under wrap.
+    /// Loaded into `Editor::leftcol` when the pane is active.
+    pub leftcol: u32,
     /// Per-pane visible-buffer height in screen rows. Issue #25
     /// (2026-05-22): replaces the single `Editor::viewport_height`
     /// global as the source of truth for each pane. Each leaf
@@ -714,6 +719,7 @@ mod tests {
             buffer_id: BufferId(1),
             cursor: Position::ZERO,
             scroll: 0,
+            leftcol: 0,
             viewport_height: 0,
             viewport_width: 0,
         }

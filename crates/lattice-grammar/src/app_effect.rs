@@ -74,6 +74,21 @@ pub enum ScrollPos {
     Bottom,
 }
 
+/// Manual horizontal-scroll commands (HS.2), the vim `z{l,h,L,H,s,e}`
+/// family. Carried by [`AppEffect::HorizontalScroll`]; the host
+/// handler mutates `leftcol` and keeps the cursor inside the new
+/// window. `wrap`-off only (no-op under wrap, like the cursor-follow
+/// clamp). See `docs/dev/architecture/horizontal-scroll.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HScroll {
+    /// `zl` / `zh`: scroll `count` columns right / left.
+    Columns { right: bool },
+    /// `zL` / `zH`: scroll half the body width right / left.
+    HalfScreen { right: bool },
+    /// `zs` (cursor to left edge) / `ze` (cursor to right edge).
+    CursorToEdge { end: bool },
+}
+
 /// App-side typed effect produced by a `CommandKind::Action`
 /// dispatch (DESIGN.md §5.2.1, see also `docs/dev/notes/8i-approach.md`).
 ///
@@ -326,6 +341,8 @@ pub enum AppEffect {
     /// cursor's current line sits at the named position.
     /// Promoted from `Action::ScrollCursorTo(_)` in slice 8.i.2.c.
     ScrollCursorTo(ScrollPos),
+    /// HS.2: vim `z{l,h,L,H,s,e}` manual horizontal scroll.
+    HorizontalScroll(HScroll),
     /// Vim's `J` (with-space) / `gJ` (no-space). Joins the
     /// current line with the next, replacing the joining
     /// newline with a single space (`with_space: true`) or

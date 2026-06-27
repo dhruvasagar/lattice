@@ -30,6 +30,9 @@ layered resolution); this page is the deep-dive on each.
 | `:set ui.ligatures` / `:set ui.ligatures=off` | on | Enable / disable OpenType ligatures (GPUI only) |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
+| `:set sidescroll=N` (`:set ss=N`) | `0`    | Columns to scroll when the cursor crosses the edge (`0` = jump to centre) |
+| `:set sidescrolloff=N` (`:set siso=N`) | `0` | Minimum columns kept left/right of the cursor (`nowrap`)     |
+| `zl` `zh` / `zL` `zH` / `zs` `ze` | —      | Scroll right/left N cols · half-screen · cursor to left/right edge |
 | `:set list` / `:set whitespace`  | off     | Show whitespace markers (tabs, trailing/leading spaces, …)     |
 | `:set display.whitespace.tab=→`  | `→`     | Glyph for a tab when markers are shown                         |
 | `:set display.whitespace.trailing=·` | `·` | Glyph for trailing whitespace                                  |
@@ -59,6 +62,34 @@ start or end of the current display row.
 The scroll model is wrap-aware: scrolling to the last line brings it
 fully into view even when earlier lines wrapped, and the cursor is
 positioned on the correct visual row.
+
+## Horizontal scroll (`sidescroll` / `sidescrolloff`)
+
+With `:set nowrap` (the default), a line wider than the pane scrolls
+**horizontally** to keep the cursor visible: move the cursor past the
+right edge and the view pans right so the rest of the line comes into
+view; move back and it pans back. Only the text body pans — the
+line-number and sign gutters stay fixed.
+
+- `:set sidescroll=N` — how far to scroll when the cursor crosses the
+  edge. `0` (the default, matching vim) jumps so the cursor lands at
+  the **centre** of the window; a positive `N` scrolls `N` columns at
+  a time for a smoother, continuous feel.
+- `:set sidescrolloff=N` — keep at least `N` columns of context
+  between the cursor and the left/right edge (the horizontal
+  counterpart of `scrolloff`).
+
+Manual scrolling — vim's `z` family (`nowrap` only):
+
+| Chord | Meaning |
+|-------|---------|
+| `zl` / `zh` | Scroll right / left `[count]` columns |
+| `zL` / `zH` | Scroll right / left half the body width |
+| `zs` / `ze` | Put the cursor's column at the left / right edge |
+
+Horizontal scroll is mutually exclusive with `wrap`: turning `wrap`
+on resets the offset, because a wrapped line has nothing off-screen to
+the right.
 
 ## Tab width (`tabstop`)
 

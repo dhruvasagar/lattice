@@ -379,6 +379,8 @@ pub enum Action {
     /// Adjust scroll so the cursor lands at the viewport top / center /
     /// bottom (vim's `zt`, `zz`, `zb`).
     ScrollCursorTo(ScrollPos),
+    /// HS.2: manual horizontal scroll (vim `z{l,h,L,H,s,e}`).
+    HorizontalScroll(lattice_grammar::HScroll),
     /// Move cursor down / up by one viewport-page (vim's Ctrl-F / Ctrl-B).
     PageDown,
     PageUp,

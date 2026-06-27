@@ -418,6 +418,12 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterZ, chord: "zj", doc: "Jump to next fold" },
         keymap_entry! { mode: AfterZ, chord: "zk", doc: "Jump to previous fold" },
         keymap_entry! { mode: AfterZ, chord: "zi", doc: "Toggle foldenable" },
+        keymap_entry! { mode: AfterZ, chord: "zl", doc: "Scroll view right [count] columns" },
+        keymap_entry! { mode: AfterZ, chord: "zh", doc: "Scroll view left [count] columns" },
+        keymap_entry! { mode: AfterZ, chord: "zL", doc: "Scroll view right half a screen" },
+        keymap_entry! { mode: AfterZ, chord: "zH", doc: "Scroll view left half a screen" },
+        keymap_entry! { mode: AfterZ, chord: "zs", doc: "Scroll cursor column to left edge" },
+        keymap_entry! { mode: AfterZ, chord: "ze", doc: "Scroll cursor column to right edge" },
         // ---- Visual mode (motions extend, operators dispatch on Range::Selection) ----
         keymap_entry! { mode: Visual, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Visual, chord: "v", doc: "Toggle: exit Visual" },

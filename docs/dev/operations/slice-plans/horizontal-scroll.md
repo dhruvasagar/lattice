@@ -45,17 +45,33 @@ user).
     Needs a visual verification pass (`cargo run --features gui --
     --gui`) on the scrolled-right case; not viewable in CI/headless.
 
-## HS.2 — Manual h-scroll grammar 🗒
+## HS.2 — Manual h-scroll grammar ✅
 
-`zl`/`zh` (count columns), `zL`/`zH` (half-screen), `zs`/`ze` (cursor
-to left/right edge), at the `Builtin` keymap layer (universal vim
-grammar). Tests per chord.
+`zl`/`zh` (count columns), `zL`/`zH` (half body width), `zs`/`ze`
+(cursor column to left/right edge), bound at the `Builtin` keymap
+layer (universal vim grammar). One `AppEffect::HorizontalScroll(
+HScroll)` + `Action::HorizontalScroll` carries all six; the host
+`do_horizontal_scroll` mutates `leftcol` (no-op under `wrap`) and then
+`clamp_cursor_into_horizontal_window` keeps the cursor on screen
+(mirroring `do_scroll_line`'s "move the cursor, not the view" rule via
+the new `byte_at_display_col` inverse). Wiring: `app_effect.rs` +
+`action.rs` enums, `dispatch.rs` two bridge arms + handler, 6 action
+IDs (`actions.rs`), 6 binds (`keymap_normal.rs`), 6 which-key entries
+(`keymap_entry.rs`), TUI dispatch-classification arm. 2 handler tests
++ 590 host / 199 grammar / 93 keymap green; both renderers build.
 
-## HS.3 — Consolidation 🗒
+## HS.3 — Consolidation ✅
 
-Bench for the `clip_spans_horizontally` / compose-with-`leftcol` path;
-user-doc note (`:set sidescroll` / `sidescrolloff`, the `z*` chords).
-Folded into HS.1/HS.2 where the four-artefacts rule already covers it.
+- **User doc** — `docs/user/display.md` gains a "Horizontal scroll"
+  section + quick-reference rows (`sidescroll`/`sidescrolloff` and the
+  `z*` chords).
+- **Bench** — no new bench: the cursor-follow clamp runs inside
+  `ensure_cursor_visible` (covered by `benches/dispatch_publish.rs`)
+  and the column-skip runs inside `compose_pane_lines` (covered by
+  `lattice-ui-tui/benches/render.rs`); both execute at `leftcol == 0`
+  on every keystroke, so the existing hot-path benches already track
+  the cost. A dedicated micro-bench for an O(viewport)/O(1) path would
+  be redundant.
 
 ## Dependency: popup-content unification
 

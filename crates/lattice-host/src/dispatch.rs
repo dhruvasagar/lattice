@@ -2109,6 +2109,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // / redraw arms. Bodies migrated to [`Editor`].
         Action::JumpViewport(vp) => editor.do_jump_viewport(vp),
         Action::ScrollCursorTo(sp) => editor.do_scroll_cursor_to(sp),
+        Action::HorizontalScroll(k) => editor.do_horizontal_scroll(k),
         Action::PageDown => editor.do_page(true),
         Action::PageUp => editor.do_page(false),
         Action::ScrollLineUp => editor.do_scroll_line(false),
@@ -5443,6 +5444,69 @@ impl Editor {
         col
     }
 
+    /// HS.2: vim `z{l,h,L,H,s,e}` manual horizontal scroll. Mutates
+    /// `leftcol` directly (no-op under `wrap`, like the cursor-follow
+    /// clamp) and then keeps the cursor inside the new window —
+    /// mirroring `do_scroll_line`'s vertical "move the cursor to stay
+    /// visible" behaviour so the cursor never scrolls off-screen.
+    /// `zl`/`zh` honour the pending count.
+    pub fn do_horizontal_scroll(&mut self, kind: lattice_grammar::HScroll) {
+        use lattice_grammar::HScroll;
+        if self.option_cache.wrap_lines {
+            return;
+        }
+        let body_w = self.body_text_width().max(1);
+        let count = self.pending_count.max(1);
+        self.pending_count = 0;
+        self.leftcol = match kind {
+            HScroll::Columns { right } => {
+                if right {
+                    self.leftcol.saturating_add(count)
+                } else {
+                    self.leftcol.saturating_sub(count)
+                }
+            }
+            HScroll::HalfScreen { right } => {
+                let half = (body_w / 2).max(1);
+                if right {
+                    self.leftcol.saturating_add(half)
+                } else {
+                    self.leftcol.saturating_sub(half)
+                }
+            }
+            HScroll::CursorToEdge { end } => {
+                let cc = self.cursor_display_col();
+                if end {
+                    // `ze`: cursor's column at the right edge.
+                    (cc + 1).saturating_sub(body_w)
+                } else {
+                    // `zs`: cursor's column at the left edge.
+                    cc
+                }
+            }
+        };
+        self.clamp_cursor_into_horizontal_window(body_w);
+    }
+
+    /// Move `cursor.byte` so the cursor's display column lands inside
+    /// the visible body window `[leftcol, leftcol + body_w)`. Called
+    /// after a manual horizontal scroll; no-op when already visible.
+    fn clamp_cursor_into_horizontal_window(&mut self, body_w: u32) {
+        let cc = self.cursor_display_col();
+        let lo = self.leftcol;
+        let hi = self.leftcol + body_w.saturating_sub(1);
+        let target_col = if cc < lo {
+            lo
+        } else if cc > hi {
+            hi
+        } else {
+            return;
+        };
+        let snap = self.document.snapshot();
+        let ts = self.option_cache.tabstop.max(1);
+        self.cursor.byte = byte_at_display_col(&snap.buffer, self.cursor.line, target_col, ts);
+    }
+
     /// The top-most `scroll` (smallest document line) such that the
     /// display window from `scroll` down to and including
     /// `target_line` occupies at most `budget` *display* rows.
@@ -6287,6 +6351,9 @@ impl Editor {
             }
             AppEffect::JumpViewport(pos) => out.next_actions.push(Action::JumpViewport(pos)),
             AppEffect::ScrollCursorTo(pos) => out.next_actions.push(Action::ScrollCursorTo(pos)),
+            AppEffect::HorizontalScroll(k) => {
+                out.next_actions.push(Action::HorizontalScroll(k))
+            }
             AppEffect::JoinLines { with_space } => {
                 out.next_actions.push(Action::JoinLines { with_space })
             }
@@ -15273,6 +15340,37 @@ fn horizontal_leftcol(leftcol: u32, cc: u32, w: u32, sidescroll: u32, sidescroll
         let steps = delta.div_ceil(sidescroll);
         leftcol + steps * sidescroll
     }
+}
+
+/// Inverse of the tab-expanded display-column scan: the byte offset
+/// in `line_idx` whose display column is the greatest `<= target_col`
+/// (always a char boundary). Tab-aware (advances to the next
+/// `tabstop` multiple); no inlay / wide-char accounting — matches
+/// `cursor_display_col`'s fallback. Used by the manual horizontal
+/// scroll (`zl`/`zh`/...) to keep the cursor inside the window.
+fn byte_at_display_col(
+    buffer: &lattice_core::Buffer,
+    line_idx: u32,
+    target_col: u32,
+    tabstop: u32,
+) -> u32 {
+    let text = buffer.line(line_idx).unwrap_or_default();
+    let ts = tabstop.max(1);
+    let mut col = 0u32;
+    let mut byte = 0u32;
+    for ch in text.chars() {
+        let next_col = if ch == '\t' {
+            (col / ts + 1) * ts
+        } else {
+            col + 1
+        };
+        if next_col > target_col {
+            break;
+        }
+        col = next_col;
+        byte += ch.len_utf8() as u32;
+    }
+    byte
 }
 
 /// True if `line_idx` is empty or whitespace-only. Used by the
@@ -32085,6 +32183,70 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 200);
         editor.ensure_cursor_horizontally_visible();
         assert_eq!(editor.leftcol, 0, "wrap reflows ⇒ no horizontal scroll");
+    }
+
+    /// HS.2: `zl`/`zh` (count columns) + `zL`/`zH` (half body) move
+    /// `leftcol` and keep the cursor inside the window.
+    #[test]
+    fn do_horizontal_scroll_columns_and_halfscreen() {
+        use lattice_grammar::HScroll;
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+        editor.option_cache.wrap_lines = false;
+        editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
+        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+
+        // 5zl ⇒ leftcol 5; the cursor (col 0, now left of the window)
+        // is pulled to the left edge (col/byte 5).
+        editor.pending_count = 5;
+        editor.do_horizontal_scroll(HScroll::Columns { right: true });
+        assert_eq!(editor.leftcol, 5);
+        assert_eq!(editor.cursor.byte, 5, "cursor pulled into the window");
+
+        // 2zh ⇒ leftcol 3 (cursor still visible, unchanged).
+        editor.pending_count = 2;
+        editor.do_horizontal_scroll(HScroll::Columns { right: false });
+        assert_eq!(editor.leftcol, 3);
+        assert_eq!(editor.cursor.byte, 5);
+
+        // zH (half = 76/2 = 38) from 3 ⇒ saturates to 0.
+        editor.do_horizontal_scroll(HScroll::HalfScreen { right: false });
+        assert_eq!(editor.leftcol, 0);
+
+        // zL ⇒ leftcol 38.
+        editor.do_horizontal_scroll(HScroll::HalfScreen { right: true });
+        assert_eq!(editor.leftcol, 38);
+    }
+
+    /// HS.2: `zs`/`ze` put the cursor's column at the left/right edge;
+    /// manual h-scroll is a no-op under `wrap`.
+    #[test]
+    fn do_horizontal_scroll_cursor_edges_and_wrap_noop() {
+        use lattice_grammar::HScroll;
+        let mut editor =
+            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+        editor.option_cache.wrap_lines = false;
+        editor.option_cache.show_line_numbers = false; // body width = 76
+        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.cursor = lattice_protocol::position::Position::new(0, 100);
+
+        // zs: cursor column → left edge ⇒ leftcol = 100.
+        editor.leftcol = 0;
+        editor.do_horizontal_scroll(HScroll::CursorToEdge { end: false });
+        assert_eq!(editor.leftcol, 100);
+
+        // ze: cursor column → right edge ⇒ leftcol = 100 + 1 - 76 = 25.
+        editor.leftcol = 0;
+        editor.do_horizontal_scroll(HScroll::CursorToEdge { end: true });
+        assert_eq!(editor.leftcol, 25);
+
+        // wrap on ⇒ the manual command is a no-op (leftcol untouched;
+        // the renderer pins it to 0 under wrap regardless).
+        editor.option_cache.wrap_lines = true;
+        editor.leftcol = 9;
+        editor.do_horizontal_scroll(HScroll::Columns { right: true });
+        assert_eq!(editor.leftcol, 9, "wrap on ⇒ manual h-scroll no-op");
     }
 
     /// `scrolloff` keeps N document lines below the cursor visible

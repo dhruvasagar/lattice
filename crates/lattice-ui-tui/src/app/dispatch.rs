@@ -328,6 +328,7 @@ impl App {
             // / redraw arms migrated to `Editor::dispatch`.
             | Action::JumpViewport(_)
             | Action::ScrollCursorTo(_)
+            | Action::HorizontalScroll(_)
             | Action::PageDown
             | Action::PageUp
             | Action::ScrollLineUp

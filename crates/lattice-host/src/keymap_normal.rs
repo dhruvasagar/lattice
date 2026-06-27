@@ -632,6 +632,52 @@ pub fn register_normal_bindings(
         source(),
     );
 
+    // HS.2: horizontal scroll (wrap off). zl/zh scroll [count]
+    // columns, zL/zH half the body width, zs/ze put the cursor's
+    // column at the left / right edge.
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('l')],
+        CommandInvocation::of(actions.h_scroll_right),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('h')],
+        CommandInvocation::of(actions.h_scroll_left),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('L')],
+        CommandInvocation::of(actions.h_scroll_half_right),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('H')],
+        CommandInvocation::of(actions.h_scroll_half_left),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('s')],
+        CommandInvocation::of(actions.h_scroll_cursor_left_edge),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[z.clone(), lit_char('e')],
+        CommandInvocation::of(actions.h_scroll_cursor_right_edge),
+        source(),
+    );
+
     // Folds.
     handle.bind(
         layer,

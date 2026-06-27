@@ -19,6 +19,7 @@
 
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
+use lattice_grammar::HScroll;
 use lattice_grammar::ModalState;
 use lattice_grammar::PaneDirection;
 use lattice_grammar::Register;
@@ -125,6 +126,12 @@ pub struct ActionIds {
     pub scroll_cursor_to_top: CommandId,
     pub scroll_cursor_to_center: CommandId,
     pub scroll_cursor_to_bottom: CommandId,
+    pub h_scroll_right: CommandId,
+    pub h_scroll_left: CommandId,
+    pub h_scroll_half_right: CommandId,
+    pub h_scroll_half_left: CommandId,
+    pub h_scroll_cursor_left_edge: CommandId,
+    pub h_scroll_cursor_right_edge: CommandId,
     pub join_lines_with_space: CommandId,
     pub join_lines_bare: CommandId,
     pub find_repeat_forward: CommandId,
@@ -763,6 +770,42 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:scroll-cursor-to-bottom",
             "Vim's `zb`: scroll viewport so the cursor's line sits at the bottom.",
             AppEffect::ScrollCursorTo(ScrollPos::Bottom),
+        ),
+        h_scroll_right: register_simple(
+            registry,
+            "action:h-scroll-right",
+            "Vim's `zl`: scroll the view right by [count] columns (wrap off).",
+            AppEffect::HorizontalScroll(HScroll::Columns { right: true }),
+        ),
+        h_scroll_left: register_simple(
+            registry,
+            "action:h-scroll-left",
+            "Vim's `zh`: scroll the view left by [count] columns (wrap off).",
+            AppEffect::HorizontalScroll(HScroll::Columns { right: false }),
+        ),
+        h_scroll_half_right: register_simple(
+            registry,
+            "action:h-scroll-half-right",
+            "Vim's `zL`: scroll the view right by half the body width.",
+            AppEffect::HorizontalScroll(HScroll::HalfScreen { right: true }),
+        ),
+        h_scroll_half_left: register_simple(
+            registry,
+            "action:h-scroll-half-left",
+            "Vim's `zH`: scroll the view left by half the body width.",
+            AppEffect::HorizontalScroll(HScroll::HalfScreen { right: false }),
+        ),
+        h_scroll_cursor_left_edge: register_simple(
+            registry,
+            "action:h-scroll-cursor-left-edge",
+            "Vim's `zs`: scroll so the cursor's column sits at the left edge.",
+            AppEffect::HorizontalScroll(HScroll::CursorToEdge { end: false }),
+        ),
+        h_scroll_cursor_right_edge: register_simple(
+            registry,
+            "action:h-scroll-cursor-right-edge",
+            "Vim's `ze`: scroll so the cursor's column sits at the right edge.",
+            AppEffect::HorizontalScroll(HScroll::CursorToEdge { end: true }),
         ),
         join_lines_with_space: register_simple(
             registry,

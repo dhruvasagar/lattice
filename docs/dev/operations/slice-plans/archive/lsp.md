@@ -1,13 +1,25 @@
 # LSP — slice plan
 
 Sequencing + status for the LSP polish work. **Design contracts** live
-in [`../../architecture/lsp-architecture.md`](../../architecture/lsp-architecture.md)
+in [`../../../architecture/lsp-architecture.md`](../../../architecture/lsp-architecture.md)
 §12–§15; the **per-method capability matrix** (LSP 3.17 coverage, every
 method's ✅/🚧 status) lives in
-[`../../notes/lsp-features.md`](../../notes/lsp-features.md). This file
+[`../../../notes/lsp-features.md`](../../../notes/lsp-features.md). This file
 owns *when* and *in what order*; those own *what* and *why*.
 
 Status legend: ✅ done · 🟡 partial · 🚧 in progress · 🗒 planned.
+
+> **Initiative status (2026-06-27): COMPLETE — archived.** L1–L7 all
+> landed; **L7** (`634012ca`, merged to main) closed the nav-surface
+> mode-ownership migration via the `Effect::Lsp(LspRequest)` boundary, so
+> every LSP chord is now fully mode-owned. The two non-✅ residuals are
+> not active work:
+> - **L3**'s remaining "collapse the segments into
+>   `LspMode::status_line_items`" scope is **superseded** — ML.3d retired
+>   `status_line_items` and ML.3c made the LSP badge a registered
+>   modeline element. Only an optional `:lsp-status` help-enrich remains.
+> - **L5** (inline `all`-lines diagnostics) is **deferred / optional** —
+>   "land only on request." Its spec is retained below for reference.
 
 ---
 
@@ -122,7 +134,7 @@ wiring. Glyphs degrade per the icon-palette rule.
   (ServiceRegistry `Arc`/`TypeId` lookup must match registration).
 **Deps:** L2.
 
-### L4 — diagnostics inline summary + cursor popup  🚧
+### L4 — diagnostics inline summary + cursor popup  ✅
 **Design:** §15. Carved into **L4a** (inline eol summary, host-plumbed
 decoration — sibling to inlay-hints/gutter/underline) and **L4b** (`gl`
 popup + `]d`/`[d`, mode-owned because they add chords + handlers).

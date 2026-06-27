@@ -180,8 +180,9 @@ users ([`../../user/lsp.md`](../../user/lsp.md) +
 [`../../user/lsp-mode.md`](../../user/lsp-mode.md)), per-feature
 trackers ([`../notes/lsp-features.md`](../notes/lsp-features.md) --
 every LSP 3.17 capability with status), slice plans
-([`slice-plans/lsp.md`](slice-plans/lsp.md) -- L1–L5 sequencing for the
-async-wake / lifecycle / status / diagnostics-presentation polish), and
+([`slice-plans/archive/lsp.md`](slice-plans/archive/lsp.md) -- L1–L7
+sequencing for the async-wake / lifecycle / status / diagnostics-
+presentation / nav-mode-ownership polish; **complete — archived**), and
 a manual verification checklist ([`verify.md`](verify.md) §17–18
 covering all 15 sub-modes + 4.4/4.5 features).
 

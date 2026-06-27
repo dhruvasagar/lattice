@@ -920,7 +920,7 @@ tracked this (the deferred "X1b") now lives in `docs/dev/archive/`
 (a stale comment in `lattice-ui-tui/src/runtime.rs` still points at its
 old path); this section is its permanent home. The fix is uniform -- fire `async_landed` from the
 two off-keystroke arrival shapes -- and is sequenced in
-[`../operations/slice-plans/lsp.md`](../operations/slice-plans/lsp.md)
+[`../operations/slice-plans/archive/lsp.md`](../operations/slice-plans/archive/lsp.md)
 (slice L1).
 
 ### The second gap: a publish must REQUEST a frame (slice L6)
@@ -1212,7 +1212,7 @@ See the slice plan (L7) for sequencing.
 ## See also
 
 - [design.md §5.4](design.md) -- canonical design.
-- [`../operations/slice-plans/lsp.md`](../operations/slice-plans/lsp.md) -- slice plan (sequencing + status for §12-§15 work).
+- [`../operations/slice-plans/archive/lsp.md`](../operations/slice-plans/archive/lsp.md) -- slice plan (sequencing + status for §12-§15 work).
 - [`../notes/lsp-features.md`](../notes/lsp-features.md) -- per-method feature matrix.
 - [`../../user/lsp.md`](../../user/lsp.md) -- user help.
 - [`../operations/benchmarks.md`](../operations/benchmarks.md) -- bench numbers (LSP rows

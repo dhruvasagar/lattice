@@ -6,7 +6,8 @@ moves a row.
 
 Sequencing for the in-flight polish work (the async-result render-wake
 fix, server lifecycle state, status surfaces, diagnostics inline/popup)
-lives in the [LSP slice plan](../operations/slice-plans/lsp.md); the
+lives in the [LSP slice plan](../operations/slice-plans/archive/lsp.md)
+(complete — archived); the
 design contracts are in
 [lsp-architecture.md](../architecture/lsp-architecture.md) §12–§15.
 Note: rows below marked ✅ for `$/progress`, `semanticTokens`, and

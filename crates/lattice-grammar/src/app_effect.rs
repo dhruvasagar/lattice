@@ -105,11 +105,8 @@ pub enum AppEffect {
     /// enters Insert. Promoted from `Action::OpenLineAbove` in
     /// slice 8.i.1.a.
     OpenLineAbove,
-    /// `K` (Phase 4.2.b). Sends `textDocument/hover` to every
-    /// LSP server attached to the active document; renders the
-    /// first non-empty markdown body in the hover popup.
-    /// Promoted from `Action::LspHoverRequest` in slice 8.i.1.a.
-    LspHoverRequest,
+    // L7: `AppEffect::LspHoverRequest` removed — `K` is mode-owned now
+    // (`lsp-mode`'s `action_handlers()` emits `Effect::Lsp(LspRequest::Hover)`).
     /// Vim's `n`. Re-runs the last search forward. Promoted from
     /// `Action::SearchNext` in slice 8.i.1.b.
     SearchNext,
@@ -233,33 +230,11 @@ pub enum AppEffect {
     /// the cursor. Promoted from `Action::PasteBefore` in slice
     /// 8.i.1.e.
     PasteBefore,
-    /// `gd` (Phase 4.2.c). `textDocument/definition` -- jump to
-    /// the symbol's definition. Promoted from
-    /// `Action::LspDefinitionRequest` in slice 8.i.1.f.
-    LspDefinitionRequest,
-    /// `gD`. `textDocument/declaration` -- declaration ≠
-    /// definition for header / forward-declaration languages.
-    /// Promoted from `Action::LspDeclarationRequest` in slice
-    /// 8.i.1.f.
-    LspDeclarationRequest,
-    /// `gy`. `textDocument/typeDefinition` -- jump from a value
-    /// to its type's declaration site. Promoted from
-    /// `Action::LspTypeDefinitionRequest` in slice 8.i.1.f.
-    LspTypeDefinitionRequest,
-    /// `gI`. `textDocument/implementation` -- jump from a trait
-    /// or interface to its implementations. Promoted from
-    /// `Action::LspImplementationRequest` in slice 8.i.1.f.
-    LspImplementationRequest,
-    /// `gr`. `textDocument/references` -- list every reference
-    /// to the symbol at the cursor. Promoted from
-    /// `Action::LspReferencesRequest` in slice 8.i.1.f.
-    LspReferencesRequest,
-    /// `gx` (Phase 4.5.c). Follow the LSP `documentLink`
-    /// covering the cursor. `file://` URIs open in a new
-    /// buffer; everything else delegates to the OS handler.
-    /// Echoes `(no link at cursor)` when the per-buffer link
-    /// cache is empty or no entry covers the cursor.
-    LspFollowLinkAtCursor,
+    // L7: the 6 nav `AppEffect::Lsp*Request` variants (`gd` / `gD` / `gy`
+    // / `gI` / `gr` / `gx`) removed — they are mode-owned now. `lsp-mode`'s
+    // `action_handlers()` closures emit `Effect::Lsp(LspRequest::{Definition,
+    // Declaration, TypeDefinition, Implementation, References, FollowLink})`,
+    // dispatched host-side by `editor.lsp_request`.
     /// Vim's `a`. Move cursor one byte right (clamped) and enter
     /// Insert. Promoted from `Action::EnterAppend` in slice
     /// 8.i.1.g.

@@ -196,54 +196,14 @@ pub enum Action {
     /// Vim's `zi` -- toggle [`App::foldenable`]. With folds disabled
     /// every line renders flat regardless of any closed flag.
     ToggleFoldEnable,
-    /// `K` (Phase 4.2.b). Send `textDocument/hover` to every
-    /// LSP server attached to the active document; render the
-    /// first non-empty markdown body in the hover popup. The
-    /// request rides a [`lattice_protocol::CancellationToken`]
-    /// so a stale response from a slow server can't drop a
-    /// popup over a moved cursor.
-    LspHoverRequest,
-    /// `gd` (Phase 4.2.c). Send `textDocument/definition` to
-    /// every attached LSP server. Single result → jump
-    /// in-place (or via `:e <path>` if cross-file); multiple
-    /// results → render in a `*lsp:definitions*` picker. Pushes
-    /// the current cursor onto the position history (§5.1.1)
-    /// so `<C-o>` walks back. Cancellation token rides on
-    /// motion / mode change.
-    LspDefinitionRequest,
-    /// `gD` (Phase 4.2.c follow-up). Same dispatch shape as
-    /// [`Self::LspDefinitionRequest`] but routes
-    /// `textDocument/declaration`. Useful for languages where
-    /// declaration ≠ definition (header / forward declaration in
-    /// C-family, `extern` in Rust, etc.).
-    LspDeclarationRequest,
-    /// `gy` (Phase 4.2.c follow-up). `textDocument/typeDefinition`
-    /// -- "where is the *type* of this expression defined?".
-    /// Steps from a value's call-site to its struct / class /
-    /// interface declaration.
-    LspTypeDefinitionRequest,
-    /// `gI` (Phase 4.2.c follow-up). `textDocument/implementation`
-    /// -- "where are the implementations of this trait /
-    /// interface?". Often returns multiple locations; shares
-    /// definition's pick-or-list dispatch.
-    LspImplementationRequest,
-    /// `gr` (Phase 4.2.d). Send `textDocument/references` to
-    /// every attached LSP server; render the merged + deduped
-    /// list as a `*lsp:references*` help-style buffer with one
-    /// `[path:line:col](file:...)` row per hit. `<CR>` on a row
-    /// jumps to the location via the existing
-    /// `do_help_follow_link` Source-link path. Cancellation
-    /// token rides on follow-up `gr` so a slow server can't
-    /// drop a stale popup over a moved cursor.
-    LspReferencesRequest,
-    /// `gx` (Phase 4.5.c). Follow the LSP documentLink at the
-    /// cursor: `file://` URIs open in a new buffer; external
-    /// URIs delegate to the OS handler. The per-tick pump
-    /// keeps the cache fresh; the keystroke walks it for the
-    /// first link whose range covers the cursor. Echoes
-    /// `(no link at cursor)` when the cache is empty or no
-    /// link covers.
-    LspFollowLinkAtCursor,
+    // L7 (lsp-architecture.md §16): the 7 nav `Action::Lsp*Request`
+    // variants (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`) removed.
+    // The nav surface is mode-owned now — `lsp-mode`'s `action_handlers()`
+    // closures emit `Effect::Lsp(LspRequest::…)`, dispatched host-side by
+    // `editor.lsp_request` onto the unchanged request substrate. The
+    // non-nav LSP actions below (signature-help / completion / symbols /
+    // on-type-formatting) are ex-command / insert-autopilot triggered,
+    // not chord-bound, and stay.
     /// `:lsp-signature-help` (Phase 4.3). Sends
     /// `textDocument/signatureHelp` to attached servers; the
     /// first non-empty response renders into a popup near the

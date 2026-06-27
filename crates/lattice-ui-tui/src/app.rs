@@ -2506,7 +2506,7 @@ mod tests {
         // popup.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("line 1\nline 2\nline 3");
-        a.apply(Action::LspHoverRequest); // -> State B (5.5.LSP.1)
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover)); // -> State B (5.5.LSP.1)
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
@@ -3393,7 +3393,7 @@ mod tests {
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.editor.cursor = lattice_protocol::Position::new(1, 4);
         a.do_open_hover("hover body");
-        a.apply(Action::LspHoverRequest); // -> State B (5.5.LSP.1)
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover)); // -> State B (5.5.LSP.1)
         // Move inside the popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));

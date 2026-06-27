@@ -379,12 +379,11 @@ impl App {
     // 5.5.LSP.1: `K` -- `do_lsp_hover_request` relocated to
     // [`lattice_host::dispatch::Editor::lsp_hover_request`]. The
     // host-side body is identical (gates + URI lookup + cursor
-    // translation + spawn on the LSP runtime) and runs as the
-    // [`Action::LspHoverRequest`] arm of [`Editor::dispatch`]. App-
-    // side callers (tests in app.rs at lines 2339, 3198 and
-    // dispatch.rs at 2206) route through `apply(Action::Lsp...)`
-    // now. The drain side (`drain_pending_hover`) stays App-
-    // resident until LSP.2+ migrates it.
+    // translation + spawn on the LSP runtime). L7: `K` is mode-owned —
+    // `lsp-mode`'s `action_handlers()` emits `Effect::Lsp(LspRequest::Hover)`,
+    // applied host-side via `editor.lsp_request`. Tests drive that exact
+    // path with `apply_effect(Effect::Lsp(LspRequest::…))`. The drain side
+    // (`drain_pending_hover`) stays App-resident.
 
     /// Drain the channel populated by `do_lsp_hover_request` and
     /// act on every pending `HoverOutcome`: open the popup for
@@ -1718,7 +1717,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         // M.5.4 request gate: hover echoes the gate message.
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert!(
             msg.text.contains("lsp-mode disabled"),
@@ -1752,7 +1751,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Default: no auto-activation (no path).
         assert!(!a.lsp_mode_enabled_for(a.editor.document_buffer_id));
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -1776,7 +1775,7 @@ mod tests {
         assert!(!a.lsp_hover_mode_enabled_for(a.editor.document_buffer_id));
         // Hover request now bails with sub-mode echo (umbrella
         // is on, so the umbrella check inside the helper passes).
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -1813,7 +1812,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-nav-mode");
-        a.apply(crate::app::Action::LspDefinitionRequest); // 5.5.LSP.2
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition)); // 5.5.LSP.2
         let msg = a.editor.last_message.as_ref().expect("nav gate echo");
         assert!(
             msg.text.contains("lsp-nav-mode disabled"),
@@ -1837,7 +1836,7 @@ mod tests {
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(a.editor.document_buffer_id));
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         let msg = a.editor.last_message.as_ref().expect("umbrella echo");
         // Umbrella echo, not sub-mode echo.
         assert!(
@@ -2013,7 +2012,7 @@ mod tests {
         // was probing.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
@@ -2032,7 +2031,7 @@ mod tests {
         // Trigger another hover. With no LSP attached the new
         // request bails on the URI lookup, but the cancel of the
         // previous token should still happen first.
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         assert!(
             stale.is_cancelled(),
             "prior in-flight hover token should flip on a new K press"
@@ -3107,7 +3106,7 @@ mod tests {
     fn lsp_definition_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspDefinitionRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
@@ -3117,7 +3116,7 @@ mod tests {
     fn lsp_declaration_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspDeclarationRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Declaration));
         // No URI mapped, same "no LSP server" guard fires.
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
@@ -3128,7 +3127,7 @@ mod tests {
     fn lsp_type_definition_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspTypeDefinitionRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::TypeDefinition));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3137,7 +3136,7 @@ mod tests {
     fn lsp_implementation_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspImplementationRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Implementation));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3194,7 +3193,7 @@ mod tests {
     fn lsp_references_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply(Action::LspReferencesRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::References));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3204,7 +3203,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_references_token = Some(stale.clone());
-        a.apply(Action::LspReferencesRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::References));
         assert!(stale.is_cancelled());
     }
 
@@ -4315,7 +4314,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_definition_token = Some(stale.clone());
-        a.apply(Action::LspImplementationRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Implementation));
         assert!(stale.is_cancelled());
     }
 
@@ -4324,7 +4323,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_definition_token = Some(stale.clone());
-        a.apply(Action::LspDefinitionRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition));
         assert!(stale.is_cancelled());
     }
 
@@ -5431,7 +5430,7 @@ mod tests {
         // Hover still works (well, fails for "no LSP server" but
         // not for "mode disabled" -- the sub-mode gate passes).
         a.editor.last_message = None;
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         if let Some(msg) = &a.editor.last_message {
             assert!(
                 !msg.text.contains("lsp-hover-mode disabled"),

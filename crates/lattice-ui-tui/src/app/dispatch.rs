@@ -433,17 +433,9 @@ impl App {
             | Action::EnterMode(_)
             | Action::EnterBlockVisualInsert
             | Action::EnterBlockVisualAppend
-            // 5.5.LSP.1: `K` -- hover request migrated to
-            // `Editor::dispatch`.
-            | Action::LspHoverRequest
-            // 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- nav family
-            // migrated to `Editor::dispatch`.
-            | Action::LspDefinitionRequest
-            | Action::LspDeclarationRequest
-            | Action::LspTypeDefinitionRequest
-            | Action::LspImplementationRequest
-            // 5.5.LSP.3: `gr` -- references migrated to `Editor::dispatch`.
-            | Action::LspReferencesRequest
+            // L7: the 6 nav `Action::Lsp*Request` no-op arms (`K` / `gd`
+            // / `gD` / `gy` / `gI` / `gr`) removed with the variants —
+            // the nav surface is mode-owned (`Effect::Lsp`), host-applied.
             // 5.5.LSP.4: signature help + completion request migrated
             // to `Editor::dispatch`.
             | Action::LspSignatureHelpRequest
@@ -545,22 +537,10 @@ impl App {
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
             // 5.5.G.14: `ToggleFoldEnable` migrated to `Editor::dispatch`.
-            // 5.5.LSP.1: `LspHoverRequest` migrated to `Editor::dispatch`
-            // (host-side `Editor::lsp_hover_request`); the App arm here
-            // is gone -- the action falls through to the grouped no-op
-            // below.
-            // 5.5.LSP.2: `LspDefinitionRequest` / `LspDeclarationRequest` /
-            // `LspTypeDefinitionRequest` / `LspImplementationRequest`
-            // migrated to `Editor::dispatch` (host-side
-            // `Editor::lsp_nav_request(LspNavKind)`); the App arms
-            // here are gone -- all four fall through to the grouped
-            // no-op below.
-            // 5.5.LSP.3: `LspReferencesRequest` migrated to
-            // `Editor::dispatch` (host-side
-            // `Editor::lsp_references_request`); falls through to
-            // the grouped no-op below.
-            // Phase 5.8.AF: migrated to host (consumed = true).
-            Action::LspFollowLinkAtCursor => {}
+            // L7: the 7 nav `Action::Lsp*Request` variants (`K` / `gd` /
+            // `gD` / `gy` / `gI` / `gr` / `gx`) are gone — the nav surface
+            // is mode-owned (`Effect::Lsp`), host-applied, so there is no
+            // App-side arm to no-op.
             // 5.5.LSP.4: `LspSignatureHelpRequest` /
             // `LspCompletionRequest` migrated to `Editor::dispatch`;
             // fall through to the grouped no-op below.
@@ -890,6 +870,8 @@ impl App {
             | Effect::SaveBuffer { .. }
             | Effect::Echo { .. }
             | Effect::ShowDiagnosticsPopup { .. }
+            // L7: LSP nav requests are host-applied (`editor.lsp_request`).
+            | Effect::Lsp(_)
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
@@ -1201,6 +1183,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
         // L4b: the diagnostics popup neither mutates nor yanks.
         Effect::ShowDiagnosticsPopup { .. } => false,
+        // L7: an LSP nav request neither mutates nor yanks.
+        Effect::Lsp(_) => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -1314,6 +1298,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.
         Effect::ShowDiagnosticsPopup { .. } => false,
+        // L7: an LSP nav request is not a buffer mutation.
+        Effect::Lsp(_) => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
@@ -2372,7 +2358,7 @@ mod tests {
         // 5.5.LSP.1: hover request migrated to `Editor::dispatch`;
         // exercise the State A -> State B promote through the Action
         // path so the test covers the live dispatch wire too.
-        a.apply(Action::LspHoverRequest);
+        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
         assert!(
             a.editor.popup_buffer.is_some(),
             "popup stays up after focus"

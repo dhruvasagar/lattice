@@ -2388,32 +2388,14 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let _ = editor.config.set_typed::<lattice_config::FoldEnable>(!cur);
             _out.renderer_signals.extend(editor.drain_option_changes());
         }
-        // 5.5.LSP.1: `K` -- LSP hover request. The helper lives on
-        // `Editor`; App's `apply` arm is gone (falls through to its
-        // grouped `_ => {}` no-op). The popup is opened by the
-        // `drain_pending_hover` tick that follows on the next
-        // frame, which is still App-resident (LSP.2+ migrates the
-        // drain).
-        Action::LspHoverRequest => editor.lsp_hover_request(),
-        // 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- LSP navigation
-        // family. All four arms share one host helper; the kind
-        // discriminates which LSP request gets sent. Drain still
-        // App-side until the next phase.
-        Action::LspDefinitionRequest => {
-            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Definition)
-        }
-        Action::LspDeclarationRequest => {
-            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Declaration)
-        }
-        Action::LspTypeDefinitionRequest => {
-            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::TypeDefinition)
-        }
-        Action::LspImplementationRequest => {
-            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Implementation)
-        }
-        // 5.5.LSP.3: `gr` -- LSP references. Drain still App-side
-        // (still uses `open_lsp_locations_picker`).
-        Action::LspReferencesRequest => editor.lsp_references_request(),
+        // L7 (lsp-architecture.md §16): the 7 nav `Action::Lsp*Request`
+        // arms (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`) are removed.
+        // The nav surface is mode-owned now — `lsp-mode`'s
+        // `action_handlers()` closures emit `Effect::Lsp(LspRequest::…)`,
+        // applied by the `Effect::Lsp` arm in `handle_effect` →
+        // `editor.lsp_request`, which dispatches onto the SAME
+        // (`lsp_hover_request` / `lsp_nav_request` / `lsp_references_request`
+        // / `do_lsp_follow_link_at_cursor`) substrate methods, unchanged.
         // 5.5.LSP.4: signature help + completion request.
         // Drains stay App-side.
         Action::LspSignatureHelpRequest => editor.lsp_signature_help_request(),
@@ -2510,10 +2492,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::LspOnTypeFormattingRequest(c) => editor.do_lsp_on_type_formatting_request(c),
         Action::LspInsertCompletionRequest => editor.do_lsp_insert_completion_request(),
-        Action::LspFollowLinkAtCursor => {
-            let signals = editor.do_lsp_follow_link_at_cursor();
-            _out.renderer_signals.extend(signals);
-        }
+        // L7: `Action::LspFollowLinkAtCursor` (`gx`) removed — mode-owned
+        // (`Effect::Lsp(LspRequest::FollowLink)` → `editor.lsp_request`,
+        // whose `FollowLink` arm calls `do_lsp_follow_link_at_cursor` and
+        // returns its renderer signals).
         Action::OilNavigateUp => {
             let signals = editor.do_oil_navigate_up();
             _out.renderer_signals.extend(signals);
@@ -2650,6 +2632,16 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // appends to the `*messages*` ring and publishes
             // [`lattice_runtime::MessagePushed`].
             editor.set_message(echo_level_from_grammar(level), text);
+        }
+        Effect::Lsp(req) => {
+            // L7 (lsp-architecture.md §16): a mode-owned nav chord
+            // (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`). The owning
+            // `lsp-mode` handler decided *which* request via `LspRequest`;
+            // run the (unchanged) async request substrate host-side. Only
+            // `FollowLink` yields renderer signals synchronously (open
+            // buffer / OS handler); the rest spawn + drain off-keystroke.
+            let signals = editor.lsp_request(req);
+            out.renderer_signals.extend(signals);
         }
         Effect::ShowDiagnosticsPopup { lines } => {
             // L4b (lsp-architecture.md §15): `gl` — the owning
@@ -6092,7 +6084,7 @@ impl Editor {
             AppEffect::ToggleCaseAtCursor => out.next_actions.push(Action::ToggleCaseAtCursor),
             AppEffect::OpenLineBelow => out.next_actions.push(Action::OpenLineBelow),
             AppEffect::OpenLineAbove => out.next_actions.push(Action::OpenLineAbove),
-            AppEffect::LspHoverRequest => out.next_actions.push(Action::LspHoverRequest),
+            // L7: `AppEffect::LspHoverRequest` removed (mode-owned `K`).
             AppEffect::SearchNext => out.next_actions.push(Action::SearchNext),
             AppEffect::SearchPrevious => out.next_actions.push(Action::SearchPrevious),
             AppEffect::JumpHistoryBack => out.next_actions.push(Action::JumpHistoryBack),
@@ -6129,20 +6121,9 @@ impl Editor {
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
-            AppEffect::LspDefinitionRequest => out.next_actions.push(Action::LspDefinitionRequest),
-            AppEffect::LspDeclarationRequest => {
-                out.next_actions.push(Action::LspDeclarationRequest)
-            }
-            AppEffect::LspTypeDefinitionRequest => {
-                out.next_actions.push(Action::LspTypeDefinitionRequest)
-            }
-            AppEffect::LspImplementationRequest => {
-                out.next_actions.push(Action::LspImplementationRequest)
-            }
-            AppEffect::LspReferencesRequest => out.next_actions.push(Action::LspReferencesRequest),
-            AppEffect::LspFollowLinkAtCursor => {
-                out.next_actions.push(Action::LspFollowLinkAtCursor)
-            }
+            // L7: the 6 nav `AppEffect::Lsp*Request` arms (`gd` / `gD` / `gy`
+            // / `gI` / `gr` / `gx`) removed — mode-owned via
+            // `Effect::Lsp(LspRequest::…)`.
             AppEffect::EnterAppend => out.next_actions.push(Action::EnterAppend),
             AppEffect::EnterInsertFirstNonBlank => {
                 out.next_actions.push(Action::EnterInsertFirstNonBlank)
@@ -7915,6 +7896,50 @@ impl Editor {
                 locations: all,
             });
         });
+    }
+
+    /// L7 (lsp-architecture.md §16): host-side dispatcher for the
+    /// mode-owned LSP **navigation** chords. `lsp-mode`'s
+    /// `action_handlers()` closures return `Effect::Lsp(LspRequest::…)`;
+    /// the `Effect::Lsp` apply arm calls this, which fans each
+    /// [`lattice_grammar::LspRequest`] variant onto the existing
+    /// (unchanged) async request substrate. Returns the renderer
+    /// signals the request produced synchronously — empty for the
+    /// spawn-and-drain requests (hover / nav / references, whose results
+    /// land off-keystroke via `drain_pending_*`), non-empty only for
+    /// `FollowLink` (opens a buffer / delegates to the OS handler in the
+    /// same tick). This is the shared host substrate the mode *triggers*
+    /// but does not *own* (the cells-worker analogue); no `Editor::do_*`
+    /// is bound to a chord and no host `Action` variant is involved.
+    pub fn lsp_request(&mut self, req: lattice_grammar::LspRequest) -> Vec<RendererSignal> {
+        use lattice_grammar::LspRequest;
+        match req {
+            LspRequest::Hover => {
+                self.lsp_hover_request();
+                Vec::new()
+            }
+            LspRequest::Definition => {
+                self.lsp_nav_request(lattice_lsp::cache::LspNavKind::Definition);
+                Vec::new()
+            }
+            LspRequest::Declaration => {
+                self.lsp_nav_request(lattice_lsp::cache::LspNavKind::Declaration);
+                Vec::new()
+            }
+            LspRequest::TypeDefinition => {
+                self.lsp_nav_request(lattice_lsp::cache::LspNavKind::TypeDefinition);
+                Vec::new()
+            }
+            LspRequest::Implementation => {
+                self.lsp_nav_request(lattice_lsp::cache::LspNavKind::Implementation);
+                Vec::new()
+            }
+            LspRequest::References => {
+                self.lsp_references_request();
+                Vec::new()
+            }
+            LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
+        }
     }
 
     /// 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- LSP navigation
@@ -26666,6 +26691,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
         // L4b: the diagnostics popup neither mutates nor yanks.
         Effect::ShowDiagnosticsPopup { .. } => false,
+        // L7: firing an LSP nav request neither mutates nor yanks the buffer.
+        Effect::Lsp(_) => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
@@ -26781,6 +26808,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.
         Effect::ShowDiagnosticsPopup { .. } => false,
+        // L7: an LSP nav request is not a buffer mutation.
+        Effect::Lsp(_) => false,
         Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
@@ -28422,6 +28451,25 @@ fn cells_edit_delta_from_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── L7: Effect::Lsp classification ──────────────────────────
+    #[test]
+    fn effect_lsp_neither_mutates_nor_yanks() {
+        // Firing a mode-owned LSP nav request is not a buffer edit, so
+        // it must not exit Visual (effect_mutates_or_yanks) nor be
+        // dot-repeat-eligible (effect_mutates). Parity with
+        // ShowDiagnosticsPopup.
+        for req in [
+            lattice_grammar::LspRequest::Hover,
+            lattice_grammar::LspRequest::Definition,
+            lattice_grammar::LspRequest::References,
+            lattice_grammar::LspRequest::FollowLink,
+        ] {
+            let e = lattice_grammar::Effect::Lsp(req);
+            assert!(!effect_mutates_or_yanks(&e), "{req:?} must not mutate/yank");
+            assert!(!effect_mutates(&e), "{req:?} must not be a mutation");
+        }
+    }
 
     // ── N.1.2: narrow `:narrow` range resolution ────────────────
     #[test]

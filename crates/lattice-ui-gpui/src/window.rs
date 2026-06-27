@@ -1401,6 +1401,15 @@ impl EditorView {
         } else {
             pane.scroll
         };
+        // HS.1b: horizontal scroll mirrors the same active-vs-stashed
+        // rule as `pane_scroll`. `ad.leftcol` is the active pane's
+        // live value; an inactive (or popup-backgrounded) pane reads
+        // its stashed `PaneState::leftcol`.
+        let pane_leftcol = if render_active {
+            ad.leftcol
+        } else {
+            pane.leftcol
+        };
         // 2026-05-27: when the popup is focused (State B), `ad`
         // describes the POPUP's viewport_height (the
         // `popup_inner_rows` override the render loop applies up
@@ -2018,6 +2027,7 @@ impl EditorView {
                     std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
                 }),
             scroll: pane_scroll,
+            leftcol: pane_leftcol,
             viewport_height,
             gutter: gutter_meta,
             gutter_width,

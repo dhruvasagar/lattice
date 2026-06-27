@@ -225,6 +225,11 @@ pub(crate) struct EditorElement {
     // substrate (`cell_matrix` / `display_matrix` below).
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
+    /// Horizontal scroll: first visible display column (0-based).
+    /// Drives the body's left clip when `wrap` is off; the host pins
+    /// it to 0 under wrap. Mirrors the TUI `leftcol` offset so both
+    /// renderers pan identically (HS.1b).
+    pub(crate) leftcol: u32,
     /// Visible viewport height in lines.
     pub(crate) viewport_height: u32,
     /// Per-visible-row gutter metadata (after fold filtering).
@@ -1540,6 +1545,15 @@ impl Element for EditorElement {
         let line_height = prepaint.line_height;
         let advance = prepaint.glyph_advance;
         let text_origin_x = bounds.origin.x + prepaint.gutter_width_px;
+        // HS.1b: horizontal scroll. With wrap off, the body pans left
+        // by `leftcol` display columns — `col_x` subtracts it (cursor
+        // + selection/decoration quads) and the body-glyph paint
+        // slices the first `leftcol` cells off each ordinary row, so
+        // column `leftcol` lands at `text_origin_x` (never over the
+        // gutter, no content mask needed). Pinned to 0 under wrap.
+        // Heading-split rows are left unoffset for now (they rarely
+        // pan); full coverage is a follow-up.
+        let leftcol = if self.wrap_width == 0 { self.leftcol } else { 0 };
 
         // F.2 (Thread F): per-display-row vertical metrics for variable
         // row height. A row's height is `line_height * row_scale[i]`
@@ -1585,11 +1599,13 @@ impl Element for EditorElement {
         let col_x = |i: usize, col: u32| -> Pixels {
             match row_split.get(i) {
                 Some(Some(split)) if col > split.prefix_cols => {
+                    // Heading title: no h-scroll offset yet (follow-up).
                     text_origin_x
                         + advance * (split.prefix_cols as f32)
                         + advance * split.title_scale * ((col - split.prefix_cols) as f32)
                 }
-                _ => text_origin_x + advance * (col as f32),
+                // Ordinary rows pan left by `leftcol` (wrap off).
+                _ => text_origin_x + advance * (col.saturating_sub(leftcol) as f32),
             }
         };
         // F.2: with variable row height the cumulative stack of
@@ -1730,6 +1746,18 @@ impl Element for EditorElement {
                                     .unwrap_or(0);
                                 let seg_cells =
                                     cell_row.segment(seg, prepaint.wrap_width);
+                                // HS.1b: pan ordinary rows left by
+                                // `leftcol` cells (wrap off) so column
+                                // `leftcol` paints at `text_origin_x`.
+                                // Heading-split rows keep their prefix
+                                // math and are not offset yet.
+                                let seg_cells = if leftcol > 0
+                                    && row_split.get(i).is_none_or(|s| s.is_none())
+                                {
+                                    &seg_cells[(leftcol as usize).min(seg_cells.len())..]
+                                } else {
+                                    seg_cells
+                                };
                                 // A continuation segment with no cells but
                                 // whose fallback ShapedLine carries text
                                 // (column models diverged) falls through so

@@ -33,8 +33,17 @@ user).
     `clip_spans_horizontally` at the nowrap body site; cursor
     screen-column subtracts `leftcol`. 3 clip unit tests + existing
     compose/cursor suites green.
-  - **GPUI** 🚧 — mirror the body offset + cursor offset in
-    `editor_element.rs` (parity rule: same patch class as TUI). Pending.
+  - **GPUI** ✅ (common path) — `EditorElement::leftcol` (active =
+    `ad.leftcol`, inactive = stashed `pane.leftcol`); `col_x` subtracts
+    `leftcol` for ordinary rows (cursor + selection/decoration quads);
+    the body-glyph paint slices the first `leftcol` cells off each
+    ordinary row so column `leftcol` lands at `text_origin_x` (no
+    content mask needed). Inert when `leftcol == 0` (saturating-sub +
+    `leftcol > 0` slice guard ⇒ byte-identical to pre-HS), so the
+    non-scrolled case cannot regress. **Heading-split rows are not
+    offset yet** (markdown headings rarely h-scroll) — follow-up.
+    Needs a visual verification pass (`cargo run --features gui --
+    --gui`) on the scrolled-right case; not viewable in CI/headless.
 
 ## HS.2 — Manual h-scroll grammar 🗒
 

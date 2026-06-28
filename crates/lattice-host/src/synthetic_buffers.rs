@@ -245,6 +245,22 @@ impl Editor {
         if !text.is_empty() {
             self.append_to_owned_buffer(id, &text);
         }
+        // PU.1b-1 (2A): give the help buffer a live markdown
+        // `SyntaxHandle` (path `help.md` ⇒ `Lang::Markdown`) so the
+        // cells worker builds its `DisplayMatrix` from the SAME grammar
+        // `with_markdown_syntax` precomputes — the seam that lets help
+        // render through `compose_pane_lines` like any document. The
+        // bespoke help renderers still read `HelpHighlights` this
+        // slice, so attaching is invisible; PU.1b-2+ flip the renderers
+        // to the matrix and PU.1b-4 deletes the precompute. The path is
+        // a language hint only — never opened. This handle is attached
+        // only at initial registration; the swap seam
+        // (`replace_owned_document_text`, used by back-stack /
+        // link-follow / in-pane re-seed) reuses this id but does NOT
+        // re-attach, so PU.1b-2 must confirm the matrix refreshes after
+        // a swap (re-attaching there if the version-bump reparse alone
+        // doesn't suffice).
+        self.install_inmemory_syntax(id, &text, std::path::Path::new("help.md"));
         self.seed_help_metadata_locals(id, metadata);
         id
     }

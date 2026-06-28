@@ -3160,6 +3160,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn help_buffer_gets_markdown_syntax_handle() {
+        // PU.1b-1 (2A): `register_help_document` attaches a live
+        // markdown `SyntaxHandle` so the cells worker builds the help
+        // `DisplayMatrix` from grammar — the seam that lets help render
+        // through `compose_pane_lines` like any document. Bespoke
+        // renderers still paint this slice, so the attach is invisible;
+        // here we just assert the handle is present.
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpContent::from_lines(
+            "syntax-check",
+            vec!["# Title".into(), "body text".into()],
+        );
+        let help_id = a.open_help_in_pane(help);
+        assert!(
+            a.editor.document_syntax_for(help_id).is_some(),
+            "help buffer should carry a markdown SyntaxHandle after register_help_document"
+        );
+    }
+
     // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----
 
     // ---- M.3.2.c.3: oil-mode locals seeded ----

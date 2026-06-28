@@ -5024,7 +5024,7 @@ impl Editor {
     /// Best-effort: a language with no registered grammar (or a bare
     /// `LangRegistry`) yields `DocumentSyntax(None)` — no highlighting, no
     /// panic, exactly as a plain-text open behaves.
-    fn install_inmemory_syntax(
+    pub(crate) fn install_inmemory_syntax(
         &mut self,
         id: BufferId,
         text: &str,

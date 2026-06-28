@@ -105,9 +105,23 @@ Two pre-existing branch breakages were fixed while landing this slice
 
 ## PU.1b — Compose seam + markdown handle + delete bespoke 🚧
 
-PU.1b is sub-carved into four sequenced slices (1a → 1 → 2 → 3) after
-the seam investigation surfaced two render states + three open forks
-the original PU.1b text glossed over.
+PU.1b is sub-carved into five sequenced slices (1a → 1 → 2 → 3 → 4)
+after the seam investigation surfaced two render states + three open
+forks the original PU.1b text glossed over.
+
+**Reorder (2026-06-28):** the markdown `SyntaxHandle` attach moved to
+the *front* (now PU.1b-1), ahead of the renderer flips. The original
+order put the flips first and "kept `with_markdown_syntax` highlights
+for now", but that is incompatible with the locked **2A** decision: once
+a renderer reads the cells-worker `DisplayMatrix` (what `compose_pane_lines`
+does), the only K.4-clean highlight source is a live grammar handle on
+the buffer — sourcing highlights from the bespoke `with_markdown_syntax`
+precompute would force a kind-branch in compose (the rejected 2B). So the
+handle must be attached *before* either renderer flips, or the flip
+regresses help's markdown colour. Attaching it first is invisible
+(bespoke renderers still read `HelpHighlights`), so it lands as its own
+green slice. The precompute is deleted last (PU.1b-4), once nothing reads
+it.
 
 ### Locked decisions (2026-06-28)
 
@@ -172,26 +186,49 @@ construction, so existing GPUI rendering cannot regress).
   (TUI compose) + `gutter_text_signcolumn_no_drops_severity_and_diff_cells`
   (GPUI); default-`yes` body stays byte-identical (existing suite).
 
-### PU.1b-1 — in-pane help (State B) through compose 🗒
+### PU.1b-1 — attach markdown SyntaxHandle to help 🚧
+
+Pure foundation; NO renderer change, NO visual change (bespoke
+renderers still read `HelpHighlights`). `register_help_document`
+(`crates/lattice-host/src/synthetic_buffers.rs`) attaches a live
+markdown `SyntaxHandle` via
+`install_inmemory_syntax(id, &text, Path::new("help.md"))` so the cells
+worker builds the help `DisplayMatrix` from the SAME grammar
+`with_markdown_syntax` precomputes — the seam PU.1b-2/-3 flip the
+renderers onto. `install_inmemory_syntax` widened to `pub(crate)`.
+
+- Attach is at initial registration only. The swap seam
+  (`replace_owned_document_text`: back-stack / link-follow / in-pane
+  re-seed) reuses the id but does NOT re-attach — PU.1b-2 must confirm
+  the matrix refreshes after a swap (re-attaching there if the
+  version-bump reparse alone doesn't suffice).
+- Test: `help_buffer_gets_markdown_syntax_handle` (TUI) asserts
+  `document_syntax_for(help_id).is_some()` after open.
+- No GPUI / `Effect` / `DiffSignKind` / `host_theme` surface touched
+  (host-side buffer registration only) — parity rule N/A this slice.
+
+### PU.1b-2 — in-pane help (State B) through compose 🗒
 
 Re-point `help_pane_render` to a content seam calling
 `compose_pane_lines` (renders cleanly now that help-mode sets
-`nonu`/`signcolumn=no`/`wrap`). **Delete** `draw_help_in_pane`,
-`draw_inactive_help`. Keep `with_markdown_syntax` highlights for now.
+`nonu`/`signcolumn=no`/`wrap`, and the matrix carries markdown colour
+from PU.1b-1). **Delete** `draw_help_in_pane`, `draw_inactive_help`.
+Confirm a help-content swap (link-follow / `<C-o>`) refreshes the
+matrix.
 
-### PU.1b-2 — floating popup (State A) through compose 🗒
+### PU.1b-3 — floating popup (State A) through compose 🗒
 
-Solve Fork 1 (cells-worker coverage for the popup buffer); re-point
+Solve Fork 1 (cells-worker coverage for the popup buffer via a
+synthetic pane-id registration in `build_cells_panes`); re-point
 `draw_help_overlay`'s interior to the seam. **Delete**
 `manually_wrap_lines` + the content portion of `draw_help_overlay`.
 
-### PU.1b-3 — 2A markdown SyntaxHandle cutover 🗒
+### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒
 
-Attach a markdown `SyntaxHandle` in `register_help_document` via
-`install_inmemory_syntax(id, text, Path::new("help.md"))` so the cells
-worker builds the matrix from live grammar. **Delete**
+Nothing reads the precompute path once both renderers flip. **Delete**
 `with_markdown_syntax`, `popup_help_highlights`, `render_help_line`,
-`popup_help`.
+`popup_help` (the view reconstructor), and the `HelpHighlights`
+buffer-local seeding.
 
 - **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
   popup; folds work inside help; horizontal scroll works inside help

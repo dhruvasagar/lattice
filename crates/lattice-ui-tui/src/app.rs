@@ -3180,6 +3180,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn help_in_pane_seeds_link_extra_highlights() {
+        // PU.1b-2b: opening help whose content has a link seeds the
+        // link-only spans into `ExtraHighlights` so the cells worker
+        // merges `Style::Link` into the help `DisplayMatrix` — the
+        // grammar can't, since the `[label](target)` markup is stripped
+        // before it parses.
+        let mut a = app_with("hi", 5);
+        let help_id = a.open_help_in_pane(crate::help::HelpContent::from_lines(
+            "links",
+            vec!["see [rust](mode:rust) docs".into()],
+        ));
+        let extra = a
+            .editor
+            .buffer_locals
+            .get(&help_id)
+            .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        assert!(
+            extra
+                .iter()
+                .flatten()
+                .any(|s| s.style == lattice_syntax::Style::Link),
+            "help link must seed a Style::Link span into ExtraHighlights for the matrix merge"
+        );
+    }
+
+    #[test]
+    fn help_in_pane_swap_reseeds_links_and_syntax() {
+        // PU.1b-2b: a same-title re-open swaps the help content in place
+        // (reuses the buffer id) and routes through
+        // `seed_help_metadata_locals`, which re-seeds `ExtraHighlights`
+        // AND re-attaches the markdown SyntaxHandle from the NEW text —
+        // so the matrix's link styling + grammar colour stay fresh across
+        // swaps (link-follow / `<C-o>` take the same re-seed path).
+        let mut a = app_with("hi", 5);
+        let id1 = a.open_help_in_pane(crate::help::HelpContent::from_lines(
+            "topic",
+            vec!["[one](mode:rust)".into()],
+        ));
+        let id2 = a.open_help_in_pane(crate::help::HelpContent::from_lines(
+            "topic",
+            vec!["plain".into(), "[two](mode:zig) tail".into()],
+        ));
+        assert_eq!(
+            id1, id2,
+            "same-title re-open swaps in place (reuses the help buffer id)"
+        );
+        let extra = a
+            .editor
+            .buffer_locals
+            .get(&id2)
+            .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        let has_link = |line: usize| {
+            extra
+                .get(line)
+                .map(|v| v.iter().any(|s| s.style == lattice_syntax::Style::Link))
+                .unwrap_or(false)
+        };
+        assert!(!has_link(0), "after swap, line 0 (plain) carries no link");
+        assert!(has_link(1), "after swap, line 1 carries the new link");
+        assert!(
+            a.editor.document_syntax_for(id2).is_some(),
+            "syntax handle re-attached against the swapped-in text"
+        );
+    }
+
     // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----
 
     // ---- M.3.2.c.3: oil-mode locals seeded ----

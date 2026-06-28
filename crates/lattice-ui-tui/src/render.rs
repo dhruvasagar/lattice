@@ -2164,132 +2164,6 @@ fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
         .unwrap_or(false)
 }
 
-/// Paint the help buffer directly into a pane's content area
-/// when help is the active in-pane buffer. Same per-line painter
-/// the popup overlay uses, plus the document buffer's hlsearch /
-/// current_match overlays so `/` `n` `N` look right.
-///
-/// No border, no title, no popup framing: the pane area IS the
-/// help content. Per-pane status line (drawn separately by
-/// `draw_pane_status_line`) shows the title.
-fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(help) = app.popup_help() else {
-        return;
-    };
-    let viewport = area.height as usize;
-    let scroll = app.ad().scroll as usize;
-    let lines = help.lines();
-    let cursor_line = app.ad().cursor.line as usize;
-    // M.3.2.b.2: read help-mode-owned data via buffer-locals.
-    // The popup buffer's own id and the registered id (= active
-    // pane's `buffer_id`) intentionally differ for in-pane help;
-    // locals are keyed by the registered id. See the comment in
-    // `App::open_help_in_pane`.
-    // Slice 3c.final.B (group 1): pane via `app.panes()`.
-    let render_id = app.panes().tree.active().buffer_id;
-    let (highlights, _links) = help_render_data(app, render_id, &help);
-    // T.5.b: resolve syntax styles through the resolved table.
-    let rs_help = app.render_state.load();
-    let help_resolved = rs_help.resolved_theme.clone();
-    let help_ids = rs_help.theme_ids;
-    let visible: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(viewport)
-        .enumerate()
-        .map(|(i, l)| {
-            let line_idx = scroll + i;
-            let spans: Vec<lattice_syntax::StyledSpan> =
-                highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
-            let line_len = l.len();
-            // Hlsearch overlay: every `app.editor.all_matches` range that
-            // touches this line. Same painter the document path
-            // uses, so visual + match styles compose identically.
-            for &range in app.ad().all_matches.iter() {
-                if let Some((overlay_start, overlay_end)) =
-                    match_overlay_range(range, line_idx as u32, line_len)
-                {
-                    body = apply_match_overlay(
-                        body,
-                        overlay_start,
-                        overlay_end,
-                        hlsearch_style(&help_resolved, &help_ids),
-                    );
-                }
-            }
-            // Current-match (the one the cursor is on after `/`
-            // submit / `n` / `N`) gets the louder match style.
-            if let Some(range) = app.ad().current_match
-                && let Some((overlay_start, overlay_end)) =
-                    match_overlay_range(range, line_idx as u32, line_len)
-            {
-                body = apply_match_overlay(
-                    body,
-                    overlay_start,
-                    overlay_end,
-                    match_style(&help_resolved, &help_ids),
-                );
-            }
-            Line::from(body)
-        })
-        .collect();
-    let para = Paragraph::new(visible);
-    frame.render_widget(para, area);
-    if area.height > 0 && area.width > 0 {
-        let row_off = cursor_line.saturating_sub(scroll);
-        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let col_off = (app.ad().cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
-    }
-}
-
-/// Inactive companion to `draw_help_in_pane`: paint a static help
-/// view in a non-active pane (multi-pane sessions where one pane
-/// holds a help buffer the user isn't currently looking at). No
-/// cursor, dim styling.
-fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
-    // Inactive panes use the pane's stashed cursor / scroll
-    // (active panes use `app.editor.cursor` / `app.editor.scroll`, but those
-    // belong to the focused buffer which isn't this one).
-    let scroll = pane.scroll as usize;
-    let viewport = area.height as usize;
-    // Look up the help content via the registry id this pane
-    // tracks; fall back to the popup slot for the legacy path.
-    // Slice 3c.final.E.5j: registry lookup via published `buffers()`
-    // sub-state (slice B.1's `BuffersRenderState.registry` is an
-    // Arc-bump clone of the same `BufferRegistry`).
-    let Some(help) = app
-        .buffers()
-        .registry
-        .help_content_view(pane.buffer_id)
-        .or_else(|| app.popup_help())
-    else {
-        return;
-    };
-    let lines = help.lines();
-    // M.3.2.b.2: read help highlights via buffer-locals.
-    // `pane.buffer_id` is the registered id (the locals key).
-    let (highlights, _links) = help_render_data(app, pane.buffer_id, &help);
-    // T.5.b: resolve syntax styles through the resolved table.
-    let rs_help = app.render_state.load();
-    let help_resolved = rs_help.resolved_theme.clone();
-    let help_ids = rs_help.theme_ids;
-    let visible: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(viewport)
-        .enumerate()
-        .map(|(i, l)| {
-            let line_idx = scroll + i;
-            let spans: Vec<lattice_syntax::StyledSpan> =
-                highlights.get(line_idx).cloned().unwrap_or_default();
-            Line::from(render_help_line(l, &spans, &help_resolved, &help_ids))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(visible), area);
-}
-
 /// Lay the pane tree out across `area` and draw each pane
 /// (DESIGN.md §5.9). Each pane renders its actual buffer content
 /// (vim-style: no decorative borders) plus a one-row status line
@@ -2704,19 +2578,25 @@ fn help_pane_render(
     frame: &mut Frame,
     area: Rect,
     app: &App,
-    _snap: &DocumentSnapshot,
+    snap: &DocumentSnapshot,
     pane: &crate::pane::PaneState,
     is_active: bool,
     _idx: usize,
 ) {
-    // Help-as-buffer (DESIGN.md §5.9): when help is the active
-    // buffer it fills the pane area, just like a document. The
-    // centred popup overlay is reserved for the transient hover
-    // state where popup_buffer is set but active is another kind.
+    // PU.1b-2b: in-pane help is a Document — its markdown `SyntaxHandle`
+    // + link `ExtraHighlights` are baked into the cells-worker
+    // `DisplayMatrix` — so it renders through the SAME compose path as
+    // any document, with NO bespoke help painter. help-mode's options
+    // (`nonu`, `signcolumn=no`, `wrap`) give it the clean gutterless
+    // wrapped look the old `draw_help_in_pane` hand-rolled. This provider
+    // stays registered only for `help_pane_status` (the status-line
+    // contribution); the render arm forwards to the generic path, so a
+    // help pane is pixel-equivalent to a `:set nonu signcolumn=no wrap`
+    // document (K.4 / `feedback_render_is_option_derived`).
     if is_active {
-        draw_help_in_pane(frame, area, app);
+        draw_buffer(frame, area, app, snap);
     } else {
-        draw_inactive_help(frame, area, app, pane);
+        draw_inactive_document(frame, area, app, pane);
     }
 }
 

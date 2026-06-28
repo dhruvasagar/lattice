@@ -10886,11 +10886,18 @@ impl Editor {
             // post-K.4 `contains_document` predicate. Help / Oil
             // / FileTree / Terminal have their own render paths
             // and remain excluded here.
+            // PU.1b-2b: in-pane help is a Document with a markdown
+            // SyntaxHandle + link `ExtraHighlights`, so it gets a
+            // `DisplayMatrix` like any document and renders through the
+            // generic compose path (no bespoke help painter). The
+            // floating help popup is NOT a pane leaf — it gets its own
+            // synthetic-pane coverage in PU.1b-3.
             if !matches!(
                 leaf.buffer,
                 lattice_core::BufferKind::Document
                     | lattice_core::BufferKind::Messages
                     | lattice_core::BufferKind::Multibuffer
+                    | lattice_core::BufferKind::Help
             ) {
                 continue;
             }
@@ -17700,10 +17707,33 @@ impl Editor {
             anchors,
             highlights,
         } = metadata;
+        // PU.1b-2b: the link-only spans the cells worker merges into the
+        // help `DisplayMatrix` (the grammar can't derive them — the link
+        // markup is stripped before it parses). Computed before `links`
+        // moves into the `HelpLinks` local.
+        let link_spans = lattice_help::link_highlights(&links);
         let locals = self.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::HelpLinks(links));
         locals.insert(crate::modes::HelpAnchors(anchors));
         locals.insert(crate::modes::HelpHighlights(highlights));
+        locals.insert(crate::modes::ExtraHighlights(link_spans));
+        // PU.1b-2b: (re-)attach the markdown `SyntaxHandle` from the
+        // buffer's CURRENT text. This is the single attach point for help
+        // — it fires on initial registration AND on every swap
+        // (back-stack / link-follow / in-pane re-seed all route through
+        // here after replacing the text), so the matrix's grammar colour
+        // stays fresh across swaps without the generic swap seam
+        // (`replace_owned_document_text`) needing to know about syntax.
+        // Re-parses synchronously at the current version; help content is
+        // a screenful, so the cost is negligible and off the keystroke
+        // path.
+        if let Some(text) = self
+            .buffers
+            .document_handle(buffer_id)
+            .map(|h| h.snapshot().buffer.as_string())
+        {
+            self.install_inmemory_syntax(buffer_id, &text, std::path::Path::new("help.md"));
+        }
     }
 
     /// Restore the most recent snapshot from `popup_back_stack`

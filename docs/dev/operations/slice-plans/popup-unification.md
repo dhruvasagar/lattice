@@ -255,24 +255,42 @@ for every pane). The generic seam Fork 4 needs.
 - ✅ Test: `extra_spans_merge_into_display_matrix_runs` (host) — a Link
   span reaches the matrix runs and overrides; empty lines untouched.
 
-### PU.1b-2b — flip in-pane help (State B) to compose 🗒
+### PU.1b-2b — flip in-pane help (State B) to compose ✅ (2026-06-28)
 
-Now that the matrix carries markdown colour (PU.1b-1) + link styling
-(PU.1b-2a seam), route in-pane help through the document path:
+In-pane help now renders through the generic document compose path
+(matrix carries markdown colour from PU.1b-1 + link styling from the
+PU.1b-2a seam). Green: lattice-host 591, lattice-ui-tui 1503 (+2),
+lattice-help 39, 0 failed.
 
-- Add `BufferKind::Help` to the `build_cells_panes` filter so in-pane
-  help panes get a `DisplayMatrix` (help is a Document → matrix "like
-  any document", per 2A).
-- Seed per-line link spans (from `metadata.links`) into `ExtraHighlights`
-  at `register_help_document`; re-seed + re-attach syntax on the swap
-  paths (`open_help_in_pane` re-seed / `swap_popup_content` /
-  `pop_popup_back`) so a link-follow / `<C-o>` swap refreshes the matrix.
-- Re-point `help_pane_render` to forward to `draw_buffer` /
-  `draw_inactive_document` (keeps `help_pane_status`; the provider
-  bundles render+status). **Delete** `draw_help_in_pane`,
-  `draw_inactive_help`.
-- Tests: in-pane help renders through `compose_pane_lines`; link styling
-  present in the matrix; a content swap refreshes; wrap/scroll work.
+- ✅ `BufferKind::Help` added to the `build_cells_panes` filter so
+  in-pane help panes get a `DisplayMatrix` like any document.
+- ✅ `seed_help_metadata_locals` is now the SINGLE seed/attach point
+  (called on initial open AND all swaps: `register_help_document`,
+  `pop_popup_back`, `swap_popup_content`, `open_help_in_pane` re-seed).
+  It seeds `ExtraHighlights` from `lattice_help::link_highlights(&links)`
+  AND re-attaches the markdown `SyntaxHandle` from the buffer's current
+  text — so a link-follow / `<C-o>` swap refreshes both grammar colour
+  and link styling. The explicit attach in `register_help_document`
+  (PU.1b-1) was removed (the swap seam `replace_owned_document_text`
+  stays syntax-agnostic).
+- ✅ `help_pane_render` forwards to `draw_buffer` /
+  `draw_inactive_document` (the provider stays only for
+  `help_pane_status`). **Deleted** `draw_help_in_pane`,
+  `draw_inactive_help`. A help pane is now pixel-equivalent to a
+  `:set nonu signcolumn=no wrap` document.
+- ✅ **In-pane help now WRAPS** (help-mode already sets `Wrap = true`,
+  with the stated intent "long help bodies should wrap"; the bespoke
+  `draw_help_in_pane` ignored it). This is an improvement aligned with
+  the declared option, not a regression — long help lines wrap instead
+  of overflowing.
+- ✅ **GPUI parity FREE.** `build_cells_panes` is shared host code, and
+  GPUI renders non-terminal panes through the generic `EditorElement`
+  (no bespoke in-pane-help path — only the *floating* popup, PU.1b-3, is
+  bespoke). So GPUI in-pane help reads the same matrix and flips for
+  free — the parity rule satisfied via the shared content layer, no
+  GPUI patch. (`feedback_tui_gpui_parity`.)
+- ✅ Tests: `help_in_pane_seeds_link_extra_highlights` +
+  `help_in_pane_swap_reseeds_links_and_syntax` (TUI).
 
 ### PU.1b-3 — floating popup (State A) through compose 🗒
 

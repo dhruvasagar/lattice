@@ -302,6 +302,18 @@ fn overlay_link_styles(
     }
 }
 
+/// PU.1b-2b: build the per-line `Style::Link` spans for `links` with NO
+/// grammar base — the link-only overlay the host seeds into a help
+/// buffer's `ExtraHighlights` local so the cells-worker `DisplayMatrix`
+/// carries link styling (the grammar can't: the `[label](url)` markup is
+/// stripped before it parses, so it never emits a Link capture). Same
+/// per-line logic as [`overlay_link_styles`], just onto an empty base.
+pub fn link_highlights(links: &[HelpLink]) -> Vec<Vec<lattice_syntax::StyledSpan>> {
+    let mut highlights = Vec::new();
+    overlay_link_styles(&mut highlights, links);
+    highlights
+}
+
 /// Find the metadata link whose label range contains `pos`.
 pub fn link_at(links: &[HelpLink], pos: Position) -> Option<&HelpLink> {
     links.iter().find(|link| {

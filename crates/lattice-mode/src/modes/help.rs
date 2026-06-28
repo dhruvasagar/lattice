@@ -46,10 +46,19 @@ impl Mode for HelpMode {
         // `NoFile = true`: help buffers carry generated content
         // (apropos lists, describe-* renders), not on-disk
         // files; `:q` must not warn about unsaved changes.
+        //
+        // PU.1b-1a: help renders gutterless — `Number = false`
+        // (no line-number gutter) + `signcolumn = no` (no
+        // diagnostics / diff sign columns). These are plain option
+        // values: the renderer derives the gutter geometry from them
+        // and never knows it is painting help (a regular buffer with
+        // `:set nonu signcolumn=no` renders identically).
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::Wrap = true,
             lattice_config::NoFile = true,
+            lattice_config::Number = false,
+            lattice_config::SignColumnOption = lattice_config::SignColumn::No,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -85,12 +94,14 @@ mod tests {
         // help bodies (markdown paragraphs, doc comments)
         // wrap at the pane / popup width rather than
         // overflowing horizontally. NoFile keeps `:q` quiet
-        // when a help pane is the last buffer open.
+        // when a help pane is the last buffer open. PU.1b-1a
+        // adds Number = false + signcolumn = no so help renders
+        // gutterless via the option-driven path.
         let opts = HelpMode.options();
         assert_eq!(
             opts.iter().count(),
-            3,
-            "expected ReadOnly + Wrap + NoFile",
+            5,
+            "expected ReadOnly + Wrap + NoFile + Number + SignColumn",
         );
     }
 

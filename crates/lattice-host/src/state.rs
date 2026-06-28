@@ -64,6 +64,13 @@ pub struct OptionCache {
     pub show_line_numbers: bool,
     pub relative_line_numbers: bool,
     pub wrap_lines: bool,
+    /// PU.1b-1a (`signcolumn`): whether the renderer reserves the
+    /// gutter sign columns (diagnostics severity + diff sign). `true`
+    /// (default) always reserves them so layout never shifts when a
+    /// sign appears; `false` (help / synthetic buffers) renders
+    /// gutterless. Resolved from the `SignColumnOption` typed option —
+    /// the renderer reads only this flag, never the buffer kind.
+    pub sign_column: bool,
     pub ignorecase: bool,
     pub tabstop: u32,
     pub foldenable: bool,
@@ -100,6 +107,7 @@ impl Default for OptionCache {
             show_line_numbers: true,
             relative_line_numbers: false,
             wrap_lines: false,
+            sign_column: true,
             ignorecase: false,
             tabstop: 4,
             foldenable: true,

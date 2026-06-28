@@ -103,23 +103,99 @@ Two pre-existing branch breakages were fixed while landing this slice
   back-stack (`<C-o>`) / dismiss-on-Esc all behave as before; full
   test suite green.
 
-## PU.1b — Compose seam + markdown handle + delete bespoke 🗒
+## PU.1b — Compose seam + markdown handle + delete bespoke 🚧
 
-- Add the **content seam**: a helper the popup-chrome code calls with
-  `(buffer_id, inner_rect, popup_scroll, popup_leftcol, popup_cursor)`
-  that builds a `FrameView::for_buffer` + `PaneComposeCtx` and calls
-  `compose_pane_lines`, returning the `Line`s the box paints.
-- Wire the markdown `SyntaxHandle` onto the help pane so the cells
-  worker builds its `DisplayMatrix` (2A); delete `with_markdown_syntax`
-  + `popup_help_highlights`.
-- Re-point `help_pane_render` / the help-overlay interior to the seam.
-- **Delete** `draw_help_in_pane`, `manually_wrap_lines`,
-  `render_help_line`, `draw_inactive_help`, the content portion of
-  `draw_help_overlay`, and `popup_help` (keep the box: border, title,
-  centering, sizing).
-- **Acceptance:** `:set wrap`/`nowrap` now changes the help popup;
-  folds work inside help; horizontal scroll works inside help (proves
-  the HS dependency); the popup's visible content equals
+PU.1b is sub-carved into four sequenced slices (1a → 1 → 2 → 3) after
+the seam investigation surfaced two render states + three open forks
+the original PU.1b text glossed over.
+
+### Locked decisions (2026-06-28)
+
+- **Fork 1 — State-A floating popup gets a *real* DisplayMatrix.** The
+  floating help popup is an overlay, not a pane, so the cells worker
+  builds no per-pane `DisplayMatrix` for it. Per the design fragment §4
+  (ad-hoc-snapshot path REJECTED), the consistent fix is to give the
+  popup buffer cells-worker coverage (a hidden/virtual pane-like
+  registration keyed by a synthetic pane id) so BOTH states route
+  through `compose_pane_lines` reading a real matrix. Confirmed by
+  Dhruva. Protects paramount #3 (no parallel resolution path).
+- **Fork 3 — gutter/signs/numbers are OPTION-derived; the renderer is
+  kind-blind.** The renderer must NEVER branch on "is this help / a
+  popup / a pane / a tab." Line-number gutter, diagnostics-severity
+  column and diff-sign column are all derived from resolved options;
+  help-mode is just a mode that sets those options to clean values. A
+  regular buffer with `:set nonu signcolumn=no` MUST render identically
+  to a help popup. This is `feedback_buffers_no_special_case` (K.4)
+  applied to gutter geometry — see `feedback_render_is_option_derived`.
+  - Sign-column model = **single vim-convention `signcolumn` option**
+    (A) gating both the diag + diff columns, default **`yes`**
+    (always-reserve = today's no-flicker behaviour), help-mode sets
+    `no`. Chosen over granular per-column options (B) on heuristic #2's
+    UX-convention carve-out + heuristic #1 (simpler long-term). `auto`
+    deferred (re-introduces layout shift).
+
+### PU.1b-1a — option-driven gutter/signs infra ✅ (2026-06-28)
+
+Pure infra; NO help-render change, NO visual change (default `yes`
+keeps every document byte-identical). Makes `signcolumn` work for
+regular buffers and lets help-mode declare clean values. Green:
+config 138 (signcolumn 5), host 590, lattice-mode (help-mode count→5),
+TUI 1500 (existing compose tests byte-identical + 1 new), GPUI gutter 5
+(+1 new) — GPUI `--features window` builds clean. GPUI visual pass on
+`:set signcolumn=no` left to a `cargo run --features gui` check
+(HS.1b precedent; the default-`yes` path is byte-identical by
+construction, so existing GPUI rendering cannot regress).
+
+- ✅ `SignColumn` value type (`yes`/`no`, default `yes`) +
+  `signcolumn`/`scl` option registered (`crates/lattice-config/src/
+  signcolumn.rs`, `core_options.rs`, `lib.rs`). 5 unit tests.
+- ✅ `OptionCache.sign_column` (state.rs) + `rebuild_option_cache`
+  (`resolved_option::<SignColumnOption>().reserved()`) + Default.
+- ✅ TUI per-buffer accessors `sign_column_for` / `wrap_lines_for`
+  (`app/options.rs`, mirror `show_line_numbers_for`); `FrameView`
+  gains `sign_column: bool` (resolved in BOTH `from_app` + `for_buffer`)
+  and `for_buffer.wrap_lines` fixed to per-buffer (`wrap_lines_for`).
+- ✅ `compose_pane_lines`: a single `sign_columns_width(view)` helper
+  (= `DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH` when `view.sign_column`
+  else `0`) gates ALL sites: `buffer_w`, the cursor-position
+  `wrap_width` + `col`, and the per-line prefix vec
+  `vec![severity_cell, diff_sign_cell]` + the wrap-continuation prefix
+  → empty vec when `no`.
+- ✅ **GPUI parity (same patch):** `EditorElement.sign_column` (sourced
+  from the active doc's `option_cache.sign_column`, mirroring how GPUI
+  reads `foldenable`) gates `gutter_chars`, `format_gutter_text`,
+  `build_gutter_runs`, `shaped_continuation_gutter` /
+  `push_wrapped_doc_row` (`editor_element.rs`).
+- ✅ help-mode `options()`: `Number = false` + `SignColumnOption =
+  SignColumn::No` (count-3 test → 5).
+- ✅ Tests: `signcolumn_no_and_nonumber_drops_sign_and_number_columns`
+  (TUI compose) + `gutter_text_signcolumn_no_drops_severity_and_diff_cells`
+  (GPUI); default-`yes` body stays byte-identical (existing suite).
+
+### PU.1b-1 — in-pane help (State B) through compose 🗒
+
+Re-point `help_pane_render` to a content seam calling
+`compose_pane_lines` (renders cleanly now that help-mode sets
+`nonu`/`signcolumn=no`/`wrap`). **Delete** `draw_help_in_pane`,
+`draw_inactive_help`. Keep `with_markdown_syntax` highlights for now.
+
+### PU.1b-2 — floating popup (State A) through compose 🗒
+
+Solve Fork 1 (cells-worker coverage for the popup buffer); re-point
+`draw_help_overlay`'s interior to the seam. **Delete**
+`manually_wrap_lines` + the content portion of `draw_help_overlay`.
+
+### PU.1b-3 — 2A markdown SyntaxHandle cutover 🗒
+
+Attach a markdown `SyntaxHandle` in `register_help_document` via
+`install_inmemory_syntax(id, text, Path::new("help.md"))` so the cells
+worker builds the matrix from live grammar. **Delete**
+`with_markdown_syntax`, `popup_help_highlights`, `render_help_line`,
+`popup_help`.
+
+- **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
+  popup; folds work inside help; horizontal scroll works inside help
+  (proves the HS dependency); the popup's visible content equals
   `compose_pane_lines` for the same buffer + inner rect.
 - Tests: a "help content == compose_pane_lines" equivalence test; the
   wrap-toggle + fold + h-scroll behaviours inside the popup.

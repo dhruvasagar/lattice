@@ -73,6 +73,7 @@ mod erased;
 pub mod group;
 pub mod loader;
 mod modeline_zone;
+mod signcolumn;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
 // construction. Direct construction of `Option<T>` is the
@@ -126,7 +127,7 @@ pub use core_options::{
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
     ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
     NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
-    Sidescroll, Sidescrolloff, SignatureDisplay,
+    Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay,
     TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
     WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
@@ -145,6 +146,10 @@ pub use loader::{
 pub use modeline_zone::ModelineZone;
 // L4a: inline-diagnostics option value types (`ui.diagnostics.*`).
 pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
+// PU.1b: the `signcolumn` option value type — gates the gutter sign
+// columns (diagnostics severity + diff sign) so help / synthetic
+// buffers render gutterless without the renderer knowing it's help.
+pub use signcolumn::SignColumn;
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated
 // `build_spec()` methods can name them, but they are no longer

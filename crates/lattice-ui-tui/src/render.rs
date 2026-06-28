@@ -119,6 +119,15 @@ pub struct FrameView<'a> {
     /// `app.ad().option_cache` directly so the resolver is always
     /// in one place.
     pub wrap_lines: bool,
+    /// PU.1b-1a (`signcolumn`): whether to reserve this pane's gutter
+    /// sign columns (diagnostics severity + diff sign). Resolved
+    /// per-buffer like every other view option — `from_app` reads the
+    /// active buffer's `option_cache.sign_column`; `for_buffer` reads
+    /// `app.sign_column_for(buffer_id)`. The compose path reserves the
+    /// two sign cells iff this is `true`, so a buffer with
+    /// `signcolumn=no` (help-mode, synthetic buffers) renders
+    /// gutterless without the renderer knowing it's help.
+    pub sign_column: bool,
 }
 
 impl<'a> FrameView<'a> {
@@ -169,6 +178,7 @@ impl<'a> FrameView<'a> {
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: app.ad().option_cache.wrap_lines,
+            sign_column: app.ad().option_cache.sign_column,
         }
     }
 
@@ -210,9 +220,12 @@ impl<'a> FrameView<'a> {
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
-            // Seam: global today; when buffer-local options land, resolve
-            // from `buffer_id`'s local value with global default fallback.
-            wrap_lines: app.ad().option_cache.wrap_lines,
+            // PU.1b-1a: wrap + signcolumn resolve per-buffer (the
+            // emacs buffer-local pattern) so an inactive pane reflects
+            // ITS mode stack — e.g. help-mode's `Wrap = true` /
+            // `signcolumn = no` — not the active buffer's settings.
+            wrap_lines: app.wrap_lines_for(buffer_id),
+            sign_column: app.sign_column_for(buffer_id),
         }
     }
 
@@ -3499,8 +3512,7 @@ pub(crate) fn compose_pane_lines(
     // doesn't shift on `:diff` / `:diffoff`.
     let buffer_w = width
         .saturating_sub(gutter_w)
-        .saturating_sub(DIAG_GUTTER_WIDTH)
-        .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
+        .saturating_sub(sign_columns_width(view));
 
     // Compute visual selection range once (instead of per line).
     // DR.3: visual selection is interaction state — present only on
@@ -4440,11 +4452,16 @@ pub(crate) fn compose_pane_lines(
         };
         let mut seg_iter = segments.into_iter();
         if let Some(seg0) = seg_iter.next() {
-            out.push(combine_prefixed(
-                vec![severity_cell, diff_sign_cell],
-                gutter,
-                seg0,
-            ));
+            // PU.1b-1a: drop the severity + diff sign cells entirely
+            // when `signcolumn=no` so content abuts the gutter — the
+            // exact geometry `buffer_w` reserved via
+            // `sign_columns_width`. Reserved (default) → byte-identical.
+            let sign_prefix = if view.sign_column {
+                vec![severity_cell, diff_sign_cell]
+            } else {
+                Vec::new()
+            };
+            out.push(combine_prefixed(sign_prefix, gutter, seg0));
         }
         for seg in seg_iter {
             if (out.len() as u32) >= height {
@@ -4456,11 +4473,15 @@ pub(crate) fn compose_pane_lines(
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
             );
-            out.push(combine_prefixed(
-                vec![Span::raw(" "), Span::raw(" ")],
-                cont_gutter,
-                seg,
-            ));
+            // PU.1b-1a: continuation rows mirror seg0's sign-column
+            // geometry — two blank cells when reserved, none when
+            // `signcolumn=no`.
+            let cont_sign_prefix = if view.sign_column {
+                vec![Span::raw(" "), Span::raw(" ")]
+            } else {
+                Vec::new()
+            };
+            out.push(combine_prefixed(cont_sign_prefix, cont_gutter, seg));
         }
         // D.3.b.1: emit Below-anchored virtual rows for this
         // document line, then continue to the next visible
@@ -4993,6 +5014,22 @@ const DIAG_GUTTER_WIDTH: u32 = 1;
 /// D.3.e will route them through the theme's `DiffAdd` /
 /// `DiffChange` / `DiffRemove` entries.
 const DIFF_SIGN_GUTTER_WIDTH: u32 = 1;
+
+/// PU.1b-1a (`signcolumn`): total width of the gutter sign columns
+/// (diagnostics severity + diff sign) for `view`, or `0` when the
+/// pane's resolved `signcolumn=no`. The single gate every compose
+/// site reads so the width math (`buffer_w`, cursor `wrap_width` /
+/// `col`) and the per-line prefix cells stay in lockstep — a buffer
+/// with `signcolumn=no` (help-mode, synthetic buffers) drops both
+/// sign cells and renders gutterless, with the renderer never
+/// branching on buffer kind.
+fn sign_columns_width(view: &FrameView<'_>) -> u32 {
+    if view.sign_column {
+        DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH
+    } else {
+        0
+    }
+}
 
 /// D.3.b.1 (2026-05-29): iterate `VirtualRowMatrix` rows
 /// anchored at `line` with the given `position`. The matrix
@@ -5865,8 +5902,7 @@ fn cursor_screen_position_at(
     let wrap_width = if view.app.ad().option_cache.wrap_lines {
         (area.width as u32)
             .saturating_sub(gutter_w)
-            .saturating_sub(DIAG_GUTTER_WIDTH)
-            .saturating_sub(DIFF_SIGN_GUTTER_WIDTH)
+            .saturating_sub(sign_columns_width(view))
             .max(1)
     } else {
         0
@@ -5950,8 +5986,7 @@ fn cursor_screen_position_at(
     } else {
         view.app.ad().leftcol
     };
-    let col = DIAG_GUTTER_WIDTH
-        + DIFF_SIGN_GUTTER_WIDTH
+    let col = sign_columns_width(view)
         + gutter_w
         + body_col.saturating_sub(leftcol);
     let row = row_in_view.saturating_add(own_segment).saturating_add(sticky_count);
@@ -6500,6 +6535,39 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains('↪')),
             "wrap off ⇒ no continuation rows, got {texts:?}"
+        );
+    }
+
+    #[test]
+    fn signcolumn_no_and_nonumber_drops_sign_and_number_columns() {
+        // PU.1b-1a: gutter geometry is option-derived, never
+        // kind-derived. With `signcolumn=no` + `nonu` a document line
+        // abuts the 2-cell no-number margin — no severity/diff sign
+        // cells, no line-number gutter. This is exactly the geometry
+        // help-mode gets via its option overrides; the renderer does
+        // not know (or care) which buffer kind it is painting.
+        let mut app = app_with("hello\nworld\n", 5);
+
+        // Default (`signcolumn=yes` + `number=yes`) reserves the sign
+        // cells + the line-number gutter, so content sits further in.
+        let default0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
+        let default_indent = default0.find("hello").expect("hello rendered");
+        assert!(
+            default_indent >= 3,
+            "default reserves 2 sign cells + a line-number gutter; got indent \
+             {default_indent} in {default0:?}"
+        );
+
+        // `signcolumn=no` + `nonu`: only the 2-cell margin remains, so
+        // the body starts at column 2.
+        app.editor.option_cache.sign_column = false;
+        app.editor.option_cache.show_line_numbers = false;
+        app.editor.publish_render_state();
+        let lean0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
+        assert_eq!(
+            lean0.find("hello"),
+            Some(2),
+            "signcolumn=no + nonu ⇒ content at the 2-cell margin, got {lean0:?}"
         );
     }
 

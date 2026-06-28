@@ -69,6 +69,26 @@ impl App {
         self.ad().option_cache.wrap_lines
     }
 
+    /// `:set wrap` for an arbitrary buffer (per-pane resolution).
+    /// Same shape as [`Self::show_line_numbers_for`]; used by the
+    /// inactive-pane `FrameView::for_buffer` so each pane wraps per
+    /// its own mode stack (e.g. help-mode's `Wrap = true`) rather
+    /// than inheriting the active buffer's setting.
+    pub fn wrap_lines_for(&self, buffer: crate::buffers::BufferId) -> bool {
+        *self.resolved_option::<lattice_config::Wrap>(buffer)
+    }
+
+    /// `:set signcolumn` for an arbitrary buffer (per-pane
+    /// resolution). Returns whether the gutter sign columns
+    /// (diagnostics severity + diff sign) are reserved. Default
+    /// `true` (always reserve, no layout shift); help / synthetic
+    /// buffers resolve `false` via their mode's `signcolumn=no`
+    /// override. The renderer reads this — never the buffer kind.
+    pub fn sign_column_for(&self, buffer: crate::buffers::BufferId) -> bool {
+        self.resolved_option::<lattice_config::SignColumnOption>(buffer)
+            .reserved()
+    }
+
     /// `:set ignorecase`. Default `false`.
     pub fn ignorecase(&self) -> bool {
         self.ad().option_cache.ignorecase

@@ -240,6 +240,12 @@ pub(crate) struct EditorElement {
     /// Line-number column width in chars (max digits in
     /// `total_lines`).
     pub(crate) gutter_width: usize,
+    /// PU.1b-1a (`signcolumn`): whether to reserve the gutter sign
+    /// columns (diagnostics severity + diff sign). `true` (default)
+    /// keeps both cells — byte-identical to the prior render; `false`
+    /// (`signcolumn=no`) drops them so content abuts the line-number
+    /// column. TUI peer: `FrameView::sign_column` / `sign_columns_width`.
+    pub(crate) sign_column: bool,
     /// Active-pane cursor state. `None` => inactive pane (no
     /// cursor marker painted).
     pub(crate) cursor: Option<CursorState>,
@@ -635,7 +641,11 @@ impl Element for EditorElement {
         let gutter_chars: usize = if self.gutter.is_empty() {
             0
         } else {
-            2 + self.gutter_width + 1
+            // PU.1b-1a: the leading `2` is the severity + diff sign
+            // cells — dropped when `signcolumn=no` so the px width
+            // tracks `format_gutter_text`'s gated output.
+            let sign_cells = if self.sign_column { 2 } else { 0 };
+            sign_cells + self.gutter_width + 1
         };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -1121,6 +1131,7 @@ impl Element for EditorElement {
                     wrap_width,
                     None,
                     self.gutter_width,
+                    self.sign_column,
                     &font,
                     font_size,
                     heading_scale,
@@ -1260,8 +1271,9 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let gutter_text = format_gutter_text(meta, self.gutter_width);
-                let gutter_runs = build_gutter_runs(&gutter_text, meta, font.clone());
+                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column);
+                let gutter_runs =
+                    build_gutter_runs(&gutter_text, meta, font.clone(), self.sign_column);
                 let shaped_g = window.text_system().shape_line(
                     SharedString::from(gutter_text),
                     font_size,
@@ -1293,6 +1305,7 @@ impl Element for EditorElement {
                     wrap_width,
                     Some(shaped_g),
                     self.gutter_width,
+                    self.sign_column,
                     &font,
                     font_size,
                     heading_scale,
@@ -2337,11 +2350,15 @@ fn shaped_continuation_gutter(
     gutter_width: usize,
     font: &gpui::Font,
     font_size: Pixels,
+    sign_column: bool,
     window: &mut Window,
 ) -> ShapedLine {
-    // 3 leading blanks (fold + severity + diff) + right-aligned
-    // marker in the number column + 1 trailing space.
-    let text = format!("   {WRAP_CONT_MARKER:>gutter_width$} ");
+    // Leading blanks: fold [+ severity + diff when signcolumn=yes] +
+    // right-aligned marker in the number column + 1 trailing space.
+    // PU.1b-1a: drop the two sign blanks when `signcolumn=no` so the
+    // continuation gutter matches `format_gutter_text`'s gated width.
+    let lead = if sign_column { "   " } else { " " };
+    let text = format!("{lead}{WRAP_CONT_MARKER:>gutter_width$} ");
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -2383,6 +2400,7 @@ fn push_wrapped_doc_row(
     wrap_width: u32,
     gutter_seg0: Option<ShapedLine>,
     gutter_width: usize,
+    sign_column: bool,
     font: &gpui::Font,
     font_size: Pixels,
     heading_scale: Option<(u32, f32)>,
@@ -2442,6 +2460,7 @@ fn push_wrapped_doc_row(
                     gutter_width,
                     font,
                     font_size,
+                    sign_column,
                     window,
                 ));
             }
@@ -2683,19 +2702,32 @@ fn push_virtual_row(
     overlay_quads_per_row.push(quads);
 }
 
-fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {
+fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: bool) -> String {
+    // PU.1b-1a: the two sign cells (severity + diff) are present only
+    // when `signcolumn=yes` (default). `signcolumn=no` drops them so
+    // the gutter is fold + line-number + trail only — content abuts
+    // the digits, exactly the geometry `gutter_chars` reserves.
     if meta.is_virtual {
-        // D.3.b.1.gpui: virtual rows render a fully-blank
-        // gutter so the column stays the same width as
-        // document rows. Total width = 1 (fold) + 1 (sev) +
-        // 1 (diff) + gutter_width + 1 (trail) = gutter_width + 4.
-        return " ".repeat(gutter_width + 4);
+        // D.3.b.1.gpui: virtual rows render a fully-blank gutter so
+        // the column stays the same width as document rows. Width =
+        // 1 (fold) [+ 1 (sev) + 1 (diff) when reserved] + gutter_width
+        // + 1 (trail).
+        let sign_cells = if sign_column { 2 } else { 0 };
+        return " ".repeat(gutter_width + 2 + sign_cells);
     }
     let fold = if meta.fold_start {
         FOLD_MARKER_GLYPH
     } else {
         ' '
     };
+    if !sign_column {
+        return format!(
+            "{fold}{num:>width$} ",
+            fold = fold,
+            num = meta.display_line as usize + 1,
+            width = gutter_width,
+        );
+    }
     let sev = meta.severity.map(|(g, _)| g).unwrap_or(' ');
     // D.3.d.2: diff-sign column sits LEFT of the line number
     // (between severity and the digits) — matches editor
@@ -2718,7 +2750,12 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {
 
 /// Build the `TextRun`s for a gutter row. Three runs (fold, sev,
 /// linenum+trailing-space) with their respective colours.
-fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec<TextRun> {
+fn build_gutter_runs(
+    text: &str,
+    meta: &GutterLineMeta,
+    font: gpui::Font,
+    sign_column: bool,
+) -> Vec<TextRun> {
     let mut runs = Vec::with_capacity(3);
     let mut bytes_consumed = 0usize;
 
@@ -2740,34 +2777,39 @@ fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec
     });
     bytes_consumed += fold_len;
 
-    // Run 2: severity sign.
-    let sev_color = meta.severity.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-    let sev_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-    let sev_len = sev_char.len_utf8();
-    runs.push(TextRun {
-        len: sev_len,
-        font: font.clone(),
-        color: rgb(sev_color).into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    });
-    bytes_consumed += sev_len;
+    // PU.1b-1a: the severity + diff sign runs exist only when
+    // `signcolumn=yes` — `format_gutter_text` omitted those two chars
+    // for `no`, so consuming them here would mis-slice the digits.
+    if sign_column {
+        // Run 2: severity sign.
+        let sev_color = meta.severity.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
+        let sev_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
+        let sev_len = sev_char.len_utf8();
+        runs.push(TextRun {
+            len: sev_len,
+            font: font.clone(),
+            color: rgb(sev_color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+        bytes_consumed += sev_len;
 
-    // Run 3: D.3.d.2 diff sign (left of line number, between
-    // severity and digits — Vim/Helix/Zed/VSCode convention).
-    let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-    let diff_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-    let diff_len = diff_char.len_utf8();
-    runs.push(TextRun {
-        len: diff_len,
-        font: font.clone(),
-        color: rgb(diff_color).into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    });
-    bytes_consumed += diff_len;
+        // Run 3: D.3.d.2 diff sign (left of line number, between
+        // severity and digits — Vim/Helix/Zed/VSCode convention).
+        let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
+        let diff_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
+        let diff_len = diff_char.len_utf8();
+        runs.push(TextRun {
+            len: diff_len,
+            font: font.clone(),
+            color: rgb(diff_color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+        bytes_consumed += diff_len;
+    }
 
     // Run 4: line number + trailing space.
     let tail_len = text.len() - bytes_consumed;
@@ -2963,7 +3005,7 @@ mod tests {
             is_virtual: false,
         };
         // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3), "     1 ");
+        assert_eq!(format_gutter_text(&meta, 3, true), "     1 ");
     }
 
     #[test]
@@ -2977,7 +3019,7 @@ mod tests {
             is_virtual: false,
         };
         // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3), "►   42 ");
+        assert_eq!(format_gutter_text(&meta, 3, true), "►   42 ");
     }
 
     #[test]
@@ -2991,7 +3033,7 @@ mod tests {
             is_virtual: false,
         };
         // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
-        assert_eq!(format_gutter_text(&meta, 2), " E 10 ");
+        assert_eq!(format_gutter_text(&meta, 2, true), " E 10 ");
     }
 
     #[test]
@@ -3005,7 +3047,30 @@ mod tests {
             is_virtual: false,
         };
         // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
-        assert_eq!(format_gutter_text(&meta, 2), "  +10 ");
+        assert_eq!(format_gutter_text(&meta, 2, true), "  +10 ");
+    }
+
+    #[test]
+    fn gutter_text_signcolumn_no_drops_severity_and_diff_cells() {
+        // PU.1b-1a: with `signcolumn=no` the severity + diff cells are
+        // gone even when a diagnostic + hunk touch the line. Gutter is
+        // fold + line-number + trail only: ' ' + "10" + ' ' = " 10 ".
+        let meta = GutterLineMeta {
+            line_idx: 9,
+            display_line: 9,
+            fold_start: false,
+            severity: Some(('E', 0xff0000)),
+            diff_sign: Some(('+', 0x33aa33)),
+            is_virtual: false,
+        };
+        assert_eq!(format_gutter_text(&meta, 2, false), " 10 ");
+        // The reserved (default) form keeps both sign cells.
+        assert_eq!(format_gutter_text(&meta, 2, true), " E+10 ");
+        // build_gutter_runs must not mis-slice the gated text: fold +
+        // (line-number + trail) = 2 runs, lengths summing to the text.
+        let runs = build_gutter_runs(" 10 ", &meta, gpui::font("monospace"), false);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), " 10 ".len());
     }
 
     #[test]

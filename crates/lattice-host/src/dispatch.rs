@@ -24007,9 +24007,9 @@ impl Editor {
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff, Tabstop,
-            TerminalEscExits, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
-            WhitespaceTab, WhitespaceTrailing, Wrap,
+            Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff,
+            SignColumnOption, Tabstop, TerminalEscExits, Whitespace, WhitespaceEol,
+            WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
         };
         let buffer = self.document_buffer_id;
         // M.7.3.a: parse a typed-option `String` into a single
@@ -24019,6 +24019,7 @@ impl Editor {
             show_line_numbers: *self.resolved_option::<Number>(buffer),
             relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
             wrap_lines: *self.resolved_option::<Wrap>(buffer),
+            sign_column: self.resolved_option::<SignColumnOption>(buffer).reserved(),
             ignorecase: *self.resolved_option::<IgnoreCase>(buffer),
             tabstop: *self.resolved_option::<Tabstop>(buffer) as u32,
             foldenable: *self.resolved_option::<FoldEnable>(buffer),

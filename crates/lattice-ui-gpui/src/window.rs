@@ -2031,6 +2031,13 @@ impl EditorView {
             viewport_height,
             gutter: gutter_meta,
             gutter_width,
+            // PU.1b-1a (`signcolumn`): reserve the sign columns per the
+            // active buffer's resolved option (mirrors how GPUI reads
+            // `option_cache.foldenable`). Correct for the active pane;
+            // inactive panes inherit the active value — the same
+            // pre-existing per-pane-option limitation as the rest of
+            // this element. TUI peer: `FrameView::sign_column`.
+            sign_column: rs_guard.active_document.load().option_cache.sign_column,
             cursor: cursor_state,
             is_active: render_active,
             visual_range,

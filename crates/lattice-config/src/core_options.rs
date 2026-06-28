@@ -26,6 +26,7 @@
 //! continue to work unchanged. M.2.0c migrates the callers to
 //! `config.get_typed::<Tabstop>()` and retires `CoreOptions`.
 
+use crate::signcolumn::SignColumn;
 use lattice_core::FoldMethod;
 
 // Validators referenced by `#[validate(...)]` on the options
@@ -166,6 +167,16 @@ crate::options! {
 
     /// Wrap long lines visually instead of horizontal scrolling.
     pub Wrap: bool = false;
+
+    /// Whether the renderer reserves the gutter sign columns
+    /// (diagnostics severity + diff sign). `yes` (default) always
+    /// reserves them so layout never shifts when a sign appears;
+    /// `no` hides them. Help / synthetic buffers set `no` for clean
+    /// gutterless rendering — the renderer derives the column layout
+    /// from this option alone, never from buffer kind / popup / pane.
+    #[aliases("scl")]
+    #[name("signcolumn")]
+    pub SignColumnOption: SignColumn = SignColumn::Yes;
 
     /// Ignore case in search patterns.
     #[aliases("ic")]

@@ -292,6 +292,30 @@ mod tests {
         assert!(lines[0].contains("ex-command"));
     }
 
+    /// PU.1b-3: the renderer→host popup-geometry feedback helper
+    /// returns the popup's inner rect only while a FLOATING popup is
+    /// open. `None` with no popup; `Some` once help is open, with the
+    /// centered inner width = `popup_outer_size` width − 2 borders.
+    #[test]
+    fn popup_feedback_inner_dims_only_for_open_floating_popup() {
+        let mut a = app_with("xx", 10);
+        assert_eq!(
+            crate::render::popup_feedback_inner_dims(&a, 120, 40),
+            None,
+            "no dims when no popup is open"
+        );
+        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.popup().is_open(), "floating popup open");
+        let (rows, cols) = crate::render::popup_feedback_inner_dims(&a, 120, 40)
+            .expect("dims resolve for an open floating popup");
+        assert!(rows >= 1, "inner height positive: {rows}");
+        // Centered cap: outer width = (120 - 4).clamp(30, 120) = 116;
+        // inner = outer − 2 borders = 114.
+        assert_eq!(cols, 114, "centered popup inner width = outer − 2 borders");
+    }
+
     #[test]
     fn describe_command_shows_source_link_to_registration_site() {
         // §5.11: every :describe-* must surface a file link to the

@@ -10902,199 +10902,283 @@ impl Editor {
                 continue;
             }
             let buffer_id = leaf.buffer_id;
-            // `is_active` selects the leaf that is currently the
-            // user's focus. This is distinct from "shows the active
-            // buffer" — two panes can render the same Document
-            // simultaneously; only the focused pane should consume
-            // the single-edit slot to avoid double-applying the
-            // delta when the worker iterates.
+            // `is_active_pane` selects the leaf that is currently the
+            // user's focus (distinct from "shows the active buffer" —
+            // two panes can render the same Document, but only the
+            // focused one consumes the single-edit slot). `is_active_buffer`
+            // is whether THIS pane's buffer is the live `self.document`
+            // (source of truth for folds + snapshot). Both fold into
+            // `build_one_pane_cells_input`; PU.1b-3 reuses that same helper
+            // for the synthetic floating-popup pane after the loop, so the
+            // real-pane and popup paths cannot drift.
             let is_active_pane = leaf.id == active_pane_id && active_doc_active;
-            // Live `Editor` slots (`self.document`, `self.folds`)
-            // are still the source of truth for the active buffer
-            // regardless of which pane it's painted in.
             let is_active_buffer = buffer_id == active_buffer_id && active_doc_active;
-
-            // Snapshot. Active buffer: live document handle.
-            // Non-active: look up through the buffer registry
-            // (returns None if the buffer is mid-close — worker
-            // treats None as skip).
-            let snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>> = if is_active_buffer {
-                Some(self.document.snapshot())
-            } else {
-                self.buffers
-                    .document_handle(buffer_id)
-                    .map(|h| h.snapshot())
-            };
-
-            // Syntax handle. `document_syntax_for` resolves
-            // active vs non-active uniformly; wrap in Arc per
-            // publish — mirrors the existing active-doc path
-            // (`self.syntax.clone().map(Arc::new)`).
-            let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
-                self.document_syntax_for(buffer_id).cloned().map(Arc::new);
-
-            // K.4.7 (2026-06-08): per-excerpt syntax entries via Document
-            // trait — no BufferKind branch. excerpt_highlights() returns
-            // empty for regular single-file buffers; MultibufferDocumentHandle
-            // overrides to return one entry per syntax-bearing excerpt.
-            let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> =
-                if is_active_buffer {
-                    Some(self.document.as_arc())
-                } else {
-                    self.buffers.document_handle(buffer_id)
-                };
-            let excerpt_syntax_ver = doc_for_excerpts
-                .as_ref()
-                .map(|d| d.excerpt_syntax_version())
-                .unwrap_or(0);
-            let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> =
-                doc_for_excerpts
-                    .as_ref()
-                    .map(|d| {
-                        d.excerpt_highlights()
-                            .into_iter()
-                            .map(|eh| crate::render_state::ExcerptSyntax {
-                                composed_start: eh.composed_start,
-                                composed_end: eh.composed_end,
-                                source_start: eh.source_start,
-                                handle: eh.highlighter,
-                            })
-                            .collect::<Vec<_>>()
-                            .into_boxed_slice()
-                            .into()
-                    })
-                    .unwrap_or_else(|| Arc::from([]));
-
-            // PU.1b-2a: generic static extra-highlight spans for this
-            // buffer (the `ExtraHighlights` local). Empty for every
-            // buffer without it → `merge_extra_spans` is a no-op and the
-            // version contribution is a constant 0, so ordinary panes
-            // render byte-identically. Same source for active + inactive
-            // panes (static per-buffer content, unlike folds).
-            let extra_spans_vec: Vec<Vec<lattice_syntax::StyledSpan>> = self
-                .buffer_locals
-                .get(&buffer_id)
-                .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
-                .map(|e| e.0.clone())
-                .unwrap_or_default();
-            let extra_spans_ver =
-                crate::cells_worker::extra_spans_version(&extra_spans_vec);
-            let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
-                Arc::from(extra_spans_vec.into_boxed_slice());
-
-            // Folds. Active buffer: live mutable slot
-            // (`Editor::folds`). Non-active: per-buffer entry on
-            // `buffer_locals`.
-            let folds_vec: Vec<lattice_core::Fold> = if is_active_buffer {
-                self.folds.clone()
-            } else {
-                self.buffer_locals
-                    .get(&buffer_id)
-                    .and_then(|l| l.get::<crate::modes::DocumentFolds>())
-                    .map(|f| f.0.clone())
-                    .unwrap_or_default()
-            };
-            let folds_hash = crate::folds::compute_fold_hash(&folds_vec);
-            let folds_arc: Arc<[lattice_core::Fold]> = Arc::from(folds_vec.into_boxed_slice());
-
-            // Inlay hints — keyed by `buffer_id`; gate checked
-            // inside the helper.
-            let (inlay_hints, inlay_version) = if let Some(snap) = snapshot.as_ref() {
-                self.build_inlay_hints_for_buffer(buffer_id, snap)
-            } else {
-                (
-                    Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice()),
-                    0u64,
-                )
-            };
-
-            let text_version = snapshot.as_ref().map(|s| s.text_version).unwrap_or(0);
-
-            let version = lattice_cells::MatrixVersion {
-                text: text_version,
-                // 2026-06-03: syntax axis = this pane's syntax-snapshot
-                // version (not the doc version), so a reparse that lands
-                // after the edit invalidates the cache and the cells
-                // rebuild with fresh colours. See the matching comment
-                // in `build_render_state`. Falls back to the doc version
-                // when the buffer has no syntax handle.
-                // K.4.7: for multibuffer panes fold in a XOR of all
-                // excerpt handle versions so a per-source reparse also
-                // invalidates the cache.
-                syntax: {
-                    let base = syntax_handle
-                        .as_ref()
-                        .map(|h| h.snapshot().text_version())
-                        .unwrap_or(text_version);
-                    // K.4.7: use wrapping_add, not XOR. XOR cancels when N
-                    // sources all share the same text_version (e.g. all=1
-                    // with even N → 0). Addition never cancels to zero
-                    // unless all terms are zero.
-                    base.wrapping_add(excerpt_syntax_ver)
-                        .wrapping_add(
-                            excerpt_syntax.iter()
-                                .map(|ex| ex.handle.highlight_version())
-                                .fold(0u64, u64::wrapping_add),
-                        )
-                        // PU.1b-2a: re-seeded static spans (help swap)
-                        // invalidate the matrix cache even when no other
-                        // axis moved. Constant 0 when absent.
-                        .wrapping_add(extra_spans_ver)
-                },
-                inlay_hints: inlay_version,
-                folds: if foldenable { folds_hash } else { !folds_hash },
-                theme: theme_hash,
-                whitespace: whitespace_hash,
-            };
-
-            entries.push(PaneCellsInputs {
-                pane_id: leaf.id,
+            let scroll = if is_active_pane { self.scroll } else { leaf.scroll };
+            let last_edit = if is_active_pane { last_edit_active } else { None };
+            entries.push(self.build_one_pane_cells_input(
+                leaf.id,
                 buffer_id,
-                matrix: self.cells_matrix_for(buffer_id),
-                // B2.1 (2026-06-04): per-line display-matrix cell for
-                // this pane's buffer. Active-pane entry shares Arc
-                // identity with `Editor::display_matrix_cell` (boot
-                // seed). No-op until the B2.2 worker writes through it.
-                display_matrix: self.display_matrix_for(buffer_id),
-                // D.4.d.2.1.b (2026-05-29): pre-attach the
-                // per-buffer virtual-rows cell at publish time.
-                // Active-pane entry shares Arc identity with
-                // `Editor::virtual_rows_matrix_cell` (D.4.d.2.0
-                // boot seed). D.4.d.2.1.c switches the virtual-
-                // rows worker to write via `pane.virtual_rows_matrix`.
-                virtual_rows_matrix: self.virtual_rows_matrix_for(buffer_id),
-                version,
-                snapshot,
-                syntax_handle,
-                inlay_hints,
-                folds: folds_arc,
-                viewport_height: leaf.viewport_height,
-                // H.3 (2026-06-04): window anchor. Active pane's live
-                // scroll is `self.scroll` (the hot-path field);
-                // inactive panes use the stashed `leaf.scroll`, which
-                // may lag the active field until the next group sync
-                // but is the correct per-pane anchor for a non-focused
-                // view. Mirrors how `viewport_height` is taken
-                // per-leaf above.
-                scroll: if is_active_pane { self.scroll } else { leaf.scroll },
-                viewport_width: leaf.viewport_width,
-                // W.2: `:set wrap` resolved for the active buffer.
-                // Per-buffer wrap divergence across panes is a
-                // later refinement; the option-cache value is the
-                // established per-publish source (mirrors
-                // `foldenable` above).
-                wrap: self.option_cache.wrap_lines,
+                is_active_buffer,
+                scroll,
+                leaf.viewport_height,
+                leaf.viewport_width,
+                self.option_cache.wrap_lines,
                 foldenable,
-                last_edit: if is_active_pane {
-                    last_edit_active
+                theme_hash,
+                whitespace_hash,
+                last_edit,
+            ));
+        }
+        // PU.1b-3 (Fork 1): the floating help popup is an overlay, not a
+        // pane-tree leaf, so the loop above never built a `DisplayMatrix`
+        // for it. Register the popup buffer under the reserved
+        // `PaneId::POPUP` so the cells worker covers it and BOTH popup
+        // states route through the shared `compose_pane_lines` reading a
+        // real matrix (no parallel ad-hoc-snapshot path — paramount #3,
+        // design fragment §4). Gated on: a popup buffer is open; it is NOT
+        // shown as an in-pane leaf (that case is a real leaf handled above);
+        // and the renderer has fed back the popup's inner geometry
+        // (`popup_viewport_width > 0`) — until then the renderer's plain-text
+        // fallback paints the one un-sized frame. `popup_is_focused` (State B)
+        // is when focus has moved into the popup, so `self.document` /
+        // `self.scroll` / `self.folds` are the popup buffer's; State A keeps
+        // the popup's persisted `popup_scroll` and sources content from the
+        // registry. `wrap = true`: the floating help popup always wraps
+        // (help-mode's declared `Wrap = true`; matches the retired
+        // unconditional `manually_wrap_lines`).
+        if let Some(popup_id) = self.popup_buffer {
+            let in_pane_help =
+                self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
+            if !in_pane_help && self.popup_viewport_width > 0 {
+                let popup_is_focused =
+                    matches!(self.active_buffer, lattice_core::BufferKind::Help);
+                let scroll = if popup_is_focused {
+                    self.scroll
                 } else {
-                    None
-                },
-                excerpt_syntax,
-                extra_spans,
-            });
+                    self.popup_scroll
+                };
+                entries.push(self.build_one_pane_cells_input(
+                    lattice_core::ui::pane::PaneId::POPUP,
+                    popup_id,
+                    popup_is_focused,
+                    scroll,
+                    self.popup_viewport_height,
+                    self.popup_viewport_width,
+                    true,
+                    foldenable,
+                    theme_hash,
+                    whitespace_hash,
+                    None,
+                ));
+            }
         }
         Arc::from(entries.into_boxed_slice())
+    }
+
+    /// PU.1b-3: build a single pane's cells-worker input. Extracted
+    /// from `build_cells_panes` so the real per-leaf path and the
+    /// synthetic floating-popup path (Fork 1) share ONE input builder
+    /// — the popup cannot drift from regular panes. All per-pane
+    /// variation (which buffer, geometry, scroll anchor, wrap, focus)
+    /// is captured in the parameters; everything else (snapshot, syntax
+    /// handle, excerpt syntax, extra spans, folds, inlay hints, matrix
+    /// cells, version) is derived here identically for every caller.
+    ///
+    /// `is_active_buffer` is whether this pane's buffer is the live
+    /// `self.document` (folds + snapshot come from the hot-path slots);
+    /// non-active buffers resolve through the registry + `buffer_locals`.
+    #[allow(clippy::too_many_arguments)]
+    fn build_one_pane_cells_input(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+        buffer_id: lattice_core::BufferId,
+        is_active_buffer: bool,
+        scroll: u32,
+        viewport_height: u32,
+        viewport_width: u32,
+        wrap: bool,
+        foldenable: bool,
+        theme_hash: u64,
+        whitespace_hash: u64,
+        last_edit: Option<lattice_cells::EditDelta>,
+    ) -> crate::render_state::PaneCellsInputs {
+        use crate::render_state::PaneCellsInputs;
+
+        // Snapshot. Active buffer: live document handle.
+        // Non-active: look up through the buffer registry
+        // (returns None if the buffer is mid-close — worker
+        // treats None as skip).
+        let snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>> = if is_active_buffer {
+            Some(self.document.snapshot())
+        } else {
+            self.buffers
+                .document_handle(buffer_id)
+                .map(|h| h.snapshot())
+        };
+
+        // Syntax handle. `document_syntax_for` resolves
+        // active vs non-active uniformly; wrap in Arc per
+        // publish — mirrors the existing active-doc path
+        // (`self.syntax.clone().map(Arc::new)`).
+        let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> =
+            self.document_syntax_for(buffer_id).cloned().map(Arc::new);
+
+        // K.4.7 (2026-06-08): per-excerpt syntax entries via Document
+        // trait — no BufferKind branch. excerpt_highlights() returns
+        // empty for regular single-file buffers; MultibufferDocumentHandle
+        // overrides to return one entry per syntax-bearing excerpt.
+        let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> =
+            if is_active_buffer {
+                Some(self.document.as_arc())
+            } else {
+                self.buffers.document_handle(buffer_id)
+            };
+        let excerpt_syntax_ver = doc_for_excerpts
+            .as_ref()
+            .map(|d| d.excerpt_syntax_version())
+            .unwrap_or(0);
+        let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> =
+            doc_for_excerpts
+                .as_ref()
+                .map(|d| {
+                    d.excerpt_highlights()
+                        .into_iter()
+                        .map(|eh| crate::render_state::ExcerptSyntax {
+                            composed_start: eh.composed_start,
+                            composed_end: eh.composed_end,
+                            source_start: eh.source_start,
+                            handle: eh.highlighter,
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                        .into()
+                })
+                .unwrap_or_else(|| Arc::from([]));
+
+        // PU.1b-2a: generic static extra-highlight spans for this
+        // buffer (the `ExtraHighlights` local). Empty for every
+        // buffer without it → `merge_extra_spans` is a no-op and the
+        // version contribution is a constant 0, so ordinary panes
+        // render byte-identically. Same source for active + inactive
+        // panes (static per-buffer content, unlike folds).
+        let extra_spans_vec: Vec<Vec<lattice_syntax::StyledSpan>> = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        let extra_spans_ver =
+            crate::cells_worker::extra_spans_version(&extra_spans_vec);
+        let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
+            Arc::from(extra_spans_vec.into_boxed_slice());
+
+        // Folds. Active buffer: live mutable slot
+        // (`Editor::folds`). Non-active: per-buffer entry on
+        // `buffer_locals`.
+        let folds_vec: Vec<lattice_core::Fold> = if is_active_buffer {
+            self.folds.clone()
+        } else {
+            self.buffer_locals
+                .get(&buffer_id)
+                .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+                .map(|f| f.0.clone())
+                .unwrap_or_default()
+        };
+        let folds_hash = crate::folds::compute_fold_hash(&folds_vec);
+        let folds_arc: Arc<[lattice_core::Fold]> = Arc::from(folds_vec.into_boxed_slice());
+
+        // Inlay hints — keyed by `buffer_id`; gate checked
+        // inside the helper.
+        let (inlay_hints, inlay_version) = if let Some(snap) = snapshot.as_ref() {
+            self.build_inlay_hints_for_buffer(buffer_id, snap)
+        } else {
+            (
+                Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice()),
+                0u64,
+            )
+        };
+
+        let text_version = snapshot.as_ref().map(|s| s.text_version).unwrap_or(0);
+
+        let version = lattice_cells::MatrixVersion {
+            text: text_version,
+            // 2026-06-03: syntax axis = this pane's syntax-snapshot
+            // version (not the doc version), so a reparse that lands
+            // after the edit invalidates the cache and the cells
+            // rebuild with fresh colours. See the matching comment
+            // in `build_render_state`. Falls back to the doc version
+            // when the buffer has no syntax handle.
+            // K.4.7: for multibuffer panes fold in a XOR of all
+            // excerpt handle versions so a per-source reparse also
+            // invalidates the cache.
+            syntax: {
+                let base = syntax_handle
+                    .as_ref()
+                    .map(|h| h.snapshot().text_version())
+                    .unwrap_or(text_version);
+                // K.4.7: use wrapping_add, not XOR. XOR cancels when N
+                // sources all share the same text_version (e.g. all=1
+                // with even N → 0). Addition never cancels to zero
+                // unless all terms are zero.
+                base.wrapping_add(excerpt_syntax_ver)
+                    .wrapping_add(
+                        excerpt_syntax.iter()
+                            .map(|ex| ex.handle.highlight_version())
+                            .fold(0u64, u64::wrapping_add),
+                    )
+                    // PU.1b-2a: re-seeded static spans (help swap)
+                    // invalidate the matrix cache even when no other
+                    // axis moved. Constant 0 when absent.
+                    .wrapping_add(extra_spans_ver)
+            },
+            inlay_hints: inlay_version,
+            folds: if foldenable { folds_hash } else { !folds_hash },
+            theme: theme_hash,
+            whitespace: whitespace_hash,
+        };
+
+        PaneCellsInputs {
+            pane_id,
+            buffer_id,
+            matrix: self.cells_matrix_for(buffer_id),
+            // B2.1 (2026-06-04): per-line display-matrix cell for
+            // this pane's buffer. Active-pane entry shares Arc
+            // identity with `Editor::display_matrix_cell` (boot
+            // seed). No-op until the B2.2 worker writes through it.
+            display_matrix: self.display_matrix_for(buffer_id),
+            // D.4.d.2.1.b (2026-05-29): pre-attach the
+            // per-buffer virtual-rows cell at publish time.
+            // Active-pane entry shares Arc identity with
+            // `Editor::virtual_rows_matrix_cell` (D.4.d.2.0
+            // boot seed). D.4.d.2.1.c switches the virtual-
+            // rows worker to write via `pane.virtual_rows_matrix`.
+            virtual_rows_matrix: self.virtual_rows_matrix_for(buffer_id),
+            version,
+            snapshot,
+            syntax_handle,
+            inlay_hints,
+            folds: folds_arc,
+            viewport_height,
+            // H.3 (2026-06-04): window anchor. Active pane's live
+            // scroll is `self.scroll` (the hot-path field);
+            // inactive panes use the stashed `leaf.scroll`, which
+            // may lag the active field until the next group sync
+            // but is the correct per-pane anchor for a non-focused
+            // view. Mirrors how `viewport_height` is taken
+            // per-leaf above.
+            scroll,
+            viewport_width,
+            // W.2: `:set wrap` resolved for the active buffer.
+            // Per-buffer wrap divergence across panes is a
+            // later refinement; the option-cache value is the
+            // established per-publish source (mirrors
+            // `foldenable` above).
+            wrap,
+            foldenable,
+            last_edit,
+            excerpt_syntax,
+            extra_spans,
+        }
     }
 
     /// D.4.d.1.a (2026-05-29): per-buffer variant of
@@ -34309,6 +34393,51 @@ mod tests {
         assert!(pane.wrap, "wrap on");
         assert_eq!(pane.viewport_width, 80, "width propagated");
         // cells_worker: effective_wrap = viewport_width = 80 when wrap is true
+    }
+
+    /// PU.1b-3 (Fork 1): an open floating help popup gets a synthetic
+    /// `PaneId::POPUP` entry in `build_cells_panes` — but only once the
+    /// renderer has fed back its inner geometry. Proves the popup buffer
+    /// routes through the shared cells/compose path (no parallel
+    /// ad-hoc-snapshot layout), keyed to the popup buffer, always-wrap.
+    #[test]
+    fn floating_popup_gets_synthetic_cells_pane_when_geometry_fed() {
+        use crate::popup::PopupPlacement;
+        use lattice_core::ui::pane::PaneId;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
+        let content = lattice_help::HelpContent::from_lines(
+            "test-help",
+            vec!["# Title".into(), "some body text".into()],
+        );
+        let _ = editor.open_floating_popup(content, PopupPlacement::Centered);
+        let popup_id = editor.popup_buffer.expect("floating popup open");
+
+        // Before the renderer feeds geometry: no synthetic pane (the
+        // gate is `popup_viewport_width > 0`, so the one un-sized frame
+        // falls back to plain text rather than building a 0-width matrix).
+        let panes = editor.build_cells_panes(None);
+        assert!(
+            !panes.iter().any(|p| p.pane_id == PaneId::POPUP),
+            "no synthetic popup pane before geometry feedback"
+        );
+
+        // After feedback: the synthetic pane appears, keyed to the popup
+        // buffer, sized to the fed inner rect, always-wrap.
+        editor.popup_viewport_height = 18;
+        editor.popup_viewport_width = 60;
+        let panes = editor.build_cells_panes(None);
+        let pop = panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("synthetic popup pane present once geometry is fed");
+        assert_eq!(pop.buffer_id, popup_id, "keyed to the popup buffer");
+        assert_eq!(pop.viewport_width, 60, "sized to fed inner width");
+        assert_eq!(pop.viewport_height, 18, "sized to fed inner height");
+        assert!(pop.wrap, "the floating help popup always wraps");
+        assert!(
+            pop.snapshot.is_some(),
+            "popup buffer snapshot resolves through the registry"
+        );
     }
 
     // ---- gj / gk / g0 / g$ display-line motions ----

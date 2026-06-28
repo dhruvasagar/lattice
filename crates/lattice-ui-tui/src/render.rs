@@ -26,7 +26,6 @@ use lattice_protocol::position::Range as ProtoRange;
 // `Editor::visual_selection_range`; this peer no longer references
 // the variants directly.
 use lattice_runtime::DocumentSnapshot;
-use lattice_syntax::Style;
 
 use crate::app::{App, EchoLevel, Fold};
 
@@ -1531,51 +1530,49 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     frame.render_widget(para, inner);
 }
 
-/// `BufferDisplay::Split` and future tab / window variants per
-/// [`lattice_core::ui::display::BufferDisplay`]. Width is
-/// `min(buffer_width - 4, 100)`, height is 70% of the buffer area.
-/// Content is the [`crate::help::HelpBuffer`]'s rope text; we slice
-/// the visible window from the rendered string. Link markup
-/// (`[[…]]`) renders verbatim today; future passes paint the link
-/// ranges with a distinct style and add a follow-link motion.
-/// M.3.2.b.2: read help-mode-owned data via buffer-locals.
-/// Returns the `(highlights, links)` for `buffer_id` from the
-/// App's per-buffer locals map; if the locals haven't been
-/// seeded (test paths constructing a HelpBuffer without going
-/// through `App::open_help_in_pane`), falls through to the
-/// HelpBuffer's own fields. Once M.3.2.c retires those fields
-/// the fallback becomes a fatal error condition.
-fn help_render_data(
+/// PU.1b-3: recompute the floating help popup's inner rect `(rows,
+/// cols)` for the host geometry hand-off (`App::set_popup_viewport`).
+/// Returns `None` when no FLOATING popup is open (no popup, or help is
+/// shown as an in-pane leaf — that case is a real pane). The buffer
+/// area is reconstructed from the terminal width + the runtime's
+/// already-resolved `buffer_height` (terminal minus cmdline/candidate
+/// rows) minus the tabline row, so the `popup_outer_size` inputs match
+/// exactly what `draw_help_overlay` paints into — the synthetic
+/// popup-pane matrix and the painted box agree on width. Inner =
+/// outer − 2 (the `Borders::ALL` block).
+pub(crate) fn popup_feedback_inner_dims(
     app: &App,
-    buffer_id: crate::buffers::BufferId,
-    _fallback: &crate::help::HelpBuffer,
-) -> (
-    Vec<Vec<lattice_syntax::StyledSpan>>,
-    Vec<crate::help::HelpLink>,
-) {
-    // M.3.2.c.5: production reads route through `buffer_locals`
-    // exclusively. The `_fallback` parameter is retained for the
-    // call-site signature stability (the popup overlay holds a
-    // `&HelpBuffer` for cursor / scroll / line-count); empty
-    // vecs on a missing locals entry are correct -- it means a
-    // synthetic test path constructed a help buffer without
-    // seeding locals, in which case nothing to highlight or
-    // follow.
-    //
-    // Slice 3c.final.B.9: read via published `buffer_locals()`
-    // sub-state — wait-free Arc-bump lookup. Clone the inner
-    // Vec bodies (small: a few hundred styled spans + ~10 links).
-    let locals_map = app.buffer_locals();
-    let locals = locals_map.map.get(&buffer_id);
-    let highlights = locals
-        .and_then(|l| l.get::<crate::modes::HelpHighlights>())
-        .map(|h| h.0.clone())
-        .unwrap_or_default();
-    let links = locals
-        .and_then(|l| l.get::<crate::modes::HelpLinks>())
-        .map(|h| h.0.clone())
-        .unwrap_or_default();
-    (highlights, links)
+    terminal_width: u16,
+    buffer_height: u32,
+) -> Option<(u32, u32)> {
+    if !app.popup().is_open() {
+        return None;
+    }
+    // In-pane help is a real pane leaf — `build_cells_panes` already
+    // covers it; only the floating overlay needs the synthetic pane.
+    if app.panes().tree.active().buffer == crate::buffers::BufferKind::Help {
+        return None;
+    }
+    let help = app.popup_help()?;
+    // `draw_frame`'s `chunks[1]` (the buffer area the overlay sizes
+    // against) is the terminal minus the tabline (0/1) and the
+    // cmdline/candidate band the runtime folded into `buffer_height`.
+    let tabline_rows: u32 = if app.render_state.load().tabs.visible {
+        1
+    } else {
+        0
+    };
+    let buffer_h = buffer_height.saturating_sub(tabline_rows);
+    let line_count = u16::try_from(help.line_count().max(1)).unwrap_or(u16::MAX);
+    let (outer_w, outer_h) = lattice_core::ui::popup::popup_outer_size(
+        terminal_width,
+        u16::try_from(buffer_h).unwrap_or(u16::MAX),
+        line_count,
+        app.popup().placement,
+    );
+    let inner_w = u32::from(outer_w.saturating_sub(2)).max(1);
+    let inner_h = u32::from(outer_h.saturating_sub(2)).max(1);
+    Some((inner_h, inner_w))
 }
 
 fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &DocumentSnapshot) {
@@ -1610,220 +1607,78 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    // Pull the visible window out of the help buffer's rope text.
-    // Allocates per frame, but only across the visible viewport
-    // (~30 lines) -- well under any latency budget for a help
-    // surface. Highlights were pre-computed at help-buffer build
-    // time via the markdown grammar; we just look them up by line
-    // and emit per-row styled spans.
-    let viewport = inner.height as usize;
-    // Active-buffer scroll lives on `app.editor.scroll` after the
-    // unification; popup_buffer's own `scroll` field is archival
-    // save-state synced at activation transitions.
-    let scroll = if matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help) {
-        app.ad().scroll as usize
-    } else {
-        help.scroll
-    };
-    let lines = help.lines();
-    // M.3.2.b.2: read help-mode-owned data via buffer-locals
-    // M.3.2.c.5: in popup-overlay mode the active pane's
-    // `buffer_id` points at the *Document* that the popup is
-    // drawn over -- not the popup's content -- so it's the wrong
-    // locals key. `open_popup` seeds metadata under the popup
-    // buffer's construction id (`help.id`), so we look up there.
-    // (Contrast `draw_help_in_pane` below: in-pane mode swaps the
-    // pane to the registered help buffer, where pane.buffer_id is
-    // the right key.)
-    let (highlights, _links) = help_render_data(app, popup_id, &help);
-    // T.5.b: resolve syntax styles through the active theme's
-    // resolved table (loaded once for the whole list).
-    let rs_help = app.render_state.load();
-    let help_resolved = rs_help.resolved_theme.clone();
-    let help_ids = rs_help.theme_ids;
-    let visible: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(viewport)
-        .enumerate()
-        .map(|(i, l)| {
-            let line_idx = scroll + i;
-            let spans: Vec<lattice_syntax::StyledSpan> =
-                highlights.get(line_idx).cloned().unwrap_or_default();
-            let mut body = render_help_line(l, &spans, &help_resolved, &help_ids);
-            // Hlsearch / current_match overlays -- same painter
-            // the document path and the in-pane help variant use,
-            // so `/foo` in a focused popup shows highlights too.
-            // Only paints when help is actually focused (search
-            // state is active-buffer-relative).
-            if matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help) {
-                let line_len = l.len();
-                for &range in app.ad().all_matches.iter() {
-                    if let Some((overlay_start, overlay_end)) =
-                        match_overlay_range(range, line_idx as u32, line_len)
-                    {
-                        body = apply_match_overlay(
-                            body,
-                            overlay_start,
-                            overlay_end,
-                            hlsearch_style(&help_resolved, &help_ids),
-                        );
-                    }
-                }
-                if let Some(range) = app.ad().current_match
-                    && let Some((overlay_start, overlay_end)) =
-                        match_overlay_range(range, line_idx as u32, line_len)
-                {
-                    body = apply_match_overlay(
-                        body,
-                        overlay_start,
-                        overlay_end,
-                        match_style(&help_resolved, &help_ids),
-                    );
-                }
-            }
-            Line::from(body)
-        })
-        .collect();
-    // Always wrap inside help / log / `:lsp-trace-log` popups --
-    // the content is prose / JSON-RPC payloads / log records, not
-    // code, and the right-edge clip on long lines hides the data
-    // the user opened the buffer to read.
+    // PU.1b-3: the popup CONTENT renders through the shared document
+    // compose path (`compose_pane_lines`) reading the synthetic
+    // popup-pane `DisplayMatrix` (`PaneId::POPUP`, built off-thread by
+    // the cells worker — markdown colour from PU.1b-1, link styling
+    // from the PU.1b-2a `ExtraHighlights` merge, hlsearch / fold /
+    // soft-wrap / horizontal-scroll all for free). Only the box
+    // (border + title) above is popup-specific chrome. A help popup is
+    // now pixel-equivalent to a `:set nonu signcolumn=no wrap` document
+    // in a box — the K.4 / `feedback_render_is_option_derived` endgame.
     //
-    // We do the wrap MANUALLY (not via ratatui's `Paragraph::wrap`)
-    // so the wrap algorithm is identical between the renderer and
-    // the cursor positioning math, AND so we can prepend a visible
-    // continuation marker (`↪ `) at the start of each wrapped row
-    // -- the user gets a clear visual signal that "this row is a
-    // continuation of the previous logical line, not a new line".
-    // Without manual wrap, ratatui breaks at internal positions we
-    // can't observe, and the cursor visibly drifts away from the
-    // edited byte on long lines.
-    let wrapped = manually_wrap_lines(visible, inner.width as usize);
-    let para = Paragraph::new(wrapped);
-    frame.render_widget(para, inner);
+    // Options resolve PER-BUFFER via `for_buffer(popup_id)`, so
+    // help-mode's `nonu` / `signcolumn=no` / `wrap = true` drive the
+    // layout regardless of which buffer is active under the popup
+    // (State A: the doc is active; State B: focus moved into help).
+    let Some(handle) = app.buffers().registry.document_handle(popup_id) else {
+        return;
+    };
+    let content_snap = handle.snapshot();
+    let view = FrameView::for_buffer(app, popup_id);
+    // State B (focus moved into the popup): the popup buffer IS the
+    // active buffer, so its live cursor / scroll / leftcol are on
+    // `app.ad()`. State A (popup shown, doc focused): the popup's
+    // persisted scroll is `popup_help().scroll` (the `popup_scroll`
+    // stash), no cursor inside the popup, leftcol pinned (help wraps).
+    let popup_focused = matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help);
+    let (scroll, cursor_line, leftcol) = if popup_focused {
+        (app.ad().scroll, app.ad().cursor.line, app.ad().leftcol)
+    } else {
+        (help.scroll as u32, 0, 0)
+    };
+    let ctx = PaneComposeCtx {
+        // State B feeds the interaction overlays (cursor line, hlsearch,
+        // current match) the same way the active pane does; State A
+        // suppresses them (popup shown but not focused).
+        is_active: popup_focused,
+        pane_id: lattice_core::ui::pane::PaneId::POPUP,
+        buffer_id: popup_id,
+        cursor_line,
+        scroll,
+        leftcol,
+        display_line_numbers: handle.display_line_numbers(),
+    };
+    let lines = compose_pane_lines(
+        &view,
+        &content_snap,
+        inner.height as u32,
+        inner.width as u32,
+        &ctx,
+    );
+    frame.render_widget(Paragraph::new(lines), inner);
 
-    // Place the terminal cursor INSIDE the popup only in State
-    // B -- focus has moved into it (active_buffer == Help) and
-    // vim grammar acts on the popup's content. In State A the
-    // popup is shown but focus is still on the main buffer; the
-    // cursor stays where the doc renderer placed it (on the
-    // symbol the user K'd) so the user knows what the popup is
-    // about. No cursor placement here in that case.
-    if inner.height > 0
+    // Place the terminal cursor INSIDE the popup only in State B —
+    // focus has moved into it and vim grammar acts on the popup's
+    // content. In State A the cursor stays where the doc renderer put
+    // it (on the symbol the user K'd). `cursor_screen_position_at` is
+    // the compose-aware placement (matches `split_body_into_segments`
+    // wrap + the nonu gutter), so it replaces the bespoke
+    // `wrap_aware_cursor_offset` that tracked the deleted
+    // `manually_wrap_lines`.
+    if popup_focused
+        && inner.height > 0
         && inner.width > 0
-        && matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help)
+        && let Some((screen_x, screen_y)) = cursor_screen_position_at(
+            &view,
+            &content_snap,
+            inner,
+            app.ad().cursor,
+            app.ad().scroll,
+        )
     {
-        // Wrap-aware screen-position computation matching
-        // `manually_wrap_lines`: each line's first display row
-        // holds bytes `[0, inner_width)`; subsequent rows hold
-        // bytes `[inner_width + (k-1)*(inner_width-2), ...)` (the
-        // `-2` accounts for the leading "↪ " marker on each
-        // continuation row).
-        let (row_off, col_off) = wrap_aware_cursor_offset(
-            &lines,
-            scroll,
-            app.ad().cursor.line as usize,
-            app.ad().cursor.byte as usize,
-            inner.width as usize,
-            inner.height as usize,
-        );
-        frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
+        frame.set_cursor_position((screen_x, screen_y));
     }
-}
-
-/// Width in cells of the continuation-row marker at the start of
-/// every wrapped line in the help-overlay popup. Currently `↪ `
-/// (the U+21AA arrow + a space). Pinned as a constant so the
-/// renderer and the cursor math agree.
-const HELP_WRAP_MARKER: &str = "↪ ";
-const HELP_WRAP_MARKER_WIDTH: usize = 2;
-
-/// Manually wrap each input `Line` into multiple display rows at
-/// `inner_width`. Continuation rows get a `↪ ` marker prefix
-/// (styled dim) so the user can see at a glance which rows are
-/// continuations vs. fresh logical lines.
-///
-/// Wrap algorithm (byte-based; assumes ASCII / single-cell-per-
-/// byte content -- LSP log payloads, JSON-RPC, prose are all in
-/// scope; non-ASCII would need char-aware width which is a
-/// post-1.0 concern):
-///
-/// - First chunk consumes up to `inner_width` cells.
-/// - Each subsequent chunk consumes up to `inner_width -
-///   HELP_WRAP_MARKER_WIDTH` cells (the marker eats the rest).
-/// - Spans are split at chunk boundaries; styling is preserved
-///   across chunks.
-/// - An empty input line still emits one (empty) output row.
-fn manually_wrap_lines(lines: Vec<Line<'static>>, inner_width: usize) -> Vec<Line<'static>> {
-    if inner_width == 0 {
-        return lines;
-    }
-    let cont_width = inner_width.saturating_sub(HELP_WRAP_MARKER_WIDTH).max(1);
-    let marker_style = TuiStyle::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM);
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        // Compute total byte length of the line.
-        let total_len: usize = line.spans.iter().map(|s| s.content.len()).sum();
-        if total_len <= inner_width {
-            // Fits in one row -- emit as-is.
-            out.push(line);
-            continue;
-        }
-        // Walk through spans, emitting a new Line at each chunk
-        // boundary. Track current row's remaining width and the
-        // current byte position within the line.
-        let mut cursor: usize = 0;
-        let mut current_spans: Vec<Span<'static>> = Vec::new();
-        let mut row_idx: usize = 0;
-        for span in line.spans {
-            let mut span_bytes = span.content.as_ref();
-            let span_style = span.style;
-            while !span_bytes.is_empty() {
-                let row_capacity = if row_idx == 0 {
-                    inner_width
-                } else {
-                    cont_width
-                };
-                let row_used = if row_idx == 0 {
-                    cursor
-                } else {
-                    cursor - inner_width - (row_idx - 1) * cont_width
-                };
-                let remaining = row_capacity.saturating_sub(row_used);
-                if remaining == 0 {
-                    // Row is full; flush and start a new continuation row.
-                    out.push(Line::from(std::mem::take(&mut current_spans)));
-                    row_idx += 1;
-                    current_spans.push(Span::styled(HELP_WRAP_MARKER.to_string(), marker_style));
-                    continue;
-                }
-                let take = remaining.min(span_bytes.len());
-                // Defensive char-boundary clamp so we don't slice
-                // mid-multibyte. Walk back to the previous char
-                // boundary if needed.
-                let take = clamp_to_char_boundary(span_bytes, take);
-                if take == 0 {
-                    // Couldn't take anything (mid-char). Force a row
-                    // break to avoid infinite loop.
-                    out.push(Line::from(std::mem::take(&mut current_spans)));
-                    row_idx += 1;
-                    current_spans.push(Span::styled(HELP_WRAP_MARKER.to_string(), marker_style));
-                    continue;
-                }
-                let (chunk, rest) = span_bytes.split_at(take);
-                current_spans.push(Span::styled(chunk.to_string(), span_style));
-                cursor += take;
-                span_bytes = rest;
-            }
-        }
-        if !current_spans.is_empty() {
-            out.push(Line::from(current_spans));
-        }
-    }
-    out
 }
 
 /// Soft-wrap (W.4): gutter continuation marker for wrapped-line
@@ -1918,89 +1773,6 @@ fn source_byte_to_body_col(line: &str, byte: usize, tabstop: u32) -> usize {
 /// cell. `col` past the end clamps to the body end (EOL overlays).
 fn nth_char_byte(s: &str, col: usize) -> usize {
     s.char_indices().nth(col).map(|(b, _)| b).unwrap_or(s.len())
-}
-
-/// Walk back from `at` to the nearest UTF-8 char boundary so
-/// `s.split_at(at)` doesn't panic. Returns 0 when `at == 0`.
-fn clamp_to_char_boundary(s: &str, at: usize) -> usize {
-    if at >= s.len() {
-        return s.len();
-    }
-    let mut i = at;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Compute the (row, col) offset from `inner.{x,y}` for a cursor
-/// at `(cursor_line, cursor_byte)` when `lines[scroll..]` are
-/// rendered with the same wrap algorithm as
-/// `manually_wrap_lines`.
-///
-/// Each logical line at index `i >= scroll`:
-/// - First display row holds bytes `[0, inner_width)`.
-/// - Subsequent rows hold bytes
-///   `[inner_width + (k-1)*cont_width, inner_width + k*cont_width)`
-///   where `cont_width = inner_width - HELP_WRAP_MARKER_WIDTH`.
-/// - An empty line still occupies 1 row.
-///
-/// The cursor's column on row 0 is `cursor_byte`; on continuation
-/// rows it's `HELP_WRAP_MARKER_WIDTH + (offset % cont_width)`.
-///
-/// Result is clamped to `(inner_height - 1, inner_width - 1)`
-/// when the cursor's logical position falls past the visible
-/// region.
-fn wrap_aware_cursor_offset(
-    lines: &[String],
-    scroll: usize,
-    cursor_line: usize,
-    cursor_byte: usize,
-    inner_width: usize,
-    inner_height: usize,
-) -> (usize, usize) {
-    if inner_width == 0 || inner_height == 0 {
-        return (0, 0);
-    }
-    let cont_width = inner_width.saturating_sub(HELP_WRAP_MARKER_WIDTH).max(1);
-    // Sum display rows for every visible line above cursor_line.
-    let mut row: usize = 0;
-    let start = scroll;
-    let end = cursor_line.min(lines.len());
-    for line_idx in start..end {
-        let len = lines[line_idx].len();
-        let rows = display_rows_for_len(len, inner_width, cont_width);
-        row = row.saturating_add(rows);
-        if row >= inner_height {
-            return (
-                inner_height.saturating_sub(1),
-                cursor_byte.min(inner_width.saturating_sub(1)),
-            );
-        }
-    }
-    // Cursor's intra-line position. Bytes [0, inner_width) -> row
-    // 0; bytes >= inner_width -> continuation rows.
-    let (intra_row, intra_col) = if cursor_byte < inner_width {
-        (0, cursor_byte)
-    } else {
-        let off = cursor_byte - inner_width;
-        let k = off / cont_width + 1; // continuation row index
-        let col = HELP_WRAP_MARKER_WIDTH + (off % cont_width);
-        (k, col)
-    };
-    let row_off = (row + intra_row).min(inner_height.saturating_sub(1));
-    let col_off = intra_col.min(inner_width.saturating_sub(1));
-    (row_off, col_off)
-}
-
-fn display_rows_for_len(len: usize, inner_width: usize, cont_width: usize) -> usize {
-    if len == 0 {
-        return 1;
-    }
-    if len <= inner_width {
-        return 1;
-    }
-    1 + (len - inner_width).div_ceil(cont_width)
 }
 
 /// Placement for the help popup overlay.
@@ -5937,77 +5709,6 @@ fn display_col_for_byte(
     base + inlay_shift
 }
 
-/// Compose one help-buffer row into ratatui spans by:
-/// 1. Walking the markdown highlight `StyledSpan`s and emitting
-///    styled segments where they land.
-/// 2. Filling unstyled gaps with `TuiStyle::default()`.
-///
-/// Help-link `[label](scheme:value)` markup is highlighted by the
-/// markdown grammar's inline parser via `text.reference` -> `Style::Link`
-/// when the inline injection fires; the renderer doesn't need to do
-/// anything extra. (When the inline injection is silent on a given
-/// row the link still renders as plain text -- the underlying
-/// `[label]` and `(url)` characters stay visible, the navigation
-/// extracted by `parse_help_links` works regardless.)
-fn render_help_line(
-    line: &str,
-    spans: &[lattice_syntax::StyledSpan],
-    resolved: &lattice_host::ui::theme::ResolvedTheme,
-    ids: &lattice_host::ui::theme::BuiltinElementIds,
-) -> Vec<Span<'static>> {
-    if spans.is_empty() {
-        return vec![Span::raw(line.to_string())];
-    }
-    let bytes = line.as_bytes();
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() * 2 + 1);
-    let mut cursor = 0usize;
-    // Spans should arrive sorted by start; defensive sort + drop
-    // overlapping in case the highlighter emits an unusual order.
-    let mut sorted: Vec<lattice_syntax::StyledSpan> = spans.to_vec();
-    sorted.sort_by_key(|sp| (sp.start, sp.end));
-    for span in sorted {
-        if span.start < cursor || span.start >= bytes.len() {
-            continue;
-        }
-        if span.start > cursor {
-            out.push(Span::raw(line[cursor..span.start].to_string()));
-        }
-        let end = span.end.min(bytes.len());
-        if end <= span.start {
-            continue;
-        }
-        out.push(Span::styled(
-            line[span.start..end].to_string(),
-            style_to_tui(span.style, resolved, ids),
-        ));
-        cursor = end;
-    }
-    if cursor < bytes.len() {
-        out.push(Span::raw(line[cursor..].to_string()));
-    }
-    out
-}
-
-/// Adapter: host-canonical [`Theme::syntax_style`] -> ratatui
-/// [`TuiStyle`]. Phase 5.8.AF.6 / issue-2 hoist: prior to this both
-/// peers carried divergent SyntaxStyle->color tables (TUI named-
-/// ANSI, GPUI Catppuccin hex). Both peers now route through the
-/// host's canonical mapping so a single edit to the palette
-/// reflects in every renderer.
-///
-/// T.5.b: resolves `s` through the active theme's resolved table
-/// (`resolved` + `ids`, loaded by the caller from the render
-/// state) — the replacement for the retired `Theme::syntax_style`.
-fn style_to_tui(
-    s: Style,
-    resolved: &lattice_host::ui::theme::ResolvedTheme,
-    ids: &lattice_host::ui::theme::BuiltinElementIds,
-) -> TuiStyle {
-    crate::theme::host_style_to_ratatui(lattice_host::ui::theme::resolve_syntax_style(
-        resolved, ids, s,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -6790,37 +6491,6 @@ mod tests {
         let total: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(total, "00:01:23.456 OTHER hi");
         assert!(spans.iter().all(|s| s.style == TuiStyle::default()));
-    }
-
-    #[test]
-    fn render_help_line_emits_styled_spans_for_markdown_heading() {
-        use lattice_syntax::LangRegistry;
-        // Build a help buffer whose first line is a markdown
-        // heading; verify the rendered Vec<Span> for that line has
-        // at least one Span with a non-default tui::Style. This
-        // is the end-of-pipeline assertion: highlights from the
-        // markdown grammar make it onto the screen.
-        let registry = LangRegistry::standard().expect("registry");
-        let h = crate::help::HelpContent::from_lines(
-            "t",
-            vec!["# Heading line".to_string(), "plain body".to_string()],
-        )
-        .with_markdown_syntax(registry);
-        let lines = h.lines();
-        // T.5.b: resolve through the default registry's resolved table.
-        use lattice_host::ui::theme::ThemeRegistry as _;
-        let reg = lattice_host::ui::theme::InMemoryThemeRegistry::with_defaults();
-        let resolved = reg.resolved();
-        let ids = lattice_host::ui::theme::BuiltinElementIds::capture(&reg);
-        let spans = render_help_line(&lines[0], &h.metadata.highlights[0], &resolved, &ids);
-        let any_styled = spans
-            .iter()
-            .any(|sp| sp.style != ratatui::style::Style::default());
-        assert!(
-            any_styled,
-            "expected at least one styled Span for `# Heading line`, got {:?}",
-            spans
-        );
     }
 
     #[test]

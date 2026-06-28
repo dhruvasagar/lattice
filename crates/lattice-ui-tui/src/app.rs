@@ -1163,6 +1163,21 @@ impl App {
         }
     }
 
+    /// PU.1b-3: floating-popup geometry hand-off. The renderer is the
+    /// single authority on the popup's inner rect (it computes it from
+    /// the buffer area + `popup_outer_size` + placement), so it pushes
+    /// the resolved inner `(rows, cols)` to the host each frame —
+    /// exactly mirroring [`Self::set_pane_viewport`] for real panes.
+    /// `build_cells_panes` reads `popup_viewport_{height,width}` to size
+    /// the synthetic popup-pane `DisplayMatrix`. Diff-then-send in the
+    /// runtime loop keeps steady-state cost at zero.
+    pub fn set_popup_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.popup_viewport_height = rows.max(1);
+            e.popup_viewport_width = cols.max(1);
+        });
+    }
+
     /// Variant of [`Self::mutate_editor`] for closures that
     /// return a value (typically `Vec<RendererSignal>` from
     /// host helpers). Same routing contract.

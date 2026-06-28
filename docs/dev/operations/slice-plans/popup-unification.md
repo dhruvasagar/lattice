@@ -292,19 +292,69 @@ lattice-help 39, 0 failed.
 - ✅ Tests: `help_in_pane_seeds_link_extra_highlights` +
   `help_in_pane_swap_reseeds_links_and_syntax` (TUI).
 
-### PU.1b-3 — floating popup (State A) through compose 🗒
+### PU.1b-3 — floating popup (both states) through compose ✅ (2026-06-28)
 
-Solve Fork 1 (cells-worker coverage for the popup buffer via a
-synthetic pane-id registration in `build_cells_panes`); re-point
-`draw_help_overlay`'s interior to the seam. **Delete**
-`manually_wrap_lines` + the content portion of `draw_help_overlay`.
+Fork 1 solved: the floating help popup now renders its CONTENT through
+the shared `compose_pane_lines` reading a real cells-worker
+`DisplayMatrix`, in BOTH State A (popup shown, doc focused) and State B
+(focus moved into the popup). Only the box (border + title + terminal
+cursor) stays popup-specific chrome. Green: lattice-host 592 (+1),
+lattice-ui-tui 1503 (net: −1 deleted `render_help_line` test, +2 new),
+lattice-help 39, GPUI `--features window` clean.
+
+- ✅ **Synthetic-pane coverage (host).** `PaneId::POPUP` (reserved
+  `u32::MAX` sentinel, `lattice-core`) keys a synthetic
+  `PaneCellsInputs` entry that `build_cells_panes` appends when a
+  floating popup is open, NOT shown in-pane, and the renderer has fed
+  back geometry (`popup_viewport_width > 0`). The per-leaf input
+  builder was extracted into `Editor::build_one_pane_cells_input` so the
+  real-pane and popup paths share ONE builder (no drift — heuristic #1).
+  State B sources snapshot/folds/scroll from the live `self.*`
+  (popup is the active buffer); State A from the registry +
+  `popup_scroll`. `wrap = true` (help-mode's declared `Wrap`; matches
+  the retired unconditional wrap).
+- ✅ **Geometry hand-off (renderer → host).** New Editor fields
+  `popup_viewport_{height,width}` + `App::set_popup_viewport`, fed each
+  frame from the runtime loop via `render::popup_feedback_inner_dims`
+  (diff-then-send, mirror of `set_pane_viewport`). The renderer is the
+  sizing authority (`popup_outer_size` over the same buffer area
+  `draw_help_overlay` paints into), so the matrix width and the painted
+  box agree. One un-sized frame on open → plain-text fallback (correct
+  wrapped text; colour eventual — UX-acceptable eventual consistency).
+- ✅ **`draw_help_overlay` interior flipped** to `compose_pane_lines`
+  with a `PaneId::POPUP` ctx + `FrameView::for_buffer(popup_id)` (so
+  help-mode's `nonu`/`signcolumn=no`/`wrap` drive layout regardless of
+  which buffer is active under the popup). Terminal cursor placement
+  (State B) now uses the compose-aware `cursor_screen_position_at`.
+- ✅ **Deleted:** `manually_wrap_lines`, `render_help_line` (+ its
+  test), `wrap_aware_cursor_offset`, `display_rows_for_len`,
+  `clamp_to_char_boundary`, `help_render_data`, `style_to_tui`, the
+  `HELP_WRAP_MARKER`/`_WIDTH` consts, and the unused `lattice_syntax::Style`
+  import. (`render_help_line` was listed under PU.1b-4 but became dead
+  the moment the interior flipped, so it landed here.)
+- **Accepted visual changes** (consistent with PU.1b-2b's in-pane flip):
+  the floating popup gains compose's 2-cell `nonumber` left margin and
+  `~` empty-line markers below short content — a help popup is now
+  pixel-equivalent to a `:set nonu signcolumn=no wrap` document in a box.
+- **GPUI parity:** the synthetic-pane infra is shared host code; the
+  GPUI *floating-popup* paint flip stays PU.2 (the bespoke
+  `window.rs` overlay still ignores the synthetic matrix). No GPUI code
+  touched; parity rule satisfied via the shared content layer (same
+  shape as PU.1b-2b).
+- Tests: `floating_popup_gets_synthetic_cells_pane_when_geometry_fed`
+  (host — synthetic pane keyed to popup buffer, gated on geometry,
+  always-wrap) + `popup_feedback_inner_dims_only_for_open_floating_popup`
+  (TUI — feedback helper Some only for an open floating popup, inner
+  width = outer − 2).
 
 ### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒
 
 Nothing reads the precompute path once both renderers flip. **Delete**
-`with_markdown_syntax`, `popup_help_highlights`, `render_help_line`,
-`popup_help` (the view reconstructor), and the `HelpHighlights`
-buffer-local seeding.
+`with_markdown_syntax`, `popup_help_highlights`, `popup_help` (the view
+reconstructor — note draw_help_overlay still uses it for chrome
+title/line-count/State-A scroll, so its retirement is the work here),
+and the `HelpHighlights` buffer-local seeding. (`render_help_line` +
+`help_render_data` already deleted in PU.1b-3.)
 
 - **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
   popup; folds work inside help; horizontal scroll works inside help

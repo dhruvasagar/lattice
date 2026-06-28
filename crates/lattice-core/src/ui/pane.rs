@@ -40,6 +40,16 @@ impl PaneId {
         static NEXT: AtomicU32 = AtomicU32::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// PU.1b-3: reserved synthetic id for the floating-popup
+    /// "pane". The floating help popup is an overlay, not a pane-tree
+    /// leaf, so the cells worker has no leaf to key its `DisplayMatrix`
+    /// on. `build_cells_panes` registers the popup buffer under this
+    /// sentinel id so BOTH popup states route through the shared
+    /// `compose_pane_lines` reading a real matrix (Fork 1, popup
+    /// unification). `next()` allocates from 1 upward and never reaches
+    /// `u32::MAX`, so the sentinel can never collide with a real leaf.
+    pub const POPUP: Self = Self(u32::MAX);
 }
 
 /// D.4.a (2026-05-29): process-monotonic id for a scroll-binding

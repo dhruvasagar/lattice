@@ -302,6 +302,12 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // wakes) per loop tick even when nothing changed — the idle/per-keystroke
     // publish storm. Push only when the resolved height actually changes.
     let mut last_viewport_height: Option<u32> = None;
+    // PU.1b-3: diff cache for the floating-popup inner-geometry hand-off
+    // (mirror of `last_viewport_height` for the synthetic popup pane).
+    // `None` when no floating popup is open; `Some((rows, cols))` carries
+    // the popup's inner rect. Push only on change so a steady-state popup
+    // costs zero actor RPCs per frame.
+    let mut last_popup_dims: Option<(u32, u32)> = None;
     // Opt-in keystroke→glyph timer (set env `LATTICE_PERF_INPUT=1`). Measures
     // OUR input-to-draw latency only — from the instant an input event was
     // applied to the instant `terminal.draw()` returns (i.e. we've written the
@@ -475,6 +481,23 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
             if needs {
                 app.set_pane_viewport(*idx, rows, cols);
             }
+        }
+        // PU.1b-3: floating-popup inner-geometry hand-off. Mirror of the
+        // per-pane loop above: the renderer is the sizing authority, so it
+        // pushes the popup's resolved inner `(rows, cols)` to the host for
+        // `build_cells_panes` to size the synthetic popup-pane matrix.
+        // `popup_feedback_inner_dims` recomputes the SAME geometry
+        // `draw_help_overlay` paints into (`popup_outer_size` over the
+        // buffer area minus tabline/cmdline/candidate rows), so the matrix
+        // and the painted box agree on width. Diff-then-send: a steady-state
+        // popup fires zero RPCs; closing the popup pushes `None` once.
+        let popup_dims =
+            crate::render::popup_feedback_inner_dims(&app, size.width, buffer_height);
+        if last_popup_dims != popup_dims {
+            if let Some((rows, cols)) = popup_dims {
+                app.set_popup_viewport(rows, cols);
+            }
+            last_popup_dims = popup_dims;
         }
         // Slice 3c.final.C: terminal_width via Action. Diff-then-send
         // (mirrors the pane-viewport loop above): the width only changes

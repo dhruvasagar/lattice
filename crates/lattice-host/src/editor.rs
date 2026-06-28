@@ -542,6 +542,19 @@ pub struct Editor {
     /// when an in-pane help buffer is stashed.
     pub popup_scroll: u32,
     pub popup_cursor: lattice_protocol::Position,
+    /// PU.1b-3: inner-rect geometry of the floating popup overlay,
+    /// fed back from the renderer each frame (mirrors the per-pane
+    /// `set_pane_viewport` hand-off). The renderer is the single
+    /// authority on the popup's inner rect — it computes it from the
+    /// buffer area + `popup_outer_size` + placement — so it pushes the
+    /// resolved `(height, width)` here. `build_cells_panes` reads them
+    /// to size the synthetic popup-pane `DisplayMatrix` (wrap width =
+    /// `popup_viewport_width`). Both 0 until the first feedback after a
+    /// popup opens; the synthetic pane is gated on
+    /// `popup_viewport_width > 0` so a zero-geometry frame is skipped
+    /// (the renderer's plain-text fallback covers that one frame).
+    pub popup_viewport_height: u32,
+    pub popup_viewport_width: u32,
     /// In-progress text in the `:` minibuffer. Populated
     /// only while `modal == ModalState::Command`.
     pub command_line: String,

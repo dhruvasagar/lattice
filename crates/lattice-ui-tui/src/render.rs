@@ -2249,7 +2249,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     let Some(help) = app
         .buffers()
         .registry
-        .with_help(pane.buffer_id, |h| h.clone())
+        .help_content_view(pane.buffer_id)
         .or_else(|| app.popup_help())
     else {
         return;

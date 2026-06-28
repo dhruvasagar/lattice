@@ -114,25 +114,22 @@ pub(super) fn subscribe_all_events(a: &App) -> tokio::sync::mpsc::UnboundedRecei
 /// into the slim buffer (popup hot-path slot) + parsed
 /// metadata (seeded into `buffer_locals`).
 pub(super) fn install_help(a: &mut App, h: HelpContent) {
-    let HelpContent { buffer, metadata } = h;
-    let id = buffer.id;
-    // M.4 (b): popup buffer lives in the registry like every
-    // other buffer. Test fixture mirrors the production
-    // `open_popup` path with the same unlisted/hidden flags.
-    a.editor
-        .buffers
-        .insert(crate::buffer_registry::BufferEntry {
-            id,
-            flags: crate::buffers::BufferFlags {
-                listed: false,
-                hidden: true,
-            },
-            data: crate::buffer_registry::BufferData::Help(buffer),
-            name: None,
-        });
+    // PU.1a: help content is an actor-backed Document. Mirror the
+    // production `open_popup` path via `register_help_document`
+    // (seeds content + metadata) with the same unlisted/hidden flags.
+    let id = a.editor.register_help_document(
+        h,
+        crate::buffers::BufferFlags {
+            listed: false,
+            hidden: true,
+        },
+    );
     a.editor.popup_buffer = Some(id);
+    a.editor.popup_scroll = 0;
+    a.editor.popup_cursor = lattice_protocol::position::Position::ZERO;
+    a.editor.cursor = lattice_protocol::position::Position::ZERO;
+    a.editor.scroll = 0;
     a.editor.active_buffer = BufferKind::Help;
-    a.seed_help_metadata_locals(id, metadata);
     // 2026-05-26: mirror production's `open_popup` mode activation.
     // Without this, `Editor::run_invocation`'s active-mode runner
     // lookup finds no `help-mode` minor on the popup buffer and

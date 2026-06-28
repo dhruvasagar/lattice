@@ -532,6 +532,16 @@ pub struct Editor {
     /// to a screen row in State B (where `self.scroll` is the
     /// POPUP's scroll, not the document's).
     pub popup_doc_scroll_at_anchor: u32,
+    /// PU.1a: the popup's persisted view state when it is NOT the
+    /// focused buffer (State A), and the stash loaded into
+    /// `self.scroll` / `self.cursor` when focus moves into the
+    /// popup (State B). Replaces the old `HelpBuffer.{scroll,cursor}`
+    /// registry fields now that help content is an actor-backed
+    /// Document with no per-view cursor of its own. Reset to 0 /
+    /// ZERO on every popup open; updated by `snapshot_active_pane`
+    /// when an in-pane help buffer is stashed.
+    pub popup_scroll: u32,
+    pub popup_cursor: lattice_protocol::Position,
     /// In-progress text in the `:` minibuffer. Populated
     /// only while `modal == ModalState::Command`.
     pub command_line: String,

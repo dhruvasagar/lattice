@@ -221,23 +221,12 @@ impl App {
     }
 }
 
-// Slice 3c.final.E.5i — test-fixture surface.
-//
-// `with_popup_help_mut` takes an `impl FnOnce(&mut HelpBuffer) -> R`
-// without a `Send + 'static` bound, so it can't route through the
-// `mutate_editor` seam without forcing that bound onto every test
-// caller. Tests are the only callers; keep the direct-field
-// access behind a cfg-gate.
+// Slice 3c.final.E.5i — test-fixture surface for popup-help reads.
+// PU.1a: `with_popup_help_mut` retired — help content is an
+// actor-backed Document, so tests mutate `editor.cursor` /
+// `editor.popup_cursor` (view state) directly, not the storage.
 #[cfg(test)]
 impl App {
-    pub fn with_popup_help_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
-    ) -> Option<R> {
-        let id = self.popup().buffer_id?;
-        self.editor.buffers.with_help_mut(id, f)
-    }
-
     pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
         let id = self.popup().buffer_id?;
         self.editor
@@ -358,7 +347,9 @@ mod tests {
         let (flags, is_help) = a
             .editor
             .buffers
-            .with_entry(id, |entry| (entry.flags, entry.help().is_some()))
+            .with_entry(id, |entry| {
+                (entry.flags, entry.kind() == crate::buffers::BufferKind::Help)
+            })
             .expect("popup registered");
         assert!(!flags.listed);
         assert!(flags.hidden);

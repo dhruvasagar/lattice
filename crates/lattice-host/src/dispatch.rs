@@ -5653,7 +5653,16 @@ impl Editor {
     /// the registry entry has been torn down.
     pub fn popup_help(&self) -> Option<lattice_help::HelpBuffer> {
         let id = self.popup_buffer?;
-        self.buffers.with_help(id, |h| h.clone())
+        // PU.1a: help content is an actor-backed Document; reconstruct
+        // the slim `HelpBuffer` view from its snapshot, then overlay
+        // the popup's persisted view state (`popup_scroll` /
+        // `popup_cursor`). State B reads `self.scroll` / `self.cursor`
+        // directly in the renderer; this view's scroll/cursor serve
+        // State A (floating popup) + the focus stash.
+        let mut view = self.buffers.help_content_view(id)?;
+        view.scroll = self.popup_scroll as usize;
+        view.cursor = self.popup_cursor;
+        Some(view)
     }
 
     /// M.3.2.c.5: read the pre-computed per-line markdown highlight
@@ -17685,12 +17694,12 @@ impl Editor {
         let Some(id) = self.popup_buffer else {
             return false;
         };
-        self.buffers.with_help_mut(id, |existing| {
-            existing.title = snap.title;
-            existing.content = snap.content;
-            existing.scroll = snap.scroll as usize;
-            existing.cursor = snap.cursor;
-        });
+        // PU.1a: restore the snapshot's content into the help
+        // Document in place (same id), plus its title + view state.
+        self.replace_owned_document_text(id, &snap.content.as_string());
+        self.buffers.set_name(id, Some(snap.title));
+        self.popup_scroll = snap.scroll;
+        self.popup_cursor = snap.cursor;
         self.cursor = snap.cursor;
         self.scroll = snap.scroll;
         self.popup_placement = snap.placement;
@@ -19637,9 +19646,9 @@ impl Editor {
     /// for `<C-o>` walk-back. Phase 5.8.AE.
     pub fn snapshot_current_popup(&self) -> Option<crate::popup::PopupSnapshot> {
         let id = self.popup_buffer?;
-        let (title, content) = self
-            .buffers
-            .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
+        // PU.1a: title/content come from the help Document view.
+        let view = self.buffers.help_content_view(id)?;
+        let (title, content) = (view.title, view.content);
         let locals = self.buffer_locals.get(&id)?;
         let metadata = crate::popup::HelpMetadata {
             links: locals
@@ -19679,12 +19688,12 @@ impl Editor {
             buffer: new_buf,
             metadata,
         } = content;
-        self.buffers.with_help_mut(id, |existing| {
-            existing.title = new_buf.title;
-            existing.content = new_buf.content;
-            existing.scroll = 0;
-            existing.cursor = lattice_protocol::position::Position::ZERO;
-        });
+        // PU.1a: re-seed the help Document in place (same id), update
+        // its title (registry name), and reset the popup view state.
+        self.replace_owned_document_text(id, &new_buf.content.as_string());
+        self.buffers.set_name(id, Some(new_buf.title));
+        self.popup_scroll = 0;
+        self.popup_cursor = lattice_protocol::position::Position::ZERO;
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.popup_placement = placement;
@@ -19698,27 +19707,33 @@ impl Editor {
         &mut self,
         content: lattice_help::HelpContent,
     ) -> (BufferId, Vec<RendererSignal>) {
-        use crate::buffer_registry::{BufferData, BufferEntry};
         use crate::buffers::BufferFlags;
-        let lattice_help::HelpContent { buffer, metadata } = content;
         let mut signals = Vec::new();
-        if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
-            self.buffers
-                .with_help_mut(existing_id, |slot| *slot = buffer);
+        // Re-running a help opener with the same title surfaces the
+        // existing buffer rather than allocating a duplicate.
+        if let Some(existing_id) = self.buffers.help_with_title(&content.buffer.title) {
+            let lattice_help::HelpContent { buffer, metadata } = content;
+            // PU.1a: re-seed the existing help Document in place and
+            // adopt the new content's view state (mirrors the old
+            // `*slot = buffer` swap that `activate_help_in_pane` reads
+            // back through `popup_help`).
+            self.popup_scroll = buffer.scroll as u32;
+            self.popup_cursor = buffer.cursor;
+            self.replace_owned_document_text(existing_id, &buffer.content.as_string());
             self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
             return (existing_id, signals);
         }
-        let id = BufferId::next();
-        self.buffers.insert(BufferEntry {
-            id,
-            flags: BufferFlags::default(),
-            data: BufferData::Help(buffer),
-            name: None,
-        });
+        // PU.1a: help content is an actor-backed Document. Listed
+        // (unlike `*messages*`) so in-pane help shows in `:ls`. Adopt
+        // the content's initial scroll/cursor (e.g. an anchor scroll).
+        let init_scroll = content.buffer.scroll as u32;
+        let init_cursor = content.buffer.cursor;
+        let id = self.register_help_document(content, BufferFlags::default());
         signals.extend(self.activate_major_for_buffer_kind(id, BufferKind::Help));
-        self.seed_help_metadata_locals(id, metadata);
         self.popup_buffer = Some(id);
+        self.popup_scroll = init_scroll;
+        self.popup_cursor = init_cursor;
         self.activate_help_in_pane(id);
         (id, signals)
     }
@@ -19744,7 +19759,6 @@ impl Editor {
         content: lattice_help::HelpContent,
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
-        use crate::buffer_registry::{BufferData, BufferEntry};
         use crate::buffers::BufferFlags;
         let mut signals = Vec::new();
         // From within Help: reuse the same popup buffer by
@@ -19757,8 +19771,6 @@ impl Editor {
             return signals;
         }
         self.popup_back_stack.clear();
-        let lattice_help::HelpContent { buffer, metadata } = content;
-        let buffer_id = buffer.id;
         self.dismiss_stale_popup_registry();
         if matches!(
             self.active_buffer,
@@ -19777,29 +19789,33 @@ impl Editor {
                 scroll: self.scroll,
             });
         }
-        let stash_cursor = buffer.cursor;
-        let stash_scroll = buffer.scroll as u32;
-        self.buffers.insert(BufferEntry {
-            id: buffer_id,
-            flags: BufferFlags {
-                listed: false,
-                hidden: true,
-            },
-            data: BufferData::Help(buffer),
-            name: None,
-        });
         // 2026-05-22 popup-anchor: capture current cursor BEFORE
         // overwriting with the help buffer's stash. The CursorAnchored
         // popup renderer reads this to paint the popup next to the
         // symbol the user invoked from, even after motions.
         self.popup_anchor = Some(self.cursor);
         self.popup_doc_scroll_at_anchor = self.scroll;
+        // PU.1a: help content is an actor-backed Document (unlisted +
+        // hidden so it never shows in `:ls` / `:bn`). `register_*`
+        // seeds the content + metadata. Preserve the content's initial
+        // scroll/cursor — a `:describe-*` arg anchor pre-scrolls the
+        // buffer (`content.buffer.scroll`) before opening.
+        let init_scroll = content.buffer.scroll as u32;
+        let init_cursor = content.buffer.cursor;
+        let buffer_id = self.register_help_document(
+            content,
+            BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+        );
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
+        self.popup_scroll = init_scroll;
+        self.popup_cursor = init_cursor;
+        self.cursor = init_cursor;
+        self.scroll = init_scroll;
         self.active_buffer = BufferKind::Help;
-        self.seed_help_metadata_locals(buffer_id, metadata);
         signals.extend(self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help));
         signals
     }
@@ -19811,20 +19827,23 @@ impl Editor {
         content: lattice_help::HelpContent,
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
-        use crate::buffer_registry::{BufferData, BufferEntry};
         use crate::buffers::BufferFlags;
-        let lattice_help::HelpContent { buffer, metadata } = content;
-        let buffer_id = buffer.id;
         self.dismiss_stale_popup_registry();
-        self.buffers.insert(BufferEntry {
-            id: buffer_id,
-            flags: BufferFlags {
+        // PU.1a: help content is an actor-backed Document. `register_*`
+        // seeds the content + metadata. Preserve the content's initial
+        // scroll/cursor as the popup's view state (State A — the doc
+        // keeps focus, so self.cursor/scroll are untouched).
+        let init_scroll = content.buffer.scroll as u32;
+        let init_cursor = content.buffer.cursor;
+        let buffer_id = self.register_help_document(
+            content,
+            BufferFlags {
                 listed: false,
                 hidden: true,
             },
-            data: BufferData::Help(buffer),
-            name: None,
-        });
+        );
+        self.popup_scroll = init_scroll;
+        self.popup_cursor = init_cursor;
         // 2026-05-22 popup-anchor: capture current cursor before
         // any focus shuffle. Floating popups (State A) don't touch
         // the cursor, but capturing here keeps the renderer's read
@@ -19843,7 +19862,6 @@ impl Editor {
         self.popup_doc_scroll_at_anchor = anchor_scroll;
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
-        self.seed_help_metadata_locals(buffer_id, metadata);
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let _ = self.mode_registry.activate_major(
@@ -24547,7 +24565,8 @@ impl Editor {
                 _ => (None, false),
             };
             let help_title = match &entry.data {
-                BufferData::Help(h) => Some(h.title.clone()),
+                // PU.1a: the help title now lives in `entry.name`.
+                BufferData::Help(_) => entry.name.clone(),
                 _ => None,
             };
             rows.push(EntryRow {
@@ -25507,16 +25526,17 @@ impl Editor {
         let pane_id = self.pane_tree.active().buffer_id;
         match self.active_buffer {
             BufferKind::Help => {
-                // M.4 (b): the popup buffer lives in the registry;
-                // mutate it in place there. The hot-path slot is
-                // just an id, so there's nothing to mirror back.
+                // PU.1a: in-pane help stashes its view state into the
+                // popup view-state fields (the help Document carries no
+                // per-view cursor of its own). Overlay help leaves
+                // pane_tree.active() pointing at the doc behind, so the
+                // `id == pane_id` guard scopes this to the in-pane case
+                // exactly as before.
                 if let Some(id) = self.popup_buffer
                     && id == pane_id
                 {
-                    self.buffers.with_help_mut(pane_id, |reg| {
-                        reg.cursor = cursor;
-                        reg.scroll = scroll as usize;
-                    });
+                    self.popup_cursor = cursor;
+                    self.popup_scroll = scroll;
                 }
             }
             BufferKind::FileTree => {
@@ -26759,8 +26779,12 @@ pub fn raw_buffer_candidates(
                     format!("tree{active_marker}"),
                 )
             }
-            BufferData::Help(h) => (
-                format!("#{:<3} {}", id.0, h.title),
+            BufferData::Help(_) => (
+                format!(
+                    "#{:<3} {}",
+                    id.0,
+                    entry.name.clone().unwrap_or_default()
+                ),
                 format!("help{active_marker}"),
             ),
             BufferData::Oil(_) => {
@@ -26904,7 +26928,12 @@ pub fn picker_buffer_entry(
                 .unwrap_or_else(|| "[no root]".to_string());
             ("tree".to_string(), root, title, false)
         }
-        BufferData::Help(h) => ("help".to_string(), None, h.title.clone(), false),
+        BufferData::Help(_) => (
+            "help".to_string(),
+            None,
+            entry.name.clone().unwrap_or_default(),
+            false,
+        ),
         BufferData::Oil(_) => {
             let dir = buffer_locals
                 .get(&entry.id)

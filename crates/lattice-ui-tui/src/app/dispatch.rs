@@ -2276,21 +2276,16 @@ mod tests {
         // the cmdline is part of the focused popup buffer.
         let mut a = app_with("xx", 10);
         // Simulate State A: register a popup buffer + set the slot
-        // but leave `active_buffer` on Document.
-        let crate::help::HelpContent { buffer, .. } =
-            crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
-        let id = buffer.id;
-        a.editor
-            .buffers
-            .insert(crate::buffer_registry::BufferEntry {
-                id,
-                flags: crate::buffers::BufferFlags {
-                    listed: false,
-                    hidden: true,
-                },
-                data: crate::buffer_registry::BufferData::Help(buffer),
-                name: None,
-            });
+        // but leave `active_buffer` on Document. PU.1a: help content
+        // is an actor-backed Document via `register_help_document`.
+        let content = crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
+        let id = a.editor.register_help_document(
+            content,
+            crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+        );
         a.editor.popup_buffer = Some(id);
         a.apply(Action::EnterCommandLine);
         assert!(a.editor.popup_buffer.is_none());

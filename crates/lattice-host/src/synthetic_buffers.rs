@@ -212,6 +212,65 @@ impl Editor {
         )
     }
 
+    /// PU.1a: register a freshly-built [`lattice_help::HelpContent`]
+    /// as an actor-backed synthetic Document ([`BufferData::Help`]),
+    /// seeded with the content's text + parsed metadata. Returns the
+    /// new [`BufferId`]. This is the single creation path help shares
+    /// with `*messages*` and the LSP logs — content lives once in the
+    /// Document; the title goes to the registry `name` slot; links /
+    /// anchors / highlights go to `buffer_locals`. The caller owns the
+    /// popup/pane focus wiring + mode activation.
+    pub fn register_help_document(
+        &mut self,
+        content: lattice_help::HelpContent,
+        flags: BufferFlags,
+    ) -> BufferId {
+        let lattice_help::HelpContent { buffer, metadata } = content;
+        let id = BufferId::next();
+        let document = Document::empty();
+        let handle = spawn_document(id, document, self.registry.clone());
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        self.buffers.insert(BufferEntry {
+            id,
+            flags,
+            data: BufferData::Help(DocumentEntry { id, handle }),
+            name: Some(buffer.title),
+        });
+        self.seed_empty_document_locals(id);
+        // Seed the help text into the actor. A fresh document is
+        // empty, so an end-of-buffer append (which bypasses the
+        // read-only dispatcher, exactly like the messages backlog
+        // seed) lands the text at the top.
+        let text = buffer.content.as_string();
+        if !text.is_empty() {
+            self.append_to_owned_buffer(id, &text);
+        }
+        self.seed_help_metadata_locals(id, metadata);
+        id
+    }
+
+    /// PU.1a: replace the entire content of an owned synthetic
+    /// Document at `id` with `text` (bypasses the read-only
+    /// dispatcher, like [`Self::append_to_owned_buffer`]). Used by
+    /// the popup back-stack / link-follow swap paths to re-seed a
+    /// help Document in place without changing its `BufferId`.
+    /// No-op when `id` is not a Document.
+    pub fn replace_owned_document_text(&mut self, id: BufferId, text: &str) {
+        let Some(handle) = self.buffers.document_handle(id) else {
+            return;
+        };
+        let snap = handle.snapshot();
+        let last_line = last_addressable_line(&snap.buffer);
+        let line_len = snap.buffer.line_byte_len(last_line);
+        let range = lattice_protocol::position::Range::new(
+            Position::ZERO,
+            Position::new(last_line, line_len),
+        );
+        let _ = lattice_runtime::block_on(
+            handle.apply_edit_batch(vec![Edit::replace(range, text.to_string())]),
+        );
+    }
+
     fn ensure_named_synthetic_doc_with_variant(
         &mut self,
         name: &str,

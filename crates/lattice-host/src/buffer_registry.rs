@@ -127,24 +127,26 @@ impl BufferEntry {
 
     /// The Document storage for any document-shaped kind.
     /// Returns `Some` for [`BufferData::Document`],
-    /// [`BufferData::Messages`], and [`BufferData::Multibuffer`]
-    /// (their storage is identical — all carry
-    /// `Arc<dyn Document>`); `None` for other kinds. Code that
-    /// needs to distinguish branches on [`Self::kind`].
+    /// [`BufferData::Messages`], [`BufferData::Multibuffer`], and
+    /// (PU.1a) [`BufferData::Help`] — their storage is identical
+    /// (all carry `Arc<dyn Document>`); `None` for other kinds.
+    /// Code that needs to distinguish branches on [`Self::kind`].
     pub fn document(&self) -> Option<&DocumentEntry> {
         match &self.data {
-            BufferData::Document(d) | BufferData::Messages(d) | BufferData::Multibuffer(d) => {
-                Some(d)
-            }
+            BufferData::Document(d)
+            | BufferData::Messages(d)
+            | BufferData::Multibuffer(d)
+            | BufferData::Help(d) => Some(d),
             _ => None,
         }
     }
 
     pub fn document_mut(&mut self) -> Option<&mut DocumentEntry> {
         match &mut self.data {
-            BufferData::Document(d) | BufferData::Messages(d) | BufferData::Multibuffer(d) => {
-                Some(d)
-            }
+            BufferData::Document(d)
+            | BufferData::Messages(d)
+            | BufferData::Multibuffer(d)
+            | BufferData::Help(d) => Some(d),
             _ => None,
         }
     }
@@ -159,20 +161,6 @@ impl BufferEntry {
     pub fn file_tree_mut(&mut self) -> Option<&mut FileTreeBuffer> {
         match &mut self.data {
             BufferData::FileTree(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub fn help(&self) -> Option<&HelpBuffer> {
-        match &self.data {
-            BufferData::Help(h) => Some(h),
-            _ => None,
-        }
-    }
-
-    pub fn help_mut(&mut self) -> Option<&mut HelpBuffer> {
-        match &mut self.data {
-            BufferData::Help(h) => Some(h),
             _ => None,
         }
     }
@@ -218,7 +206,18 @@ pub enum BufferData {
     /// `:describe-*`, `:diagnostics`) route here so they live in
     /// a real pane, can be split, switched, listed via `:ls`,
     /// and updated live when their backing source emits events.
-    Help(HelpBuffer),
+    ///
+    /// PU.1a (2026-06-27): storage is now identical to
+    /// [`BufferData::Document`] (a [`DocumentEntry`] carrying
+    /// `Arc<dyn Document>`) — help content is an actor-backed
+    /// synthetic Document, exactly like [`BufferData::Messages`].
+    /// The discriminator stays so help-mode behaviours (links,
+    /// anchors, dismiss-on-Esc, the markdown major) and `:ls` /
+    /// introspection can tell a help view apart from a file. The
+    /// help title lives in [`BufferEntry::name`]; per-buffer
+    /// metadata (links / anchors / highlights) lives in
+    /// `buffer_locals`.
+    Help(DocumentEntry),
     /// Flat editable directory listing (oil.nvim-style).
     Oil(OilBuffer),
     Terminal(TerminalBuffer),
@@ -688,9 +687,9 @@ impl BufferRegistry {
     pub fn help_with_title(&self, title: &str) -> Option<BufferId> {
         let inner = lock_inner(&self.inner);
         for entry in inner.by_id.values() {
-            if let BufferData::Help(h) = &entry.data
-                && h.title == title
-            {
+            // PU.1a: the help title now lives in `entry.name` (the
+            // synthetic-Document name slot), not on the storage.
+            if matches!(entry.data, BufferData::Help(_)) && entry.name.as_deref() == Some(title) {
                 return Some(entry.id);
             }
         }
@@ -782,24 +781,27 @@ impl BufferRegistry {
         result
     }
 
-    pub fn with_help<R>(&self, id: BufferId, f: impl FnOnce(&HelpBuffer) -> R) -> Option<R> {
+    /// PU.1a: reconstruct a transient [`HelpBuffer`] *view* from the
+    /// registry Document at `id`. Help content is now an actor-backed
+    /// synthetic Document; this builds the slim view value the bespoke
+    /// help renderers still consume (PU.1b deletes both). The view's
+    /// `scroll` / `cursor` default to 0 — callers overlay the live
+    /// popup (`popup_scroll`/`popup_cursor`) or pane scroll+cursor.
+    /// `None` when `id` is not a help buffer.
+    pub fn help_content_view(&self, id: BufferId) -> Option<HelpBuffer> {
         let inner = lock_inner(&self.inner);
-        inner.by_id.get(&id).and_then(|e| e.help()).map(f)
-    }
-
-    pub fn with_help_mut<R>(
-        &self,
-        id: BufferId,
-        f: impl FnOnce(&mut HelpBuffer) -> R,
-    ) -> Option<R> {
-        let result = {
-            let mut inner = lock_inner(&self.inner);
-            inner.by_id.get_mut(&id).and_then(|e| e.help_mut()).map(f)
-        };
-        if result.is_some() {
-            self.bump_version();
+        let entry = inner.by_id.get(&id)?;
+        if !matches!(entry.data, BufferData::Help(_)) {
+            return None;
         }
-        result
+        let snap = entry.document()?.handle.snapshot();
+        Some(HelpBuffer {
+            id,
+            title: entry.name.clone().unwrap_or_default(),
+            content: snap.buffer.clone(),
+            scroll: 0,
+            cursor: lattice_protocol::position::Position::ZERO,
+        })
     }
 
     pub fn with_file_tree<R>(

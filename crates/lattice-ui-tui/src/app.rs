@@ -3762,9 +3762,11 @@ mod tests {
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
         let buf_id = a.editor.popup_buffer.unwrap();
-        a.with_popup_help_mut(|h| {
-            h.cursor = lattice_protocol::Position::ZERO;
-        });
+        // PU.1a: the focused help cursor is `editor.cursor`
+        // (`popup_cursor` is the persisted stash). Zero both so
+        // FollowLink reads the link at (0,0).
+        a.editor.cursor = lattice_protocol::Position::ZERO;
+        a.editor.popup_cursor = lattice_protocol::Position::ZERO;
         let mut existing_links = a
             .editor
             .buffer_locals
@@ -3823,9 +3825,11 @@ mod tests {
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
         let buf_id = a.editor.popup_buffer.unwrap();
-        a.with_popup_help_mut(|h| {
-            h.cursor = lattice_protocol::Position::ZERO;
-        });
+        // PU.1a: the focused help cursor is `editor.cursor`
+        // (`popup_cursor` is the persisted stash). Zero both so
+        // FollowLink reads the link at (0,0).
+        a.editor.cursor = lattice_protocol::Position::ZERO;
+        a.editor.popup_cursor = lattice_protocol::Position::ZERO;
         let mut existing_links = a
             .editor
             .buffer_locals

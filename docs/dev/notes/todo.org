@@ -47,10 +47,10 @@
 - [ ] history (command, macros, yank, etc.)
 - [ ] auto indent
 - [ ] auto formatting
-- [ ] GPUI: Zooming Text
 - [ ] Spell Check
 - [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
 - [ ] <C-=>, <C--> for zooming (font-size) in GPUI
+- [X] Implement org cycle like folding behavior
 - [X] Implement basic emacs style <C-x> bindings
   - [X] <C-x>b :buffer
   - [X] <C-x><C-s> for :write
@@ -158,6 +158,8 @@
   one character. The character just before the cursor doesn't get
   highlighted until one more key press.
 - [X] echo in GPUI. `set wrap?` should echo the value.
+- [X] claude code inline diff colors are off, font color is dark
+  making it look dull in TUI
 
 * Documentation
 - [X] lattice-tutor

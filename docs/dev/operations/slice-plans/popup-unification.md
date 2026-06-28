@@ -23,24 +23,100 @@ proves the registry-buffer seam end-to-end with the least new content
 modelling. Transient popups (hover/signature/docs) follow once the
 seam + the ephemeral-buffer class exist.
 
-## PU.1 — Help into the registry + TUI compose seam 🗒
+## Locked decision (2026-06-27): full conversion (α) + 2A highlights
 
-The foundational slice. Make help a registry buffer and route its
-popup content through the shared TUI compose path.
+The PU.1 internal shape is **α — full conversion**: help becomes an
+actor-backed synthetic Document outright (`BufferData::Help` carries a
+`DocumentEntry`, exactly like `BufferData::Messages`). `HelpBuffer`
+storage is retired; content lives once in the Document; the popup's
+view state (scroll/cursor) routes through the same `self.cursor` /
+`self.scroll` it already uses when focused; motions come from the
+normal grammar path; and the `active_text` / `active_cursor` /
+`active_buffer_id` `BufferKind::Help` branches are replaced by
+**focus-state routing** (a focused popup → `popup_buffer`) that names
+no kind. Chosen over the dual-backed transitional (β, duplicates
+content — a fresh drift seam) and the single-rope-keep-motions
+intermediate (γ); α is the endgame with no half-migration residue
+(paramount #3, heuristic #1, `feedback_mode_owns_its_surface`).
 
-- Register `HelpBuffer` content as a **listed synthetic Document** in
-  the `BufferRegistry` (the queued "help into the registry" move). It
-  stays `HelpBuffer`-flavoured (links/anchors/dismiss-on-Esc) but
-  exposes a `DocumentSnapshot` like any Document. See
-  `feedback_synthetic_buffers` + the Group-1 set.
+Highlights take path **2A**: help is a real markdown Document, so its
+`DisplayMatrix` is built by the cells worker from a live markdown
+`SyntaxHandle` like any document — the `with_markdown_syntax`
+precompute + `popup_help_highlights` read path are deleted, not
+special-cased in compose (which 2B would do, re-introducing a K.4
+kind-branch + leaving the highlight source as drift). Pixel-identical
+today because `with_markdown_syntax` already runs the same grammar.
+
+Sub-slices: **PU.1a** (storage/cursor/motion/kind-branch conversion,
+green, no visual change — bespoke renderers keep painting via a
+reconstructed `HelpBuffer` *view* built from the Document) → **PU.1b**
+(compose seam + markdown handle + delete bespoke renderers) →
+**PU.1c** (mop up any residual focus-routing edge cases the render
+switch exposes). PU.2 (GPUI parity) unchanged.
+
+## PU.1a — Help → actor-backed Document ✅
+
+Landed 2026-06-28. Help content is now `BufferData::Help(DocumentEntry)`
+— an actor-backed synthetic Document seeded by
+`Editor::register_help_document`, exactly like `*messages*`. Title →
+registry `name`; links/anchors/highlights → `buffer_locals`. The popup
+view state (scroll/cursor when help is NOT focused, plus the focus
+stash) moved off the retired `HelpBuffer.{scroll,cursor}` registry
+fields onto `Editor::{popup_scroll,popup_cursor}` (a faithful
+relocation of the prior registry-cursor behaviour — `snapshot_active_pane`
+syncs them identically). `popup_help()` survives as a view
+reconstructor (`BufferRegistry::help_content_view` + the popup stash) so
+the bespoke renderers paint unchanged this slice; PU.1b deletes both.
+`active_text` / `active_cursor` / `active_buffer_id` route through
+`popup_buffer`/`popup_help()` (Document-backed), and HelpBuffer's motion
+methods + their tests are gone (motions come from the grammar path).
+No visual change; full suite green (lattice-help 39, lattice-host 590,
+lattice-ui-tui 1499, 0 failed).
+
+Two pre-existing branch breakages were fixed while landing this slice
+(both unrelated to popup unification): the GPUI `EditorElement::paint`
+`self.wrap_width` → `prepaint.wrap_width` field error from HS.1b (broke
+`--features window`), and a stale `lattice-help` markdown test asserting
+`##` → `Heading1` (the T-series per-level heading query makes it
+`Heading2`).
+
+- Add `SyntheticDocVariant::Help` → `BufferData::Help(DocumentEntry)`;
+  spawn/seed help content as a Document (mirror
+  `ensure_named_synthetic_doc_with_variant`). Title → registry `name`;
+  metadata (links/anchors/highlights) → `buffer_locals` (already the
+  `HelpLinks`/`HelpAnchors`/`HelpHighlights` slots).
+- Rewrite the registry accessors (`help`/`help_mut`/`with_help`/
+  `with_help_mut`/`help_with_title`/`contains_help`/`help_ids_sorted`)
+  onto the `DocumentEntry`. `popup_help()` survives PU.1a as a
+  **view reconstructor** (builds a transient `HelpBuffer` value from
+  the Document snapshot + popup scroll/cursor) so the bespoke
+  renderers need zero change this slice — PU.1b deletes both.
+- Rewrite the popup state machine off `HelpBuffer` storage:
+  `open_popup` / `open_floating_popup` / `open_help_in_pane` /
+  `swap_popup_content` / `snapshot_current_popup` (back-stack) /
+  `dismiss_popup` / `focus_help_popup`.
+- Replace the `BufferKind::Help` branches in `active_text` /
+  `active_cursor` / `active_buffer_id` with focus-state routing.
+- Delete `HelpBuffer`'s motion methods + their lattice-help tests
+  (motions now come from the grammar path).
+- **Acceptance:** no visual change; `:help` / `:describe-*` / hover /
+  back-stack (`<C-o>`) / dismiss-on-Esc all behave as before; full
+  test suite green.
+
+## PU.1b — Compose seam + markdown handle + delete bespoke 🗒
+
 - Add the **content seam**: a helper the popup-chrome code calls with
   `(buffer_id, inner_rect, popup_scroll, popup_leftcol, popup_cursor)`
   that builds a `FrameView::for_buffer` + `PaneComposeCtx` and calls
   `compose_pane_lines`, returning the `Line`s the box paints.
+- Wire the markdown `SyntaxHandle` onto the help pane so the cells
+  worker builds its `DisplayMatrix` (2A); delete `with_markdown_syntax`
+  + `popup_help_highlights`.
 - Re-point `help_pane_render` / the help-overlay interior to the seam.
 - **Delete** `draw_help_in_pane`, `manually_wrap_lines`,
-  `render_help_line`, `draw_inactive_help`, and the content portion of
-  `draw_help_overlay` (keep the box: border, title, centering, sizing).
+  `render_help_line`, `draw_inactive_help`, the content portion of
+  `draw_help_overlay`, and `popup_help` (keep the box: border, title,
+  centering, sizing).
 - **Acceptance:** `:set wrap`/`nowrap` now changes the help popup;
   folds work inside help; horizontal scroll works inside help (proves
   the HS dependency); the popup's visible content equals

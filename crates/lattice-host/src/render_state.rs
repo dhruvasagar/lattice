@@ -1208,6 +1208,13 @@ pub struct PaneCellsInputs {
     /// K.4.7 (2026-06-07): per-excerpt syntax entries for multibuffer
     /// panes. Empty for ordinary single-document panes.
     pub excerpt_syntax: Arc<[ExcerptSyntax]>,
+    /// PU.1b-2a: generic per-buffer *static* highlight spans (indexed
+    /// by source line), merged ON TOP OF the grammar spans in the
+    /// matrix build. Sourced from the buffer's `ExtraHighlights` local
+    /// (help links; later, any non-grammar-derivable styling). Empty
+    /// `[]` for every buffer without the local — the merge is a no-op
+    /// then, so ordinary panes render byte-identically.
+    pub extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]>,
 }
 
 impl Default for CellsRenderState {

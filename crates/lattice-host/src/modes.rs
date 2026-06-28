@@ -85,6 +85,33 @@ impl BufferLocal for HelpHighlights {
     }
 }
 
+/// PU.1b-2a: generic per-buffer *static* highlight spans, merged into
+/// the cells-worker `DisplayMatrix` ON TOP OF (overriding, by
+/// first-match precedence) the live grammar spans on their byte
+/// ranges. Indexed by source line. Unlike [`DocumentSyntax`] (the live
+/// grammar handle, dynamic per edit) these are fixed for the buffer's
+/// content — the home for styling the grammar can't derive because the
+/// source text was transformed before parsing (help-link labels, whose
+/// `[label](target)` markup is stripped before the markdown grammar
+/// runs, so the grammar never emits a link capture). Property-derived,
+/// NOT kind-specific: any buffer carrying this local gets the merge;
+/// empty/absent is the universal default and renders byte-identically.
+#[derive(Debug, Clone, Default)]
+pub struct ExtraHighlights(pub Vec<Vec<lattice_syntax::StyledSpan>>);
+
+impl BufferLocal for ExtraHighlights {
+    const NAME: &'static str = "text-mode.extra-highlights";
+    const DOC: &'static str = "Generic per-buffer static highlight spans merged on top of \
+         the live grammar spans in the display matrix, indexed by source \
+         line. The home for styling the grammar can't derive (e.g. help \
+         links, whose markup is stripped before parsing). Empty is the \
+         universal default and renders byte-identically.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("{} line(s) of extra highlights", self.0.len())
+    }
+}
+
 // ---- file-tree-mode buffer-locals ----
 //
 // All three live in `lattice_file_tree::modes` alongside their

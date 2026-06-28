@@ -497,6 +497,7 @@ mod tests {
             foldenable: false,
             last_edit: None,
             excerpt_syntax: Arc::from([]),
+            extra_spans: Arc::from([]),
         }
     }
 

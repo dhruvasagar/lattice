@@ -436,15 +436,26 @@ pub fn recompute_pane(
     // `None` falls through to a full windowed rebuild. The worker path
     // keeps full syntax colour (`allow_highlight: true`); the sync edit
     // path forces it off.
-    let rebuilt = try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, true)
-        .and_then(|mut dm| {
-            dm.wrap_width = effective_wrap;
-            // H.3: accept the incremental result only if it still
-            // covers the viewport; a same-tick scroll past the window
-            // edge falls through to a recentred full rebuild.
-            dm.covers(visible_lo, visible_hi)
-                .then_some((dm, WorkerDecision::RecomputedIncremental))
-        });
+    //
+    // PU.1b-2a: buffers carrying static extra spans always take the full
+    // rebuild — the incremental path reuses prefix/suffix `DisplayLine`s
+    // verbatim and does not re-run the `merge_extra_spans` step, so a
+    // re-seed (help-content swap) would otherwise keep stale link
+    // styling. The gate is free for ordinary panes (`extra_spans`
+    // empty), which dominate.
+    let rebuilt = if pane.extra_spans.is_empty() {
+        try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, true)
+            .and_then(|mut dm| {
+                dm.wrap_width = effective_wrap;
+                // H.3: accept the incremental result only if it still
+                // covers the viewport; a same-tick scroll past the window
+                // edge falls through to a recentred full rebuild.
+                dm.covers(visible_lo, visible_hi)
+                    .then_some((dm, WorkerDecision::RecomputedIncremental))
+            })
+    } else {
+        None
+    };
 
     let (matrix, decision) = match rebuilt {
         Some((dm, decision)) => (dm, decision),
@@ -455,6 +466,7 @@ pub fn recompute_pane(
                 snapshot.as_ref(),
                 pane.syntax_handle.as_deref(),
                 &pane.excerpt_syntax,
+                &pane.extra_spans,
                 ct,
                 &pane.inlay_hints,
                 &pane.folds,
@@ -1544,6 +1556,55 @@ fn build_display_rows(
     rows
 }
 
+/// PU.1b-2a: merge per-buffer static `extra` spans into the grammar
+/// `spans` (both indexed by source line; `spans` is the window relative
+/// to `base`, `extra` is absolute), PREPENDING the extra spans so they
+/// win [`style_at_byte`]'s first-match precedence (a help-link label
+/// overrides whatever grammar scope sits under it). No-op when `extra`
+/// is empty — every buffer without the `ExtraHighlights` local — so the
+/// grammar spans pass through untouched and ordinary panes are
+/// byte-identical.
+fn merge_extra_spans(
+    spans: &mut [Vec<lattice_syntax::StyledSpan>],
+    extra: &[Vec<lattice_syntax::StyledSpan>],
+    base: u32,
+) {
+    if extra.is_empty() {
+        return;
+    }
+    for (i, line_spans) in spans.iter_mut().enumerate() {
+        let src = base as usize + i;
+        if let Some(ex) = extra.get(src) {
+            if !ex.is_empty() {
+                let mut merged = Vec::with_capacity(ex.len() + line_spans.len());
+                merged.extend_from_slice(ex);
+                merged.append(line_spans);
+                *line_spans = merged;
+            }
+        }
+    }
+}
+
+/// PU.1b-2a: a cheap content fingerprint of the static extra-highlight
+/// spans, folded into [`MatrixVersion`]'s `syntax` axis so a re-seed
+/// (e.g. a help-content swap) invalidates the matrix cache even when no
+/// other axis moved. Empty ⇒ `0` — a constant for every buffer without
+/// the local, so it never perturbs their version.
+pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> u64 {
+    let mut acc = 0u64;
+    for (line, line_spans) in spans.iter().enumerate() {
+        for s in line_spans {
+            acc = acc
+                .wrapping_mul(1099511628211) // FNV-1a prime
+                .wrapping_add(line as u64)
+                .wrapping_add((s.start as u64) << 20)
+                .wrapping_add((s.end as u64) << 4)
+                .wrapping_add(s.style as u64);
+        }
+    }
+    acc
+}
+
 /// B2.2 (2026-06-04): build a [`crate::display_matrix::DisplayMatrix`]
 /// — the `DisplayLine` analogue of [`build_matrix`]. Identical mode
 /// selection ([`pick_chunk_size`]), windowing ([`window_bounds`]), and
@@ -1556,6 +1617,7 @@ fn build_display_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
     excerpt_syntax: &[crate::render_state::ExcerptSyntax],
+    extra_spans: &[Vec<lattice_syntax::StyledSpan>],
     ct: CellTheme<'_>,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
@@ -1581,19 +1643,41 @@ fn build_display_matrix(
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // K.4.7: multibuffer panes use per-excerpt handles.
-        if let Some(spans) = highlight_range_multibuffer(excerpt_syntax, lo, hi) {
+        if let Some(mut spans) = highlight_range_multibuffer(excerpt_syntax, lo, hi) {
+            merge_extra_spans(&mut spans, extra_spans, lo);
             return Some(spans);
         }
         if hi <= lo {
             return Some(Vec::new());
         }
-        syntax_handle.and_then(|h| {
+        // PU.1b-2a: prepend the buffer's static extra spans onto the
+        // grammar spans so they win `style_at_byte`'s first-match
+        // precedence. No-op when `extra_spans` is empty (every buffer
+        // without the local), so non-help panes are byte-identical.
+        let grammar = syntax_handle.and_then(|h| {
             let snap = h.snapshot();
             if snap.text_version() < snapshot.text_version {
                 return None;
             }
             snap.highlight_lines(lo, hi).ok()
-        })
+        });
+        match grammar {
+            Some(mut spans) => {
+                merge_extra_spans(&mut spans, extra_spans, lo);
+                Some(spans)
+            }
+            // No (or stale) grammar but static extra spans exist (e.g. a
+            // plain-text buffer carrying link styling): synthesise an
+            // empty per-line window and merge the extra spans in, so the
+            // static styling still reaches the matrix. Plain buffers with
+            // no extra spans keep the historical `None` (all-default).
+            None if !extra_spans.is_empty() => {
+                let mut spans = vec![Vec::new(); (hi - lo) as usize];
+                merge_extra_spans(&mut spans, extra_spans, lo);
+                Some(spans)
+            }
+            None => None,
+        }
     };
 
     match pick_chunk_size(viewport_height, line_count) {
@@ -2357,6 +2441,7 @@ mod tests {
             foldenable,
             last_edit,
             excerpt_syntax: Arc::from([]),
+            extra_spans: Arc::from([]),
         };
         let pane_matrices = {
             let mut m = std::collections::HashMap::new();
@@ -3261,6 +3346,70 @@ mod tests {
     /// recovers that only via the `WS_TRAILING` run flag. A regression in
     /// either builder (or a missing `WS_TRAILING`) makes the projected
     /// cells diverge from `build_matrix` and fails here.
+    /// PU.1b-2a: a buffer carrying static `ExtraHighlights` (here a Link
+    /// span on line 0, bytes 0..2) gets that style baked into the
+    /// `DisplayMatrix` runs the renderers read — overriding the grammar
+    /// (none here; `syntax_handle = None`, exercising the no-grammar
+    /// merge branch). Line 1 has no extra span, so it stays default:
+    /// proof the merge is per-line and that empty lines are untouched
+    /// (the empty-`extra_spans` case is byte-identical, covered by every
+    /// existing matrix test that passes `&[]`).
+    #[test]
+    fn extra_spans_merge_into_display_matrix_runs() {
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig {
+            show: false,
+            tab: None,
+            trailing: None,
+            leading: None,
+            space: None,
+            eol: None,
+            tabstop: 4,
+        };
+        let snap = snap_of_versioned("hello\nworld", 1);
+        let extra = vec![
+            vec![lattice_syntax::StyledSpan {
+                start: 0,
+                end: 2,
+                style: lattice_syntax::Style::Link,
+            }],
+            vec![],
+        ];
+        let dm = build_display_matrix(
+            snap.as_ref(),
+            None,
+            &[],
+            &extra,
+            ct,
+            &[],
+            &[],
+            true,
+            5,
+            0,
+            v(1),
+            &ws,
+        );
+        let row0 = dm.row_at_source_line(0).expect("line 0 row");
+        let first = row0.runs.first().expect("at least one run on line 0");
+        assert_eq!(
+            first.style,
+            lattice_syntax::Style::Link,
+            "the static Link span must reach the matrix run for line 0"
+        );
+        assert_eq!(first.len, 2, "the Link run should cover the 2-byte span");
+        let row1 = dm.row_at_source_line(1).expect("line 1 row");
+        assert!(
+            row1.runs
+                .iter()
+                .all(|r| r.style != lattice_syntax::Style::Link),
+            "line 1 carries no extra span, so it must have no Link styling"
+        );
+    }
+
     #[test]
     fn projection_parity_ws_on_trailing_tab_inlay() {
         let (resolved, ids) = test_cell_theme();
@@ -3314,6 +3463,7 @@ mod tests {
         let dm = build_display_matrix(
             snap.as_ref(),
             None,
+            &[],
             &[],
             ct,
             &inlays,
@@ -4799,6 +4949,7 @@ mod tests {
                         foldenable: true,
                         last_edit,
                         excerpt_syntax: Arc::from([]),
+                        extra_spans: Arc::from([]),
                     };
                     let cells = CellsRenderState {
                         matrix: matrix_cell.clone(),
@@ -4950,6 +5101,7 @@ mod tests {
                 foldenable: true,
                 last_edit: None,
                 excerpt_syntax: Arc::from([]),
+                extra_spans: Arc::from([]),
             };
             let cells = CellsRenderState {
                 matrix: matrix_cell.clone(),
@@ -5039,6 +5191,7 @@ mod tests {
             foldenable: true,
             last_edit: None,
             excerpt_syntax: Arc::from([]),
+            extra_spans: Arc::from([]),
         }
     }
 

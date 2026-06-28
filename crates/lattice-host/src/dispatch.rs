@@ -10958,6 +10958,23 @@ impl Editor {
                     })
                     .unwrap_or_else(|| Arc::from([]));
 
+            // PU.1b-2a: generic static extra-highlight spans for this
+            // buffer (the `ExtraHighlights` local). Empty for every
+            // buffer without it → `merge_extra_spans` is a no-op and the
+            // version contribution is a constant 0, so ordinary panes
+            // render byte-identically. Same source for active + inactive
+            // panes (static per-buffer content, unlike folds).
+            let extra_spans_vec: Vec<Vec<lattice_syntax::StyledSpan>> = self
+                .buffer_locals
+                .get(&buffer_id)
+                .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
+                .map(|e| e.0.clone())
+                .unwrap_or_default();
+            let extra_spans_ver =
+                crate::cells_worker::extra_spans_version(&extra_spans_vec);
+            let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
+                Arc::from(extra_spans_vec.into_boxed_slice());
+
             // Folds. Active buffer: live mutable slot
             // (`Editor::folds`). Non-active: per-buffer entry on
             // `buffer_locals`.
@@ -11012,6 +11029,10 @@ impl Editor {
                                 .map(|ex| ex.handle.highlight_version())
                                 .fold(0u64, u64::wrapping_add),
                         )
+                        // PU.1b-2a: re-seeded static spans (help swap)
+                        // invalidate the matrix cache even when no other
+                        // axis moved. Constant 0 when absent.
+                        .wrapping_add(extra_spans_ver)
                 },
                 inlay_hints: inlay_version,
                 folds: if foldenable { folds_hash } else { !folds_hash },
@@ -11063,6 +11084,7 @@ impl Editor {
                     None
                 },
                 excerpt_syntax,
+                extra_spans,
             });
         }
         Arc::from(entries.into_boxed_slice())

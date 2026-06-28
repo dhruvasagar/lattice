@@ -697,6 +697,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         foldenable: false,
         last_edit: None,
         excerpt_syntax: excerpt_syntax_arc,
+        extra_spans: Arc::from([]),
     };
 
     // T.6.t: the host `Theme` struct is gone; `recompute_pane` reads

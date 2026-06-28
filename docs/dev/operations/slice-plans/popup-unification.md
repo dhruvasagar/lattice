@@ -186,8 +186,9 @@ construction, so existing GPUI rendering cannot regress).
   (TUI compose) + `gutter_text_signcolumn_no_drops_severity_and_diff_cells`
   (GPUI); default-`yes` body stays byte-identical (existing suite).
 
-### PU.1b-1 — attach markdown SyntaxHandle to help 🚧
+### PU.1b-1 — attach markdown SyntaxHandle to help ✅ (2026-06-28)
 
+Landed `30c7aa87`. Green: lattice-host 590, lattice-ui-tui 1501 (+1).
 Pure foundation; NO renderer change, NO visual change (bespoke
 renderers still read `HelpHighlights`). `register_help_document`
 (`crates/lattice-host/src/synthetic_buffers.rs`) attaches a live
@@ -207,14 +208,71 @@ renderers onto. `install_inmemory_syntax` widened to `pub(crate)`.
 - No GPUI / `Effect` / `DiffSignKind` / `host_theme` surface touched
   (host-side buffer registration only) — parity rule N/A this slice.
 
-### PU.1b-2 — in-pane help (State B) through compose 🗒
+### Fork 4 — help-link styling (locked 2026-06-28, Option D)
 
-Re-point `help_pane_render` to a content seam calling
-`compose_pane_lines` (renders cleanly now that help-mode sets
-`nonu`/`signcolumn=no`/`wrap`, and the matrix carries markdown colour
-from PU.1b-1). **Delete** `draw_help_in_pane`, `draw_inactive_help`.
-Confirm a help-content swap (link-follow / `<C-o>`) refreshes the
-matrix.
+The 2A "pixel-identical" claim overlooked help **links**:
+`extract_links_and_clean` strips the `[label](target)` markup *before*
+the markdown grammar runs (the user sees only `label`), then
+`overlay_link_styles` pushes `Style::Link` spans onto the label ranges.
+The cells-worker `DisplayMatrix` is built from the grammar on the
+*stripped* text, so it has no link spans — flipping in-pane help to the
+matrix would drop link styling (a visible regression). **Option D
+(matrix static-span merge)** chosen over Option A (per-renderer overlay
+band): help-link styling is *static* (content-fixed), so it belongs in
+the matrix's single styling source, not a dynamic per-frame overlay.
+
+> **UX:** pixel-identical, no regression (links keep `Style::Link`).
+> **Paramount #1 (perf):** merge runs once off-thread on matrix build,
+> O(visible lines), gated to buffers that carry the local; UI thread
+> does zero extra work.
+> **Paramount #3 (everything-is-a-buffer):** property-derived generic
+> `ExtraHighlights` local any buffer can carry — precedent is K.4.7
+> `excerpt_syntax` feeding the same build. No kind-branch.
+> **Heuristic #1 (long-term fit):** the display-line model's invariant
+> is "the matrix is the single source of glyph styling"; static styling
+> belongs in it, dynamic styling stays an overlay. Genuinely-better fit.
+> **Parity (`feedback_tui_gpui_parity`):** best — both renderers read
+> the shared matrix, so the merge needs zero GPUI code (no drift seam).
+
+### PU.1b-2a — generic ExtraHighlights matrix-merge infra ✅ (2026-06-28)
+
+Pure infra, INVISIBLE (no buffer carries the local yet → byte-identical
+for every pane). The generic seam Fork 4 needs.
+
+- ✅ `ExtraHighlights(Vec<Vec<StyledSpan>>)` buffer-local (`modes.rs`),
+  property-derived (owner `text-mode`, not help).
+- ✅ `build_display_matrix` gains an `extra_spans` param; the
+  `highlight_range` closure PREPENDS them onto the grammar spans (wins
+  `style_at_byte`'s first-match), incl. a no-grammar branch so a
+  handle-less buffer still shows static styling. `merge_extra_spans` +
+  `extra_spans_version` helpers.
+- ✅ `PaneCellsInputs.extra_spans`; `build_cells_panes` reads the local
+  and folds `extra_spans_version` into `MatrixVersion::syntax` so a
+  re-seed invalidates the cache. Incremental rebuild gated off when
+  `extra_spans` is non-empty (it reuses lines verbatim).
+- ✅ GPUI parity FREE (Option D): both renderers read the merged matrix;
+  no GPUI code touched.
+- ✅ Test: `extra_spans_merge_into_display_matrix_runs` (host) — a Link
+  span reaches the matrix runs and overrides; empty lines untouched.
+
+### PU.1b-2b — flip in-pane help (State B) to compose 🗒
+
+Now that the matrix carries markdown colour (PU.1b-1) + link styling
+(PU.1b-2a seam), route in-pane help through the document path:
+
+- Add `BufferKind::Help` to the `build_cells_panes` filter so in-pane
+  help panes get a `DisplayMatrix` (help is a Document → matrix "like
+  any document", per 2A).
+- Seed per-line link spans (from `metadata.links`) into `ExtraHighlights`
+  at `register_help_document`; re-seed + re-attach syntax on the swap
+  paths (`open_help_in_pane` re-seed / `swap_popup_content` /
+  `pop_popup_back`) so a link-follow / `<C-o>` swap refreshes the matrix.
+- Re-point `help_pane_render` to forward to `draw_buffer` /
+  `draw_inactive_document` (keeps `help_pane_status`; the provider
+  bundles render+status). **Delete** `draw_help_in_pane`,
+  `draw_inactive_help`.
+- Tests: in-pane help renders through `compose_pane_lines`; link styling
+  present in the matrix; a content swap refreshes; wrap/scroll work.
 
 ### PU.1b-3 — floating popup (State A) through compose 🗒
 

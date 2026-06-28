@@ -1553,7 +1553,11 @@ impl Element for EditorElement {
         // gutter, no content mask needed). Pinned to 0 under wrap.
         // Heading-split rows are left unoffset for now (they rarely
         // pan); full coverage is a follow-up.
-        let leftcol = if self.wrap_width == 0 { self.leftcol } else { 0 };
+        let leftcol = if prepaint.wrap_width == 0 {
+            self.leftcol
+        } else {
+            0
+        };
 
         // F.2 (Thread F): per-display-row vertical metrics for variable
         // row height. A row's height is `line_height * row_scale[i]`

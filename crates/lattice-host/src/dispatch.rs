@@ -16795,51 +16795,6 @@ impl Editor {
     /// previewing mode. Each variant maps to its visual
     /// effect; side-effecting / stateful variants short-
     /// circuit with no preview.
-    /// PU-fix: attach an ASYNC syntax handle to a buffer — like
-    /// [`Self::install_inmemory_syntax`] but WITHOUT the synchronous
-    /// `parse_at`. The first parse is scheduled on the syntax worker
-    /// (`request_reparse`) and lands off the actor thread; the buffer shows
-    /// plain text for a frame or two, then colours in (eventual
-    /// consistency, allowed by the keystroke contract). Used by picker
-    /// preview so highlighting never blocks the UI thread the way
-    /// `do_edit`'s synchronous parse did.
-    fn install_async_syntax(&mut self, id: BufferId, language_path: &std::path::Path) {
-        let lang = lattice_syntax::Lang::detect_from_path(Some(language_path));
-        let Some(snap) = self.buffers.document_handle(id).map(|h| h.snapshot()) else {
-            return;
-        };
-        let version = snap.text_version;
-        let handle: Option<lattice_syntax::SyntaxHandle> =
-            match lattice_syntax::Syntax::for_language_with_registry(
-                lang,
-                self.lang_registry.clone(),
-            ) {
-                Ok(Some(s)) => {
-                    // NO synchronous `parse_at` — schedule the first parse
-                    // on the worker instead.
-                    let al = self.async_landed.clone();
-                    let eb = self.event_bus.clone();
-                    let h = lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                        s,
-                        lattice_runtime::runtime::lsp_runtime().handle(),
-                        Some(std::sync::Arc::new(move || {
-                            al.notify_one();
-                            eb.publish_typed(crate::events::SyntaxReparsed);
-                        })),
-                    );
-                    // Full async parse from a clean baseline (no cached tree,
-                    // no incremental edits).
-                    h.request_reparse(0, version, snap.buffer.clone(), Vec::new());
-                    Some(h)
-                }
-                _ => None,
-            };
-        let locals = self.buffer_locals.entry(id).or_default();
-        locals.insert(crate::modes::DocumentSyntax(handle));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
-    }
-
     /// Bounded read for picker live-preview: at most `MAX_BYTES` from disk,
     /// lossy-UTF8, capped to `MAX_LINES`. `None` on read error. Bounded so
     /// previewing a giant or binary file can't block the actor thread
@@ -16937,15 +16892,28 @@ impl Editor {
         };
         let preview_id = self.ensure_preview_buffer();
         self.replace_owned_document_text(preview_id, &text);
-        // Async syntax highlight: attach a handle that parses off-thread
-        // (never the synchronous `parse_at` that froze `do_edit`). Re-attached
-        // per preview so the language tracks the previewed file; colours land
-        // a frame or two after the text (eventual consistency). Attached
-        // BEFORE `activate_document` so it loads into `self.syntax`.
-        self.install_async_syntax(preview_id, &path);
+        // Syntax highlight SYNCHRONOUSLY. Safe (unlike `do_edit`'s freeze)
+        // because the preview content is BOUNDED (see `read_preview_text`) —
+        // a parse of ≤256KB is fast — and it renders immediately instead of
+        // relying on the async land/notify path, which wasn't producing
+        // colours for the reusable preview buffer. Re-attached per preview so
+        // the language tracks the previewed file.
+        self.install_inmemory_syntax(preview_id, &text, &path);
         self.previewing = true;
         let changed = self.activate_document(preview_id);
         self.previewing = false;
+        // `activate_document` early-returns on a same-slot re-preview (the
+        // reused preview buffer is already the active document) and so does
+        // NOT reload `self.syntax` from the freshly re-attached handle —
+        // switching files would keep the PREVIOUS file's handle (stale /
+        // broken highlighting). `document_syntax_for(active)` reads
+        // `self.syntax`, so force it from the buffer-local we just seeded.
+        self.syntax = self
+            .buffer_locals
+            .get(&preview_id)
+            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+            .and_then(|s| s.0.clone());
+        self.last_parsed_text_version = self.document.text_version();
         self.position_preview_cursor(target_line);
         if changed {
             self.activate_buffer_state()
@@ -34707,6 +34675,44 @@ mod tests {
     /// overrides (`nonu`, `signcolumn=no`, `wrap`) apply. Regression guard
     /// for the user-reported bug: hover popups showed line numbers because
     /// `open_floating_popup` activated MarkdownMode but NOT help-mode.
+    /// Switching previewed files (the reusable slot) must update the ACTIVE
+    /// syntax handle. Regression guard for the user-reported "highlighting
+    /// breaks as I switch files": `activate_document` early-returns on a
+    /// same-slot re-preview, so `do_preview` must reload `self.syntax` from
+    /// the freshly re-attached handle — otherwise the previous file's handle
+    /// lingers.
+    #[test]
+    fn preview_switch_updates_active_syntax_handle() {
+        let dir = std::env::temp_dir()
+            .join(format!("lattice-preview-switch-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let txt = dir.join("plain.txt");
+        let md = dir.join("doc.md");
+        std::fs::write(&txt, "just text\n").unwrap();
+        std::fs::write(&md, "# heading\nbody\n").unwrap();
+        let mut e = Editor::boot(lattice_core::Document::empty());
+
+        // Preview the markdown file first → active handle is markdown.
+        let _ = e.do_preview(md, None);
+        let pid = e.preview_buffer.expect("preview slot");
+        let lang_md = e.document_syntax_for(pid).map(|h| h.snapshot().lang());
+        assert_eq!(
+            lang_md,
+            Some(lattice_syntax::Lang::Markdown),
+            "markdown preview → markdown syntax handle"
+        );
+        // Switch to the plain file in the SAME reusable slot. The active
+        // handle must update — NOT stay the stale markdown one.
+        let _ = e.do_preview(txt, None);
+        let lang_txt = e.document_syntax_for(pid).map(|h| h.snapshot().lang());
+        assert_ne!(
+            lang_txt,
+            Some(lattice_syntax::Lang::Markdown),
+            "switching files must update the active syntax handle (stale markdown handle would remain)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn floating_popup_activates_help_mode_minor_so_nonu() {
         let mut e = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));

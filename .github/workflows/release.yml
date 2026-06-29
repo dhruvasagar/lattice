@@ -137,6 +137,56 @@ jobs:
           fi
           rm -rf "$pkg"
 
+      - name: Install cargo-deb
+        if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Build .deb (GUI)
+        if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # cargo-deb's [assets] reference target/release/lattice; stage the
+          # GUI binary there so --no-build picks it up.
+          mkdir -p target/release
+          cp "target/${{ matrix.target }}/release/lattice" target/release/lattice
+          arch="${{ matrix.build }}"; arch="${arch%-linux}"
+          cargo deb -p lattice-cli --no-build --output "dist/lattice-gui-${VERSION}-${arch}.deb"
+
+      - name: Build AppImage (GUI)
+        if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends libfuse2
+          arch="${{ matrix.build }}"; arch="${arch%-linux}"   # x86_64 | aarch64
+          # linuxdeploy requires the icon basename to equal the desktop Icon= key.
+          cp assets/lattice.iconset/icon_256x256.png com.lattice-editor.lattice.png
+          mkdir -p AppDir/usr/bin
+          cp "target/${{ matrix.target }}/release/lattice" AppDir/usr/bin/lattice
+          curl -fsSLo linuxdeploy.AppImage \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${arch}.AppImage"
+          chmod +x linuxdeploy.AppImage
+          export ARCH="$arch"
+          export VERSION="$VERSION"
+          export OUTPUT="lattice-gui-${VERSION}-${arch}.AppImage"
+          export UPDATE_INFORMATION="gh-releases-zsync|dhruvasagar|lattice|latest|lattice-gui-*-${arch}.AppImage.zsync"
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            -e AppDir/usr/bin/lattice \
+            -d assets/linux/com.lattice-editor.lattice.desktop \
+            -i com.lattice-editor.lattice.png \
+            --output appimage
+          mkdir -p dist
+          mv "lattice-gui-${VERSION}-${arch}.AppImage" dist/
+          mv "lattice-gui-${VERSION}-${arch}.AppImage.zsync" dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.build }}

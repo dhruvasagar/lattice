@@ -16685,6 +16685,31 @@ impl Editor {
     /// slices 9-17), reverts to the pre-7g buffer-switcher-
     /// only path keyed on `RoutingPayload::Buffer`.
     pub fn preview_picker_selection(&mut self) -> Vec<RendererSignal> {
+        // No matches (e.g. the query filtered everything out) → there is no
+        // candidate to preview. Restore the ORIGINAL buffer the picker opened
+        // over (`preview_origin`) instead of leaving the previous match's
+        // preview on screen, which renders as stale "garbage". Extract the
+        // (has-candidate, origin) pair first so the `self.picker` borrow drops
+        // before the restore mutates `self`.
+        let (has_candidate, preview_origin) = match self.picker.as_ref() {
+            Some(p) => (p.selected_candidate().is_some(), p.preview_origin),
+            None => return Vec::new(),
+        };
+        if !has_candidate {
+            if let Some(origin) = preview_origin.map(BufferId)
+                && origin != self.active_pane_buffer_id()
+            {
+                self.previewing = true;
+                let needs = self.activate_buffer(origin);
+                self.previewing = false;
+                return if needs {
+                    self.activate_buffer_state()
+                } else {
+                    Vec::new()
+                };
+            }
+            return Vec::new();
+        }
         let Some(picker) = self.picker.as_ref() else {
             return Vec::new();
         };

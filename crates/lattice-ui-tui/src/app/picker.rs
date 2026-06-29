@@ -457,6 +457,42 @@ mod tests {
         assert_eq!(app.active_pane_buffer_id(), doc_id);
     }
 
+    /// Filtering the picker query down to ZERO matches must restore the
+    /// preview to the original buffer — not leave the previous candidate's
+    /// preview on screen (the user-reported "weird garbage" on no-match).
+    #[test]
+    fn picker_no_match_restores_origin_preview() {
+        let mut app = app_with("origin\n", 5);
+        let _a = app.open_help_in_pane(HelpContent::from_lines("alpha", vec!["a".into()]));
+        let _b = app.open_help_in_pane(HelpContent::from_lines("beta", vec!["b".into()]));
+        let doc_id = app
+            .editor
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        app.open_buffer_picker();
+        // Move off the origin so a non-origin candidate is being previewed.
+        app.apply(Action::PickerSelectNext);
+        assert_ne!(
+            app.active_pane_buffer_id(),
+            doc_id,
+            "a non-origin candidate is being previewed"
+        );
+        // Type a query that matches no buffer.
+        for c in "zzzz".chars() {
+            app.apply(Action::PickerAppend(c));
+        }
+        assert_eq!(
+            app.active_pane_buffer_id(),
+            doc_id,
+            "no-match preview must restore the origin buffer (not keep the stale candidate)"
+        );
+        app.apply(Action::PickerDismiss);
+    }
+
     #[test]
     fn picker_preview_does_not_pollute_position_history() {
         // Hover-previewing through several candidates should not

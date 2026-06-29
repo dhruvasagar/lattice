@@ -567,6 +567,14 @@ pub struct Editor {
     /// `nonu`/`signcolumn=no`/`wrap` help-mode options and renders through
     /// the shared compose seam (`PaneId::COMPLETION_DOCS`).
     pub completion_docs_buffer: Option<BufferId>,
+    /// Picker live-preview reusable slot. A single ephemeral, read-only
+    /// buffer the find-file (and other file-opening) picker previews load
+    /// content into as the selection changes — instead of running the full
+    /// `do_edit` open path per keystroke (which synchronously parses +
+    /// attaches LSP + leaks a registry buffer per candidate, freezing the
+    /// UI thread). `do_preview` reuses this one buffer; `do_edit` is
+    /// reserved for the final accept. GC'd on picker dismiss.
+    pub preview_buffer: Option<BufferId>,
     /// PU.5c: inner-rect geometry of the completion-docs side popup, fed
     /// back from the renderer each frame (the second synthetic popup, peer
     /// of `popup_viewport_*`). `build_cells_panes` reads them to size the

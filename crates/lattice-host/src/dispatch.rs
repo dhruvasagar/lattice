@@ -16795,6 +16795,131 @@ impl Editor {
     /// previewing mode. Each variant maps to its visual
     /// effect; side-effecting / stateful variants short-
     /// circuit with no preview.
+    /// Bounded read for picker live-preview: at most `MAX_BYTES` from disk,
+    /// lossy-UTF8, capped to `MAX_LINES`. `None` on read error. Bounded so
+    /// previewing a giant or binary file can't block the actor thread
+    /// (paramount #1) — a peek, not a load.
+    fn read_preview_text(path: &std::path::Path) -> Option<String> {
+        use std::io::Read;
+        const MAX_BYTES: usize = 256 * 1024;
+        const MAX_LINES: usize = 2000;
+        let mut f = std::fs::File::open(path).ok()?;
+        let mut buf = vec![0u8; MAX_BYTES];
+        let n = f.read(&mut buf).ok()?;
+        buf.truncate(n);
+        let text = String::from_utf8_lossy(&buf);
+        Some(text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// Create-or-reuse the single ephemeral picker-preview buffer. A plain
+    /// `BufferData::Document` with NO syntax handle (plain-text peek),
+    /// `{listed:false, hidden:true, ephemeral:true}` so it never shows in
+    /// `:ls` / `:bn` / `:bp`. One buffer reused across candidates — no
+    /// per-candidate leak.
+    fn ensure_preview_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.preview_buffer
+            && self.buffers.contains_document(id)
+        {
+            return id;
+        }
+        let id = BufferId::next();
+        let handle = lattice_runtime::spawn_document(
+            id,
+            lattice_core::Document::empty(),
+            self.registry.clone(),
+        );
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id,
+            flags: lattice_core::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: true,
+            },
+            data: crate::buffer_registry::BufferData::Document(
+                crate::buffer_registry::DocumentEntry { id, handle },
+            ),
+            name: Some("*preview*".to_string()),
+        });
+        self.seed_empty_document_locals(id);
+        self.preview_buffer = Some(id);
+        id
+    }
+
+    /// Picker live-preview a file WITHOUT the full [`Self::do_edit`] open
+    /// path. `do_edit` (real open: synchronous parse + LSP attach + a
+    /// persistent registry buffer) is reserved for the final accept; running
+    /// it per keystroke during find-file typing froze the UI thread. This
+    /// instead:
+    /// - activates the REAL buffer if the file is already open (already
+    ///   parsed + attached — richer + still cheap), else
+    /// - loads a BOUNDED slice into the single reusable ephemeral preview
+    ///   buffer ([`Self::ensure_preview_buffer`]) and activates that — no
+    ///   LSP, no synchronous parse (plain text), no per-candidate leak.
+    ///
+    /// `target_line` lands + centres the cursor for location previews
+    /// (`gr`, grep hits); `None` starts at the top. The `previewing` flag
+    /// suppresses position-history; origin restore + preview-buffer GC are
+    /// handled by [`Self::do_picker_dismiss`].
+    pub fn do_preview(
+        &mut self,
+        path: std::path::PathBuf,
+        target_line: Option<u32>,
+    ) -> Vec<RendererSignal> {
+        let path = normalize_user_path(&path);
+        // Already-open file: activate the real (parsed + attached) buffer.
+        if let Some(existing) = self.find_document_by_path(&path) {
+            self.previewing = true;
+            let changed = if existing != self.document_buffer_id {
+                self.activate_document(existing)
+            } else {
+                false
+            };
+            self.previewing = false;
+            self.position_preview_cursor(target_line);
+            return if changed {
+                self.activate_buffer_state()
+            } else {
+                self.snapshot_active_document();
+                Vec::new()
+            };
+        }
+        // Not open: bounded read into the reusable ephemeral slot.
+        let Some(text) = Self::read_preview_text(&path) else {
+            // Unreadable (binary / permissions / vanished) — leave the pane
+            // on whatever it was; the candidate is still selectable.
+            return Vec::new();
+        };
+        let preview_id = self.ensure_preview_buffer();
+        self.replace_owned_document_text(preview_id, &text);
+        self.previewing = true;
+        let changed = self.activate_document(preview_id);
+        self.previewing = false;
+        self.position_preview_cursor(target_line);
+        if changed {
+            self.activate_buffer_state()
+        } else {
+            // Same slot, swapped content: refresh the active snapshot so the
+            // new text renders on the next publish.
+            self.snapshot_active_document();
+            Vec::new()
+        }
+    }
+
+    /// Land the preview cursor: `Some(line)` centres on that line (location
+    /// previews), `None` starts at the top. Clamped to the active buffer.
+    fn position_preview_cursor(&mut self, target_line: Option<u32>) {
+        let snap = self.document.snapshot();
+        let line = target_line.unwrap_or(0).min(last_addressable_line(&snap.buffer));
+        self.cursor = lattice_protocol::Position::new(line, 0);
+        if target_line.is_some() {
+            self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        } else {
+            self.scroll = 0;
+            self.ensure_cursor_visible();
+        }
+    }
+
     fn preview_accept_action(
         &mut self,
         action: lattice_completion::AcceptAction,
@@ -16848,47 +16973,19 @@ impl Editor {
                     Vec::new()
                 }
             }
-            AcceptAction::JumpToFileLocation { path, line, col } => {
-                self.previewing = true;
-                let mut signals = Vec::new();
-                let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
-                if !same_buffer {
-                    let outcome = self.do_edit(Some(path.clone()), false);
-                    match outcome {
-                        DoEditOutcome::Opened(s)
-                        | DoEditOutcome::Activated(s)
-                        | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                        DoEditOutcome::Directory(_)
-                        | DoEditOutcome::NoFileName
-                        | DoEditOutcome::Failed => {}
-                    }
-                }
-                let snap = self.document.snapshot();
-                let target_line = line.min(last_addressable_line(&snap.buffer));
-                let line_len = snap.buffer.line_byte_len(target_line);
-                let target_col = col.min(line_len);
-                self.cursor = lattice_protocol::Position::new(target_line, target_col);
-                // Centre the previewed line (vim `zz`) — see the
-                // JumpInBuffer arm above. Same rationale for cross-file
-                // location previews (`gr` into another file, grep hits).
-                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
-                self.previewing = false;
-                signals
+            AcceptAction::JumpToFileLocation { path, line, col: _ } => {
+                // PU-fix: preview via the lightweight `do_preview` path
+                // (bounded read, no LSP attach, no sync parse, reusable
+                // ephemeral slot) — NOT `do_edit`, which froze the UI on
+                // every keystroke. The real open (LSP + parse) happens on
+                // accept. Col precision is an accept-time concern; preview
+                // centres on the line.
+                self.do_preview(path, Some(line))
             }
             AcceptAction::OpenFile { path } => {
-                self.previewing = true;
-                let mut signals = Vec::new();
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
-                    DoEditOutcome::Opened(s)
-                    | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
-                    DoEditOutcome::Directory(_)
-                    | DoEditOutcome::NoFileName
-                    | DoEditOutcome::Failed => {}
-                }
-                self.previewing = false;
-                signals
+                // PU-fix: lightweight preview (see JumpToFileLocation
+                // above). `do_edit` (real open) is reserved for accept.
+                self.do_preview(path, None)
             }
             // Side-effecting / irreversible / stateful — no
             // preview. The candidate stays selectable; preview
@@ -34527,6 +34624,56 @@ mod tests {
             e.buffers.document_handle(id).is_none(),
             "ephemeral buffer removed from the registry on dismiss"
         );
+    }
+
+    /// Picker live-preview must NOT run the full `do_edit` open path
+    /// (synchronous parse + LSP attach + a permanent registry buffer per
+    /// candidate — the cause of the find-file freeze). `do_preview` loads a
+    /// bounded slice into ONE reusable ephemeral buffer; `do_edit` is
+    /// reserved for the final accept.
+    #[test]
+    fn do_preview_uses_reusable_ephemeral_slot_not_do_edit() {
+        let dir = std::env::temp_dir().join(format!("lattice-preview-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f1 = dir.join("a.txt");
+        let f2 = dir.join("b.txt");
+        std::fs::write(&f1, "alpha\nbeta\n").unwrap();
+        std::fs::write(&f2, "gamma\ndelta\n").unwrap();
+        let mut e = Editor::boot(lattice_core::Document::empty());
+        let listed_before = e.buffers.listed_ids_sorted().len();
+
+        let _ = e.do_preview(f1.clone(), None);
+        let pid = e.preview_buffer.expect("preview slot created");
+        // Content is shown…
+        assert!(e.document.snapshot().buffer.as_string().contains("alpha"));
+        // …but the file was NOT opened as a real (by-path) buffer — that
+        // would mean `do_edit` ran (LSP attach + parse + leak).
+        assert!(
+            e.find_document_by_path(&f1).is_none(),
+            "preview must not open the file via do_edit"
+        );
+        assert!(
+            e.buffers.flags_of(pid).expect("flags").ephemeral,
+            "preview buffer is ephemeral"
+        );
+        assert_eq!(
+            e.buffers.listed_ids_sorted().len(),
+            listed_before,
+            "no listed buffer leaked by preview"
+        );
+
+        // Previewing a second file reuses the SAME slot (no per-candidate
+        // leak) with swapped content.
+        let _ = e.do_preview(f2.clone(), None);
+        assert_eq!(
+            e.preview_buffer,
+            Some(pid),
+            "reuses the one preview buffer across candidates"
+        );
+        assert!(e.document.snapshot().buffer.as_string().contains("gamma"));
+        assert!(e.find_document_by_path(&f2).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

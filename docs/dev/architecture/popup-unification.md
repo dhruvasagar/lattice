@@ -9,7 +9,8 @@ add reaches popups automatically with zero per-popup work and zero
 drift.
 
 The slice plan (sequencing, status) lives at
-`docs/dev/operations/slice-plans/popup-unification.md`.
+`docs/dev/operations/slice-plans/archive/popup-unification.md` (archived —
+the initiative is complete).
 
 ## 1. The drift this removes
 

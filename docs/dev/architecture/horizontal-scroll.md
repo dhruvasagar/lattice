@@ -6,7 +6,8 @@ to let the user pan to off-screen content. This is the horizontal twin
 of the vertical viewport model (`scroll` / `ensure_cursor_visible`).
 
 The slice plan (sequencing, status) lives at
-`docs/dev/operations/slice-plans/horizontal-scroll.md`.
+`docs/dev/operations/slice-plans/archive/horizontal-scroll.md` (archived —
+HS.1–HS.3 all landed).
 
 ## 1. Why this is a new axis, not a tweak
 

@@ -16811,41 +16811,6 @@ impl Editor {
         Some(text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n"))
     }
 
-    /// Create-or-reuse the single ephemeral picker-preview buffer. A plain
-    /// `BufferData::Document` with NO syntax handle (plain-text peek),
-    /// `{listed:false, hidden:true, ephemeral:true}` so it never shows in
-    /// `:ls` / `:bn` / `:bp`. One buffer reused across candidates — no
-    /// per-candidate leak.
-    fn ensure_preview_buffer(&mut self) -> BufferId {
-        if let Some(id) = self.preview_buffer
-            && self.buffers.contains_document(id)
-        {
-            return id;
-        }
-        let id = BufferId::next();
-        let handle = lattice_runtime::spawn_document(
-            id,
-            lattice_core::Document::empty(),
-            self.registry.clone(),
-        );
-        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
-        self.buffers.insert(crate::buffer_registry::BufferEntry {
-            id,
-            flags: lattice_core::BufferFlags {
-                listed: false,
-                hidden: true,
-                ephemeral: true,
-            },
-            data: crate::buffer_registry::BufferData::Document(
-                crate::buffer_registry::DocumentEntry { id, handle },
-            ),
-            name: Some("*preview*".to_string()),
-        });
-        self.seed_empty_document_locals(id);
-        self.preview_buffer = Some(id);
-        id
-    }
-
     /// Picker live-preview a file WITHOUT the full [`Self::do_edit`] open
     /// path. `do_edit` (real open: synchronous parse + LSP attach + a
     /// persistent registry buffer) is reserved for the final accept; running
@@ -16884,45 +16849,88 @@ impl Editor {
                 Vec::new()
             };
         }
-        // Not open: bounded read into the reusable ephemeral slot.
+        // Not open: install a BOUNDED slice into a FRESH ephemeral buffer the
+        // SAME way `do_edit` (`open_fresh_into_active_slot`) does — fresh
+        // `ActiveDocument` + `self.syntax` + `self.snapshot_cache` set
+        // together. That is the proven path that highlights; the prior
+        // reuse-buffer + `replace` + `activate` approach left the syntax
+        // disconnected from the rendered matrix (no colours). The ONLY
+        // differences from a real open: the read is BOUNDED (no freeze) and
+        // we do NOT publish `DocumentOpened` (no LSP attach). The real open +
+        // LSP happen on the final accept via `do_edit`.
         let Some(text) = Self::read_preview_text(&path) else {
             // Unreadable (binary / permissions / vanished) — leave the pane
-            // on whatever it was; the candidate is still selectable.
+            // as-is; the candidate stays selectable.
             return Vec::new();
         };
-        let preview_id = self.ensure_preview_buffer();
-        self.replace_owned_document_text(preview_id, &text);
-        // Syntax highlight SYNCHRONOUSLY. Safe (unlike `do_edit`'s freeze)
-        // because the preview content is BOUNDED (see `read_preview_text`) —
-        // a parse of ≤256KB is fast — and it renders immediately instead of
-        // relying on the async land/notify path, which wasn't producing
-        // colours for the reusable preview buffer. Re-attached per preview so
-        // the language tracks the previewed file.
-        self.install_inmemory_syntax(preview_id, &text, &path);
-        self.previewing = true;
-        let changed = self.activate_document(preview_id);
-        self.previewing = false;
-        // `activate_document` early-returns on a same-slot re-preview (the
-        // reused preview buffer is already the active document) and so does
-        // NOT reload `self.syntax` from the freshly re-attached handle —
-        // switching files would keep the PREVIOUS file's handle (stale /
-        // broken highlighting). `document_syntax_for(active)` reads
-        // `self.syntax`, so force it from the buffer-local we just seeded.
-        self.syntax = self
-            .buffer_locals
-            .get(&preview_id)
-            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
-            .and_then(|s| s.0.clone());
-        self.last_parsed_text_version = self.document.text_version();
-        self.position_preview_cursor(target_line);
-        if changed {
-            self.activate_buffer_state()
-        } else {
-            // Same slot, swapped content: refresh the active snapshot so the
-            // new text renders on the next publish.
-            self.snapshot_active_document();
-            Vec::new()
+        // Detect the language from the PREVIEW PATH (the in-memory
+        // `Document::from_text` below has no path of its own).
+        let lang = lattice_syntax::Lang::detect_from_path(Some(&path));
+        let new_doc = lattice_core::Document::from_text(&text);
+        let initial_text = new_doc.text();
+        let initial_text_version = new_doc.text_version();
+        // SYNC parse of the BOUNDED content (fast) so spans are available on
+        // the first publish, exactly like a real open. Safe because the read
+        // is capped (unlike `do_edit`'s unbounded read that froze).
+        let syntax: Option<lattice_syntax::SyntaxHandle> =
+            match lattice_syntax::Syntax::for_language_with_registry(
+                lang,
+                self.lang_registry.clone(),
+            ) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(&initial_text, initial_text_version);
+                    let al = self.async_landed.clone();
+                    let eb = self.event_bus.clone();
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        lattice_runtime::runtime::lsp_runtime().handle(),
+                        Some(std::sync::Arc::new(move || {
+                            al.notify_one();
+                            eb.publish_typed(crate::events::SyntaxReparsed);
+                        })),
+                    ))
+                }
+                _ => None,
+            };
+        // One preview buffer alive at a time: GC the previous before
+        // installing a fresh one (no per-candidate leak).
+        if let Some(prev) = self.preview_buffer.take() {
+            self.gc_ephemeral_buffer(prev);
         }
+        let new_id = lattice_core::BufferId::next();
+        let new_handle = lattice_runtime::spawn_document(new_id, new_doc, self.registry.clone());
+        let new_handle_arc: std::sync::Arc<dyn lattice_runtime::Document> =
+            std::sync::Arc::new(new_handle.clone());
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: new_id,
+            flags: lattice_core::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: true,
+            },
+            data: crate::buffer_registry::BufferData::Document(
+                crate::buffer_registry::DocumentEntry {
+                    id: new_id,
+                    handle: std::sync::Arc::clone(&new_handle_arc),
+                },
+            ),
+            name: Some("*preview*".to_string()),
+        });
+        self.seed_empty_document_locals(new_id);
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = lattice_core::BufferKind::Document;
+        self.document_buffer_id = new_id;
+        self.document = lattice_runtime::ActiveDocument::new(new_handle);
+        self.snapshot_cache = self.document.snapshot_cache();
+        self.syntax = syntax;
+        self.last_parsed_text_version = self.document.text_version();
+        self.preview_buffer = Some(new_id);
+        self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
+        self.pane_tree.active_mut().buffer_id = new_id;
+        self.position_preview_cursor(target_line);
+        // No `publish_document_opened_for_active()` → no LSP attach.
+        self.activate_buffer_state()
     }
 
     /// Land the preview cursor: `Some(line)` centres on that line (location
@@ -34675,40 +34683,53 @@ mod tests {
     /// overrides (`nonu`, `signcolumn=no`, `wrap`) apply. Regression guard
     /// for the user-reported bug: hover popups showed line numbers because
     /// `open_floating_popup` activated MarkdownMode but NOT help-mode.
-    /// Switching previewed files (the reusable slot) must update the ACTIVE
-    /// syntax handle. Regression guard for the user-reported "highlighting
-    /// breaks as I switch files": `activate_document` early-returns on a
-    /// same-slot re-preview, so `do_preview` must reload `self.syntax` from
-    /// the freshly re-attached handle — otherwise the previous file's handle
-    /// lingers.
+    /// End-to-end: a file preview renders syntax-highlighted spans. Guards
+    /// the user-reported "no highlighting during preview" — `do_preview`
+    /// installs a fresh `Document` + sync-parsed `self.syntax` (mirroring the
+    /// proven `do_edit` open path) so the cells worker's `DisplayMatrix`
+    /// carries styled runs, instead of the prior reuse-buffer path where the
+    /// syntax never reached the rendered matrix.
     #[test]
-    fn preview_switch_updates_active_syntax_handle() {
+    fn preview_renders_syntax_highlighting() {
         let dir = std::env::temp_dir()
-            .join(format!("lattice-preview-switch-{}", std::process::id()));
+            .join(format!("lattice-preview-hl-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let txt = dir.join("plain.txt");
         let md = dir.join("doc.md");
         std::fs::write(&txt, "just text\n").unwrap();
         std::fs::write(&md, "# heading\nbody\n").unwrap();
+        let _ = txt; // (switch is structurally safe now — fresh buffer per preview)
         let mut e = Editor::boot(lattice_core::Document::empty());
-
-        // Preview the markdown file first → active handle is markdown.
         let _ = e.do_preview(md, None);
+        e.publish_render_state();
         let pid = e.preview_buffer.expect("preview slot");
-        let lang_md = e.document_syntax_for(pid).map(|h| h.snapshot().lang());
-        assert_eq!(
-            lang_md,
-            Some(lattice_syntax::Lang::Markdown),
-            "markdown preview → markdown syntax handle"
-        );
-        // Switch to the plain file in the SAME reusable slot. The active
-        // handle must update — NOT stay the stale markdown one.
-        let _ = e.do_preview(txt, None);
-        let lang_txt = e.document_syntax_for(pid).map(|h| h.snapshot().lang());
-        assert_ne!(
-            lang_txt,
-            Some(lattice_syntax::Lang::Markdown),
-            "switching files must update the active syntax handle (stale markdown handle would remain)"
+        // Drive the cells worker for the preview pane (async in production) and
+        // assert the rendered DisplayMatrix carries syntax-highlighted spans —
+        // the end-to-end check the handle-attached assertion missed.
+        let cells = e.render_state.load_full().cells.load_full();
+        let pane = cells
+            .panes
+            .iter()
+            .find(|p| p.buffer_id == pid)
+            .expect("preview pane present in cells inputs");
+        let ct = crate::cells_worker::CellTheme {
+            resolved: &cells.resolved_theme,
+            ids: &cells.theme_ids,
+        };
+        let _ = crate::cells_worker::recompute_pane(pane, ct, &cells.whitespace);
+        let dm = pane.display_matrix.load_full();
+        let has_styled = (0..6u32).any(|line| {
+            dm.row_at_source_line(line)
+                .map(|r| {
+                    r.runs
+                        .iter()
+                        .any(|run| run.style != lattice_syntax::Style::Default)
+                })
+                .unwrap_or(false)
+        });
+        assert!(
+            has_styled,
+            "preview must render syntax-highlighted (non-Default) spans"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -34767,13 +34788,14 @@ mod tests {
             "no listed buffer leaked by preview"
         );
 
-        // Previewing a second file reuses the SAME slot (no per-candidate
-        // leak) with swapped content.
+        // Previewing a second file installs a FRESH preview buffer and GCs
+        // the previous one — one alive at a time, no per-candidate leak.
         let _ = e.do_preview(f2.clone(), None);
-        assert_eq!(
-            e.preview_buffer,
-            Some(pid),
-            "reuses the one preview buffer across candidates"
+        let pid2 = e.preview_buffer.expect("preview slot after switch");
+        assert_ne!(pid2, pid, "a fresh preview buffer per previewed file");
+        assert!(
+            e.buffers.document_handle(pid).is_none(),
+            "previous preview buffer is GC'd (no per-candidate leak)"
         );
         assert!(e.document.snapshot().buffer.as_string().contains("gamma"));
         assert!(e.find_document_by_path(&f2).is_none());

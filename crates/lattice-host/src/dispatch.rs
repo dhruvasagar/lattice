@@ -16795,6 +16795,51 @@ impl Editor {
     /// previewing mode. Each variant maps to its visual
     /// effect; side-effecting / stateful variants short-
     /// circuit with no preview.
+    /// PU-fix: attach an ASYNC syntax handle to a buffer — like
+    /// [`Self::install_inmemory_syntax`] but WITHOUT the synchronous
+    /// `parse_at`. The first parse is scheduled on the syntax worker
+    /// (`request_reparse`) and lands off the actor thread; the buffer shows
+    /// plain text for a frame or two, then colours in (eventual
+    /// consistency, allowed by the keystroke contract). Used by picker
+    /// preview so highlighting never blocks the UI thread the way
+    /// `do_edit`'s synchronous parse did.
+    fn install_async_syntax(&mut self, id: BufferId, language_path: &std::path::Path) {
+        let lang = lattice_syntax::Lang::detect_from_path(Some(language_path));
+        let Some(snap) = self.buffers.document_handle(id).map(|h| h.snapshot()) else {
+            return;
+        };
+        let version = snap.text_version;
+        let handle: Option<lattice_syntax::SyntaxHandle> =
+            match lattice_syntax::Syntax::for_language_with_registry(
+                lang,
+                self.lang_registry.clone(),
+            ) {
+                Ok(Some(s)) => {
+                    // NO synchronous `parse_at` — schedule the first parse
+                    // on the worker instead.
+                    let al = self.async_landed.clone();
+                    let eb = self.event_bus.clone();
+                    let h = lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        lattice_runtime::runtime::lsp_runtime().handle(),
+                        Some(std::sync::Arc::new(move || {
+                            al.notify_one();
+                            eb.publish_typed(crate::events::SyntaxReparsed);
+                        })),
+                    );
+                    // Full async parse from a clean baseline (no cached tree,
+                    // no incremental edits).
+                    h.request_reparse(0, version, snap.buffer.clone(), Vec::new());
+                    Some(h)
+                }
+                _ => None,
+            };
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(handle));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+    }
+
     /// Bounded read for picker live-preview: at most `MAX_BYTES` from disk,
     /// lossy-UTF8, capped to `MAX_LINES`. `None` on read error. Bounded so
     /// previewing a giant or binary file can't block the actor thread
@@ -16892,6 +16937,12 @@ impl Editor {
         };
         let preview_id = self.ensure_preview_buffer();
         self.replace_owned_document_text(preview_id, &text);
+        // Async syntax highlight: attach a handle that parses off-thread
+        // (never the synchronous `parse_at` that froze `do_edit`). Re-attached
+        // per preview so the language tracks the previewed file; colours land
+        // a frame or two after the text (eventual consistency). Attached
+        // BEFORE `activate_document` so it loads into `self.syntax`.
+        self.install_async_syntax(preview_id, &path);
         self.previewing = true;
         let changed = self.activate_document(preview_id);
         self.previewing = false;
@@ -34635,10 +34686,10 @@ mod tests {
     fn do_preview_uses_reusable_ephemeral_slot_not_do_edit() {
         let dir = std::env::temp_dir().join(format!("lattice-preview-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let f1 = dir.join("a.txt");
-        let f2 = dir.join("b.txt");
-        std::fs::write(&f1, "alpha\nbeta\n").unwrap();
-        std::fs::write(&f2, "gamma\ndelta\n").unwrap();
+        let f1 = dir.join("a.md");
+        let f2 = dir.join("b.md");
+        std::fs::write(&f1, "# alpha\nbeta\n").unwrap();
+        std::fs::write(&f2, "# gamma\ndelta\n").unwrap();
         let mut e = Editor::boot(lattice_core::Document::empty());
         let listed_before = e.buffers.listed_ids_sorted().len();
 
@@ -34646,6 +34697,12 @@ mod tests {
         let pid = e.preview_buffer.expect("preview slot created");
         // Content is shown…
         assert!(e.document.snapshot().buffer.as_string().contains("alpha"));
+        // …with an ASYNC syntax handle attached (highlighting wired — parses
+        // off-thread, no synchronous parse on the actor thread).
+        assert!(
+            e.document_syntax_for(pid).is_some(),
+            "preview attaches a syntax handle for highlighting"
+        );
         // …but the file was NOT opened as a real (by-path) buffer — that
         // would mean `do_edit` ran (LSP attach + parse + leak).
         assert!(

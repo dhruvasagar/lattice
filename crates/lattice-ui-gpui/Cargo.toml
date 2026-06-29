@@ -60,6 +60,14 @@ lattice-config = { path = "../lattice-config" }
 # pattern-matched by `build_terminal_inner` to translate the
 # alacritty-published snapshot to gpui `Rgba` + text styling.
 lattice-terminal = { path = "../lattice-terminal" }
+# Oil + file-tree pane rendering (parity with the TUI's `draw_oil_pane`
+# / `draw_file_tree_pane`). Oil content + entries come through the host
+# registry's `with_oil` accessor (no type dep needed); the file-tree
+# per-entry path/kind lives in the `FileTreeEntries` buffer-local, so the
+# renderer names `lattice_file_tree::modes::FileTreeEntries` +
+# `FileTreeEntry` / `FileTreeEntryKind` to read them from the shared
+# `buffer_locals` typemap.
+lattice-file-tree = { path = "../lattice-file-tree" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

@@ -325,6 +325,64 @@ fn bottom_row_content(
     }
 }
 
+/// Upper bound on rows materialised for entry-list panes (oil /
+/// file-tree) when the host hasn't yet published a per-pane
+/// `viewport_height` (e.g. the very first frame). Keeps paint O(viewport)
+/// instead of O(directory-size) on huge listings (paramount goal #1).
+const VIEWPORT_ROWS_FALLBACK: usize = 200;
+
+/// Map a renderer-neutral [`lattice_core::ui::icons::IconColor`] to a
+/// packed `0xRRGGBB` for GPUI's `rgb()`. Mirrors the TUI peer's
+/// `to_ratatui_color`; the named colours resolve to the default
+/// (Catppuccin Mocha) palette so file-type icons read the same hue across
+/// renderers. `Reset` falls back to the document foreground. Pure, so the
+/// mapping is unit-testable without a gpui render context.
+fn icon_color_to_rgb(c: lattice_core::ui::icons::IconColor, default_fg: u32) -> u32 {
+    use lattice_core::ui::icons::IconColor;
+    match c {
+        IconColor::Rgb(rgb) => rgb,
+        IconColor::Reset => default_fg,
+        IconColor::Yellow => 0x00f9_e2af,
+        IconColor::DarkGray => 0x006c_7086,
+        IconColor::Blue => 0x0089_b4fa,
+        IconColor::Cyan => 0x0094_e2d5,
+        IconColor::Green => 0x00a6_e3a1,
+        IconColor::White => 0x00cd_d6f4,
+    }
+}
+
+/// Foreground colour for a file-entry row (oil / file-tree), matching the
+/// TUI peer's `icon_for_entry`: **directories** and **dotfiles** take their
+/// themeable `file_tree.dir` / `file_tree.hidden` registry roles — so the
+/// built-in themes style them and both renderers resolve the SAME colour —
+/// while every other file keeps the fixed devicon brand hue from
+/// `entry_visual`. The roles already live in the shared `lattice-theme`
+/// registry (`register_builtins`); this just consumes them, exactly as the
+/// TUI side does via `ids.file_tree_*`.
+fn entry_fg(
+    rs_guard: &lattice_host::render_state::RenderState,
+    is_dir: bool,
+    is_hidden: bool,
+    icol: lattice_core::ui::icons::IconColor,
+    default_fg: u32,
+) -> u32 {
+    let role = |id| {
+        rs_guard
+            .resolved_theme
+            .get(id)
+            .fg
+            .map(|c| c.to_rgb_u32(default_fg))
+            .unwrap_or(default_fg)
+    };
+    if is_dir {
+        role(rs_guard.theme_ids.file_tree_dir)
+    } else if is_hidden {
+        role(rs_guard.theme_ids.file_tree_hidden)
+    } else {
+        icon_color_to_rgb(icol, default_fg)
+    }
+}
+
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
     // Slice 3c.final.B.10: typed-options registry via published
     // `options()` sub-state — wait-free Arc clone.
@@ -1320,6 +1378,35 @@ impl EditorView {
                 inactive_pane_opacity(&self.app),
             );
         }
+        // Oil + file-tree are non-`Document` buffer kinds: their content
+        // lives in `BufferData::Oil` / `BufferData::FileTree`, not behind
+        // `document_handle`, so they need their own inner builders (the
+        // TUI peer renders them via the M.4 pane-render providers
+        // `oil_pane_render` / `file_tree_pane_render`). Handled inline here
+        // for the same reason Terminal is — the GPUI M.4 provider registry
+        // is a later slice (see `pane_chrome` doc). Both flow through the
+        // shared `pane_chrome` wrapper so the modeline row is reserved
+        // uniformly [[feedback_buffers_no_special_case]].
+        if matches!(pane.buffer, lattice_core::BufferKind::Oil) {
+            let inner = self.build_oil_inner(pane, &rs_guard, theme, is_active);
+            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
+            return Self::pane_chrome(
+                inner,
+                status_row,
+                is_active,
+                inactive_pane_opacity(&self.app),
+            );
+        }
+        if matches!(pane.buffer, lattice_core::BufferKind::FileTree) {
+            let inner = self.build_file_tree_inner(pane, &rs_guard, theme, is_active);
+            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
+            return Self::pane_chrome(
+                inner,
+                status_row,
+                is_active,
+                inactive_pane_opacity(&self.app),
+            );
+        }
         // Resolve the buffer's document handle. Inactive panes may
         // reference buffers different from `editor.document`; the
         // registry clone on `rs_guard.buffers` shares the editor's
@@ -2137,6 +2224,190 @@ impl EditorView {
             render_active,
             inactive_pane_opacity(&self.app),
         )
+    }
+
+    /// Build the inner content of an **oil** pane (flat editable directory
+    /// listing). Parity with the TUI peer's `draw_oil_pane`: one row per
+    /// visible entry, a file-type icon glyph prepended to the bare name,
+    /// the cursor row highlighted block-style. Oil content + the
+    /// `(name, is_dir)` pairs come straight from the host registry's
+    /// `with_oil` accessor (no oil type dep needed); the icon glyph +
+    /// colour resolve through the shared `entry_visual` so TUI/GPUI agree.
+    ///
+    /// Like every other kind, the caller wraps this via
+    /// [`Self::pane_chrome`] so the listing can never paint past the
+    /// modeline [[feedback_buffers_no_special_case]]. Rows are bounded to
+    /// the pane's `viewport_height` so paint stays O(viewport), not
+    /// O(directory-size) (paramount goal #1).
+    fn build_oil_inner(
+        &self,
+        pane: &PaneState,
+        rs_guard: &lattice_host::render_state::RenderState,
+        theme: &GpuiTheme,
+        is_active: bool,
+    ) -> AnyElement {
+        let oil = rs_guard.buffers.registry.with_oil(pane.buffer_id, |o| {
+            (
+                o.content.as_string(),
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| (e.name.clone(), e.is_dir))
+                    .collect::<Vec<(String, bool)>>(),
+            )
+        });
+        let Some((raw_text, entries)) = oil else {
+            return div()
+                .bg(rgb(theme.background))
+                .text_color(rgb(theme.foreground))
+                .child(format!("(oil buffer {:?} unavailable)", pane.buffer_id))
+                .into_any_element();
+        };
+        let (cursor_line, scroll) = if is_active {
+            let ad = rs_guard.active_document.load();
+            (ad.cursor.line as usize, ad.scroll as usize)
+        } else {
+            (pane.cursor.line as usize, pane.scroll as usize)
+        };
+        let nerd_fonts = rs_guard
+            .options
+            .config
+            .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
+        let viewport = if pane.viewport_height > 0 {
+            pane.viewport_height as usize
+        } else {
+            VIEWPORT_ROWS_FALLBACK
+        };
+        let rows: Vec<gpui::Div> = raw_text
+            .split('\n')
+            .enumerate()
+            .skip(scroll)
+            .take(viewport)
+            .map(|(i, name_str)| {
+                let line_idx = scroll + i;
+                let is_cursor = is_active && line_idx == cursor_line;
+                // `entry_visual` only inspects `file_name()` / extension, so a
+                // bare relative name resolves the same icon as a full path —
+                // no need to join the OilDir.
+                let (name, is_dir) = entries
+                    .get(line_idx)
+                    .cloned()
+                    .unwrap_or_else(|| (name_str.to_string(), false));
+                let (glyph, icol) = lattice_core::ui::icons::entry_visual(
+                    std::path::Path::new(&name),
+                    is_dir,
+                    nerd_fonts,
+                );
+                let is_hidden = name.starts_with('.');
+                let fg = if is_cursor {
+                    theme.cursor_foreground
+                } else {
+                    entry_fg(rs_guard, is_dir, is_hidden, icol, theme.foreground)
+                };
+                let mut row = div().text_color(rgb(fg)).child(format!("{glyph}{name_str}"));
+                if is_cursor {
+                    row = row.bg(rgb(theme.cursor_background));
+                }
+                row
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme.background))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Build the inner content of a **file-tree** pane. Parity with the
+    /// TUI peer's `draw_file_tree_pane`: the rope content already carries
+    /// the indentation + `▾`/`▸` expansion markers, so each visible line
+    /// is rendered verbatim and only *colour-tinted* per entry (the icon
+    /// glyph is not prepended — the tree markers already convey kind). The
+    /// per-entry path/kind comes from the `FileTreeEntries` buffer-local
+    /// (host-populated); the colour resolves through the shared
+    /// `entry_visual`. Bounded to `viewport_height` like the oil builder.
+    fn build_file_tree_inner(
+        &self,
+        pane: &PaneState,
+        rs_guard: &lattice_host::render_state::RenderState,
+        theme: &GpuiTheme,
+        is_active: bool,
+    ) -> AnyElement {
+        let raw_text = rs_guard
+            .buffers
+            .registry
+            .with_file_tree(pane.buffer_id, |t| t.content.as_string());
+        let Some(raw_text) = raw_text else {
+            return div()
+                .bg(rgb(theme.background))
+                .text_color(rgb(theme.foreground))
+                .child(format!("(file-tree buffer {:?} unavailable)", pane.buffer_id))
+                .into_any_element();
+        };
+        let entries: Vec<lattice_file_tree::FileTreeEntry> = rs_guard
+            .buffer_locals
+            .map
+            .get(&pane.buffer_id)
+            .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeEntries>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        let (cursor_line, scroll) = if is_active {
+            let ad = rs_guard.active_document.load();
+            (ad.cursor.line as usize, ad.scroll as usize)
+        } else {
+            (pane.cursor.line as usize, pane.scroll as usize)
+        };
+        let nerd_fonts = rs_guard
+            .options
+            .config
+            .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
+        let viewport = if pane.viewport_height > 0 {
+            pane.viewport_height as usize
+        } else {
+            VIEWPORT_ROWS_FALLBACK
+        };
+        let rows: Vec<gpui::Div> = raw_text
+            .split('\n')
+            .enumerate()
+            .zip(entries.iter())
+            .skip(scroll)
+            .take(viewport)
+            .map(|((i, raw_line), entry)| {
+                let line_idx = scroll + i;
+                let is_cursor = is_active && line_idx == cursor_line;
+                let is_dir = matches!(
+                    entry.kind,
+                    lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                );
+                let (_glyph, icol) =
+                    lattice_core::ui::icons::entry_visual(&entry.path, is_dir, nerd_fonts);
+                let is_hidden = entry
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'));
+                let fg = if is_cursor {
+                    theme.cursor_foreground
+                } else {
+                    entry_fg(rs_guard, is_dir, is_hidden, icol, theme.foreground)
+                };
+                let mut row = div().text_color(rgb(fg)).child(raw_line.to_string());
+                if is_cursor {
+                    row = row.bg(rgb(theme.cursor_background));
+                }
+                row
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme.background))
+            .children(rows)
+            .into_any_element()
     }
 
     /// Issue #40 / Terminal-mode T1: build the inner content of a
@@ -4313,5 +4584,48 @@ mod modeline_tests {
         assert!(super::global_bottom_row_visible(true, false));
         // No picker at all → keep.
         assert!(super::global_bottom_row_visible(false, false));
+    }
+
+    /// `icon_color_to_rgb` maps the renderer-neutral named `IconColor`s
+    /// (the non-`Rgb` devicon fallbacks) to the default GPUI palette, and
+    /// passes `Rgb(_)` through untouched. `Reset` defers to the supplied
+    /// document foreground. Pins the colour adapter the oil / file-tree
+    /// builders use for regular-file devicon hues.
+    #[test]
+    fn icon_color_to_rgb_maps_named_palette_and_passes_rgb_through() {
+        use lattice_core::ui::icons::IconColor;
+        assert_eq!(super::icon_color_to_rgb(IconColor::Rgb(0xDEA584), 0x111111), 0xDEA584);
+        assert_eq!(super::icon_color_to_rgb(IconColor::Reset, 0x123456), 0x123456);
+        assert_eq!(super::icon_color_to_rgb(IconColor::Blue, 0), 0x0089_b4fa);
+        assert_eq!(super::icon_color_to_rgb(IconColor::Green, 0), 0x00a6_e3a1);
+        assert_eq!(super::icon_color_to_rgb(IconColor::Yellow, 0), 0x00f9_e2af);
+    }
+
+    /// The oil / file-tree builders colour directories and dotfiles from
+    /// the shared `file_tree.dir` / `file_tree.hidden` theme roles (so
+    /// built-in themes drive them and TUI/GPUI agree). This pins that the
+    /// roles exist and are themed under the default palette — dir is blue +
+    /// bold, hidden is dim grey, and regular `file_tree.file` carries no
+    /// override (regular files keep their devicon hue).
+    #[test]
+    fn file_tree_entry_roles_are_themed_in_default_palette() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+
+        let dir = resolved.get(ids.file_tree_dir);
+        assert!(dir.fg.is_some(), "file_tree.dir must carry a themed fg");
+        assert!(dir.modifiers.bold, "file_tree.dir is bold");
+
+        let hidden = resolved.get(ids.file_tree_hidden);
+        assert!(hidden.fg.is_some(), "file_tree.hidden must carry a themed fg");
+        assert_ne!(
+            dir.fg.unwrap().to_rgb_u32(0),
+            hidden.fg.unwrap().to_rgb_u32(0),
+            "dir and hidden resolve to distinct hues"
+        );
+
+        // Regular files carry no override — the devicon hue shows through.
+        assert!(resolved.get(ids.file_tree_file).fg.is_none());
     }
 }

@@ -164,13 +164,22 @@ pub(crate) fn popup_inner_cols(popup_w_px: f32, rem: f32, glyph_advance_px: f32)
     ((popup_w_px - chrome) / glyph_advance_px).floor().max(1.0) as u32
 }
 
-/// Pixel height the popup body is locked to (so its rendered
-/// content cannot exceed `popup_inner_height_rows` × `row_px`).
-/// Passed to the body div's `min_h == max_h` so flex layout
-/// can't oversize the body and push rows past the popup's
-/// bottom edge.
+/// Pixel height the popup body div is locked to. Uses the FULL available
+/// inner height (`popup_h_px − chrome`), NOT `inner_rows × row_px`.
+///
+/// The body paints exactly [`popup_inner_height_rows`] rows via its
+/// `EditorElement`, but that element lays each row out at its OWN
+/// `line_height` (`font_size × 1.3`), which GPUI rounds to physical pixels.
+/// Flooring the body to `inner_rows × estimated_row_px` left ZERO vertical
+/// slack, so the accumulated rounding pushed the last row a sub-pixel past
+/// the locked body and `overflow_hidden` clipped it — the last line rendered
+/// "partially behind" the bottom edge once `G` parked the cursor on it.
+/// Claiming the full inner height keeps the floor remainder (< one row) as
+/// harmless slack below the last row, absorbing the rounding. The row COUNT
+/// (scroll / matrix / cursor clamp) is still `popup_inner_height_rows`, so
+/// the content fills the popup; only the body div's lock loosens.
 pub(crate) fn popup_body_h_px(popup_h_px: f32, rem: f32, row_px: f32) -> f32 {
-    popup_inner_height_rows(popup_h_px, rem, row_px) as f32 * row_px
+    (popup_h_px - popup_chrome_v_px(rem, row_px)).max(row_px)
 }
 
 /// Reads the typed `picker.display` option and returns `true` iff
@@ -4139,6 +4148,47 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 // `lattice_host::cursor_shape::tests`; the GPUI peer's local
 // duplicates were removed. Window-side tests (popup focus, dispatch
 // integration) still live in `crate::tests` at the lib's root.
+
+#[cfg(test)]
+mod popup_geometry_tests {
+    use super::{popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
+
+    /// The popup body div must hold every inner row WITH slack, and never
+    /// overflow the popup. Regression guard for the "last line partially
+    /// behind on G" bug: flooring the body to `inner_rows × row_px` left
+    /// zero slack, so the EditorElement's per-row pixel rounding pushed the
+    /// last row past the locked body (clipped by `overflow_hidden`).
+    #[test]
+    fn popup_body_carries_row_rounding_slack_without_overflow() {
+        let rem = 16.0;
+        for &row_px in &[16.0_f32, 18.2, 20.0] {
+            for &h in &[240.0_f32, 400.0, 600.0] {
+                let rows = popup_inner_height_rows(h, rem, row_px);
+                let body = popup_body_h_px(h, rem, row_px);
+                // Holds every inner row...
+                assert!(
+                    body >= rows as f32 * row_px,
+                    "body {body} must fit {rows} rows ({}) @ row_px={row_px} h={h}",
+                    rows as f32 * row_px
+                );
+                // ...and never overflows the popup's outer height (body +
+                // chrome ≤ popup height).
+                assert!(
+                    body + popup_chrome_v_px(rem, row_px) <= h + 0.01,
+                    "body+chrome must fit popup h={h}"
+                );
+            }
+        }
+        // With a non-row-aligned height there is genuine slack (the floor
+        // remainder) — what absorbs the EditorElement's rounding.
+        let body = popup_body_h_px(600.0, rem, 18.0);
+        let rows = popup_inner_height_rows(600.0, rem, 18.0);
+        assert!(
+            body > rows as f32 * 18.0,
+            "expected rounding slack; re-flooring the body would regress the clip"
+        );
+    }
+}
 
 #[cfg(test)]
 mod modeline_tests {

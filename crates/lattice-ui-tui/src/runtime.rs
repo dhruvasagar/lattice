@@ -200,6 +200,25 @@ enum Wake {
 fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut Option<Instant>) {
     match ev {
         Event::Key(k) => {
+            // Esc dismisses an open floating popup (hover / signature /
+            // `:describe-*`) even when the DOCUMENT keeps focus (State A) —
+            // mirrors the GPUI peer's `on_key_down` gate (window.rs). Without
+            // this, Esc only closed the popup once focus had moved into it
+            // (State B) or on cursor motion (HoverMode auto-dismiss); plain
+            // `<Esc>` over the document did nothing. Gated to State A
+            // (`buffer_kind != Help`) so a FOCUSED popup (State B) keeps the
+            // normal Esc path, where in-popup sub-modes (search, …) can
+            // cancel first before the popup closes.
+            if matches!(k.code, crossterm::event::KeyCode::Esc)
+                && app.popup().is_open()
+                && app.ad().buffer_kind != crate::buffers::BufferKind::Help
+            {
+                app.dismiss_popup();
+                if perf_input {
+                    *last_input_at = Some(Instant::now());
+                }
+                return;
+            }
             // Slice 3c.final.B (group 5): translator inputs read through
             // `rs.translator` instead of `&app.editor.{builtins,keymap,
             // partial_chord}`. The Arc-bound substate keeps the borrows valid
@@ -703,6 +722,34 @@ mod tests {
             app.ad().modal,
             ModalState::Normal,
             "repaint must not change modal"
+        );
+    }
+
+    /// `<Esc>` dismisses an open floating popup even when the DOCUMENT keeps
+    /// focus (State A) — the GPUI peer already does this; the TUI used to
+    /// only close on State-B Esc or cursor motion. Regression guard for the
+    /// user-reported "Esc doesn't close the hover popup" bug.
+    #[test]
+    fn esc_dismisses_floating_popup_in_state_a() {
+        let mut app = App::new(Document::from_text("fn main() {}\n"));
+        let content = crate::help::HelpContent::from_lines("hover", vec!["doc".to_string()]);
+        app.open_floating_popup(content, lattice_core::ui::popup::PopupPlacement::CursorAnchored);
+        assert!(app.popup().is_open(), "floating popup open");
+        assert_ne!(
+            app.ad().buffer_kind,
+            crate::buffers::BufferKind::Help,
+            "State A: document keeps focus (popup not focused)"
+        );
+        let mut last = None;
+        apply_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            false,
+            &mut last,
+        );
+        assert!(
+            !app.popup().is_open(),
+            "Esc over the document must dismiss the floating popup (State A)"
         );
     }
 

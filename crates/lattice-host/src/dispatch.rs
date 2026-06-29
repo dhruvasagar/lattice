@@ -20253,6 +20253,8 @@ impl Editor {
         self.popup_placement = placement;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        // Markdown as the MAJOR (the content is markdown; highlighting also
+        // rides the `SyntaxHandle` seeded by `register_help_document`).
         let _ = self.mode_registry.activate_major(
             &mut active,
             &self.mode_guards,
@@ -20263,6 +20265,24 @@ impl Editor {
             lattice_syntax::MarkdownMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),
         );
+        // help-mode MINOR — the same default minor `:help` gets
+        // (`default_minor_mode_id_for_buffer_kind(Help)`). It carries
+        // help-mode's option overrides (`nonu`, `signcolumn=no`, `wrap`) +
+        // read-only + link/anchor follow. WITHOUT it the floating popup
+        // (hover / signature help) rendered WITH line numbers (the
+        // user-reported bug: it bypassed the PU help-mode option path that
+        // `:help` goes through). HelpMode is a MINOR, not a major.
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            crate::modes::HelpMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        // hover-specific minor (auto-dismiss on cursor motion, …).
         let _ = self.mode_registry.activate_minor(
             &mut active,
             &self.mode_guards,
@@ -34682,6 +34702,28 @@ mod tests {
     /// candidate — the cause of the find-file freeze). `do_preview` loads a
     /// bounded slice into ONE reusable ephemeral buffer; `do_edit` is
     /// reserved for the final accept.
+    /// Hover / signature (the floating popup via `open_floating_popup`)
+    /// must activate the help-mode MINOR — same as `:help` — so its option
+    /// overrides (`nonu`, `signcolumn=no`, `wrap`) apply. Regression guard
+    /// for the user-reported bug: hover popups showed line numbers because
+    /// `open_floating_popup` activated MarkdownMode but NOT help-mode.
+    #[test]
+    fn floating_popup_activates_help_mode_minor_so_nonu() {
+        let mut e = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
+        let content =
+            lattice_help::HelpContent::from_lines("hover", vec!["doc body".to_string()]);
+        let _ = e.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        let pid = e.popup_buffer.expect("floating popup open");
+        assert!(
+            e.minor_mode_enabled_for(pid, crate::modes::HelpMode::mode_id()),
+            "floating popup must activate the help-mode minor"
+        );
+        assert!(
+            !*e.resolved_option::<lattice_config::Number>(pid),
+            "floating popup is nonu via help-mode (no line numbers)"
+        );
+    }
+
     #[test]
     fn do_preview_uses_reusable_ephemeral_slot_not_do_edit() {
         let dir = std::env::temp_dir().join(format!("lattice-preview-{}", std::process::id()));

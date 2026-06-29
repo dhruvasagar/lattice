@@ -5716,6 +5716,77 @@ mod tests {
     use crate::app::App;
     use lattice_core::Document;
 
+    /// PU.1b-3 regression (link styling): the FLOATING help popup must
+    /// render its markdown/link styling end-to-end. `:describe-command`
+    /// emits a source link and opens a focused (State B) popup. The popup
+    /// content lives in the registry (help is never `activate_document`'d
+    /// as `self.document`), so the synthetic `PaneId::POPUP` pane must
+    /// source its snapshot from the registry handle — NOT `self.document`,
+    /// which still points at the underlying buffer. We drive the cells
+    /// worker for the popup pane, compose the popup interior the way
+    /// `draw_help_overlay` does, and assert a span carries the resolved
+    /// `Style::Link` style (not the unstyled plain-text fallback).
+    #[test]
+    fn floating_popup_composes_link_styling_end_to_end() {
+        use lattice_core::ui::pane::PaneId;
+        let mut a = App::new(Document::from_text("xx\n"));
+        a.set_viewport_height(20);
+        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.modal = ModalState::Command;
+        a.apply(crate::app::Action::CommandLineSubmit);
+        let popup_id = a.editor.popup_buffer.expect("floating popup open");
+        // Renderer normally feeds this from the runtime loop.
+        a.editor.popup_viewport_height = 30;
+        a.editor.popup_viewport_width = 100;
+        a.editor.publish_render_state();
+        // Drive the cells worker for the synthetic popup pane (sim async).
+        let cells = a.editor.render_state.load().cells.load_full();
+        let pop = cells
+            .panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("synthetic popup pane present");
+        let ct = lattice_host::cells_worker::CellTheme {
+            resolved: &cells.resolved_theme,
+            ids: &cells.theme_ids,
+        };
+        let _ = lattice_host::cells_worker::recompute_pane(pop, ct, &cells.whitespace);
+        // Compose the popup interior the way draw_help_overlay does.
+        let handle = a
+            .buffers()
+            .registry
+            .document_handle(popup_id)
+            .expect("popup buffer in registry");
+        let snap = handle.snapshot();
+        let view = FrameView::for_buffer(&a, popup_id);
+        let ctx = PaneComposeCtx {
+            is_active: true,
+            pane_id: PaneId::POPUP,
+            buffer_id: popup_id,
+            cursor_line: a.ad().cursor.line,
+            scroll: a.ad().scroll,
+            leftcol: a.ad().leftcol,
+            display_line_numbers: handle.display_line_numbers(),
+        };
+        let lines = compose_pane_lines(&view, &snap, 30, 100, &ctx);
+        let link_style = crate::theme::host_style_to_ratatui(
+            lattice_host::ui::theme::resolve_syntax_style(
+                &cells.resolved_theme,
+                &cells.theme_ids,
+                lattice_syntax::Style::Link,
+            ),
+        );
+        let styled_link = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|sp| sp.style == link_style && !sp.content.trim().is_empty());
+        assert!(
+            styled_link,
+            "floating popup must render a span with the resolved Style::Link style \
+             (got the unstyled plain-text fallback — link styling regressed)"
+        );
+    }
+
     fn app_with(text: &str, viewport: u32) -> App {
         let mut a = App::new(Document::from_text(text));
         a.set_viewport_height(viewport);

@@ -10939,13 +10939,18 @@ impl Editor {
         // shown as an in-pane leaf (that case is a real leaf handled above);
         // and the renderer has fed back the popup's inner geometry
         // (`popup_viewport_width > 0`) — until then the renderer's plain-text
-        // fallback paints the one un-sized frame. `popup_is_focused` (State B)
-        // is when focus has moved into the popup, so `self.document` /
-        // `self.scroll` / `self.folds` are the popup buffer's; State A keeps
-        // the popup's persisted `popup_scroll` and sources content from the
-        // registry. `wrap = true`: the floating help popup always wraps
-        // (help-mode's declared `Wrap = true`; matches the retired
-        // unconditional `manually_wrap_lines`).
+        // fallback paints the one un-sized frame.
+        //
+        // `is_active_buffer = false` ALWAYS: a help popup is a registry
+        // Document that is NEVER `activate_document`'d as `self.document`
+        // (PU.1a) — even when focused (State B, `active_buffer == Help`),
+        // `self.document` still points at the buffer UNDERNEATH the popup.
+        // So the snapshot + folds MUST come from the registry handle +
+        // `buffer_locals[popup_id]`, never the (wrong) `self.document` /
+        // `self.folds`. Only the scroll ANCHOR differs by focus: State B
+        // (focused) reads the popup's live view scroll on `self.scroll`;
+        // State A reads the persisted `popup_scroll` stash. `wrap = true`:
+        // the floating help popup always wraps (help-mode's `Wrap = true`).
         if let Some(popup_id) = self.popup_buffer {
             let in_pane_help =
                 self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
@@ -10960,7 +10965,7 @@ impl Editor {
                 entries.push(self.build_one_pane_cells_input(
                     lattice_core::ui::pane::PaneId::POPUP,
                     popup_id,
-                    popup_is_focused,
+                    false,
                     scroll,
                     self.popup_viewport_height,
                     self.popup_viewport_width,

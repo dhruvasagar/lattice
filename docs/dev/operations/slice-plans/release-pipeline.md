@@ -404,10 +404,10 @@ Append to `.github/workflows/release.yml`:
             "lattice-gui-${VERSION}-x86_64-macos.tar.xz"
             "lattice-gui-${VERSION}-aarch64-macos.tar.xz"
             "lattice-gui-${VERSION}-x86_64-windows.zip"
-            "lattice-gui-${VERSION}-x86_64-linux.AppImage"
-            "lattice-gui-${VERSION}-x86_64-linux.deb"
-            "lattice-gui-${VERSION}-aarch64-linux.AppImage"
-            "lattice-gui-${VERSION}-aarch64-linux.deb"
+            "lattice-gui-${VERSION}-x86_64.AppImage"
+            "lattice-gui-${VERSION}-x86_64.deb"
+            "lattice-gui-${VERSION}-aarch64.AppImage"
+            "lattice-gui-${VERSION}-aarch64.deb"
             "lattice-${VERSION}-source.tar.xz"
           )
           best_effort=(

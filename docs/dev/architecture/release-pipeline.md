@@ -108,7 +108,7 @@ toolchain + target installation), mirroring Helix.
 | `lattice-<ver>-<build>.tar.xz` / `.zip`      | TUI    | all 6                 |
 | `lattice-gui-<ver>-<build>.tar.xz` / `.zip`  | GUI    | all 6 (2 best-effort) |
 | `lattice-gui-<ver>-<arch>.AppImage` + `.zsync` | GUI  | linux (x86_64, aarch64)|
-| `lattice-gui_<ver>_<arch>.deb`               | GUI    | linux (x86_64, aarch64)|
+| `lattice-gui-<ver>-<arch>.deb`               | GUI    | linux (x86_64, aarch64)|
 | `lattice-<ver>-source.tar.xz`                | —      | publish job           |
 | `SHA256SUMS`                                  | —      | publish job           |
 

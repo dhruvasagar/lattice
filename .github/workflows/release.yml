@@ -192,3 +192,91 @@ jobs:
           name: artifacts-${{ matrix.build }}
           path: dist
           if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [prepare, dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # upload to the release
+      id-token: write       # provenance signing
+      attestations: write   # write provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: staging
+
+      - name: Assemble dist, source archive, checksums, manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staging -mindepth 2 -type f -exec mv -t dist {} +
+
+          # Deterministic source export (GitHub also auto-attaches its own).
+          git archive --format=tar --prefix="lattice-${VERSION}/" HEAD \
+            | xz -9 > "dist/lattice-${VERSION}-source.tar.xz"
+
+          ( cd dist && sha256sum lattice-* > SHA256SUMS )
+
+          echo "## Artefacts" >> "$GITHUB_STEP_SUMMARY"
+          ls -1 dist >> "$GITHUB_STEP_SUMMARY"
+
+          # Manifest: required must exist; best-effort (arm GUI) only warned.
+          required=(
+            "lattice-${VERSION}-x86_64-linux.tar.xz"
+            "lattice-${VERSION}-aarch64-linux.tar.xz"
+            "lattice-${VERSION}-x86_64-macos.tar.xz"
+            "lattice-${VERSION}-aarch64-macos.tar.xz"
+            "lattice-${VERSION}-x86_64-windows.zip"
+            "lattice-${VERSION}-aarch64-windows.zip"
+            "lattice-gui-${VERSION}-x86_64-linux.tar.xz"
+            "lattice-gui-${VERSION}-x86_64-macos.tar.xz"
+            "lattice-gui-${VERSION}-aarch64-macos.tar.xz"
+            "lattice-gui-${VERSION}-x86_64-windows.zip"
+            "lattice-gui-${VERSION}-x86_64.AppImage"
+            "lattice-gui-${VERSION}-x86_64.deb"
+            "lattice-gui-${VERSION}-aarch64.AppImage"
+            "lattice-gui-${VERSION}-aarch64.deb"
+            "lattice-${VERSION}-source.tar.xz"
+          )
+          best_effort=(
+            "lattice-gui-${VERSION}-aarch64-linux.tar.xz"
+            "lattice-gui-${VERSION}-aarch64-windows.zip"
+          )
+          fail=0
+          for f in "${required[@]}"; do
+            if [[ ! -f "dist/$f" ]]; then echo "::error::missing required artefact $f"; fail=1; fi
+          done
+          for f in "${best_effort[@]}"; do
+            if [[ ! -f "dist/$f" ]]; then echo "::warning::best-effort artefact absent (ARM GUI unproven): $f"; fi
+          done
+          [[ $fail -eq 0 ]] || exit 1
+
+      - name: Attest build provenance
+        if: needs.prepare.outputs.preview == 'false'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+
+      - name: Create GitHub Release
+        if: needs.prepare.outputs.preview == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Upload preview bundle
+        if: needs.prepare.outputs.preview == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preview
+          path: dist/*
+          if-no-files-found: error

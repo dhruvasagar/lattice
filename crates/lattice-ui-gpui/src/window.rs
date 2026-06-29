@@ -99,6 +99,12 @@ use crate::{GpuiApp, GpuiTheme};
 /// breakdown. The integer row count derived from inner pixels
 /// doubles as the cursor-clamp viewport when the popup is focused
 /// (mirrors TUI's `help_popup_inner_height`).
+/// PU.5d: the completion-docs side popup is a fixed-width box placed to the
+/// left of GPUI's top-right candidate popup. Width matches the candidate
+/// popup (`max_w(px(360.0))`); height grows to the doc body, capped.
+pub(crate) const COMPLETION_DOCS_W_PX: f32 = 360.0;
+pub(crate) const COMPLETION_DOCS_MAX_ROWS: u32 = 16;
+
 pub(crate) const POPUP_MAX_W_PX: f32 = 900.0;
 pub(crate) const POPUP_MAX_H_PX: f32 = 600.0;
 pub(crate) const POPUP_MIN_W_PX: f32 = 480.0;
@@ -802,6 +808,9 @@ struct EditorView {
     /// GPUI peer of the TUI runtime's `last_popup_dims` local) so a
     /// steady-state popup fires zero actor RPCs; `None` once on dismiss.
     last_popup_dims: Option<(u32, u32)>,
+    /// PU.5d: diff-then-send cache for the completion-docs popup geometry
+    /// (`set_completion_docs_viewport`), peer of `last_popup_dims`.
+    last_completion_docs_dims: Option<(u32, u32)>,
 }
 
 impl EditorView {
@@ -864,6 +873,7 @@ impl EditorView {
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
             last_popup_dims: None,
+            last_completion_docs_dims: None,
         }
     }
 
@@ -2790,6 +2800,37 @@ impl Render for EditorView {
             }
             self.last_popup_dims = popup_dims;
         }
+        // PU.5d: completion-docs popup geometry hand-off (peer of the
+        // floating-popup feedback above). Shown when completion is open with
+        // a resolved non-empty doc body AND the host has created the
+        // ephemeral docs buffer. GPUI's candidate popup is a fixed top-right
+        // box, so the docs popup is a fixed-width box to its left; its inner
+        // cols drive the `PaneId::COMPLETION_DOCS` matrix wrap, rows the
+        // viewport (grown to the body, capped). Diff-then-send.
+        let completion_docs_dims = {
+            let rs = self.app.render_state.load();
+            let comp = &rs.completion;
+            let body_lines = comp
+                .insert
+                .as_deref()
+                .and_then(|ic| ic.doc_popup.as_ref())
+                .and_then(|d| d.body.as_ref())
+                .filter(|b| !b.is_empty())
+                .map(|b| b.lines().count().max(1) as u32);
+            match (body_lines, comp.docs_buffer_id) {
+                (Some(lines), Some(_)) => Some((
+                    lines.min(COMPLETION_DOCS_MAX_ROWS).max(1),
+                    popup_inner_cols(COMPLETION_DOCS_W_PX, rem, glyph_advance_px),
+                )),
+                _ => None,
+            }
+        };
+        if self.last_completion_docs_dims != completion_docs_dims {
+            if let Some((rows, cols)) = completion_docs_dims {
+                self.app.set_completion_docs_viewport(rows, cols);
+            }
+            self.last_completion_docs_dims = completion_docs_dims;
+        }
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
@@ -3063,6 +3104,149 @@ impl Render for EditorView {
                             .child(footer_text),
                     )
             });
+
+        // PU.5d: completion-docs side popup. GPUI had no docs popup before
+        // this slice; it now renders the focused candidate's documentation
+        // through the SAME `EditorElement` + `PaneId::COMPLETION_DOCS` matrix
+        // as the floating popup (markdown colour + link styling + soft-wrap),
+        // in a fixed-width box placed to the left of the top-right candidate
+        // popup. Shown only once the host created the ephemeral docs buffer
+        // (`reconcile_completion_docs_buffer`) and fed back geometry; one
+        // un-sized frame falls back to the matrix-less plain text (eventual
+        // consistency, same as the floating popup).
+        let docs_resolved = self.app.render_state.load().resolved_theme.clone();
+        let docs_ids = self.app.render_state.load().theme_ids;
+        let completion_docs_overlay: Option<gpui::Div> = {
+            let rs = self.app.render_state.load();
+            let comp = rs.completion.clone();
+            let doc_popup = comp.insert.as_deref().and_then(|ic| ic.doc_popup.as_ref());
+            let body_present = doc_popup
+                .and_then(|d| d.body.as_ref())
+                .is_some_and(|b| !b.is_empty());
+            match (comp.docs_buffer_id, doc_popup) {
+                (Some(docs_id), Some(doc_popup)) if body_present => {
+                    let scroll = doc_popup.scroll as u32;
+                    let content_snap = rs
+                        .buffers
+                        .registry
+                        .document_handle(docs_id)
+                        .map(|h| h.snapshot());
+                    let text_version =
+                        content_snap.as_ref().map(|s| s.text_version).unwrap_or(0);
+                    let body_string = content_snap
+                        .as_ref()
+                        .map(|s| s.buffer.as_string())
+                        .unwrap_or_default();
+                    let inner_rows = (body_string.split('\n').count().max(1) as u32)
+                        .min(COMPLETION_DOCS_MAX_ROWS);
+                    // Visible window from `scroll` (the gutter-less walk
+                    // indexes `text` by `line_idx - scroll`).
+                    let window_text: String = body_string
+                        .split('\n')
+                        .skip(scroll as usize)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let cells = rs.cells.load();
+                    let pane = lattice_core::ui::pane::PaneId::COMPLETION_DOCS;
+                    let display_matrix = cells
+                        .display_matrix_for_pane(pane)
+                        .map(|c| c.load_full())
+                        .filter(|m| m.version.text == text_version);
+                    let cell_matrix = cells
+                        .matrix_for_pane(pane)
+                        .map(|c| c.load_full())
+                        .filter(|m| m.version.text == text_version);
+                    let editor_element = crate::editor_element::EditorElement {
+                        // `usize::MAX - 1`: distinct ElementId from the
+                        // floating popup (`usize::MAX`) and every real pane.
+                        pane_idx: usize::MAX - 1,
+                        theme: theme.clone(),
+                        text: std::sync::Arc::new(window_text),
+                        scroll,
+                        leftcol: 0,
+                        viewport_height: inner_rows,
+                        // help-flavoured ephemeral buffer ⇒ nonu /
+                        // signcolumn=no ⇒ empty gutter (text-only walk).
+                        gutter: Vec::new(),
+                        gutter_width: 0,
+                        sign_column: false,
+                        // Docs popup is never focused — no cursor / overlays.
+                        cursor: None,
+                        is_active: false,
+                        visual_range: None,
+                        visual_block_extents: None,
+                        current_match: None,
+                        all_matches: Vec::new(),
+                        substitute_matches: Vec::new(),
+                        doc_highlights: Vec::new(),
+                        worker_static_overlay_quads: None,
+                        virtual_rows: std::sync::Arc::new(
+                            lattice_cells::VirtualRowMatrix::empty(),
+                        ),
+                        diff_tint_per_row: Vec::new(),
+                        cursorline_bg: 0,
+                        cursorline_enabled: false,
+                        diff_deletion_block_bg: 0,
+                        inlay_hints: Vec::new(),
+                        diagnostic_underlines: Vec::new(),
+                        inlay_color: 0,
+                        inline_diag_summary: None,
+                        cell_matrix,
+                        display_matrix,
+                        resolved_theme: docs_resolved.clone(),
+                        theme_ids: docs_ids,
+                        glyph_resolver: self.glyph_resolver.clone(),
+                    };
+                    let docs_body_h_px = inner_rows as f32 * estimated_row_px;
+                    let docs_h_px =
+                        popup_chrome_v_px(rem, estimated_row_px) + docs_body_h_px;
+                    Some(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w(px(COMPLETION_DOCS_W_PX))
+                            .max_w(px(COMPLETION_DOCS_W_PX))
+                            .min_h(px(docs_h_px))
+                            .max_h(px(docs_h_px))
+                            .overflow_hidden()
+                            .p_4()
+                            .bg(rgb(theme.popup_background))
+                            .text_color(rgb(theme.foreground))
+                            .border_2()
+                            .border_color(rgb(theme.popup_border))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .text_color(rgb(theme.popup_border))
+                                    .pb_2()
+                                    .child(
+                                        div()
+                                            .h(px(estimated_row_px))
+                                            .flex_shrink_0()
+                                            .child(" docs ".to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(estimated_row_px))
+                                            .flex_shrink_0()
+                                            .child("───────────────".to_string()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_h(px(docs_body_h_px))
+                                    .max_h(px(docs_body_h_px))
+                                    .overflow_hidden()
+                                    .child(editor_element.into_any_element()),
+                            ),
+                    )
+                }
+                _ => None,
+            }
+        };
 
         // `picker.display` selects the picker UI shape. `"popup"`
         // floats a centred overlay over the buffer area; the
@@ -3756,6 +3940,12 @@ impl Render for EditorView {
         }
         if let Some(overlay) = completion_overlay {
             root = root.child(div().absolute().top_8().right_4().child(overlay));
+        }
+        // PU.5d: docs popup to the LEFT of the candidate popup. The
+        // candidate box is `.right_4()` (16px) wide up to 360px, so the docs
+        // box sits at right = 16 + 360 + 8(gap) = 384px, same `.top_8()`.
+        if let Some(overlay) = completion_docs_overlay {
+            root = root.child(div().absolute().top_8().right(px(384.0)).child(overlay));
         }
         if let Some(overlay) = popup_overlay {
             // Issue #18 (2026-05-22): respect

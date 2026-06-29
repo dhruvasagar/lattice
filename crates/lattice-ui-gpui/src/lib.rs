@@ -546,6 +546,18 @@ impl GpuiApp {
         });
     }
 
+    /// PU.5d: completion-docs side-popup inner-geometry hand-off — the peer
+    /// of [`Self::set_popup_viewport`] for the second synthetic popup
+    /// (`PaneId::COMPLETION_DOCS`). `build_cells_panes` reads
+    /// `Editor::completion_docs_viewport_{height,width}` to size the docs
+    /// `DisplayMatrix`. Diff-then-send in the render loop keeps churn down.
+    pub fn set_completion_docs_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.completion_docs_viewport_height = rows.max(1);
+            e.completion_docs_viewport_width = cols.max(1);
+        });
+    }
+
     /// Dismiss any active help popup. Phase 5.8.AE: routes
     /// through the host's `dismiss_popup` so popup state lands
     /// uniformly across both peers. Slice 3c.final.C: now goes

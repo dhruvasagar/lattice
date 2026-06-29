@@ -553,26 +553,46 @@ nothing left to delete.
   wrap, and h-scroll (via the shared popup→compose seam); auto-dismiss +
   cursor-motion behaviour unchanged (untouched existing logic).
 
-## PU.5 — Signature help + completion docs through compose 🗒 (now owns the ephemeral class)
+## PU.5 — Signature help + completion docs through compose ✅ (2026-06-29)
 
-**Signature help: already satisfied** — `drain_pending_signature_help`
-emits the SAME `DisplayBuffer(content, category: Hover)` path as hover
-(renders as a cursor-anchored floating popup through the compose seam). No
-bespoke signature line builder remains.
+**Signature help: pre-satisfied** — `drain_pending_signature_help` emits the
+SAME `DisplayBuffer(content, category: Hover)` path as hover (cursor-anchored
+floating popup through the compose seam). No bespoke signature builder.
 
-**Remaining real work = completion docs** (the last bespoke content popup):
-- The completion-docs side popup is `draw_insert_completion_docs_popup`
-  (TUI, `render.rs`) painting a plain `Paragraph` — NOT a registry buffer,
-  NOT through compose. Route it through the seam: back it with an
-  **ephemeral registry buffer** (the PU.3 class, built HERE as its first
-  real consumer) carrying the doc markdown, rendered via the synthetic-pane
-  compose path; delete the bespoke `Paragraph` path in both renderers.
-- Build the ephemeral-buffer class as part of this slice (PU.3 folded in):
-  the `ephemeral` marker + `:ls` exclusion + mode-owned create/GC, shaped
-  by the completion-docs consumer.
-- Note: the completion **candidate list** and pickers are list/
-  selection widgets, not document content — out of scope (a separate
-  "list buffer" question). This initiative is about *content* popups.
+**Completion docs (the last bespoke content popup) + the ephemeral-buffer
+class (PU.3 folded in):** sub-sliced 5a→5d, each landed green.
+
+- ✅ **PU.5a** (`e6177b31`) — `BufferFlags.ephemeral` marker + `:ls`/`:bn`/
+  `:bp` exclusion. (`:bn`/`:bp` already skipped `listed:false`; the new bit
+  is the `:ls` exclusion + the marker. GC-on-dismiss already existed in
+  `dismiss_stale_popup_registry`.)
+- ✅ **PU.5b** (`3f678e07`) — `PaneId::COMPLETION_DOCS` sentinel +
+  `synthetic_popup_panes()` spec list (the single `PaneId::POPUP` block
+  generalized to N overlays; help popup behavior-identical).
+- ✅ **PU.5c** (`ef161b5f`) — TUI completion docs through compose. The docs
+  popup is backed by an **ephemeral, help-flavoured registry Document**
+  (markdown syntax + link `ExtraHighlights` + `nonu`/`signcolumn=no`/`wrap`
+  help-mode options for free), reconciled once per cycle from
+  `run_tick_pending` (`reconcile_completion_docs_buffer` — single chokepoint:
+  create / replace-in-place / GC, not the ~10 scattered teardown sites).
+  `draw_insert_completion_docs_popup` flipped from `Paragraph` to
+  `compose_pane_lines` reading the `COMPLETION_DOCS` matrix; `draw_frame`
+  returns the docs inner dims (cursor-anchored ⇒ computed at the draw site)
+  fed back via `set_completion_docs_viewport` (diff-then-send).
+- ✅ **PU.5d** (this commit) — GPUI completion-docs surface (NEW — GPUI had
+  none). The docs popup renders through the same `EditorElement` +
+  `COMPLETION_DOCS` matrix as the floating popup (PU.2 pattern), a
+  fixed-width box left of the top-right candidate popup;
+  `GpuiApp::set_completion_docs_viewport` + `EditorView.last_completion_docs_dims`
+  diff-then-send geometry. GPUI users gain completion docs at all (a real
+  parity fill). Visual pass: `cargo run --features gui -- --gui`.
+- Note: the completion **candidate list** and pickers are list/selection
+  widgets, not document content — out of scope (a separate "list buffer"
+  question). This initiative is about *content* popups.
+
+Green: host 594, ui-tui 1504, ui-gpui `--features window` 112; builds clean
+incl. `--features gui`. Tests: `ephemeral_buffers_excluded_from_listed_ids`,
+`completion_docs_reconcile_creates_ephemeral_buffer_and_gcs`.
 
 ## PU.6 — Cleanup + regression guard 🗒
 

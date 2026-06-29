@@ -1692,14 +1692,13 @@ pub struct CompletionRenderState {
 /// `buffer_id` mirrors `Editor::popup_buffer` (the active popup's
 /// id, `None` when no popup is open). `help` carries an
 /// `Arc<HelpBuffer>` snapshot of the popup content. `placement`
-/// echoes `Editor::popup_placement`. `help_highlights` is the
-/// per-line markdown highlight span list seeded into the popup
-/// buffer's locals.
+/// echoes `Editor::popup_placement`. Help syntax / link styling is
+/// carried by the live cells-worker `DisplayMatrix` (grammar spans +
+/// the `ExtraHighlights` link overlay), not a popup-side span list.
 #[derive(Debug, Clone)]
 pub struct PopupRenderState {
     pub buffer_id: Option<lattice_core::BufferId>,
     pub help: Option<std::sync::Arc<lattice_help::HelpBuffer>>,
-    pub help_highlights: std::sync::Arc<[Vec<lattice_syntax::StyledSpan>]>,
     pub placement: lattice_core::ui::popup::PopupPlacement,
     /// 2026-05-22 popup-anchor: cursor position snapshotted at
     /// popup-open time. CursorAnchored renderers read this so
@@ -1722,9 +1721,6 @@ impl Default for PopupRenderState {
         Self {
             buffer_id: None,
             help: None,
-            help_highlights: std::sync::Arc::from(
-                Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice(),
-            ),
             placement: lattice_core::ui::popup::PopupPlacement::default(),
             anchor: None,
             doc_scroll_at_anchor: 0,
@@ -2854,7 +2850,6 @@ mod tests {
         let rs = editor.render_state.load_full();
         assert!(!rs.popup.is_open());
         assert!(rs.popup.help.is_none());
-        assert!(rs.popup.help_highlights.is_empty());
     }
 
     /// Slice 3c.final.B (group 3): picker + completion slots

@@ -3408,9 +3408,10 @@ impl Render for EditorView {
 
         // Phase 5.8.AE + Slice 3c.final.B (group 3): read popup
         // state via the published substate. The Arc-wrapped
-        // `HelpBuffer` + `help_highlights` slice live on
-        // `render_state.popup.X`; bind locally so the borrows live
-        // for the closure.
+        // `HelpBuffer` lives on `render_state.popup.help`; bind
+        // locally so the borrows live for the closure. (Help syntax /
+        // link styling now rides the live cells-worker `DisplayMatrix`,
+        // not a popup-side highlight slice.)
         let popup_substate = self.app.render_state.load().popup.clone();
         // T.5.b: the popup-overlay cell renderer resolves syntax
         // styles through the active theme's resolved table (loaded

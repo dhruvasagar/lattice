@@ -69,22 +69,6 @@ impl BufferLocal for HelpAnchors {
     }
 }
 
-/// Help buffer's pre-computed per-line markdown highlight
-/// spans. Empty when the buffer was constructed without a
-/// language registry (test paths).
-#[derive(Debug, Clone)]
-pub struct HelpHighlights(pub Vec<Vec<lattice_syntax::StyledSpan>>);
-
-impl BufferLocal for HelpHighlights {
-    const NAME: &'static str = "help-mode.highlights";
-    const DOC: &'static str = "Pre-computed per-line markdown highlight spans, indexed \
-         by visible line. Populated by `with_markdown_syntax`.";
-    const OWNER_MODE: &'static str = "help-mode";
-    fn describe(&self) -> String {
-        format!("{} line(s) of highlights", self.0.len())
-    }
-}
-
 /// PU.1b-2a: generic per-buffer *static* highlight spans, merged into
 /// the cells-worker `DisplayMatrix` ON TOP OF (overriding, by
 /// first-match precedence) the live grammar spans on their byte

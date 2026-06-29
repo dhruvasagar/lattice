@@ -155,10 +155,10 @@ impl App {
         self.mutate_editor(move |e| e.seed_help_metadata_locals(buffer_id, metadata));
     }
 
-    // Slice 3c.final.E.swap: `popup_help_links`,
-    // `popup_help_anchors`, `popup_help_highlights` return
-    // borrowed slices off `editor.buffer_locals`; their only
-    // callers are in `#[cfg(test)] mod tests` blocks. Moved to
+    // Slice 3c.final.E.swap: `popup_help_links` and
+    // `popup_help_anchors` return borrowed slices off
+    // `editor.buffer_locals`; their only callers are in
+    // `#[cfg(test)] mod tests` blocks. Moved to
     // the `#[cfg(test)] impl App` block at the bottom of this
     // file. `active_popup_placement` same — only `display.rs` +
     // `popup.rs` tests use it.
@@ -242,15 +242,6 @@ impl App {
             .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpAnchors>())
-            .map(|h| h.0.as_slice())
-    }
-
-    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
-        let id = self.popup().buffer_id?;
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
             .map(|h| h.0.as_slice())
     }
 

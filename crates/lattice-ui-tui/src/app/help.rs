@@ -1,8 +1,9 @@
 //! Help-buffer App surface -- the `:describe-*` / `:apropos`
 //! / `:help` / `:keymap` writers that compose help bodies.
 //! Each method renders a help-buffer body via shared helpers
-//! (`HelpContent::from_lines{,_and_anchors}` +
-//! `with_markdown_syntax`) and hands it to `open_help`.
+//! (`HelpContent::from_lines{,_and_anchors}`) and hands it to
+//! `open_help`; syntax / link styling rides the live cells-worker
+//! `DisplayMatrix`.
 //!
 //! Methods that live here:
 //! - `do_open_help_topic` (`:help [topic]` -- index by

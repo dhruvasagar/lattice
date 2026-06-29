@@ -366,25 +366,60 @@ in-pane help (PU.1b-2b) was never affected. Guard:
 worker for `PaneId::POPUP`, composes like `draw_help_overlay`, asserts a
 resolved `Style::Link` span).
 
-### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒 — UNBLOCKED (PU.2 landed 2026-06-29)
+### PU.1b-4 — delete bespoke precompute (2A cutover) — sub-carved 4a/4b (2026-06-29)
 
 **Dependency correction (2026-06-29):** the original "once *both* renderers
 flip" framing put PU.1b-4 before PU.2, which is self-contradictory — GPUI
 flips in PU.2. Both renderers are now flipped (TUI: PU.1b-2b + PU.1b-3;
 GPUI: PU.2), so the cells-worker `DisplayMatrix` is the single styling
-source for help in both peers. **`popup_help_highlights` / `HelpHighlights`
-/ the published `PopupRenderState.help_highlights` are now read by NEITHER
-renderer** (PU.2 deleted GPUI's last read) and are deletable. `popup_help()`
-(`PopupRenderState.help`) is still read by both renderers for CHROME ONLY
-(title / line-count / State-A scroll), so its retirement is the bulk of the
-remaining work here.
+source for help in both peers.
 
-Once PU.2 lands: **Delete** `with_markdown_syntax`, `popup_help_highlights`,
-`popup_help` (the view reconstructor — note draw_help_overlay still uses it
-for chrome title/line-count/State-A scroll, so its retirement is the work
-here), the published `PopupRenderState.{help,help_highlights}`, and the
-`HelpHighlights` buffer-local seeding. (`render_help_line` + `help_render_data`
-already deleted in PU.1b-3.)
+**Sub-carve (2026-06-29):** the PU.1b-4 scope surfaced two unrelated
+deletions of different risk, so it splits:
+- **4a** — the dead markdown-highlight precompute (pure deletion of
+  now-unread code; no behaviour change).
+- **4b** — retiring `popup_help()` / `PopupRenderState.help` (a
+  *behaviour-sourcing* rework: `popup_help()` feeds NOT JUST chrome but
+  `active_text` / `active_cursor` for a focused State-B popup, so its
+  retirement reworks motion/text sourcing AND both renderers' chrome —
+  the original text glossed the `active_text` coupling).
+
+#### PU.1b-4a — delete the markdown-highlight precompute ✅ (2026-06-29)
+
+Pure deletion; both renderers already style help from the live
+`DisplayMatrix` (markdown via `install_inmemory_syntax`, links via
+`ExtraHighlights(link_highlights(&links))`), so the precompute was read by
+nobody for rendering. No behaviour change. Green: `lattice-help` 34,
+`lattice-host` 643, `lattice-ui-tui` 1504; `cargo build` clean for
+`lattice-host`, `lattice-cli` (TUI), `lattice-ui-gpui --features window`,
+and `--features gui`. Final grep of all five symbols across `crates/` = 0.
+
+- ✅ **`lattice-help`:** deleted `HelpContent::with_markdown_syntax`, the
+  free fn `compute_markdown_highlights`, the `HelpMetadata.highlights`
+  field (+ its literal init), and the 5 markdown-highlight tests. Kept
+  `overlay_link_styles` + `link_highlights` (the live `ExtraHighlights`
+  feed). Pruned now-unused imports.
+- ✅ **`lattice-host`:** removed all 24 `.with_markdown_syntax(...)` chain
+  calls; dropped `HelpHighlights` from `seed_help_metadata_locals` +
+  `snapshot_current_popup`; deleted `Editor::popup_help_highlights`,
+  `modes::HelpHighlights`, `PopupRenderState.help_highlights` (field +
+  publish + Default); removed the dead `ShowDiagnosticsPopup` severity-span
+  precompute (fed only `metadata.highlights`).
+- ✅ **`lattice-ui-tui`:** deleted `App::popup_help_highlights` + the
+  `HelpHighlights` seeding assert in the locals test.
+- ✅ **`lattice-ui-gpui`:** trimmed the stale `help_highlights` comment
+  (the read was already gone in PU.2).
+
+#### PU.1b-4b — retire `popup_help()` / `PopupRenderState.help` 🗒
+
+The remaining bulk. `popup_help()` reconstructs a `HelpBuffer` *view* from
+the registry Document + popup view state; it is read by (a) both
+renderers' chrome (title / line-count / State-A scroll) AND (b)
+`active_text` / `active_cursor` / `active_buffer_id` for a focused (State
+B) popup. Retiring it means sourcing all of those from the registry
+Document + popup view state directly, then deleting `popup_help()`,
+`help_content_view`, and `PopupRenderState.help`. Cross-renderer + host;
+plan + confirm before executing (touches motion/text sourcing).
 
 - **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
   popup; folds work inside help; horizontal scroll works inside help

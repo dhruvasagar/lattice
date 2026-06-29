@@ -1053,14 +1053,6 @@ impl Editor {
             popup: std::sync::Arc::new(PopupRenderState {
                 buffer_id: self.popup_buffer,
                 help: self.popup_help().map(std::sync::Arc::new),
-                help_highlights: self
-                    .popup_help_highlights()
-                    .map(|spans| std::sync::Arc::from(spans.to_vec().into_boxed_slice()))
-                    .unwrap_or_else(|| {
-                        std::sync::Arc::from(
-                            Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice(),
-                        )
-                    }),
                 placement: self.popup_placement,
                 anchor: self.popup_anchor,
                 doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,
@@ -2659,24 +2651,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 editor.set_message(EchoLevel::Info, "no diagnostics on line".to_string());
             } else {
                 let texts: Vec<String> = lines.iter().map(|(t, _)| t.clone()).collect();
-                let highlights: Vec<Vec<lattice_syntax::StyledSpan>> = lines
-                    .iter()
-                    .map(|(t, rank)| {
-                        let style = match rank {
-                            0 => lattice_syntax::Style::DiagnosticError,
-                            1 => lattice_syntax::Style::DiagnosticWarning,
-                            2 => lattice_syntax::Style::DiagnosticInfo,
-                            _ => lattice_syntax::Style::DiagnosticHint,
-                        };
-                        vec![lattice_syntax::StyledSpan {
-                            start: 0,
-                            end: t.len(),
-                            style,
-                        }]
-                    })
-                    .collect();
-                let mut content = lattice_help::HelpContent::from_lines("diagnostics", texts);
-                content.metadata.highlights = highlights;
+                let content = lattice_help::HelpContent::from_lines("diagnostics", texts);
                 out.renderer_signals
                     .push(RendererSignal::DisplayBuffer(Box::new(
                         DisplayBufferRequest {
@@ -2937,8 +2912,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // renders the introspection help body. Infallible.
             let body = editor.diff_subsystem.build_describe_diff_content();
             let lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
-            let content = lattice_help::HelpContent::from_lines("describe-diff", lines)
-                .with_markdown_syntax(editor.lang_registry.clone());
+            let content = lattice_help::HelpContent::from_lines("describe-diff", lines);
             out.renderer_signals
                 .push(RendererSignal::DisplayBuffer(Box::new(
                     DisplayBufferRequest {
@@ -5663,18 +5637,6 @@ impl Editor {
         view.scroll = self.popup_scroll as usize;
         view.cursor = self.popup_cursor;
         Some(view)
-    }
-
-    /// M.3.2.c.5: read the pre-computed per-line markdown highlight
-    /// spans seeded into the active popup's buffer-locals. Returns
-    /// `None` when no popup is open or the locals slot was not
-    /// seeded. Both renderer peers read through here.
-    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
-        let id = self.popup_buffer?;
-        self.buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
-            .map(|h| h.0.as_slice())
     }
 
     /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
@@ -12292,8 +12254,7 @@ impl Editor {
             match outcome {
                 HoverOutcome::Body(body) => {
                     let lines: Vec<String> = body.split('\n').map(String::from).collect();
-                    let content = lattice_help::HelpContent::from_lines("hover", lines)
-                        .with_markdown_syntax(self.lang_registry.clone());
+                    let content = lattice_help::HelpContent::from_lines("hover", lines);
                     signals.push(RendererSignal::DisplayBuffer(Box::new(
                         DisplayBufferRequest {
                             content,
@@ -12370,8 +12331,7 @@ impl Editor {
                 // floating-popup surface as hover, so the title
                 // stays consistent with the hover popup. A future
                 // slice could differentiate.
-                let content = lattice_help::HelpContent::from_lines("hover", lines)
-                    .with_markdown_syntax(self.lang_registry.clone());
+                let content = lattice_help::HelpContent::from_lines("hover", lines);
                 signals.push(RendererSignal::DisplayBuffer(Box::new(
                     DisplayBufferRequest {
                         content,
@@ -17791,11 +17751,7 @@ impl Editor {
         buffer_id: BufferId,
         metadata: lattice_help::HelpMetadata,
     ) {
-        let lattice_help::HelpMetadata {
-            links,
-            anchors,
-            highlights,
-        } = metadata;
+        let lattice_help::HelpMetadata { links, anchors } = metadata;
         // PU.1b-2b: the link-only spans the cells worker merges into the
         // help `DisplayMatrix` (the grammar can't derive them — the link
         // markup is stripped before it parses). Computed before `links`
@@ -17804,7 +17760,6 @@ impl Editor {
         let locals = self.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::HelpLinks(links));
         locals.insert(crate::modes::HelpAnchors(anchors));
-        locals.insert(crate::modes::HelpHighlights(highlights));
         locals.insert(crate::modes::ExtraHighlights(link_spans));
         // PU.1b-2b: (re-)attach the markdown `SyntaxHandle` from the
         // buffer's CURRENT text. This is the single attach point for help
@@ -19800,10 +19755,6 @@ impl Editor {
                 .get::<crate::modes::HelpAnchors>()
                 .map(|h| h.0.clone())
                 .unwrap_or_default(),
-            highlights: locals
-                .get::<crate::modes::HelpHighlights>()
-                .map(|h| h.0.clone())
-                .unwrap_or_default(),
         };
         Some(crate::popup::PopupSnapshot {
             title,
@@ -20428,8 +20379,7 @@ impl Editor {
         } else {
             format!("help {name}")
         };
-        let content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors)
-            .with_markdown_syntax(self.lang_registry.clone());
+        let content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors);
         vec![RendererSignal::DisplayBuffer(Box::new(
             DisplayBufferRequest {
                 content,
@@ -20466,8 +20416,7 @@ impl Editor {
     /// `K` (LSP hover) response / `:hover [markdown]`. Phase 5.8.AD.5.
     pub fn do_open_hover(&mut self, markdown: &str) -> Vec<RendererSignal> {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
-        let content = lattice_help::HelpContent::from_lines("hover", lines)
-            .with_markdown_syntax(self.lang_registry.clone());
+        let content = lattice_help::HelpContent::from_lines("hover", lines);
         vec![RendererSignal::DisplayBuffer(Box::new(
             DisplayBufferRequest {
                 content,
@@ -22552,8 +22501,7 @@ impl Editor {
     /// to surface (popup / pane / split per the user's typed
     /// option).
     pub fn do_lsp_status(&mut self) -> Vec<RendererSignal> {
-        let content = lattice_lsp::help_views::lsp_status_help(&self.lsp)
-            .with_markdown_syntax(self.lang_registry.clone());
+        let content = lattice_lsp::help_views::lsp_status_help(&self.lsp);
         vec![RendererSignal::DisplayBuffer(Box::new(
             DisplayBufferRequest {
                 content,
@@ -24812,7 +24760,6 @@ impl Editor {
             }
         }
         lattice_help::HelpContent::from_lines("buffers", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.1: build the `:describe-buffer` content. Mirrors App's
@@ -24908,7 +24855,6 @@ impl Editor {
             }
         }
         lattice_help::HelpContent::from_lines("describe-buffer", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.2: build the `:describe-command` content.
@@ -24961,8 +24907,7 @@ impl Editor {
             format!("describe-command {name}"),
             lines,
             anchors,
-        )
-        .with_markdown_syntax(self.lang_registry.clone());
+        );
         if let Some(a) = anchor
             && let Some(line) = lattice_help::anchor_line(&content.metadata.anchors, a)
         {
@@ -25023,8 +24968,7 @@ impl Editor {
             }
         }
         Some(
-            lattice_help::HelpContent::from_lines(format!("apropos {pattern}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("apropos {pattern}"), lines),
         )
     }
 
@@ -25052,8 +24996,7 @@ impl Editor {
                 return lattice_help::HelpContent::from_lines(
                     format!("describe-key {chord}"),
                     lines,
-                )
-                .with_markdown_syntax(self.lang_registry.clone());
+                );
             }
         };
 
@@ -25206,7 +25149,6 @@ impl Editor {
             format!("describe-key {chord}"),
             lines,
         )
-        .with_markdown_syntax(self.lang_registry.clone())
     }
 
 
@@ -25271,7 +25213,6 @@ impl Editor {
             lines.push(String::new());
         }
         lattice_help::HelpContent::from_lines("keymap", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.3: build the `:describe-option <name>` content.
@@ -25301,8 +25242,7 @@ impl Editor {
         lines.push(String::new());
         lines.push(spec.doc().to_string());
         Some(
-            lattice_help::HelpContent::from_lines(format!("describe-option {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("describe-option {name}"), lines),
         )
     }
 
@@ -25356,8 +25296,7 @@ impl Editor {
         });
 
         Some(
-            lattice_help::HelpContent::from_lines(format!("describe-element {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("describe-element {name}"), lines),
         )
     }
 
@@ -25473,7 +25412,6 @@ impl Editor {
         }
 
         lattice_help::HelpContent::from_lines("options", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.3: build the `:describe-option-resolution <name>`
@@ -25602,8 +25540,7 @@ impl Editor {
             lattice_help::HelpContent::from_lines(
                 format!("describe-option-resolution {name}"),
                 lines,
-            )
-            .with_markdown_syntax(self.lang_registry.clone()),
+            ),
         )
     }
 
@@ -25648,7 +25585,6 @@ impl Editor {
             );
         }
         lattice_help::HelpContent::from_lines("describe-events", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.4.1: copy the Editor's hot-path cursor / scroll into the
@@ -26301,8 +26237,7 @@ impl Editor {
                 .into(),
         );
         Some(
-            lattice_help::HelpContent::from_lines(format!("describe-event {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("describe-event {name}"), lines),
         )
     }
 
@@ -26360,7 +26295,6 @@ impl Editor {
         }
 
         lattice_help::HelpContent::from_lines("list-modes", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.6: `:describe-mode <name>` (M.8) content builder —
@@ -26436,8 +26370,7 @@ impl Editor {
         ));
 
         Some(
-            lattice_help::HelpContent::from_lines(format!("describe-mode {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("describe-mode {name}"), lines),
         )
     }
 
@@ -26507,7 +26440,6 @@ impl Editor {
         }
 
         lattice_help::HelpContent::from_lines("customize", lines)
-            .with_markdown_syntax(self.lang_registry.clone())
     }
 
     /// 5.5.F.6: `:customize <group>` content builder — every
@@ -26557,8 +26489,7 @@ impl Editor {
                 .into(),
         );
         Some(
-            lattice_help::HelpContent::from_lines(format!("customize {group_name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("customize {group_name}"), lines),
         )
     }
 
@@ -26645,8 +26576,7 @@ impl Editor {
                 .into(),
         );
         Some(
-            lattice_help::HelpContent::from_lines(format!("customize {mode_name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_help::HelpContent::from_lines(format!("customize {mode_name}"), lines),
         )
     }
 

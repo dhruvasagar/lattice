@@ -43,12 +43,10 @@
 //! for future targets (option, event, mode, ...).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use lattice_core::Buffer;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
-use lattice_syntax::{Lang, LangRegistry, Syntax};
 
 use lattice_core::BufferId;
 
@@ -126,9 +124,6 @@ pub struct HelpMetadata {
     /// [`generate_heading_anchors`], plus any explicit anchors
     /// supplied by the introspection renderer.
     pub anchors: Vec<HelpAnchor>,
-    /// Per-line markdown highlight spans. Empty when the
-    /// content was not enriched with [`compute_markdown_highlights`].
-    pub highlights: Vec<Vec<lattice_syntax::StyledSpan>>,
 }
 
 /// M.3.2.c.5: pair of (slim help buffer, parsed metadata) returned
@@ -143,19 +138,6 @@ pub struct HelpContent {
 }
 
 impl HelpContent {
-    /// Builder-style override: enrich the metadata's `highlights`
-    /// via the markdown grammar, then overlay `Style::Link` spans on
-    /// each link's label range so renderers paint clickable tokens
-    /// without re-discovering the link table at frame time. Cheap
-    /// when the registry doesn't have markdown registered (the
-    /// grammar pass is a silent no-op; the link overlay still runs).
-    pub fn with_markdown_syntax(mut self, registry: Arc<LangRegistry>) -> Self {
-        let mut highlights = compute_markdown_highlights(&self.buffer, registry);
-        overlay_link_styles(&mut highlights, &self.metadata.links);
-        self.metadata.highlights = highlights;
-        self
-    }
-
     /// Scroll to a named anchor in the metadata. Returns true if
     /// the anchor was found and the buffer's `scroll` advanced.
     /// Reads `metadata.anchors` (the canonical owner of help
@@ -224,32 +206,8 @@ pub fn parse_help_lines_and_anchors(
             scroll: 0,
             cursor: Position::ZERO,
         },
-        metadata: HelpMetadata {
-            links,
-            anchors,
-            highlights: Vec::new(),
-        },
+        metadata: HelpMetadata { links, anchors },
     }
-}
-
-/// Compute per-line markdown highlight spans for `buffer` via the
-/// shared language registry. Failure to construct the markdown
-/// syntax (registry doesn't have it, parse error) returns an
-/// empty Vec -- the renderer treats that as "no syntax colours,
-/// no error".
-pub fn compute_markdown_highlights(
-    buffer: &HelpBuffer,
-    registry: Arc<LangRegistry>,
-) -> Vec<Vec<lattice_syntax::StyledSpan>> {
-    if let Ok(Some(mut s)) = Syntax::for_language_with_registry(Lang::Markdown, registry) {
-        let text = buffer.content.as_string();
-        s.parse(&text);
-        let total_lines = buffer.content.line_count();
-        if let Ok(rows) = s.highlight_lines(0, total_lines) {
-            return rows;
-        }
-    }
-    Vec::new()
 }
 
 /// Overlay `Style::Link` spans on each link's label range. The
@@ -258,8 +216,8 @@ pub fn compute_markdown_highlights(
 /// markup and never emits a Link capture itself. Renderers therefore
 /// can't tell a link label from prose. Walking `links` here and
 /// pushing one Link span per `range` onto the line's highlight
-/// vector restores that signal so the published `metadata.highlights`
-/// is self-contained.
+/// vector restores that signal so the link-only overlay published
+/// via [`link_highlights`] is self-contained.
 ///
 /// Multi-line links (a label that wraps across a row break) push one
 /// span per affected line, each clipped to that line's byte width.
@@ -356,9 +314,10 @@ impl HelpContent {
     /// Lines may contain `[label](scheme:value)` markdown links --
     /// the parser indexes them into the returned metadata's `links`
     /// vec at the label's byte range in the joined output. No syntax
-    /// highlighting is attached -- chain
-    /// [`Self::with_markdown_syntax`] (the App always does; tests
-    /// usually don't need to).
+    /// highlighting is attached -- help buffers receive their syntax
+    /// and link styling from the live cells-worker `DisplayMatrix`
+    /// (link spans seeded via [`link_highlights`] into the buffer's
+    /// `ExtraHighlights` local).
     pub fn from_lines(title: impl Into<String>, lines: Vec<String>) -> Self {
         parse_help_lines(title, lines)
     }
@@ -933,160 +892,6 @@ mod tests {
     #[test]
     fn command_link_helper_renders_markup() {
         assert_eq!(command_link("ex:write"), "[ex:write](command:ex:write)");
-    }
-
-    #[test]
-    fn with_markdown_syntax_populates_highlights_for_headings() {
-        let registry = LangRegistry::standard().expect("registry");
-        let h = HelpContent::from_lines("t", vec!["# Configuration".into(), "body line".into()])
-            .with_markdown_syntax(registry);
-        // Line 0 (the heading) should carry a Heading1 span.
-        assert!(
-            h.metadata
-                .highlights
-                .first()
-                .map(|spans| spans
-                    .iter()
-                    .any(|sp| sp.style == lattice_syntax::Style::Heading1))
-                .unwrap_or(false),
-            "expected Heading1 span on heading line, got {:?}",
-            h.metadata.highlights.first()
-        );
-    }
-
-    #[test]
-    fn hover_markdown_with_fenced_rust_block_has_highlights() {
-        // Representative LSP hover body: fenced ```rust block
-        // followed by prose with inline backtick code. Verifies
-        // the markdown highlighter populates highlights for at
-        // least the fenced code lines (rust injection) and the
-        // inline-code spans on prose lines.
-        let registry = LangRegistry::standard().expect("registry");
-        let lines = vec![
-            "```rust".to_string(),
-            "fn write(&mut self, buf: &[u8]) -> Result<usize>".to_string(),
-            "```".to_string(),
-            String::new(),
-            "Writes the contents of `buf` to the stream.".to_string(),
-        ];
-        let h = HelpContent::from_lines("hover", lines).with_markdown_syntax(registry);
-        // Line 1: fenced rust code -- should carry Keyword spans
-        // (`fn`) once the rust injection runs.
-        let line1_has_styled = h
-            .metadata
-            .highlights
-            .get(1)
-            .map(|spans| !spans.is_empty())
-            .unwrap_or(false);
-        assert!(
-            line1_has_styled,
-            "expected highlights on fenced rust line, got {:?}",
-            h.metadata.highlights.get(1)
-        );
-        // Line 4: inline `buf` -- should carry MarkupRaw or
-        // similar.
-        let line4_has_styled = h
-            .metadata
-            .highlights
-            .get(4)
-            .map(|spans| !spans.is_empty())
-            .unwrap_or(false);
-        assert!(
-            line4_has_styled,
-            "expected highlights on inline-code line, got {:?}",
-            h.metadata.highlights.get(4)
-        );
-    }
-
-    #[test]
-    fn with_markdown_syntax_populates_subheading_and_inline_code() {
-        let registry = LangRegistry::standard().expect("registry");
-        let lines = vec![
-            "# :lsp-status".to_string(),
-            String::new(),
-            "## rust-analyzer".to_string(),
-            "- workspace root: `/home/foo`".to_string(),
-            "- supports hover: true".to_string(),
-        ];
-        let h = HelpContent::from_lines("lsp-status", lines).with_markdown_syntax(registry);
-        let h1 = h.metadata.highlights[0]
-            .iter()
-            .any(|sp| sp.style == lattice_syntax::Style::Heading1);
-        // The per-level heading query (theme-system T-series) maps each
-        // heading depth to its own capture, so `#` -> Heading1 and
-        // `##` -> Heading2 (the `##` marker itself is a `Markup` span).
-        let h2 = h.metadata.highlights[2]
-            .iter()
-            .any(|sp| sp.style == lattice_syntax::Style::Heading2);
-        assert!(h1, "line 0 (# heading): {:?}", h.metadata.highlights[0]);
-        assert!(h2, "line 2 (## heading): {:?}", h.metadata.highlights[2]);
-        // inline code on line 3 -- look for any Markup-family span
-        // (MarkupRaw) covering the backticked range.
-        let has_raw = h.metadata.highlights[3].iter().any(|sp| {
-            matches!(
-                sp.style,
-                lattice_syntax::Style::MarkupRaw
-                    | lattice_syntax::Style::Markup
-                    | lattice_syntax::Style::String
-            )
-        });
-        assert!(
-            has_raw,
-            "expected inline-code style on `/home/foo`, got {:?}",
-            h.metadata.highlights[3]
-        );
-    }
-
-    #[test]
-    fn with_markdown_syntax_is_optional() {
-        // The fallback path -- no registry means no highlights, but
-        // the buffer still works.
-        let h = HelpContent::from_lines("t", vec!["# title".into()]);
-        assert!(h.metadata.highlights.is_empty());
-        assert_eq!(h.content.line_count(), 1);
-    }
-
-    #[test]
-    fn with_markdown_syntax_overlays_style_link_on_help_links() {
-        // Regression (2026-05-27): describe-buffer's "Active modes"
-        // section renders each mode name as `[name](mode:name)`. The
-        // cleaner strips the markup before the grammar runs so the
-        // markdown highlighter never sees the link; `with_markdown_syntax`
-        // now overlays `Style::Link` spans from `metadata.links` so
-        // both renderer peers paint the label as a clickable token
-        // without re-discovering links at frame time.
-        let registry = LangRegistry::standard().expect("registry");
-        let lines = vec![
-            "## Active modes".to_string(),
-            "- major: [rust](mode:rust)".to_string(),
-            "- minors: [lsp](mode:lsp), [autoindent](mode:autoindent)".to_string(),
-        ];
-        let h = HelpContent::from_lines("describe-buffer", lines).with_markdown_syntax(registry);
-        // Line 1 (`- major: rust`): the cleaned label `rust` sits at
-        // bytes 9..13. One Link span should cover exactly that.
-        let line1_links: Vec<_> = h.metadata.highlights[1]
-            .iter()
-            .filter(|sp| sp.style == lattice_syntax::Style::Link)
-            .collect();
-        assert_eq!(
-            line1_links.len(),
-            1,
-            "expected one Link span on `- major: rust`, got {:?}",
-            h.metadata.highlights[1]
-        );
-        assert_eq!((line1_links[0].start, line1_links[0].end), (9, 13));
-        // Line 2 (`- minors: lsp, autoindent`): two Link spans, one
-        // per inline link, each over the cleaned label range.
-        let line2_links: Vec<_> = h.metadata.highlights[2]
-            .iter()
-            .filter(|sp| sp.style == lattice_syntax::Style::Link)
-            .collect();
-        assert_eq!(
-            line2_links.len(),
-            2,
-            "expected two Link spans on `- minors: lsp, autoindent`, got {:?}",
-            h.metadata.highlights[2]
-        );
     }
 
     // --- Anchor links + heading slugs ---------------------------

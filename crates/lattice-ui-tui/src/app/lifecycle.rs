@@ -1477,11 +1477,6 @@ mod tests {
             .get::<crate::modes::HelpAnchors>()
             .expect("HelpAnchors local seeded (possibly empty)");
         assert_eq!(anchors.0.len(), 0);
-        // Highlights are empty without a markdown registry.
-        let highlights = locals
-            .get::<crate::modes::HelpHighlights>()
-            .expect("HelpHighlights local seeded (possibly empty)");
-        assert_eq!(highlights.0.len(), 0);
     }
 
     #[test]

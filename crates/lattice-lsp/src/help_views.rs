@@ -8,9 +8,9 @@
 //! editor App invoke these directly when servicing
 //! `:diagnostics` / `:lsp-status` / `:lsp-log` / `:references`.
 //!
-//! Each function returns an unsyntaxed [`HelpContent`]; the App
-//! attaches markdown highlighting at popup-open time via
-//! [`HelpContent::with_markdown_syntax`].
+//! Each function returns an unsyntaxed [`HelpContent`]; help buffers
+//! receive their markdown syntax and link styling from the live
+//! cells-worker `DisplayMatrix` once displayed.
 
 use lattice_help::{HelpContent, one_line};
 

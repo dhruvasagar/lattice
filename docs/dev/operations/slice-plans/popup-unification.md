@@ -11,8 +11,14 @@ popup-specific. Outcome: folding, soft-wrap, horizontal scroll,
 syntax, and decorations work in popups for free, and no popup path
 contains bespoke text-layout code.
 
-Status icons: ✅ done · 🚧 in progress · 🗒 planned. All slices below
-are 🗒 (not started).
+Status icons: ✅ done · 🚧 in progress · 🗒 planned.
+
+**Status (2026-06-29):** PU.1 / PU.1b (all sub-slices) / PU.2 / PU.3 /
+PU.4 / PU.5 (5a–5d) ✅ complete. Only **PU.6** (cleanup + regression
+guard) remains 🗒. PU.3 was delivered as part of PU.5 (ephemeral class
+built with its first consumer, completion docs); PU.4 was pre-satisfied by
+the PU.1b-3/PU.2 popup unification (hover/signature already ride the
+floating-popup compose seam).
 
 ## Sequencing rationale
 
@@ -508,31 +514,36 @@ renders, which is already covered).
   geometry plumbing + zero→1 clamp; the synthetic-pane build is covered
   host-side by PU.1b-3's `floating_popup_gets_synthetic_cells_pane_when_geometry_fed`).
 
-## PU.3 — Ephemeral-buffer class 🗒 — RE-HOMED to PU.5 (2026-06-29)
+## PU.3 — Ephemeral-buffer class ✅ (2026-06-29, delivered via PU.5a + PU.5c)
 
 The mechanism transient popups need before they can join the registry.
 
-**Folded into PU.5 (2026-06-29).** Investigation while folding PU.3 into
-PU.4 (per the agreed "build the abstraction with its consumer") found that
-PU.4's premise was already obsolete: hover + signature already live in the
-registry as `HelpContent` Documents and GC on dismiss (see PU.4 below), so
-they need NO ephemeral class. The *only* transient content popup still
-bespoke + NOT in the registry is the **completion-docs side popup** — so
-the ephemeral-buffer class's genuine first consumer is PU.5, and it is
-built there (no-speculative-abstraction rule, heuristic #1).
+**Folded into PU.5 and built there (2026-06-29).** Investigation while
+folding PU.3 into PU.4 (per "build the abstraction with its consumer")
+found PU.4's premise was obsolete: hover + signature already live in the
+registry as `HelpContent` Documents and GC on dismiss (see PU.4), so they
+need NO ephemeral class. The *only* transient content popup still bespoke +
+NOT in the registry was the **completion-docs side popup** — the genuine
+first consumer — so the ephemeral class was built alongside it (no-
+speculative-abstraction rule, heuristic #1).
 
-Original intent (now PU.5's to deliver):
-- `BufferFlags { listed: false, hidden: true }` + an **ephemeral**
-  marker; create on popup-open, garbage-collect on dismiss. Never
-  appears in `:ls`, never churns the listed set. (Note: `:bn`/`:bp`
-  already skip `listed:false` via `listed_ids_sorted`; the GC-on-dismiss
-  pattern already exists in `dismiss_stale_popup_registry`. The NEW part
-  is the ephemeral marker + `:ls` exclusion + a non-popup-slot GC for a
-  mode-owned transient buffer.)
-- Lifecycle hooks: the owning mode's `on_activate` creates it, dismiss
-  drops it.
-- Tests: an ephemeral buffer is invisible to `:ls` / `:bn` / `:bp` and
-  is removed from the registry on dismiss.
+Deliverables — all landed:
+- ✅ **`BufferFlags.ephemeral` marker** + invisible-to-`:ls` /
+  `:bn` / `:bp` (PU.5a, `e6177b31`). (`:bn`/`:bp` already skipped
+  `listed:false`; the new bits are the marker + the full `:ls` exclusion.)
+- ✅ **Create on popup-open, GC on dismiss** (PU.5c, `ef161b5f`):
+  `reconcile_completion_docs_buffer` (single chokepoint in
+  `run_tick_pending`) creates the ephemeral help-flavoured Document when the
+  docs popup opens and `gc_ephemeral_buffer`s it when completion closes —
+  the consumer (completion subsystem) owns the lifecycle. Implemented as a
+  per-cycle reconcile rather than a literal `Mode::on_activate`/`on_deactivate`
+  pair; the ownership + create/GC intent is identical and decouples from the
+  ~10 scattered `insert_completion = None` teardown sites (more robust than
+  hooking each).
+- ✅ **Tests**: `ephemeral_buffers_excluded_from_listed_ids` (registry —
+  invisible to `:bn`/`:bp`, still in `sorted_ids` until GC) +
+  `completion_docs_reconcile_creates_ephemeral_buffer_and_gcs` (host —
+  create / replace-in-place / GC-on-dismiss, ephemeral flag asserted).
 
 ## PU.4 — LSP hover through compose (TUI + GPUI) ✅ (2026-06-29, pre-satisfied)
 

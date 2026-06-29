@@ -9012,15 +9012,24 @@ impl Editor {
         }
         picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
-        if source == "buffers" {
-            picker.preview_origin = Some(self.active_pane_buffer_id().0);
-        }
+        // Carry the pre-preview origin across re-seats. A LIVE picker (files /
+        // grep) re-seats here on EVERY query change, and by then the active
+        // buffer is the previewed one — so capture the origin ONCE (from the
+        // outgoing picker, else the current active on the first seat) and
+        // thread it onto the fresh picker. Without this, "restore origin" (on
+        // dismiss / no-match) would target a stale preview buffer.
+        let carried_origin = self.picker.as_ref().and_then(|p| p.preview_origin);
+        picker.preview_origin =
+            Some(carried_origin.unwrap_or_else(|| self.active_pane_buffer_id().0));
         self.set_active_picker(picker);
-        if source == "buffers" {
-            self.preview_picker_selection()
-        } else {
-            Vec::new()
-        }
+        // Preview the seated selection — or restore the origin when the query
+        // matched NOTHING — for every source, not just buffers. The live file
+        // picker re-seats here on each query change, so this is what makes its
+        // preview track the freshly-seated candidates (incl. the empty
+        // no-match case, which `preview_picker_selection` restores). Sources
+        // whose candidates aren't previewable (e.g. the command palette) no-op
+        // inside `preview_accept_action`.
+        self.preview_picker_selection()
     }
 
     /// `:picker <source> [args...]` -- open a picker by source
@@ -16832,8 +16841,29 @@ impl Editor {
         let mut buf = vec![0u8; MAX_BYTES];
         let n = f.read(&mut buf).ok()?;
         buf.truncate(n);
+        // Binary detection: a NUL byte means this isn't text (images,
+        // executables, …). Rendering its bytes as lossy UTF-8 produces
+        // garbage, and binary content carries control / escape bytes that
+        // corrupt the terminal. Show a clean placeholder instead.
+        if buf.contains(&0) {
+            return Some("<binary file — no preview>".to_string());
+        }
         let text = String::from_utf8_lossy(&buf);
-        Some(text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n"))
+        // Strip control / escape chars (keep tab) per line so stray bytes in
+        // a "text" file can't emit raw escape sequences to the terminal
+        // (which leave garbage / leftover characters on screen). `\n` is the
+        // line separator, handled by `lines()`.
+        Some(
+            text.lines()
+                .take(MAX_LINES)
+                .map(|line| {
+                    line.chars()
+                        .filter(|c| !c.is_control() || *c == '\t')
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 
     /// Picker live-preview a file WITHOUT the full [`Self::do_edit`] open
@@ -34708,6 +34738,30 @@ mod tests {
     /// overrides (`nonu`, `signcolumn=no`, `wrap`) apply. Regression guard
     /// for the user-reported bug: hover popups showed line numbers because
     /// `open_floating_popup` activated MarkdownMode but NOT help-mode.
+    /// A binary file (NUL byte) previews as a clean placeholder, not garbage;
+    /// control/escape bytes in a "text" file are stripped (keeping tab) so
+    /// they can't corrupt the terminal or leave leftover characters.
+    #[test]
+    fn read_preview_text_handles_binary_and_control_chars() {
+        let dir = std::env::temp_dir()
+            .join(format!("lattice-preview-bin-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bin = dir.join("img.bin");
+        let txt = dir.join("esc.txt");
+        std::fs::write(&bin, [0x89u8, 0x50, 0x00, 0x4e, 0x47]).unwrap(); // NUL inside
+        std::fs::write(&txt, b"a\x1b[31mb\tc\r\nd").unwrap(); // ESC + tab + CR
+        assert_eq!(
+            Editor::read_preview_text(&bin).as_deref(),
+            Some("<binary file — no preview>"),
+            "binary file → placeholder, not garbage"
+        );
+        let cleaned = Editor::read_preview_text(&txt).expect("text read");
+        assert!(!cleaned.contains('\u{1b}'), "ESC stripped");
+        assert!(!cleaned.contains('\r'), "CR stripped");
+        assert!(cleaned.contains('\t'), "tab kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// End-to-end: a file preview renders syntax-highlighted spans. Guards
     /// the user-reported "no highlighting during preview" — `do_preview`
     /// installs a fresh `Document` + sync-parsed `self.syntax` (mirroring the

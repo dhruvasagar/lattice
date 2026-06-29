@@ -5139,7 +5139,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-Coverage by crate. Crates marked `(2026-06-16)` were re-verified this
+Coverage by crate. Crates marked `(2026-06-29)` were re-verified this
 session; the rest are from the prior snapshot and want a re-run.
 
 | Crate                            | Tests |
@@ -5151,12 +5151,13 @@ session; the rest are from the prior snapshot and want a re-run.
 | lattice-completion               | 124   |
 | lattice-config                   | 118   |
 | lattice-syntax                   | 82    |
+| lattice-theme                    | 53 (2026-06-29) |
 | lattice-runtime                  | 43    |
 | lattice-lsp                      | 183   |
-| lattice-picker                   | 48    |
-| lattice-ui-tui                   | 1475 (2026-06-16) |
-| lattice-host                     | 738 (2026-06-16) |
-| lattice-ui-gpui                  | 25    |
+| lattice-picker                   | 48 (2026-06-29) |
+| lattice-ui-tui                   | 1507 (2026-06-29) |
+| lattice-host                     | 654 (2026-06-29) |
+| lattice-ui-gpui                  | 25 default · 114 `--features window` (2026-06-29) |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/benchmarks.md` for the latest numbers.

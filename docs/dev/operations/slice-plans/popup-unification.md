@@ -508,37 +508,71 @@ renders, which is already covered).
   geometry plumbing + zero→1 clamp; the synthetic-pane build is covered
   host-side by PU.1b-3's `floating_popup_gets_synthetic_cells_pane_when_geometry_fed`).
 
-## PU.3 — Ephemeral-buffer class 🗒
+## PU.3 — Ephemeral-buffer class 🗒 — RE-HOMED to PU.5 (2026-06-29)
 
 The mechanism transient popups need before they can join the registry.
 
+**Folded into PU.5 (2026-06-29).** Investigation while folding PU.3 into
+PU.4 (per the agreed "build the abstraction with its consumer") found that
+PU.4's premise was already obsolete: hover + signature already live in the
+registry as `HelpContent` Documents and GC on dismiss (see PU.4 below), so
+they need NO ephemeral class. The *only* transient content popup still
+bespoke + NOT in the registry is the **completion-docs side popup** — so
+the ephemeral-buffer class's genuine first consumer is PU.5, and it is
+built there (no-speculative-abstraction rule, heuristic #1).
+
+Original intent (now PU.5's to deliver):
 - `BufferFlags { listed: false, hidden: true }` + an **ephemeral**
   marker; create on popup-open, garbage-collect on dismiss. Never
-  appears in `:ls`, never churns the listed set.
+  appears in `:ls`, never churns the listed set. (Note: `:bn`/`:bp`
+  already skip `listed:false` via `listed_ids_sorted`; the GC-on-dismiss
+  pattern already exists in `dismiss_stale_popup_registry`. The NEW part
+  is the ephemeral marker + `:ls` exclusion + a non-popup-slot GC for a
+  mode-owned transient buffer.)
 - Lifecycle hooks: the owning mode's `on_activate` creates it, dismiss
-  drops it (mirrors how transient state is owned today).
+  drops it.
 - Tests: an ephemeral buffer is invisible to `:ls` / `:bn` / `:bp` and
   is removed from the registry on dismiss.
 
-## PU.4 — LSP hover through compose (TUI + GPUI) 🗒
+## PU.4 — LSP hover through compose (TUI + GPUI) ✅ (2026-06-29, pre-satisfied)
 
-- Back the hover popup with an ephemeral buffer (PU.3) carrying the
-  hover markdown; route its content through the seam.
-- Delete the hover-specific line builder (both renderers).
-- **Acceptance:** hover content gets syntax/markdown rendering,
-  wrap-toggle, and h-scroll; auto-dismiss + cursor-motion behaviour
-  unchanged.
+**Already satisfied by the popup unification (PU.1b-3 + PU.2)** — no code
+needed. Hover does NOT have a bespoke renderer: `drain_pending_hover`
+builds `HelpContent::from_lines("hover", …)` and emits
+`RendererSignal::DisplayBuffer(content, category: Hover)`, which
+`editor.display_buffer` routes to a cursor-anchored `open_floating_popup`
+— the SAME floating popup PU.1b-3 (TUI) and PU.2 (GPUI) flipped to the
+compose/matrix seam. So hover content already gets markdown/link syntax
+(live `DisplayMatrix`), soft-wrap, and h-scroll, is a registry Document,
+and GC's on dismiss via `dismiss_stale_popup_registry`. The "hover-specific
+line builder" the original slice text wanted to delete had already been
+unified into the `DisplayBuffer`→popup mechanism before PU.1, so there is
+nothing left to delete.
 
-## PU.5 — Signature help + completion docs through compose 🗒
+- **Acceptance (met):** hover content gets syntax/markdown rendering,
+  wrap, and h-scroll (via the shared popup→compose seam); auto-dismiss +
+  cursor-motion behaviour unchanged (untouched existing logic).
 
-- Same ephemeral-buffer + seam treatment for signature help and the
-  completion documentation popup (both renderers).
-- Delete their bespoke content paths (the completion-docs plain
-  `Paragraph`, the signature line builder).
+## PU.5 — Signature help + completion docs through compose 🗒 (now owns the ephemeral class)
+
+**Signature help: already satisfied** — `drain_pending_signature_help`
+emits the SAME `DisplayBuffer(content, category: Hover)` path as hover
+(renders as a cursor-anchored floating popup through the compose seam). No
+bespoke signature line builder remains.
+
+**Remaining real work = completion docs** (the last bespoke content popup):
+- The completion-docs side popup is `draw_insert_completion_docs_popup`
+  (TUI, `render.rs`) painting a plain `Paragraph` — NOT a registry buffer,
+  NOT through compose. Route it through the seam: back it with an
+  **ephemeral registry buffer** (the PU.3 class, built HERE as its first
+  real consumer) carrying the doc markdown, rendered via the synthetic-pane
+  compose path; delete the bespoke `Paragraph` path in both renderers.
+- Build the ephemeral-buffer class as part of this slice (PU.3 folded in):
+  the `ephemeral` marker + `:ls` exclusion + mode-owned create/GC, shaped
+  by the completion-docs consumer.
 - Note: the completion **candidate list** and pickers are list/
-  selection widgets, not document content — out of scope for this
-  initiative (their unification, if any, is a separate "list buffer"
-  question). This initiative is about *content* popups.
+  selection widgets, not document content — out of scope (a separate
+  "list buffer" question). This initiative is about *content* popups.
 
 ## PU.6 — Cleanup + regression guard 🗒
 

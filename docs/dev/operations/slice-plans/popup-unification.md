@@ -347,14 +347,43 @@ lattice-help 39, GPUI `--features window` clean.
   (TUI — feedback helper Some only for an open floating popup, inner
   width = outer − 2).
 
-### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒
+#### PU.1b-3 follow-up fix (2026-06-29, `1037976c`) — wrong snapshot source
 
-Nothing reads the precompute path once both renderers flip. **Delete**
-`with_markdown_syntax`, `popup_help_highlights`, `popup_help` (the view
-reconstructor — note draw_help_overlay still uses it for chrome
-title/line-count/State-A scroll, so its retirement is the work here),
-and the `HelpHighlights` buffer-local seeding. (`render_help_line` +
-`help_render_data` already deleted in PU.1b-3.)
+Dhruva reported help **link/markdown styling vanished** from the floating
+popup after PU.1b-3. Root cause: the synthetic popup pane passed
+`is_active_buffer = popup_is_focused` to `build_one_pane_cells_input`. But a
+help popup is a registry Document that is NEVER `activate_document`'d as
+`self.document` (PU.1a) — even focused (State B, `active_buffer == Help`),
+`self.document` still points at the buffer UNDERNEATH the popup. So
+`is_active_buffer = true` built the popup matrix from the WRONG document's
+(empty/stale) snapshot; compose's `display_stale` guard then fell back to
+unstyled plain text. Fix: the popup ALWAYS sources snapshot+folds from the
+registry handle + `buffer_locals[popup_id]` (`is_active_buffer = false`) —
+only the scroll anchor differs by focus. This matches how the main loop
+already treats in-pane Help (excluded from `active_doc_active`), which is why
+in-pane help (PU.1b-2b) was never affected. Guard:
+`floating_popup_composes_link_styling_end_to_end` (TUI — drives the cells
+worker for `PaneId::POPUP`, composes like `draw_help_overlay`, asserts a
+resolved `Style::Link` span).
+
+### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒 — BLOCKED on PU.2
+
+**Dependency correction (2026-06-29):** the original "once *both* renderers
+flip" framing put PU.1b-4 before PU.2, which is self-contradictory — GPUI
+flips in PU.2. The TUI is flipped (PU.1b-2b + PU.1b-3), but **GPUI's bespoke
+floating popup still reads the precompute** (`window.rs` reads
+`popup_substate.help` = `popup_help()` and `popup_substate.help_highlights`
+= `popup_help_highlights()`, which `build_render_state` publishes from
+`HelpHighlights`, fed by `with_markdown_syntax`). Deleting the precompute now
+would break GPUI help. **PU.2 must land first**; then PU.1b-4 deletes the
+now-fully-unread path.
+
+Once PU.2 lands: **Delete** `with_markdown_syntax`, `popup_help_highlights`,
+`popup_help` (the view reconstructor — note draw_help_overlay still uses it
+for chrome title/line-count/State-A scroll, so its retirement is the work
+here), the published `PopupRenderState.{help,help_highlights}`, and the
+`HelpHighlights` buffer-local seeding. (`render_help_line` + `help_render_data`
+already deleted in PU.1b-3.)
 
 - **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
   popup; folds work inside help; horizontal scroll works inside help

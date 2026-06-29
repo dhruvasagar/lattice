@@ -1178,6 +1178,18 @@ impl App {
         });
     }
 
+    /// PU.5c: completion-docs side-popup inner-geometry hand-off — the peer
+    /// of [`Self::set_popup_viewport`] for the second synthetic popup
+    /// (`PaneId::COMPLETION_DOCS`). `build_cells_panes` reads
+    /// `Editor::completion_docs_viewport_{height,width}` to size the docs
+    /// `DisplayMatrix`. Diff-then-send in the runtime loop keeps churn down.
+    pub fn set_completion_docs_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.completion_docs_viewport_height = rows.max(1);
+            e.completion_docs_viewport_width = cols.max(1);
+        });
+    }
+
     /// Variant of [`Self::mutate_editor`] for closures that
     /// return a value (typically `Vec<RendererSignal>` from
     /// host helpers). Same routing contract.

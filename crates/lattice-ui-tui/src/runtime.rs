@@ -308,6 +308,8 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // the popup's inner rect. Push only on change so a steady-state popup
     // costs zero actor RPCs per frame.
     let mut last_popup_dims: Option<(u32, u32)> = None;
+    // PU.5c: diff-then-send cache for the completion-docs popup geometry.
+    let mut last_completion_docs_dims: Option<(u32, u32)> = None;
     // Opt-in keystroke→glyph timer (set env `LATTICE_PERF_INPUT=1`). Measures
     // OUR input-to-draw latency only — from the instant an input event was
     // applied to the instant `terminal.draw()` returns (i.e. we've written the
@@ -574,9 +576,25 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         } else {
             None
         };
+        let mut completion_docs_dims: Option<(u32, u32)> = None;
         terminal
-            .draw(|frame| draw_frame(frame, &app, &frame_snap))
+            .draw(|frame| {
+                completion_docs_dims = draw_frame(frame, &app, &frame_snap);
+            })
             .context("draw frame")?;
+        // PU.5c: completion-docs popup geometry hand-off (diff-then-send,
+        // peer of the floating-popup feedback above). `draw_frame` returns
+        // the docs popup's inner (rows, cols) when shown — computed at the
+        // exact draw site (it is cursor-anchored, so position-dependent) —
+        // and the host sizes the `PaneId::COMPLETION_DOCS` matrix from it.
+        // `None` when no docs popup → nothing sent (the synthetic pane just
+        // isn't built).
+        if last_completion_docs_dims != completion_docs_dims {
+            if let Some((rows, cols)) = completion_docs_dims {
+                app.set_completion_docs_viewport(rows, cols);
+            }
+            last_completion_docs_dims = completion_docs_dims;
+        }
         // Perf timer: this draw is the one that renders the keystroke applied
         // at the end of the PREVIOUS iteration. Report input→glyph (our side),
         // the bare draw duration, AND the bytes written to the terminal — the

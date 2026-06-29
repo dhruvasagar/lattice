@@ -1684,6 +1684,12 @@ pub struct PickerRenderState {
 pub struct CompletionRenderState {
     pub insert: Option<std::sync::Arc<lattice_completion::InsertCompletionState>>,
     pub state: Option<std::sync::Arc<crate::state::CompletionState>>,
+    /// PU.5c: the ephemeral registry buffer backing the completion-docs
+    /// side popup (`Editor::completion_docs_buffer`). Both renderers read
+    /// it to source the docs snapshot + per-buffer options from the
+    /// registry and route the content through the `PaneId::COMPLETION_DOCS`
+    /// compose seam. `None` when no docs buffer exists.
+    pub docs_buffer_id: Option<lattice_core::BufferId>,
 }
 
 /// Help / hover / signature popup's render-side projection.

@@ -555,6 +555,25 @@ pub struct Editor {
     /// (the renderer's plain-text fallback covers that one frame).
     pub popup_viewport_height: u32,
     pub popup_viewport_width: u32,
+    /// PU.5c: the ephemeral registry buffer backing the Insert-mode
+    /// completion-docs side popup. `None` when no docs are shown.
+    /// Reconciled from `insert_completion.doc_popup.body` once per cycle
+    /// (`reconcile_completion_docs_buffer` in `run_tick_pending`):
+    /// created when docs appear, text-replaced when they change, and
+    /// garbage-collected when they vanish — a single chokepoint instead
+    /// of the scattered `insert_completion = None` teardown sites. It is a
+    /// help-flavoured `BufferData::Help` Document with the `ephemeral`
+    /// flag, so it reuses markdown syntax + link styling + the
+    /// `nonu`/`signcolumn=no`/`wrap` help-mode options and renders through
+    /// the shared compose seam (`PaneId::COMPLETION_DOCS`).
+    pub completion_docs_buffer: Option<BufferId>,
+    /// PU.5c: inner-rect geometry of the completion-docs side popup, fed
+    /// back from the renderer each frame (the second synthetic popup, peer
+    /// of `popup_viewport_*`). `build_cells_panes` reads them to size the
+    /// `PaneId::COMPLETION_DOCS` matrix; the synthetic pane is gated on
+    /// `completion_docs_viewport_width > 0`.
+    pub completion_docs_viewport_height: u32,
+    pub completion_docs_viewport_width: u32,
     /// In-progress text in the `:` minibuffer. Populated
     /// only while `modal == ModalState::Command`.
     pub command_line: String,

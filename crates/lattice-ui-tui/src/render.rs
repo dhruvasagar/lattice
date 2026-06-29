@@ -290,7 +290,19 @@ impl<'a> FrameView<'a> {
 /// `visible_highlights`, and `show_line_numbers` go through that
 /// snapshot rather than the live App fields. `lsp_diagnostics`
 /// stays wait-free behind its own `ArcSwap` (audit slice 2).
-pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
+/// Returns the completion-docs side popup's inner `(rows, cols)` when it is
+/// shown this frame (PU.5c) — `None` otherwise. The runtime loop feeds this
+/// back via `App::set_completion_docs_viewport` so `build_cells_panes` sizes
+/// the `PaneId::COMPLETION_DOCS` matrix. Computed at the exact draw site
+/// (with the real `chunks[1]` buffer area) because the docs popup is
+/// cursor-anchored — position-dependent, unlike the floating popup whose
+/// geometry the runtime reconstructs (`popup_feedback_inner_dims`).
+#[must_use]
+pub fn draw_frame(
+    frame: &mut Frame,
+    app: &App,
+    snap: &DocumentSnapshot,
+) -> Option<(u32, u32)> {
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open in
     // minibuffer mode, an extra row band sits below the cmdline
@@ -432,6 +444,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Anchored at the cursor; floats over the buffer; doesn't
     // claim the cmdline row (so echoes can still appear).
     // Painted last so it sits on top of any pane-area widgets.
+    let mut completion_docs_dims: Option<(u32, u32)> = None;
     if app.completion_popup_active() {
         draw_insert_completion_popup(frame, chunks[1], app, snap);
         // Side documentation popup (Phase 4.2.g.3) -- only
@@ -442,8 +455,13 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
             && state.doc_popup.is_some()
         {
             draw_insert_completion_docs_popup(frame, chunks[1], app, snap);
+            // PU.5c: feed the docs popup's inner geometry back to the host
+            // (computed here with the exact `chunks[1]` it painted into).
+            completion_docs_dims =
+                completion_docs_feedback_inner_dims(app, snap, chunks[1]);
         }
     }
+    completion_docs_dims
 }
 
 /// Issue #29 (2026-05-22): paint the tabline row. Reads the
@@ -761,22 +779,26 @@ fn clip_to_width(s: &str, width: u16) -> String {
 ///
 /// `<C-f>` / `<C-b>` (inside the completion-popup minor
 /// mode) page through the body via `state.doc_popup.scroll`.
-fn draw_insert_completion_docs_popup(
-    frame: &mut Frame,
-    buffer_area: Rect,
+/// PU.5c: the OUTER rect the completion-docs side popup paints into, or
+/// `None` when no docs popup is shown / there's no room. Anchored to the
+/// right of (or below) the candidate popup. Shared by the renderer (paint)
+/// and the runtime geometry feedback (`completion_docs_feedback_inner_dims`
+/// → `App::set_completion_docs_viewport`) so the `PaneId::COMPLETION_DOCS`
+/// matrix width and the painted box agree — the peer of
+/// `popup_feedback_inner_dims` / `draw_help_overlay`.
+fn completion_docs_popup_rect(
     app: &App,
     snap: &DocumentSnapshot,
-) {
-    // Slice 3c.final.B (group 3): bind substate Arc.
+    buffer_area: Rect,
+) -> Option<Rect> {
     let completion = app.completion();
-    let Some(state) = completion.insert.as_deref() else {
-        return;
-    };
-    let Some(doc_popup) = state.doc_popup.as_ref() else {
-        return;
-    };
-    // Anchor: same anchor as the candidate popup. Pull the
-    // active pane rect for placement math.
+    let state = completion.insert.as_deref()?;
+    let doc_popup = state.doc_popup.as_ref()?;
+    // Only shown when the focused candidate resolved a non-empty body.
+    if !doc_popup.body.as_ref().is_some_and(|b| !b.is_empty()) {
+        return None;
+    }
+    // Anchor: same anchor as the candidate popup.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
     let anchor_screen =
@@ -794,34 +816,54 @@ fn draw_insert_completion_docs_popup(
     };
     let cand_max_x = (buffer_area.x + buffer_area.width).saturating_sub(cand_width);
     let cand_x = anchor_x.min(cand_max_x).max(buffer_area.x);
-    // Docs popup: try to fit right of the candidate popup.
-    // If there's not enough room, place below the candidate
-    // popup instead.
+    // Docs popup: try to fit right of the candidate popup; else below it.
     let cand_right = cand_x + cand_width;
     let space_right = (buffer_area.x + buffer_area.width).saturating_sub(cand_right + 1);
     let docs_width: u16 = 60u16.min(space_right);
     let (x, y, width, height) = if docs_width >= 30 {
-        // Right side, same vertical extent as the candidate
-        // popup.
         (cand_right + 1, cand_y, docs_width, cand_height)
     } else {
-        // Below the candidate popup, full popup width, capped
-        // at remaining vertical space.
         let below_y = cand_y + cand_height;
         let below_h = area_bottom.saturating_sub(below_y).min(8);
         if below_h < 3 {
-            return;
+            return None;
         }
         (cand_x, below_y, cand_width, below_h)
     };
     if width < 20 || height < 3 {
-        return;
+        return None;
     }
-    let popup = Rect {
+    Some(Rect {
         x,
         y,
         width,
         height,
+    })
+}
+
+/// PU.5c: inner `(rows, cols)` of the completion-docs popup for the host
+/// geometry hand-off (`App::set_completion_docs_viewport`). Inner = outer −
+/// 2 (the `Borders::ALL` block). `None` when no docs popup is shown — the
+/// runtime then pushes nothing (the synthetic pane simply isn't built).
+pub(crate) fn completion_docs_feedback_inner_dims(
+    app: &App,
+    snap: &DocumentSnapshot,
+    buffer_area: Rect,
+) -> Option<(u32, u32)> {
+    let rect = completion_docs_popup_rect(app, snap, buffer_area)?;
+    let inner_w = u32::from(rect.width.saturating_sub(2)).max(1);
+    let inner_h = u32::from(rect.height.saturating_sub(2)).max(1);
+    Some((inner_h, inner_w))
+}
+
+fn draw_insert_completion_docs_popup(
+    frame: &mut Frame,
+    buffer_area: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+) {
+    let Some(popup) = completion_docs_popup_rect(app, snap, buffer_area) else {
+        return;
     };
     frame.render_widget(Clear, popup);
     let block = Block::default()
@@ -829,23 +871,68 @@ fn draw_insert_completion_docs_popup(
         .title(" docs (<C-d>) ");
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    // Body. Plain-text rendering for v1; markdown highlight
-    // can layer on once the help-popup pipeline gets reused
-    // (4.2.g.5+). Wrap so long lines paginate naturally.
-    let body_text: String = doc_popup
-        .body
-        .clone()
-        .unwrap_or_else(|| "(loading…)".to_string());
-    // Apply scroll: skip the first `scroll` lines.
-    let visible_body: String = body_text
-        .lines()
-        .skip(doc_popup.scroll as usize)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let para = Paragraph::new(visible_body)
-        .wrap(Wrap { trim: false })
-        .style(TuiStyle::default().fg(Color::Gray));
-    frame.render_widget(para, inner);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let completion = app.completion();
+    let doc_scroll = completion
+        .insert
+        .as_deref()
+        .and_then(|s| s.doc_popup.as_ref())
+        .map(|d| d.scroll as u32)
+        .unwrap_or(0);
+    // PU.5c: render the docs CONTENT through the shared compose seam reading
+    // the `PaneId::COMPLETION_DOCS` `DisplayMatrix` (markdown colour + link
+    // styling + soft-wrap), the SAME path the help / hover popup uses — the
+    // docs buffer is a help-flavoured ephemeral Document. Before the
+    // ephemeral buffer exists (the one tick between `doc_popup.body`
+    // appearing and `reconcile_completion_docs_buffer` creating it) OR
+    // before the renderer has fed geometry back (matrix not built yet),
+    // compose falls back to plain-text from the snapshot — correct text,
+    // colour catches up within a frame (UX-acceptable eventual consistency).
+    if let Some(docs_id) = completion.docs_buffer_id
+        && let Some(handle) = app.buffers().registry.document_handle(docs_id)
+    {
+        let content_snap = handle.snapshot();
+        let view = FrameView::for_buffer(app, docs_id);
+        let ctx = PaneComposeCtx {
+            // The docs popup is never focused (State A only) — no cursor,
+            // no interaction overlays.
+            is_active: false,
+            pane_id: lattice_core::ui::pane::PaneId::COMPLETION_DOCS,
+            buffer_id: docs_id,
+            cursor_line: 0,
+            scroll: doc_scroll,
+            leftcol: 0,
+            display_line_numbers: handle.display_line_numbers(),
+        };
+        let lines = compose_pane_lines(
+            &view,
+            &content_snap,
+            inner.height as u32,
+            inner.width as u32,
+            &ctx,
+        );
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        // Pre-buffer fallback: plain-text body so the user sees docs
+        // immediately on the first frame.
+        let body_text: String = completion
+            .insert
+            .as_deref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone())
+            .unwrap_or_else(|| "(loading…)".to_string());
+        let visible_body: String = body_text
+            .lines()
+            .skip(doc_scroll as usize)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let para = Paragraph::new(visible_body)
+            .wrap(Wrap { trim: false })
+            .style(TuiStyle::default().fg(Color::Gray));
+        frame.render_widget(para, inner);
+    }
 }
 
 /// Render one Insert-mode-completion candidate row. Three

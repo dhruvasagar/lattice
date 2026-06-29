@@ -1049,6 +1049,7 @@ impl Editor {
             completion: std::sync::Arc::new(CompletionRenderState {
                 insert: self.insert_completion.clone().map(std::sync::Arc::new),
                 state: self.completion_state.clone().map(std::sync::Arc::new),
+                docs_buffer_id: self.completion_docs_buffer,
             }),
             popup: std::sync::Arc::new(PopupRenderState {
                 buffer_id: self.popup_buffer,
@@ -10839,9 +10840,109 @@ impl Editor {
                 });
             }
         }
-        // PU.5c: the Insert-mode completion-docs side popup is appended here
-        // once its ephemeral backing buffer + geometry feedback land.
+        // PU.5c: the Insert-mode completion-docs side popup. Shown when
+        // completion is open, the focused candidate resolved a doc body
+        // (the ephemeral buffer exists), AND the renderer fed back the docs
+        // popup's inner geometry. Its scroll is the doc popup's own scroll
+        // (`<C-f>`/`<C-b>` paging), independent of the floating popup.
+        if let Some(docs_id) = self.completion_docs_buffer
+            && self.completion_docs_viewport_width > 0
+            && let Some(scroll) = self
+                .insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .filter(|d| d.body.as_ref().is_some_and(|b| !b.is_empty()))
+                .map(|d| d.scroll)
+        {
+            specs.push(PopupPaneSpec {
+                pane_id: PaneId::COMPLETION_DOCS,
+                buffer_id: docs_id,
+                scroll,
+                viewport_height: self.completion_docs_viewport_height,
+                viewport_width: self.completion_docs_viewport_width,
+                wrap: true,
+            });
+        }
         specs
+    }
+
+    /// PU.5c: reconcile the ephemeral completion-docs buffer with the
+    /// current `insert_completion.doc_popup.body`. The SINGLE chokepoint
+    /// (called once per cycle from [`Self::run_tick_pending`]) that owns the
+    /// buffer's lifecycle, so the ~10 scattered `insert_completion = None`
+    /// teardown sites don't each have to remember to GC it:
+    /// - completion closed (`insert_completion` None) → GC the buffer;
+    /// - first doc body while open → create it (a help-flavoured ephemeral
+    ///   Document — markdown syntax + link styling + `nonu`/`signcolumn=no`/
+    ///   `wrap` help-mode options for free, so it renders pixel-consistent
+    ///   with the hover/help popup through the shared compose seam);
+    /// - doc body changed → replace its text + re-seed metadata;
+    /// - docs absent mid-session (a candidate with no docs) → keep the
+    ///   buffer (the pane is simply not built — see `synthetic_popup_panes`),
+    ///   avoiding actor spawn/GC churn while paging candidates.
+    fn reconcile_completion_docs_buffer(&mut self) {
+        let completion_open = self.insert_completion.is_some();
+        if !completion_open {
+            if let Some(id) = self.completion_docs_buffer.take() {
+                self.gc_ephemeral_buffer(id);
+            }
+            return;
+        }
+        let want_body: Option<String> = self
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone())
+            .filter(|b| !b.is_empty());
+        match (want_body, self.completion_docs_buffer) {
+            (Some(body), Some(id)) => {
+                // Replace only when the text actually changed (the body is a
+                // screenful, checked only while completion is open).
+                let current = self
+                    .buffers
+                    .document_handle(id)
+                    .map(|h| h.snapshot().buffer.as_string())
+                    .unwrap_or_default();
+                if current != body {
+                    self.replace_owned_document_text(id, &body);
+                    let content = lattice_help::HelpContent::from_lines(
+                        "completion-docs",
+                        body.split('\n').map(String::from).collect(),
+                    );
+                    self.seed_help_metadata_locals(id, content.metadata);
+                }
+            }
+            (Some(body), None) => {
+                let content = lattice_help::HelpContent::from_lines(
+                    "completion-docs",
+                    body.split('\n').map(String::from).collect(),
+                );
+                let id = self.register_help_document(
+                    content,
+                    lattice_core::BufferFlags {
+                        listed: false,
+                        hidden: true,
+                        ephemeral: true,
+                    },
+                );
+                // help-mode → `nonu` / `signcolumn=no` / `wrap`, matching the
+                // floating popup so docs render identically.
+                let _ = self.activate_major_for_buffer_kind(id, BufferKind::Help);
+                self.completion_docs_buffer = Some(id);
+            }
+            // No (fresh) docs for this candidate: keep any existing buffer
+            // (hidden — the pane isn't built) to avoid spawn/GC churn.
+            (None, _) => {}
+        }
+    }
+
+    /// PU.5c: tear down an ephemeral popup-backing buffer + its per-buffer
+    /// state. Mirrors [`Self::dismiss_stale_popup_registry`]'s cleanup set.
+    fn gc_ephemeral_buffer(&mut self, id: BufferId) {
+        self.buffers.remove(id);
+        self.active_modes.remove(&id);
+        self.buffer_locals.remove(&id);
+        self.resolved_options.remove(&id);
     }
 
     fn build_cells_panes(
@@ -12188,6 +12289,10 @@ impl Editor {
         self.drain_code_lens_refresh();
         self.drain_pending_insert_completion_lsp();
         self.drain_pending_completion_resolve();
+        // PU.5c: reconcile the ephemeral completion-docs buffer AFTER the
+        // resolve drain has updated `doc_popup.body` — single chokepoint for
+        // its create / replace / GC lifecycle.
+        self.reconcile_completion_docs_buffer();
         self.drain_lsp_log_events();
         self.drain_modeline_element_updates();
         self.drain_lsp_detach_events();
@@ -34348,6 +34453,80 @@ mod tests {
         let cells = editor.render_state.load_full().cells.load_full();
         let pane = cells.panes.first().expect("at least one pane");
         assert!(!pane.wrap, "PaneCellsInputs.wrap must be false after :set nowrap");
+    }
+
+    /// PU.5c: the ephemeral completion-docs buffer lifecycle, reconciled
+    /// once per cycle from `run_tick_pending`. Created (help-flavoured,
+    /// ephemeral, invisible to `:ls`/`:bn`/`:bp`) when the focused candidate
+    /// resolves a doc body; text-replaced in place when the body changes;
+    /// garbage-collected when completion closes.
+    #[test]
+    fn completion_docs_reconcile_creates_ephemeral_buffer_and_gcs() {
+        use lattice_completion::{CompletionTrigger, DocPopupState, InsertCompletionState};
+        use lattice_protocol::position::Position;
+        let mut e = Editor::boot(lattice_core::Document::empty());
+        // No completion → no docs buffer.
+        e.reconcile_completion_docs_buffer();
+        assert!(e.completion_docs_buffer.is_none());
+
+        // Completion open with a resolved doc body → ephemeral buffer.
+        let mut st = InsertCompletionState::open(
+            CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        st.doc_popup = Some(DocPopupState {
+            for_index: 0,
+            body: Some("# Docs\nbody".to_string()),
+            scroll: 0,
+        });
+        e.insert_completion = Some(st);
+        e.reconcile_completion_docs_buffer();
+        let id = e
+            .completion_docs_buffer
+            .expect("ephemeral docs buffer created");
+        assert!(e.buffers.contains_help(id), "docs buffer is help-flavoured");
+        assert!(
+            e.buffers.flags_of(id).expect("flags").ephemeral,
+            "docs buffer carries the ephemeral flag"
+        );
+        assert!(
+            !e.buffers.listed_ids_sorted().contains(&id),
+            "ephemeral docs buffer excluded from :bn/:bp"
+        );
+
+        // Body changed → same buffer id, text replaced in place.
+        e.insert_completion
+            .as_mut()
+            .unwrap()
+            .doc_popup
+            .as_mut()
+            .unwrap()
+            .body = Some("changed body".to_string());
+        e.reconcile_completion_docs_buffer();
+        assert_eq!(
+            e.completion_docs_buffer,
+            Some(id),
+            "buffer reused on body change (no churn)"
+        );
+        let text = e
+            .buffers
+            .document_handle(id)
+            .unwrap()
+            .snapshot()
+            .buffer
+            .as_string();
+        assert!(text.contains("changed body"), "text replaced; got {text:?}");
+
+        // Completion closes → buffer GC'd.
+        e.insert_completion = None;
+        e.reconcile_completion_docs_buffer();
+        assert!(e.completion_docs_buffer.is_none());
+        assert!(
+            e.buffers.document_handle(id).is_none(),
+            "ephemeral buffer removed from the registry on dismiss"
+        );
     }
 
     #[test]

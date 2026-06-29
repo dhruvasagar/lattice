@@ -629,6 +629,29 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one("file_tree.file", spec(), "Regular file entries.");
 
+    // ---- Terminal ANSI palette (the 16 colours programs draw in) ----
+    // Each ANSI slot maps to a palette accent so the embedded terminal
+    // recolours with the active colorscheme (catppuccin-style mapping:
+    // magenta→pink, cyan→teal, black/white→surface/subtext). Replaces the
+    // GPUI terminal's old hardcoded dim-VGA xterm palette. Bright variants
+    // (8-15) reuse the same accents; only black/white brighten.
+    reg_one("terminal.ansi.0", spec().fg("surface1"), "ANSI 0 — black.");
+    reg_one("terminal.ansi.1", spec().fg("red"), "ANSI 1 — red.");
+    reg_one("terminal.ansi.2", spec().fg("green"), "ANSI 2 — green.");
+    reg_one("terminal.ansi.3", spec().fg("yellow"), "ANSI 3 — yellow.");
+    reg_one("terminal.ansi.4", spec().fg("blue"), "ANSI 4 — blue.");
+    reg_one("terminal.ansi.5", spec().fg("pink"), "ANSI 5 — magenta.");
+    reg_one("terminal.ansi.6", spec().fg("teal"), "ANSI 6 — cyan.");
+    reg_one("terminal.ansi.7", spec().fg("subtext"), "ANSI 7 — white.");
+    reg_one("terminal.ansi.8", spec().fg("surface2"), "ANSI 8 — bright black.");
+    reg_one("terminal.ansi.9", spec().fg("red"), "ANSI 9 — bright red.");
+    reg_one("terminal.ansi.10", spec().fg("green"), "ANSI 10 — bright green.");
+    reg_one("terminal.ansi.11", spec().fg("yellow"), "ANSI 11 — bright yellow.");
+    reg_one("terminal.ansi.12", spec().fg("blue"), "ANSI 12 — bright blue.");
+    reg_one("terminal.ansi.13", spec().fg("pink"), "ANSI 13 — bright magenta.");
+    reg_one("terminal.ansi.14", spec().fg("teal"), "ANSI 14 — bright cyan.");
+    reg_one("terminal.ansi.15", spec().fg("text"), "ANSI 15 — bright white.");
+
     // ---- Diagnostics ----
     reg_one(
         "diagnostic.error",
@@ -1022,6 +1045,11 @@ pub struct BuiltinElementIds {
     pub completion_annotation_keybinding: ElementId,
     pub completion_annotation_source: ElementId,
     pub completion_annotation_custom: ElementId,
+    // Terminal ANSI 0-15 (the 16-colour palette programs draw in). Each
+    // maps to a palette accent so the embedded terminal recolours with the
+    // colorscheme instead of a hardcoded dim-VGA xterm palette. The GPUI
+    // terminal renderer reads these; index = ANSI colour number.
+    pub terminal_ansi: [ElementId; 16],
 }
 
 impl Default for BuiltinElementIds {
@@ -1047,6 +1075,7 @@ impl Default for BuiltinElementIds {
             pane_status_inactive: ElementId::INVALID,
             pane_separator: ElementId::INVALID,
             pane_inactive_overlay: ElementId::INVALID,
+            terminal_ansi: [ElementId::INVALID; 16],
             modeline_active: ElementId::INVALID,
             modeline_inactive: ElementId::INVALID,
             modeline_mode: ElementId::INVALID,
@@ -1128,6 +1157,24 @@ impl BuiltinElementIds {
             }
         };
         BuiltinElementIds {
+            terminal_ansi: [
+                id("terminal.ansi.0"),
+                id("terminal.ansi.1"),
+                id("terminal.ansi.2"),
+                id("terminal.ansi.3"),
+                id("terminal.ansi.4"),
+                id("terminal.ansi.5"),
+                id("terminal.ansi.6"),
+                id("terminal.ansi.7"),
+                id("terminal.ansi.8"),
+                id("terminal.ansi.9"),
+                id("terminal.ansi.10"),
+                id("terminal.ansi.11"),
+                id("terminal.ansi.12"),
+                id("terminal.ansi.13"),
+                id("terminal.ansi.14"),
+                id("terminal.ansi.15"),
+            ],
             diagnostic_error: id("diagnostic.error"),
             diagnostic_warning: id("diagnostic.warning"),
             diagnostic_info: id("diagnostic.info"),
@@ -1444,6 +1491,46 @@ mod tests {
             resolved.get(ids.diff_conflict_line).bg,
             Some(Color::Rgb(60, 0, 60))
         );
+    }
+
+    #[test]
+    fn terminal_ansi_palette_resolves_to_themed_accents() {
+        // The embedded terminal's 16-colour palette is sourced from
+        // `terminal.ansi.*` roles → palette accents, so a `:colorscheme`
+        // swap recolours the terminal and the colours are readable on dark
+        // backgrounds (the old hardcoded `0xcd0000`/`0x0000ee` dim-VGA fix).
+        // Default palette = mocha.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+        let fg = |i: usize| resolved.get(ids.terminal_ansi[i]).fg.map(|c| c.to_rgb_u32(0));
+        // red / green / yellow / blue map to the mocha accents — NOT the
+        // dim VGA ANSI values (0xcd0000 / 0x00cd00 / 0x0000ee).
+        assert_eq!(fg(1), Some(0x00f3_8ba8), "ANSI red = mocha red");
+        assert_eq!(fg(2), Some(0x00a6_e3a1), "ANSI green = mocha green");
+        assert_eq!(fg(4), Some(0x0089_b4fa), "ANSI blue = mocha blue (not 0x0000ee)");
+        assert_eq!(fg(5), Some(0x00f5_c2e7), "ANSI magenta = pink");
+        assert_eq!(fg(6), Some(0x0094_e2d5), "ANSI cyan = teal");
+        // bright variants reuse the same accents; black/white brighten.
+        assert_eq!(fg(9), fg(1), "bright red reuses red");
+        assert_ne!(fg(0), fg(8), "black (surface1) and bright black (surface2) differ");
+    }
+
+    #[test]
+    fn terminal_ansi_palette_follows_colorscheme_swap() {
+        // Swapping the palette recolours the terminal ANSI roles — proof
+        // the terminal is theme-driven, not hardcoded. Gruvbox blue differs
+        // from mocha blue.
+        let mocha = InMemoryThemeRegistry::with_defaults();
+        let ids = BuiltinElementIds::capture(&mocha);
+        let mocha_blue = mocha.resolved().get(ids.terminal_ansi[4]).fg.unwrap().to_rgb_u32(0);
+
+        let gruv = InMemoryThemeRegistry::new(crate::palette::gruvbox_dark_palette());
+        register_builtins(&gruv);
+        let gids = BuiltinElementIds::capture(&gruv);
+        let gruv_blue = gruv.resolved().get(gids.terminal_ansi[4]).fg.unwrap().to_rgb_u32(0);
+
+        assert_ne!(mocha_blue, gruv_blue, "terminal blue tracks the colorscheme");
     }
 
     #[test]

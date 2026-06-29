@@ -2512,26 +2512,31 @@ impl EditorView {
                 .into_any_element();
             return placeholder;
         }
-        // T2 substrate swap (2026-05-25): per-cell SGR colors
-        // from alacritty's grid. The xterm-default 16-colour
-        // palette is hardcoded here so unthemed terminals look
-        // identical to a real xterm; a future slice promotes
-        // these to the host theme so users can re-skin the
-        // terminal palette without recompiling.
+        // T2 substrate swap (2026-05-25): per-cell SGR colors from
+        // alacritty's grid. The 16-colour ANSI palette is sourced from the
+        // active theme's `terminal.ansi.*` roles (each maps to a palette
+        // accent), so a `:colorscheme` swap recolours the terminal and the
+        // colours are readable on dark backgrounds — replacing the old
+        // hardcoded dim-VGA xterm palette (`0xcd0000` / `0x0000ee` …).
         use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
-        const ANSI_PALETTE: [u32; 16] = [
-            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
-            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
-        ];
         let default_fg = theme.foreground;
         let default_bg = theme.background;
+        let ansi_palette: [u32; 16] = std::array::from_fn(|i| {
+            rs_guard
+                .resolved_theme
+                .get(rs_guard.theme_ids.terminal_ansi[i])
+                .fg
+                .map(|c| c.to_rgb_u32(default_fg))
+                .unwrap_or(default_fg)
+        });
         // Map `TerminalColor::Indexed(16..=255)` (the xterm
         // 256-colour palette beyond the 16 named entries) to its
         // RGB approximation per the xterm spec: indices 16..=231
         // form a 6×6×6 cube; 232..=255 a 24-step grayscale ramp.
-        fn indexed_to_rgb(i: u8) -> u32 {
-            if (i as usize) < ANSI_PALETTE.len() {
-                return ANSI_PALETTE[i as usize];
+        // Indices 0..=15 fall back to the themed `ansi` palette.
+        fn indexed_to_rgb(i: u8, ansi: &[u32; 16]) -> u32 {
+            if (i as usize) < ansi.len() {
+                return ansi[i as usize];
             }
             if i >= 232 {
                 let lvl = 8 + 10 * (i - 232) as u32;
@@ -2568,9 +2573,9 @@ impl EditorView {
                         TermNamed::BrightCyan => 14,
                         TermNamed::BrightWhite => 15,
                     };
-                    ANSI_PALETTE[idx]
+                    ansi_palette[idx]
                 }
-                TerminalColor::Indexed(i) => indexed_to_rgb(i),
+                TerminalColor::Indexed(i) => indexed_to_rgb(i, &ansi_palette),
                 TerminalColor::Rgb(r, g, b) => {
                     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
                 }

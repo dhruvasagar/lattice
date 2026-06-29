@@ -728,11 +728,11 @@ impl GpuiApp {
     /// editor with synthetic chords.
     ///
     /// Builds [`TranslateContext`] from current `Editor` state.
-    /// `chord_capture` is hard-wired to `false` for now: the
-    /// `App`-side `chord_capture_active()` predicate in the TUI
-    /// peer touches a cmdline arg-slot field that has no GPUI
-    /// equivalent yet; when the GPUI peer grows a cmdline this
-    /// reads from the same shared editor state.
+    /// `chord_capture` reads the published `ad().chord_capture` flag (the
+    /// host computes it via `Editor::chord_capture_active` each publish), so
+    /// the actor-based peer doesn't need a live `&Editor`. With it,
+    /// `:describe-key` (and any `ArgKind::Chord` arg) captures the next
+    /// keystroke instead of dispatching it — was hard-wired `false`.
     pub fn dispatch_chord(&mut self, chord: KeyChord) -> DispatchOutcome {
         // Investigation 2026-05-22: trace partial_chord at
         // dispatch_chord entry so we can see if it survives
@@ -769,7 +769,7 @@ impl GpuiApp {
                 recording_macro: ad.macro_recording,
                 active_buffer: ad.buffer_kind,
                 completion_open: ad.completion_open,
-                chord_capture: false,
+                chord_capture: ad.chord_capture,
                 picker_open: ad.picker_open,
                 insert_completion_open,
                 snippet_active: ad.snippet_active,

@@ -772,6 +772,7 @@ impl Editor {
                 macro_recording: self.macro_recording.is_some(),
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
+                chord_capture: self.chord_capture_active(),
                 snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                 // Terminal-mode T2.a: published so the translate
                 // layer can build TranslateContext from the
@@ -34820,6 +34821,34 @@ mod tests {
             "preview must render syntax-highlighted (non-Default) spans"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `:describe-key` arms a `Chord` arg slot; the host must PUBLISH
+    /// `chord_capture` so the actor-based GPUI peer (which has no live
+    /// `&Editor` at dispatch) can route the next keystroke into
+    /// `translate_command_chord_capture` instead of dispatching it. Guards
+    /// the GPUI "describe-key doesn't capture keys" bug.
+    #[test]
+    fn describe_key_prompt_publishes_chord_capture() {
+        let mut e = Editor::boot(lattice_core::Document::from_text("x\n"));
+        // Not armed → no capture.
+        e.publish_render_state();
+        assert!(
+            !e.render_state.load_full().active_document.load().chord_capture,
+            "no chord capture when the cmdline isn't at a Chord arg slot"
+        );
+        // Arm the describe-key prompt: Command mode at the Chord arg slot.
+        e.modal = lattice_grammar::ModalState::Command;
+        e.command_line = "describe-key ".to_string();
+        assert!(
+            e.chord_capture_active(),
+            "predicate true at the describe-key Chord arg slot"
+        );
+        e.publish_render_state();
+        assert!(
+            e.render_state.load_full().active_document.load().chord_capture,
+            "publish must mirror chord_capture_active() into ad.chord_capture"
+        );
     }
 
     #[test]

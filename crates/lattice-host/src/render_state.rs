@@ -382,6 +382,13 @@ pub struct ActiveDocumentRenderState {
     /// `true` while a picker overlay is open. Gates the
     /// normal-mode keymap so picker-local keys take precedence.
     pub picker_open: bool,
+    /// `true` while the `:` line sits on an `ArgKind::Chord` arg slot
+    /// (e.g. the armed `:describe-key ` prompt) — the next keystroke is
+    /// CAPTURED as that chord, not dispatched. Published (computed via
+    /// [`crate::dispatch::Editor::chord_capture_active`]) so the actor-based
+    /// GPUI peer can read it the same way the TUI App computes it live;
+    /// drives `TranslateContext::chord_capture`.
+    pub chord_capture: bool,
     /// `true` while a snippet's tab-stop chain is active.
     /// Gates Tab / S-Tab to drive `next_tabstop` / `prev_tabstop`
     /// instead of falling back to insert-completion / outdent.
@@ -531,6 +538,7 @@ impl Default for ActiveDocumentRenderState {
             macro_recording: false,
             completion_open: false,
             picker_open: false,
+            chord_capture: false,
             snippet_active: false,
             terminal_insert_active: false,
             terminal_esc_exits: true,

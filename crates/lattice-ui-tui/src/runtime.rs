@@ -338,7 +338,23 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // a large number here ⇒ the lag is our draw. Writes one clean line per
     // rendered keystroke straight to stderr (bypasses tracing, so it does not
     // add to the debug-log flood). Off by default — zero cost when unset.
-    let perf_input = std::env::var_os("LATTICE_PERF_INPUT").is_some();
+    // Emit the perf line ONLY when stderr is REDIRECTED (not the
+    // alternate-screen terminal). In the TUI, stderr is the same tty as the
+    // rendered display, so a raw `eprintln!` corrupts it: ratatui's diff
+    // can't repair an out-of-band write, and each line's newline scrolls the
+    // alt-screen — leaving fragments of the previous frame (e.g. preview
+    // line-tails) on screen until a force redraw. Require `2>file`.
+    use std::io::IsTerminal;
+    let perf_env = std::env::var_os("LATTICE_PERF_INPUT").is_some();
+    let stderr_redirected = !std::io::stderr().is_terminal();
+    if perf_env && !stderr_redirected {
+        tracing::info!(
+            "LATTICE_PERF_INPUT is set but stderr is the terminal — perf lines are \
+             suppressed to avoid corrupting the TUI display. Re-run with `2>perf.log` \
+             (or any redirect) to capture them."
+        );
+    }
+    let perf_input = perf_env && stderr_redirected;
     let mut last_input_at: Option<Instant> = None;
 
     // I.3 (event-driven wake): replace the 100ms terminal poll with a wake on

@@ -801,10 +801,10 @@ impl Editor {
                 Ok(Some(idx)) => idx,
                 Ok(None) => lattice_picker::PickerMruIndex::with_cap(mru_cap),
                 Err(e) => {
-                    eprintln!(
-                        "lattice: discarding corrupt MRU cache at {}: {e}",
-                        path.display(),
-                    );
+                    // Route through tracing, not raw stderr: stderr may be
+                    // the TUI's terminal (see the picker-MRU-save fix in
+                    // dispatch.rs). → *messages*.
+                    tracing::warn!("discarding corrupt MRU cache at {}: {e}", path.display());
                     lattice_picker::PickerMruIndex::with_cap(mru_cap)
                 }
             },

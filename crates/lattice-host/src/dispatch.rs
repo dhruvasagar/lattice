@@ -23269,10 +23269,12 @@ impl Editor {
             return;
         };
         if let Err(e) = self.picker_mru.save_to(path) {
-            eprintln!(
-                "lattice: failed to persist picker MRU at {}: {e}",
-                path.display(),
-            );
+            // MUST NOT `eprintln!` here: in the TUI, stderr IS the
+            // alternate-screen terminal, so a raw write corrupts the display
+            // (ratatui's diff can't repair an out-of-band write — fragments
+            // persist until a force redraw). Route through tracing instead
+            // (→ *messages*; stderr-tracing is gated off for the TUI).
+            tracing::warn!("failed to persist picker MRU at {}: {e}", path.display());
         }
     }
 

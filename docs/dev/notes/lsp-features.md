@@ -216,14 +216,22 @@ single source of truth.
 
 ## Tracking summary
 
-Counts as of 2026-05-12:
+Counts as of 2026-06-30:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 48    |
-| 🚧 In progress | 12    |
-| ⏹️ Planned      | 5     |
+| ✅ Done        | 91    |
+| 🚧 In progress | 11    |
+| ⏹️ Planned      | 1     |
 | ⛔ Deferred    | 4     |
+
+✅ breaks down as **77 LSP protocol methods** + **14 lattice-side
+logging / introspection features**. The 11 🚧 rows all ship the wire
+wrapper + capability probe; only the host-side trigger is deferred
+(file-op UX, multi-cursor shadow edits, DAP, inlay-interaction UX, or
+the `lsp-types` `proposed` flag — see each row's note). ⏹️ =
+`workspace/didChangeWorkspaceFolders` (multi-root, post-1.0); ⛔ = the
+four `notebookDocument/*` methods.
 
 Phase rollup:
 

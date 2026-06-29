@@ -279,6 +279,20 @@ fn collect_pane_geometries(
     }
 }
 
+/// Whether the global cmdline/echo bottom row should be painted this
+/// frame. It is suppressed in exactly one case: a picker open in
+/// minibuffer mode, where the picker carries its OWN prompt row that
+/// claims the bottom slot — mirroring the TUI peer's `draw_picker_prompt`,
+/// which draws into the cmdline row instead of `draw_command_or_echo`.
+/// Painting both would wedge an empty cmdline row between the modeline and
+/// the picker prompt (the GPUI gap this guards against). cmdline-completion
+/// keeps the row (the `:cmd` line IS its prompt); picker popup-mode keeps
+/// it (echo stays visible under the floating overlay). Pure, so the truth
+/// table is unit-testable without a gpui render context.
+fn global_bottom_row_visible(picker_use_minibuffer: bool, picker_has_state: bool) -> bool {
+    !(picker_use_minibuffer && picker_has_state)
+}
+
 /// Select the global bottom-row content (vim's shared cmdline / echo
 /// line) plus the echo level for colouring. While typing `:` / `/` it's
 /// the in-progress minibuffer; otherwise it's the last echo message — a
@@ -3865,6 +3879,19 @@ impl Render for EditorView {
             None
         };
 
+        // When the picker is open in minibuffer mode it carries its OWN
+        // prompt row (built into `picker_minibuffer` below). The picker
+        // prompt must claim the bottom slot — exactly as the TUI peer's
+        // `draw_picker_prompt` draws into the cmdline row instead of
+        // `draw_command_or_echo`. Rendering the global cmdline/echo row
+        // *and* the picker's prompt would leave an empty cmdline row
+        // wedged between the modeline and the picker prompt (the GPUI gap
+        // this fixes). cmdline-completion is unaffected: it has no prompt
+        // of its own (the `:cmd` bottom row IS its prompt), so the bottom
+        // row stays for that path.
+        let render_global_bottom_row =
+            global_bottom_row_visible(picker_use_minibuffer, picker_substate.state.is_some());
+
         let mut root = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -3878,9 +3905,9 @@ impl Render for EditorView {
         if let Some(tabline) = tabline_element {
             root = root.child(tabline);
         }
-        root = root
-            .child(document_area)
-            .child({
+        root = root.child(document_area);
+        if render_global_bottom_row {
+            root = root.child({
                 // Level-coloured echo (errors red + bold, warnings
                 // yellow) to match the TUI echo line; cmdline / search /
                 // Info fall through to the default status foreground.
@@ -3923,6 +3950,7 @@ impl Render for EditorView {
                     row
                 }
             });
+        }
 
         if let Some(strip) = picker_minibuffer {
             root = root.child(strip);
@@ -4266,5 +4294,24 @@ mod modeline_tests {
         let empty = MessagesRenderState { last: None };
         let (row, _) = super::bottom_row_content(ModalState::Normal, &modeline, &empty);
         assert!(row.is_empty());
+    }
+
+    /// The global cmdline/echo row is painted in every state EXCEPT a
+    /// picker open in minibuffer mode — there the picker's own prompt row
+    /// claims the bottom slot (like the TUI's `draw_picker_prompt`), so
+    /// painting the cmdline row too would leave an empty row between the
+    /// modeline and the picker prompt (the GPUI gap this guards). This
+    /// pins the full truth table.
+    #[test]
+    fn global_bottom_row_suppressed_only_for_minibuffer_picker() {
+        // Picker open in minibuffer mode → suppress (picker prompt is the row).
+        assert!(!super::global_bottom_row_visible(true, true));
+        // Picker open but in popup mode → keep (echo shows under the overlay).
+        assert!(super::global_bottom_row_visible(false, true));
+        // No picker, minibuffer display configured (e.g. cmdline-completion,
+        // plain editing) → keep (the `:cmd`/echo line IS the bottom row).
+        assert!(super::global_bottom_row_visible(true, false));
+        // No picker at all → keep.
+        assert!(super::global_bottom_row_visible(false, false));
     }
 }

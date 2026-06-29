@@ -26292,18 +26292,25 @@ impl Editor {
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.load_active_pane();
-        // Echo the switch. `set_message` runs host-side (F.1).
-        self.set_message(
-            EchoLevel::Info,
-            format!(
-                "switched to buffer #{} {}",
-                id.0,
-                self.document
-                    .path()
-                    .map(|p| format!("\"{}\"", p.display()))
-                    .unwrap_or_else(|| "(no file)".into())
-            ),
-        );
+        // Echo the switch — but NEVER during a preview. Picker live-preview
+        // (and the no-match origin-restore) flips through buffers under
+        // `previewing = true`; echoing "switched to buffer #N" on each would
+        // spam the echo area + *messages* (and, if stderr logging is on,
+        // write to the terminal). Only a real, committed switch echoes —
+        // matching vim's `:e` filename echo. `set_message` runs host-side (F.1).
+        if !self.previewing {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "switched to buffer #{} {}",
+                    id.0,
+                    self.document
+                        .path()
+                        .map(|p| format!("\"{}\"", p.display()))
+                        .unwrap_or_else(|| "(no file)".into())
+                ),
+            );
+        }
         // Full-activation path: caller must run activate_buffer_state.
         true
     }

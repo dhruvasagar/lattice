@@ -183,9 +183,27 @@ async fn main() -> Result<()> {
     // would blit a stray line over ratatui's paint. Defaults
     // OFF for TUI, ON for GPUI. `--stderr-logs` forces ON
     // (e.g. `lattice --tui --stderr-logs 2>tracing.log`).
+    // 2026-06-29: `--stderr-logs` must NOT write to the TUI's OWN terminal.
+    // In the TUI stderr IS the alternate-screen tty, so the fmt layer would
+    // blit stray log lines over ratatui's paint — corruption ratatui's diff
+    // can't repair (it persists until a force redraw), and each line's
+    // newline scrolls the screen, leaving fragments of the previous frame
+    // behind. Honor `--stderr-logs` only when stderr is REDIRECTED
+    // (`!is_terminal()`). The GUI's stderr is separate from its window, so it
+    // stays unconditionally enabled there.
     let use_gui = cli.gui || (running_in_bundle && !cli.tui);
-    let stderr_enabled = cli.stderr_logs || use_gui;
+    let stderr_is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let stderr_enabled = use_gui || (cli.stderr_logs && !stderr_is_tty);
     lattice_runtime::set_boot_stderr_enabled(stderr_enabled);
+    if cli.stderr_logs && stderr_is_tty && !use_gui {
+        // Note BEFORE the alt-screen is entered (stderr is still the normal
+        // terminal here, so this is safe). `--stderr-logs` is being ignored
+        // because writing logs to the TUI's own terminal would corrupt it.
+        eprintln!(
+            "lattice: --stderr-logs ignored (stderr is the terminal — would corrupt the TUI). \
+             Redirect it, e.g. `lattice --stderr-logs 2>lattice.log`."
+        );
+    }
 
     let document = match cli.file {
         Some(path) => {

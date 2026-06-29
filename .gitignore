@@ -28,3 +28,7 @@ logs.txt
 # Not part of the repo; lives in assets/tmp/ for ergonomic
 # `Read` access during diagnosis.
 assets/tmp/
+
+# Windows "mark of the web" Alternate-Data-Stream sidecars. The colon in
+# the name is an illegal path char on Windows and aborts actions/checkout.
+*:Zone.Identifier

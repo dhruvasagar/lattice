@@ -69,6 +69,12 @@ pub struct Theme {
     /// Active-pane foreground for mode-contributed items (LSP / diff).
     pub modeline_mode_item: Style,
 
+    /// Popup header title (bold accent) — `ui.popup.title`. Shared with
+    /// the GPUI peer so the accent is themeable + identical across peers.
+    pub popup_title: Style,
+    /// Popup header hint (dim — e.g. "Esc to dismiss") — `ui.popup.hint`.
+    pub popup_hint: Style,
+
     /// Style for directory entries in file-tree and oil buffers.
     pub file_tree_dir_style: Style,
     /// Style for hidden files (names starting with `.`).
@@ -204,6 +210,13 @@ impl Default for Theme {
             modeline_position: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
             modeline_lang: Style::new().fg(Color::Rgb(0x94, 0xe2, 0xd5)),
             modeline_mode_item: Style::new().fg(Color::Rgb(0x93, 0x99, 0xb2)),
+            // Popup header: blue bold title + overlay (muted) hint, the
+            // `ui.popup.title` / `ui.popup.hint` defaults under Catppuccin
+            // Mocha (matches the GPUI peer's `popup_title` / `popup_hint`).
+            popup_title: Style::new()
+                .fg(Color::Rgb(0x89, 0xb4, 0xfa))
+                .add_modifier(Modifier::BOLD),
+            popup_hint: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)),
             // Severity glyphs: solid square / triangle / circle /
             // dot. Same shapes vim's nvim-lsp / VS Code use --
             // immediately readable, terminal-safe.
@@ -457,6 +470,10 @@ pub fn build_tui_theme(
             modeline_position: resolved_style(ids.modeline_position),
             modeline_lang: resolved_style(ids.modeline_lang),
             modeline_mode_item: resolved_style(ids.modeline_mode_item),
+            // Popup header title / hint from the resolved `ui.popup.*`
+            // elements (palette-driven, shared with the GPUI peer).
+            popup_title: resolved_style(ids.ui_popup_title),
+            popup_hint: resolved_style(ids.ui_popup_hint),
             // T.4.c: inactive-pane overlay + file-tree styles source
             // from the resolved table. Separator chars + `dim`/
             // `nerd_fonts` flags stay on `h` (non-style → T.6.t).

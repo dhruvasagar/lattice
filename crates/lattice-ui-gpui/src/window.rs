@@ -3236,7 +3236,7 @@ impl Render for EditorView {
                                             .flex_shrink_0()
                                             .text_size(px(font_size_px * POPUP_TITLE_SCALE))
                                             .font_weight(gpui::FontWeight::BOLD)
-                                            .text_color(rgb(theme.popup_border))
+                                            .text_color(rgb(theme.popup_title))
                                             .child(" docs ".to_string()),
                                     ),
                             )
@@ -3786,13 +3786,13 @@ impl Render for EditorView {
                                 .flex_shrink_0()
                                 .text_size(px(font_size_px * POPUP_TITLE_SCALE))
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(rgb(theme.popup_border))
+                                .text_color(rgb(theme.popup_title))
                                 .child(format!(" {title} ")),
                         )
                         .child(
                             div()
                                 .flex_shrink_0()
-                                .text_color(rgb(theme.foreground))
+                                .text_color(rgb(theme.popup_hint))
                                 .child(header_hint),
                         ),
                 )

@@ -605,6 +605,16 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().bg("mantle"),
         "Popup / overlay surface background.",
     );
+    reg_one(
+        "ui.popup.title",
+        spec().fg("blue").bold(),
+        "Popup header title (bold accent — describe/help/hover popups).",
+    );
+    reg_one(
+        "ui.popup.hint",
+        spec().fg("overlay"),
+        "Popup header hint (dim — e.g. 'Esc to dismiss').",
+    );
 
     // ---- File tree ----
     reg_one(
@@ -950,6 +960,8 @@ pub struct BuiltinElementIds {
     pub editor_foreground: ElementId,
     pub editor_cursor: ElementId,
     pub ui_popup_background: ElementId,
+    pub ui_popup_title: ElementId,
+    pub ui_popup_hint: ElementId,
     pub file_tree_dir: ElementId,
     pub file_tree_hidden: ElementId,
     pub file_tree_file: ElementId,
@@ -1046,6 +1058,8 @@ impl Default for BuiltinElementIds {
             editor_foreground: ElementId::INVALID,
             editor_cursor: ElementId::INVALID,
             ui_popup_background: ElementId::INVALID,
+            ui_popup_title: ElementId::INVALID,
+            ui_popup_hint: ElementId::INVALID,
             file_tree_dir: ElementId::INVALID,
             file_tree_hidden: ElementId::INVALID,
             file_tree_file: ElementId::INVALID,
@@ -1142,6 +1156,8 @@ impl BuiltinElementIds {
             editor_foreground: id("editor.foreground"),
             editor_cursor: id("editor.cursor"),
             ui_popup_background: id("ui.popup.background"),
+            ui_popup_title: id("ui.popup.title"),
+            ui_popup_hint: id("ui.popup.hint"),
             file_tree_dir: id("file_tree.dir"),
             file_tree_hidden: id("file_tree.hidden"),
             file_tree_file: id("file_tree.file"),
@@ -1469,6 +1485,15 @@ mod tests {
         assert_eq!(
             resolved_of(&reg, "ui.popup.background").bg,
             Some(Color::Rgb(0x18, 0x18, 0x25))
+        );
+        // Popup header: bold blue title + muted overlay hint (shared by the
+        // TUI + GPUI peers so the accent is themeable and identical).
+        let title = resolved_of(&reg, "ui.popup.title");
+        assert_eq!(title.fg, Some(Color::Rgb(0x89, 0xb4, 0xfa)));
+        assert!(title.modifiers.bold);
+        assert_eq!(
+            resolved_of(&reg, "ui.popup.hint").fg,
+            Some(Color::Rgb(0x6c, 0x70, 0x86))
         );
     }
 

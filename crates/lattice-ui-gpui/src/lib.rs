@@ -199,6 +199,10 @@ pub struct GpuiTheme {
     pub popup_background: u32,
     /// Popup-overlay border / accent color.
     pub popup_border: u32,
+    /// Popup header TITLE colour (bold accent) — `ui.popup.title`.
+    pub popup_title: u32,
+    /// Popup header HINT colour (dim) — `ui.popup.hint`.
+    pub popup_hint: u32,
     /// Issue #35 (2026-05-22): picker match-range highlight
     /// color. Painted on the substring of each candidate that
     /// matched the query. Catppuccin Mocha peach by default —
@@ -235,6 +239,10 @@ impl Default for GpuiTheme {
             popup_background: 0x181825,
             // Catppuccin Mocha lavender (accent).
             popup_border: 0xb4befe,
+            // Catppuccin Mocha blue — popup title accent (`ui.popup.title`).
+            popup_title: 0x89b4fa,
+            // Catppuccin Mocha overlay — dim popup hint (`ui.popup.hint`).
+            popup_hint: 0x6c7086,
             // Issue #35: Catppuccin Mocha peach — bright accent
             // distinct from `foreground` (text). Highly
             // visible against both light and dark backgrounds.
@@ -835,6 +843,14 @@ impl GpuiApp {
         // role: thin accent line between visual regions).
         if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
+        }
+        // Popup header title / hint ↔ `ui.popup.title` / `ui.popup.hint`
+        // (shared with the TUI peer so the accent is themeable + identical).
+        if let Some(fg) = resolved.get(ids.ui_popup_title).fg {
+            self.theme.popup_title = fg.to_rgb_u32(defaults.popup_title);
+        }
+        if let Some(fg) = resolved.get(ids.ui_popup_hint).fg {
+            self.theme.popup_hint = fg.to_rgb_u32(defaults.popup_hint);
         }
         // T.11.0b: source the canvas (window bg/fg, block-cursor
         // inversion, popup surface) from the resolved table so a

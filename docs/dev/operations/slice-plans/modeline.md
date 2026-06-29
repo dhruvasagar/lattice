@@ -5,7 +5,7 @@ contracts** live in
 [`../../architecture/modeline.md`](../../architecture/modeline.md); this
 file owns *when* and *in what order*.
 
-Status legend: ✅ done · 🚧 in progress · 🗒 planned · ⛔ deferred.
+Status legend: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 The redesign turns the per-pane status footer (today a single formatted
 string from `Mode::status_line_items`) into a **registry of styled,
@@ -79,7 +79,7 @@ Also corrected `zone_ordered` to ascending in **every** zone (the Right
 zone block is right-aligned by the renderer; `priority` is uniform
 leftward→rightward) — design §3 + the ML.0a test updated.
 
-Carved into **ML.1a-foundation** (✅) and **ML.1a-render** (🗒).
+Carved into **ML.1a-foundation** (✅) and **ML.1a-render** (📝).
 
 #### ML.1a-foundation  ✅
 Per-pane content model confirmed + recorded (design §4); `zone_ordered`

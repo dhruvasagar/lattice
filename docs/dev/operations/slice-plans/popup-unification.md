@@ -11,11 +11,11 @@ popup-specific. Outcome: folding, soft-wrap, horizontal scroll,
 syntax, and decorations work in popups for free, and no popup path
 contains bespoke text-layout code.
 
-Status icons: ✅ done · 🚧 in progress · 🗒 planned.
+Status icons: ✅ done · 🚧 in progress · 📝 planned.
 
 **Status (2026-06-29):** PU.1 / PU.1b (all sub-slices) / PU.2 / PU.3 /
 PU.4 / PU.5 (5a–5d) ✅ complete. Only **PU.6** (cleanup + regression
-guard) remains 🗒. PU.3 was delivered as part of PU.5 (ephemeral class
+guard) remains 📝. PU.3 was delivered as part of PU.5 (ephemeral class
 built with its first consumer, completion docs); PU.4 was pre-satisfied by
 the PU.1b-3/PU.2 popup unification (hover/signature already ride the
 floating-popup compose seam).
@@ -605,7 +605,7 @@ Green: host 594, ui-tui 1504, ui-gpui `--features window` 112; builds clean
 incl. `--features gui`. Tests: `ephemeral_buffers_excluded_from_listed_ids`,
 `completion_docs_reconcile_creates_ephemeral_buffer_and_gcs`.
 
-## PU.6 — Cleanup + regression guard 🗒
+## PU.6 — Cleanup + regression guard 📝
 
 - Grep-gate (CI) asserting no popup path calls a bespoke content
   renderer — mirrors the `Effect::*` / `DiffSignKind::*` GPUI-parity

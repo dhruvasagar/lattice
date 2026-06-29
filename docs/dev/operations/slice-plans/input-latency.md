@@ -187,7 +187,7 @@ test/bench readers bind a guard where a borrow outlives its statement (the `load
 guard is a statement-temporary). Green: host 692 + ratchet + 13; tui 1467 + 3 paint
 gates; gpui 25 + window build; host benches.
 
-**I.5.3 — flip the keystroke fast path 🗒 DEFERRED (2026-06-05).** Decision: do NOT
+**I.5.3 — flip the keystroke fast path 📝 DEFERRED (2026-06-05).** Decision: do NOT
 flip `dispatch_fused` to store only the two inner cells. Two findings, on merit:
 1. **Correctness.** `partial_chord` lives on `Editor` and is *mutated during dispatch*
    — pressing a chord prefix (`g`, operator keys) does `partial_chord.push(chord)` and
@@ -225,7 +225,7 @@ flip `dispatch_fused` to store only the two inner cells. Two findings, on merit:
 - Risk: medium-high — touches the renderer's read contract; slice tightly.
 - Deps: after I.4.
 
-### I.6 — physical key-identity seam  🗒  (deferred, v1+)
+### I.6 — physical key-identity seam  📝  (deferred, v1+)
 
 Reserve the optional physical/positional axis on `KeyChord` (design § "Key
 identity"). **Not scheduled** — niche ergonomics / i18n, not a paramount-goal
@@ -339,4 +339,4 @@ edited line for pure intra-line edits). See `project_typing_latency_root_cause` 
 check the renderer for version-lag / stale-row reuse first.
 
 ## Status legend
-✅ landed · 🚧 in progress · 🗒 planned
+✅ landed · 🚧 in progress · 📝 planned

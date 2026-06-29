@@ -58,7 +58,7 @@ N≥10-excerpt view). All ✅ as of 2026-06-08.
 
 ## Priority A — daily-driver workflows
 
-### A.1 `ProjectDiffProvider` 🗒
+### A.1 `ProjectDiffProvider` 📝
 
 Composes every changed file in the working tree (or a comparison range) into
 one multibuffer. One excerpt per hunk; file-boundary folds (M.8) group hunks
@@ -77,7 +77,7 @@ per file so a 50-file diff collapses to a 50-row outline at `:set foldlevel=0`.
 - Compose: A.1 is the canonical AI-multi-file-diff base — A.2 reuses A.1's
   rendering with a different edit-commit path.
 
-### A.2 `AIProposedEditsProvider` 🗒
+### A.2 `AIProposedEditsProvider` 📝
 
 Renders an LSP-shape `WorkspaceEdit` from an AI plugin as a multibuffer with
 per-excerpt accept/reject. Solves the "AI proposed changes to 14 files —
@@ -94,7 +94,7 @@ review each, accept most, reject some" workflow.
 - Compose: shares file-boundary-fold rendering with A.1; per-excerpt
   accept/reject UI generalises into A.8.
 
-### A.3 `LspReferencesProvider` 🗒
+### A.3 `LspReferencesProvider` 📝
 
 `gr` (find references) / `:lsp-references` opens every reference site as a
 multibuffer. Each excerpt shows the call-site with configurable surrounding
@@ -108,7 +108,7 @@ cross-callsite refactors.
 - Tests: mock LSP returns 8 reference locations across 3 files → 8 excerpts;
   edit one → source file updates; version-mismatch path prompts user.
 
-### A.4 `DiagnosticsProvider` 🗒
+### A.4 `DiagnosticsProvider` 📝
 
 All LSP diagnostics across the workspace as one multibuffer. Header per excerpt
 encodes severity (Error/Warning/Info/Hint), file:line, and the message; the
@@ -123,7 +123,7 @@ excerpt body shows the offending line + context.
 - Tests: 12 diagnostics across 4 files → 12 excerpts; filter by severity;
   edit clears matching diagnostic after next LSP republish.
 
-### A.6 `QuickfixProvider` 🗒
+### A.6 `QuickfixProvider` 📝
 
 The canonical refactor surface for compiler errors / test failures / lint
 warnings. Replaces vim's traditionally read-only quickfix list with an editable
@@ -143,7 +143,7 @@ collapses into one surface.
   abstraction — A.3, A.4, A.10, A.11, A.12 can optionally route through
   quickfix for uniform navigation.
 
-### A.15 `OutlineBufferProvider` 🗒
+### A.15 `OutlineBufferProvider` 📝
 
 Symbol outline of the current file (or N files, or a directory) as a
 multibuffer. Each symbol is an excerpt with its signature line and (optionally)
@@ -162,7 +162,7 @@ navigable cross-file outline.
 
 ## Priority B — power features + plugin foundations
 
-### A.7 `GitHunksProvider` 🗒
+### A.7 `GitHunksProvider` 📝
 
 magit-style cross-file VCS workflow. All staged hunks (or working-tree hunks,
 or both) across the workspace as one editable multibuffer. Per-excerpt stage /
@@ -178,7 +178,7 @@ unstage / discard actions.
 - Tests: stage 4 hunks across 2 files → `:Gstaged` shows 4 excerpts; unstage
   one → excerpt disappears, reappears in `:Gunstaged`.
 
-### A.8 `LspRefactorPreviewProvider` 🗒
+### A.8 `LspRefactorPreviewProvider` 📝
 
 `<F2>` / `:lsp-rename Foo` returns a `WorkspaceEdit`; this provider renders it
 as a multibuffer with per-excerpt accept/reject before commit. Gives a review
@@ -192,7 +192,7 @@ step before a rename is applied.
   land; cancel discards everything.
 - Compose: shares per-excerpt accept/reject UI with A.2.
 
-### A.9 `LspWorkspaceSymbolsProvider` 🗒
+### A.9 `LspWorkspaceSymbolsProvider` 📝
 
 `:WorkspaceSymbols Foo` opens every definition + key call-site of the symbol
 as a multibuffer. The canonical cross-codebase signature-refactor surface.
@@ -207,7 +207,7 @@ as a multibuffer. The canonical cross-codebase signature-refactor surface.
 
 ## Priority C — specialised / experimental
 
-### A.10 `LspCallHierarchyProvider` 🗒
+### A.10 `LspCallHierarchyProvider` 📝
 
 Incoming / outgoing calls of a function as a multibuffer.
 
@@ -215,14 +215,14 @@ Incoming / outgoing calls of a function as a multibuffer.
 - User surface: `:call-hierarchy incoming` / `outgoing`; navigate with
   `]C` / `[C`.
 
-### A.11 `LspTypeHierarchyProvider` 🗒
+### A.11 `LspTypeHierarchyProvider` 📝
 
 Supertypes / subtypes / trait impls as a multibuffer.
 
 - Extra deps: LSP `typeHierarchy/*` requests.
 - User surface: `:type-hierarchy super` / `sub` / `impls`.
 
-### A.12 `TodoProvider` 🗒
+### A.12 `TodoProvider` 📝
 
 Workspace-wide TODO/FIXME/XXX/HACK scan as an editable multibuffer.
 
@@ -232,14 +232,14 @@ Workspace-wide TODO/FIXME/XXX/HACK scan as an editable multibuffer.
 - Tests: 8 TODOs across 4 files → 8 excerpts; edit TODO out of existence →
   excerpt auto-removes on next scan.
 
-### A.13 `MergeConflictTriageProvider` 🗒
+### A.13 `MergeConflictTriageProvider` 📝
 
 Every conflict marker in the working tree as one multibuffer.
 
 - Extra deps: none — D.6 conflict-marker recognition already shipped.
 - User surface: `:conflicts`; `:resolve-all-ours` / `:resolve-all-theirs`.
 
-### A.14 `PRReviewProvider` 🗒
+### A.14 `PRReviewProvider` 📝
 
 Read-only multibuffer of a pull request's diff with inline comment threads as
 excerpt decorations.
@@ -248,7 +248,7 @@ excerpt decorations.
 - User surface: `:gh-pr <number>`; navigate hunks with `]h` / `[h`; comment
   with `:pr-comment`.
 
-### A.16 `CompilationOutputProvider` 🗒
+### A.16 `CompilationOutputProvider` 📝
 
 `cargo build` / `cargo test` output, parsed and rendered as a live-updating
 multibuffer. One excerpt per compiler error / test failure.
@@ -257,26 +257,26 @@ multibuffer. One excerpt per compiler error / test failure.
 - Compose: largely redundant with A.6 (quickfix); ship only if cargo-specific
   decorations (test status icons, timing) add enough value.
 
-### A.17 `NotebookProvider` 🗒
+### A.17 `NotebookProvider` 📝
 
 Markdown cells + code cells from N source files composed into a notebook view.
 
 - Extra deps: rich-buffer rendering primitives (post-v1).
 - User surface: `:notebook <glob>`.
 
-### A.18 `ReplTranscriptProvider` 🗒
+### A.18 `ReplTranscriptProvider` 📝
 
 REPL session transcript as a multibuffer. Each input/output pair an excerpt.
 
 - Extra deps: REPL subsystem (post-v1).
 
-### A.19 `HelpCrossReferenceProvider` 🗒
+### A.19 `HelpCrossReferenceProvider` 📝
 
 `:help <topic>` opens a multibuffer with relevant `:help` sections side-by-side.
 
 - Extra deps: `:help` subsystem (already in lattice).
 
-### A.20 `ProjectConfigProvider` 🗒
+### A.20 `ProjectConfigProvider` 📝
 
 `.gitignore` + `.editorconfig` + `Cargo.toml` (or config-set per project type)
 composed for cross-file consistency edits.
@@ -284,7 +284,7 @@ composed for cross-file consistency edits.
 - Extra deps: none.
 - User surface: `:project-config`.
 
-### A.21 `LogTailProvider` 🗒
+### A.21 `LogTailProvider` 📝
 
 `tail -F` over N log files composed and live-updating, with
 timestamp-decorated headers.

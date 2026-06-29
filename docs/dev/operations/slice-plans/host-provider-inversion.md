@@ -1,6 +1,6 @@
 # Host ↔ provider inversion — slice plan
 
-> **Status: 🗒 DEFERRED to post-Phase-7 (2026-06-17).** Analysed in depth and
+> **Status: 📝 DEFERRED to post-Phase-7 (2026-06-17).** Analysed in depth and
 > deliberately deferred — *not* because it's hard, but because the evidence
 > doesn't justify the cost now. The extraction would relocate two tiny,
 > first-party, well-behaved feature-buffers (oil, file-tree) by exposing a
@@ -57,9 +57,9 @@ stop compiling (the types leave host scope).
 | Slice | Title | Status |
 |-------|-------|--------|
 | **HPI.1** | `ActionContext` primitive audit + extension (the WASM-API surface) | 🚧 |
-| **HPI.2** | Extract **oil** → `lattice-oil`; drop the host dep; CI guard | 🗒 |
-| **HPI.3** | Extract **file-tree** → `lattice-file-tree`; drop the host dep; CI guard | 🗒 |
-| **HPI.4** | Rewrite `comparison-zed.md` §5 to the earned end-state; ledger + memory | 🗒 |
+| **HPI.2** | Extract **oil** → `lattice-oil`; drop the host dep; CI guard | 📝 |
+| **HPI.3** | Extract **file-tree** → `lattice-file-tree`; drop the host dep; CI guard | 📝 |
+| **HPI.4** | Rewrite `comparison-zed.md` §5 to the earned end-state; ledger + memory | 📝 |
 
 HPI.1 gates HPI.2/3 (the handlers can't move until the primitives they need are
 on `ActionContext`). HPI.2 is the template; HPI.3 mirrors it.

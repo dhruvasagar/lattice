@@ -3,7 +3,7 @@
 Design fragment: `docs/dev/architecture/horizontal-scroll.md` (the
 *what* and *why*). This file owns the *when* and *in what order*.
 
-Status icons: ✅ done · 🚧 in progress · 🗒 planned.
+Status icons: ✅ done · 🚧 in progress · 📝 planned.
 
 ## HS.1 — Core: `leftcol` state + cursor-follow + renderer offset
 

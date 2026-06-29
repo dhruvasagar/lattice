@@ -3402,7 +3402,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     one-line note added on next pass (no contract
     change — `Default` keeps every existing producer
     valid).
-- 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
+- 📝 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
 - ✅ **D.8** — `:diffthis` as buffer-group membership +
   arity-agnostic descriptor refactor. Design fragment:
@@ -4155,7 +4155,7 @@ architecture §10 for the rationale.
   `benches/multibuffer_compose.rs`: 27 µs at 1k excerpts ×
   10 sources (CI gate ≤ 200 µs — 7× under). Self-loop
   debouncer deferred to M.4.2 if profiling warrants.
-- 🗒 **M.4.2** — Self-loop debouncer (skip recompose when
+- 📝 **M.4.2** — Self-loop debouncer (skip recompose when
   multibuffer's own edit caused the source change). Lands
   when profiling shows the redundant recompose matters.
 - ✅ **M.5** (landed 2026-06-01) — Expand-context affordance.
@@ -4282,7 +4282,7 @@ architecture §10 for the rationale.
   cancellation on refresh** (old task keeps running on
   blocking pool until the walk completes) is a separate
   follow-up.
-- 🗒 **M.6.4** — wgrep-style edit-results follow-up. Drop
+- 📝 **M.6.4** — wgrep-style edit-results follow-up. Drop
   `ReadOnly = true` from `ProjectSearchMultibufferMode::options()`,
   open sources through `BufferRegistry`, hook `:w` to save
   source files. Tracked alongside M.6 because it's the user-
@@ -5274,7 +5274,7 @@ for the remaining consumer providers (A.1–A.21 catalog, formerly archived in
 
 ---
 
-## host ↔ provider boundary + inversion (analysed, 🗒 DEFERRED to post-Phase-7, 2026-06-17)
+## host ↔ provider boundary + inversion (analysed, 📝 DEFERRED to post-Phase-7, 2026-06-17)
 
 Design fragment:
 [`../architecture/host-provider-boundary.md`](../architecture/host-provider-boundary.md).

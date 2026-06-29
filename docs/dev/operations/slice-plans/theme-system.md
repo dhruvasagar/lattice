@@ -9,7 +9,7 @@ custom elements and buffer-local remap.
   contract, renderer-peer asymmetry).
 - **Authoritative status:** `implementation.md` `## theme-system`.
 
-Status icons: 🗒 planned · 🚧 in progress · ✅ landed.
+Status icons: 📝 planned · 🚧 in progress · ✅ landed.
 
 Every renderer-touching slice updates **TUI + GPUI in the same
 patch** ([[feedback_tui_gpui_parity]]). Every slice ships its
@@ -221,7 +221,7 @@ resolved, ids }` bundle replaces the threaded `theme: &Theme`;
 `fd551230`; green (theme 30, host lib 730, GPUI lockstep). Parity
 pinned by the existing cells_worker colour tests.
 
-**T.5.b 🗒 (remaining)** — migrate the other **6** `syntax_style`
+**T.5.b 📝 (remaining)** — migrate the other **6** `syntax_style`
 consumers to the resolved table, then **delete `Theme::syntax_style`**
 + retarget its `theme.rs` tests:
 - TUI `cells_render::display_line_to_source_spans` (+ `render.rs:5703`
@@ -234,7 +234,7 @@ consumers to the resolved table, then **delete `Theme::syntax_style`**
   call one mapping; thread `resolved`+`ids` from the display-line
   callers (`render.rs:3634`, `editor_element:609`) + `SyntaxContext`.
 
-**T.5.c 🗒** — whitespace finish (the re-slice from T.4.d): migrate the
+**T.5.c 📝** — whitespace finish (the re-slice from T.4.d): migrate the
 display-line trailing-ws reads + `build_tui_theme` (native cache) to
 resolved; delete the 2 host `Theme` whitespace fields.
 

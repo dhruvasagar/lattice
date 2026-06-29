@@ -6,7 +6,7 @@ The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status per
 slice lives in [`../implementation.md`](../implementation.md).
 
-> **Status: 🗒 planned — design complete, implementation NOT started
+> **Status: 📝 planned — design complete, implementation NOT started
 > (verified-from-source 2026-06-17).** The design fragment + this plan
 > exist (`ea302a6b`), and the lower-level `CancellationToken` substrate is
 > in place (grammar/runtime/actor plumbing + cooperative scan checks). But

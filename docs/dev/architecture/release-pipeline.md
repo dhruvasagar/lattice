@@ -66,7 +66,7 @@ Native runner per arch — free for this public repo, avoids cross-compilation:
 | -------------- | ----------------- | ---------------------------- |
 | x86_64-linux   | ubuntu-22.04      | x86_64-unknown-linux-gnu     |
 | aarch64-linux  | ubuntu-22.04-arm  | aarch64-unknown-linux-gnu    |
-| x86_64-macos   | macos-13          | x86_64-apple-darwin          |
+| x86_64-macos   | macos-15-intel    | x86_64-apple-darwin          |
 | aarch64-macos  | macos-latest      | aarch64-apple-darwin         |
 | x86_64-windows | windows-latest    | x86_64-pc-windows-msvc       |
 | aarch64-windows| windows-11-arm    | aarch64-pc-windows-msvc      |

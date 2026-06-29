@@ -356,6 +356,9 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     }
     let perf_input = perf_env && stderr_redirected;
     let mut last_input_at: Option<Instant> = None;
+    // Tracks the active buffer across frames so a wholesale buffer SWITCH
+    // can force a full repaint (see the clear in the draw loop).
+    let mut last_active_buffer: Option<crate::buffers::BufferId> = None;
 
     // I.3 (event-driven wake): replace the 100ms terminal poll with a wake on
     // (input-ready OR actor-publish). A dedicated reader thread owns terminal
@@ -561,6 +564,22 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
             terminal.clear().context("clear terminal for redraw")?;
             app.apply(lattice_host::action::Action::AcknowledgeRedraw);
         }
+        // Force a full repaint when the active pane's buffer changed since
+        // the last frame. A wholesale buffer SWITCH (e.g. picker live-preview
+        // flipping between files, or the no-match restore to the origin)
+        // replaces the entire screen's content; ratatui's per-cell diff can
+        // leave stale cells from the previous buffer — observed as preview
+        // "bleeding" (fragments of the prior preview's line tails that
+        // survive until a manual `<C-l>`). Clearing here makes the next draw
+        // repaint every cell, exactly like RedrawScreen, scoped to the rare
+        // buffer-switch frame (not per-keystroke edits within one buffer).
+        let active_buffer = app.active_buffer_id();
+        if last_active_buffer.is_some_and(|prev| prev != active_buffer) {
+            terminal
+                .clear()
+                .context("clear terminal on buffer switch")?;
+        }
+        last_active_buffer = Some(active_buffer);
         // Phase 5.8.AF.5 / Slice X2.5: removed
         // `app.refresh_highlights()` from the per-frame body.
         // display-line B4.2: active-pane syntax colour now flows

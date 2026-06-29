@@ -5948,14 +5948,24 @@ mod tests {
             })
             .unwrap();
         let buf2 = terminal.backend().buffer().clone();
-        let stale: Vec<u16> = (0..26u16)
-            .filter(|&y| row_text(&buf2, y).contains("members entry"))
+        // Check BOTH the line START ("members entry") AND the line TAIL
+        // ("XXXX…") — the reported bleed is the trailing chars, which a
+        // start-only check would miss.
+        let stale: Vec<(u16, String)> = (0..26u16)
+            .filter_map(|y| {
+                let r = row_text(&buf2, y);
+                if r.contains("members entry") || r.contains("XXXX") {
+                    Some((y, r.trim_end().to_string()))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         std::fs::remove_dir_all(&dir).ok();
         assert!(
             stale.is_empty(),
-            "stale long-file rows after switching to a short preview: rows {stale:?}"
+            "stale long-file content after switching to a short preview: {stale:?}"
         );
     }
 

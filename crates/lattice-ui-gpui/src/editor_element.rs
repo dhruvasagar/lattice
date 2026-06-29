@@ -644,8 +644,18 @@ impl Element for EditorElement {
             // PU.1b-1a: the leading `2` is the severity + diff sign
             // cells — dropped when `signcolumn=no` so the px width
             // tracks `format_gutter_text`'s gated output.
+            //
+            // The trailing `2` is the fold-marker cell (1, always
+            // present) PLUS the separator space after the digits (1).
+            // This MUST match `format_gutter_text`'s full width
+            // (`{fold}{sev}{diff}{num:>width$} ` = sign + digits + 2)
+            // and the virtual-row reservation (`gutter_width + 2 +
+            // sign_cells`). It was `+ 1` — omitting the fold cell — so
+            // `gutter_width_px` was one glyph too narrow and the code's
+            // first column landed on the gutter's trailing space (no gap
+            // between the line number and the code).
             let sign_cells = if self.sign_column { 2 } else { 0 };
-            sign_cells + self.gutter_width + 1
+            sign_cells + self.gutter_width + 2
         };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -2834,6 +2844,48 @@ fn build_gutter_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rendered gutter text MUST be exactly the width the element
+    /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 2`,
+    /// where the `+2` is the fold cell + the separator space). If the
+    /// reservation undercounts (it was `+ 1`, omitting the fold cell), the
+    /// code's first column lands on the gutter's trailing space → no gap
+    /// between the line number and the code. Pins both the document and the
+    /// virtual-row branch against the reservation formula.
+    #[test]
+    fn gutter_text_width_matches_reserved_chars() {
+        let doc = GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_start: false,
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+        };
+        let virt = GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_start: false,
+            severity: None,
+            diff_sign: None,
+            is_virtual: true,
+        };
+        let gutter_width = 3usize;
+        for &sign in &[false, true] {
+            let sign_cells = if sign { 2 } else { 0 };
+            let reserved = sign_cells + gutter_width + 2;
+            assert_eq!(
+                format_gutter_text(&doc, gutter_width, sign).chars().count(),
+                reserved,
+                "document gutter must fill the reserved width (sign={sign})"
+            );
+            assert_eq!(
+                format_gutter_text(&virt, gutter_width, sign).chars().count(),
+                reserved,
+                "virtual gutter must match the reserved width (sign={sign})"
+            );
+        }
+    }
 
     /// T.5.b: the resolved table + builtin ids the
     /// `build_line_with_inlays` / `syntax_color` tests resolve syntax

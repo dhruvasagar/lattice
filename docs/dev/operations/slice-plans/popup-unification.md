@@ -103,7 +103,7 @@ Two pre-existing branch breakages were fixed while landing this slice
   back-stack (`<C-o>`) / dismiss-on-Esc all behave as before; full
   test suite green.
 
-## PU.1b — Compose seam + markdown handle + delete bespoke 🚧
+## PU.1b — Compose seam + markdown handle + delete bespoke ✅ (2026-06-29)
 
 PU.1b is sub-carved into five sequenced slices (1a → 1 → 2 → 3 → 4)
 after the seam investigation surfaced two render states + three open

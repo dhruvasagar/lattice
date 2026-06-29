@@ -141,6 +141,15 @@ pub struct BufferFlags {
     /// pane close, so this is informational; future cleanup
     /// passes will read it.
     pub hidden: bool,
+    /// PU.5: transient popup-backing buffer. Stronger than
+    /// `listed: false` — an ephemeral buffer is invisible to `:ls`
+    /// ENTIRELY (not just shown with a `u` marker like an unlisted
+    /// buffer), never appears in `:bn` / `:bp`, and is garbage-
+    /// collected when its owning popup dismisses. Used by content
+    /// popups that join the registry to render through the compose
+    /// seam (completion docs today; hover/signature already ride the
+    /// floating-popup slot). Default `false` (a normal buffer).
+    pub ephemeral: bool,
 }
 
 impl Default for BufferFlags {
@@ -148,6 +157,7 @@ impl Default for BufferFlags {
         Self {
             listed: true,
             hidden: false,
+            ephemeral: false,
         }
     }
 }

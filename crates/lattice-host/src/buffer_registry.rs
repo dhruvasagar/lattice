@@ -541,10 +541,13 @@ impl BufferRegistry {
     /// separate header (post-v1 polish).
     pub fn listed_ids_sorted(&self) -> Vec<BufferId> {
         let inner = lock_inner(&self.inner);
+        // PU.5: ephemeral popup-backing buffers are never listed (they set
+        // `listed: false`, but gate on `ephemeral` too so the invariant
+        // holds even if a future caller sets `listed: true` by mistake).
         let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
-            .filter(|(_, e)| e.flags.listed)
+            .filter(|(_, e)| e.flags.listed && !e.flags.ephemeral)
             .map(|(id, _)| *id)
             .collect();
         ids.sort();
@@ -1023,6 +1026,7 @@ mod tests {
             flags: BufferFlags {
                 listed,
                 hidden: false,
+                ephemeral: false,
             },
             data: BufferData::FileTree(FileTreeBuffer {
                 id,
@@ -1062,6 +1066,22 @@ mod tests {
         r.insert(ft_entry(id_b, false, None));
         assert_eq!(r.listed_ids_sorted(), vec![id_a]);
         assert_eq!(r.sorted_ids(), vec![id_a, id_b]);
+    }
+
+    #[test]
+    fn ephemeral_buffers_excluded_from_listed_ids() {
+        // PU.5: an ephemeral popup-backing buffer never appears in the
+        // `:bn` / `:bp` walk (`listed_ids_sorted`), even though it remains
+        // in the full registry (`sorted_ids`) until its owning popup GCs it.
+        let r = BufferRegistry::new();
+        let id_a = BufferId::next();
+        let id_eph = BufferId::next();
+        r.insert(ft_entry(id_a, true, None));
+        let mut eph = ft_entry(id_eph, false, None);
+        eph.flags.ephemeral = true;
+        r.insert(eph);
+        assert_eq!(r.listed_ids_sorted(), vec![id_a]);
+        assert_eq!(r.sorted_ids(), vec![id_a, id_eph]);
     }
 
     #[test]

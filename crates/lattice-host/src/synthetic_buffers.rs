@@ -54,6 +54,7 @@ use crate::editor::Editor;
 pub const SYNTHETIC_BUFFER_FLAGS: BufferFlags = BufferFlags {
     listed: false,
     hidden: false,
+    ephemeral: false,
 };
 
 impl Editor {

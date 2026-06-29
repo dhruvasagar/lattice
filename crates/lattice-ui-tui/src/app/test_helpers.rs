@@ -122,6 +122,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
         crate::buffers::BufferFlags {
             listed: false,
             hidden: true,
+            ephemeral: false,
         },
     );
     a.editor.popup_buffer = Some(id);

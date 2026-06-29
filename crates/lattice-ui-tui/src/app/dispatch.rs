@@ -2284,6 +2284,7 @@ mod tests {
             crate::buffers::BufferFlags {
                 listed: false,
                 hidden: true,
+                ephemeral: false,
             },
         );
         a.editor.popup_buffer = Some(id);

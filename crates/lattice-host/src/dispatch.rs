@@ -18378,6 +18378,7 @@ impl Editor {
             flags: lattice_core::BufferFlags {
                 listed: true,
                 hidden: false,
+                ephemeral: false,
             },
             data: crate::buffer_registry::BufferData::Terminal(entry),
             name: Some(label),
@@ -19903,6 +19904,7 @@ impl Editor {
             BufferFlags {
                 listed: false,
                 hidden: true,
+                ephemeral: false,
             },
         );
         self.popup_buffer = Some(buffer_id);
@@ -19936,6 +19938,7 @@ impl Editor {
             BufferFlags {
                 listed: false,
                 hidden: true,
+                ephemeral: false,
             },
         );
         self.popup_scroll = init_scroll;
@@ -24654,6 +24657,13 @@ impl Editor {
         }
         let mut rows: Vec<EntryRow> = Vec::with_capacity(ids.len());
         self.buffers.for_each(|entry| {
+            // PU.5: ephemeral popup-backing buffers (completion docs, …)
+            // are invisible to `:ls` ENTIRELY — not even shown with the `u`
+            // unlisted marker. They are transient render surfaces, not user
+            // buffers.
+            if entry.flags.ephemeral {
+                return;
+            }
             let (doc_path, doc_dirty) = match &entry.data {
                 BufferData::Document(d) => (d.handle.path(), d.handle.dirty()),
                 _ => (None, false),

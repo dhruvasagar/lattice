@@ -1,0 +1,144 @@
+# Release pipeline. See docs/dev/architecture/release-pipeline.md for design;
+# docs/dev/operations/slice-plans/release-pipeline.md for sequencing.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+  pull_request:
+    paths: ['.github/workflows/release.yml']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      preview: ${{ steps.v.outputs.preview }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            preview=false
+            version="${GITHUB_REF_NAME#v}"
+          else
+            preview=true
+            version="dev-${GITHUB_SHA:0:7}"
+          fi
+          echo "preview=$preview" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$version preview=$preview"
+          if [[ "$preview" == "false" ]]; then
+            cargo_ver=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+            if [[ "$version" != "$cargo_ver" ]]; then
+              echo "::error::tag v$version does not match Cargo.toml workspace version $cargo_ver"
+              exit 1
+            fi
+            echo "Tag matches Cargo.toml version $cargo_ver"
+          fi
+
+  dist:
+    name: dist (${{ matrix.build }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { build: x86_64-linux,   os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,   gui_best_effort: false }
+          - { build: aarch64-linux,  os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu,  gui_best_effort: true  }
+          - { build: x86_64-macos,   os: macos-13,         target: x86_64-apple-darwin,        gui_best_effort: false }
+          - { build: aarch64-macos,  os: macos-latest,     target: aarch64-apple-darwin,       gui_best_effort: false }
+          - { build: x86_64-windows, os: windows-latest,   target: x86_64-pc-windows-msvc,     gui_best_effort: false }
+          - { build: aarch64-windows,os: windows-11-arm,   target: aarch64-pc-windows-msvc,    gui_best_effort: true  }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove rust-toolchain.toml
+        shell: bash
+        run: rm -f rust-toolchain.toml
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          rustflags: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.build }}
+
+      - name: Install Linux display libs (for GUI link)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libfontconfig1-dev
+
+      - name: Build TUI binary
+        run: cargo build -p lattice-cli --release --locked --target ${{ matrix.target }}
+
+      - name: Package TUI archive
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          pkg="lattice-${VERSION}-${{ matrix.build }}"
+          mkdir -p "$pkg"
+          cp LICENSE README.md "$pkg/"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
+          else
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
+            chmod +x "$pkg/lattice"
+            tar cJf "dist/$pkg.tar.xz" "$pkg"
+          fi
+          rm -rf "$pkg"
+
+      - name: Build GUI binary
+        id: gui_build
+        continue-on-error: ${{ matrix.gui_best_effort }}
+        run: cargo build -p lattice-cli --release --locked --features gui --target ${{ matrix.target }}
+
+      - name: Package GUI archive
+        if: steps.gui_build.outcome == 'success'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          pkg="lattice-gui-${VERSION}-${{ matrix.build }}"
+          mkdir -p "$pkg"
+          cp LICENSE README.md "$pkg/"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
+          else
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
+            chmod +x "$pkg/lattice"
+            tar cJf "dist/$pkg.tar.xz" "$pkg"
+          fi
+          rm -rf "$pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.build }}
+          path: dist
+          if-no-files-found: error

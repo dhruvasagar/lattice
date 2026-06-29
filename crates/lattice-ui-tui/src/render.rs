@@ -1688,9 +1688,22 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
 
     frame.render_widget(Clear, popup);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} (Esc to dismiss) ", help.title));
+    // Header: the title BOLD in the accent colour (Cyan — the TUI's
+    // established accent, same as the picker prompt) + a dim "Esc to
+    // dismiss" hint. Mirrors the GPUI peer's bold-accent title (GPUI also
+    // bumps the font size); no separator rule on either peer.
+    let block = Block::default().borders(Borders::ALL).title(Line::from(vec![
+        Span::styled(
+            format!(" {} ", help.title),
+            TuiStyle::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Esc to dismiss ",
+            TuiStyle::default().fg(Color::DarkGray),
+        ),
+    ]));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 

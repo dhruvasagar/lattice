@@ -111,6 +111,11 @@ pub(crate) const POPUP_MIN_W_PX: f32 = 480.0;
 pub(crate) const POPUP_MIN_H_PX: f32 = 240.0;
 pub(crate) const POPUP_W_RATIO: f32 = 0.70;
 pub(crate) const POPUP_H_RATIO: f32 = 0.60;
+/// Popup TITLE is rendered at this multiple of the body font size (bold).
+/// The title row's locked height is `row_px * POPUP_TITLE_SCALE` (the larger
+/// font's line height), which `popup_chrome_v_px` reserves so the body
+/// geometry stays exact. Shared by the chrome math AND the header paint.
+pub(crate) const POPUP_TITLE_SCALE: f32 = 1.2;
 
 /// Compute the popup's outer pixel dimensions from the window's
 /// viewport pixels. Window-relative with hard min/max caps so the
@@ -122,24 +127,19 @@ pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f3
 }
 
 /// Pixel cost of the popup's vertical chrome (border + .p_4 padding
-/// top+bottom + header title row + separator row + .pb_2 header
-/// gap). Subtract from the popup's outer height to get the inner
-/// body area.
+/// top+bottom + the bold/larger title row + .pb_2 header gap).
+/// Subtract from the popup's outer height to get the inner body area.
 ///
-/// 2026-05-27: chrome is now exact (no safety margin) because the
-/// popup paint locks each header row AND each body row to exactly
-/// `row_px`. Previously the safety margin compensated for GPUI's
-/// default `text-sm` line-height (~20px) being larger than the
-/// editor row_px (~18.2px); with explicit `.h(px(row_px))` on
-/// every header / body div the row metric is the single source
-/// of truth.
+/// 2026-06: the `───` separator row was removed (the bold, larger title
+/// + the `.pb_2()` gap separate the header from the body); the title row
+/// is now `row_px * POPUP_TITLE_SCALE` tall (the larger font's line
+/// height), locked in the paint so this stays exact.
 pub(crate) fn popup_chrome_v_px(rem: f32, row_px: f32) -> f32 {
     let border_v = 2.0 * 2.0; // .border_2() top + bottom
     let p4_v = rem * 1.0 * 2.0; // .p_4() top + bottom = 2rem
-    let header_text = row_px; // " title (hint) " row
-    let separator_row = row_px; // "───" row
+    let title_row = row_px * POPUP_TITLE_SCALE; // bold/larger title row
     let pb_2_v = rem * 0.5; // header .pb_2() = 0.5rem
-    border_v + p4_v + header_text + separator_row + pb_2_v
+    border_v + p4_v + title_row + pb_2_v
 }
 
 /// Derive integer body-row count from popup outer height + chrome.
@@ -3224,22 +3224,20 @@ impl Render for EditorView {
                             .border_2()
                             .border_color(rgb(theme.popup_border))
                             .child(
+                                // Same header treatment as the main popup:
+                                // bold, larger title; no `───` separator.
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .text_color(rgb(theme.popup_border))
+                                    .flex_row()
                                     .pb_2()
                                     .child(
                                         div()
-                                            .h(px(estimated_row_px))
+                                            .h(px(estimated_row_px * POPUP_TITLE_SCALE))
                                             .flex_shrink_0()
+                                            .text_size(px(font_size_px * POPUP_TITLE_SCALE))
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .text_color(rgb(theme.popup_border))
                                             .child(" docs ".to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .h(px(estimated_row_px))
-                                            .flex_shrink_0()
-                                            .child("───────────────".to_string()),
                                     ),
                             )
                             .child(
@@ -3745,9 +3743,9 @@ impl Render for EditorView {
                 rgb(theme.popup_border)
             };
             let header_hint = if popup_focused {
-                " (j/k scroll · Esc dismiss)"
+                " Esc to dismiss"
             } else {
-                " (K to focus · Esc dismiss)"
+                " K to focus · Esc to dismiss"
             };
             // 2026-05-27: lock the popup to the per-frame computed
             // outer dimensions. min == max prevents the flex layout
@@ -3769,29 +3767,33 @@ impl Render for EditorView {
                 .border_2()
                 .border_color(border_color)
                 .child(
-                    // 2026-05-27: lock title + separator rows to
-                    // exactly `estimated_row_px` so the chrome math
-                    // is precise. Default text rendering uses
-                    // `text-sm` line-height (~20px @ 16px rem); the
-                    // editor row_px is ~18.2px. Without the lock,
-                    // header height drifted, eating space the body
-                    // needed.
+                    // Header: a BOLD, larger (`POPUP_TITLE_SCALE`) title in
+                    // the accent colour + a dim hint, on one baseline-aligned
+                    // row. No `───` separator — the title styling + the
+                    // `.pb_2()` gap separate it from the body. The title
+                    // row's height is locked to `estimated_row_px *
+                    // POPUP_TITLE_SCALE` (the larger font's line height),
+                    // exactly what `popup_chrome_v_px` reserves, so the body
+                    // geometry stays precise.
                     div()
                         .flex()
-                        .flex_col()
-                        .text_color(rgb(theme.popup_border))
+                        .flex_row()
+                        .items_baseline()
                         .pb_2()
                         .child(
                             div()
-                                .h(px(estimated_row_px))
+                                .h(px(estimated_row_px * POPUP_TITLE_SCALE))
                                 .flex_shrink_0()
-                                .child(format!(" {title}{header_hint} ")),
+                                .text_size(px(font_size_px * POPUP_TITLE_SCALE))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(rgb(theme.popup_border))
+                                .child(format!(" {title} ")),
                         )
                         .child(
                             div()
-                                .h(px(estimated_row_px))
                                 .flex_shrink_0()
-                                .child("───────────────".to_string()),
+                                .text_color(rgb(theme.foreground))
+                                .child(header_hint),
                         ),
                 )
                 .child(

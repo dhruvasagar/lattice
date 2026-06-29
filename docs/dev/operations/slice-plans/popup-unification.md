@@ -410,23 +410,50 @@ and `--features gui`. Final grep of all five symbols across `crates/` = 0.
 - ✅ **`lattice-ui-gpui`:** trimmed the stale `help_highlights` comment
   (the read was already gone in PU.2).
 
-#### PU.1b-4b — retire `popup_help()` / `PopupRenderState.help` 🗒
+#### PU.1b-4b — remove the published `PopupRenderState.help` drift seam ✅ (2026-06-29)
 
-The remaining bulk. `popup_help()` reconstructs a `HelpBuffer` *view* from
-the registry Document + popup view state; it is read by (a) both
-renderers' chrome (title / line-count / State-A scroll) AND (b)
-`active_text` / `active_cursor` / `active_buffer_id` for a focused (State
-B) popup. Retiring it means sourcing all of those from the registry
-Document + popup view state directly, then deleting `popup_help()`,
-`help_content_view`, and `PopupRenderState.help`. Cross-renderer + host;
-plan + confirm before executing (touches motion/text sourcing).
+**Re-scoped on discovery (merit-based, heuristic #1).** The original
+"delete `popup_help()`" framing proved wrong on contact: `popup_help()` is
+a host READ ACCESSOR that reconstructs a transient view FROM the registry
+Document on demand — it is NOT a parallel store, so it is not an
+everything-is-a-buffer violation. It is woven into ~70 TUI tests (as a
+content/title read accessor) PLUS production motion (`motions.rs`), focus
+(`focus_help_popup`), and in-pane re-seed paths. Deleting the *function*
+would be a ~70-test rewrite that serves NO paramount goal (heuristic #1
+forbids rewriting for its own sake).
+
+The actual everything-is-a-buffer seam is the **published
+`PopupRenderState.help`** — the parallel `Arc<HelpBuffer>` snapshot a
+renderer paints chrome from instead of the registry Document. That is what
+this slice removes. Green: `lattice-host` + `lattice-cli` (TUI) +
+`lattice-ui-gpui --features window` + `--features gui` all build clean;
+suites green (host / ui-tui / ui-gpui).
+
+- ✅ **`PopupRenderState`:** deleted the `help: Option<Arc<HelpBuffer>>`
+  field; added `scroll: u32` (the popup's State-A view scroll = genuine
+  popup-only view state, NOT in the registry Document, so it IS published).
+  `build_render_state` publishes `scroll: self.popup_scroll` instead of
+  `help: self.popup_help()...`.
+- ✅ **GPUI** (the only consumer of the published `help` field): the popup
+  closure now gates on `popup_substate.buffer_id`, sources the title from
+  `rs.buffers.registry.name_of(popup_id)`, content/line-count from the
+  registry snapshot (already so for content since PU.2), and State-A scroll
+  from `popup_substate.scroll`.
+- ✅ **TUI:** NO change — the TUI chrome reads the `popup_help()` accessor
+  (kept), never the published `help` field. So removing the field doesn't
+  touch the TUI renderer.
+- ✅ **Kept:** `popup_help()` (host + TUI accessor), `help_content_view`,
+  and the `active_text` / `active_cursor` reads through them — all read the
+  canonical registry, no drift. A standalone `popup_help()` deletion (with
+  the ~70-test migration) is available as a separate cleanup if ever
+  wanted, but it carries no paramount-goal payoff.
 
 - **Acceptance (whole PU.1b):** `:set wrap`/`nowrap` changes the help
   popup; folds work inside help; horizontal scroll works inside help
   (proves the HS dependency); the popup's visible content equals
-  `compose_pane_lines` for the same buffer + inner rect.
-- Tests: a "help content == compose_pane_lines" equivalence test; the
-  wrap-toggle + fold + h-scroll behaviours inside the popup.
+  `compose_pane_lines` for the same buffer + inner rect. (Behaviourally
+  satisfied: both renderers paint help through the shared matrix /
+  `compose_pane_lines` path.)
 
 ## PU.2 — GPUI help parity ✅ (2026-06-29)
 

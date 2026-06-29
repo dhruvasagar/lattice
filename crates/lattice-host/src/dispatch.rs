@@ -1052,7 +1052,11 @@ impl Editor {
             }),
             popup: std::sync::Arc::new(PopupRenderState {
                 buffer_id: self.popup_buffer,
-                help: self.popup_help().map(std::sync::Arc::new),
+                // PU.1b-4b: publish the popup's State-A view scroll only —
+                // content / title / line-count are sourced by both renderers
+                // from the registry Document at `buffer_id` (no popup-side
+                // `HelpBuffer` snapshot republished).
+                scroll: self.popup_scroll,
                 placement: self.popup_placement,
                 anchor: self.popup_anchor,
                 doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,

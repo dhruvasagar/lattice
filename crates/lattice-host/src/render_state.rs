@@ -1690,15 +1690,22 @@ pub struct CompletionRenderState {
 ///
 /// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): populated.
 /// `buffer_id` mirrors `Editor::popup_buffer` (the active popup's
-/// id, `None` when no popup is open). `help` carries an
-/// `Arc<HelpBuffer>` snapshot of the popup content. `placement`
-/// echoes `Editor::popup_placement`. Help syntax / link styling is
-/// carried by the live cells-worker `DisplayMatrix` (grammar spans +
-/// the `ExtraHighlights` link overlay), not a popup-side span list.
+/// id, `None` when no popup is open). `placement` echoes
+/// `Editor::popup_placement`. Help content + syntax / link styling
+/// are carried by the registry Document at `buffer_id` and its live
+/// cells-worker `DisplayMatrix` (grammar spans + the `ExtraHighlights`
+/// link overlay) — both renderers source the popup's CONTENT, TITLE,
+/// and line-count from the registry Document directly (PU.2 / PU.1b-4b),
+/// so no popup-side `HelpBuffer` snapshot is published.
 #[derive(Debug, Clone)]
 pub struct PopupRenderState {
     pub buffer_id: Option<lattice_core::BufferId>,
-    pub help: Option<std::sync::Arc<lattice_help::HelpBuffer>>,
+    /// PU.1b-4b: the popup's State-A view scroll (= `Editor::popup_scroll`).
+    /// Genuine popup-only view state — NOT in the registry Document (the
+    /// Document carries no per-popup scroll), so it is published here for
+    /// both renderers' State-A (popup-shown-but-not-focused) anchor. State
+    /// B (focused) reads the live `active_document.scroll` instead.
+    pub scroll: u32,
     pub placement: lattice_core::ui::popup::PopupPlacement,
     /// 2026-05-22 popup-anchor: cursor position snapshotted at
     /// popup-open time. CursorAnchored renderers read this so
@@ -1720,7 +1727,7 @@ impl Default for PopupRenderState {
     fn default() -> Self {
         Self {
             buffer_id: None,
-            help: None,
+            scroll: 0,
             placement: lattice_core::ui::popup::PopupPlacement::default(),
             anchor: None,
             doc_scroll_at_anchor: 0,
@@ -2849,7 +2856,8 @@ mod tests {
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert!(!rs.popup.is_open());
-        assert!(rs.popup.help.is_none());
+        assert_eq!(rs.popup.buffer_id, None);
+        assert_eq!(rs.popup.scroll, 0);
     }
 
     /// Slice 3c.final.B (group 3): picker + completion slots

@@ -3406,58 +3406,60 @@ impl Render for EditorView {
                     .children(visible_candidates)
             });
 
-        // Phase 5.8.AE + Slice 3c.final.B (group 3): read popup
-        // state via the published substate. The Arc-wrapped
-        // `HelpBuffer` lives on `render_state.popup.help`; bind
-        // locally so the borrows live for the closure. (Help syntax /
-        // link styling now rides the live cells-worker `DisplayMatrix`,
-        // not a popup-side highlight slice.)
+        // Phase 5.8.AE + Slice 3c.final.B (group 3): read popup state via
+        // the published substate. PU.1b-4b: the popup is gated on
+        // `popup_substate.buffer_id`; its CONTENT / TITLE / line-count come
+        // from the registry Document at that id (single source), and its
+        // State-A scroll from `popup_substate.scroll`. No popup-side
+        // `HelpBuffer` snapshot is published anymore. (Help syntax / link
+        // styling rides the live cells-worker `DisplayMatrix`.)
         let popup_substate = self.app.render_state.load().popup.clone();
         // T.5.b: the popup-overlay cell renderer resolves syntax
         // styles through the active theme's resolved table (loaded
         // once; captured by the popup closure below).
         let popup_resolved = self.app.render_state.load().resolved_theme.clone();
         let popup_ids = self.app.render_state.load().theme_ids;
-        let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
-            let title = buf.title.clone();
-            // PU.2: the popup CONTENT now renders through the shared
-            // document `EditorElement` reading the synthetic
-            // `PaneId::POPUP` `DisplayMatrix` (markdown colour from
-            // PU.1b-1, link styling from the PU.1b-2a `ExtraHighlights`
-            // merge, soft-wrap from the matrix `wrap_width`, h-scroll /
-            // folds for free) — the GPUI peer of the TUI's
-            // `draw_help_overlay` compose flip (PU.1b-3). Only the box
-            // (border + title + separator) below stays popup-specific
-            // chrome. A help popup is now pixel-equivalent to a `:set nonu
-            // signcolumn=no wrap` document in a box (K.4 /
-            // `feedback_render_is_option_derived`). The ~190-line manual
-            // cell/row + chunk-wrap loop this replaces is deleted.
-            let popup_id = popup_substate.buffer_id;
-            // When the popup is focused (State B) `ad().scroll` /
-            // `ad().cursor` describe the popup buffer (it IS the active
-            // buffer); State A reads the doc beneath.
+        let popup_overlay: Option<gpui::Div> = popup_substate.buffer_id.map(|popup_id| {
+            // PU.2: the popup CONTENT renders through the shared document
+            // `EditorElement` reading the synthetic `PaneId::POPUP`
+            // `DisplayMatrix` (markdown colour from PU.1b-1, link styling
+            // from the PU.1b-2a `ExtraHighlights` merge, soft-wrap from the
+            // matrix `wrap_width`, h-scroll / folds for free) — the GPUI peer
+            // of the TUI's `draw_help_overlay` compose flip (PU.1b-3). Only
+            // the box (border + title + separator) below stays
+            // popup-specific chrome. A help popup is now pixel-equivalent to
+            // a `:set nonu signcolumn=no wrap` document in a box (K.4 /
+            // `feedback_render_is_option_derived`).
+            //
+            // PU.1b-4b: title + content + line-count are sourced from the
+            // registry Document at `popup_id` (single source); State-A
+            // scroll from the published `popup_substate.scroll`. No
+            // popup-side `HelpBuffer` snapshot.
             let ad = self.app.ad();
             let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
             let rs = self.app.render_state.load();
-            // Snapshot + text version from the registry handle: the popup
-            // is a registry Document never `activate_document`'d as
-            // `self.document` (PU.1a), so its content must come from the
-            // handle — the same source the host builds the POPUP matrix
-            // from (`build_one_pane_cells_input`, `is_active_buffer=false`).
-            let content_snap = popup_id
-                .and_then(|id| rs.buffers.registry.document_handle(id))
+            // Title = the popup buffer's registry name.
+            let title = rs.buffers.registry.name_of(popup_id).unwrap_or_default();
+            // Snapshot from the registry handle: the popup is a registry
+            // Document never `activate_document`'d as `self.document`
+            // (PU.1a), so its content must come from the handle — the same
+            // source the host builds the POPUP matrix from
+            // (`build_one_pane_cells_input`, `is_active_buffer=false`).
+            let content_snap = rs
+                .buffers
+                .registry
+                .document_handle(popup_id)
                 .map(|h| h.snapshot());
             let text_version = content_snap.as_ref().map(|s| s.text_version).unwrap_or(0);
             let body_string = content_snap
                 .as_ref()
                 .map(|s| s.buffer.as_string())
-                .unwrap_or_else(|| buf.content.as_string());
-            // Scroll anchor by focus state — the SAME choice the host
-            // makes when building the POPUP matrix (`build_cells_panes`):
-            // State B → live `ad.scroll`; State A → the stashed
-            // `popup_scroll` (published as `buf.scroll`). Matching it keeps
-            // the matrix rows and the painted window aligned.
-            let popup_scroll: u32 = if popup_focused { ad.scroll } else { buf.scroll as u32 };
+                .unwrap_or_default();
+            // Scroll anchor by focus state — the SAME choice the host makes
+            // when building the POPUP matrix (`build_cells_panes`): State B →
+            // live `ad.scroll`; State A → the published popup view scroll.
+            // Matching it keeps the matrix rows and the painted window aligned.
+            let popup_scroll: u32 = if popup_focused { ad.scroll } else { popup_substate.scroll };
             // `EditorElement.text` carries the VISIBLE WINDOW from
             // `scroll` (the gutter-less walk indexes it by
             // `line_idx - scroll`); matrix lookups stay keyed by absolute

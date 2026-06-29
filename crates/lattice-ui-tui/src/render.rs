@@ -5888,6 +5888,77 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Evidence test for the preview-switch "bleeding" report: render a LONG
+    /// active document, then a SHORT one (the binary-placeholder case), to
+    /// the same TestBackend terminal. After the switch, NO row may still
+    /// show the long document's content. If this FAILS, the per-frame render
+    /// isn't clearing vacated rows (a real render bug). If it PASSES, the
+    /// on-screen bleed is an out-of-band terminal write, not the renderer.
+    #[test]
+    fn shrinking_active_document_clears_vacated_rows() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir = std::env::temp_dir().join(format!("lattice-bleed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = dir.join("long.txt");
+        let short = dir.join("short.txt");
+        let body: String = (0..30)
+            .map(|i| format!("members entry line {i} XXXXXXXXXXXXXXXXXXXX\n"))
+            .collect();
+        std::fs::write(&long, &body).unwrap();
+        std::fs::write(&short, "only one line\n").unwrap();
+
+        let mut app = app_with("origin\n", 24);
+        let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
+
+        let row_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+            (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect()
+        };
+
+        // Frame 1: preview the long file.
+        let long_c = long.clone();
+        app.mutate_editor(move |e| {
+            let _ = e.do_preview(long_c, None);
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let buf1 = terminal.backend().buffer().clone();
+        let frame1_has_long = (0..26u16).any(|y| row_text(&buf1, y).contains("members entry"));
+        assert!(
+            frame1_has_long,
+            "sanity: the long preview must actually render its content"
+        );
+
+        // Frame 2: preview the short file (active doc shrinks 30 → 1 line).
+        let short_c = short.clone();
+        app.mutate_editor(move |e| {
+            let _ = e.do_preview(short_c, None);
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let buf2 = terminal.backend().buffer().clone();
+        let stale: Vec<u16> = (0..26u16)
+            .filter(|&y| row_text(&buf2, y).contains("members entry"))
+            .collect();
+
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            stale.is_empty(),
+            "stale long-file rows after switching to a short preview: rows {stale:?}"
+        );
+    }
+
     // ---- W.4: body wrap segment splitting ----
 
     #[test]

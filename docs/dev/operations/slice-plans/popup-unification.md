@@ -14,11 +14,11 @@ contains bespoke text-layout code.
 Status icons: ✅ done · 🚧 in progress · 📝 planned.
 
 **Status (2026-06-29):** PU.1 / PU.1b (all sub-slices) / PU.2 / PU.3 /
-PU.4 / PU.5 (5a–5d) ✅ complete. Only **PU.6** (cleanup + regression
-guard) remains 📝. PU.3 was delivered as part of PU.5 (ephemeral class
-built with its first consumer, completion docs); PU.4 was pre-satisfied by
-the PU.1b-3/PU.2 popup unification (hover/signature already ride the
-floating-popup compose seam).
+PU.4 / PU.5 (5a–5d) / **PU.6** ✅ complete — **the initiative is done.**
+PU.3 was delivered as part of PU.5 (ephemeral class built with its first
+consumer, completion docs); PU.4 was pre-satisfied by the PU.1b-3/PU.2
+popup unification (hover/signature already ride the floating-popup compose
+seam).
 
 ## Sequencing rationale
 
@@ -605,17 +605,29 @@ Green: host 594, ui-tui 1504, ui-gpui `--features window` 112; builds clean
 incl. `--features gui`. Tests: `ephemeral_buffers_excluded_from_listed_ids`,
 `completion_docs_reconcile_creates_ephemeral_buffer_and_gcs`.
 
-## PU.6 — Cleanup + regression guard 📝
+## PU.6 — Cleanup + regression guard ✅ (2026-06-29)
 
-- Grep-gate (CI) asserting no popup path calls a bespoke content
-  renderer — mirrors the `Effect::*` / `DiffSignKind::*` GPUI-parity
-  grep in the TUI/GPUI-parity rule.
-- The verbatim "a popup is a regular buffer in a box" test across all
-  popup kinds (K.4-style), analogous to
-  `crates/lattice-host/tests/multibuffer_is_a_regular_buffer.rs`.
-- Confirm the four-artefacts set landed per slice (design fragment
-  here, tests per slice, perf covered by the existing compose benches
-  — popups compose only their inner rect, no new hot-path cost).
+- ✅ **Grep-gate** (`crates/lattice-host/tests/popup_no_bespoke_renderer.rs`):
+  scans every `.rs` under `crates/` and asserts no DELETED bespoke renderer
+  reappears as a `fn` definition (`draw_help_in_pane`, `draw_inactive_help`,
+  `manually_wrap_lines`, `with_markdown_syntax`, `popup_help_highlights`) —
+  across BOTH renderers, so a kind-specific popup paint can't sneak back in
+  on the TUI or GPUI side. Mirrors the `Effect::*` / `DiffSignKind::*`
+  GPUI-parity grep, as a committed CI test rather than a manual audit.
+- ✅ **K.4-style "a popup is a regular buffer in a box"**
+  (`crates/lattice-host/tests/popup_is_a_regular_buffer.rs`): the centered
+  help popup (`open_popup`), the floating hover/signature popup
+  (`open_floating_popup`), and in-pane help (`open_help_in_pane`) each
+  assert the same contract — actor-backed Document in the registry,
+  help-mode minor active, `nonu` resolved PER-BUFFER via the generic option
+  path (no kind-branch), markdown syntax handle attached (composes through
+  the shared seam). Analogous to `multibuffer_is_a_regular_buffer.rs`.
+- ✅ **Four-artefacts set confirmed:** design fragment lives here; tests
+  landed per slice (PU.1a/1b link+syntax reseed, PU.2 GPUI compose, PU.5
+  ephemeral, + the regression guards above); perf is covered by the
+  existing compose benches — popups compose only their inner rect, no new
+  hot-path cost; error handling is the shared compose path's (log + skip,
+  no popup-specific panics). The initiative is complete.
 
 ## Dependencies & cross-references
 

@@ -3285,6 +3285,25 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
     }
 }
 
+/// PU.5: one synthetic popup "pane" the cells worker must build a
+/// `DisplayMatrix` for. Floating overlays (the help / hover / signature
+/// floating popup; the Insert-mode completion-docs side popup) are not
+/// pane-tree leaves, so [`Editor::build_cells_panes`] enumerates these via
+/// [`Editor::synthetic_popup_panes`] and registers each under its reserved
+/// sentinel [`lattice_core::ui::pane::PaneId`]. All fields are consumed by
+/// the shared `build_one_pane_cells_input` with `is_active_buffer = false`.
+struct PopupPaneSpec {
+    pane_id: lattice_core::ui::pane::PaneId,
+    buffer_id: lattice_core::BufferId,
+    /// View scroll (top source line). Floating popup: focus-dependent
+    /// (State B → live `self.scroll`, State A → `popup_scroll`).
+    /// Completion docs: the doc popup's own scroll.
+    scroll: u32,
+    viewport_height: u32,
+    viewport_width: u32,
+    wrap: bool,
+}
+
 // 5.5.D: pure-editor mutation helpers relocated from
 // `lattice-ui-tui::app`. Grouped here next to `dispatch` so they sit
 // with their callers; subsequent slices (5.5.E+) split them into
@@ -10789,6 +10808,42 @@ impl Editor {
     /// renderer reads today). D.4.d.1.b will switch the
     /// cells worker to iterate this slice; D.4.d.1.c will
     /// expose the per-pane matrices to renderers.
+    /// PU.5: enumerate the open synthetic popup panes (floating overlays
+    /// the cells worker must build a `DisplayMatrix` for; see
+    /// [`PopupPaneSpec`]). Each is gated on its popup being open AND the
+    /// renderer having fed back its inner geometry (`viewport_width > 0`) —
+    /// until then the renderer's plain-text fallback paints the one un-sized
+    /// frame. Order is irrelevant (each keys a distinct sentinel pane id).
+    fn synthetic_popup_panes(&self) -> Vec<PopupPaneSpec> {
+        use lattice_core::ui::pane::PaneId;
+        let mut specs = Vec::new();
+        // Floating help / hover / signature popup (PU.1b-3). Not built when
+        // help is shown as an in-pane leaf (that case is a real leaf handled
+        // by the per-leaf loop above).
+        if let Some(popup_id) = self.popup_buffer {
+            let in_pane_help =
+                self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
+            if !in_pane_help && self.popup_viewport_width > 0 {
+                let popup_is_focused =
+                    matches!(self.active_buffer, lattice_core::BufferKind::Help);
+                let scroll = if popup_is_focused { self.scroll } else { self.popup_scroll };
+                specs.push(PopupPaneSpec {
+                    pane_id: PaneId::POPUP,
+                    buffer_id: popup_id,
+                    scroll,
+                    viewport_height: self.popup_viewport_height,
+                    viewport_width: self.popup_viewport_width,
+                    // The floating help popup always wraps (help-mode's
+                    // `Wrap = true`).
+                    wrap: true,
+                });
+            }
+        }
+        // PU.5c: the Insert-mode completion-docs side popup is appended here
+        // once its ephemeral backing buffer + geometry feedback land.
+        specs
+    }
+
     fn build_cells_panes(
         &self,
         last_edit_active: Option<lattice_cells::EditDelta>,
@@ -10895,53 +10950,35 @@ impl Editor {
                 last_edit,
             ));
         }
-        // PU.1b-3 (Fork 1): the floating help popup is an overlay, not a
-        // pane-tree leaf, so the loop above never built a `DisplayMatrix`
-        // for it. Register the popup buffer under the reserved
-        // `PaneId::POPUP` so the cells worker covers it and BOTH popup
-        // states route through the shared `compose_pane_lines` reading a
-        // real matrix (no parallel ad-hoc-snapshot path — paramount #3,
-        // design fragment §4). Gated on: a popup buffer is open; it is NOT
-        // shown as an in-pane leaf (that case is a real leaf handled above);
-        // and the renderer has fed back the popup's inner geometry
-        // (`popup_viewport_width > 0`) — until then the renderer's plain-text
-        // fallback paints the one un-sized frame.
+        // PU.1b-3 / PU.5: synthetic popup panes. Floating overlays (the
+        // help / hover / signature floating popup; the Insert-mode
+        // completion-docs side popup) are NOT pane-tree leaves, so the loop
+        // above built no `DisplayMatrix` for them. `synthetic_popup_panes`
+        // enumerates each open popup's (pane_id, buffer, geometry, scroll,
+        // wrap); register each under its reserved sentinel id so its content
+        // routes through the SAME `compose_pane_lines` seam as every pane (no
+        // parallel ad-hoc-snapshot path — paramount #3, design fragment §4).
         //
-        // `is_active_buffer = false` ALWAYS: a help popup is a registry
-        // Document that is NEVER `activate_document`'d as `self.document`
-        // (PU.1a) — even when focused (State B, `active_buffer == Help`),
-        // `self.document` still points at the buffer UNDERNEATH the popup.
-        // So the snapshot + folds MUST come from the registry handle +
-        // `buffer_locals[popup_id]`, never the (wrong) `self.document` /
-        // `self.folds`. Only the scroll ANCHOR differs by focus: State B
-        // (focused) reads the popup's live view scroll on `self.scroll`;
-        // State A reads the persisted `popup_scroll` stash. `wrap = true`:
-        // the floating help popup always wraps (help-mode's `Wrap = true`).
-        if let Some(popup_id) = self.popup_buffer {
-            let in_pane_help =
-                self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
-            if !in_pane_help && self.popup_viewport_width > 0 {
-                let popup_is_focused =
-                    matches!(self.active_buffer, lattice_core::BufferKind::Help);
-                let scroll = if popup_is_focused {
-                    self.scroll
-                } else {
-                    self.popup_scroll
-                };
-                entries.push(self.build_one_pane_cells_input(
-                    lattice_core::ui::pane::PaneId::POPUP,
-                    popup_id,
-                    false,
-                    scroll,
-                    self.popup_viewport_height,
-                    self.popup_viewport_width,
-                    true,
-                    foldenable,
-                    theme_hash,
-                    whitespace_hash,
-                    None,
-                ));
-            }
+        // `is_active_buffer = false` ALWAYS: a popup buffer is a registry
+        // Document NEVER `activate_document`'d as `self.document` (PU.1a) —
+        // even when focused (State B), `self.document` still points at the
+        // buffer UNDERNEATH the popup. So snapshot + folds come from the
+        // registry handle + `buffer_locals`, never the (wrong)
+        // `self.document` / `self.folds`.
+        for spec in self.synthetic_popup_panes() {
+            entries.push(self.build_one_pane_cells_input(
+                spec.pane_id,
+                spec.buffer_id,
+                false,
+                spec.scroll,
+                spec.viewport_height,
+                spec.viewport_width,
+                spec.wrap,
+                foldenable,
+                theme_hash,
+                whitespace_hash,
+                None,
+            ));
         }
         Arc::from(entries.into_boxed_slice())
     }

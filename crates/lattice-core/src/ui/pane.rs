@@ -50,6 +50,15 @@ impl PaneId {
     /// unification). `next()` allocates from 1 upward and never reaches
     /// `u32::MAX`, so the sentinel can never collide with a real leaf.
     pub const POPUP: Self = Self(u32::MAX);
+
+    /// PU.5: reserved synthetic id for the Insert-mode completion-docs
+    /// side popup — a SECOND simultaneous overlay (it coexists with the
+    /// candidate list and, if open, the floating [`Self::POPUP`]). Like
+    /// `POPUP` it is not a pane-tree leaf, so `build_cells_panes`
+    /// registers its ephemeral backing buffer under this sentinel so the
+    /// docs content routes through the same `compose_pane_lines` seam.
+    /// `u32::MAX - 1` — still far above any `next()`-allocated leaf.
+    pub const COMPLETION_DOCS: Self = Self(u32::MAX - 1);
 }
 
 /// D.4.a (2026-05-29): process-monotonic id for a scroll-binding

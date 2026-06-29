@@ -527,7 +527,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one(
         "pane.status.inactive",
-        spec().fg("ansi.darkgray").dim(),
+        spec().fg("overlay").dim(),
         "Inactive pane's status line.",
     );
     reg_one(
@@ -537,7 +537,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one(
         "pane.separator",
-        spec().fg("ansi.darkgray"),
+        spec().fg("overlay"),
         "Split separator between panes.",
     );
 
@@ -619,12 +619,12 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // ---- File tree ----
     reg_one(
         "file_tree.dir",
-        spec().fg("ansi.blue").bold(),
+        spec().fg("blue").bold(),
         "Directory entries in the file tree.",
     );
     reg_one(
         "file_tree.hidden",
-        spec().fg("ansi.darkgray").dim(),
+        spec().fg("overlay").dim(),
         "Hidden entries in the file tree.",
     );
     reg_one("file_tree.file", spec(), "Regular file entries.");
@@ -632,34 +632,34 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // ---- Diagnostics ----
     reg_one(
         "diagnostic.error",
-        spec().fg("ansi.red").bold(),
+        spec().fg("red").bold(),
         "Error-severity diagnostic sign + text.",
     );
     reg_one(
         "diagnostic.warning",
-        spec().fg("ansi.yellow").bold(),
+        spec().fg("yellow").bold(),
         "Warning-severity diagnostic.",
     );
     reg_one(
         "diagnostic.info",
-        spec().fg("ansi.blue"),
+        spec().fg("blue"),
         "Info-severity diagnostic.",
     );
     reg_one(
         "diagnostic.hint",
-        spec().fg("ansi.darkgray").dim(),
+        spec().fg("overlay").dim(),
         "Hint-severity diagnostic.",
     );
 
     // ---- Whitespace + current line ----
     reg_one(
         "whitespace",
-        spec().fg("ansi.darkgray").dim(),
+        spec().fg("overlay").dim(),
         "Rendered whitespace markers.",
     );
     reg_one(
         "whitespace.trailing",
-        spec().fg("ansi.red"),
+        spec().fg("red"),
         "Trailing whitespace markers.",
     );
     reg_one(
@@ -671,46 +671,46 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // ---- *messages* buffer levels ----
     reg_one(
         "messages.timestamp",
-        spec().fg("ansi.darkgray").dim(),
+        spec().fg("overlay").dim(),
         "Timestamp column in *messages*.",
     );
     reg_one("messages.trace", spec().dim(), "TRACE-level message.");
     reg_one(
         "messages.debug",
-        spec().fg("ansi.cyan"),
+        spec().fg("cyan"),
         "DEBUG-level message.",
     );
     reg_one("messages.info", spec(), "INFO-level message.");
     reg_one(
         "messages.warn",
-        spec().fg("ansi.yellow").bold(),
+        spec().fg("yellow").bold(),
         "WARN-level message.",
     );
     reg_one(
         "messages.error",
-        spec().fg("ansi.red").bold(),
+        spec().fg("red").bold(),
         "ERROR-level message.",
     );
 
     // ---- Diff ----
     reg_one(
         "diff.add.sign",
-        spec().fg("ansi.green").bold(),
+        spec().fg("green").bold(),
         "`+` gutter sign (added line).",
     );
     reg_one(
         "diff.change.sign",
-        spec().fg("ansi.yellow").bold(),
+        spec().fg("yellow").bold(),
         "`~` gutter sign (changed line).",
     );
     reg_one(
         "diff.remove.sign",
-        spec().fg("ansi.red").bold(),
+        spec().fg("red").bold(),
         "`-` gutter sign (removed line).",
     );
     reg_one(
         "diff.conflict.sign",
-        spec().fg("ansi.magenta").bold(),
+        spec().fg("purple").bold(),
         "`?` gutter sign (three-way conflict).",
     );
     reg_one(
@@ -1215,7 +1215,7 @@ impl BuiltinElementIds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Color, NamedColor};
+    use crate::Color;
 
     fn reg() -> InMemoryThemeRegistry {
         InMemoryThemeRegistry::with_defaults()
@@ -1231,35 +1231,39 @@ mod tests {
     #[test]
     fn resolved_builtins_match_legacy_literals() {
         let reg = reg();
-        // Chrome — ANSI named, matches Theme::default() exactly.
+        // Chrome — palette accent keys (migrated off `ansi.*` so each theme's
+        // tuned accent applies and GPUI gets readable truecolor instead of the
+        // dim VGA `Color::Named` approximations; `ansi.*` collapsed to the same
+        // `0x0000ee`/`0x7f7f7f` regardless of theme). Default palette = mocha.
+        let rgb = Color::Rgb;
         assert_eq!(
             resolved_of(&reg, "pane.status.active"),
             Style::empty().reverse().bold()
         );
         assert_eq!(
             resolved_of(&reg, "pane.status.inactive"),
-            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+            Style::empty().fg(rgb(0x6c, 0x70, 0x86)).dim() // overlay
         );
         assert_eq!(
             resolved_of(&reg, "diagnostic.error"),
-            Style::empty().fg(Color::Named(NamedColor::Red)).bold()
+            Style::empty().fg(rgb(0xf3, 0x8b, 0xa8)).bold() // red
         );
         assert_eq!(
             resolved_of(&reg, "diagnostic.info"),
-            Style::empty().fg(Color::Named(NamedColor::Blue))
+            Style::empty().fg(rgb(0x89, 0xb4, 0xfa)) // blue
         );
         assert_eq!(
             resolved_of(&reg, "file_tree.dir"),
-            Style::empty().fg(Color::Named(NamedColor::Blue)).bold()
+            Style::empty().fg(rgb(0x89, 0xb4, 0xfa)).bold() // blue
         );
         assert_eq!(resolved_of(&reg, "file_tree.file"), Style::empty());
         assert_eq!(
             resolved_of(&reg, "diff.add.sign"),
-            Style::empty().fg(Color::Named(NamedColor::Green)).bold()
+            Style::empty().fg(rgb(0xa6, 0xe3, 0xa1)).bold() // green
         );
         assert_eq!(
             resolved_of(&reg, "diff.conflict.sign"),
-            Style::empty().fg(Color::Named(NamedColor::Magenta)).bold()
+            Style::empty().fg(rgb(0xcb, 0xa6, 0xf7)).bold() // purple
         );
         // Tints — exact RGB / indexed.
         assert_eq!(
@@ -1392,19 +1396,19 @@ mod tests {
         assert_ne!(ids.diagnostic_hint, ElementId::INVALID);
         assert_eq!(
             resolved.get(ids.diagnostic_error),
-            Style::empty().fg(Color::Named(NamedColor::Red)).bold()
+            Style::empty().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).bold()
         );
         assert_eq!(
             resolved.get(ids.diagnostic_warning),
-            Style::empty().fg(Color::Named(NamedColor::Yellow)).bold()
+            Style::empty().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).bold()
         );
         assert_eq!(
             resolved.get(ids.diagnostic_info),
-            Style::empty().fg(Color::Named(NamedColor::Blue))
+            Style::empty().fg(Color::Rgb(0x89, 0xb4, 0xfa))
         );
         assert_eq!(
             resolved.get(ids.diagnostic_hint),
-            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+            Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
         );
     }
 
@@ -1417,11 +1421,11 @@ mod tests {
         let resolved = reg.resolved();
         assert_eq!(
             resolved.get(ids.diff_add_sign),
-            Style::empty().fg(Color::Named(NamedColor::Green)).bold()
+            Style::empty().fg(Color::Rgb(0xa6, 0xe3, 0xa1)).bold()
         );
         assert_eq!(
             resolved.get(ids.diff_conflict_sign),
-            Style::empty().fg(Color::Named(NamedColor::Magenta)).bold()
+            Style::empty().fg(Color::Rgb(0xcb, 0xa6, 0xf7)).bold()
         );
         // Tints carry the legacy Rgb on the `bg` channel.
         assert_eq!(
@@ -1444,20 +1448,21 @@ mod tests {
 
     #[test]
     fn builtin_ids_capture_resolves_chrome_to_legacy() {
-        // T.4.c parity net: the writer-free pane/file-tree elements
-        // resolve to the legacy literals. (`pane.status.*` /
-        // `pane.separator` migrate in T.9 with their `:set` overrides.)
+        // Parity net: the writer-free pane/file-tree elements resolve to
+        // their palette accent keys. `file_tree.dir`/`.hidden` migrated off
+        // `ansi.*` to `blue`/`overlay` so each theme's tuned accent applies
+        // and GPUI renders readable truecolor (the dull-blue folder fix).
         let reg = reg();
         let ids = BuiltinElementIds::capture(&reg);
         let resolved = reg.resolved();
         assert_eq!(resolved.get(ids.pane_inactive_overlay), Style::empty().dim());
         assert_eq!(
             resolved.get(ids.file_tree_dir),
-            Style::empty().fg(Color::Named(NamedColor::Blue)).bold()
+            Style::empty().fg(Color::Rgb(0x89, 0xb4, 0xfa)).bold()
         );
         assert_eq!(
             resolved.get(ids.file_tree_hidden),
-            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+            Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
         );
         assert_eq!(resolved.get(ids.file_tree_file), Style::empty());
     }
@@ -1511,20 +1516,20 @@ mod tests {
         assert_eq!(resolved.get(ids.messages_trace), Style::empty().dim());
         assert_eq!(
             resolved.get(ids.messages_debug),
-            Style::empty().fg(Color::Named(NamedColor::Cyan))
+            Style::empty().fg(Color::Rgb(0x74, 0xc7, 0xec))
         );
         assert_eq!(resolved.get(ids.messages_info), Style::empty());
         assert_eq!(
             resolved.get(ids.messages_warn),
-            Style::empty().fg(Color::Named(NamedColor::Yellow)).bold()
+            Style::empty().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).bold()
         );
         assert_eq!(
             resolved.get(ids.messages_error),
-            Style::empty().fg(Color::Named(NamedColor::Red)).bold()
+            Style::empty().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).bold()
         );
         assert_eq!(
             resolved.get(ids.messages_timestamp),
-            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+            Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
         );
     }
 
@@ -1562,11 +1567,11 @@ mod tests {
         );
         assert_eq!(
             resolved.get(ids.whitespace_trailing),
-            Style::empty().fg(Color::Named(NamedColor::Red))
+            Style::empty().fg(Color::Rgb(0xf3, 0x8b, 0xa8))
         );
         assert_eq!(
             resolved.get(ids.whitespace),
-            Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim()
+            Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
         );
     }
 

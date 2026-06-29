@@ -190,10 +190,10 @@ impl Default for Theme {
             pane_status_active: Style::new()
                 .add_modifier(Modifier::REVERSED)
                 .add_modifier(Modifier::BOLD),
-            pane_status_inactive: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            pane_status_inactive: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
             inactive_pane_overlay: Style::new().add_modifier(Modifier::DIM),
             dim_inactive_panes: true,
-            pane_separator: Style::new().fg(Color::DarkGray),
+            pane_separator: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
             // ML.1b: defaults mirror the resolved `modeline.*` elements
@@ -221,40 +221,40 @@ impl Default for Theme {
             // dot. Same shapes vim's nvim-lsp / VS Code use --
             // immediately readable, terminal-safe.
             diagnostic_error_glyph: '■',
-            diagnostic_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            diagnostic_error_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
             diagnostic_warning_glyph: '▲',
-            diagnostic_warning_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            diagnostic_warning_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
             diagnostic_info_glyph: '●',
-            diagnostic_info_style: Style::new().fg(Color::Blue),
+            diagnostic_info_style: Style::new().fg(Color::Rgb(0x89, 0xb4, 0xfa)),
             diagnostic_hint_glyph: '·',
-            diagnostic_hint_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            file_tree_dir_style: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
-            file_tree_hidden_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            diagnostic_hint_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            file_tree_dir_style: Style::new().fg(Color::Rgb(0x89, 0xb4, 0xfa)).add_modifier(Modifier::BOLD),
+            file_tree_hidden_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
             file_tree_file_style: Style::new(),
             // Default to the BMP fallback so the first frame works
             // in any terminal font. Users on a Nerd-Font-patched
             // terminal opt in via `:set ui.nerd_fonts on`.
             nerd_fonts: false,
             // M.7.3: whitespace + current-line defaults.
-            whitespace_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            whitespace_trailing_style: Style::new().fg(Color::Red),
+            whitespace_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            whitespace_trailing_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)),
             cursor_line_bg: Color::Indexed(236),
             // msg-mode.3: matches the format produced by
             // `crate::app::messages::format_message_record`.
-            messages_timestamp_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            messages_timestamp_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
             messages_trace_style: Style::new().add_modifier(Modifier::DIM),
-            messages_debug_style: Style::new().fg(Color::Cyan),
+            messages_debug_style: Style::new().fg(Color::Rgb(0x74, 0xc7, 0xec)),
             messages_info_style: Style::new(),
-            messages_warn_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            messages_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            messages_warn_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
+            messages_error_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
 
             // D.3.b.3 (2026-05-29): defaults mirror
             // `host_theme::Theme::default()` Diff section.
-            diff_add_sign_style: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
-            diff_change_sign_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            diff_remove_sign_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            diff_add_sign_style: Style::new().fg(Color::Rgb(0xa6, 0xe3, 0xa1)).add_modifier(Modifier::BOLD),
+            diff_change_sign_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
+            diff_remove_sign_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
             diff_conflict_sign_style: Style::new()
-                .fg(Color::Magenta)
+                .fg(Color::Rgb(0xcb, 0xa6, 0xf7))
                 .add_modifier(Modifier::BOLD),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),

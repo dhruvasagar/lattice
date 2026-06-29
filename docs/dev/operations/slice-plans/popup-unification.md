@@ -366,17 +366,18 @@ in-pane help (PU.1b-2b) was never affected. Guard:
 worker for `PaneId::POPUP`, composes like `draw_help_overlay`, asserts a
 resolved `Style::Link` span).
 
-### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒 — BLOCKED on PU.2
+### PU.1b-4 — delete bespoke precompute (2A cutover complete) 🗒 — UNBLOCKED (PU.2 landed 2026-06-29)
 
 **Dependency correction (2026-06-29):** the original "once *both* renderers
 flip" framing put PU.1b-4 before PU.2, which is self-contradictory — GPUI
-flips in PU.2. The TUI is flipped (PU.1b-2b + PU.1b-3), but **GPUI's bespoke
-floating popup still reads the precompute** (`window.rs` reads
-`popup_substate.help` = `popup_help()` and `popup_substate.help_highlights`
-= `popup_help_highlights()`, which `build_render_state` publishes from
-`HelpHighlights`, fed by `with_markdown_syntax`). Deleting the precompute now
-would break GPUI help. **PU.2 must land first**; then PU.1b-4 deletes the
-now-fully-unread path.
+flips in PU.2. Both renderers are now flipped (TUI: PU.1b-2b + PU.1b-3;
+GPUI: PU.2), so the cells-worker `DisplayMatrix` is the single styling
+source for help in both peers. **`popup_help_highlights` / `HelpHighlights`
+/ the published `PopupRenderState.help_highlights` are now read by NEITHER
+renderer** (PU.2 deleted GPUI's last read) and are deletable. `popup_help()`
+(`PopupRenderState.help`) is still read by both renderers for CHROME ONLY
+(title / line-count / State-A scroll), so its retirement is the bulk of the
+remaining work here.
 
 Once PU.2 lands: **Delete** `with_markdown_syntax`, `popup_help_highlights`,
 `popup_help` (the view reconstructor — note draw_help_overlay still uses it
@@ -392,17 +393,58 @@ already deleted in PU.1b-3.)
 - Tests: a "help content == compose_pane_lines" equivalence test; the
   wrap-toggle + fold + h-scroll behaviours inside the popup.
 
-## PU.2 — GPUI help parity 🗒
+## PU.2 — GPUI help parity ✅ (2026-06-29)
 
-Same seam in the GPUI peer (parity rule — same patch class as PU.1).
+The GPUI floating help popup now renders its CONTENT through the shared
+`EditorElement` reading the synthetic `PaneId::POPUP` `DisplayMatrix` —
+the GPUI peer of PU.1b-3's TUI flip. Only the box (border + title +
+separator) stays popup-specific chrome. Green: `cargo build -p
+lattice-ui-gpui` (default) + `--features window` both clean; GPUI suite
+112 passed (+1). Visual pass on wrap/fold/h-scroll inside the popup left
+to a `cargo run --features gui -- --gui` check (HS.1b / PU.1b-1a
+precedent — the content now flows through the same matrix the TUI peer
+renders, which is already covered).
 
-- Route the GPUI help popup interior through `EditorElement` with the
-  popup's inner rect + scroll/leftcol/cursor.
-- **Delete** the ~270-line manual cell/row + chunk-wrap loop in
-  `window.rs` (~3405–3670). Keep the box chrome.
-- **Acceptance:** GPUI help renders byte-equivalent content to a
-  regular pane; visual pass on wrap/fold/h-scroll inside the popup
-  (`cargo run --features gui -- --gui`).
+- ✅ **Geometry hand-off (GPUI runtime → host).** `EditorView` gains a
+  `last_popup_dims` field; each frame a floating popup is open AND help
+  is not an in-pane leaf, `render` computes the popup's inner `(rows,
+  cols)` (`popup_inner_rows` / `popup_inner_cols`, the SAME dims the
+  chrome locks the body to) and pushes via the new
+  `GpuiApp::set_popup_viewport` (→ `Editor::popup_viewport_{height,width}`
+  via `mutate_editor`). Diff-then-send mirrors the pane-viewport loop +
+  the TUI runtime's `popup_feedback_inner_dims`; steady-state = zero RPCs.
+  This is what makes `build_cells_panes` build the `PaneId::POPUP` matrix
+  on the GPUI side (it never fed the geometry before).
+- ✅ **Interior through `EditorElement`.** `draw`'s popup closure builds
+  one `EditorElement` (approach A — minimal inline construction; decoration
+  fields empty/None because a help overlay genuinely has no
+  selection/diff/doc-highlight/inlay/diagnostic). Snapshot + text version
+  from the registry handle (`is_active_buffer=false` equivalent — the
+  popup is never `activate_document`'d, PU.1a); matrices from
+  `display_matrix_for_pane(POPUP)` / `matrix_for_pane(POPUP)` with the
+  same `version.text` stale guard as every pane; State-B cursor / State-A
+  none; help-mode `nonu` + `signcolumn=no` → empty gutter (the text-only
+  walk) + `sign_column=false`; wrap from the matrix `wrap_width`.
+  `pane_idx = usize::MAX` for a non-colliding `ElementId`.
+- ✅ **Empty-gutter walk windowing fix** (`editor_element.rs`). The
+  text-only fallback iterated `[scroll, scroll+vh).min(raw_lines.len())`,
+  which clamped the END to the window LENGTH and dropped `scroll`-many
+  rows once `scroll > 0` (only correct for `scroll == 0`). Rewrote it to
+  iterate the window-relative offset `rel` directly (`line_idx = scroll +
+  rel`), correct at any scroll. No production caller passed an empty
+  gutter before this slice (paint_pane always builds one), so the fix is
+  regression-free — the floating popup is its first user.
+- ✅ **Deleted:** the ~190-line manual cell/row + chunk-wrap loop and its
+  now-orphaned helpers `syntax_color`, `style_at`, `popup_wrap_enabled`
+  (+ the unused `SyntaxStyle` import). Wrap is now matrix-driven (always
+  on for help, matching the TUI peer), not the `popup.wrap` read.
+- **Accepted visual changes** (consistent with PU.1b-2b / PU.1b-3): the
+  popup gains compose's `nonumber` left margin behaviour and `~`
+  empty-line markers — pixel-equivalent to a `:set nonu signcolumn=no
+  wrap` document in a box.
+- Test: `set_popup_viewport_writes_editor_geometry_fields` (GPUI — the
+  geometry plumbing + zero→1 clamp; the synthetic-pane build is covered
+  host-side by PU.1b-3's `floating_popup_gets_synthetic_cells_pane_when_geometry_fed`).
 
 ## PU.3 — Ephemeral-buffer class 🗒
 

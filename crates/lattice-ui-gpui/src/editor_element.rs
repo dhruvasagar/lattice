@@ -1067,21 +1067,26 @@ impl Element for EditorElement {
             // pre-filter the rows for fold-skipping; without that,
             // the fallback paints every line in
             // `[scroll, scroll+viewport_height)`.
-            let visible_start = (self.scroll as usize).min(raw_lines.len());
-            let visible_end = (self.scroll as usize)
-                .saturating_add(self.viewport_height.max(1) as usize)
-                .min(raw_lines.len());
-            for line_idx in visible_start..visible_end {
+            //
+            // PU.2: `self.text` is the VISIBLE WINDOW starting at
+            // `scroll` (caller-supplied), so `raw_lines` is indexed by
+            // the window-relative offset `rel` (0-based) while the
+            // ABSOLUTE source line is `scroll + rel` — the latter keys
+            // the `DisplayMatrix` lookup in `build_runs`. Iterate `rel`
+            // directly so the window is correct at ANY scroll: the prior
+            // `[scroll, scroll+vh).min(raw_lines.len())` math clamped the
+            // END to the window LENGTH, dropping `scroll`-many rows once
+            // `scroll > 0` (only correct for `scroll == 0`). No
+            // production caller passed an empty gutter before PU.2's
+            // floating popup, so this fix is regression-free.
+            let visible_count = (self.viewport_height.max(1) as usize).min(raw_lines.len());
+            for rel in 0..visible_count {
                 // W.5: respect the height cap (wrapped lines can fill
                 // the viewport mid-window).
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
                 }
-                let rel = line_idx.saturating_sub(self.scroll as usize);
-                // 2026-05-26: `self.text` carries the visible-window
-                // text (slice A.4 + cursor-line fix follow-up), so
-                // raw_lines is indexed by visible-row offset, not
-                // by absolute line.
+                let line_idx = (self.scroll as usize).saturating_add(rel);
                 let line = raw_lines.get(rel).copied().unwrap_or("");
                 let (combined, runs, inlay_offsets) =
                     build_runs(line, rel, line_idx as u32);

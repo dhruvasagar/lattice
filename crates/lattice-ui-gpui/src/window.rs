@@ -71,42 +71,17 @@ use lattice_core::ui::pane::{PaneNode, PaneState};
 use lattice_grammar::ModalState;
 use lattice_host::cursor_shape::CursorShape;
 use lattice_host::per_buffer_cache::PerBufferCacheExt;
-use lattice_syntax::Style as SyntaxStyle;
 
 use crate::{GpuiApp, GpuiTheme};
 
 // Phase 5.8.AF.5 / Slice X3.full.2: `CellStyle` + `run_to_cell`
 // (per-cell styled-Div construction) deleted -- replaced by the
 // shaping-layer logic in `crate::editor_element::build_text_runs`.
-// `syntax_color` + `style_at` are kept because the popup-overlay
-// renderer below still walks chars and emits one Div per cell.
-// Slice X3.full.3 absorbs the popup into a shaped-line path; at
-// that point these helpers move into `editor_element` too.
-
-/// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
-/// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: prior to this the
-/// GPUI peer carried its own Catppuccin Mocha hex table that
-/// diverged from the TUI's named-ANSI table. Both peers now route
-/// through `lattice_host::ui::theme::Theme::syntax_style`, so a
-/// single edit reflects everywhere.
-///
-/// T.5.b: resolves `style` through the active theme's resolved table
-/// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
-/// for the retired `Theme::syntax_style`. The fallback when `fg` is
-/// unset is the Catppuccin Text (`0xcdd6f4`) — matches what
-/// `SyntaxStyle::Default` resolves to and what `EditorElement` paints
-/// on un-spanned bytes.
-fn syntax_color(
-    style: SyntaxStyle,
-    resolved: &lattice_host::ui::theme::ResolvedTheme,
-    ids: &lattice_host::ui::theme::BuiltinElementIds,
-) -> u32 {
-    let host_style = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
-    host_style
-        .fg
-        .map(|c| c.to_rgb_u32(0xcdd6f4))
-        .unwrap_or(0xcdd6f4)
-}
+// PU.2: `syntax_color` + `style_at` deleted — the popup-overlay's
+// manual per-cell Div walk they fed is gone (the popup interior now
+// renders through `EditorElement` reading the synthetic POPUP matrix,
+// which resolves syntax styles via the shared `display_line_to_text_runs`
+// path like every pane).
 
 /// Popup sizing constants. 2026-05-27: popup geometry is locked to
 /// a window-relative size so the box does not grow with content
@@ -190,17 +165,6 @@ pub(crate) fn popup_inner_cols(popup_w_px: f32, rem: f32, glyph_advance_px: f32)
 /// bottom edge.
 pub(crate) fn popup_body_h_px(popup_h_px: f32, rem: f32, row_px: f32) -> f32 {
     popup_inner_height_rows(popup_h_px, rem, row_px) as f32 * row_px
-}
-
-/// Walk `spans` (one entry per line) and find the `Style` that
-/// covers `byte`.
-fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
-    for span in spans {
-        if byte >= span.start && byte < span.end {
-            return span.style;
-        }
-    }
-    SyntaxStyle::Default
 }
 
 /// Reads the typed `picker.display` option and returns `true` iff
@@ -342,16 +306,11 @@ fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
         .unwrap_or(true)
 }
 
-/// 2026-05-27: read `popup.wrap` (bool) — controls whether the
-/// help / hover popup wraps long lines at the popup's inner cols
-/// or clips at the right edge.
-fn popup_wrap_enabled(app: &GpuiApp) -> bool {
-    app.options()
-        .config
-        .get_typed::<lattice_host::ui::theme_options::PopupWrap>()
-        .map(|v| *v)
-        .unwrap_or(true)
-}
+// PU.2: `popup_wrap_enabled` (read of the `popup.wrap` option) deleted
+// — the floating help popup now always wraps via the synthetic POPUP
+// matrix's `wrap_width` (the host builds it with `wrap = true`, help-mode's
+// declared `Wrap`), matching the TUI peer (PU.1b-3). No renderer-side
+// wrap branch remains.
 
 /// 2026-05-27: read `ui.inactive_pane_opacity` (percent 0-100) and
 /// convert to a 0.0..=1.0 alpha. `ui.dim_inactive=false` short-
@@ -838,6 +797,11 @@ struct EditorView {
     /// Gated only by the `window` feature (mirrors `app`);
     /// the resolve path uses `&mut Window` which is paint-only.
     glyph_resolver: std::sync::Arc<std::sync::Mutex<crate::glyph_resolver::GlyphResolver>>,
+    /// PU.2: last floating-popup inner `(rows, cols)` pushed to the host
+    /// via `App::set_popup_viewport`. Diff-then-send across frames (the
+    /// GPUI peer of the TUI runtime's `last_popup_dims` local) so a
+    /// steady-state popup fires zero actor RPCs; `None` once on dismiss.
+    last_popup_dims: Option<(u32, u32)>,
 }
 
 impl EditorView {
@@ -899,6 +863,7 @@ impl EditorView {
             glyph_resolver: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
+            last_popup_dims: None,
         }
     }
 
@@ -2792,6 +2757,39 @@ impl Render for EditorView {
             drop(rs_for_popup);
             self.app.set_viewport_height(target_height);
         }
+        // PU.2: floating-popup inner-geometry hand-off — the GPUI peer of
+        // the TUI runtime's `popup_feedback_inner_dims` → `set_popup_viewport`.
+        // The renderer is the sizing authority, so it pushes the popup's
+        // resolved inner `(rows, cols)` to the host; `build_cells_panes`
+        // reads `popup_viewport_{height,width}` to build the synthetic
+        // `PaneId::POPUP` matrix the interior `EditorElement` paints from.
+        // Gated identically to the TUI: a floating popup is open AND help is
+        // NOT an in-pane leaf (that case is a real pane the loop above already
+        // covers). `popup_inner_rows` / `popup_inner_cols` are the SAME inner
+        // dims the chrome locks the body to (`popup_body_h_px`, `inner_cols`),
+        // so the matrix width and the painted body agree. Diff-then-send via
+        // `self.last_popup_dims` keeps a steady-state popup at zero RPCs and
+        // pushes once on dismiss (the gate flips to `None`, but we only send
+        // on `Some` — the synthetic pane simply stops being built host-side).
+        let popup_dims = {
+            let rs = self.app.render_state.load();
+            let in_pane_help =
+                matches!(rs.panes.tree.active().buffer, lattice_core::BufferKind::Help);
+            if rs.popup.is_open() && !in_pane_help {
+                Some((
+                    popup_inner_rows,
+                    popup_inner_cols(popup_w_px, rem, glyph_advance_px),
+                ))
+            } else {
+                None
+            }
+        };
+        if self.last_popup_dims != popup_dims {
+            if let Some((rows, cols)) = popup_dims {
+                self.app.set_popup_viewport(rows, cols);
+            }
+            self.last_popup_dims = popup_dims;
+        }
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
@@ -3421,198 +3419,129 @@ impl Render for EditorView {
         let popup_ids = self.app.render_state.load().theme_ids;
         let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
             let title = buf.title.clone();
-            let body_text = buf.content.as_string();
-            // M.3.2.c.5: highlights live in buffer-locals keyed by the
-            // popup buffer id; published as `popup.help_highlights`.
-            let highlights_owned: Vec<Vec<lattice_syntax::StyledSpan>> =
-                popup_substate.help_highlights.to_vec();
-            let line_highlights: &[Vec<lattice_syntax::StyledSpan>] =
-                highlights_owned.as_slice();
-            let body_lines: Vec<&str> = body_text.split('\n').collect();
-
-            // When the popup is focused (State B), ad().scroll and
-            // ad().cursor describe the popup buffer's scroll/cursor so
-            // we can show the right content window and a cursor indicator.
+            // PU.2: the popup CONTENT now renders through the shared
+            // document `EditorElement` reading the synthetic
+            // `PaneId::POPUP` `DisplayMatrix` (markdown colour from
+            // PU.1b-1, link styling from the PU.1b-2a `ExtraHighlights`
+            // merge, soft-wrap from the matrix `wrap_width`, h-scroll /
+            // folds for free) — the GPUI peer of the TUI's
+            // `draw_help_overlay` compose flip (PU.1b-3). Only the box
+            // (border + title + separator) below stays popup-specific
+            // chrome. A help popup is now pixel-equivalent to a `:set nonu
+            // signcolumn=no wrap` document in a box (K.4 /
+            // `feedback_render_is_option_derived`). The ~190-line manual
+            // cell/row + chunk-wrap loop this replaces is deleted.
+            let popup_id = popup_substate.buffer_id;
+            // When the popup is focused (State B) `ad().scroll` /
+            // `ad().cursor` describe the popup buffer (it IS the active
+            // buffer); State A reads the doc beneath.
             let ad = self.app.ad();
             let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
-            // 2026-05-27: max visible body rows derived from the
-            // per-frame popup geometry (`popup_inner_rows` computed
-            // up top from window dimensions minus popup chrome). The
-            // viewport-height override above uses the same value so
-            // motion clamps and the painted body stay in lockstep.
-            let max_popup_lines: usize = popup_inner_rows as usize;
-            let popup_scroll = if popup_focused { ad.scroll as usize } else { 0 };
-            let cursor_doc_line = if popup_focused {
-                Some(ad.cursor.line as usize)
+            let rs = self.app.render_state.load();
+            // Snapshot + text version from the registry handle: the popup
+            // is a registry Document never `activate_document`'d as
+            // `self.document` (PU.1a), so its content must come from the
+            // handle — the same source the host builds the POPUP matrix
+            // from (`build_one_pane_cells_input`, `is_active_buffer=false`).
+            let content_snap = popup_id
+                .and_then(|id| rs.buffers.registry.document_handle(id))
+                .map(|h| h.snapshot());
+            let text_version = content_snap.as_ref().map(|s| s.text_version).unwrap_or(0);
+            let body_string = content_snap
+                .as_ref()
+                .map(|s| s.buffer.as_string())
+                .unwrap_or_else(|| buf.content.as_string());
+            // Scroll anchor by focus state — the SAME choice the host
+            // makes when building the POPUP matrix (`build_cells_panes`):
+            // State B → live `ad.scroll`; State A → the stashed
+            // `popup_scroll` (published as `buf.scroll`). Matching it keeps
+            // the matrix rows and the painted window aligned.
+            let popup_scroll: u32 = if popup_focused { ad.scroll } else { buf.scroll as u32 };
+            // `EditorElement.text` carries the VISIBLE WINDOW from
+            // `scroll` (the gutter-less walk indexes it by
+            // `line_idx - scroll`); matrix lookups stay keyed by absolute
+            // source line, so colour stays aligned with the text.
+            let window_text: String = body_string
+                .split('\n')
+                .skip(popup_scroll as usize)
+                .collect::<Vec<_>>()
+                .join("\n");
+            // State B paints a block cursor inside the popup; State A
+            // none (focus is on the doc beneath). `line_text` comes from
+            // the content snapshot (the element's windowed `text` can't
+            // recover an arbitrary cursor line — same contract as
+            // `paint_pane`).
+            let cursor = if popup_focused {
+                let line_text = content_snap
+                    .as_ref()
+                    .and_then(|s| s.buffer.line(ad.cursor.line))
+                    .unwrap_or_default();
+                Some(crate::editor_element::CursorState {
+                    line: ad.cursor.line,
+                    byte: ad.cursor.byte,
+                    shape: CursorShape::for_mode(ad.modal),
+                    line_text,
+                })
             } else {
                 None
             };
-            // Byte offset within the cursor line (for a char-wide block cursor).
-            let cursor_byte = if popup_focused {
-                Some(ad.cursor.byte as usize)
-            } else {
-                None
+            // The synthetic `PaneId::POPUP` matrices the cells worker
+            // built off the geometry fed at the top of `render`
+            // (`set_popup_viewport`). Same `version.text` stale guard as
+            // every pane (`paint_pane`): a lagging matrix falls back to
+            // default-styled windowed text for a frame, colour catches up.
+            let cells = rs.cells.load();
+            let popup_pane = lattice_core::ui::pane::PaneId::POPUP;
+            let display_matrix = cells
+                .display_matrix_for_pane(popup_pane)
+                .map(|c| c.load_full())
+                .filter(|m| m.version.text == text_version);
+            let cell_matrix = cells
+                .matrix_for_pane(popup_pane)
+                .map(|c| c.load_full())
+                .filter(|m| m.version.text == text_version);
+            let editor_element = crate::editor_element::EditorElement {
+                // `usize::MAX`: a stable `ElementId` distinct from every
+                // real pane index (0, 1, 2, …) so GPUI tracks the popup
+                // element across frames without colliding.
+                pane_idx: usize::MAX,
+                theme: theme.clone(),
+                text: std::sync::Arc::new(window_text),
+                scroll: popup_scroll,
+                // Help wraps; the host pins `leftcol = 0` under wrap.
+                leftcol: 0,
+                viewport_height: popup_inner_rows,
+                // Empty gutter → the text-only walk. Help-mode is `nonu`
+                // + `signcolumn=no`, so there is no gutter to paint.
+                gutter: Vec::new(),
+                gutter_width: 0,
+                sign_column: false,
+                cursor,
+                is_active: popup_focused,
+                // A help overlay carries no selection / search / diff /
+                // inlay / diagnostic decoration — all empty / None.
+                visual_range: None,
+                visual_block_extents: None,
+                current_match: None,
+                all_matches: Vec::new(),
+                substitute_matches: Vec::new(),
+                doc_highlights: Vec::new(),
+                worker_static_overlay_quads: None,
+                virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
+                diff_tint_per_row: Vec::new(),
+                cursorline_bg: 0,
+                cursorline_enabled: false,
+                diff_deletion_block_bg: 0,
+                inlay_hints: Vec::new(),
+                diagnostic_underlines: Vec::new(),
+                inlay_color: 0,
+                inline_diag_summary: None,
+                cell_matrix,
+                display_matrix,
+                resolved_theme: popup_resolved.clone(),
+                theme_ids: popup_ids,
+                glyph_resolver: self.glyph_resolver.clone(),
             };
-
-            // 2026-05-27 popup wrap. Each source line emits ONE OR
-            // MORE visible rows: when `popup.wrap` is true and the
-            // source line is wider than `inner_cols` chars, split
-            // it into char-count chunks. The cursor block appears
-            // on the wrap segment whose char-range contains
-            // `cursor_byte`; other segments of the same source
-            // line render without the cursor highlight.
-            let inner_cols = popup_inner_cols(popup_w_px, rem, glyph_advance_px) as usize;
-            let wrap_on = popup_wrap_enabled(&self.app);
-            // 2026-05-27 popup-wrap probe. One log per frame the
-            // popup is open. Enable with:
-            //   RUST_LOG=lattice_gpui::popup_wrap=debug
-            // Helpful when "wrap doesn't fire" — compare inner_cols
-            // against the longest body line. If `wrap_on=false`,
-            // the user has `popup.wrap=false` or the option didn't
-            // register. If `inner_cols` is larger than the longest
-            // line, wrap doesn't activate (everything fits).
-            let longest_line_chars = body_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-            tracing::debug!(
-                target: "lattice_gpui::popup_wrap",
-                wrap_on,
-                inner_cols,
-                popup_w_px,
-                glyph_advance_px,
-                longest_line_chars,
-                line_count = body_lines.len(),
-                "popup-wrap probe"
-            );
-            let mut popup_lines: Vec<gpui::Div> = Vec::new();
-            'outer: for (idx, line) in body_lines.iter().enumerate().skip(popup_scroll) {
-                if popup_lines.len() >= max_popup_lines {
-                    break;
-                }
-                let is_cursor_line = cursor_doc_line == Some(idx);
-                let spans: &[lattice_syntax::StyledSpan] =
-                    line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-                let cb_line = if is_cursor_line {
-                    cursor_byte.unwrap_or(0)
-                } else {
-                    usize::MAX
-                };
-                // Char-index list lets us slice the line at char
-                // boundaries (the grapheme question is deferred —
-                // help / hover text is overwhelmingly ASCII).
-                let char_indices: Vec<(usize, char)> = line.char_indices().collect();
-                let total_chars = char_indices.len();
-                // Empty line: one blank visible row to preserve row
-                // height (flex_row collapses if no children).
-                if total_chars == 0 {
-                    let mut cells: Vec<gpui::Div> = Vec::new();
-                    if is_cursor_line && cb_line == 0 {
-                        cells.push(
-                            div()
-                                .w(px(glyph_advance_px))
-                                .flex_shrink_0()
-                                .bg(rgb(theme.cursor_background))
-                                .text_color(rgb(theme.cursor_foreground))
-                                .child(" ".to_string()),
-                        );
-                    } else {
-                        cells.push(
-                            div()
-                                .w(px(glyph_advance_px))
-                                .flex_shrink_0()
-                                .child(" ".to_string()),
-                        );
-                    }
-                    popup_lines.push(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .h(px(estimated_row_px))
-                            .flex_shrink_0()
-                            .children(cells),
-                    );
-                    continue;
-                }
-                // Determine chunk size. Without wrap, one chunk
-                // spanning the whole line (cells overflow the
-                // popup's `overflow_hidden` and clip at the right
-                // edge — pre-wrap behaviour).
-                let chunk_chars = if wrap_on && total_chars > inner_cols {
-                    inner_cols.max(1)
-                } else {
-                    total_chars.max(1)
-                };
-                let mut chunk_start_char = 0;
-                while chunk_start_char < total_chars {
-                    if popup_lines.len() >= max_popup_lines {
-                        break 'outer;
-                    }
-                    let chunk_end_char = (chunk_start_char + chunk_chars).min(total_chars);
-                    // Byte range for this chunk's text.
-                    let byte_start = char_indices[chunk_start_char].0;
-                    let byte_end = if chunk_end_char < total_chars {
-                        char_indices[chunk_end_char].0
-                    } else {
-                        line.len()
-                    };
-                    let cursor_in_chunk = is_cursor_line
-                        && cb_line >= byte_start
-                        && cb_line < byte_end;
-                    let cursor_past_end = is_cursor_line
-                        && chunk_end_char == total_chars
-                        && cb_line >= line.len();
-                    // 2026-05-27 cell-width lock. Without an
-                    // explicit width per cell, the row's actual
-                    // pixel width was `sum(cell content widths)`
-                    // which diverged from `N × glyph_advance_px`
-                    // (sub-pixel kerning, font metrics for non-"M"
-                    // glyphs). For wrap the break point was
-                    // `inner_cols = (popup_w - chrome) / adv`, so
-                    // the sum could exceed the popup edge and the
-                    // tail of each wrap row clipped past the right
-                    // border. Locking `.w(px(adv)) +
-                    // .flex_shrink_0()` per cell makes a row of
-                    // N cells exactly N × adv wide — the same
-                    // budget the wrap math uses.
-                    let cell_w_px = glyph_advance_px;
-                    let mut cells: Vec<gpui::Div> = char_indices
-                        [chunk_start_char..chunk_end_char]
-                        .iter()
-                        .map(|(byte_idx, c)| {
-                            let style = style_at(spans, *byte_idx);
-                            let base = div()
-                                .w(px(cell_w_px))
-                                .flex_shrink_0()
-                                .overflow_hidden();
-                            if cursor_in_chunk && *byte_idx == cb_line {
-                                base.bg(rgb(theme.cursor_background))
-                                    .text_color(rgb(theme.cursor_foreground))
-                                    .child(c.to_string())
-                            } else {
-                                base.text_color(rgb(syntax_color(style, &popup_resolved, &popup_ids)))
-                                    .child(c.to_string())
-                            }
-                        })
-                        .collect();
-                    if cursor_past_end {
-                        cells.push(
-                            div()
-                                .w(px(cell_w_px))
-                                .flex_shrink_0()
-                                .bg(rgb(theme.cursor_background))
-                                .text_color(rgb(theme.cursor_foreground))
-                                .child(" ".to_string()),
-                        );
-                    }
-                    popup_lines.push(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .h(px(estimated_row_px))
-                            .flex_shrink_0()
-                            .children(cells),
-                    );
-                    chunk_start_char = chunk_end_char;
-                }
-            }
 
             let border_color = if popup_focused {
                 rgb(theme.cursor_background)
@@ -3670,19 +3599,18 @@ impl Render for EditorView {
                         ),
                 )
                 .child(
-                    // 2026-05-27: body height locked to
-                    // `popup_inner_rows × row_px` so flex can't
-                    // oversize the body. Combined with
-                    // `.take(max_popup_lines)` this guarantees the
-                    // cursor's last reachable row is always painted
-                    // inside the popup's visible bottom edge.
+                    // PU.2: body height locked to `popup_inner_rows ×
+                    // row_px` so flex can't oversize the body; the
+                    // `EditorElement` flex-grows to fill it and paints
+                    // exactly `viewport_height` (= `popup_inner_rows`)
+                    // display rows from the synthetic POPUP matrix.
                     div()
                         .flex()
                         .flex_col()
                         .min_h(px(popup_body_h_px))
                         .max_h(px(popup_body_h_px))
                         .overflow_hidden()
-                        .children(popup_lines),
+                        .child(editor_element.into_any_element()),
                 )
         });
 

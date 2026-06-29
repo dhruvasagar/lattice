@@ -529,6 +529,23 @@ impl GpuiApp {
         }
     }
 
+    /// PU.2: floating-popup inner-geometry hand-off — the GPUI peer of
+    /// the TUI `App::set_popup_viewport`. The renderer is the sizing
+    /// authority for the popup's inner rect, so it pushes the resolved
+    /// `(rows, cols)` to the host; `build_cells_panes` reads
+    /// `Editor::popup_viewport_{height,width}` to size the synthetic
+    /// `PaneId::POPUP` `DisplayMatrix` the popup interior `EditorElement`
+    /// paints from. Plain field writes (no special host handler), so it
+    /// routes through `mutate_editor` (which republishes RS) rather than a
+    /// typed actor command. Diff-then-send in the render loop keeps a
+    /// steady-state popup at zero RPCs.
+    pub fn set_popup_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.popup_viewport_height = rows.max(1);
+            e.popup_viewport_width = cols.max(1);
+        });
+    }
+
     /// Dismiss any active help popup. Phase 5.8.AE: routes
     /// through the host's `dismiss_popup` so popup state lands
     /// uniformly across both peers. Slice 3c.final.C: now goes
@@ -1440,6 +1457,30 @@ mod tests {
             app.editor.partial_chord.is_empty(),
             "partial_chord should clear after gg resolves"
         );
+    }
+
+    /// PU.2: the GPUI floating-popup geometry hand-off. `set_popup_viewport`
+    /// writes the popup's resolved inner `(rows, cols)` onto the editor so
+    /// the host's `build_cells_panes` can size the synthetic `PaneId::POPUP`
+    /// `DisplayMatrix` the popup interior `EditorElement` paints from — the
+    /// GPUI peer of the TUI's `App::set_popup_viewport`. (Host-side coverage
+    /// that these fields actually build the synthetic pane lives in
+    /// `floating_popup_gets_synthetic_cells_pane_when_geometry_fed`; this
+    /// just pins the GPUI plumbing + the zero→1 clamp.)
+    #[test]
+    fn set_popup_viewport_writes_editor_geometry_fields() {
+        let mut app = GpuiApp::new(Document::empty());
+        // Both 0 until the first feedback (the gate `popup_viewport_width
+        // > 0` skips the synthetic pane until then).
+        assert_eq!(app.editor.popup_viewport_height, 0);
+        assert_eq!(app.editor.popup_viewport_width, 0);
+        app.set_popup_viewport(18, 60);
+        assert_eq!(app.editor.popup_viewport_height, 18);
+        assert_eq!(app.editor.popup_viewport_width, 60);
+        // A zero-sized matrix is meaningless; both axes clamp to >= 1.
+        app.set_popup_viewport(0, 0);
+        assert_eq!(app.editor.popup_viewport_height, 1);
+        assert_eq!(app.editor.popup_viewport_width, 1);
     }
 
     /// Test-coverage gap (sibling to gg): `zz` / `zt` / `zb`.

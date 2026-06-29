@@ -3778,7 +3778,6 @@ impl Render for EditorView {
                     div()
                         .flex()
                         .flex_row()
-                        .items_baseline()
                         .pb_2()
                         .child(
                             div()
@@ -3790,8 +3789,16 @@ impl Render for EditorView {
                                 .child(format!(" {title} ")),
                         )
                         .child(
+                            // Push the smaller hint DOWN by the title-vs-hint
+                            // height difference (`row_px * (scale - 1)`) so
+                            // its bottom lines up with the title's bottom
+                            // rather than floating up at the top. (gpui's flex
+                            // `items_end`/`justify_end` didn't land the text
+                            // where its bottom meets the title; an explicit
+                            // top offset is deterministic.)
                             div()
                                 .flex_shrink_0()
+                                .pt(px(estimated_row_px * (POPUP_TITLE_SCALE - 1.0)))
                                 .text_color(rgb(theme.popup_hint))
                                 .child(header_hint),
                         ),

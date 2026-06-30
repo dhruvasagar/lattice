@@ -271,6 +271,34 @@ fn register_diff_ex_commands(registry: &mut CommandRegistry) {
         },
     );
     registry.register_ex_command(
+        "diff-accept-all",
+        "Resolve EVERY pending diff review with Accept — the bulk counterpart \
+         to `:diff-accept` for when several agent reviews are open at once.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffAcceptAll)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    registry.register_ex_command(
+        "diff-reject-all",
+        "Resolve EVERY pending diff review with Reject — the bulk counterpart \
+         to `:diff-reject` (`:diff-reject-all`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffRejectAll)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    registry.register_ex_command(
         "hunk-next",
         "Jump cursor to the start of the next diff hunk on the current side. Wraps to top. \
          `]c` / `:hunk-next`.",

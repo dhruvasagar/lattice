@@ -95,6 +95,8 @@ fn diff_ex_commands_resolve_at_boot() {
         // onto the mode resolvers via `diff_*_effect` (CR.1).
         "diff-accept",
         "diff-reject",
+        "diff-accept-all",
+        "diff-reject-all",
         "describe-diff",
     ] {
         assert!(

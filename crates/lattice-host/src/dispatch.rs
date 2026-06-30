@@ -3007,6 +3007,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // signal, and tear down.
             editor.do_diff_reject();
         }
+        Effect::DiffAcceptAll => {
+            editor.do_diff_resolve_all(crate::diff::subsystem::DiffOutcome::Accept, "Accepted");
+        }
+        Effect::DiffRejectAll => {
+            editor.do_diff_resolve_all(crate::diff::subsystem::DiffOutcome::Reject, "Rejected");
+        }
         Effect::CloseSessionDiffs {
             origin_session,
             tab_name,
@@ -3973,6 +3979,28 @@ impl Editor {
         }
         // Neither a pending review nor a focused diff — mirror `:diffoff`.
         self.set_message(EchoLevel::Info, "No active diff session");
+    }
+
+    /// Bulk verdict (`:diff-accept-all` / `:diff-reject-all`): resolve EVERY
+    /// pending review (each registry session with a bound completion) with
+    /// `outcome`, from anywhere — the bulk counterpart to
+    /// [`Self::resolve_diff_verdict`] for when several agent reviews are open
+    /// at once. Tears each session down + closes its transient panes; batches a
+    /// single virtual-rows wake + a count echo. No-op message when none pend.
+    fn do_diff_resolve_all(&mut self, outcome: crate::diff::subsystem::DiffOutcome, verb: &str) {
+        let pending = self.diff_subsystem.sessions_awaiting_outcome();
+        if pending.is_empty() {
+            self.set_message(EchoLevel::Info, "No pending diff reviews");
+            return;
+        }
+        let count = pending.len();
+        for session in &pending {
+            let primary = session.buffer_id();
+            self.tear_down_single_diff_session(session, Some(outcome.clone()));
+            self.finish_programmatic_diff_panes(primary);
+        }
+        self.virtual_rows_wake.0.notify_one();
+        self.set_message(EchoLevel::Info, format!("{verb} {count} diff review(s)"));
     }
 
     /// D-fix.6: tear down every *programmatic* diff opened by IDE-peer
@@ -27546,6 +27574,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        | Effect::DiffAcceptAll
+        | Effect::DiffRejectAll
         // D-fix.6: a session-scoped diff close tears down panes/sessions —
         // it neither mutates the active buffer nor yanks.
         | Effect::CloseSessionDiffs { .. }
@@ -27664,6 +27694,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
         | Effect::DiffReject
+        | Effect::DiffAcceptAll
+        | Effect::DiffRejectAll
         // D-fix.6: a session-scoped diff close tears down panes/sessions —
         // it neither mutates the active buffer nor yanks.
         | Effect::CloseSessionDiffs { .. }

@@ -773,6 +773,13 @@ pub enum Effect {
     /// consuming the outcome should revert any
     /// pre-session state. D.6.e.
     DiffReject,
+    /// `:diff-accept-all` — resolve EVERY pending review (each session with a
+    /// bound completion) with [`DiffOutcome::Accept`]. The bulk counterpart to
+    /// `:diff-accept` for when several agent reviews are open at once.
+    DiffAcceptAll,
+    /// `:diff-reject-all` — resolve EVERY pending review with
+    /// [`DiffOutcome::Reject`]. Bulk counterpart to `:diff-reject`.
+    DiffRejectAll,
     /// D-fix.6: an IDE-peer connection's `close_tab` — tear down (as a
     /// Reject) every *programmatic* diff session that THIS connection
     /// (`origin_session`) opened, regardless of how/where it is

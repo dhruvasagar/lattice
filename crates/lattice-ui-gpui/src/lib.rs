@@ -1092,6 +1092,8 @@ impl GpuiApp {
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept
             | Effect::DiffReject
+            | Effect::DiffAcceptAll
+            | Effect::DiffRejectAll
             // D-fix.6: session-scoped diff close is host-applied (the
             // renderer no-ops, parity with the TUI peer's classifier).
             | Effect::CloseSessionDiffs { .. }

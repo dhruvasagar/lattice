@@ -262,7 +262,86 @@ MARG.1's TUI `candidate_to_line` still resolves annotation colors through the ha
 - Graceful: unstattable file → no metadata cells (no panic); unknown slot → fallback color.
 - Bench: extend the MARG annotation-render bench with a styled-cell row set.
 
-## 9. Open questions
+## 9. Picker marginalia rollout (MP) — 2026-06-30 extension
+
+§8 added the `Styled` mechanism and made the file/dir picker its first producer. Every *other* picker source still bakes its metadata into a flat, hand-width-padded `display` string and emits zero annotations. This section rolls the §8 treatment across the remaining pickers so marginalia is uniform across picker surfaces (paramount goal #3 — picker rows stop being per-source snowflakes).
+
+### 9.1 Why this is purely additive
+
+Pickers run **no annotators**: a source stamps `RawCandidate.annotations` directly and the candidate carries it straight through (`RenderedCandidate::from_scored`). So for pickers, *the source IS the annotation provider*. Enrichment is therefore local to each source — build typed/`Styled` annotations instead of a flat string, register any new theme slot, add a `category_order` entry. No new enum variant, no annotator wiring: §8's `Styled` already expresses every case here, and both peers already resolve it generically (§8.3). Renderer churn is limited to registering the new slots; the paint paths are untouched.
+
+### 9.2 Shared segment builders
+
+The coordinate-class pickers (Grep, Jumps, Outline, Lines, Marks) and the future LSP locations/symbols picker all format `path:line:col` (or `line:col`) by hand. The policy lives once, as free functions in `lattice-picker` that the sources import (the §8 lesson — `perm_segments` keeps the bit→slot policy in one place, renderers stay dumb):
+
+```rust
+/// A colored location cell: dim path, distinct line/col.
+fn location_segments(path: Option<&str>, line: u32, col: u32) -> Vec<AnnotationSegment>;
+/// Buffer status: dirty/active markers as their own slots.
+fn status_segments(dirty: bool, active: bool) -> Vec<AnnotationSegment>;
+/// Command latency class → its slot.
+fn latency_segment(class: LatencyClass) -> AnnotationSegment;
+```
+
+These are **substrate helpers, not Document trait methods** — they are consumed only by specific picker sources, never by generic host machinery (the CLAUDE.md substrate-vs-helper rule). A source builds `Styled { category, segments }` from them.
+
+### 9.3 Per-picker mapping
+
+| Picker source | Today (flat `display`) | After (annotations; `display` becomes matchable text only) |
+|---|---|---|
+| `CommandsSource` | name │ args-hint │ doc │ latency-tag (4 hand-padded cols) | `display`=name; `Styled{args}`, `DocSnippet`(existing `doc` slot), `Styled{latency}`, **+ `Keybinding`** (slot exists, flat display omits it) |
+| `BuffersSource` | `#id path [+] kind (current)` | `display`=path; `Styled{buffer-id}`, `Styled{status}` (dirty/active), `Kind`(existing slot) |
+| `RecentFilesSource` | path only | `display`=path; reuse §8 `metadata_annotations` (perm/size/mtime) verbatim — free |
+| `GrepSource` | `path:line:col  preview` | `display`=preview (matchable); `Styled{location}` via `location_segments` |
+| `JumpsSource` | `[tag] buf:line:col` | `display`=buf label; `Styled{location}`; source-tag → categorical slot |
+| `OutlineSource` | `lineno: name` | `display`=name; `Styled{location}` (line only) |
+| `LinesSource` | `lineno: text` | `display`=text; `Styled{location}` (line only) |
+| `MarksSource` | `'name line:col` | `display`=name; `Styled{location}` |
+| `RegistersSource` | `"name preview` | `display`=preview; `Styled{register}` (name) |
+
+`SnippetsSource` (`lattice-snippet`) follows the Commands shape: `display`=name, prefix→`Styled` segment, description→`DocSnippet`. `ThemePickerSource` is deferred (§9.6).
+
+### 9.4 New theme slots
+
+Under the existing `completion.annotation.*` namespace, registered in `registry.rs` with `BuiltinElementIds` fields + `annotation_slot()` arms (unknown slot still falls back to `…custom`, §8.3):
+
+| Slot | Default (dark) | Used by |
+|---|---|---|
+| `completion.annotation.location.path` | overlay / dim | location path head |
+| `completion.annotation.location.line` | yellow | line number |
+| `completion.annotation.location.col` | overlay / dim | column number |
+| `completion.annotation.status.dirty` | red | buffer `[+]` |
+| `completion.annotation.status.active` | green | current-buffer marker |
+| `completion.annotation.latency.reflex` | green | `[reflex]` commands |
+| `completion.annotation.latency.display` | blue | `[display]` commands |
+| `completion.annotation.latency.background` | peach | `[background]` commands |
+| `completion.annotation.args` | subtext | command arg-hint |
+| `completion.annotation.buffer-id` | overlay / dim | buffer `#id` |
+| `completion.annotation.register` | purple | register / mark name |
+
+`category_order` (§4) gains entries after the §8 file-metadata slots (perm=5, size=6, mtime=7): `location=8`, `status=9`, `latency=10`, `args=11`, `buffer-id=12`, `register=13`. Each picker uses a subset; the global order keeps mixed sets aligned.
+
+### 9.5 Paramount-goal alignment (rollout)
+
+| Goal | This rollout |
+|---|---|
+| #1 perf | Same O(visible × segments) resolution as §8. Sources already run off the UI thread (sync sources on the editor-actor thread, live sources on the LSP runtime); the segment build moves there, never onto the render thread. |
+| #2 extensibility | Inherits §8 — every picker now speaks the same `(text, slot)` annotation contract; a future producer reuses the shared builders. |
+| #3 grammar | Neutral. |
+| #4 async | Neutral — no new threading; producers already spawn off-thread (Grep on the LSP runtime, the rest inline on the actor thread). |
+
+### 9.6 Deferred — `ThemePickerSource` color swatch
+
+A real color *swatch* for `:colorscheme` is the one item needing a primitive extension: the swatch color is per-candidate data (the theme's own accent), not a fixed theme slot — which conflicts with the §3 invariant "slot key, never a baked color." Deferred per heuristic #1 (don't add the primitive until a second consumer needs it). When wanted, it lands as its own design note (an explicit-color segment variant, or a swatch-by-theme-id resolver). The theme picker may still gain categorical metadata cells (dark/light variant) under existing slots in the meantime.
+
+### 9.7 Tests + artefacts (rollout)
+
+- `location_segments` / `status_segments` / `latency_segment`: each input maps to its slot; `None` path / zero col edge cases.
+- Each migrated source produces the expected annotation set per row and keeps the matchable text in `display` (fuzzy match still works) — assert against annotations, not the old flat string.
+- Both peers: a synthetic candidate for each new family resolves to distinct fgs; `:colorscheme` swap recolors; unknown slot → custom fallback (no panic).
+- Bench: extend the §8 styled-cell bench with the location/status/latency families.
+
+## 10. Open questions
 
 - **Should `KeybindingAnnotator` run for non-command candidates too?** File-name candidates could surface `<C-x><C-o>` for open-in-split; option candidates could surface `:set spell`'s bind. Probably yes, but each surface needs its own reverse-cache key — file paths aren't `CommandId`s. Defer until past-v1 unless a clear use case emerges in the slice plan.
 
@@ -272,10 +351,12 @@ MARG.1's TUI `candidate_to_line` still resolves annotation colors through the ha
 
 - **MRU influence on which binding to display.** For commands with N>1 bindings, "first bound chord" is a stable but arbitrary choice. An alternative: show the chord the user most recently invoked. Would require an MRU per command — heavier than v1 should carry. Stick with first-bound for v1.
 
-## 10. Cross-references
+## 11. Cross-references
 
 - Slice sequencing + status (closed MARG.1–5): `docs/dev/archive/marginalia.md`
 - Slice sequencing for §8 (rich per-segment marginalia): `docs/dev/operations/slice-plans/marginalia-rich.md`
+- Slice sequencing for §9 (picker rollout) + preview highlighting: `docs/dev/operations/slice-plans/picker-marginalia.md`
+- Sibling design — syntax-highlighted picker preview text (a separate surface from marginalia columns): `docs/dev/architecture/picker-preview-highlight.md`
 - Substrate this rides on: `docs/dev/architecture/completion-pipeline-unification.md`
 - Sibling consumer of the candidate-rendering pipeline: `docs/dev/architecture/insert-completion.md`
 - Self-documenting help surface (the `:describe-key` / `:describe-command` cousin of this feature): `design.md` §5.11

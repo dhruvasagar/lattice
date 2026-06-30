@@ -1036,6 +1036,20 @@ impl DiffSession {
             .take()
     }
 
+    /// True while a completion sender is still bound — i.e. this session is a
+    /// programmatic/agent review awaiting a `:diff-accept` / `:diff-reject`
+    /// verdict (set by [`Self::bind_completion`], cleared by
+    /// [`Self::take_completion`] at teardown). `:diff-accept` / `:diff-reject`
+    /// use this (via [`DiffSubsystem::sessions_awaiting_outcome`]) to resolve a
+    /// pending review even when focus isn't on the diff pane, so a verdict
+    /// typed from the `:claude` terminal still reaches the agent.
+    pub fn awaits_outcome(&self) -> bool {
+        self.completion
+            .lock()
+            .expect("DiffSession completion mutex poisoned")
+            .is_some()
+    }
+
     pub fn pane_group_id(&self) -> Option<lattice_core::ui::pane::PaneGroupId> {
         *self
             .pane_group_id
@@ -1503,6 +1517,28 @@ impl DiffSubsystem {
             })
             .map(|(_, session)| session.clone())
             .collect()
+    }
+
+    /// Snapshot of every registered session still **awaiting a verdict** — a
+    /// bound completion sender (a programmatic / agent review opened via
+    /// [`DiffSession::bind_completion`]). Ordered by primary `BufferId`
+    /// ascending; since ids are monotonic, the LAST entry is the
+    /// most-recently-opened review. `:diff-accept` / `:diff-reject` fall back
+    /// to this when the active buffer isn't itself a diff pane, so a verdict
+    /// typed from the `:claude` terminal (or anywhere) resolves the pending
+    /// review instead of doing nothing and stranding the agent. Empty when no
+    /// review is pending (e.g. only inline `:diff` / `:diffsplit` views exist).
+    pub fn sessions_awaiting_outcome(&self) -> Vec<Arc<DiffSession>> {
+        let mut pending: Vec<Arc<DiffSession>> = self
+            .sessions
+            .lock()
+            .expect("DiffSubsystem mutex poisoned")
+            .values()
+            .filter(|session| session.awaits_outcome())
+            .cloned()
+            .collect();
+        pending.sort_by_key(|session| session.buffer_id().0);
+        pending
     }
 
     /// Look up the session for `buffer_id`. Returns `None` if no
@@ -5454,6 +5490,40 @@ mod tests {
     fn all_sessions_for_unregistered_buffer_is_empty() {
         let sub = DiffSubsystem::new();
         assert!(sub.all_sessions_for(bid(99)).is_empty());
+    }
+
+    /// `sessions_awaiting_outcome` returns ONLY sessions with a bound
+    /// completion (pending agent reviews), ordered oldest→newest by id, so
+    /// `:diff-accept`/`:diff-reject` can resolve the pending review from any
+    /// pane (`.last()` = most-recent). A plain `:diff` session (no completion)
+    /// is excluded; taking the outcome clears it.
+    #[test]
+    fn sessions_awaiting_outcome_tracks_bound_completions_in_order() {
+        let sub = DiffSubsystem::new();
+        // Plain diff view — no completion bound → not awaiting.
+        sub.register(bid(5), DiffAlgorithm::Histogram);
+        assert!(sub.sessions_awaiting_outcome().is_empty());
+
+        // Two agent reviews bind completions (registered out of id order).
+        let s30 = sub.register(bid(30), DiffAlgorithm::Histogram);
+        let (tx30, _rx30) = tokio::sync::oneshot::channel();
+        s30.bind_completion(tx30);
+        let s10 = sub.register(bid(10), DiffAlgorithm::Histogram);
+        let (tx10, _rx10) = tokio::sync::oneshot::channel();
+        s10.bind_completion(tx10);
+
+        let pending = sub.sessions_awaiting_outcome();
+        let ids: Vec<u32> = pending.iter().map(|s| s.buffer_id().0).collect();
+        assert_eq!(ids, vec![10, 30], "ascending by id; last() is most-recent");
+
+        // Resolving (taking the outcome) drops it from the pending set.
+        let _ = s30.take_completion();
+        let ids: Vec<u32> = sub
+            .sessions_awaiting_outcome()
+            .iter()
+            .map(|s| s.buffer_id().0)
+            .collect();
+        assert_eq!(ids, vec![10], "taken completion no longer awaits");
     }
 
     /// Single-session buffer: returns exactly one session.

@@ -3912,41 +3912,67 @@ impl Editor {
     /// invokes `:diff-accept`, this method fires the
     /// `Accept` signal on the channel.
     pub fn do_diff_accept(&mut self) {
-        // D-fix.1: capture the resolving session's primary BEFORE teardown drops
-        // it, so `finish_programmatic_diff_panes` can close the transient diff
-        // panes + refocus the claude pane after the outcome fires + the save
-        // lands. No-op for non-programmatic (`:diffsplit` / `:Gdiff`) sessions.
-        let primary = self
-            .diff_subsystem
-            .lookup_session_for(self.document_buffer_id)
-            .map(|s| s.buffer_id());
-        self.tear_down_active_diff_session(
-            false,
-            Some(crate::diff::subsystem::DiffOutcome::Accept),
-            "Diff accepted",
-        );
-        if let Some(primary) = primary {
-            self.finish_programmatic_diff_panes(primary);
-        }
+        // accept = single-session teardown (`force = false`).
+        self.resolve_diff_verdict(false, crate::diff::subsystem::DiffOutcome::Accept, "Diff accepted");
     }
 
     /// D.6.e (2026-05-31): resolve the active pane's diff
     /// session with [`DiffOutcome::Reject`]. v1 semantics:
     /// equivalent to `:diffoff!` + signal Reject.
     pub fn do_diff_reject(&mut self) {
-        // D-fix.1: see `do_diff_accept` — capture before teardown, finish after.
-        let primary = self
-            .diff_subsystem
-            .lookup_session_for(self.document_buffer_id)
-            .map(|s| s.buffer_id());
-        self.tear_down_active_diff_session(
-            true,
-            Some(crate::diff::subsystem::DiffOutcome::Reject),
-            "Diff rejected",
-        );
-        if let Some(primary) = primary {
+        // reject = force-cascade teardown (`force = true`, `:diffoff!` semantics).
+        self.resolve_diff_verdict(true, crate::diff::subsystem::DiffOutcome::Reject, "Diff rejected");
+    }
+
+    /// D-fix (registry-backed verdict): resolve a `:diff-accept` / `:diff-reject`
+    /// against the global [`DiffSubsystem`] session registry — **not** the
+    /// active buffer.
+    ///
+    /// A `:diff-accept` / `:diff-reject` is invoked from wherever the user is
+    /// (canonically the `:claude` terminal pane, which is NOT the diff), so the
+    /// verdict must NOT depend on focus. We resolve the pending **agent
+    /// review** directly: the most-recently-opened session still awaiting a
+    /// verdict ([`DiffSubsystem::sessions_awaiting_outcome`] — a bound
+    /// completion oneshot). The agent's no-timeout `openDiff` is blocked on
+    /// exactly this, so resolving it from anywhere is what unblocks the agent.
+    ///
+    /// Only when NO review is pending does this fall through to the focused
+    /// diff view (a plain `:diffsplit` / `:Gdiff` with no verdict to deliver),
+    /// where accept/reject act as a close — preserving the historical `force`
+    /// semantics (accept = single, reject = `:diffoff!` cascade). A bare
+    /// "nothing to resolve" message only when neither holds.
+    fn resolve_diff_verdict(
+        &mut self,
+        force: bool,
+        outcome: crate::diff::subsystem::DiffOutcome,
+        ok_message: &str,
+    ) {
+        // Primary: the pending agent review, resolved from the registry
+        // regardless of which pane is focused. D-fix.1: capture the primary
+        // BEFORE teardown drops the session so `finish_programmatic_diff_panes`
+        // can close the transient diff panes + refocus the origin pane after
+        // the outcome fires + the Accept save lands.
+        if let Some(session) = self.diff_subsystem.sessions_awaiting_outcome().pop() {
+            let primary = session.buffer_id();
+            self.tear_down_single_diff_session(&session, Some(outcome));
+            // Wake the virtual-rows worker so the provider removals republish
+            // empty matrices (mirrors `tear_down_active_diff_session`'s wake).
+            self.virtual_rows_wake.0.notify_one();
             self.finish_programmatic_diff_panes(primary);
+            self.set_message(EchoLevel::Info, ok_message);
+            return;
         }
+        // No pending review — treat accept/reject as a close of the FOCUSED
+        // diff view (`:diffsplit` / `:Gdiff`), preserving the historical force
+        // semantics. No-op `finish_programmatic_diff_panes` (not programmatic).
+        if let Some(session) = self.diff_subsystem.lookup_session_for(self.document_buffer_id) {
+            let primary = session.buffer_id();
+            self.tear_down_active_diff_session(force, Some(outcome), ok_message);
+            self.finish_programmatic_diff_panes(primary);
+            return;
+        }
+        // Neither a pending review nor a focused diff — mirror `:diffoff`.
+        self.set_message(EchoLevel::Info, "No active diff session");
     }
 
     /// D-fix.6: tear down every *programmatic* diff opened by IDE-peer

@@ -1314,10 +1314,17 @@ impl EditorView {
             .flex()
             .flex_col()
             .flex_grow()
+            .min_h(px(0.0))
             .overflow_hidden()
             .child(
+                // `min_h(0)` lets the content area shrink below its content's
+                // intrinsic min-size (a terminal's `flex_shrink_0` rows) so it
+                // is bounded by the pane and the per-pane modeline (the sibling
+                // below) is never pushed out — `overflow_hidden` then clips the
+                // excess. Without it, taffy keeps the content's full min-size.
                 div()
                     .flex_grow()
+                    .min_h(px(0.0))
                     .p_3()
                     .flex()
                     .flex_col()

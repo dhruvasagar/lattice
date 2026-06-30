@@ -117,13 +117,16 @@ fn build_lsp_subsystem(
 fn built_in_picker_registry(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
+    keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup>,
     snippet_registry: Arc<ArcSwap<SnippetRegistry>>,
     theme_registry: lattice_theme::ThemeRegistryHandle,
 ) -> PickerRegistry {
     let mut reg = PickerRegistry::new();
-    for generator in
-        lattice_picker::picker_sources::first_party_generators(command_registry, config)
-    {
+    for generator in lattice_picker::picker_sources::first_party_generators(
+        command_registry,
+        config,
+        keybinding_reverse,
+    ) {
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
@@ -773,9 +776,24 @@ impl Editor {
         // theme-system.md §3.5 / §7.
         let theme_registry: lattice_theme::ThemeRegistryHandle =
             Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+        // MP.2b: create the keymap handle here (ahead of the
+        // `keymap:` struct field that registers all bindings) so
+        // the commands picker can capture a reverse-lookup
+        // adapter over the *same* registry. `KeymapHandle` is
+        // dependency-free and `Clone` over an inner
+        // `Arc<KeymapRegistry>`; the adapter holds a clone of the
+        // registry's `ArcSwap` reverse cache, so bindings
+        // registered later (in the `keymap:` block, via the moved
+        // handle) are visible to the picker at open time. See
+        // `marginalia.md` §6 + the wiring rationale in the
+        // picker-marginalia slice plan (MP.2b).
+        let keymap_handle = crate::keymap_registry::KeymapHandle::new();
+        let keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup> =
+            crate::keymap_registry::KeymapReverseLookupHandle::new(&keymap_handle, registry.clone());
         let picker_registry: Arc<PickerRegistry> = Arc::new(built_in_picker_registry(
             registry.clone(),
             config.clone(),
+            keybinding_reverse,
             snippet_registry_handle.clone(),
             theme_registry.clone(),
         ));
@@ -1456,7 +1474,10 @@ impl Editor {
             builtins,
             action_ids,
             keymap: {
-                let h = crate::keymap_registry::KeymapHandle::new();
+                // MP.2b: reuse the handle created above so the
+                // commands picker's reverse-lookup adapter and the
+                // binding registration below share one registry.
+                let h = keymap_handle;
                 crate::keymap_replace::register_replace_bindings(&h, &action_ids);
                 crate::keymap_visual::register_visual_bindings(
                     &h,

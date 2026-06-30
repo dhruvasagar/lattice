@@ -41,9 +41,19 @@ Changes (landed):
 
 Acceptance: `:picker commands` shows colored args/doc/latency; `:picker snippets` shows name/description marginalia, both theme-driven. No GPUI change (no new variant/slot). Green (one pre-existing parallel-test flake in `render.rs`, passes in isolation).
 
-### MP.2b — Commands picker keybinding column 📝
+### MP.2b — Commands picker keybinding column ✅
 
-Thread a command→chords reverse-cache through `PickerContext` (host-side, from the active keymap at `build_picker_context`) so `CommandsSource` can emit `Annotation::Keybinding` (slot already exists). Show first-bound chord per marginalia §10. Depends on MP.2.
+`CommandsSource` emits `Annotation::Keybinding` (variant + `completion.annotation.keybinding` slot already existed from MARG.2; GPUI already paints it) so `:picker commands` shows the bound chord leftmost (category rank 0). First-bound chord per marginalia §6 (the reverse cache stores one binding's chord *sequence* per command, first-binding-wins). Depends on MP.2.
+
+**Wiring seam — construction capture, not `PickerContext` (revised from the MP.2 carve-out note).** The carve-out above leaned toward threading the reverse-cache through `PickerContext` + `build_picker_context`. Re-evaluated against heuristic #1 at execution: the keymap reverse-lookup is a *static App-wide facade* — the same category as the `Arc<CommandRegistry>` `CommandsSource` already captures at construction — not the runtime-varying "where-am-I" snapshot state `PickerContext`'s module doc reserves that struct for. Putting it on the snapshot would add a permanent field that only one source reads, contradicting the struct's own contract. So it's captured at construction instead, keeping the picker seam uniform. The carve-out note cited no heuristic reason for the `PickerContext` route, so per CLAUDE.md it was a starting point, not authority.
+
+Changes (landed):
+
+1. `crates/lattice-picker/src/picker_sources.rs` — `CommandsSource` gains a `reverse: Arc<dyn KeymapReverseLookup>` field (mirrors its `registry` capture); `new(registry, reverse)`. `init` looks up `reverse.chords_for(&row.canonical)` and pushes `Annotation::Keybinding(chords)` when non-empty (unbound commands push nothing → blank cell, no zero-width span). `first_party_generators` takes the reverse-lookup as a third arg.
+2. `crates/lattice-host/src/editor_boot.rs` — `KeymapHandle::new()` is hoisted above the picker-registry build so the commands picker captures a `KeymapReverseLookupHandle` over the *same* registry the `keymap:` field then registers bindings into; the handle is moved into the field (identity preserved, so later `:map`/`:unmap` rebuilds are visible to the picker). `built_in_picker_registry` threads the adapter through. The existing `KeymapReverseLookupHandle` (name → `CommandId` → live `ArcSwap` reverse cache) is reused verbatim — same adapter the completion-pipeline `KeybindingAnnotator` already uses (MARG.2).
+3. Tests (`lattice-ui-tui`): `commands_source_emits_keybinding_annotation` (stub reverse-lookup → bound command carries the chord, unbound carries none); `commands_source_keybinding_from_real_keymap` (real adapter → `help` row surfaces `<C-h>` from the help-prefix binding `ex:help` → `<C-h><C-h>`, proving the boot wiring end-to-end). Existing command-picker tests pass an empty reverse-lookup to stay focused.
+
+Acceptance: `:picker commands` shows the bound chord leftmost on rows that have one, theme-driven via the existing keybinding slot. No GPUI change (no new variant/slot — `Annotation::Keybinding` paint predates this slice). No new bench (the existing `annotation_pipeline` bench already covers `Keybinding` render cost; this slice only changes the *producer*). Green.
 
 ### MP.3 — Buffers + RecentFiles pickers ✅
 
@@ -84,7 +94,7 @@ Changes (landed):
 
 Acceptance: bench added; colorscheme test green; design ↔ code reconciled. No GPUI change across MP.2–MP.5 (no new variant/slot — generic `Styled`/typed-variant paint from MR §8.3).
 
-**MP series complete** — every picker source now emits typed, theme-driven marginalia. Remaining: MP.2b (commands keybinding column) and the PH series (preview syntax highlighting).
+**MP series complete** — every picker source now emits typed, theme-driven marginalia, and the commands picker surfaces bound chords (MP.2b). Remaining: the PH series (preview syntax highlighting).
 
 ---
 

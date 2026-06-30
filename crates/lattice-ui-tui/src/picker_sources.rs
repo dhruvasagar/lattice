@@ -34,6 +34,34 @@ mod tests {
     };
     use std::sync::Arc;
 
+    /// MP.2b: an empty name→chords reverse-lookup for command-
+    /// picker tests that don't exercise the keybinding column.
+    /// The commands source then emits no `Keybinding`
+    /// annotations, keeping those tests focused on args/doc/
+    /// latency.
+    fn empty_reverse() -> Arc<dyn lattice_completion::KeymapReverseLookup> {
+        struct Empty;
+        impl lattice_completion::KeymapReverseLookup for Empty {
+            fn chords_for(&self, _name: &str) -> Vec<lattice_protocol::KeyChord> {
+                Vec::new()
+            }
+        }
+        Arc::new(Empty)
+    }
+
+    /// MP.2b: the real reverse-lookup adapter over the test
+    /// App's keymap registry — the same path boot wires into the
+    /// live commands picker. Proves the end-to-end binding →
+    /// annotation flow (e.g. `ex:help` bound to `<C-h><C-h>`).
+    fn app_reverse(
+        app: &crate::app::App,
+    ) -> Arc<dyn lattice_completion::KeymapReverseLookup> {
+        lattice_host::keymap_registry::KeymapReverseLookupHandle::new(
+            &app.editor.keymap,
+            app.editor.registry.clone(),
+        )
+    }
+
     /// Files source emits `OpenFile { path }` routing
     /// payloads pointing under the supplied root.
     #[test]
@@ -252,8 +280,11 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators =
-            first_party_generators(app.editor.registry.clone(), app.editor.config.clone());
+        let generators = first_party_generators(
+            app.editor.registry.clone(),
+            app.editor.config.clone(),
+            empty_reverse(),
+        );
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
@@ -295,7 +326,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.editor.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone(), empty_reverse());
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
             panic!("expected Inline");
@@ -336,7 +367,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.editor.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone(), empty_reverse());
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
             panic!("expected Inline");
@@ -371,6 +402,94 @@ mod tests {
         )));
     }
 
+    /// MP.2b: a command with a bound chord carries a
+    /// `Keybinding` annotation; one without carries none. Uses a
+    /// deterministic stub reverse-lookup so the assertion is
+    /// independent of whatever the default keymap happens to
+    /// bind.
+    #[test]
+    fn commands_source_emits_keybinding_annotation() {
+        use lattice_completion::Annotation;
+        use lattice_protocol::KeyChord;
+
+        struct Stub;
+        impl lattice_completion::KeymapReverseLookup for Stub {
+            fn chords_for(&self, name: &str) -> Vec<KeyChord> {
+                // `:write` registers canonically as `ex:write`.
+                if name == "ex:write" {
+                    vec![KeyChord::ctrl('s')]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = CommandsSource::new(app.editor.registry.clone(), Arc::new(Stub));
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+
+        let keybinding_of = |name: &str| -> Option<String> {
+            pairs
+                .iter()
+                .find(|(c, _)| c.text == name)
+                .expect("row present")
+                .0
+                .annotations
+                .iter()
+                .find(|a| matches!(a, Annotation::Keybinding(_)))
+                .map(|a| a.display_text().into_owned())
+        };
+
+        // `write` is bound in the stub → keybinding cell present,
+        // rendering the chord (`<C-s>`).
+        let write_kb = keybinding_of("write").expect("write has a keybinding annotation");
+        assert!(write_kb.contains("C-s"), "got {write_kb:?}");
+
+        // A command the stub does not bind carries no keybinding
+        // annotation (blank cell, not a zero-width span).
+        assert_eq!(
+            keybinding_of("quit"),
+            None,
+            "unbound command must not push an empty keybinding annotation"
+        );
+    }
+
+    /// MP.2b: end-to-end through the real keymap adapter boot
+    /// wires in. `ex:help` is bound to `<C-h><C-h>` (help-prefix
+    /// table), so the live commands picker surfaces that chord on
+    /// the `help` row — proving the reverse-cache → annotation
+    /// path, not just the stub.
+    #[test]
+    fn commands_source_keybinding_from_real_keymap() {
+        use lattice_completion::Annotation;
+
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = CommandsSource::new(app.editor.registry.clone(), app_reverse(&app));
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+
+        let help_kb = pairs
+            .iter()
+            .find(|(c, _)| c.text == "help")
+            .expect("help row present")
+            .0
+            .annotations
+            .iter()
+            .find_map(|a| match a {
+                Annotation::Keybinding(_) => Some(a.display_text().into_owned()),
+                _ => None,
+            })
+            .expect("help carries a keybinding from the real keymap");
+        assert!(help_kb.contains("C-h"), "got {help_kb:?}");
+    }
+
     /// P.7: accept on `InvokeCommand` routing returns the
     /// matching outcome, carrying the canonical id +
     /// supplied args verbatim.
@@ -379,7 +498,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.editor.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone(), empty_reverse());
         let routing = RoutingPayload::InvokeCommand {
             id: "ex:write".into(),
             args: Args::None,

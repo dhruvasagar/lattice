@@ -19,7 +19,9 @@
 
 use std::sync::Arc;
 
-use lattice_completion::{Annotation, AnnotationSegment, CandidateKind, RawCandidate};
+use lattice_completion::{
+    Annotation, AnnotationSegment, CandidateKind, KeymapReverseLookup, RawCandidate,
+};
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
@@ -830,16 +832,26 @@ impl PickerSourceGenerator for JumpsSource {
 pub struct CommandsSource {
     pub spec: PickerSourceSpec,
     pub registry: Arc<CommandRegistry>,
+    /// MP.2b: name → first-bound-chord reverse lookup. Captured
+    /// at construction like `registry` (both are static
+    /// App-wide facades, not per-open snapshot state — see the
+    /// `PickerContext` module doc on why feature facades live
+    /// here, not on the context). Each call reads the keymap's
+    /// live `ArcSwap` reverse cache, so a `:map` / `:unmap`
+    /// between picker opens is reflected without rebuilding the
+    /// source.
+    pub reverse: Arc<dyn KeymapReverseLookup>,
 }
 
 impl CommandsSource {
-    pub fn new(registry: Arc<CommandRegistry>) -> Self {
+    pub fn new(registry: Arc<CommandRegistry>, reverse: Arc<dyn KeymapReverseLookup>) -> Self {
         Self {
             spec: PickerSourceSpec::no_args(
                 "commands",
                 "Ex-command palette. Walks the CommandRegistry; `<CR>` invokes the chosen command.",
             ),
             registry,
+            reverse,
         }
     }
 }
@@ -908,7 +920,18 @@ impl PickerSourceGenerator for CommandsSource {
             .into_iter()
             .map(|row| {
                 let mut cand = RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
-                let mut annotations: Vec<Annotation> = Vec::with_capacity(3);
+                let mut annotations: Vec<Annotation> = Vec::with_capacity(4);
+                // MP.2b: the keybinding column. The reverse cache
+                // stores one binding's chord *sequence* per command
+                // (first-binding-wins), so a non-empty result is the
+                // chord to surface — `marginalia.md` §6. Commands with
+                // no Normal-mode chord push nothing (blank cell, no
+                // zero-width span). Rendered leftmost regardless of
+                // push order (category rank 0).
+                let chords = self.reverse.chords_for(&row.canonical);
+                if !chords.is_empty() {
+                    annotations.push(Annotation::Keybinding(chords));
+                }
                 if !row.args_hint.is_empty() {
                     annotations.push(Annotation::Styled {
                         category: "args".into(),
@@ -1635,6 +1658,7 @@ pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> 
 pub fn first_party_generators(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
+    keybinding_reverse: Arc<dyn KeymapReverseLookup>,
 ) -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
@@ -1642,7 +1666,7 @@ pub fn first_party_generators(
         Arc::new(BuffersSource::new()),
         Arc::new(LinesSource::new()),
         Arc::new(JumpsSource::new()),
-        Arc::new(CommandsSource::new(command_registry)),
+        Arc::new(CommandsSource::new(command_registry, keybinding_reverse)),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
         Arc::new(GrepSource::new(config)),

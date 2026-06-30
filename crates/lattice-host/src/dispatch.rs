@@ -5286,6 +5286,12 @@ impl Editor {
             return signals;
         }
 
+        // Equal-area the layout so claude | baseline | proposed each get a
+        // third (the two 0.5 `split_active`s would otherwise leave the claude
+        // pane at 50% and the two diff panes at 25% each — the unequal-widths
+        // complaint). Leaf-weighted `equalize_ratios` makes every pane equal.
+        self.pane_tree.equalize_ratios();
+
         // Bind the completion oneshot to the session (primary = the right /
         // current buffer) + record the Accept save target AND the D-fix.1 pane
         // teardown info. The existing `tear_down_single_diff_session` fires the

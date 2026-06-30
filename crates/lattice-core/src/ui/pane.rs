@@ -602,6 +602,16 @@ fn compute_rects_recursive(node: &PaneNode, area: PaneRect, out: &mut Vec<(usize
 /// Issue #28: recursive helper for `PaneTree::equalize_ratios`.
 /// Resets every split node's ratio to `DEFAULT_SPLIT_RATIO`.
 /// Returns `true` if any ratio changed.
+/// Number of leaf panes under `node`. Used to weight `<C-w>=` so EVERY pane
+/// ends equal-area, not just balanced binary trees.
+fn leaf_count(node: &PaneNode) -> usize {
+    match node {
+        PaneNode::Leaf(_) => 1,
+        PaneNode::HorizontalSplit { top, bottom, .. } => leaf_count(top) + leaf_count(bottom),
+        PaneNode::VerticalSplit { left, right, .. } => leaf_count(left) + leaf_count(right),
+    }
+}
+
 fn equalize_recursive(node: &mut PaneNode) -> bool {
     match node {
         PaneNode::Leaf(_) => false,
@@ -609,22 +619,22 @@ fn equalize_recursive(node: &mut PaneNode) -> bool {
             top,
             bottom,
             ratio,
-        } => {
-            let changed = (*ratio - DEFAULT_SPLIT_RATIO).abs() > f32::EPSILON;
-            *ratio = DEFAULT_SPLIT_RATIO;
-            let l = equalize_recursive(top);
-            let r = equalize_recursive(bottom);
-            changed || l || r
         }
-        PaneNode::VerticalSplit {
-            left,
-            right,
+        | PaneNode::VerticalSplit {
+            left: top,
+            right: bottom,
             ratio,
         } => {
-            let changed = (*ratio - DEFAULT_SPLIT_RATIO).abs() > f32::EPSILON;
-            *ratio = DEFAULT_SPLIT_RATIO;
-            let l = equalize_recursive(left);
-            let r = equalize_recursive(right);
+            // Equal AREA, not equal ratio: a binary tree like
+            // `V(A, V(B, C))` is only equal-thirds when the outer ratio is
+            // 1/3 and the inner 1/2. Weight each split by the leaf counts of
+            // its two subtrees so N panes at any nesting come out equal.
+            let (lc, rc) = (leaf_count(top), leaf_count(bottom));
+            let target = lc as f32 / (lc + rc) as f32;
+            let changed = (*ratio - target).abs() > f32::EPSILON;
+            *ratio = target;
+            let l = equalize_recursive(top);
+            let r = equalize_recursive(bottom);
             changed || l || r
         }
     }
@@ -750,6 +760,42 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert!(t.root().is_single_leaf());
         assert_eq!(t.active_index(), 0);
+    }
+
+    /// `<C-w>=` must make THREE vertical splits equal-width, not 50/25/25.
+    /// A binary tree `V(A, V(B, C))` is equal-thirds only when the outer
+    /// ratio is 1/3 and the inner 1/2 — leaf-weighted, not a flat 0.5.
+    #[test]
+    fn equalize_makes_three_splits_equal_area() {
+        let mut t = PaneTree::single(doc_state());
+        // A | (split right) → V(A, B); focus B; split again → V(A, V(B, C)).
+        t.split_active(SplitOrientation::Vertical);
+        let b = t.active_index(); // split_active keeps A active; B is the new leaf
+        let b = if b == 0 { 1 } else { b };
+        t.set_active(b);
+        t.split_active(SplitOrientation::Vertical);
+
+        assert!(t.equalize_ratios(), "ratios changed from the 0.5 defaults");
+
+        // Outer split: left subtree = 1 leaf (A), right = 2 leaves (B,C) ⇒ 1/3.
+        match t.root() {
+            PaneNode::VerticalSplit { left, right, ratio } => {
+                assert!(
+                    (*ratio - 1.0 / 3.0).abs() < 1e-4,
+                    "outer ratio = 1/3 (A gets a third), got {ratio}"
+                );
+                assert!(left.is_single_leaf(), "left is the lone A leaf");
+                // Inner split: two leaves ⇒ even 0.5 (each then a third overall).
+                match &**right {
+                    PaneNode::VerticalSplit { ratio: inner, .. } => assert!(
+                        (*inner - 0.5).abs() < 1e-4,
+                        "inner ratio = 1/2, got {inner}"
+                    ),
+                    other => panic!("expected nested VerticalSplit, got {other:?}"),
+                }
+            }
+            other => panic!("expected VerticalSplit root, got {other:?}"),
+        }
     }
 
     #[test]

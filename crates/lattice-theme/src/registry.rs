@@ -1851,6 +1851,33 @@ mod tests {
     }
 
     #[test]
+    fn picker_rollout_slots_follow_colorscheme_swap() {
+        // MARG §9: the picker-rollout slots (location/status/latency/…)
+        // are palette refs too, so a colorscheme swap recolors the
+        // command/buffer/grep/jumps marginalia on BOTH peers (shared
+        // `resolved.get(ids.annotation_slot(slot))` resolution).
+        let swap = |slot: &str| {
+            let mocha = InMemoryThemeRegistry::with_defaults();
+            let mids = BuiltinElementIds::capture(&mocha);
+            let m = mocha.resolved().get(mids.annotation_slot(slot)).fg.unwrap().to_rgb_u32(0);
+            let gruv = InMemoryThemeRegistry::new(crate::palette::gruvbox_dark_palette());
+            register_builtins(&gruv);
+            let gids = BuiltinElementIds::capture(&gruv);
+            let g = gruv.resolved().get(gids.annotation_slot(slot)).fg.unwrap().to_rgb_u32(0);
+            (m, g)
+        };
+        for slot in [
+            "completion.annotation.location.line",
+            "completion.annotation.status.dirty",
+            "completion.annotation.latency.display",
+            "completion.annotation.register",
+        ] {
+            let (m, g) = swap(slot);
+            assert_ne!(m, g, "`{slot}` should track the colorscheme");
+        }
+    }
+
+    #[test]
     fn builtin_ids_capture_resolves_chrome_to_legacy() {
         // Parity net: the writer-free pane/file-tree elements resolve to
         // their palette accent keys. `file_tree.dir`/`.hidden` migrated off

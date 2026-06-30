@@ -234,6 +234,27 @@ its cost is dominated by the `display_text` concat measured here.
 or `styled_perm_10seg` past 150 ns, signals an unintended allocation in
 the column-layout or concat path — review against §8.7.
 
+### MP §9 — picker marginalia rollout (2026-06-30)
+
+The non-file pickers (commands / buffers / grep / jumps / outline / lines
+/ marks / registers / snippets) emit the same `Annotation::Styled` (and
+typed `Kind`/`DocSnippet`/`Source`) cells, in the location / status /
+latency / args / buffer-id / register families. Same layout path as §8,
+benched over the rollout families:
+
+| Bench / shape                  | Median time | Notes |
+|--------------------------------|------------|-------|
+| `styled_picker_columns_1000`   | ~183 µs    | `AnnotationColumns::from_visible` over 1000 rows, each a location (5-seg) + status (2-seg) + latency (1-seg) cell. Worst case — a real picker page is ~30 visible (≈6 µs). |
+
+Confirms the §9.5 "same O(visible × segments), no measurable cost" claim:
+the realistic ~30-row page lays out in ~6 µs, the same negligible profile
+as the file-metadata and command-completion paths. Per-segment slot
+resolution goes through the identical `annotation_slot` O(1) match.
+
+**Regression envelope:** `styled_picker_columns_1000` past ~360 µs
+signals an unintended allocation in the column-layout path — review
+against §9.5.
+
 ### What this bench does NOT cover
 
 - **Reverse-cache build cost** at trie-rebuild time

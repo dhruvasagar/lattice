@@ -149,6 +149,59 @@ fn make_styled_file_candidates(n: usize) -> Vec<RenderedCandidate> {
         .collect()
 }
 
+/// MARG §9: picker-rollout-shaped candidates — each carries a 5-segment
+/// `location` cell (path:line:col) plus a 2-segment `status` cell and a
+/// single-segment `latency` cell, the families MP.2–MP.4 emit across the
+/// non-file pickers. Used to lock the §9.5 "same O(visible × segments),
+/// no measurable cost" claim for the rollout families.
+fn tseg(text: &str, slot: &'static str) -> AnnotationSegment {
+    AnnotationSegment { text: Arc::from(text), slot: Arc::from(slot) }
+}
+
+fn make_styled_picker_candidates(n: usize) -> Vec<RenderedCandidate> {
+    (0..n)
+        .map(|i| {
+            let mut raw = RawCandidate::plain(format!("let x = {i};"), CandidateKind::Plain);
+            raw.annotations = vec![
+                Annotation::Styled {
+                    category: Arc::from("location"),
+                    segments: vec![
+                        tseg("src/module.rs", "completion.annotation.location.path"),
+                        tseg(":", "completion.annotation.location.path"),
+                        tseg("42", "completion.annotation.location.line"),
+                        tseg(":", "completion.annotation.location.col"),
+                        tseg("7", "completion.annotation.location.col"),
+                    ],
+                },
+                Annotation::Styled {
+                    category: Arc::from("status"),
+                    segments: vec![
+                        tseg("•", "completion.annotation.status.active"),
+                        tseg("+", "completion.annotation.status.dirty"),
+                    ],
+                },
+                Annotation::Styled {
+                    category: Arc::from("latency"),
+                    segments: vec![tseg("[display]", "completion.annotation.latency.display")],
+                },
+            ];
+            let annotations = raw.annotations.clone();
+            RenderedCandidate { raw, score: MatchScore::PERFECT, match_ranges: Vec::new(), annotations }
+        })
+        .collect()
+}
+
+fn bench_styled_picker_columns_1000(c: &mut Criterion) {
+    // §9.5: per-frame `AnnotationColumns` layout cost for the rollout
+    // families (location + status + latency) over 1000 rows (~30× a full
+    // picker page). Sibling to `styled_marginalia_columns_1000` (file
+    // metadata); locks the rollout's no-measurable-cost claim.
+    let cands = make_styled_picker_candidates(BENCH_CANDIDATE_COUNT);
+    c.bench_function("styled_picker_columns_1000", |b| {
+        b.iter(|| black_box(AnnotationColumns::from_visible(black_box(cands.iter()))))
+    });
+}
+
 fn bench_styled_marginalia_columns_1000(c: &mut Criterion) {
     // Per-frame cost of laying out a styled marginalia column over the
     // visible candidate set: `AnnotationColumns::from_visible` walks
@@ -261,6 +314,7 @@ criterion_group!(
     bench_annotate_pipeline_1000_3stage,
     bench_keybinding_annotator_1000,
     bench_styled_marginalia_columns_1000,
+    bench_styled_picker_columns_1000,
     bench_annotation_display_text_per_variant,
 );
 criterion_main!(benches);

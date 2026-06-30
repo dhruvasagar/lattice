@@ -242,6 +242,9 @@ const SLOT_ARGS: &str = "completion.annotation.args";
 /// MARG §9: slot for the buffer-id (`#N`) marginalia cell.
 const SLOT_BUFFER_ID: &str = "completion.annotation.buffer-id";
 
+/// MARG §9: slot for the register / mark name marginalia cell.
+const SLOT_REGISTER: &str = "completion.annotation.register";
+
 /// Format a byte size with a single-letter SI-ish suffix
 /// (`72` / `1.4K` / `70k` / `12M` / `4.2G`), matching the
 /// `ls -h` convention. Uses 1024-based units. Capped at 5
@@ -996,8 +999,14 @@ impl PickerSourceGenerator for RegistersSource {
                 // multi-char keys (vim doesn't have any) would
                 // need a richer routing variant.
                 let ch = name.chars().next()?;
-                let display = format!("\"{name:<2} {preview}");
-                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // MP.4/§9: the register contents are the matchable
+                // `display`; the register name (`"a`) is a `register`
+                // marginalia cell.
+                let mut cand = RawCandidate::plain(preview.clone(), CandidateKind::Plain);
+                cand.annotations = vec![Annotation::Styled {
+                    category: "register".into(),
+                    segments: vec![txt_seg(format!("\"{name}"), SLOT_REGISTER)],
+                }];
                 // Slice 7b.5: typed accept payload.
                 cand.accept_action =
                     Some(Box::new(lattice_completion::AcceptAction::PasteRegister { name: ch }));

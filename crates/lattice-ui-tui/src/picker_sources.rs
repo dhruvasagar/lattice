@@ -433,6 +433,16 @@ mod tests {
             RoutingPayload::PasteRegister { name } => assert_eq!(*name, 'a'),
             other => panic!("expected PasteRegister, got {other:?}"),
         }
+        // MP.5: register contents are the matchable display; the name
+        // (`"a`) is a `register` marginalia cell.
+        assert_eq!(pairs[1].0.display, "world");
+        let reg = pairs[1]
+            .0
+            .annotations
+            .iter()
+            .find(|a| a.category() == "register")
+            .expect("register cell");
+        assert_eq!(reg.display_text(), "\"a");
     }
 
     /// P.4: accept on a `PasteRegister` routing returns the

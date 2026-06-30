@@ -71,18 +71,20 @@ Changes (landed):
 
 Acceptance: all five pickers show a colored location cell; Jumps shows a colored provenance tag; the matchable text moved to `display`. No GPUI change (existing variants/slots). Green.
 
-### MP.5 — Registers + four-artefact close 📝
+### MP.5 — Registers + four-artefact close ✅
 
 Close-out. Depends on MP.2–MP.4.
 
-Changes:
+Changes (landed):
 
-1. `RegistersSource` — `display`=preview; `Styled{register}` for the register name.
-2. Bench: extend the §8 styled-cell bench with the location/status/latency families; record in `BENCHMARKS.md` (the §9.5 O(visible×segments) claim, examinable in CI).
-3. Tests: `:colorscheme` swap recolors a representative picker's marginalia on both peers (cross-peer + colorscheme).
-4. Doc: refresh status icons in this plan + the `marginalia.md` §9 status line; reconcile design ↔ code.
+1. `RegistersSource` — `display`=register contents (matchable); `Styled{register}` for the name (`"a`).
+2. Bench: `annotation_pipeline.rs` gains `styled_picker_columns_1000` (location+status+latency families over 1000 rows), sibling to the §8 `styled_marginalia_columns_1000` — locks the §9.5 O(visible×segments) claim in CI.
+3. Tests: `picker_rollout_slots_follow_colorscheme_swap` (theme-level, peer-agnostic — both peers resolve through `annotation_slot`) asserts location/status/latency/register recolor on a mocha→gruvbox swap; registers source test extended to assert display+register cell.
+4. Doc reconciled: §9.3 snippet line corrected to `display`=prefix (matcher alignment) + registers row added; §9.4 `latency.background` token corrected peach→orange (this palette has no `peach`); slice-plan statuses updated.
 
-Acceptance: bench recorded; colorscheme/cross-peer tests green; design ↔ code reconciled. Bisect-friendly: one commit.
+Acceptance: bench added; colorscheme test green; design ↔ code reconciled. No GPUI change across MP.2–MP.5 (no new variant/slot — generic `Styled`/typed-variant paint from MR §8.3).
+
+**MP series complete** — every picker source now emits typed, theme-driven marginalia. Remaining: MP.2b (commands keybinding column) and the PH series (preview syntax highlighting).
 
 ---
 

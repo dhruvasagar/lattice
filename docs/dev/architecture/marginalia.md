@@ -299,7 +299,7 @@ These are **substrate helpers, not Document trait methods** — they are consume
 | `MarksSource` | `'name line:col` | `display`=name; `Styled{location}` |
 | `RegistersSource` | `"name preview` | `display`=preview; `Styled{register}` (name) |
 
-`SnippetsSource` (`lattice-snippet`) follows the Commands shape: `display`=name, prefix→`Styled` segment, description→`DocSnippet`. `ThemePickerSource` is deferred (§9.6).
+`SnippetsSource` (`lattice-snippet`): `display`=**prefix** (the trigger the user types — the matcher scores `candidate.text` and `match_ranges` index it, so the shown run must stay aligned with the trigger), name→`Kind`, description→`DocSnippet`. `RegistersSource`: `display`=register contents, name (`"a`)→`Styled{register}`. `ThemePickerSource` is deferred (§9.6).
 
 ### 9.4 New theme slots
 
@@ -314,7 +314,7 @@ Under the existing `completion.annotation.*` namespace, registered in `registry.
 | `completion.annotation.status.active` | green | current-buffer marker |
 | `completion.annotation.latency.reflex` | green | `[reflex]` commands |
 | `completion.annotation.latency.display` | blue | `[display]` commands |
-| `completion.annotation.latency.background` | peach | `[background]` commands |
+| `completion.annotation.latency.background` | orange | `[background]` commands |
 | `completion.annotation.args` | subtext | command arg-hint |
 | `completion.annotation.buffer-id` | overlay / dim | buffer `#id` |
 | `completion.annotation.register` | purple | register / mark name |

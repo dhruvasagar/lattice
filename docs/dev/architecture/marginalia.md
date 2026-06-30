@@ -1,6 +1,8 @@
 # Marginalia — typed annotations for completion candidates
 
-> **Status (2026-06-03):** proposed; no code yet. Implementation lands as the `MARG.*` slice series — see slice plan at `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
+> **Status (2026-06-03):** §§1–7 landed as the `MARG.*` slice series (typed `Annotation` enum, keybinding annotator, GPUI parity, MARG.5 column layout) plus T.6 (GPUI annotation colors read from theme). Closed slice plan: `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
+>
+> **Status (2026-06-30):** §8 (rich per-segment marginalia) added — extends the §4 data model with `Annotation::Styled` so a single column cell can be colored per-segment (eza-style permission bits), registers the file/dir picker as the first file-metadata producer, and closes the remaining TUI theme-wiring gap. Slice plan: `docs/dev/operations/slice-plans/marginalia-rich.md`.
 
 ## 1. Vision
 
@@ -159,7 +161,108 @@ Phase 4 (WASM plugin host) gets two extension points:
 
 Pre-Phase-4 (today): the `Annotation::Custom` escape hatch is reserved for in-tree extension crates that want to ship without a variant of their own. Default annotators (`Kind`, `DocSnippet`, `Keybinding`, `Source`) cover the cases on the table.
 
-## 8. Open questions
+## 8. Rich per-segment marginalia (file metadata) — 2026-06-30 extension
+
+Extends §4. MARG.1–5 + T.6 give typed annotations, shared column layout, and (GPUI-side) theme-resolved colors. They lack exactly one thing: **per-segment coloring within a single column cell**. This section adds it and registers the file/dir picker as the first producer of file-metadata marginalia (permissions, size, mtime) with eza-style per-bit permission colors.
+
+### 8.1 The gap
+
+Every §4 variant maps to exactly one theme slot, i.e. one color per column cell. The file/dir picker wants a `drwxr-xr-x` permission column where each bit class is its own color (eza / `ls --color` convention) — many colors inside *one* column. The single-slot model can't express that.
+
+### 8.2 Data model — `Annotation::Styled`
+
+```rust
+/// One run of marginalia text sharing a theme slot. Carries a
+/// slot KEY, never a resolved color — theme resolution stays at
+/// the render seam (the §3 invariant; this is NOT the rejected
+/// pre-styled-spans alternative, which baked colors at produce
+/// time).
+pub struct AnnotationSegment {
+    pub text: Arc<str>,
+    pub slot: Arc<str>,
+}
+
+enum Annotation {
+    // … §4 variants …
+    /// A column cell colored per-segment. The permission string
+    /// is one segment per bit class; any future multi-colored
+    /// field (size+unit, path head/tail, …) reuses it. `category`
+    /// keys the column exactly like the single-variant `category()`.
+    Styled { category: Arc<str>, segments: Vec<AnnotationSegment> },
+}
+```
+
+- `display_text()` returns the segments concatenated → `AnnotationColumns` width math (MARG.5) is **unchanged**; styled and single-variant cells share the same column grid.
+- `category()` returns `category` → column layout unchanged.
+- `Styled` is the multi-slot generalization of `Custom { text, slot }`. `Custom` stays for single-color plugin annotations.
+
+### 8.3 Rendering contract (both peers)
+
+On `Styled`, a renderer emits one span/div per segment, each resolved against that segment's `slot`, instead of one styled cell. Unknown slot falls back to the custom/plugin annotation color (paint warning, not panic). Width and alignment come from `display_text()` as for every other annotation, so a styled perm cell lines up with a plain `size` cell in the next column. GPUI extends `paint_candidate_row` / `annotation_color_rgb`; TUI extends `candidate_to_line` (see §8.6).
+
+### 8.4 Producer — file/dir picker
+
+`crates/lattice-picker/src/picker_sources.rs` stops baking the flat `"{path} {perms} {size} {mtime}"` string into `RawCandidate.display`. Per row it emits structured annotations:
+
+- `Styled { category: "perm", segments }` — `format_perms` is refactored to yield `(char, slot)` per bit instead of a flat `String`. **The bit→slot policy lives once, here** — renderers stay dumb.
+- `Styled { category: "size", segments: [one] }` (slot `completion.annotation.size`).
+- `Styled { category: "mtime", segments: [one] }` (slot `completion.annotation.mtime`).
+
+The path remains the candidate text (matched + match-highlighted as today). A file that fails to stat emits no metadata annotations → blank cells, preserving today's behavior. Per-bit slot policy:
+
+| permission char | slot |
+|---|---|
+| type: `d` `l` `b` `c` `p` `s` `-` (leading) | `…perm.type` |
+| `r` | `…perm.read` |
+| `w` | `…perm.write` |
+| `x` | `…perm.exec` |
+| `s` `S` `t` `T` (setuid / setgid / sticky) | `…perm.special` |
+| `-` (absent bit) | `…perm.none` |
+
+### 8.5 Theme slots
+
+New slots under the existing `completion.annotation.*` namespace (pickers are completion candidates):
+
+| Slot | Default (dark) | Used by |
+|---|---|---|
+| `completion.annotation.perm.type` | blue | leading type char |
+| `completion.annotation.perm.read` | yellow | `r` |
+| `completion.annotation.perm.write` | red | `w` |
+| `completion.annotation.perm.exec` | green | `x` |
+| `completion.annotation.perm.special` | magenta | setuid / setgid / sticky |
+| `completion.annotation.perm.none` | overlay / dim | absent bit `-` |
+| `completion.annotation.size` | peach / gold | size column |
+| `completion.annotation.mtime` | green | mtime column |
+
+Defaults track eza / `ls --color` (UX rule: permission colors are cross-tool muscle memory; lead with convention). Every slot is colorscheme-overridable and carries `fg` + `fg_selected` per §5's selected-row contrast rule.
+
+### 8.6 Close the TUI theme gap
+
+MARG.1's TUI `candidate_to_line` still resolves annotation colors through the hardcoded `annotation_color()` — the §5 "queued" note closed only on the GPUI side (T.6). This extension threads the resolved theme table + element ids into `candidate_to_line` and replaces `annotation_color()` with theme-slot reads, for **all** annotation categories, not just the new ones. After it, both peers resolve every marginalia color from the theme and a `:colorscheme` swap recolors marginalia live on both. This is a prerequisite — without it the new perm/size/mtime slots would have no effect on TUI.
+
+### 8.7 Paramount-goal alignment (extension)
+
+| Goal | This extension |
+|---|---|
+| #1 perf | Resolution is O(visible × segments); a perm cell is ≤11 segments, ~30 rows ⇒ ~330 O(1) slot reads per picker frame. No measurable cost; the MARG annotation-render bench is extended with a styled-cell case. |
+| #2 extensibility | **Load-bearing.** `Styled` is the contract any producer (multibuffer, LSP, future WASM plugin) uses for multi-colored marginalia — `(text, slot)` data, zero renderer changes per new field. |
+| #3 grammar | Neutral. |
+| #4 async | Neutral — the stat walk already runs in the picker source's init (off the UI thread); the perm→segment build stays there, never on the render thread. |
+
+### 8.8 Rejected alternatives (extension)
+
+- **Typed semantic variants** (`Permissions(mode)`, `Size(u64)`, `Mtime(SystemTime)`): type-safe, but each new multi-colored field needs a new variant *and* match arms in BOTH peers, and the eza format + color policy leaks into renderer code (duplication across TUI/GPUI). Sacrifices #2. `Styled` keeps the policy in the shared producer and the renderers as pure slot-resolvers.
+- **Pre-styled spans**: already rejected in §3 — bakes colors at produce time and breaks live `:colorscheme`. `Styled` carries slot keys, not colors, so it is explicitly *not* this.
+
+### 8.9 Tests + artefacts
+
+- `format_perms` → segments: each bit class maps to its slot; symlink / setuid / setgid / sticky / block / char / fifo / socket edge cases.
+- `AnnotationColumns` width with a `Styled` cell equals its concatenated `display_text()` width; alignment holds when styled and non-styled rows mix in one column set.
+- TUI + GPUI: a `Styled` perm annotation renders N spans/divs, each with its slot's resolved fg; a `:colorscheme` swap recolors them on both peers.
+- Graceful: unstattable file → no metadata cells (no panic); unknown slot → fallback color.
+- Bench: extend the MARG annotation-render bench with a styled-cell row set.
+
+## 9. Open questions
 
 - **Should `KeybindingAnnotator` run for non-command candidates too?** File-name candidates could surface `<C-x><C-o>` for open-in-split; option candidates could surface `:set spell`'s bind. Probably yes, but each surface needs its own reverse-cache key — file paths aren't `CommandId`s. Defer until past-v1 unless a clear use case emerges in the slice plan.
 
@@ -169,9 +272,10 @@ Pre-Phase-4 (today): the `Annotation::Custom` escape hatch is reserved for in-tr
 
 - **MRU influence on which binding to display.** For commands with N>1 bindings, "first bound chord" is a stable but arbitrary choice. An alternative: show the chord the user most recently invoked. Would require an MRU per command — heavier than v1 should carry. Stick with first-bound for v1.
 
-## 9. Cross-references
+## 10. Cross-references
 
-- Slice sequencing + status: `docs/dev/archive/marginalia.md`
+- Slice sequencing + status (closed MARG.1–5): `docs/dev/archive/marginalia.md`
+- Slice sequencing for §8 (rich per-segment marginalia): `docs/dev/operations/slice-plans/marginalia-rich.md`
 - Substrate this rides on: `docs/dev/architecture/completion-pipeline-unification.md`
 - Sibling consumer of the candidate-rendering pipeline: `docs/dev/architecture/insert-completion.md`
 - Self-documenting help surface (the `:describe-key` / `:describe-command` cousin of this feature): `design.md` §5.11

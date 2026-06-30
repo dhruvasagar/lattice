@@ -131,11 +131,19 @@ Changes (landed):
 
 Acceptance: `:picker lines` / `:picker outline` render code previews with the buffer's syntax colors on both peers (PH.1 paint), recoloring on `:colorscheme`. Green. Bisect-friendly: one commit.
 
-**PH series (v1) complete** — `:picker lines` / `:picker outline` show syntax-colored previews. Remaining: PH.3 (Grep arbitrary-file highlighting) is deferred post-v1 (design only).
+**PH series complete** — `:picker lines` / `:picker outline` (active buffer) and `:picker grep` (arbitrary files) all show syntax-colored previews on both peers.
 
-### PH.3 — Grep arbitrary-file highlighting 📝 **post-v1 (design only)**
+### PH.3 — Grep arbitrary-file highlighting ✅
 
-Deferred per picker-preview-highlight.md §7. Not scheduled. When taken up: a single-line `highlight_line_with_grammar(lang, &str)` helper on the LSP-runtime task, grammar selected by extension, capped to the visible window, plain fallback when no grammar matches. Carrier + render composition (PH.1) unchanged — only the producer differs.
+Producer-only slice (carrier + render composition are PH.1, unchanged). Grep hits come from arbitrary files with no parsed tree, so each preview line is highlighted by selecting a grammar from the file extension and parsing the single line — all on the grep blocking task, never the render thread.
+
+Changes (landed):
+
+1. `crates/lattice-picker/src/picker_sources.rs` — `GrepPreviewHighlighter` trait (abstract; `lattice-picker` keeps NO `lattice-syntax`/`lattice-cells` production dep, so the off-thread guarantee stays a compile-time fact). `GrepSource` captures `Option<Arc<dyn GrepPreviewHighlighter>>` at construction (like `config`); `spawn_grep` runs `hits_to_pairs` *inside* the `spawn_blocking` closure so the per-hit parse stays off the async worker; `hits_to_pairs` calls the highlighter per hit, attaching display-relative `display_spans` (the preview IS the trimmed `display`). No grammar / no spans → plain preview.
+2. `crates/lattice-host/src/grep_highlight.rs` — `SyntaxGrepHighlighter` impl: grammar-by-extension (`Lang::detect_from_path`), single-line parse under a per-language cached `Syntax` (`Mutex<HashMap<Lang, Option<Syntax>>>` — the compiled highlight query is reused across hits *and* across live-grep keystrokes; only the short line re-parses). Poison-safe; `Lang::Plain`/unknown → plain. Wired at boot via `built_in_picker_registry` → `first_party_generators` using the editor's shared `LangRegistry` (hoisted above the picker-registry build, same pattern as the MP.2b keymap handle). `Lang` gained `Hash` for the cache key.
+3. Tests: host `grep_highlight` (real Rust grammar → keyword-styled display-relative spans; unknown ext / empty line → plain; grammar cache reuse) + picker `hits_to_pairs_attaches_highlighter_spans` (stub highlighter → spans attached; `None` → plain). No GPUI change (PH.1 paint already composes `display_spans`).
+
+Acceptance: `:picker grep` previews render in the file's syntax colors on both peers, recoloring on `:colorscheme` (semantic `Style` resolved at the seam). Cost stays off the render thread by construction. Bisect-friendly: one commit.
 
 ---
 

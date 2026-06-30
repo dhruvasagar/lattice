@@ -118,6 +118,7 @@ fn built_in_picker_registry(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
     keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup>,
+    grep_highlighter: Option<Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>>,
     snippet_registry: Arc<ArcSwap<SnippetRegistry>>,
     theme_registry: lattice_theme::ThemeRegistryHandle,
 ) -> PickerRegistry {
@@ -126,6 +127,7 @@ fn built_in_picker_registry(
         command_registry,
         config,
         keybinding_reverse,
+        grep_highlighter,
     ) {
         reg.register_generator(generator);
     }
@@ -790,10 +792,23 @@ impl Editor {
         let keymap_handle = crate::keymap_registry::KeymapHandle::new();
         let keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup> =
             crate::keymap_registry::KeymapReverseLookupHandle::new(&keymap_handle, registry.clone());
+        // PH.3: the shared lang registry — created here (ahead of the
+        // document `Syntax` below, which reuses it) so the grep picker's
+        // preview highlighter selects grammars from the same set the
+        // buffers use. The highlighter parses each grep hit's preview
+        // line on the grep blocking task (off the render thread; the
+        // picker crate has no syntax dep). See picker-preview-highlight.md §7.
+        let lang_registry = LangRegistry::standard().expect("standard lang registry");
+        let grep_highlighter: Option<
+            Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>,
+        > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new(
+            lang_registry.clone(),
+        ));
         let picker_registry: Arc<PickerRegistry> = Arc::new(built_in_picker_registry(
             registry.clone(),
             config.clone(),
             keybinding_reverse,
+            grep_highlighter,
             snippet_registry_handle.clone(),
             theme_registry.clone(),
         ));
@@ -837,11 +852,9 @@ impl Editor {
             },
         );
 
-        // One `LangRegistry` per Editor, shared between the
-        // document buffer's `Syntax` and every `HelpBuffer` for
-        // `:describe-*` / `:apropos` / `:keymap` (markdown
-        // highlighted with fenced-block language injection).
-        let lang_registry = LangRegistry::standard().expect("standard lang registry");
+        // `lang_registry` (one per Editor, shared between the document
+        // buffer's `Syntax`, every `HelpBuffer`, and the grep preview
+        // highlighter) was created above with the picker registry.
         let lang = Lang::detect_from_path(document.path());
         // Build the underlying `Syntax` synchronously + seed it
         // with one parse of the initial text so the renderer's

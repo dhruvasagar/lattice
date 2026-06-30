@@ -103,6 +103,7 @@ pub mod display_matrix;
 // polls registered `VirtualRowProvider`s on wake, publishes
 // via `Editor::virtual_rows_matrix_cell`. See
 // `docs/dev/architecture/virtual-rows.md`.
+pub mod grep_highlight;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

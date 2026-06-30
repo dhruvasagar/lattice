@@ -1204,13 +1204,37 @@ impl PickerSourceGenerator for MarksSource {
 /// backend choice is read at every invocation (lets the user
 /// `:set picker.grep.backend = "ag"` mid-session and see
 /// it take effect on the next `:picker grep`).
+/// PH.3: off-thread syntax highlighter for grep preview lines.
+/// `lattice-picker` deliberately has NO `lattice-syntax`
+/// dependency (the structural off-thread guarantee — a source
+/// physically cannot parse on the render thread). The host
+/// injects a concrete impl that selects a grammar by the hit's
+/// file extension and highlights the single preview line. Runs
+/// on the grep blocking task; returns display-relative
+/// `DisplaySpan`s, empty when no grammar matches (→ plain
+/// preview). See `docs/dev/architecture/picker-preview-highlight.md` §7.
+pub trait GrepPreviewHighlighter: Send + Sync {
+    /// Highlight `line` as source for the file at `path`. `line`
+    /// is the exact text shown as the candidate `display` (already
+    /// trimmed), so returned spans are display-relative and need
+    /// no offset. Empty result ⇒ plain preview.
+    fn highlight_line(&self, path: &std::path::Path, line: &str) -> Vec<lattice_completion::DisplaySpan>;
+}
+
 pub struct GrepSource {
     pub spec: PickerSourceSpec,
     pub config: Arc<ConfigRegistry>,
+    /// PH.3: optional preview highlighter, captured at
+    /// construction like `config`. `None` ⇒ plain previews
+    /// (e.g. tests, or a host that doesn't wire syntax).
+    pub highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,
 }
 
 impl GrepSource {
-    pub fn new(config: Arc<ConfigRegistry>) -> Self {
+    pub fn new(
+        config: Arc<ConfigRegistry>,
+        highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,
+    ) -> Self {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
@@ -1232,6 +1256,7 @@ impl GrepSource {
                 live: true,
             },
             config,
+            highlighter,
         }
     }
 
@@ -1266,13 +1291,22 @@ impl GrepSource {
         pattern: String,
         root: std::path::PathBuf,
         max_hits: usize,
+        highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,
     ) -> crate::CandidateFuture {
         Box::pin(async move {
-            let join =
-                tokio::task::spawn_blocking(move || run_grep(&binary, &pattern, &root, max_hits))
-                    .await;
+            // PH.3: run BOTH the grep AND the per-hit syntax
+            // highlighting inside the blocking closure — the
+            // highlighting is CPU-bound (per-line tree-sitter parse)
+            // and must not land on an async runtime worker. Off the
+            // render thread by construction (the picker crate has no
+            // syntax dep; the highlighter is host-injected).
+            let join = tokio::task::spawn_blocking(move || {
+                run_grep(&binary, &pattern, &root, max_hits)
+                    .map(|hits| hits_to_pairs(hits, highlighter.as_deref()))
+            })
+            .await;
             match join {
-                Ok(Ok(hits)) => Ok(hits_to_pairs(hits)),
+                Ok(Ok(pairs)) => Ok(pairs),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(format!("grep: task panicked: {e}")),
             }
@@ -1285,20 +1319,29 @@ impl GrepSource {
 /// path (no initial pattern → empty pairs) and the async
 /// future path that the live grep flow drives. Empty input
 /// → empty output; callers don't special-case.
-fn hits_to_pairs(hits: Vec<GrepHit>) -> crate::CandidateBatch {
+fn hits_to_pairs(
+    hits: Vec<GrepHit>,
+    highlighter: Option<&dyn GrepPreviewHighlighter>,
+) -> crate::CandidateBatch {
     hits.into_iter()
         .map(|hit| {
-            // MP.4: the matched preview text is the matchable `display`
-            // (and the future PH.3 syntax-highlight target); path:line:col
-            // becomes a `location` marginalia cell.
+            // MP.4: the matched preview text is the matchable `display`;
+            // path:line:col becomes a `location` marginalia cell.
             let path_display = hit.path.display().to_string();
-            let mut cand =
-                RawCandidate::plain(hit.preview.trim_start().to_string(), CandidateKind::Plain);
+            let preview = hit.preview.trim_start().to_string();
+            let mut cand = RawCandidate::plain(preview.clone(), CandidateKind::Plain);
             cand.annotations = vec![location_annotation(
                 Some(&path_display),
                 hit.line + 1,
                 Some(hit.col + 1),
             )];
+            // PH.3: syntax-color the preview when a highlighter is wired
+            // and a grammar matches the file. `display` IS the trimmed
+            // preview, so spans come back display-relative; no grammar /
+            // no spans → plain preview. Runs in the grep blocking task.
+            if let Some(h) = highlighter {
+                cand.display_spans = h.highlight_line(&hit.path, &preview);
+            }
             // Slice 7b.6: typed accept payload. Grep hits jump
             // to file:line:col — same shape as LSP references /
             // definitions / diagnostics → JumpToFileLocation.
@@ -1340,7 +1383,13 @@ impl PickerSourceGenerator for GrepSource {
         };
         let (binary, max_hits) = self.resolve_settings()?;
         let root = ctx.workspace_root.to_path_buf();
-        let fut = GrepSource::spawn_grep(binary, pattern.to_string(), root, max_hits);
+        let fut = GrepSource::spawn_grep(
+            binary,
+            pattern.to_string(),
+            root,
+            max_hits,
+            self.highlighter.clone(),
+        );
         Ok(PickerInitResult::Future(fut))
     }
 
@@ -1383,7 +1432,13 @@ impl PickerSourceGenerator for GrepSource {
         };
         let (binary, max_hits) = settings;
         let root = ctx.workspace_root.to_path_buf();
-        let fut = GrepSource::spawn_grep(binary, trimmed.to_string(), root, max_hits);
+        let fut = GrepSource::spawn_grep(
+            binary,
+            trimmed.to_string(),
+            root,
+            max_hits,
+            self.highlighter.clone(),
+        );
         Some(Ok(PickerInitResult::Future(fut)))
     }
 }
@@ -1734,6 +1789,7 @@ pub fn first_party_generators(
     command_registry: Arc<CommandRegistry>,
     config: Arc<ConfigRegistry>,
     keybinding_reverse: Arc<dyn KeymapReverseLookup>,
+    grep_highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,
 ) -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
@@ -1744,7 +1800,7 @@ pub fn first_party_generators(
         Arc::new(CommandsSource::new(command_registry, keybinding_reverse)),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
-        Arc::new(GrepSource::new(config)),
+        Arc::new(GrepSource::new(config, grep_highlighter)),
         Arc::new(OutlineSource::new()),
     ]
 }
@@ -1942,12 +1998,15 @@ mod tests {
     /// `location` marginalia cell (1-based), routing to the file location.
     #[test]
     fn hits_to_pairs_emits_preview_and_location() {
-        let pairs = hits_to_pairs(vec![GrepHit {
+        let pairs = hits_to_pairs(
+            vec![GrepHit {
             path: std::path::PathBuf::from("src/main.rs"),
             line: 41,
             col: 6,
             preview: "    let x = 1;".to_string(),
-        }]);
+        }],
+            None,
+        );
         assert_eq!(pairs.len(), 1);
         let cand = &pairs[0].0;
         // Preview (trimmed) is the matchable display.
@@ -1962,6 +2021,42 @@ mod tests {
             &pairs[0].1,
             RoutingPayload::LspLocation { line: 41, col: 6, .. }
         ));
+    }
+
+    /// PH.3: when a highlighter is wired, grep previews carry its spans
+    /// as `display_spans` (display-relative, since `display` is the
+    /// trimmed preview); without one, previews stay plain.
+    #[test]
+    fn hits_to_pairs_attaches_highlighter_spans() {
+        struct Stub;
+        impl GrepPreviewHighlighter for Stub {
+            fn highlight_line(
+                &self,
+                _path: &std::path::Path,
+                line: &str,
+            ) -> Vec<lattice_completion::DisplaySpan> {
+                vec![lattice_completion::DisplaySpan {
+                    range: 0..line.len(),
+                    style: lattice_cells::style::Style::Keyword,
+                }]
+            }
+        }
+        let mk = || GrepHit {
+            path: std::path::PathBuf::from("src/main.rs"),
+            line: 0,
+            col: 0,
+            preview: "  let x = 1;".to_string(),
+        };
+        // With a highlighter: spans attached, aligned to the trimmed display.
+        let stub = Stub;
+        let pairs = hits_to_pairs(vec![mk()], Some(&stub));
+        let cand = &pairs[0].0;
+        assert_eq!(cand.display, "let x = 1;");
+        assert_eq!(cand.display_spans.len(), 1);
+        assert_eq!(cand.display_spans[0].range, 0..cand.display.len());
+        // Without one: plain preview.
+        let plain = hits_to_pairs(vec![mk()], None);
+        assert!(plain[0].0.display_spans.is_empty());
     }
 
     /// Helper smoke: `format_args_hint` matches the

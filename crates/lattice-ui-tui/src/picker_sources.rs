@@ -284,6 +284,7 @@ mod tests {
             app.editor.registry.clone(),
             app.editor.config.clone(),
             empty_reverse(),
+            None,
         );
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
@@ -594,7 +595,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.editor.config.clone());
+        let source = GrepSource::new(app.editor.config.clone(), None);
         let result = source
             .init(&ctx, &[])
             .expect("init must not error on no args");
@@ -619,7 +620,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.editor.config.clone());
+        let source = GrepSource::new(app.editor.config.clone(), None);
         let result = source
             .on_query_changed(&ctx, "")
             .expect("live source returns Some")
@@ -646,7 +647,7 @@ mod tests {
     #[test]
     fn grep_source_spec_is_live() {
         let app = app_with("hi\n", 5);
-        let source = GrepSource::new(app.editor.config.clone());
+        let source = GrepSource::new(app.editor.config.clone(), None);
         assert!(source.spec().live, "GrepSource must declare live = true");
     }
 
@@ -662,7 +663,7 @@ mod tests {
             .unwrap();
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.editor.config.clone());
+        let source = GrepSource::new(app.editor.config.clone(), None);
         let err = source.init(&ctx, &["TODO".to_string()]).unwrap_err();
         assert!(err.contains("definitely-not-a-binary"), "got {err}");
         assert!(err.contains("not found on PATH"), "got {err}");

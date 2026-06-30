@@ -1,6 +1,6 @@
 # Picker preview syntax highlighting (PH)
 
-**Status:** ✅ v1 complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition) and PH.2 (Lines/Outline producers + per-frame bench) landed — `:picker lines` / `:picker outline` render the buffer's syntax colors, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). PH.3 (Grep arbitrary-file highlighting) stays deferred post-v1 (§7). Slice plan: `docs/dev/operations/slice-plans/picker-marginalia.md` (PH series).
+**Status:** ✅ complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition), PH.2 (Lines/Outline active-buffer producers + per-frame bench), and PH.3 (Grep arbitrary-file highlighting) all landed — `:picker lines` / `:picker outline` / `:picker grep` render syntax colors on both peers, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). Slice plan: `docs/dev/operations/slice-plans/picker-marginalia.md` (PH series).
 
 A sibling surface to marginalia (`marginalia.md`), not part of it. Marginalia colors the trailing annotation *columns* (perm/size/location, §8–9 there). This feature colors the **source code inside the row** — the `preview` of a Grep hit, the line text of `:picker lines`, the symbol context of `:picker outline` — using tree-sitter, so a code snippet in a picker reads like it does in the buffer.
 
@@ -67,11 +67,17 @@ let spans: Vec<Vec<StyledSpan>> = snapshot.highlight_lines(lo, hi)?; // per visi
 
 This adds no parsing: `highlight_lines` is a `tree_sitter::QueryCursor` pass over the cached tree, and these sources already run synchronously on the editor-actor thread.
 
-## 7. Grep across arbitrary files — deferred (PH.3, post-v1)
+## 7. Grep across arbitrary files (PH.3) ✅
 
-Grep previews come from `rg`/`ag`/`grep` over **arbitrary files**, which are *not* the active buffer and have no parsed tree. Highlighting them requires, per hit: (a) select a grammar by file extension, (b) parse the previewed line (or a small window) under that grammar, (c) map captures to `Style`. This is genuine per-hit parsing work — feasible thread-wise (the Grep source already builds candidates off-thread on the LSP runtime, never on the render thread) but not free tree-reuse like Lines/Outline.
+Grep previews come from `rg`/`ag`/`grep` over **arbitrary files**, which are *not* the active buffer and have no parsed tree. Highlighting them requires, per hit: (a) select a grammar by file extension, (b) parse the previewed line under that grammar, (c) map captures to `Style`. This is genuine per-hit parsing work — but `GrepSource` already builds candidates off-thread (`spawn_blocking`), so it's safe there.
 
-Deferred to post-v1 (heuristic #1 — ship the cheap, high-value path first; don't take on per-hit parsing + a grammar-selection-by-extension cache until the cheap path proves the UX). When taken up: a `highlight_line_with_grammar(lang, &str) -> Vec<StyledSpan>` helper (single-line parse, no injections) on the LSP-runtime task; cap by visible-window so cost stays O(visible hits), and skip (plain preview) when no grammar matches the extension. The `DisplaySpan` carrier and the render composition (§4–5) are unchanged — only the producer differs.
+**Shipped shape (producer-only — carrier + composition §4–5 unchanged):**
+
+- `GrepPreviewHighlighter` trait in `lattice-picker` (abstract). The crate keeps **no** `lattice-syntax`/`lattice-cells` production dependency, so "the picker can't parse on the render thread" stays a *compile-time* fact, not discipline. The host injects the impl (trait-injection — the same seam every host-only picker capability uses).
+- `SyntaxGrepHighlighter` (host) selects a grammar by extension (`Lang::detect_from_path`) and parses the single preview line under a **per-language cached** `Syntax` (`Mutex<HashMap<Lang, Option<Syntax>>>`). The expensive part — compiling a grammar's highlight query — is reused across hits and across live-grep keystrokes; only the short line re-parses per hit. No grammar match → plain preview.
+- The highlighting runs **inside** `GrepSource::spawn_grep`'s `spawn_blocking` closure (with the grep), so the per-hit parse never lands on an async runtime worker. The preview text *is* the candidate `display`, so spans are display-relative — no offset math.
+
+Rejected the original "cap by visible-window" sketch: with the per-language query cache, a short-line parse per hit is cheap enough that highlighting the whole (bounded `picker.grep.max-hits`) result set keeps spans ready the instant results seat, avoiding a second async re-decoration pass. Injections are not run (single-line context). Heuristic #1: the cheap active-buffer paths (PH.2) shipped first and proved the UX before this took on per-hit parsing.
 
 ## 8. Rejected alternatives
 

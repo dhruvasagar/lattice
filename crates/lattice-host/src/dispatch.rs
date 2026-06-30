@@ -9377,6 +9377,34 @@ impl Editor {
             .as_ref()
             .map(|s| s.snapshot().collect_symbol_locations())
             .unwrap_or_default();
+        // PH.2: pre-collect per-line syntax-highlight spans off the
+        // render thread (read-only tree query, no reparse — same
+        // shape as `syntax_symbols`). Mapped to `DisplaySpan` here
+        // so `lattice-picker` needs no `lattice-cells` dep; the
+        // `LinesSource` / `OutlineSource` previews colour from these.
+        // `highlight_lines` returns `Err` (stale / no grammar) → no
+        // spans → plain previews (graceful, picker-preview-highlight.md
+        // §6). Line-relative byte offsets are preserved verbatim.
+        let line_count = snap.buffer.line_count();
+        let syntax_highlights: Vec<Vec<lattice_completion::DisplaySpan>> = self
+            .syntax
+            .as_ref()
+            .and_then(|s| s.snapshot().highlight_lines(0, line_count).ok())
+            .map(|per_line| {
+                per_line
+                    .into_iter()
+                    .map(|line_spans| {
+                        line_spans
+                            .into_iter()
+                            .map(|sp| lattice_completion::DisplaySpan {
+                                range: sp.start..sp.end,
+                                style: sp.style,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let active_buffer = ActiveBufferSnapshot {
             buffer_id: active_id.0,
             path,
@@ -9385,6 +9413,7 @@ impl Editor {
             selection,
             buffer: &snap.buffer,
             syntax_symbols,
+            syntax_highlights,
         };
 
         let workspace_root = self.picker_workspace_root_path(snap);

@@ -1,6 +1,6 @@
 # Picker preview syntax highlighting (PH)
 
-**Status:** 🚧 in progress (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition) landed; the §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). PH.2 (Lines/Outline producers) + the per-frame bench remain. Slice plan: `docs/dev/operations/slice-plans/picker-marginalia.md` (PH series).
+**Status:** ✅ v1 complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition) and PH.2 (Lines/Outline producers + per-frame bench) landed — `:picker lines` / `:picker outline` render the buffer's syntax colors, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). PH.3 (Grep arbitrary-file highlighting) stays deferred post-v1 (§7). Slice plan: `docs/dev/operations/slice-plans/picker-marginalia.md` (PH series).
 
 A sibling surface to marginalia (`marginalia.md`), not part of it. Marginalia colors the trailing annotation *columns* (perm/size/location, §8–9 there). This feature colors the **source code inside the row** — the `preview` of a Grep hit, the line text of `:picker lines`, the symbol context of `:picker outline` — using tree-sitter, so a code snippet in a picker reads like it does in the buffer.
 

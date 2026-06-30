@@ -214,6 +214,66 @@ fn location_annotation(path: Option<&str>, line: u32, col: Option<u32>) -> Annot
     }
 }
 
+/// PH.2: clone the host-collected syntax-highlight spans for
+/// buffer `line`, clipped to `display_len` (the candidate's
+/// shown byte length — the line text with its trailing `\n`
+/// trimmed). Spans are already line-relative `DisplaySpan`s, so
+/// they map 1:1 onto a `:picker lines` row whose `display` *is*
+/// the line. Absent / out-of-range line → no spans (plain
+/// preview). A clip landing mid-codepoint is dropped by the
+/// renderer's char-boundary guard, never a panic.
+fn display_spans_for_line(
+    highlights: &[Vec<lattice_completion::DisplaySpan>],
+    line: u32,
+    display_len: usize,
+) -> Vec<lattice_completion::DisplaySpan> {
+    let Some(spans) = highlights.get(line as usize) else {
+        return Vec::new();
+    };
+    spans
+        .iter()
+        .filter(|s| s.range.start < display_len)
+        .map(|s| lattice_completion::DisplaySpan {
+            range: s.range.start..s.range.end.min(display_len),
+            style: s.style,
+        })
+        .collect()
+}
+
+/// PH.2: project a line's syntax spans onto a symbol name shown
+/// in `:picker outline`. The symbol `display` is the name alone
+/// — a substring of its line starting at byte `col` — so the
+/// line-relative spans are clipped to `[col, col + name_len)`
+/// and shifted to be name-relative. Non-overlapping spans drop;
+/// partial overlaps clip. Absent line / no overlap → no spans
+/// (plain preview).
+fn display_spans_for_symbol(
+    highlights: &[Vec<lattice_completion::DisplaySpan>],
+    line: u32,
+    col: u32,
+    name_len: usize,
+) -> Vec<lattice_completion::DisplaySpan> {
+    let Some(spans) = highlights.get(line as usize) else {
+        return Vec::new();
+    };
+    let col = col as usize;
+    let end_bound = col.saturating_add(name_len);
+    spans
+        .iter()
+        .filter_map(|s| {
+            let start = s.range.start.max(col);
+            let end = s.range.end.min(end_bound);
+            if start >= end {
+                return None;
+            }
+            Some(lattice_completion::DisplaySpan {
+                range: (start - col)..(end - col),
+                style: s.style,
+            })
+        })
+        .collect()
+}
+
 /// MARG §9: buffer status markers — an active `•` and/or a dirty `+`,
 /// each in its own slot. Empty when neither applies (clean, inactive).
 fn status_segments(dirty: bool, active: bool) -> Vec<AnnotationSegment> {
@@ -671,6 +731,13 @@ impl PickerSourceGenerator for LinesSource {
             // to a `location` marginalia cell.
             let mut cand = RawCandidate::plain(text.to_string(), CandidateKind::Plain);
             cand.annotations = vec![location_annotation(None, line + 1, None)];
+            // PH.2: syntax-color the line preview. The host pre-collected
+            // per-line spans (line-relative byte offsets); the line text
+            // *is* the `display`, so the spans map 1:1. Clip to the
+            // trimmed display length (the trailing `\n` was stripped);
+            // the renderer additionally guards char boundaries. No spans
+            // for this line → plain preview.
+            cand.display_spans = display_spans_for_line(&ctx.active_buffer.syntax_highlights, line, cand.display.len());
             // Slice 7b.4: typed accept payload.
             cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
@@ -1528,6 +1595,14 @@ impl PickerSourceGenerator for OutlineSource {
                 // line number moves to a `location` cell.
                 let mut cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
                 cand.annotations = vec![location_annotation(None, line + 1, None)];
+                // PH.2: colour the symbol name with its line's syntax
+                // spans, projected onto the name column.
+                cand.display_spans = display_spans_for_symbol(
+                    &ctx.active_buffer.syntax_highlights,
+                    *line,
+                    *col,
+                    name.len(),
+                );
                 // Slice 7b.4: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                     buffer_id: lattice_core::BufferId(buffer_id),

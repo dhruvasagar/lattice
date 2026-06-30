@@ -82,6 +82,20 @@ pub struct ActiveBufferSnapshot<'a> {
     /// no parser registered for the buffer's language. Drives
     /// `:picker outline`.
     pub syntax_symbols: Vec<(String, u32, u32)>,
+    /// PH.2: per-line syntax-highlight spans for the active
+    /// buffer, one inner `Vec` per buffer line, each span's
+    /// `range` a *line-relative* byte range. Pre-collected by
+    /// the host via `SyntaxSnapshot::highlight_lines` (a
+    /// read-only tree query run off the render thread, mirroring
+    /// the `syntax_symbols` precedent) and already mapped to
+    /// `DisplaySpan` host-side so this crate needs no
+    /// `lattice-cells` dependency. Empty when no grammar is
+    /// registered / the snapshot is stale → plain previews.
+    /// `LinesSource` clones the matching line's spans into a
+    /// candidate's `display_spans`; `OutlineSource` clips them
+    /// to the symbol-name column. See
+    /// `docs/dev/architecture/picker-preview-highlight.md` §6.
+    pub syntax_highlights: Vec<Vec<lattice_completion::DisplaySpan>>,
 }
 
 /// One buffer in the registry, projected for picker rows.

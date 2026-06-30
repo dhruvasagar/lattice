@@ -117,18 +117,21 @@ Acceptance: synthetic candidate with `display_spans` renders multi-colored with 
 
 **Bench deferred to PH.2.** The §9 per-frame resolution bench is most meaningful once a producer (PH.2) emits real spans and a picker render exercises the O(visible chars) path end-to-end; PH.1's synthetic data would measure the resolver in isolation. Lands with PH.2.
 
-### PH.2 — Lines + Outline producers (cheap path) 📝
+### PH.2 — Lines + Outline producers (cheap path) ✅
 
 The user-visible payoff. Depends on PH.1 (and MP.4, which already moves these sources' line text into `display`).
 
-Changes:
+Changes (landed):
 
-1. `crates/lattice-picker/src/context.rs` — add per-line highlight spans to `ActiveBufferSnapshot` (mirror the `syntax_symbols` precedent).
-2. `crates/lattice-host/src/...` `build_picker_context` — pre-collect spans via `snapshot.highlight_lines(lo, hi)` (read-only, no reparse) and populate the new field.
-3. `LinesSource` / `OutlineSource` — map the spans for each candidate's line into `display_spans` offset to `display`; no spans → empty (plain preview).
-4. Tests: parsed fixture buffer → `LinesSource`/`OutlineSource` emit `display_spans` aligned to `display`; unparsed / no-grammar buffer → none; assert no `highlight_lines` call is reachable from `Render::render` (off-thread proof).
+1. `crates/lattice-picker/src/context.rs` — `ActiveBufferSnapshot` gains `syntax_highlights: Vec<Vec<DisplaySpan>>` (per-line, line-relative byte offsets; mirrors the `syntax_symbols` precedent). Mapped to `DisplaySpan` host-side so `lattice-picker` needs no `lattice-cells` dep.
+2. `crates/lattice-host/src/dispatch.rs` `build_picker_context` — pre-collects spans via `SyntaxSnapshot::highlight_lines(0, line_count)` (read-only tree query off the render thread, same shape as `syntax_symbols`) and maps `StyledSpan → DisplaySpan`. `Err`/no-grammar → empty → plain previews.
+3. `LinesSource` / `OutlineSource` (`picker_sources.rs`) — `display_spans_for_line` clones the matching line's spans (1:1, clipped to the trimmed `display` length); `display_spans_for_symbol` clips the line spans to `[col, col+name_len)` and shifts them name-relative for the outline symbol column. No spans → empty (plain preview).
+4. Tests: parsed Rust buffer → `LinesSource` emits keyword-styled `display_spans` aligned to `display` (end-to-end through the real host highlight path); no-grammar buffer → none (plain); `OutlineSource` projection asserted exactly via synthesised spans. **Off-thread proof is structural:** `lattice-picker` has *no* `lattice-syntax` dependency, so a source physically cannot call `highlight_lines`; the only call site is `build_picker_context`, which runs on the editor-actor thread (the `:picker` dispatch path), never in `Render::render`.
+5. Bench (deferred from PH.1): `picker_preview/resolve_viewport_4000_chars` in `lattice-syntax/benches/highlight.rs` — ~6.8 µs for a 4000-char viewport (~1.7 ns/char), recorded in `benchmarks.md`. Confirms §3 O(visible chars).
 
-Acceptance: `:picker lines` / `:picker outline` render code previews with the buffer's syntax colors on both peers, recoloring on `:colorscheme`. Bisect-friendly: one commit.
+Acceptance: `:picker lines` / `:picker outline` render code previews with the buffer's syntax colors on both peers (PH.1 paint), recoloring on `:colorscheme`. Green. Bisect-friendly: one commit.
+
+**PH series (v1) complete** — `:picker lines` / `:picker outline` show syntax-colored previews. Remaining: PH.3 (Grep arbitrary-file highlighting) is deferred post-v1 (design only).
 
 ### PH.3 — Grep arbitrary-file highlighting 📝 **post-v1 (design only)**
 

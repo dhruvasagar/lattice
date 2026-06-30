@@ -230,6 +230,26 @@ cell that's ~1.6 µs per paint. Renderer-side per-segment slot resolution
 allocation, no HashMap) is O(1) per segment and not separately benched;
 its cost is dominated by the `display_text` concat measured here.
 
+### PH — picker preview syntax-highlight resolution (2026-07-01)
+
+Bench: `cargo bench -p lattice-syntax --bench highlight -- picker_preview`.
+The PH feature colors the *code text inside* picker rows (`:picker lines`
+/ `:picker outline`) with the buffer's syntax colors. Spans are produced
+off the render thread at candidate-build time (`build_picker_context` →
+`SyntaxSnapshot::highlight_lines`); the render-seam cost is one
+`resolve_syntax_style` lookup per display char (picker-preview-highlight.md
+§3, O(visible chars)). This bench isolates that lookup.
+
+| Bench / shape | Median time | Notes |
+|---|---|---|
+| `picker_preview/resolve_viewport_4000_chars` | ~6.8 µs | 4000 `resolve_syntax_style` calls (50 rows × 80 cols, cycling 8 common code styles) — ~1.7 ns/char. |
+
+A full picker page worth of syntax resolution (~4000 chars) costs ~6.8 µs
+— deep inside a single 120 Hz frame (8.3 ms), and the *production* of the
+spans (the tree query) never runs on the render thread at all. Confirms
+the §3 O(visible chars) claim: the per-char resolution is a `match` +
+theme-table index, no allocation, no parsing.
+
 **Regression envelope:** `styled_marginalia_columns_1000` past ~300 µs,
 or `styled_perm_10seg` past 150 ns, signals an unintended allocation in
 the column-layout or concat path — review against §8.7.

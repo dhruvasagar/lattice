@@ -19,7 +19,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, c
 
 use lattice_protocol::Position;
 use lattice_protocol::edit::EditDelta;
-use lattice_syntax::{Lang, Syntax};
+use lattice_syntax::{Lang, Style, Syntax, resolve_syntax_style};
 
 fn rust_corpus(n_fns: usize) -> String {
     let mut s = String::with_capacity(n_fns * 80);
@@ -255,6 +255,45 @@ fn reparse_full_baseline(c: &mut Criterion) {
     g.finish();
 }
 
+/// PH.1/PH.2: the per-char syntax-color resolution cost the picker
+/// preview render pays — `resolve_syntax_style` once per display
+/// char (picker-preview-highlight.md §3, O(visible chars)). The
+/// spans are *produced* off-thread at candidate-build time; this
+/// measures only the render-seam lookup over a viewport-sized run
+/// (50 rows × 80 cols) cycling the common code styles, making the
+/// §3 claim examinable in CI.
+fn picker_preview_resolution(c: &mut Criterion) {
+    use lattice_theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry};
+    let reg = InMemoryThemeRegistry::with_defaults();
+    let resolved = reg.resolved();
+    let ids = BuiltinElementIds::capture(&reg);
+    let styles = [
+        Style::Keyword,
+        Style::Function,
+        Style::Type,
+        Style::String,
+        Style::Number,
+        Style::Comment,
+        Style::Variable,
+        Style::Default,
+    ];
+    const VIEWPORT_CHARS: usize = 50 * 80;
+    c.bench_function("picker_preview/resolve_viewport_4000_chars", |b| {
+        b.iter(|| {
+            let mut acc = 0u32;
+            for i in 0..VIEWPORT_CHARS {
+                let style = resolve_syntax_style(
+                    black_box(&resolved),
+                    black_box(&ids),
+                    styles[i % styles.len()],
+                );
+                acc = acc.wrapping_add(style.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0));
+            }
+            black_box(acc);
+        });
+    });
+}
+
 criterion_group!(
     highlight,
     highlight_rust,
@@ -264,5 +303,6 @@ criterion_group!(
     tree_edit_single_char,
     reparse_incremental_single_char_change,
     reparse_full_baseline,
+    picker_preview_resolution,
 );
 criterion_main!(highlight);

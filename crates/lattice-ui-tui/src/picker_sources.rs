@@ -826,6 +826,108 @@ mod tests {
         assert_eq!(loc.display_text(), "3");
     }
 
+    /// PH.2: a parsed buffer's `:picker lines` rows carry
+    /// `display_spans` syntax-aligned to the line text — the host
+    /// pre-collects per-line spans via `highlight_lines` and the
+    /// source maps them 1:1. Proves the end-to-end wiring (host
+    /// build_picker_context → DisplaySpan → LinesSource).
+    #[test]
+    fn lines_source_emits_display_spans_for_parsed_buffer() {
+        let src = "fn foo() {}\n";
+        let mut app = app_with(src, 5);
+        // Attach a parsed Rust tree (mirrors the `set_rust_syntax`
+        // app-module helper, inlined here since it's `pub(super)`).
+        let mut syn = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .expect("rust syntax");
+        syn.parse_at(src, 0);
+        app.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = LinesSource::new();
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+        let first = &pairs[0].0;
+        assert_eq!(first.display, "fn foo() {}");
+        assert!(
+            !first.display_spans.is_empty(),
+            "a parsed code line should carry syntax spans"
+        );
+        // Every span stays within the displayed byte length.
+        assert!(
+            first
+                .display_spans
+                .iter()
+                .all(|s| s.range.end <= first.display.len()),
+            "spans must be clipped to the display run"
+        );
+        // The leading `fn` keyword resolves to the Keyword style.
+        assert!(
+            first
+                .display_spans
+                .iter()
+                .any(|s| s.style == lattice_cells::style::Style::Keyword),
+            "expected a keyword-styled span for `fn`"
+        );
+    }
+
+    /// PH.2: with no grammar attached, `:picker lines` rows carry
+    /// no `display_spans` — today's plain preview, no panic.
+    #[test]
+    fn lines_source_no_grammar_emits_no_display_spans() {
+        let app = app_with("fn foo() {}\n", 5); // no syntax handle attached
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = LinesSource::new();
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+        assert!(
+            pairs.iter().all(|(c, _)| c.display_spans.is_empty()),
+            "no grammar → plain preview"
+        );
+    }
+
+    /// PH.2: `:picker outline` projects a line's syntax spans
+    /// onto the symbol-name column — line-relative spans clipped
+    /// to `[col, col+name_len)` and shifted to be name-relative.
+    /// Synthesised so the projection math is asserted exactly,
+    /// independent of the live parse.
+    #[test]
+    fn outline_source_projects_display_spans_onto_symbol_name() {
+        let app = app_with("fn foo() {}\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let mut ctx = app.build_picker_context(&snap);
+        // "foo" symbol at line 0, byte-col 3.
+        ctx.active_buffer.syntax_symbols = vec![("foo".to_string(), 0, 3)];
+        // Line 0 spans: "fn" keyword (0..2), "foo" function (3..6).
+        ctx.active_buffer.syntax_highlights = vec![vec![
+            lattice_completion::DisplaySpan {
+                range: 0..2,
+                style: lattice_cells::style::Style::Keyword,
+            },
+            lattice_completion::DisplaySpan {
+                range: 3..6,
+                style: lattice_cells::style::Style::Function,
+            },
+        ]];
+        let source = OutlineSource::new();
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+        let foo = &pairs[0].0;
+        assert_eq!(foo.display, "foo");
+        // Only the function span survives, shifted to name-relative
+        // 0..3; the keyword span (outside the name column) is dropped.
+        assert_eq!(foo.display_spans.len(), 1);
+        assert_eq!(foo.display_spans[0].range, 0..3);
+        assert_eq!(
+            foo.display_spans[0].style,
+            lattice_cells::style::Style::Function
+        );
+    }
+
     /// P.5: marks source returns `Err` when no marks set.
     #[test]
     fn marks_source_empty_errors() {

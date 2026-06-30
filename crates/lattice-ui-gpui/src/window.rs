@@ -1056,6 +1056,7 @@ impl EditorView {
         theme: &GpuiTheme,
         active_idx: usize,
         row_px: f32,
+        pane_rows: &std::collections::HashMap<usize, u32>,
     ) -> gpui::Div {
         // 2026-05-27: split branches drop `.size_full()`. With both
         // `.flex_grow()` and `.size_full()`, the split's hypothetical
@@ -1100,7 +1101,9 @@ impl EditorView {
         // both invariants.
         const RATIO_SCALE: f32 = 1_000_000.0;
         match node {
-            PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx, row_px),
+            PaneNode::Leaf(idx) => {
+                self.paint_pane(*idx, theme, *idx == active_idx, row_px, pane_rows)
+            }
             PaneNode::HorizontalSplit { top, bottom, ratio } => {
                 let ratio = ratio.clamp(0.05, 0.95);
                 div()
@@ -1108,7 +1111,7 @@ impl EditorView {
                     .flex_col()
                     .flex_grow()
                     .child(
-                        self.paint_pane_tree(top, theme, active_idx, row_px)
+                        self.paint_pane_tree(top, theme, active_idx, row_px, pane_rows)
                             .flex_grow()
                             .flex_basis(px(ratio * RATIO_SCALE))
                             .min_h(px(0.0))
@@ -1116,7 +1119,7 @@ impl EditorView {
                             .border_color(rgb(theme.popup_border)),
                     )
                     .child(
-                        self.paint_pane_tree(bottom, theme, active_idx, row_px)
+                        self.paint_pane_tree(bottom, theme, active_idx, row_px, pane_rows)
                             .flex_grow()
                             .flex_basis(px((1.0 - ratio) * RATIO_SCALE))
                             .min_h(px(0.0)),
@@ -1129,7 +1132,7 @@ impl EditorView {
                     .flex_row()
                     .flex_grow()
                     .child(
-                        self.paint_pane_tree(left, theme, active_idx, row_px)
+                        self.paint_pane_tree(left, theme, active_idx, row_px, pane_rows)
                             .flex_grow()
                             .flex_basis(px(ratio * RATIO_SCALE))
                             .min_w(px(0.0))
@@ -1137,7 +1140,7 @@ impl EditorView {
                             .border_color(rgb(theme.popup_border)),
                     )
                     .child(
-                        self.paint_pane_tree(right, theme, active_idx, row_px)
+                        self.paint_pane_tree(right, theme, active_idx, row_px, pane_rows)
                             .flex_grow()
                             .flex_basis(px((1.0 - ratio) * RATIO_SCALE))
                             .min_w(px(0.0)),
@@ -1338,6 +1341,7 @@ impl EditorView {
         theme: &GpuiTheme,
         is_active: bool,
         row_px: f32,
+        pane_rows: &std::collections::HashMap<usize, u32>,
     ) -> gpui::Div {
         // Slice 3c.final.E.swap: paint reads route through the
         // App's own `render_state` Arc (cloned from
@@ -1383,8 +1387,19 @@ impl EditorView {
             // always paint the block so the user can still see
             // where each shell's cursor sits.
             let insert_active = is_active && ad.terminal_insert_active;
-            let inner =
-                self.build_terminal_inner(pane, &rs_guard, theme, insert_active, is_active, row_px);
+            // Bound to THIS frame's fresh pane-row budget (falls back to the
+            // published `viewport_height` if absent) so the terminal never
+            // overflows a height-reduced (horizontal-split) pane.
+            let fresh_rows = pane_rows.get(&pane_idx).copied().unwrap_or(pane.viewport_height);
+            let inner = self.build_terminal_inner(
+                pane,
+                &rs_guard,
+                theme,
+                insert_active,
+                is_active,
+                row_px,
+                fresh_rows,
+            );
             // ML.2: terminal panes get the same zone/per-Span modeline as
             // every other kind (shared resolver) — no kind-specific status.
             let status_row = Self::modeline_row(pane, is_active, &rs_guard);
@@ -2451,6 +2466,7 @@ impl EditorView {
         insert_active: bool,
         is_active: bool,
         row_px: f32,
+        pane_rows: u32,
     ) -> AnyElement {
         // ML.2: returns the inner content only; the per-pane modeline row
         // is built uniformly by `Self::modeline_row` at the call site (no
@@ -2663,7 +2679,7 @@ impl EditorView {
         // published row budget and show the BOTTOM rows (recent output + the
         // cursor), the same O(viewport) discipline oil / file-tree use. A
         // vertical split keeps full height, so this is a no-op there.
-        let row_start = terminal_row_start(snap.rows, pane.viewport_height);
+        let row_start = terminal_row_start(snap.rows, pane_rows);
         let mut rows: Vec<gpui::Div> = Vec::with_capacity((snap.rows - row_start) as usize);
         for r in row_start..snap.rows {
             // 2026-05-27: lock each terminal row to the editor's
@@ -3316,14 +3332,28 @@ impl Render for EditorView {
         let resolved_theme = render_state.resolved_theme.clone();
         let theme_ids = render_state.theme_ids;
         let active_idx = render_state.panes.tree.active_index();
+        // THIS frame's freshly-computed per-pane row budget, keyed by leaf
+        // index. `pane.viewport_height` (published) lags by a frame because
+        // `set_pane_viewport` rides the actor — so a terminal pane reading it
+        // during paint would size against the PRE-split height and never
+        // converge. The fresh map bounds the terminal to its current pane.
+        let pane_row_map: std::collections::HashMap<usize, u32> = pane_geometries
+            .iter()
+            .map(|(idx, rows, _)| (*idx, *rows))
+            .collect();
         let document_area = self
             .paint_pane_tree(
                 render_state.panes.tree.root(),
                 &theme,
                 active_idx,
                 estimated_row_px,
+                &pane_row_map,
             )
-            .flex_grow();
+            .flex_grow()
+            // Defensive: never let pane content (a terminal's flex_shrink_0
+            // rows) force the document area to grow and push the global
+            // cmdline off-screen.
+            .min_h(px(0.0));
         #[cfg(feature = "profile-frames")]
         let after_paint = std::time::Instant::now();
 

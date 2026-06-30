@@ -298,6 +298,90 @@ async fn wrong_token_is_rejected() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Resilience: a blocking `openDiff` review must NOT freeze the connection,
+/// and dropping the connection mid-review must reject + close that session's
+/// diffs (so the agent is never stranded and panes don't leak). This is the
+/// `(A)` decoupling — `openDiff` runs on its own task while the read loop keeps
+/// serving other frames; teardown fires `closeAllDiffTabs` for the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_diff_does_not_block_loop_and_drop_rejects_pending_diff() {
+    use lattice_claude_code::inbound::{ClaudeCodeInboundRequest, InboundKind};
+    use lattice_diff::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
+    use lattice_mode::inbound::make_inbound_raw;
+    use tokio::sync::Notify;
+
+    let dir = unique_dir("resilient");
+    let handle = spawn(
+        ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: dir.clone(),
+        },
+        bus(),
+        &tokio::runtime::Handle::current(),
+    );
+    // Wire a writes bus + diff bus so `openDiff` reaches a (test-played) host
+    // and the teardown's `closeAllDiffTabs` is observable.
+    let (writes_bus, mut writes_rx) =
+        make_inbound_raw::<ClaudeCodeInboundRequest>(Arc::new(Notify::new()));
+    let (diff_bus, mut diff_rx): (ProgrammaticDiffBus, _) =
+        make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
+    handle.install_services(None, None, writes_bus, Some(diff_bus));
+    handle.start();
+    let (port, token) = wait_for_lockfile(&dir).await;
+
+    let mut request = format!("ws://127.0.0.1:{port}")
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert(AUTH_HEADER, HeaderValue::from_str(&token).unwrap());
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("authorized connect succeeds");
+
+    // Fire openDiff (id=10). It blocks server-side awaiting the verdict.
+    send_request(
+        &mut ws,
+        10,
+        "tools/call",
+        Some(json!({
+            "name": "openDiff",
+            "arguments": { "old_file_path": "/a.rs", "new_file_contents": "x", "tab_name": "t" },
+        })),
+    )
+    .await;
+    // The host (this test) receives the programmatic diff request — DON'T
+    // resolve it; the review stays pending.
+    let diff_req = tokio::time::timeout(Duration::from_secs(5), diff_rx.recv())
+        .await
+        .expect("diff request arrives")
+        .expect("diff bus open");
+    assert_eq!(diff_req.origin_session, 1, "first connection's conn_id");
+
+    // The loop is NOT blocked: a follow-up tools/list responds while the review
+    // is still pending. (Before the fix this would deadlock.)
+    send_request(&mut ws, 11, "tools/list", None).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_response(&mut ws))
+        .await
+        .expect("tools/list responds while a review is pending");
+    assert_eq!(resp.id, RequestId::Number(11));
+
+    // Drop the connection mid-review. Teardown must reject + close this
+    // connection's diffs via `closeAllDiffTabs` on the writes bus.
+    drop(ws);
+    let inbound = tokio::time::timeout(Duration::from_secs(5), writes_rx.recv())
+        .await
+        .expect("teardown fires a write")
+        .expect("writes bus open");
+    assert!(
+        matches!(inbound.kind, InboundKind::CloseAllDiffTabs { origin_session } if origin_session == 1),
+        "dropped connection rejects its own pending diffs",
+    );
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_writes_lockfile_and_stop_removes_it() {
     let dir = unique_dir("life");

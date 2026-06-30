@@ -620,46 +620,85 @@ async fn serve_connection(
     });
 
     // Read loop: handle incoming MCP frames; responses ride the same writer.
-    // Capture the result so teardown runs on both the ok and error paths.
-    let result: Result<()> = async {
-        loop {
-            let frame = tokio::select! {
-                maybe = read.next() => match maybe {
-                    Some(f) => f?,
-                    None => break, // peer closed the socket
-                },
-                // I7: the server stopped — the shutdown sender dropped, so
-                // `recv()` returns `Closed`. Either arm closes this connection.
-                _ = shutdown_rx.recv() => break,
-            };
-            if frame.is_close() {
-                break;
-            }
-            // MCP frames are JSON text; ignore binary / ping / pong (pings are
-            // auto-ponged by the stream's read machinery).
-            let Ok(text) = frame.to_text() else {
-                continue;
-            };
+    // The blocking `openDiff` tool is dispatched on its OWN task (tracked in
+    // `blocking`) so its unbounded, no-timeout verdict-wait never blocks the
+    // loop — the loop keeps polling `read.next()` + `shutdown_rx`, so a closed
+    // socket or `:claude-code-stop` is observed promptly even while a review is
+    // pending, and the agent can't be stranded forever. Every non-blocking tool
+    // stays inline + ordered. Capture the result so teardown runs on every path.
+    let mut blocking: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    let result: Result<()> = 'read: loop {
+        let frame = tokio::select! {
+            maybe = read.next() => match maybe {
+                Some(Ok(f)) => f,
+                Some(Err(e)) => break 'read Err(e.into()),
+                None => break 'read Ok(()), // peer closed the socket
+            },
+            // I7: the server stopped — the shutdown sender dropped, so
+            // `recv()` returns `Closed`. Either arm closes this connection.
+            _ = shutdown_rx.recv() => break 'read Ok(()),
+        };
+        if frame.is_close() {
+            break 'read Ok(());
+        }
+        // MCP frames are JSON text; ignore binary / ping / pong (pings are
+        // auto-ponged by the stream's read machinery).
+        let Ok(text) = frame.to_text() else {
+            continue;
+        };
+        if dispatch::is_blocking_tool_call(text.as_bytes()) {
+            // The verdict-wait posts its response (correlated by request id)
+            // when the user resolves the diff — or when teardown below rejects
+            // it. Meanwhile the loop moves straight on to the next frame.
+            let ctx = ctx.clone();
+            let out = out_tx.clone();
+            let text = text.to_owned();
+            blocking.spawn(async move {
+                for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
+                    if let Some(payload) = serialize_outgoing(&outgoing) {
+                        let _ = out.send(payload);
+                    }
+                }
+            });
+        } else {
             for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
-                let payload = match &outgoing {
-                    Outgoing::Response(r) => serde_json::to_string(r)?,
-                    Outgoing::Notification(n) => serde_json::to_string(n)?,
+                let Some(payload) = serialize_outgoing(&outgoing) else {
+                    continue;
                 };
                 if out_tx.send(payload).is_err() {
-                    return Ok(()); // writer gone — connection is finished
+                    break 'read Ok(()); // writer gone — connection is finished
                 }
             }
         }
-        Ok(())
-    }
-    .await;
+    };
 
-    // Teardown: dropping the read loop's `out_tx` + the forwarder's clone ends
-    // the writer; abort the forwarder so its `notify_rx` is released promptly.
+    // Teardown (runs on socket close, error, or stop). A connection that drops
+    // mid-review must not strand the agent or leak diff panes: reject + close
+    // every diff THIS connection opened (idempotent — a no-op when it opened
+    // none), so the host fires `DIFF_REJECTED` + tears the transient panes down.
+    // Then abort any in-flight `openDiff` handlers (their reply can't reach a
+    // dead socket anyway) so they release their `out_tx` clones, and drain the
+    // writer.
+    if let Some(bus) = ctx.writes.clone() {
+        tokio::spawn(async move {
+            let _ = crate::writes::close_all_diff_tabs(Some(&bus), conn_id).await;
+        });
+    }
+    blocking.abort_all();
     drop(out_tx);
     forwarder.abort();
     let _ = writer.await;
     result
+}
+
+/// Serialize one outbound frame for the WS writer. A serialization failure
+/// (never expected for a well-formed `Response`/`Notification`) drops just
+/// that frame rather than tearing the connection down.
+fn serialize_outgoing(outgoing: &Outgoing) -> Option<String> {
+    match outgoing {
+        Outgoing::Response(r) => serde_json::to_string(r).ok(),
+        Outgoing::Notification(n) => serde_json::to_string(n).ok(),
+    }
 }
 
 #[cfg(test)]

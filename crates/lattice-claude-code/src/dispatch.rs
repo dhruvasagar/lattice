@@ -90,6 +90,27 @@ pub async fn dispatch_frame(bytes: &[u8], ctx: &DispatchContext) -> Vec<Outgoing
     }
 }
 
+/// True if `frame` is a `tools/call` request for the blocking `openDiff`
+/// tool — the only tool whose handler ([`crate::diff::open_diff`]) awaits an
+/// unbounded, user-paced verdict with no timeout. The connection dispatches
+/// these on their OWN task so the per-connection read loop is never blocked by
+/// a pending review: it keeps polling the socket + shutdown signal (so a
+/// dropped connection or `:claude-code-stop` is observed promptly and the
+/// pending review can be rejected), and other tool calls still flow. Every
+/// non-blocking tool stays inline + ordered. Malformed / non-matching frames
+/// return `false` (dispatched inline, where the parse error is reported).
+pub fn is_blocking_tool_call(frame: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(frame) else {
+        return false;
+    };
+    value.get("method").and_then(|m| m.as_str()) == Some("tools/call")
+        && value
+            .get("params")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            == Some("openDiff")
+}
+
 /// Route one request to its MCP response.
 pub async fn handle_request(req: &Request, ctx: &DispatchContext) -> Response {
     match req.method.as_str() {
@@ -322,5 +343,29 @@ mod tests {
         let out = dispatch_frame(&bytes, &test_ctx()).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(&out[0], Outgoing::Response(r) if r.id == RequestId::Number(9)));
+    }
+
+    #[test]
+    fn is_blocking_tool_call_matches_only_open_diff() {
+        let open_diff = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "openDiff", "arguments": {} },
+        });
+        assert!(is_blocking_tool_call(open_diff.to_string().as_bytes()));
+
+        // Other tools/call names are NOT blocking (dispatched inline).
+        let save = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "saveDocument", "arguments": {} },
+        });
+        assert!(!is_blocking_tool_call(save.to_string().as_bytes()));
+
+        // Non-tools/call methods are not blocking.
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        assert!(!is_blocking_tool_call(list.to_string().as_bytes()));
+
+        // Malformed input never matches (it falls through to inline parse-error).
+        assert!(!is_blocking_tool_call(b"{ not json"));
+        assert!(!is_blocking_tool_call(b""));
     }
 }

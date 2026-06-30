@@ -7967,6 +7967,51 @@ mod tests {
         assert_eq!(x.style.fg, Some(want(ids.completion_annotation_perm_exec)));
     }
 
+    /// MR.4: a theme change recolors styled marginalia on the TUI peer —
+    /// overriding the `perm.write` element changes the rendered `w`
+    /// segment's fg through `candidate_to_line`.
+    #[test]
+    fn styled_segment_recolors_on_theme_change_tui() {
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, ElementName, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let ids = BuiltinElementIds::capture(&reg);
+        let perm = lattice_completion::Annotation::Styled {
+            category: "perm".into(),
+            segments: vec![lattice_completion::AnnotationSegment {
+                text: "w".into(),
+                slot: "completion.annotation.perm.write".into(),
+            }],
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw: lattice_completion::RawCandidate::plain(
+                "f",
+                lattice_completion::CandidateKind::Plain,
+            ),
+            score: lattice_completion::MatchScore::PERFECT,
+            match_ranges: vec![],
+        };
+        let mut c = lattice_completion::RenderedCandidate::from_scored(scored);
+        c.annotations = vec![perm];
+        let cols = lattice_completion::AnnotationColumns::from_visible(std::iter::once(&c));
+        let w_fg = |reg: &InMemoryThemeRegistry| {
+            let r = reg.resolved();
+            let line = super::candidate_to_line(&c, false, 1, &cols, &r, &ids);
+            line.spans
+                .iter()
+                .find(|s| s.content.as_ref() == "w")
+                .map(|s| s.style.fg)
+        };
+        let before = w_fg(&reg);
+        reg.set_override(
+            ElementName::from_static("completion.annotation.perm.write"),
+            StyleSpec::new().fg("green"),
+        );
+        let after = w_fg(&reg);
+        assert_ne!(before, after, "styled marginalia tracks the active theme on TUI");
+    }
+
     /// 4.4.h: a seeded semantic-tokens cache repaints the
     /// foreground color within each token's byte range.
     #[test]

@@ -210,6 +210,30 @@ crossing 100 ns (or `Keybinding` crossing 200 ns) suggests
 an unintended allocation has crept in — the contract is
 "borrow when possible, format only when structured."
 
+### MR §8 — styled (per-segment) marginalia (2026-06-30)
+
+The file/dir picker emits `Annotation::Styled` cells (a 10-segment
+permission string + size + mtime). Two new costs, both confirming the
+§8.7 "O(visible × segments), no measurable cost" claim:
+
+| Bench / shape                       | Median time | Notes |
+|-------------------------------------|------------|-------|
+| `styled_marginalia_columns_1000`    | ~142 µs    | `AnnotationColumns::from_visible` over 1000 file rows, each with a perm (10-seg) + size + mtime cell. Worst case — a real picker page is ~30 visible (≈4 µs). |
+| `annotation_display_text/styled_perm_10seg` | ~53 ns | Multi-segment `display_text()` concat for a 10-segment perm cell (the owning case alongside `Keybinding`). |
+
+The realistic page (~30 rows) costs ~4 µs to lay out — the same
+negligible profile as the command-completion annotators. The 10-segment
+`display_text()` concat at ~53 ns is ~2× the keybinding variant (it
+joins 10 single-char `Arc<str>`s into a String); at 30 rows × 1 perm
+cell that's ~1.6 µs per paint. Renderer-side per-segment slot resolution
+(`BuiltinElementIds::annotation_slot` — a `match` over slot keys, no
+allocation, no HashMap) is O(1) per segment and not separately benched;
+its cost is dominated by the `display_text` concat measured here.
+
+**Regression envelope:** `styled_marginalia_columns_1000` past ~300 µs,
+or `styled_perm_10seg` past 150 ns, signals an unintended allocation in
+the column-layout or concat path — review against §8.7.
+
 ### What this bench does NOT cover
 
 - **Reverse-cache build cost** at trie-rebuild time

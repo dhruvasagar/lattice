@@ -2,7 +2,7 @@
 
 > **Status (2026-06-03):** §§1–7 landed as the `MARG.*` slice series (typed `Annotation` enum, keybinding annotator, GPUI parity, MARG.5 column layout) plus T.6 (GPUI annotation colors read from theme). Closed slice plan: `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
 >
-> **Status (2026-06-30):** §8 (rich per-segment marginalia) added — extends the §4 data model with `Annotation::Styled` so a single column cell can be colored per-segment (eza-style permission bits), registers the file/dir picker as the first file-metadata producer, and closes the remaining TUI theme-wiring gap. Slice plan: `docs/dev/operations/slice-plans/marginalia-rich.md`.
+> **Status (2026-06-30):** §8 (rich per-segment marginalia) **landed** as the `MR.1–MR.4` slice series — `Annotation::Styled` colors a single column cell per-segment (eza-style permission bits), the file/dir picker is the first file-metadata producer (perms / size / mtime), and the remaining TUI theme-wiring gap is closed. Marginalia recolors live on `:colorscheme` on both peers; bench in `benchmarks.md` (MR §8). Slice plan: `docs/dev/operations/slice-plans/marginalia-rich.md`.
 
 ## 1. Vision
 

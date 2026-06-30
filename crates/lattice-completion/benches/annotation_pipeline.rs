@@ -39,8 +39,9 @@ use std::sync::Arc;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lattice_completion::{
-    Annotation, CandidateData, CandidateKind, DocSnippetAnnotator, KeybindingAnnotator,
-    KeymapReverseLookup, KindLabelAnnotator, MatchScore, RawCandidate, RenderedCandidate,
+    Annotation, AnnotationColumns, AnnotationSegment, CandidateData, CandidateKind,
+    DocSnippetAnnotator, KeybindingAnnotator, KeymapReverseLookup, KindLabelAnnotator, MatchScore,
+    RawCandidate, RenderedCandidate,
 };
 use lattice_grammar::source::SourceLocation;
 use lattice_protocol::KeyChord;
@@ -95,6 +96,71 @@ fn make_candidates(n: usize) -> Vec<RenderedCandidate> {
             annotations: Vec::new(),
         })
         .collect()
+}
+
+/// MARG §8: file-picker-shaped candidates — each carries a 10-segment
+/// `Styled` permission cell plus single-segment size + mtime cells, the
+/// exact set `metadata_annotations` produces. Used to bench the
+/// per-frame `AnnotationColumns` layout + `display_text` concat cost the
+/// renderer pays when a styled marginalia column is visible.
+fn seg(ch: char, slot: &'static str) -> AnnotationSegment {
+    AnnotationSegment { text: Arc::from(ch.to_string()), slot: Arc::from(slot) }
+}
+
+fn make_styled_file_candidates(n: usize) -> Vec<RenderedCandidate> {
+    let perm = || Annotation::Styled {
+        category: Arc::from("perm"),
+        segments: vec![
+            seg('d', "completion.annotation.perm.type"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('w', "completion.annotation.perm.write"),
+            seg('x', "completion.annotation.perm.exec"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('-', "completion.annotation.perm.none"),
+            seg('x', "completion.annotation.perm.exec"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('-', "completion.annotation.perm.none"),
+            seg('x', "completion.annotation.perm.exec"),
+        ],
+    };
+    (0..n)
+        .map(|i| {
+            let mut raw = RawCandidate::plain(format!("src/module-{i:04}.rs"), CandidateKind::File);
+            raw.annotations = vec![
+                perm(),
+                Annotation::Styled {
+                    category: Arc::from("size"),
+                    segments: vec![AnnotationSegment {
+                        text: Arc::from("1.2K"),
+                        slot: Arc::from("completion.annotation.size"),
+                    }],
+                },
+                Annotation::Styled {
+                    category: Arc::from("mtime"),
+                    segments: vec![AnnotationSegment {
+                        text: Arc::from("3 days ago"),
+                        slot: Arc::from("completion.annotation.mtime"),
+                    }],
+                },
+            ];
+            let annotations = raw.annotations.clone();
+            RenderedCandidate { raw, score: MatchScore::PERFECT, match_ranges: Vec::new(), annotations }
+        })
+        .collect()
+}
+
+fn bench_styled_marginalia_columns_1000(c: &mut Criterion) {
+    // Per-frame cost of laying out a styled marginalia column over the
+    // visible candidate set: `AnnotationColumns::from_visible` walks
+    // every candidate's annotations and `display_text()`s each cell to
+    // size the columns. Locks the §8.7 "O(visible × segments), no
+    // measurable cost" claim for the file/dir picker's perm/size/mtime
+    // marginalia. 1000 rows is the worst case (full picker page is
+    // ~30 visible; this is 30×).
+    let cands = make_styled_file_candidates(BENCH_CANDIDATE_COUNT);
+    c.bench_function("styled_marginalia_columns_1000", |b| {
+        b.iter(|| black_box(AnnotationColumns::from_visible(black_box(cands.iter()))))
+    });
 }
 
 fn bench_annotate_pipeline_1000_3stage(c: &mut Criterion) {
@@ -158,6 +224,23 @@ fn bench_annotation_display_text_per_variant(c: &mut Criterion) {
         text: Arc::from("[lsp]"),
         slot: Arc::from("annotation_lsp"),
     };
+    // MARG §8: a 10-segment permission cell — the multi-segment
+    // `display_text()` concat (the only owning case besides Keybinding).
+    let styled_perm = Annotation::Styled {
+        category: Arc::from("perm"),
+        segments: vec![
+            seg('d', "completion.annotation.perm.type"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('w', "completion.annotation.perm.write"),
+            seg('x', "completion.annotation.perm.exec"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('-', "completion.annotation.perm.none"),
+            seg('x', "completion.annotation.perm.exec"),
+            seg('r', "completion.annotation.perm.read"),
+            seg('-', "completion.annotation.perm.none"),
+            seg('x', "completion.annotation.perm.exec"),
+        ],
+    };
 
     let mut group = c.benchmark_group("annotation_display_text");
     group.bench_function("kind", |b| b.iter(|| black_box(kind.display_text())));
@@ -167,6 +250,9 @@ fn bench_annotation_display_text_per_variant(c: &mut Criterion) {
     });
     group.bench_function("source", |b| b.iter(|| black_box(source.display_text())));
     group.bench_function("custom", |b| b.iter(|| black_box(custom.display_text())));
+    group.bench_function("styled_perm_10seg", |b| {
+        b.iter(|| black_box(styled_perm.display_text()))
+    });
     group.finish();
 }
 
@@ -174,6 +260,7 @@ criterion_group!(
     benches,
     bench_annotate_pipeline_1000_3stage,
     bench_keybinding_annotator_1000,
+    bench_styled_marginalia_columns_1000,
     bench_annotation_display_text_per_variant,
 );
 criterion_main!(benches);

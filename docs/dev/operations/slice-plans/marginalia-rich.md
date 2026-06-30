@@ -2,7 +2,7 @@
 
 **Design:** [marginalia.md §8](../../architecture/marginalia.md).
 
-**Status:** 🚧 in progress (2026-06-30) — MR.1–MR.3 ✅ landed (the screenshot's rich coloring renders on both peers); MR.4 📝 remaining. Four sub-slices. Implements the §8 extension: `Annotation::Styled` (per-segment-colored column cell), eza-style permission/size/mtime theme slots, the file/dir picker as first producer, and closure of the TUI annotation-theme gap left open by MARG.1. Design fragment + bench + per-renderer tests + per-renderer palette ship together per CLAUDE.md heuristic #5.
+**Status:** ✅ complete (2026-06-30) — MR.1–MR.4 landed. The file/dir picker renders eza-style per-bit permission colors, gold size, and green mtime on both peers, theme-driven (recolors live on `:colorscheme`). Four sub-slices. Implements the §8 extension: `Annotation::Styled` (per-segment-colored column cell), eza-style permission/size/mtime theme slots, the file/dir picker as first producer, and closure of the TUI annotation-theme gap left open by MARG.1. Design fragment + bench + per-renderer tests + per-renderer palette ship together per CLAUDE.md heuristic #5.
 
 **Why:** The file/dir picker bakes `perms/size/mtime` into one flat `RawCandidate.display` string painted in a single uncolored run. The user wants the eza/`ls --color` treatment from the reference screenshot — per-bit permission colors, gold size, green mtime — integrated with the theme system, on both renderers. The MARG substrate already carries typed, column-aligned annotations (MARG.1–5) and GPUI already resolves their colors from the theme (T.6); the one missing primitive is coloring *within* a single column cell.
 
@@ -57,7 +57,7 @@ Acceptance: opening the file/dir picker shows per-bit-colored perms, gold size, 
 
 Risk: any test asserting the old flat `display` string for the file/dir picker must move to annotation assertions. Audit `grep -rn "format_perms\|format_size\|format_mtime" crates/lattice-picker/`.
 
-### MR.4 — Four-artefact close: bench + colorscheme/cross-peer tests 📝
+### MR.4 — Four-artefact close: bench + colorscheme/cross-peer tests ✅
 
 Close-out slice. Depends on MR.3.
 

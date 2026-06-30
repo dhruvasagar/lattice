@@ -1655,6 +1655,35 @@ mod tests {
     }
 
     #[test]
+    fn styled_marginalia_slots_follow_colorscheme_swap() {
+        // MARG §8: the per-segment file-metadata slots are palette
+        // refs, so swapping the colorscheme recolors them — the shared
+        // resolution both renderer peers read (`resolved.get(
+        // ids.annotation_slot(slot))`). Gruvbox red/peach differ from
+        // mocha's, proving the marginalia is theme-driven, not baked.
+        let mocha = InMemoryThemeRegistry::with_defaults();
+        let mids = BuiltinElementIds::capture(&mocha);
+        let m_write = mocha
+            .resolved()
+            .get(mids.annotation_slot("completion.annotation.perm.write"))
+            .fg
+            .unwrap()
+            .to_rgb_u32(0);
+
+        let gruv = InMemoryThemeRegistry::new(crate::palette::gruvbox_dark_palette());
+        register_builtins(&gruv);
+        let gids = BuiltinElementIds::capture(&gruv);
+        let g_write = gruv
+            .resolved()
+            .get(gids.annotation_slot("completion.annotation.perm.write"))
+            .fg
+            .unwrap()
+            .to_rgb_u32(0);
+
+        assert_ne!(m_write, g_write, "perm.write tracks the colorscheme");
+    }
+
+    #[test]
     fn builtin_ids_capture_resolves_chrome_to_legacy() {
         // Parity net: the writer-free pane/file-tree elements resolve to
         // their palette accent keys. `file_tree.dir`/`.hidden` migrated off

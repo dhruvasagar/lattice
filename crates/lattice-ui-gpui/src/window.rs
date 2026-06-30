@@ -4650,6 +4650,25 @@ mod modeline_tests {
         );
     }
 
+    /// MR.4: a theme change recolors styled marginalia on the GPUI peer
+    /// — overriding the `perm.write` element changes the resolved
+    /// segment color through the same path `paint_candidate_row` uses.
+    #[test]
+    fn styled_segment_color_follows_colorscheme_on_gpui() {
+        use lattice_host::ui::theme::{ElementName, StyleSpec, ThemeRegistry as _};
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let ids = BuiltinElementIds::capture(&reg);
+        let before =
+            super::styled_segment_color_rgb("completion.annotation.perm.write", &reg.resolved(), &ids);
+        reg.set_override(
+            ElementName::from_static("completion.annotation.perm.write"),
+            StyleSpec::new().fg("green"),
+        );
+        let after =
+            super::styled_segment_color_rgb("completion.annotation.perm.write", &reg.resolved(), &ids);
+        assert_ne!(before, after, "styled marginalia tracks the active theme on GPUI");
+    }
+
     /// ML.2: the `modeline.*` elements GPUI's `modeline_row` paints through
     /// resolve to the expected u32 colours under the default palette —
     /// pinning the exact `resolved.get(id).fg.to_rgb_u32` adaptation the

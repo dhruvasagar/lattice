@@ -1248,6 +1248,49 @@ mod tests {
         );
     }
 
+    /// The event-driven loop parks on `recv()` with no timer of its
+    /// own, so a debounced live re-query must schedule its own wake or
+    /// the grep never fires until the next keystroke. Assert that
+    /// `bump_live_picker_debounce` both sets the deadline AND notifies
+    /// `paint_request` after the debounce window (the loop's
+    /// `Wake::Repaint` source). Without this the user sees "results
+    /// don't show until a key press".
+    #[test]
+    fn live_picker_debounce_schedules_a_paint_wake() {
+        let mut app = app_with("hi\n", 5);
+        // Open grep with NO pattern: installs live state, no initial
+        // grep future (so the only paint wake comes from the debounce
+        // timer, not a result).
+        app.open_picker("grep".into(), Vec::new());
+        let paint = app.editor.paint_request.clone();
+        app.editor.bump_live_picker_debounce();
+        assert!(
+            app.editor
+                .live_picker_query
+                .as_ref()
+                .unwrap()
+                .debounce_until
+                .is_some(),
+            "deadline armed"
+        );
+        // The timer sleeps the debounce window then notifies. `Notify`
+        // is permit-style, so a notify landing before we await is not
+        // lost. Block on a tiny runtime with generous margin.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let woke = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), paint.notified())
+                .await
+                .is_ok()
+        });
+        assert!(
+            woke,
+            "debounce must notify paint_request so the loop wakes to fire the re-query"
+        );
+    }
+
     #[test]
     fn open_picker_grep_with_initial_pattern_seats_immediately_and_marks_loading() {
         let mut app = app_with("hi\n", 5);

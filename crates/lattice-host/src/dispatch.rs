@@ -9286,10 +9286,16 @@ impl Editor {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let cancel = lattice_protocol::CancellationToken::new();
                 let cancel_clone = cancel.clone();
+                // Wake the event-driven loop once the grep result lands
+                // so it drains + repaints WITHOUT waiting for the next
+                // keystroke (mirrors the LSP-hover X1b fix). Without
+                // this, results sit invisible on an idle picker.
+                let paint_notify = self.paint_request.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
                     let result = fut.await;
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result);
+                        paint_notify.notify_one();
                     }
                 });
                 self.pending_picker_init = Some(crate::state::PendingPickerInit {
@@ -16863,10 +16869,26 @@ impl Editor {
     /// LIVE_PICKER_DEBOUNCE`. No-op when no live-query state is in
     /// flight.
     pub fn bump_live_picker_debounce(&mut self) {
-        let Some(state) = self.live_picker_query.as_mut() else {
-            return;
-        };
-        state.debounce_until = Some(std::time::Instant::now() + crate::state::LIVE_PICKER_DEBOUNCE);
+        {
+            let Some(state) = self.live_picker_query.as_mut() else {
+                return;
+            };
+            state.debounce_until =
+                Some(std::time::Instant::now() + crate::state::LIVE_PICKER_DEBOUNCE);
+        }
+        // The event-driven loop has no timer wake of its own, so a
+        // debounce deadline reached while the loop is parked would
+        // never fire the re-query until the next keystroke. Schedule a
+        // one-shot wake after the quiet window: the loop ticks, and
+        // `drain_pending_live_picker_query`'s `now >= debounce_until`
+        // gate fires exactly once (after the LATEST bump — earlier
+        // wakes from a typing burst find the deadline still in the
+        // future and no-op). Mirrors the grep-result wake above.
+        let paint_notify = self.paint_request.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            tokio::time::sleep(crate::state::LIVE_PICKER_DEBOUNCE).await;
+            paint_notify.notify_one();
+        });
     }
 
     /// If the picker is open and its action is
@@ -17364,10 +17386,14 @@ impl Editor {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let cancel = lattice_protocol::CancellationToken::new();
                 let cancel_clone = cancel.clone();
+                // Wake the loop when this live re-query resolves so the
+                // refreshed results paint without another keystroke.
+                let paint_notify = self.paint_request.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
                     let result = fut.await;
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
+                        paint_notify.notify_one();
                     }
                 });
                 if let Some(state) = self.live_picker_query.as_mut() {

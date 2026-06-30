@@ -375,6 +375,16 @@ pub struct Picker {
     /// [`Self::set_live_source_mode`] right after opening the
     /// picker, before the first batch lands.
     live_source_mode: bool,
+    /// True while an async fetch for this picker is in flight
+    /// (the initial grep on `:picker grep <pat>`, or a live
+    /// re-query after a keystroke). Both renderers surface it as
+    /// a `searching…` indicator in the prompt so a slow grep
+    /// reads as "working", not "nothing happened". The host sets
+    /// it when it spawns a fetch future and clears it when
+    /// results seat (a fresh `Picker` defaults to `false`) or the
+    /// fetch errors. See `seat_picker_from_pairs` /
+    /// `open_picker` / `fire_live_picker_query_changed`.
+    pub loading: bool,
 }
 
 impl Picker {
@@ -392,6 +402,7 @@ impl Picker {
             preview_origin: None,
             source_id: None,
             mru_bonuses: Vec::new(),
+            loading: false,
             live_source_mode: false,
         }
     }

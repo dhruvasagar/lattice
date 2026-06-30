@@ -1249,28 +1249,61 @@ mod tests {
     }
 
     #[test]
-    fn open_picker_grep_with_initial_pattern_stashes_query_until_seat() {
+    fn open_picker_grep_with_initial_pattern_seats_immediately_and_marks_loading() {
         let mut app = app_with("hi\n", 5);
-        // We pass an initial pattern. init() schedules a Future
-        // (real grep on the blocking pool) -- the picker isn't
-        // seated yet, so the stashed `initial_query` survives
-        // on `live_picker_query`. Once the future resolves and
-        // `seat_picker_from_pairs` runs, it'll consume the
-        // stash and seed `picker.query`. We assert the stash
-        // shape; the seat-consumes path is exercised by the
-        // synthetic-source tests above + by integration runs
-        // against a real workspace.
+        // Grep-UX fix: with an initial pattern, init() schedules a
+        // Future (real grep on the blocking pool) AND the picker is
+        // now SEATED IMMEDIATELY with the seeded query visible + a
+        // `loading` indicator — instead of staying unseated until
+        // results arrive (the old "command consumed, nothing
+        // happens" feel). The future's result re-seats via
+        // `drain_pending_picker_init`, clearing `loading`.
         app.open_picker("grep".into(), vec!["needle".to_string()]);
+        let picker = app
+            .editor
+            .picker
+            .as_ref()
+            .expect("picker seated immediately, not parked unseated");
+        assert_eq!(picker.query, "needle", "initial pattern visible at once");
+        assert!(picker.loading, "in-flight grep shows the searching indicator");
+        // The stash was consumed on the immediate seat.
         let live = app
             .editor
             .live_picker_query
             .as_ref()
             .expect("live state must be installed");
-        assert_eq!(live.initial_query.as_deref(), Some("needle"));
-        // pending_picker_init carries the in-flight future.
+        assert!(
+            live.initial_query.is_none(),
+            "initial_query consumed by the immediate seat"
+        );
+        // pending_picker_init still carries the in-flight future.
         assert!(
             app.editor.pending_picker_init.is_some(),
             "init returned Future -> drain rx parked",
+        );
+    }
+
+    #[test]
+    fn grep_live_reseat_preserves_typed_query_and_clears_loading() {
+        // The typed query must survive an async result re-seat (a
+        // LIVE source re-seats on every refresh). Drive the seat
+        // paths by hand: open with "TODO" (seats, loading=true),
+        // then re-seat as `drain_pending_picker_init` would when
+        // results land — the query carries across and loading clears.
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("grep".into(), vec!["TODO".to_string()]);
+        assert!(app.editor.picker.as_ref().unwrap().loading);
+        // Results arrive: re-seat with (empty) pairs.
+        app.seat_picker_from_pairs("grep".to_string(), Vec::new());
+        let picker = app.editor.picker.as_ref().expect("picker open");
+        assert_eq!(
+            picker.query, "TODO",
+            "typed query carried across the live re-seat"
+        );
+        assert_eq!(picker.query_cursor, "TODO".len());
+        assert!(
+            !picker.loading,
+            "loading cleared once results seated (fresh picker default)"
         );
     }
 

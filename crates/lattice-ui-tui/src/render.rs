@@ -1450,6 +1450,14 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("({}/{}) ", p.selected + 1, p.candidates.len())
     };
+    // PH/grep UX: an in-flight async fetch (initial `:picker grep
+    // <pat>` or a live re-query) shows `searching…` so a slow grep
+    // reads as "working" rather than "nothing happened".
+    let trailing = if p.loading {
+        format!("  {count}searching… ")
+    } else {
+        format!("  {count}")
+    };
     let para = Paragraph::new(Line::from(vec![
         Span::styled(
             format!("{}> ", p.title),
@@ -1458,10 +1466,7 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(p.query.clone()),
-        Span::styled(
-            format!("  {count}"),
-            TuiStyle::default().fg(Color::DarkGray),
-        ),
+        Span::styled(trailing, TuiStyle::default().fg(Color::DarkGray)),
     ]));
     frame.render_widget(para, area);
 }

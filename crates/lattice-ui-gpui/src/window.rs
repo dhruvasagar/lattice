@@ -3793,10 +3793,11 @@ impl Render for EditorView {
                         .text_color(rgb(theme.popup_border))
                         .pb_1()
                         .child(format!(
-                            " {} ({} / {}) ",
+                            " {} ({} / {}){} ",
                             picker.title,
                             if total == 0 { 0 } else { picker.selected + 1 },
                             total,
+                            if picker.loading { " searching…" } else { "" },
                         )),
                 )
                 .child(
@@ -3891,9 +3892,10 @@ impl Render for EditorView {
                 };
 
                 let count = format!(
-                    "  ({} / {})",
+                    "  ({} / {}){}",
                     if total == 0 { 0 } else { picker.selected + 1 },
                     total,
+                    if picker.loading { " searching…" } else { "" },
                 );
                 let prompt_row = div()
                     .px_2()

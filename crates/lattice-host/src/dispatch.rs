@@ -9124,6 +9124,20 @@ impl Editor {
         if let Some(initial) = initial_query {
             picker.query_cursor = initial.len();
             picker.query = initial;
+        } else if live {
+            // A LIVE source re-seats on every query change / async
+            // result. Carry the typed query (and cursor) from the
+            // outgoing same-source picker so the prompt doesn't blink
+            // empty on each refresh — without this, `:picker grep`
+            // would erase what the user typed the moment results land.
+            // Same-source guard so a genuinely new picker open still
+            // starts with a clear prompt.
+            if let Some(prev) = self.picker.as_ref()
+                && prev.source_id.as_deref() == Some(source.as_str())
+            {
+                picker.query_cursor = prev.query_cursor;
+                picker.query = prev.query.clone();
+            }
         }
         picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
@@ -9284,8 +9298,28 @@ impl Editor {
                     rx,
                     cancel,
                 });
-                self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
-                Vec::new()
+                if entry_is_live {
+                    // LIVE source (grep / files): seat an empty picker
+                    // NOW (instead of parking unseated until results
+                    // arrive) so the overlay appears immediately with
+                    // the seeded query visible + a `searching…`
+                    // indicator. Results re-seat via
+                    // `drain_pending_picker_init` (the query carries
+                    // across the live re-seat). Fixes the "command
+                    // consumed, nothing happens" feel on a slow
+                    // `:picker grep <pat>`.
+                    let signals = self.seat_picker_from_pairs(source, Vec::new());
+                    if let Some(p) = self.picker.as_mut() {
+                        p.loading = true;
+                    }
+                    signals
+                } else {
+                    // Non-live async source: keep the parked behavior —
+                    // it has no query to show and no live re-fetch, so a
+                    // brief status echo is the right affordance.
+                    self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
+                    Vec::new()
+                }
             }
             lattice_picker::PickerInitResult::Stream(_) => {
                 self.set_message(
@@ -9320,6 +9354,11 @@ impl Editor {
         match result {
             Ok(pairs) => self.seat_picker_from_pairs(pending.source_id, pairs),
             Err(e) => {
+                // Clear the in-flight indicator so a failed grep stops
+                // showing `searching…` (the empty picker stays open).
+                if let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
                 self.set_message(EchoLevel::Error, format!("picker: {e}"));
                 Vec::new()
             }
@@ -17310,6 +17349,9 @@ impl Editor {
         let init_result = match res {
             Ok(r) => r,
             Err(e) => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
                 self.set_message(EchoLevel::Error, format!("picker: {e}"));
                 return Vec::new();
             }
@@ -17334,6 +17376,11 @@ impl Editor {
                         rx,
                         launched_for_query: query,
                     });
+                }
+                // A live re-query is in flight — show `searching…` on
+                // the still-seated picker until the result re-seats.
+                if let Some(p) = self.picker.as_mut() {
+                    p.loading = true;
                 }
                 Vec::new()
             }
@@ -17387,6 +17434,9 @@ impl Editor {
                 self.seat_picker_from_pairs(source_id, pairs)
             }
             Ok(_) => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
                 self.set_message(
                     EchoLevel::Error,
                     "picker: live source future resolved to non-Inline (unsupported)".to_string(),
@@ -17394,6 +17444,9 @@ impl Editor {
                 Vec::new()
             }
             Err(e) => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
                 self.set_message(EchoLevel::Error, format!("picker: {e}"));
                 Vec::new()
             }

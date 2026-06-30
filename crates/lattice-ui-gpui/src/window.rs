@@ -383,6 +383,23 @@ fn entry_fg(
     }
 }
 
+/// First grid row to paint for a terminal of `snap_rows` shown in a pane that
+/// can hold `pane_rows` rows (`0` = not yet published ⇒ no cap). Returns the
+/// START row so the BOTTOM `min(snap_rows, pane_rows)` rows render — recent
+/// output + the cursor — and the pane NEVER paints more rows than it has. A
+/// terminal grid is sized by the PTY, not the pane, so a horizontal split
+/// (halved height) leaves the grid taller than its pane; without this bound
+/// the `flex_shrink_0` rows overflow `pane_chrome` and push the modeline +
+/// cmdline off-screen. Pure, so the clipping is unit-testable.
+fn terminal_row_start(snap_rows: u16, pane_rows: u32) -> u16 {
+    let max_rows: u16 = if pane_rows > 0 {
+        (pane_rows as u16).min(snap_rows)
+    } else {
+        snap_rows
+    };
+    snap_rows.saturating_sub(max_rows)
+}
+
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
     // Slice 3c.final.B.10: typed-options registry via published
     // `options()` sub-state — wait-free Arc clone.
@@ -2637,8 +2654,18 @@ impl EditorView {
         // T3.b.2 / T3.b.2.b: Visual selection predicate. Same
         // shape as the TUI peer.
         let visual_state = visual;
-        let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
-        for r in 0..snap.rows {
+        // Never paint more rows than the pane allocates. The terminal grid is
+        // sized by the PTY, NOT the pane, so a pane shorter than the grid (the
+        // classic case: a HORIZONTAL split halves the height while the grid
+        // still has its full row count) would otherwise paint `flex_shrink_0`
+        // rows past `pane_chrome`'s clip and shove the per-pane modeline — then
+        // the global cmdline + sibling panes — off-screen. Bound to the pane's
+        // published row budget and show the BOTTOM rows (recent output + the
+        // cursor), the same O(viewport) discipline oil / file-tree use. A
+        // vertical split keeps full height, so this is a no-op there.
+        let row_start = terminal_row_start(snap.rows, pane.viewport_height);
+        let mut rows: Vec<gpui::Div> = Vec::with_capacity((snap.rows - row_start) as usize);
+        for r in row_start..snap.rows {
             // 2026-05-27: lock each terminal row to the editor's
             // row_px metric (font_size × 1.3). Without this, default
             // GPUI text rendering used a larger line-height (~20px
@@ -4596,6 +4623,20 @@ mod modeline_tests {
     /// passes `Rgb(_)` through untouched. `Reset` defers to the supplied
     /// document foreground. Pins the colour adapter the oil / file-tree
     /// builders use for regular-file devicon hues.
+    #[test]
+    fn terminal_row_start_clips_to_pane_height_from_the_bottom() {
+        // Grid taller than the pane (e.g. a horizontal split halved the
+        // height while the PTY still holds 50 rows) → show the BOTTOM 24
+        // (start at row 26), so the terminal never overflows its pane and
+        // shoves the modeline / cmdline off-screen.
+        assert_eq!(super::terminal_row_start(50, 24), 26);
+        // Pane ≥ grid → no clip (vertical split keeps full height).
+        assert_eq!(super::terminal_row_start(24, 50), 0);
+        assert_eq!(super::terminal_row_start(24, 24), 0);
+        // Pane height not published yet (0) → no clip (paint the whole grid).
+        assert_eq!(super::terminal_row_start(50, 0), 0);
+    }
+
     #[test]
     fn icon_color_to_rgb_maps_named_palette_and_passes_rgb_through() {
         use lattice_core::ui::icons::IconColor;

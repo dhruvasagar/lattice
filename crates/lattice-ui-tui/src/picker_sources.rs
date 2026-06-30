@@ -284,14 +284,13 @@ mod tests {
         assert_eq!(texts, sorted);
     }
 
-    /// Marginalia: command rows carry args-hint + doc +
-    /// latency tag columns. Confirms the new layout by
-    /// finding `write` (a known ex-command) and checking
-    /// the display string contains its args hint
-    /// `[<path>]` plus a `[display]`/`[reflex]`/`[background]`
-    /// tag and a non-empty doc segment.
+    /// MP.2: command rows carry args-hint + doc + latency as typed
+    /// marginalia annotations (not a flat display string). The name is
+    /// the matchable `display`. Confirms by finding `write` (a known
+    /// ex-command) and checking its annotation set.
     #[test]
-    fn commands_source_display_carries_marginalia_columns() {
+    fn commands_source_emits_marginalia_annotations() {
+        use lattice_completion::Annotation;
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
@@ -304,22 +303,30 @@ mod tests {
             .iter()
             .find(|(c, _)| c.text == "write")
             .expect("write command row");
-        let display = &write_row.0.display;
-        // Marginalia: args hint for `:write` is `[<path>]` (optional).
+        let cand = &write_row.0;
+        // Name is the matchable display, no hand-padded columns.
+        assert_eq!(cand.display, "write");
+        let by_cat = |cat: &str| {
+            cand.annotations
+                .iter()
+                .find(|a| a.category() == cat)
+                .map(|a| a.display_text().into_owned())
+        };
+        // Args hint for `:write` is `[<path>]` (optional arg).
+        assert_eq!(by_cat("args").as_deref(), Some("[<path>]"));
+        // Latency: `:write` is `Display`-class.
+        assert_eq!(by_cat("latency").as_deref(), Some("[display]"));
+        // Doc cell is present and non-empty.
         assert!(
-            display.contains("[<path>]"),
-            "expected args hint in marginalia, got `{display}`"
+            by_cat("doc").is_some_and(|d| d.contains("Write")),
+            "expected doc annotation containing `Write`, got {:?}",
+            by_cat("doc")
         );
-        // Latency tag: `:write` is `Display`-class.
-        assert!(
-            display.contains("[display]"),
-            "expected latency tag in marginalia, got `{display}`"
-        );
-        // Doc segment is non-empty.
-        assert!(
-            display.contains("Write"),
-            "expected doc text in display, got `{display}`"
-        );
+        // Every command-picker annotation is the expected typed shape.
+        assert!(cand.annotations.iter().all(|a| matches!(
+            a,
+            Annotation::Styled { .. } | Annotation::DocSnippet(_)
+        )));
     }
 
     /// P.7: accept on `InvokeCommand` routing returns the

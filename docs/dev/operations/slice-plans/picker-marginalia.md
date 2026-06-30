@@ -27,19 +27,23 @@ Acceptance: workspace check + tests green on both peers; no visible picker chang
 
 Risk: exhaustive `category_order` / `annotation_slot` matches — sweep `grep -rn "category_order\|annotation_slot" crates/`.
 
-### MP.2 — Commands + Snippets pickers 📝
+### MP.2 — Commands + Snippets pickers ✅
 
 The "doc + extra columns" shape. Depends on MP.1.
 
-Changes:
+Changes (landed):
 
-1. `crates/lattice-picker/src/picker_sources.rs` `CommandsSource` — stop building the 4-column hand-padded `display`. Set `display`=command name; push `Styled{args}`, `DocSnippet` (existing `doc` slot), `Styled{latency}` (via `latency_segment`), and `Keybinding` (reverse-cache lookup; flat display omitted it).
-2. `crates/lattice-snippet/src/picker_sources.rs` `SnippetsSource` — `display`=name; prefix→`Styled` segment; description→`DocSnippet`.
-3. Tests: each source emits the expected annotation set per row; name/prefix stays the matchable `display`; commands with N bindings show first-bound chord (marginalia §10 open-q resolution).
+1. `crates/lattice-picker/src/picker_sources.rs` `CommandsSource` — dropped the 4-column hand-padded `display` (and the now-dead `clip_to`). `display`=command name; emits `Styled{args}`, `DocSnippet`, `Styled{latency}`. Also folded the MP.1 duplicate `LatencyClass` into the canonical `lattice_grammar::command::LatencyClass` (heuristic #1, no duplicate enum) and added `SLOT_ARGS`.
+2. `crates/lattice-snippet/src/picker_sources.rs` `SnippetsSource` — `display`=**prefix** (the matchable trigger), name→`Kind`, description→`DocSnippet`. (Design §9.3 said `display`=name; corrected to prefix because the matcher scores `candidate.text` and `match_ranges` index it, so the shown run must stay aligned with the trigger — reconcile §9.3 wording at MP.5.)
+3. Tests: `commands_source_emits_marginalia_annotations` asserts the typed annotation set (args=`[<path>]`, latency=`[display]`, doc contains `Write`) and `display`=`write`; MP.1 helper tests cover `latency_segment`.
 
-Acceptance: `:picker commands` / `:picker snippets` show colored args/doc/latency/keybinding columns on both peers, theme-driven. Bisect-friendly: one commit.
+**Carved out → MP.2b:** the `+ Keybinding` enrichment. `PickerContext` exposes no keybinding reverse-cache and `CommandsSource` holds only the `CommandRegistry`; wiring it needs the reverse-cache threaded through `PickerContext` + `build_picker_context` (shared host plumbing) — a deliberate slice, not a freebie. Deferred to keep MP.2 focused.
 
-Risk: tests asserting the old flat `display` for these sources move to annotation assertions. Audit `grep -rn "format_args_hint\|latency" crates/lattice-picker/`.
+Acceptance: `:picker commands` shows colored args/doc/latency; `:picker snippets` shows name/description marginalia, both theme-driven. No GPUI change (no new variant/slot). Green (one pre-existing parallel-test flake in `render.rs`, passes in isolation).
+
+### MP.2b — Commands picker keybinding column 📝
+
+Thread a command→chords reverse-cache through `PickerContext` (host-side, from the active keymap at `build_picker_context`) so `CommandsSource` can emit `Annotation::Keybinding` (slot already exists). Show first-bound chord per marginalia §10. Depends on MP.2.
 
 ### MP.3 — Buffers + RecentFiles pickers 📝
 

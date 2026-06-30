@@ -16,13 +16,25 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use lattice_completion::{CandidateKind, RawCandidate};
+use lattice_completion::{Annotation, CandidateKind, RawCandidate};
 use lattice_picker::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
     RoutingPayload, SourceResult,
 };
 
-use crate::registry::SnippetRegistry;
+use crate::registry::{SnippetMeta, SnippetRegistry};
+
+/// MP.2: the marginalia for one snippet row — the name as a `Kind`
+/// label cell, and (when present) the description as a `DocSnippet`.
+/// The prefix stays the matchable `display`, so it carries no
+/// annotation. Single home so source + test agree on the set.
+fn snippet_annotations(meta: &SnippetMeta) -> Vec<Annotation> {
+    let mut annotations = vec![Annotation::Kind(meta.name.clone().into())];
+    if let Some(desc) = meta.description.as_deref().filter(|d| !d.is_empty()) {
+        annotations.push(Annotation::DocSnippet(desc.into()));
+    }
+    annotations
+}
 
 /// `:picker snippets`. Walks
 /// `SnippetRegistry::meta_for_language(active_lang)` and
@@ -61,37 +73,15 @@ impl PickerSourceGenerator for SnippetsSource {
         }
         // Sort by user-facing prefix so popup order is stable.
         metas.sort_by(|a, b| a.prefix.cmp(&b.prefix));
-        // Right-pad the prefix column so name + description
-        // line up. Width caps at 12 chars to keep rows tidy
-        // even for unusual long prefixes.
-        let prefix_width = metas
-            .iter()
-            .map(|m| m.prefix.len())
-            .max()
-            .unwrap_or(0)
-            .min(20);
+        // MP.2: the prefix (the trigger the user types) is the matchable
+        // `display`; the snippet name and description become typed
+        // marginalia (`Kind` + `DocSnippet`) — `AnnotationColumns` owns
+        // alignment, so no hand-padding.
         let pairs = metas
             .into_iter()
             .map(|meta| {
-                let description = meta.description.clone().unwrap_or_else(String::new);
-                let display = if description.is_empty() {
-                    format!(
-                        "{:<width$}  {}",
-                        meta.prefix,
-                        meta.name,
-                        width = prefix_width,
-                    )
-                } else {
-                    format!(
-                        "{:<width$}  {}  --  {}",
-                        meta.prefix,
-                        meta.name,
-                        description,
-                        width = prefix_width,
-                    )
-                };
                 let mut cand = RawCandidate::plain(meta.prefix.clone(), CandidateKind::Plain);
-                cand.display = display;
+                cand.annotations = snippet_annotations(&meta);
                 // ExpandSnippet routing carries the snippet
                 // `name` (stable id) -- the host resolves the
                 // body through `SnippetRegistry::by_name` at
@@ -160,5 +150,33 @@ mod tests {
         // tests in lattice-ui-tui exercise end-to-end.
         assert_eq!(source.spec().id, "snippets");
         assert!(source.spec().args_schema.is_empty());
+    }
+
+    /// MP.2: a snippet row's marginalia is a `Kind` name cell plus a
+    /// `DocSnippet` description cell; the prefix stays the matchable
+    /// display (no annotation). A description-less snippet emits only
+    /// the name cell.
+    #[test]
+    fn snippet_annotations_name_and_description() {
+        let with_desc = SnippetMeta {
+            name: "for-loop".into(),
+            prefix: "for".into(),
+            description: Some("C-style for loop".into()),
+        };
+        let anns = snippet_annotations(&with_desc);
+        assert_eq!(anns.len(), 2);
+        assert_eq!(anns[0].category(), "kind");
+        assert_eq!(anns[0].display_text(), "for-loop");
+        assert_eq!(anns[1].category(), "doc");
+        assert_eq!(anns[1].display_text(), "C-style for loop");
+
+        let no_desc = SnippetMeta {
+            name: "main".into(),
+            prefix: "main".into(),
+            description: None,
+        };
+        let anns = snippet_annotations(&no_desc);
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].category(), "kind");
     }
 }

@@ -23,7 +23,7 @@ use lattice_completion::{Annotation, AnnotationSegment, CandidateKind, RawCandid
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
-use lattice_grammar::command::CommandKind;
+use lattice_grammar::command::{CommandKind, LatencyClass};
 
 use crate::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
@@ -43,22 +43,6 @@ fn format_args_hint(schema: &[ArgSpec]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Clip `s` to at most `width` chars; longer strings get a
-/// trailing ellipsis so the user knows truncation happened.
-/// Cheap (single chars().count() walk) and stable across
-/// utf-8 multi-byte characters.
-fn clip_to(s: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= width {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// Format unix mode bits like `ls -l` (`-rw-r--r--`,
@@ -234,17 +218,8 @@ fn status_segments(dirty: bool, active: bool) -> Vec<AnnotationSegment> {
     out
 }
 
-/// MARG §9: command latency class, color-coded in the commands picker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by MP.2 (commands picker)
-pub(crate) enum LatencyClass {
-    Reflex,
-    Display,
-    Background,
-}
-
-/// MARG §9: a single latency-class marginalia segment.
-#[allow(dead_code)] // consumed by MP.2 (commands picker)
+/// MARG §9: a single latency-class marginalia segment, color-coded by
+/// the canonical `lattice_grammar` latency class (no duplicate enum).
 fn latency_segment(class: LatencyClass) -> AnnotationSegment {
     let (text, slot) = match class {
         LatencyClass::Reflex => ("[reflex]", SLOT_LATENCY_REFLEX),
@@ -253,6 +228,9 @@ fn latency_segment(class: LatencyClass) -> AnnotationSegment {
     };
     txt_seg(text, slot)
 }
+
+/// MARG §9: slot for the command argument-hint marginalia cell.
+const SLOT_ARGS: &str = "completion.annotation.args";
 
 /// Format a byte size with a single-letter SI-ish suffix
 /// (`72` / `1.4K` / `70k` / `12M` / `4.2G`), matching the
@@ -851,7 +829,7 @@ impl PickerSourceGenerator for CommandsSource {
             canonical: String,
             args_hint: String,
             doc: String,
-            latency: &'static str,
+            latency: LatencyClass,
         }
         let mut rows: Vec<Row> = self
             .registry
@@ -879,7 +857,7 @@ impl PickerSourceGenerator for CommandsSource {
                     canonical: canonical.to_string(),
                     args_hint,
                     doc: one_line_doc,
-                    latency: spec.latency_class.label(),
+                    latency: spec.latency_class,
                 })
             })
             .collect();
@@ -889,38 +867,29 @@ impl PickerSourceGenerator for CommandsSource {
         if rows.is_empty() {
             return Err("commands: no ex-commands registered".into());
         }
-        // Per-column widths adapt to the longest row in each
-        // column. Args column caps at 20 chars so a command
-        // with many args doesn't push the doc column off the
-        // visible width. Latency tag width is the fixed
-        // `[background]` length (12 incl. brackets) so the
-        // right edge stays stable.
-        let name_width = rows.iter().map(|r| r.user_facing.len()).max().unwrap_or(0);
-        let args_width = rows
-            .iter()
-            .map(|r| r.args_hint.len())
-            .max()
-            .unwrap_or(0)
-            .min(20);
-        const LATENCY_TAG_WIDTH: usize = 12;
+        // MP.2: the command name is the matchable `display`; args-hint,
+        // doc, and latency become typed marginalia (`AnnotationColumns`
+        // owns alignment — no hand-padding). Column order is fixed by
+        // `category_order` (args → doc → latency).
         let pairs = rows
             .into_iter()
             .map(|row| {
-                let args_clipped = clip_to(&row.args_hint, args_width);
-                let tag = format!("[{}]", row.latency);
-                let display = format!(
-                    "{:<name$}  {:<args$}  {:<doc_max$}  {:>tag_w$}",
-                    row.user_facing,
-                    args_clipped,
-                    row.doc,
-                    tag,
-                    name = name_width,
-                    args = args_width,
-                    doc_max = 60,
-                    tag_w = LATENCY_TAG_WIDTH,
-                );
                 let mut cand = RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
-                cand.display = display;
+                let mut annotations: Vec<Annotation> = Vec::with_capacity(3);
+                if !row.args_hint.is_empty() {
+                    annotations.push(Annotation::Styled {
+                        category: "args".into(),
+                        segments: vec![txt_seg(row.args_hint, SLOT_ARGS)],
+                    });
+                }
+                if !row.doc.is_empty() {
+                    annotations.push(Annotation::DocSnippet(row.doc.into()));
+                }
+                annotations.push(Annotation::Styled {
+                    category: "latency".into(),
+                    segments: vec![latency_segment(row.latency)],
+                });
+                cand.annotations = annotations;
                 // Slice 7b.3: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::InvokeCommand {
                     id: row.canonical.clone(),

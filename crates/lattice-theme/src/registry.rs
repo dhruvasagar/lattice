@@ -838,6 +838,50 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("blue"),
         "Completion annotation: custom/plugin.",
     );
+    // ---- MARG §8: per-segment file-metadata marginalia ----
+    // eza / `ls --color` convention for the permission string
+    // (one slot per bit class) plus size + mtime columns. Consumed
+    // by `Annotation::Styled` segments emitted by the file/dir picker.
+    reg_one(
+        "completion.annotation.perm.type",
+        spec().fg("blue"),
+        "Marginalia: permission type char (d/l/b/c/p/s/-).",
+    );
+    reg_one(
+        "completion.annotation.perm.read",
+        spec().fg("yellow"),
+        "Marginalia: permission read bit (r).",
+    );
+    reg_one(
+        "completion.annotation.perm.write",
+        spec().fg("red"),
+        "Marginalia: permission write bit (w).",
+    );
+    reg_one(
+        "completion.annotation.perm.exec",
+        spec().fg("green"),
+        "Marginalia: permission execute bit (x).",
+    );
+    reg_one(
+        "completion.annotation.perm.special",
+        spec().fg("pink"),
+        "Marginalia: permission special bit (setuid/setgid/sticky).",
+    );
+    reg_one(
+        "completion.annotation.perm.none",
+        spec().fg("overlay"),
+        "Marginalia: permission absent bit (-).",
+    );
+    reg_one(
+        "completion.annotation.size",
+        spec().fg("orange"),
+        "Marginalia: file size column.",
+    );
+    reg_one(
+        "completion.annotation.mtime",
+        spec().fg("green"),
+        "Marginalia: file modified-time column.",
+    );
 
     // ---- Syntax (mirrors host `Theme::syntax_style`) ----
     reg_one("syntax.default", spec().fg("text"), "Default foreground text.");
@@ -1045,6 +1089,15 @@ pub struct BuiltinElementIds {
     pub completion_annotation_keybinding: ElementId,
     pub completion_annotation_source: ElementId,
     pub completion_annotation_custom: ElementId,
+    // MARG §8: per-segment file-metadata marginalia slots.
+    pub completion_annotation_perm_type: ElementId,
+    pub completion_annotation_perm_read: ElementId,
+    pub completion_annotation_perm_write: ElementId,
+    pub completion_annotation_perm_exec: ElementId,
+    pub completion_annotation_perm_special: ElementId,
+    pub completion_annotation_perm_none: ElementId,
+    pub completion_annotation_size: ElementId,
+    pub completion_annotation_mtime: ElementId,
     // Terminal ANSI 0-15 (the 16-colour palette programs draw in). Each
     // maps to a palette accent so the embedded terminal recolours with the
     // colorscheme instead of a hardcoded dim-VGA xterm palette. The GPUI
@@ -1139,11 +1192,46 @@ impl Default for BuiltinElementIds {
             completion_annotation_keybinding: ElementId::INVALID,
             completion_annotation_source: ElementId::INVALID,
             completion_annotation_custom: ElementId::INVALID,
+            completion_annotation_perm_type: ElementId::INVALID,
+            completion_annotation_perm_read: ElementId::INVALID,
+            completion_annotation_perm_write: ElementId::INVALID,
+            completion_annotation_perm_exec: ElementId::INVALID,
+            completion_annotation_perm_special: ElementId::INVALID,
+            completion_annotation_perm_none: ElementId::INVALID,
+            completion_annotation_size: ElementId::INVALID,
+            completion_annotation_mtime: ElementId::INVALID,
         }
     }
 }
 
 impl BuiltinElementIds {
+    /// MARG §8: map an [`Annotation::Styled`] segment's slot KEY to its
+    /// interned element id, shared by both renderer peers so a styled
+    /// marginalia cell resolves identically. Unknown slots fall back to
+    /// `completion.annotation.custom` (the plugin-annotation default) —
+    /// a paint-time styleless-ish read, never a panic. Adding a new
+    /// builtin slot is one arm here plus the field/registration; plugin
+    /// slots resolve dynamically once the WASM host lands (design §7).
+    ///
+    /// [`Annotation::Styled`]: lattice-completion's `Annotation::Styled`
+    pub fn annotation_slot(&self, slot: &str) -> ElementId {
+        match slot {
+            "completion.annotation.kind" => self.completion_annotation_kind,
+            "completion.annotation.doc" => self.completion_annotation_doc,
+            "completion.annotation.keybinding" => self.completion_annotation_keybinding,
+            "completion.annotation.source" => self.completion_annotation_source,
+            "completion.annotation.perm.type" => self.completion_annotation_perm_type,
+            "completion.annotation.perm.read" => self.completion_annotation_perm_read,
+            "completion.annotation.perm.write" => self.completion_annotation_perm_write,
+            "completion.annotation.perm.exec" => self.completion_annotation_perm_exec,
+            "completion.annotation.perm.special" => self.completion_annotation_perm_special,
+            "completion.annotation.perm.none" => self.completion_annotation_perm_none,
+            "completion.annotation.size" => self.completion_annotation_size,
+            "completion.annotation.mtime" => self.completion_annotation_mtime,
+            _ => self.completion_annotation_custom,
+        }
+    }
+
     /// Intern the builtin ids from the registry once at boot. A
     /// missing builtin (a registration bug, never expected) logs once
     /// and falls back to [`ElementId::INVALID`] — a styleless read,
@@ -1255,6 +1343,14 @@ impl BuiltinElementIds {
             completion_annotation_keybinding: id("completion.annotation.keybinding"),
             completion_annotation_source: id("completion.annotation.source"),
             completion_annotation_custom: id("completion.annotation.custom"),
+            completion_annotation_perm_type: id("completion.annotation.perm.type"),
+            completion_annotation_perm_read: id("completion.annotation.perm.read"),
+            completion_annotation_perm_write: id("completion.annotation.perm.write"),
+            completion_annotation_perm_exec: id("completion.annotation.perm.exec"),
+            completion_annotation_perm_special: id("completion.annotation.perm.special"),
+            completion_annotation_perm_none: id("completion.annotation.perm.none"),
+            completion_annotation_size: id("completion.annotation.size"),
+            completion_annotation_mtime: id("completion.annotation.mtime"),
         }
     }
 }
@@ -1437,6 +1533,31 @@ mod tests {
         let reg = reg();
         let ids = BuiltinElementIds::capture(&reg);
         let resolved = reg.resolved();
+        // MR.2: the per-segment marginalia slots resolve to eza-convention
+        // defaults, and `annotation_slot` maps slot keys to them.
+        assert_ne!(ids.completion_annotation_perm_type, ElementId::INVALID);
+        assert_eq!(
+            resolved.get(ids.completion_annotation_perm_write).fg,
+            Some(Color::Rgb(0xf3, 0x8b, 0xa8)) // red
+        );
+        assert_eq!(
+            resolved.get(ids.completion_annotation_perm_exec).fg,
+            Some(Color::Rgb(0xa6, 0xe3, 0xa1)) // green
+        );
+        assert_eq!(
+            ids.annotation_slot("completion.annotation.perm.exec"),
+            ids.completion_annotation_perm_exec,
+            "annotation_slot maps the perm.exec key"
+        );
+        assert_eq!(
+            ids.annotation_slot("completion.annotation.size"),
+            ids.completion_annotation_size,
+        );
+        assert_eq!(
+            ids.annotation_slot("totally.unknown.slot"),
+            ids.completion_annotation_custom,
+            "unknown slots fall back to the custom annotation id"
+        );
         assert_ne!(ids.diagnostic_error, ElementId::INVALID);
         assert_ne!(ids.diagnostic_warning, ElementId::INVALID);
         assert_ne!(ids.diagnostic_info, ElementId::INVALID);

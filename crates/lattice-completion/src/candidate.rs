@@ -301,6 +301,27 @@ pub enum Annotation {
     /// renderer resolves (unknown slot falls back to the
     /// plugin-annotation default).
     Custom { text: Arc<str>, slot: Arc<str> },
+
+    /// MARG §8: a single column cell whose text is colored
+    /// **per segment**. Generalizes `Custom` to N slots — used
+    /// for the file-permission string (`drwxr-xr-x`, one segment
+    /// per bit class) and any future multi-colored field
+    /// (size+unit, path head/tail, git status). Each segment
+    /// carries a slot KEY, never a resolved color, so theme
+    /// resolution stays at the render seam. `category` keys the
+    /// column exactly like the single-variant categories.
+    Styled { category: Arc<str>, segments: Vec<AnnotationSegment> },
+}
+
+/// MARG §8: one run of marginalia text sharing a theme slot,
+/// the unit of an [`Annotation::Styled`] cell. `slot` is a theme
+/// element name the renderer resolves at paint time (unknown slot
+/// → the custom/plugin annotation color); it is NEVER a baked
+/// color, so a `:colorscheme` swap recolors it live on both peers.
+#[derive(Debug, Clone)]
+pub struct AnnotationSegment {
+    pub text: Arc<str>,
+    pub slot: Arc<str>,
 }
 
 impl Annotation {
@@ -326,6 +347,15 @@ impl Annotation {
                     Cow::Owned(buf)
                 }
             }
+            // §8: the cell's text is its segments concatenated. A
+            // single segment borrows; multi-segment owns. `AnnotationColumns`
+            // width math consumes this, so a styled cell occupies the same
+            // column width as the equivalent flat string.
+            Self::Styled { segments, .. } => match segments.as_slice() {
+                [] => Cow::Borrowed(""),
+                [one] => Cow::Borrowed(one.text.as_ref()),
+                many => Cow::Owned(many.iter().map(|s| s.text.as_ref()).collect()),
+            },
         }
     }
 
@@ -341,6 +371,7 @@ impl Annotation {
             Self::Keybinding(_) => "keybinding",
             Self::Source(_) => "source",
             Self::Custom { slot, .. } => slot.as_ref(),
+            Self::Styled { category, .. } => category.as_ref(),
         }
     }
 }
@@ -540,6 +571,56 @@ mod tests {
         let cols = AnnotationColumns::from_visible(cands.iter());
         let kind = cols.iter().find(|(c, _)| *c == "kind").unwrap();
         assert_eq!(kind.1, "motion".chars().count());
+    }
+
+    fn seg(text: &str, slot: &str) -> AnnotationSegment {
+        AnnotationSegment { text: text.into(), slot: slot.into() }
+    }
+
+    #[test]
+    fn styled_display_text_concatenates_segments() {
+        // MR.2: the cell's text is its segments joined; `category()`
+        // keys the column like any single-variant annotation.
+        let perm = Annotation::Styled {
+            category: "perm".into(),
+            segments: vec![
+                seg("d", "completion.annotation.perm.type"),
+                seg("rwx", "completion.annotation.perm.read"),
+            ],
+        };
+        assert_eq!(perm.display_text(), "drwx");
+        assert_eq!(perm.category(), "perm");
+    }
+
+    #[test]
+    fn styled_single_segment_borrows_display_text() {
+        let one = Annotation::Styled {
+            category: "size".into(),
+            segments: vec![seg("1.2k", "completion.annotation.size")],
+        };
+        assert_eq!(one.display_text(), "1.2k");
+        // Empty segment list is a valid (blank) cell, not a panic.
+        let empty = Annotation::Styled { category: "x".into(), segments: vec![] };
+        assert_eq!(empty.display_text(), "");
+    }
+
+    #[test]
+    fn annotation_columns_width_counts_styled_cell() {
+        // A styled cell occupies the width of its concatenated text, so
+        // it aligns alongside single-variant cells in the same column.
+        let cands = vec![
+            candidate_with(vec![Annotation::Styled {
+                category: "perm".into(),
+                segments: vec![seg("drwxr-xr-x", "completion.annotation.perm.type")],
+            }]),
+            candidate_with(vec![Annotation::Styled {
+                category: "perm".into(),
+                segments: vec![seg("lrwx", "completion.annotation.perm.type")],
+            }]),
+        ];
+        let cols = AnnotationColumns::from_visible(cands.iter());
+        let perm = cols.iter().find(|(c, _)| *c == "perm").unwrap();
+        assert_eq!(perm.1, "drwxr-xr-x".chars().count());
     }
 
     #[test]

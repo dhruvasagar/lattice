@@ -680,16 +680,36 @@ fn paint_candidate_row(
                 .find(|a| a.category() == category);
             match ann_for_col {
                 Some(ann) => {
-                    let text = ann.display_text().into_owned();
-                    let text_chars = text.chars().count();
+                    let text_chars = ann.display_text().chars().count();
                     let cell_pad = col_width.saturating_sub(text_chars);
-                    let fg = rgb(annotation_color_rgb(ann, selected, resolved, ids));
-                    row = row.child(
-                        div()
-                            .text_color(fg)
-                            .flex_shrink_0()
-                            .child(text),
-                    );
+                    match ann {
+                        // MR.2: a styled cell paints one child div per
+                        // segment, each resolved from its own theme slot
+                        // (per-bit permission coloring). Selection shows via
+                        // the row background, so segments read the slot fg in
+                        // both states (no per-segment brightening). Parity
+                        // with the TUI peer's `candidate_to_line`.
+                        lattice_completion::Annotation::Styled { segments, .. } => {
+                            for seg in segments {
+                                let segfg = styled_segment_color_rgb(&seg.slot, resolved, ids);
+                                row = row.child(
+                                    div()
+                                        .text_color(rgb(segfg))
+                                        .flex_shrink_0()
+                                        .child(seg.text.to_string()),
+                                );
+                            }
+                        }
+                        _ => {
+                            let fg = rgb(annotation_color_rgb(ann, selected, resolved, ids));
+                            row = row.child(
+                                div()
+                                    .text_color(fg)
+                                    .flex_shrink_0()
+                                    .child(ann.display_text().into_owned()),
+                            );
+                        }
+                    }
                     if cell_pad > 0 {
                         row = row.child(
                             div()
@@ -715,6 +735,24 @@ fn paint_candidate_row(
         }
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
+}
+
+/// MR.2 (2026-06-30): resolve one [`lattice_completion::AnnotationSegment`]'s
+/// foreground from its theme slot, as a `0xRRGGBB`. `ids.annotation_slot`
+/// maps the slot key to its element (unknown → custom annotation); the
+/// resolved fg falls back to the custom-blue literal only if even that
+/// slot is unset. Shares the slot→id resolver with the TUI peer so a
+/// styled marginalia cell colors identically across renderers.
+fn styled_segment_color_rgb(
+    slot: &str,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> u32 {
+    resolved
+        .get(ids.annotation_slot(slot))
+        .fg
+        .map(|c| c.to_rgb_u32(0x89b4fa))
+        .unwrap_or(0x89b4fa)
 }
 
 /// MARG.3 (2026-06-03): map each [`lattice_completion::Annotation`]
@@ -758,6 +796,11 @@ fn annotation_color_rgb(
         // theme registry that resolves slot keys to colours
         // lands with the WASM plugin host.
         Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+        // `Styled` cells are painted per-segment by the caller (each
+        // segment resolves its own slot via `ids.annotation_slot`), so
+        // this whole-cell path is never taken for them; map to the custom
+        // fallback for exhaustiveness.
+        Annotation::Styled { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
     };
     if selected {
         // Brightened form preserved as renderer logic on top of the base.
@@ -4577,6 +4620,35 @@ mod popup_geometry_tests {
 #[cfg(test)]
 mod modeline_tests {
     use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+
+    /// MR.2: a styled marginalia segment resolves its slot through the
+    /// theme on the GPUI peer — perm.write = red, perm.exec = green —
+    /// and an unknown slot falls back to the custom annotation color.
+    /// Parity with the TUI peer's per-segment resolution.
+    #[test]
+    fn styled_segment_color_resolves_slot_on_gpui() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        assert_eq!(
+            super::styled_segment_color_rgb("completion.annotation.perm.write", &resolved, &ids),
+            0xf38ba8, // red
+        );
+        assert_eq!(
+            super::styled_segment_color_rgb("completion.annotation.perm.exec", &resolved, &ids),
+            0xa6e3a1, // green
+        );
+        // Unknown slot → custom annotation element (blue), never a panic.
+        let custom = resolved
+            .get(ids.completion_annotation_custom)
+            .fg
+            .map(|c| c.to_rgb_u32(0x89b4fa))
+            .unwrap_or(0x89b4fa);
+        assert_eq!(
+            super::styled_segment_color_rgb("nope.unknown", &resolved, &ids),
+            custom,
+        );
+    }
 
     /// ML.2: the `modeline.*` elements GPUI's `modeline_row` paints through
     /// resolve to the expected u32 colours under the default palette —

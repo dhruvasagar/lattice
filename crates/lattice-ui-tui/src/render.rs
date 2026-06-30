@@ -1238,11 +1238,35 @@ fn candidate_to_line<'a>(
                 .find(|a| a.category() == category);
             match ann_for_col {
                 Some(ann) => {
-                    let text = ann.display_text();
-                    let text_chars = text.chars().count();
+                    let text_chars = ann.display_text().chars().count();
                     let cell_pad = col_width.saturating_sub(text_chars);
-                    let fg = annotation_color(ann, selected, resolved, ids);
-                    spans.push(Span::styled(text.into_owned(), row_style.fg(fg)));
+                    match ann {
+                        // MR.2: a styled cell paints one span per segment,
+                        // each resolved from its own theme slot (the per-bit
+                        // permission coloring). Selection is conveyed by the
+                        // row background, so segments read the slot fg in both
+                        // states (no per-segment brightening).
+                        lattice_completion::Annotation::Styled { segments, .. } => {
+                            for seg in segments {
+                                let fg = resolved
+                                    .get(ids.annotation_slot(&seg.slot))
+                                    .fg
+                                    .map(crate::theme::host_color_to_ratatui)
+                                    .unwrap_or(Color::DarkGray);
+                                spans.push(Span::styled(
+                                    seg.text.to_string(),
+                                    row_style.fg(fg),
+                                ));
+                            }
+                        }
+                        _ => {
+                            let fg = annotation_color(ann, selected, resolved, ids);
+                            spans.push(Span::styled(
+                                ann.display_text().into_owned(),
+                                row_style.fg(fg),
+                            ));
+                        }
+                    }
                     if cell_pad > 0 {
                         spans.push(Span::styled(" ".repeat(cell_pad), row_style));
                     }
@@ -1304,9 +1328,13 @@ fn annotation_color(
         Annotation::Keybinding(_) => (ids.completion_annotation_keybinding, 0xf9e2af, 0xfff0b8),
         Annotation::Source(_) => (ids.completion_annotation_source, 0xcba6f7, 0xe2cfff),
         // Plugin / extension fallback. Unknown `slot` strings all
-        // resolve to this element pre-Phase-4; the per-slot resolution
-        // for `Custom`/`Styled` segment slots lands in MR.2.
+        // resolve to this element pre-Phase-4.
         Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+        // `Styled` cells are painted per-segment by the caller (each
+        // segment resolves its own slot via `ids.annotation_slot`), so
+        // this whole-cell color path is never taken for them; map to the
+        // custom fallback for exhaustiveness.
+        Annotation::Styled { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
     };
     if selected {
         rgb_u32_to_ratatui(brightened)
@@ -7890,6 +7918,53 @@ mod tests {
             super::annotation_color(&kind, true, &cells.resolved_theme, &cells.theme_ids);
         // Same brightened literal GPUI returns for a selected Kind row.
         assert_eq!(got, Color::Rgb(0xcd, 0xd6, 0xf4));
+    }
+
+    /// MR.2: a `Styled` annotation paints one span per segment, each
+    /// colored by its own theme slot — the per-bit permission coloring.
+    #[test]
+    fn styled_annotation_paints_each_segment_with_its_slot_color() {
+        let app = app_with("x\n", 5);
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+        let perm = lattice_completion::Annotation::Styled {
+            category: "perm".into(),
+            segments: vec![
+                lattice_completion::AnnotationSegment {
+                    text: "w".into(),
+                    slot: "completion.annotation.perm.write".into(),
+                },
+                lattice_completion::AnnotationSegment {
+                    text: "x".into(),
+                    slot: "completion.annotation.perm.exec".into(),
+                },
+            ],
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw: lattice_completion::RawCandidate::plain(
+                "f",
+                lattice_completion::CandidateKind::Plain,
+            ),
+            score: lattice_completion::MatchScore::PERFECT,
+            match_ranges: vec![],
+        };
+        let mut c = lattice_completion::RenderedCandidate::from_scored(scored);
+        c.annotations = vec![perm];
+        let cols = lattice_completion::AnnotationColumns::from_visible(std::iter::once(&c));
+        let line = super::candidate_to_line(&c, false, 1, &cols, resolved, ids);
+
+        let want = |id| {
+            resolved
+                .get(id)
+                .fg
+                .map(crate::theme::host_color_to_ratatui)
+                .unwrap()
+        };
+        let w = line.spans.iter().find(|s| s.content.as_ref() == "w").expect("w span");
+        let x = line.spans.iter().find(|s| s.content.as_ref() == "x").expect("x span");
+        assert_eq!(w.style.fg, Some(want(ids.completion_annotation_perm_write)));
+        assert_eq!(x.style.fg, Some(want(ids.completion_annotation_perm_exec)));
     }
 
     /// 4.4.h: a seeded semantic-tokens cache repaints the

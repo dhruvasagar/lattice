@@ -214,6 +214,73 @@ impl Default for RenderState {
     }
 }
 
+impl RenderState {
+    /// Resolve the fold list + `foldenable` that a pane showing
+    /// `buffer_id` must render with.
+    ///
+    /// Folds are **per-buffer** (a buffer's `zf` / `za` / computed
+    /// + overlay folds are shared by every pane showing it — the
+    /// user-confirmed model). The bug this fixes: both renderers
+    /// previously sourced folds for *every* pane from
+    /// `active_document.folds`, so an inactive pane showing a
+    /// *different* buffer rendered with the **active** buffer's
+    /// folds — folding buffer A elided lines in buffer B's pane
+    /// (GPUI), and switching focus away made A's inactive pane drop
+    /// its folds (TUI). Both renderers now call this so the source
+    /// is the pane's own buffer, uniformly (TUI/GPUI parity).
+    ///
+    /// The active buffer reads the live `active_document.folds`
+    /// (freshest — updated synchronously on the fold keystroke);
+    /// any other buffer reads its published per-pane entry in
+    /// `cells.panes` (sourced from its `DocumentFolds` buffer-local).
+    /// A buffer in no pane (no `cells.panes` entry) yields an empty
+    /// list — nothing to elide.
+    pub fn folds_for_buffer(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> (Arc<[lattice_core::Fold]>, bool) {
+        let ad = self.active_document.load();
+        if ad.document_buffer_id == buffer_id {
+            return (ad.folds.clone(), ad.option_cache.foldenable);
+        }
+        let cells = self.cells.load();
+        if let Some(pane) = cells.panes.iter().find(|p| p.buffer_id == buffer_id) {
+            return (pane.folds.clone(), pane.foldenable);
+        }
+        (Arc::from([]), ad.option_cache.foldenable)
+    }
+
+    /// Resolve the byte-baked inlay-hint rows a pane showing
+    /// `buffer_id` must render.
+    ///
+    /// Like [`Self::folds_for_buffer`], this gives every pane its OWN
+    /// buffer's decoration so active and inactive panes render through
+    /// ONE code path (inactive == active, modulo dimming). It replaces
+    /// a duplicated seam where the active pane spliced the baked
+    /// `syntax.inlay_hints` while inactive panes re-derived hints from
+    /// the per-buffer LSP cache with their own utf-16→utf-8 conversion —
+    /// two sources that could drift.
+    ///
+    /// The active buffer reads the canonical baked list
+    /// (`syntax.inlay_hints`); any other buffer reads its published
+    /// `cells.panes` entry (built by `build_inlay_hints_for_buffer`,
+    /// identical gating + byte-baking). A buffer in no pane yields empty.
+    pub fn inlay_hints_for_buffer(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Arc<[InlayHintRow]> {
+        let ad = self.active_document.load();
+        if ad.document_buffer_id == buffer_id {
+            return self.syntax.inlay_hints.clone();
+        }
+        let cells = self.cells.load();
+        if let Some(pane) = cells.panes.iter().find(|p| p.buffer_id == buffer_id) {
+            return pane.inlay_hints.clone();
+        }
+        Arc::from([])
+    }
+}
+
 /// D.3.b.1 (2026-05-29): renderer-side projection of the
 /// virtual-rows worker's published `VirtualRowMatrix`.
 /// Carries the matrix so the TUI / GPUI renderer can
@@ -1957,6 +2024,30 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    /// Write `contents` to a uniquely-named temp file; the returned
+    /// guard removes it on drop. Local to this module so the fold
+    /// test can open a second on-disk buffer without depending on
+    /// the `dispatch` test module's `write_temp`.
+    struct TempFilePathRs(std::path::PathBuf);
+    impl Drop for TempFilePathRs {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn write_temp_rs(contents: &str) -> TempFilePathRs {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "lattice-foldbuf-{}-{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::write(&path, contents).expect("write temp file");
+        TempFilePathRs(path)
+    }
+
     /// Calling `dispatch()` publishes a fresh `RenderState` Arc
     /// into the editor's `ArcSwap`. The Arc identity must
     /// differ across dispatches — otherwise readers can't tell
@@ -2678,6 +2769,137 @@ mod tests {
         assert!(rs.active_document.load().folds[0].closed);
         assert_eq!(rs.active_document.load().folds[1].end_line, 30);
         assert!(!rs.active_document.load().folds[1].closed);
+    }
+
+    /// Fold-bleed regression: with buffer A folded in one pane and a
+    /// *different* buffer B in another split, each pane must resolve
+    /// folds from ITS OWN buffer — not from `active_document.folds`.
+    /// Both renderers previously read the active doc's folds for every
+    /// pane, so folding A elided B's lines (GPUI) and A's inactive pane
+    /// dropped its folds on focus-out (TUI). `folds_for_buffer` is the
+    /// shared per-buffer source that closes the bug for both peers.
+    #[test]
+    fn folds_for_buffer_is_per_buffer_not_active_document() {
+        use lattice_core::Fold;
+        use lattice_core::ui::pane::SplitOrientation;
+
+        // Buffer A (boot document): give it a closed fold.
+        let document = lattice_core::Document::from_text(
+            &(0..10).map(|i| format!("a{i}\n")).collect::<String>(),
+        );
+        let mut editor = Editor::boot(document);
+        let a_id = editor.document_buffer_id;
+        editor.folds.push(Fold {
+            start_line: 0,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+
+        // Split and open a DIFFERENT buffer B in the new pane. `do_edit`
+        // snapshots A's folds into its `DocumentFolds` on switch-away,
+        // so A's inactive pane keeps them in the published `cells.panes`.
+        let path = write_temp_rs(&(0..10).map(|i| format!("b{i}\n")).collect::<String>());
+        editor.do_split_pane(SplitOrientation::Vertical);
+        let new_idx = editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(new_idx);
+        let _ = editor.do_edit(Some(path.0.clone()), false);
+        let b_id = editor.pane_tree.active().buffer_id;
+        assert_ne!(a_id, b_id, "B must be a distinct buffer from A");
+
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        // A is now inactive, but its pane still resolves A's own folds.
+        let (a_folds, a_foldenable) = rs.folds_for_buffer(a_id);
+        assert!(a_foldenable, "foldenable defaults on");
+        assert!(
+            a_folds.iter().any(|f| f.closed && f.start_line == 0),
+            "inactive buffer A keeps its own closed fold, got {a_folds:?}"
+        );
+
+        // B is active and has no folds — it must NOT inherit A's folds.
+        let (b_folds, _) = rs.folds_for_buffer(b_id);
+        assert!(
+            b_folds.is_empty(),
+            "active buffer B resolves to its own (empty) folds, got {b_folds:?}"
+        );
+    }
+
+    /// Exact user repro (2026-06-30): A in pane1, B (folded) active in
+    /// pane2, then `<C-w>w` focus back to A. B's folds must survive the
+    /// switch-away — `folds_for_buffer(B)` must still report B's closed
+    /// fold once B is inactive. Pane navigation goes through
+    /// `activate_pane` (NOT `do_edit`/`activate_document`), so this guards
+    /// the `sync_active_document_to_pane` → `snapshot_active_document`
+    /// stash path specifically.
+    #[test]
+    fn fold_survives_switching_pane_focus_away_from_its_buffer() {
+        use lattice_core::Fold;
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let document = lattice_core::Document::from_text(
+            &(0..10).map(|i| format!("a{i}\n")).collect::<String>(),
+        );
+        let mut editor = Editor::boot(document);
+        let a_id = editor.document_buffer_id;
+        let a_idx = editor.pane_tree.active_index();
+
+        // Split, open B in the new pane → B active.
+        let path = write_temp_rs(&(0..10).map(|i| format!("b{i}\n")).collect::<String>());
+        let b_idx = editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(b_idx);
+        let _ = editor.do_edit(Some(path.0.clone()), false);
+        let b_id = editor.pane_tree.active().buffer_id;
+        assert_ne!(a_id, b_id);
+
+        // Fold B while it is the active buffer (simulates z<Space>).
+        editor.folds.push(Fold {
+            start_line: 1,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        });
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(
+            rs.folds_for_buffer(b_id).0.iter().any(|f| f.closed),
+            "sanity: B is folded while active"
+        );
+
+        // <C-w>w back to A: pane navigation, NOT activate_document.
+        editor.activate_pane(a_idx);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        let (b_folds, _) = rs.folds_for_buffer(b_id);
+        assert!(
+            b_folds.iter().any(|f| f.closed && f.start_line == 1),
+            "B keeps its closed fold after focus moves away, got {b_folds:?}"
+        );
+    }
+
+    /// `inlay_hints_for_buffer` routes the active buffer to the baked
+    /// `syntax.inlay_hints` list and an unknown buffer to empty — the
+    /// per-pane source that lets both renderers splice hints through one
+    /// path regardless of focus.
+    #[test]
+    fn inlay_hints_for_buffer_routes_active_and_unknown() {
+        use crate::render_state::InlayHintRow;
+        let mut editor = Editor::default();
+        let a_id = editor.document_buffer_id;
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        // Active buffer returns whatever `syntax.inlay_hints` holds —
+        // Arc-identity equal to the published list.
+        let active = rs.inlay_hints_for_buffer(a_id);
+        assert!(Arc::ptr_eq(&active, &rs.syntax.inlay_hints));
+
+        // An unknown buffer (no pane entry) routes to empty, never a panic.
+        let _ = InlayHintRow { line: 0, byte: 0, text: String::new() };
+        let unknown = rs.inlay_hints_for_buffer(lattice_core::BufferId(999_999));
+        assert!(unknown.is_empty());
     }
 
     /// Slice 3c.final.B (group 2): hlsearch matches /

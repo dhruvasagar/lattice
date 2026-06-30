@@ -1607,9 +1607,16 @@ impl EditorView {
         // O(rows × folds) per pane per frame. The index drops the
         // per-line check to a partition-point binary search with a
         // constant-time fast path for non-overlapping folds.
+        // Fold-bleed fix (2026-06-30): fold elision must use THIS pane's
+        // buffer's folds, not the active doc's. Previously every pane built
+        // its index from `active_document.folds`, so folding buffer A elided
+        // lines in an inactive pane showing buffer B. `folds_for_buffer`
+        // resolves the per-buffer list (active → live `self.folds`; other →
+        // published `cells.panes` entry). Shared with the TUI peer.
+        let (pane_folds, pane_foldenable) = rs_guard.folds_for_buffer(pane.buffer_id);
         let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs_guard.active_document.load().folds,
-            rs_guard.active_document.load().option_cache.foldenable,
+            &pane_folds,
+            pane_foldenable,
         );
         // K.4.6 follow-up (2026-06-02): cache the
         // display_line_numbers map outside the per-row closure.

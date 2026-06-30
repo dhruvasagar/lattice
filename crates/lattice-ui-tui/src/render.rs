@@ -91,6 +91,13 @@ pub struct FrameView<'a> {
     /// becomes a partition-point binary search with a constant-time
     /// fast path for the common non-overlapping case.
     pub fold_index: lattice_host::folds::FoldIndex,
+    /// Fold-bleed follow-up (2026-06-30): this pane's OWN byte-baked
+    /// inlay-hint rows, resolved via `RenderState::inlay_hints_for_buffer`
+    /// (active → baked `syntax.inlay_hints`; inactive → published
+    /// `cells.panes` entry). One source for both focus states so the
+    /// compose loop splices hints through a single path — no
+    /// active-vs-inactive divergence to drift.
+    pub inlay_hints: Arc<[lattice_host::render_state::InlayHintRow]>,
     /// Slice 3c.extension.fold-rs: per-frame LSP-mode gates,
     /// cached once at `FrameView::from_app` so the compose loop's
     /// per-line decoration checks don't pay actor-RPC cost. Each
@@ -153,20 +160,20 @@ impl<'a> FrameView<'a> {
         // per-line compose loop. The active document id is needed
         // for the mode-gate checks.
         let doc_id = rs.active_document.load().document_buffer_id;
-        let foldenable = app.foldenable();
         // Perf plan C: build the index once per frame from the same
         // snapshot the renderer reads. Both peers go through this
         // path now; build cost is O(folds) (<1 µs for typical files).
-        let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs.active_document.load().folds,
-            foldenable,
-        );
+        // Fold-bleed fix (2026-06-30): route through `folds_for_buffer`
+        // (the active doc returns its live `self.folds`) so the active
+        // and inactive (`for_buffer`) pane paths share ONE per-buffer
+        // fold source — no drift between them or the GPUI peer.
+        let (folds, foldenable) = rs.folds_for_buffer(doc_id);
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
+        let inlay_hints = rs.inlay_hints_for_buffer(doc_id);
         Self {
             app,
-            // Slice 3c.final.B (group 2): folds already published as
-            // `Arc<[Fold]>` on the active-document substate; one Arc
-            // clone replaces the prior `Vec::clone + into_boxed_slice`.
-            folds: rs.active_document.load().folds.clone(),
+            folds,
+            inlay_hints,
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
             foldenable,
@@ -184,29 +191,26 @@ impl<'a> FrameView<'a> {
     /// M.4: per-pane FrameView -- resolves options for `buffer_id`
     /// instead of capturing the active buffer's settings. Used by
     /// inactive-pane render paths so each pane's mode stack drives
-    /// its own gutter independently. The fold snapshot stays tied
-    /// to the active doc (per-buffer fold state is a future seam).
+    /// its own gutter independently.
     /// DR.2: inactive panes now source decorations from their own
     /// per-pane `DisplayMatrix`; `pane_highlights` is retired.
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
         // display-line B4.2: same as `from_app` — the deleted
         // prepaint-rows cell is no longer snapshotted here.
         let rs = app.render_state.load_full();
-        let foldenable = app.foldenable();
-        // Perf plan C: same one-per-frame index as `from_app`. The
-        // fold snapshot is doc-scoped (`active_document.folds`); the
-        // gate keyed on `foldenable` collapses every predicate to
-        // `false` when folding is off — match the `from_app` path.
-        let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &rs.active_document.load().folds,
-            foldenable,
-        );
+        // Fold-bleed fix (2026-06-30): resolve folds from THIS pane's
+        // buffer, not the active doc. Previously this snapshot was
+        // doc-scoped (`active_document.folds`), so an inactive pane
+        // showing a different buffer rendered with the active buffer's
+        // folds and dropped its own. `folds_for_buffer` returns the
+        // per-buffer list (+ its `foldenable`). Shared with the GPUI peer.
+        let (folds, foldenable) = rs.folds_for_buffer(buffer_id);
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
+        let inlay_hints = rs.inlay_hints_for_buffer(buffer_id);
         Self {
             app,
-            // Slice 3c.final.B (group 2): folds already published as
-            // `Arc<[Fold]>` on the active-document substate; one Arc
-            // clone replaces the prior `Vec::clone + into_boxed_slice`.
-            folds: rs.active_document.load().folds.clone(),
+            folds,
+            inlay_hints,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -3301,26 +3305,23 @@ pub(crate) fn compose_pane_lines(
     let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
     let mut buf_line = ctx.scroll;
     while visible.len() < height as usize && buf_line < total_lines {
-        // DR.3: closed-fold skipping reads `view.folds`, which is the
-        // ACTIVE document's fold set (folds aren't per-buffer yet), so
-        // it applies only to the focused pane. Inactive panes walk
-        // lines 1:1 — a documented seam that lifts when per-buffer
-        // fold state lands.
-        if ctx.is_active {
-            // Slice 3c.extension.fold-rs: use view.X (wait-free) instead
-            // of app.X (per-line actor RPC).
-            if view.line_inside_closed_fold(buf_line) {
-                buf_line += 1;
-                continue;
-            }
-            visible.push(buf_line);
-            if let Some(fold) = view.fold_start_at(buf_line) {
-                buf_line = fold.end_line + 1;
-            } else {
-                buf_line += 1;
-            }
+        // Fold-bleed fix (2026-06-30): closed-fold elision is now
+        // applied to EVERY pane, active or not. `view.fold_index` is
+        // the pane's OWN buffer's fold set (via `folds_for_buffer`), so
+        // an inactive pane folds exactly as it did when focused — only
+        // the dimming differs. Previously this was gated on
+        // `ctx.is_active` because `view.folds` was the active doc's set
+        // (folding the wrong buffer), so inactive panes walked lines 1:1
+        // and visibly un-folded the moment focus moved away. That seam
+        // is closed now that the fold source is per-buffer.
+        if view.line_inside_closed_fold(buf_line) {
+            buf_line += 1;
+            continue;
+        }
+        visible.push(buf_line);
+        if let Some(fold) = view.fold_start_at(buf_line) {
+            buf_line = fold.end_line + 1;
         } else {
-            visible.push(buf_line);
             buf_line += 1;
         }
     }
@@ -3668,27 +3669,23 @@ pub(crate) fn compose_pane_lines(
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
-        // DR.3: fold state is the ACTIVE document's (`view.folds`), so
-        // the summary only applies to the focused pane — matches the
-        // fold-aware visible-line walk above. Inactive panes show no
-        // fold suffix (seam lifts with per-buffer fold state).
-        let closed_fold_at_start = if ctx.is_active {
-            view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
-                // The "N lines folded" suffix should reflect the
-                // user's perception of how much content collapsed
-                // onto this single visible row -- including any
-                // sibling / nested closed folds whose headings are
-                // themselves hidden by this fold and whose ranges
-                // chain past `f.end_line`. Without this walk, two
-                // touching folds (1..=3 then 3..=5, both closed)
-                // visually hide 5 lines but report only the first
-                // fold's own 3 lines, which doesn't match what the
-                // user just collapsed.
-                closed_fold_display_span(view, snap, &f)
-            })
-        } else {
-            None
-        };
+        // Fold-bleed fix (2026-06-30): computed for every pane (matches
+        // the now-ungated visible-line walk above). `view.fold_start_at`
+        // reads the pane's own per-buffer folds, so an inactive pane
+        // shows its fold summary identically to when it was focused.
+        let closed_fold_at_start = view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
+            // The "N lines folded" suffix should reflect the
+            // user's perception of how much content collapsed
+            // onto this single visible row -- including any
+            // sibling / nested closed folds whose headings are
+            // themselves hidden by this fold and whose ranges
+            // chain past `f.end_line`. Without this walk, two
+            // touching folds (1..=3 then 3..=5, both closed)
+            // visually hide 5 lines but report only the first
+            // fold's own 3 lines, which doesn't match what the
+            // user just collapsed.
+            closed_fold_display_span(view, snap, &f)
+        });
         // 4.4.h: LSP semantic-tokens overlay. Replaces the
         // foreground color (folding in modifier bits) for
         // each token's byte range. Painted BEFORE visual /
@@ -3930,61 +3927,30 @@ pub(crate) fn compose_pane_lines(
         // from raw line text. (The old prepaint-rows cell that would
         // have woven it was deleted in B4.2.)
         //
-        // DR.3: inlay hints are a buffer-intrinsic decoration shown on
-        // BOTH panes. The active pane reads the publish-time-baked
-        // active list (`rs.syntax.inlay_hints`, utf-8 byte offsets
-        // ready) — byte-identical to the pre-merge path. Inactive
-        // panes read their OWN buffer's per-buffer cache
-        // (`rs.lsp.inlay_hints.get_for(buffer_id)`), converting utf-16
-        // columns → utf-8 bytes per line. The baked active list isn't
-        // keyed per-buffer yet, so the SOURCE differs by focus — a
-        // documented seam; the user-visible result (inlays on both,
-        // dimmed when inactive) is uniform. Both splice through
-        // `map_ob` so W.4.t tab expansion lands them on the right cell.
+        // Fold-bleed follow-up (2026-06-30): inlay hints are a
+        // buffer-intrinsic decoration shown on EVERY pane through ONE
+        // path. `view.inlay_hints` is this pane's own byte-baked list
+        // (`RenderState::inlay_hints_for_buffer`: active → baked
+        // `syntax.inlay_hints`; inactive → its `cells.panes` entry).
+        // This replaces the prior active-vs-inactive split where the
+        // inactive branch re-derived hints from the LSP cache with its
+        // own utf-16→utf-8 conversion — two sources that could drift.
+        // Splices through `map_ob` so W.4.t tab expansion lands them on
+        // the right cell; reverse byte order keeps earlier splices from
+        // shifting later ones.
         let rs = app.render_state.load();
-        if ctx.is_active {
-            if !rs.syntax.inlay_hints.is_empty() {
-                let mut on_line: Vec<&lattice_host::render_state::InlayHintRow> = rs
-                    .syntax
-                    .inlay_hints
-                    .iter()
-                    .filter(|h| h.line == line_idx)
-                    .collect();
-                on_line.sort_by(|a, b| b.byte.cmp(&a.byte));
-                for h in on_line {
-                    body = splice_virtual_text_into_spans(
-                        body,
-                        map_ob((h.byte as usize).min(line_len)),
-                        h.text.clone(),
-                        inlay_hint_style(overlay_resolved, overlay_ids),
-                    );
-                }
-            }
-        } else if app.lsp_inlay_hint_mode_enabled_for(ctx.buffer_id)
-            && let Some(cache) = rs.lsp.inlay_hints.get_for(ctx.buffer_id)
-        {
-            let mut on_line: Vec<_> = cache
-                .hints
+        if !view.inlay_hints.is_empty() {
+            let mut on_line: Vec<&lattice_host::render_state::InlayHintRow> = view
+                .inlay_hints
                 .iter()
-                .filter(|h| h.position.line == line_idx)
+                .filter(|h| h.line == line_idx)
                 .collect();
-            on_line.sort_by(|a, b| b.position.character.cmp(&a.position.character));
+            on_line.sort_by(|a, b| b.byte.cmp(&a.byte));
             for h in on_line {
-                let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
-                if h.padding_left.unwrap_or(false) {
-                    text.insert(0, ' ');
-                }
-                if h.padding_right.unwrap_or(false) {
-                    text.push(' ');
-                }
-                let src_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    h.position.character,
-                ) as usize;
                 body = splice_virtual_text_into_spans(
                     body,
-                    map_ob(src_byte.min(line_len)),
-                    text,
+                    map_ob((h.byte as usize).min(line_len)),
+                    h.text.clone(),
                     inlay_hint_style(overlay_resolved, overlay_ids),
                 );
             }
@@ -7259,6 +7225,45 @@ mod tests {
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
     }
 
+    /// Fold-bleed fix (2026-06-30): an INACTIVE pane must elide its
+    /// closed folds and show the summary exactly like the active pane —
+    /// the user's repro was a folded buffer un-folding the instant focus
+    /// moved to another split. Previously `compose_pane_lines` gated all
+    /// fold handling on `ctx.is_active`, so inactive panes walked lines
+    /// 1:1. With per-buffer fold state (`folds_for_buffer`) the gate is
+    /// gone; this composes the buffer with `is_active: false` and asserts
+    /// the interior is still hidden and the summary still appears.
+    #[test]
+    fn inactive_pane_elides_closed_folds_like_active() {
+        let mut app = app_with("# H\nhidden1\nhidden2\nshown\n", 5);
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
+        app.recompute_folds();
+        let idx = app
+            .editor
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("heading fold");
+        app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
+
+        let view = FrameView::for_buffer(&app, app.ad().document_buffer_id);
+        let ctx = PaneComposeCtx {
+            is_active: false,
+            pane_id: app.panes().tree.active().id,
+            buffer_id: app.ad().document_buffer_id,
+            cursor_line: app.ad().cursor.line,
+            scroll: app.ad().scroll,
+            leftcol: app.ad().leftcol,
+            display_line_numbers: app.ad().display_line_numbers.clone(),
+        };
+        let lines = compose_pane_lines(&view, &app.ad().snapshot.clone(), 5, 80, &ctx);
+        let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!blob.contains("hidden1"), "inactive interior leaked: {blob}");
+        assert!(!blob.contains("hidden2"), "inactive interior leaked: {blob}");
+        assert!(blob.contains("lines folded"), "inactive summary missing: {blob}");
+    }
+
     #[test]
     fn closed_fold_summary_includes_chained_closed_folds() {
         // Reproduces the user's "fold both branches of an if/else
@@ -7769,6 +7774,66 @@ mod tests {
             }
         }
         assert!(found, "expected `: i32` inlay-hint span; got {row0:?}");
+    }
+
+    /// Inlay-hint de-duplication (2026-06-30): an INACTIVE pane renders
+    /// inlay hints through the SAME single path as the active pane —
+    /// `view.inlay_hints` (per-buffer). Guards the unified
+    /// `inlay_hints_for_buffer` source against a regression back to the
+    /// active-only / inactive-LSP-cache split.
+    #[test]
+    fn inactive_pane_renders_inlay_hints_like_active() {
+        use std::str::FromStr;
+        let mut app = app_with("let x = 1;\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
+        if !app.lsp_mode_enabled_for(doc_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        if !app.lsp_inlay_hint_mode_enabled_for(doc_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                doc_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: vec![lattice_lsp::lsp_types::InlayHint {
+                        position: lattice_lsp::lsp_types::Position { line: 0, character: 5 },
+                        label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
+                        kind: Some(lattice_lsp::lsp_types::InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: Some(false),
+                        padding_right: Some(false),
+                        data: None,
+                    }],
+                    requested_first_line: 0,
+                    requested_last_line: u32::MAX,
+                },
+            );
+        }
+        app.editor.publish_render_state();
+
+        // Compose the buffer as an INACTIVE pane.
+        let view = FrameView::for_buffer(&app, doc_id);
+        let ctx = PaneComposeCtx {
+            is_active: false,
+            pane_id: app.panes().tree.active().id,
+            buffer_id: doc_id,
+            cursor_line: app.ad().cursor.line,
+            scroll: app.ad().scroll,
+            leftcol: app.ad().leftcol,
+            display_line_numbers: app.ad().display_line_numbers.clone(),
+        };
+        let lines = compose_pane_lines(&view, &app.ad().snapshot.clone(), 5, 80, &ctx);
+        let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("");
+        assert!(
+            blob.contains(": i32"),
+            "inactive pane lost its inlay hint via the unified path: {blob}"
+        );
     }
 
     /// 4.4.h: a seeded semantic-tokens cache repaints the

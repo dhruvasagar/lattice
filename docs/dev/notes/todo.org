@@ -160,6 +160,19 @@
 - [X] echo in GPUI. `set wrap?` should echo the value.
 - [X] claude code inline diff colors are off, font color is dark
   making it look dull in TUI
+- [X] GPUI `describe-key` doesn't ask for / translate key chords
+- [X] claude code sometimes seems to get stuck within lattice with no
+  changes happening. Mostly I feel this was around diff-accept /
+  diff-reject. But we should review it overall to make sure we handle
+  errors correctly, reconnect if connection breaks, etc.
+- [X] Fold issues with active / inactive panes
+  - [X] TUI: when we switch active pane folds reset for the previously
+    active pane, when we switch back to it they are re-applied. The
+    folds should not change for active pane
+  - [X] GPUI: when folding, the folding gets applied to all active and
+    inactive panes, when we switch to separate panes the folds reset
+    for that pane. Folding key bindings should never effect inactive
+    pane content.
 
 * Documentation
 - [X] lattice-tutor

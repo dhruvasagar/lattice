@@ -206,7 +206,6 @@ fn location_segments(path: Option<&str>, line: u32, col: Option<u32>) -> Vec<Ann
 
 /// MARG §9: buffer status markers — an active `•` and/or a dirty `+`,
 /// each in its own slot. Empty when neither applies (clean, inactive).
-#[allow(dead_code)] // consumed by MP.3 (buffers picker)
 fn status_segments(dirty: bool, active: bool) -> Vec<AnnotationSegment> {
     let mut out = Vec::with_capacity(2);
     if active {
@@ -231,6 +230,9 @@ fn latency_segment(class: LatencyClass) -> AnnotationSegment {
 
 /// MARG §9: slot for the command argument-hint marginalia cell.
 const SLOT_ARGS: &str = "completion.annotation.args";
+
+/// MARG §9: slot for the buffer-id (`#N`) marginalia cell.
+const SLOT_BUFFER_ID: &str = "completion.annotation.buffer-id";
 
 /// Format a byte size with a single-letter SI-ish suffix
 /// (`72` / `1.4K` / `70k` / `12M` / `4.2G`), matching the
@@ -474,6 +476,12 @@ impl PickerSourceGenerator for RecentFilesSource {
             .map(|p| {
                 let display = p.display().to_string();
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // MP.3: same eza-style perm/size/mtime marginalia as the
+                // file picker. A path that fails to stat (since-deleted MRU
+                // entry) emits no metadata cells → blank, no error.
+                if let Ok(meta) = std::fs::metadata(p) {
+                    cand.annotations = metadata_annotations(&meta);
+                }
                 // Slice 7b.2: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
                     path: p.clone(),
@@ -539,19 +547,31 @@ impl PickerSourceGenerator for BuffersSource {
         let pairs = entries
             .into_iter()
             .map(|e| {
-                let active_marker = if e.id == active { " (current)" } else { "" };
                 let path_display = e
                     .path
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| e.title.clone());
-                let dirty = if e.dirty { " [+]" } else { "" };
-                let display = format!(
-                    "#{:<3} {path_display}{dirty}  {}{active_marker}",
-                    e.id, e.kind_label,
-                );
-                let mut cand = RawCandidate::plain(format!("#{}", e.id), CandidateKind::Buffer);
-                cand.display = display;
+                // MP.3: the path is the matchable `display`; buffer-id,
+                // dirty/active status, and kind become typed marginalia
+                // (no inline `#id`/`[+]`/`(current)` markers). Column order
+                // is fixed by `category_order` (kind → status → buffer-id).
+                let mut cand = RawCandidate::plain(path_display, CandidateKind::Buffer);
+                let mut annotations = vec![
+                    Annotation::Kind(e.kind_label.clone().into()),
+                    Annotation::Styled {
+                        category: "buffer-id".into(),
+                        segments: vec![txt_seg(format!("#{}", e.id), SLOT_BUFFER_ID)],
+                    },
+                ];
+                let status = status_segments(e.dirty, e.id == active);
+                if !status.is_empty() {
+                    annotations.push(Annotation::Styled {
+                        category: "status".into(),
+                        segments: status,
+                    });
+                }
+                cand.annotations = annotations;
                 // Slice 7b.1: typed accept payload on the
                 // candidate. Parallel to the existing
                 // RoutingPayload (still emitted for the picker's

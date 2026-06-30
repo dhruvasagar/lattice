@@ -45,17 +45,17 @@ Acceptance: `:picker commands` shows colored args/doc/latency; `:picker snippets
 
 Thread a command→chords reverse-cache through `PickerContext` (host-side, from the active keymap at `build_picker_context`) so `CommandsSource` can emit `Annotation::Keybinding` (slot already exists). Show first-bound chord per marginalia §10. Depends on MP.2.
 
-### MP.3 — Buffers + RecentFiles pickers 📝
+### MP.3 — Buffers + RecentFiles pickers ✅
 
 Depends on MP.1.
 
-Changes:
+Changes (landed):
 
-1. `BuffersSource` — `display`=path; `Styled{buffer-id}`, `Styled{status}` (dirty/active via `status_segments`), `Kind` (existing slot). Drop the inline `[+]` / `(current)` markers from `display`.
-2. `RecentFilesSource` — reuse §8 `metadata_annotations` verbatim (it already has the paths to stat) for perm/size/mtime.
-3. Tests: buffers source emits status/kind/id per row, path matchable; recent-files source emits the same three metadata cells as `FilesSource` for a stattable path, none for an unstattable one.
+1. `BuffersSource` — `display`=path (now the matchable text, was `#id`); `Kind` + `Styled{buffer-id}` (`#N`) on every row, `Styled{status}` (active `•` / dirty `+` via `status_segments`) on rows that need it. Dropped the inline `#id` / `[+]` / `(current)` markers. Active buffer still floats to the bottom.
+2. `RecentFilesSource` — reuse §8 `metadata_annotations` (stat each MRU path; a path that fails to stat emits no metadata cells → blank, no error).
+3. Tests: buffers row exposes buffer-id/kind/active-status annotations and no inline markers in `display`; recent row for a stattable path carries perm/size/mtime (seeded via `Editor::push_recent_file`).
 
-Acceptance: `:picker buffers` shows colored status + kind; `:picker recent` gets the eza-style perm/size/mtime treatment. Bisect-friendly: one commit.
+Acceptance: `:picker buffers` shows colored id/status/kind marginalia (path matchable); `:picker recent` gets the eza-style perm/size/mtime treatment. No GPUI change (existing variants/slots). Green.
 
 ### MP.4 — Location family (Grep, Jumps, Outline, Lines, Marks) 📝
 

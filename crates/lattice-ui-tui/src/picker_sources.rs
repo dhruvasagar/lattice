@@ -143,9 +143,37 @@ mod tests {
         assert_eq!(err, "no recent files");
     }
 
-    /// Buffers source emits one row per registry entry; the
-    /// active buffer carries the `(current)` marker and floats
-    /// to the bottom.
+    /// MP.3: a recent-files row for a stattable path carries the same
+    /// eza-style perm/size/mtime marginalia as the file picker.
+    #[test]
+    fn recent_source_emits_metadata_annotations() {
+        let mut app = app_with("hi\n", 5);
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-recent-meta-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::write(&tmp, b"hello").unwrap();
+        app.editor.push_recent_file(&tmp);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = RecentFilesSource::new();
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+        let row = pairs
+            .iter()
+            .find(|(c, _)| c.display.contains("lattice-recent-meta"))
+            .expect("recent row for the pushed temp file");
+        let cats: Vec<&str> = row.0.annotations.iter().map(|a| a.category()).collect();
+        assert!(
+            cats.contains(&"perm") && cats.contains(&"size") && cats.contains(&"mtime"),
+            "expected perm/size/mtime metadata, got {cats:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// MP.3: buffers source emits one row per registry entry; the
+    /// active buffer floats to the bottom and carries an active-status
+    /// marginalia cell (no inline `(current)` in the display). Each row
+    /// carries a buffer-id and a kind cell; the path is the display.
     #[test]
     fn buffers_source_inline_init_floats_active_to_bottom() {
         let app = app_with("hi\n", 5);
@@ -163,10 +191,24 @@ mod tests {
             RoutingPayload::Buffer { id } => assert_eq!(*id, ctx.active_buffer.buffer_id),
             other => panic!("expected Buffer routing, got {other:?}"),
         }
+        let cand = &last.0;
+        // No inline markers leak into the matchable display.
+        assert!(!cand.display.contains("(current)"));
+        assert!(!cand.display.contains("[+]"));
+        let cat = |c: &str| {
+            cand.annotations
+                .iter()
+                .find(|a| a.category() == c)
+                .map(|a| a.display_text().into_owned())
+        };
+        // Buffer-id and kind cells present; active row has an active-status
+        // marker (`•`).
+        assert_eq!(cat("buffer-id"), Some(format!("#{}", ctx.active_buffer.buffer_id)));
+        assert!(cat("kind").is_some(), "kind cell missing");
         assert!(
-            last.0.display.contains("(current)"),
-            "active row missing (current) marker: {}",
-            last.0.display
+            cat("status").is_some_and(|s| s.contains('•')),
+            "active row missing active-status marker, got {:?}",
+            cat("status")
         );
     }
 

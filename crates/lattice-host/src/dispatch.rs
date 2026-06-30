@@ -12792,10 +12792,29 @@ impl Editor {
             self.focus_help_popup();
             return;
         }
-        // First K -- fire a fresh hover request. Cancel any in-
-        // flight first. (Cancel-stale-work runs before the M.5.4
-        // gate so the prior request's relay loop sees the flip
-        // even when the gate is now closed.)
+        // Coalesce impatient repeats: if a hover request is already
+        // in-flight for THIS cursor position, let it complete instead
+        // of cancelling + re-firing. Before this guard, every K while a
+        // request was pending (popup not yet shown, so State A above
+        // didn't catch it) cancelled the prior request and swapped in a
+        // fresh `pending_hover_rx`; the cancelled request then delivered
+        // its outcome into the orphaned receiver and was silently
+        // dropped. A user pressing K a few times before a slow server
+        // replied would kill each request in turn and see nothing until
+        // they happened to pause — the intermittent "K does nothing for
+        // 2-3 tries then works" report. We only re-fire when the cursor
+        // moved (the popup must not land over the wrong symbol).
+        if self.pending_hover_token.is_some()
+            && self
+                .pending_hover_anchor
+                .is_some_and(|(anchor_cursor, _)| anchor_cursor == self.cursor)
+        {
+            return;
+        }
+        // Fire a fresh hover request. Cancel any in-flight first (the
+        // cursor moved, so the prior request is now stale). Cancel-
+        // stale-work runs before the M.5.4 gate so the prior request's
+        // relay loop sees the flip even when the gate is now closed.
         if let Some(token) = self.pending_hover_token.take() {
             token.cancel();
         }
@@ -29617,6 +29636,59 @@ mod tests {
         assert_eq!(
             reg.resolved().get(kw).fg,
             Some(lattice_theme::Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
+    }
+
+    /// Hover coalescing (2026-06-30): a repeat `K` while a hover request
+    /// is already in-flight for the SAME cursor position is a no-op — it
+    /// must NOT cancel the in-flight request. Before this fix, each
+    /// impatient K cancelled the prior request and swapped in a fresh
+    /// receiver, so the cancelled request delivered into an orphaned
+    /// channel and was silently dropped; a slow server's reply never
+    /// surfaced until the user happened to pause ("K does nothing for
+    /// 2-3 tries then suddenly works").
+    #[test]
+    fn repeat_hover_at_same_position_does_not_cancel_inflight() {
+        let document = lattice_core::Document::from_text("fn main() {}\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let cursor = lattice_protocol::position::Position::new(0, 3);
+        editor.cursor = cursor;
+        // Simulate a request already in-flight, anchored at this cursor.
+        let token = lattice_protocol::CancellationToken::new();
+        editor.pending_hover_token = Some(token.clone());
+        editor.pending_hover_anchor = Some((cursor, editor.scroll));
+
+        editor.lsp_hover_request();
+
+        assert!(
+            !token.is_cancelled(),
+            "repeat K at the same position must not cancel the in-flight hover"
+        );
+        assert!(
+            editor.pending_hover_token.is_some(),
+            "the in-flight token is preserved so its reply can still arrive"
+        );
+    }
+
+    /// Counterpart: when the cursor HAS moved since the in-flight
+    /// request, a fresh `K` cancels the stale request so the popup can't
+    /// land over the wrong symbol.
+    #[test]
+    fn hover_after_cursor_move_cancels_stale_inflight() {
+        let document = lattice_core::Document::from_text("fn main() {}\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let old_token = lattice_protocol::CancellationToken::new();
+        editor.pending_hover_token = Some(old_token.clone());
+        editor.pending_hover_anchor =
+            Some((lattice_protocol::position::Position::new(0, 3), editor.scroll));
+        // Cursor moved to a different column since the request fired.
+        editor.cursor = lattice_protocol::position::Position::new(0, 7);
+
+        editor.lsp_hover_request();
+
+        assert!(
+            old_token.is_cancelled(),
+            "moving the cursor cancels the stale in-flight hover before re-firing"
         );
     }
 

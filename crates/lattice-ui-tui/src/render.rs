@@ -1105,13 +1105,16 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
     let columns = lattice_completion::AnnotationColumns::from_visible(
         state.candidates.iter().skip(scroll).take(visible_count),
     );
+    // MR.1: resolved theme + ids so annotation colors read the
+    // registered `completion.annotation.*` slots (TUI/GPUI parity).
+    let cells_rs = app.render_state.load().cells.load_full();
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -1130,6 +1133,8 @@ fn candidate_to_line<'a>(
     selected: bool,
     display_col_chars: usize,
     columns: &lattice_completion::AnnotationColumns,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
 ) -> Line<'a> {
     // 2026-06-03: the `▶ ` selection-glyph prefix was
     // redundant — the row-background colour on the selected
@@ -1236,7 +1241,7 @@ fn candidate_to_line<'a>(
                     let text = ann.display_text();
                     let text_chars = text.chars().count();
                     let cell_pad = col_width.saturating_sub(text_chars);
-                    let fg = annotation_color(ann, selected);
+                    let fg = annotation_color(ann, selected, resolved, ids);
                     spans.push(Span::styled(text.into_owned(), row_style.fg(fg)));
                     if cell_pad > 0 {
                         spans.push(Span::styled(" ".repeat(cell_pad), row_style));
@@ -1263,48 +1268,54 @@ fn candidate_to_line<'a>(
 /// `docs/dev/architecture/marginalia.md` §5; will move to
 /// theme-slot reads when the queued theme-through-renderer
 /// slice lands.
-fn annotation_color(ann: &lattice_completion::Annotation, selected: bool) -> Color {
+/// Pack a `0xRRGGBB` literal into a ratatui `Color::Rgb`. Used for the
+/// selected-row brightened annotation literals and the unset-slot
+/// fallbacks (both shared verbatim with the GPUI peer).
+fn rgb_u32_to_ratatui(v: u32) -> Color {
+    Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// MR.1 (2026-06-30): resolve a completion / picker annotation's
+/// foreground from the theme. Mirrors the GPUI peer's
+/// `annotation_color_rgb` exactly so both renderers agree:
+///
+/// - the **unselected** base reads the registered
+///   `completion.annotation.{kind,doc,keybinding,source,custom}`
+///   element (fall back to the legacy literal if the slot is unset);
+/// - the **selected-row brightening** stays renderer logic — a selected
+///   row returns the brightened literal so contrast against the
+///   selection background holds (the brightening is NOT a separate theme
+///   element). The two-tuple literals are identical to GPUI's.
+///
+/// Before MR.1 this matched on the variant and returned a hardcoded
+/// `Color::*` regardless of theme (the §5 "queued" note only closed on
+/// the GPUI side via T.6). Now `:colorscheme` recolors marginalia on
+/// both peers.
+fn annotation_color(
+    ann: &lattice_completion::Annotation,
+    selected: bool,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) -> Color {
     use lattice_completion::Annotation;
-    match ann {
-        Annotation::Kind(_) => {
-            if selected {
-                Color::Gray
-            } else {
-                Color::DarkGray
-            }
-        }
-        Annotation::DocSnippet(_) => {
-            if selected {
-                Color::LightCyan
-            } else {
-                Color::Cyan
-            }
-        }
-        Annotation::Keybinding(_) => {
-            if selected {
-                Color::LightYellow
-            } else {
-                Color::Yellow
-            }
-        }
-        Annotation::Source(_) => {
-            if selected {
-                Color::LightMagenta
-            } else {
-                Color::Magenta
-            }
-        }
-        // Plugin / extension fallback. Unknown `slot` strings
-        // all resolve to this colour pre-Phase-4; the typed
-        // theme registry that resolves slot keys to colours
-        // lands with the WASM plugin host.
-        Annotation::Custom { .. } => {
-            if selected {
-                Color::LightBlue
-            } else {
-                Color::Blue
-            }
-        }
+    let (id, base_fallback, brightened): (_, u32, u32) = match ann {
+        Annotation::Kind(_) => (ids.completion_annotation_kind, 0x9399b2, 0xcdd6f4),
+        Annotation::DocSnippet(_) => (ids.completion_annotation_doc, 0x89dceb, 0xbfeaf5),
+        Annotation::Keybinding(_) => (ids.completion_annotation_keybinding, 0xf9e2af, 0xfff0b8),
+        Annotation::Source(_) => (ids.completion_annotation_source, 0xcba6f7, 0xe2cfff),
+        // Plugin / extension fallback. Unknown `slot` strings all
+        // resolve to this element pre-Phase-4; the per-slot resolution
+        // for `Custom`/`Styled` segment slots lands in MR.2.
+        Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+    };
+    if selected {
+        rgb_u32_to_ratatui(brightened)
+    } else {
+        resolved
+            .get(id)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or_else(|| rgb_u32_to_ratatui(base_fallback))
     }
 }
 
@@ -1394,13 +1405,16 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
     let columns = lattice_completion::AnnotationColumns::from_visible(
         p.candidates.iter().skip(scroll).take(visible_count),
     );
+    // MR.1: resolved theme + ids so annotation colors read the
+    // registered `completion.annotation.*` slots (TUI/GPUI parity).
+    let cells_rs = app.render_state.load().cells.load_full();
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, area);
@@ -1538,13 +1552,16 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let columns = lattice_completion::AnnotationColumns::from_visible(
         p.candidates.iter().skip(scroll).take(visible_count),
     );
+    // MR.1: resolved theme + ids so annotation colors read the
+    // registered `completion.annotation.*` slots (TUI/GPUI parity).
+    let cells_rs = app.render_state.load().cells.load_full();
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, cand_area);
@@ -1609,13 +1626,16 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let columns = lattice_completion::AnnotationColumns::from_visible(
         state.candidates.iter().skip(scroll).take(visible_count),
     );
+    // MR.1: resolved theme + ids so annotation colors read the
+    // registered `completion.annotation.*` slots (TUI/GPUI parity).
+    let cells_rs = app.render_state.load().cells.load_full();
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -7834,6 +7854,42 @@ mod tests {
             blob.contains(": i32"),
             "inactive pane lost its inlay hint via the unified path: {blob}"
         );
+    }
+
+    /// MR.1: an unselected annotation's color now reads the registered
+    /// `completion.annotation.*` theme slot (was a hardcoded `Color::*`
+    /// before; GPUI already did this via T.6). Closes the TUI theme gap.
+    #[test]
+    fn annotation_color_reads_theme_for_unselected_rows() {
+        let app = app_with("x\n", 5);
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+        let kind = lattice_completion::Annotation::Kind("motion".into());
+        let got = super::annotation_color(&kind, false, resolved, ids);
+        let want = resolved
+            .get(ids.completion_annotation_kind)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .expect("completion.annotation.kind has a default fg");
+        assert_eq!(
+            got, want,
+            "unselected annotation fg must resolve from completion.annotation.kind"
+        );
+    }
+
+    /// MR.1: the selected-row brightening stays renderer logic (a
+    /// brightened literal), NOT a theme read — mirrors the GPUI peer's
+    /// `annotation_color_rgb` exactly so the two peers agree.
+    #[test]
+    fn annotation_color_brightens_selected_independent_of_theme() {
+        let app = app_with("x\n", 5);
+        let cells = app.render_state.load().cells.load_full();
+        let kind = lattice_completion::Annotation::Kind("motion".into());
+        let got =
+            super::annotation_color(&kind, true, &cells.resolved_theme, &cells.theme_ids);
+        // Same brightened literal GPUI returns for a selected Kind row.
+        assert_eq!(got, Color::Rgb(0xcd, 0xd6, 0xf4));
     }
 
     /// 4.4.h: a seeded semantic-tokens cache repaints the

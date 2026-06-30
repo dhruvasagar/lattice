@@ -485,6 +485,13 @@ fn category_order(category: &str) -> u8 {
         "perm" => 5,
         "size" => 6,
         "mtime" => 7,
+        // MARG §9: picker rollout columns, to the right of file metadata.
+        "location" => 8,
+        "status" => 9,
+        "latency" => 10,
+        "args" => 11,
+        "buffer-id" => 12,
+        "register" => 13,
         _ => 4,
     }
 }

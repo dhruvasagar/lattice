@@ -882,6 +882,64 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("green"),
         "Marginalia: file modified-time column.",
     );
+    // ---- MARG §9: picker marginalia rollout (location / status /
+    // latency / args / buffer-id / register). Same `Annotation::Styled`
+    // mechanism, new slot families consumed by the non-file pickers. ----
+    reg_one(
+        "completion.annotation.location.path",
+        spec().fg("overlay"),
+        "Marginalia: location path head (grep/jumps/marks).",
+    );
+    reg_one(
+        "completion.annotation.location.line",
+        spec().fg("yellow"),
+        "Marginalia: location line number.",
+    );
+    reg_one(
+        "completion.annotation.location.col",
+        spec().fg("overlay"),
+        "Marginalia: location column number.",
+    );
+    reg_one(
+        "completion.annotation.status.dirty",
+        spec().fg("red"),
+        "Marginalia: dirty-buffer marker.",
+    );
+    reg_one(
+        "completion.annotation.status.active",
+        spec().fg("green"),
+        "Marginalia: current-buffer marker.",
+    );
+    reg_one(
+        "completion.annotation.latency.reflex",
+        spec().fg("green"),
+        "Marginalia: reflex-latency command class.",
+    );
+    reg_one(
+        "completion.annotation.latency.display",
+        spec().fg("blue"),
+        "Marginalia: display-latency command class.",
+    );
+    reg_one(
+        "completion.annotation.latency.background",
+        spec().fg("orange"),
+        "Marginalia: background-latency command class.",
+    );
+    reg_one(
+        "completion.annotation.args",
+        spec().fg("subtext"),
+        "Marginalia: command argument hint.",
+    );
+    reg_one(
+        "completion.annotation.buffer-id",
+        spec().fg("overlay"),
+        "Marginalia: buffer id (#N).",
+    );
+    reg_one(
+        "completion.annotation.register",
+        spec().fg("purple"),
+        "Marginalia: register / mark name.",
+    );
 
     // ---- Syntax (mirrors host `Theme::syntax_style`) ----
     reg_one("syntax.default", spec().fg("text"), "Default foreground text.");
@@ -1098,6 +1156,18 @@ pub struct BuiltinElementIds {
     pub completion_annotation_perm_none: ElementId,
     pub completion_annotation_size: ElementId,
     pub completion_annotation_mtime: ElementId,
+    // MARG §9: picker marginalia rollout slots.
+    pub completion_annotation_location_path: ElementId,
+    pub completion_annotation_location_line: ElementId,
+    pub completion_annotation_location_col: ElementId,
+    pub completion_annotation_status_dirty: ElementId,
+    pub completion_annotation_status_active: ElementId,
+    pub completion_annotation_latency_reflex: ElementId,
+    pub completion_annotation_latency_display: ElementId,
+    pub completion_annotation_latency_background: ElementId,
+    pub completion_annotation_args: ElementId,
+    pub completion_annotation_buffer_id: ElementId,
+    pub completion_annotation_register: ElementId,
     // Terminal ANSI 0-15 (the 16-colour palette programs draw in). Each
     // maps to a palette accent so the embedded terminal recolours with the
     // colorscheme instead of a hardcoded dim-VGA xterm palette. The GPUI
@@ -1200,6 +1270,17 @@ impl Default for BuiltinElementIds {
             completion_annotation_perm_none: ElementId::INVALID,
             completion_annotation_size: ElementId::INVALID,
             completion_annotation_mtime: ElementId::INVALID,
+            completion_annotation_location_path: ElementId::INVALID,
+            completion_annotation_location_line: ElementId::INVALID,
+            completion_annotation_location_col: ElementId::INVALID,
+            completion_annotation_status_dirty: ElementId::INVALID,
+            completion_annotation_status_active: ElementId::INVALID,
+            completion_annotation_latency_reflex: ElementId::INVALID,
+            completion_annotation_latency_display: ElementId::INVALID,
+            completion_annotation_latency_background: ElementId::INVALID,
+            completion_annotation_args: ElementId::INVALID,
+            completion_annotation_buffer_id: ElementId::INVALID,
+            completion_annotation_register: ElementId::INVALID,
         }
     }
 }
@@ -1228,6 +1309,19 @@ impl BuiltinElementIds {
             "completion.annotation.perm.none" => self.completion_annotation_perm_none,
             "completion.annotation.size" => self.completion_annotation_size,
             "completion.annotation.mtime" => self.completion_annotation_mtime,
+            "completion.annotation.location.path" => self.completion_annotation_location_path,
+            "completion.annotation.location.line" => self.completion_annotation_location_line,
+            "completion.annotation.location.col" => self.completion_annotation_location_col,
+            "completion.annotation.status.dirty" => self.completion_annotation_status_dirty,
+            "completion.annotation.status.active" => self.completion_annotation_status_active,
+            "completion.annotation.latency.reflex" => self.completion_annotation_latency_reflex,
+            "completion.annotation.latency.display" => self.completion_annotation_latency_display,
+            "completion.annotation.latency.background" => {
+                self.completion_annotation_latency_background
+            }
+            "completion.annotation.args" => self.completion_annotation_args,
+            "completion.annotation.buffer-id" => self.completion_annotation_buffer_id,
+            "completion.annotation.register" => self.completion_annotation_register,
             _ => self.completion_annotation_custom,
         }
     }
@@ -1351,6 +1445,19 @@ impl BuiltinElementIds {
             completion_annotation_perm_none: id("completion.annotation.perm.none"),
             completion_annotation_size: id("completion.annotation.size"),
             completion_annotation_mtime: id("completion.annotation.mtime"),
+            completion_annotation_location_path: id("completion.annotation.location.path"),
+            completion_annotation_location_line: id("completion.annotation.location.line"),
+            completion_annotation_location_col: id("completion.annotation.location.col"),
+            completion_annotation_status_dirty: id("completion.annotation.status.dirty"),
+            completion_annotation_status_active: id("completion.annotation.status.active"),
+            completion_annotation_latency_reflex: id("completion.annotation.latency.reflex"),
+            completion_annotation_latency_display: id("completion.annotation.latency.display"),
+            completion_annotation_latency_background: id(
+                "completion.annotation.latency.background",
+            ),
+            completion_annotation_args: id("completion.annotation.args"),
+            completion_annotation_buffer_id: id("completion.annotation.buffer-id"),
+            completion_annotation_register: id("completion.annotation.register"),
         }
     }
 }
@@ -1577,6 +1684,66 @@ mod tests {
         assert_eq!(
             resolved.get(ids.diagnostic_hint),
             Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
+        );
+    }
+
+    #[test]
+    fn builtin_ids_capture_resolves_picker_rollout_slots() {
+        // MP.1 (shared by BOTH renderers — each resolves a `Styled`
+        // segment via `ids.annotation_slot(slot)`): the picker-rollout
+        // slots intern, `annotation_slot` maps every key, and each family
+        // resolves to its intended palette token (asserted against a
+        // sibling slot that shares the token, so no hardcoded hex).
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+
+        for (key, id) in [
+            ("completion.annotation.location.path", ids.completion_annotation_location_path),
+            ("completion.annotation.location.line", ids.completion_annotation_location_line),
+            ("completion.annotation.location.col", ids.completion_annotation_location_col),
+            ("completion.annotation.status.dirty", ids.completion_annotation_status_dirty),
+            ("completion.annotation.status.active", ids.completion_annotation_status_active),
+            ("completion.annotation.latency.reflex", ids.completion_annotation_latency_reflex),
+            ("completion.annotation.latency.display", ids.completion_annotation_latency_display),
+            (
+                "completion.annotation.latency.background",
+                ids.completion_annotation_latency_background,
+            ),
+            ("completion.annotation.args", ids.completion_annotation_args),
+            ("completion.annotation.buffer-id", ids.completion_annotation_buffer_id),
+            ("completion.annotation.register", ids.completion_annotation_register),
+        ] {
+            assert_ne!(id, ElementId::INVALID, "`{key}` should intern");
+            assert_eq!(ids.annotation_slot(key), id, "annotation_slot maps `{key}`");
+        }
+
+        // Token parity (against sibling slots sharing the same palette token):
+        let fg = |id| resolved.get(id).fg;
+        assert_eq!(
+            fg(ids.completion_annotation_location_line),
+            fg(ids.completion_annotation_keybinding), // yellow
+        );
+        assert_eq!(
+            fg(ids.completion_annotation_status_dirty),
+            fg(ids.completion_annotation_perm_write), // red
+        );
+        assert_eq!(
+            fg(ids.completion_annotation_latency_reflex),
+            fg(ids.completion_annotation_perm_exec), // green
+        );
+        assert_eq!(
+            fg(ids.completion_annotation_latency_display),
+            fg(ids.completion_annotation_perm_type), // blue
+        );
+        assert_eq!(
+            fg(ids.completion_annotation_register),
+            fg(ids.completion_annotation_source), // purple
+        );
+        // The accent line is distinct from its dim path/col siblings.
+        assert_ne!(
+            fg(ids.completion_annotation_location_line),
+            fg(ids.completion_annotation_location_path),
         );
     }
 

@@ -181,6 +181,79 @@ fn metadata_annotations(meta: &std::fs::Metadata) -> Vec<Annotation> {
     annotations
 }
 
+// MARG §9: theme slot keys for the picker-rollout marginalia families.
+// Must match the elements registered in `lattice-theme` (MP.1). The
+// bit→slot / class→slot policy lives here once; renderers stay dumb.
+const SLOT_LOC_PATH: &str = "completion.annotation.location.path";
+const SLOT_LOC_LINE: &str = "completion.annotation.location.line";
+const SLOT_LOC_COL: &str = "completion.annotation.location.col";
+const SLOT_STATUS_DIRTY: &str = "completion.annotation.status.dirty";
+const SLOT_STATUS_ACTIVE: &str = "completion.annotation.status.active";
+const SLOT_LATENCY_REFLEX: &str = "completion.annotation.latency.reflex";
+const SLOT_LATENCY_DISPLAY: &str = "completion.annotation.latency.display";
+const SLOT_LATENCY_BACKGROUND: &str = "completion.annotation.latency.background";
+
+/// MARG §9: a marginalia segment from string text + a slot key.
+fn txt_seg(text: impl Into<String>, slot: &str) -> AnnotationSegment {
+    AnnotationSegment { text: text.into().into(), slot: slot.into() }
+}
+
+/// MARG §9: a colored `path:line:col` location cell — dim path, accent
+/// line, dim column, with the `:` separators riding the dim slots. A
+/// `None` path yields `line[:col]` (line/outline pickers); a `None`
+/// column drops the trailing `:col` (line-only pickers). The policy
+/// lives here so grep / jumps / outline / lines / marks (and the future
+/// LSP locations picker) share one coloring. Substrate helper, not a
+/// `Document` trait method — only specific picker sources consume it.
+#[allow(dead_code)] // consumed by MP.4 (location family)
+fn location_segments(path: Option<&str>, line: u32, col: Option<u32>) -> Vec<AnnotationSegment> {
+    let mut out = Vec::with_capacity(5);
+    if let Some(p) = path {
+        out.push(txt_seg(p, SLOT_LOC_PATH));
+        out.push(txt_seg(":", SLOT_LOC_PATH));
+    }
+    out.push(txt_seg(line.to_string(), SLOT_LOC_LINE));
+    if let Some(c) = col {
+        out.push(txt_seg(":", SLOT_LOC_COL));
+        out.push(txt_seg(c.to_string(), SLOT_LOC_COL));
+    }
+    out
+}
+
+/// MARG §9: buffer status markers — an active `•` and/or a dirty `+`,
+/// each in its own slot. Empty when neither applies (clean, inactive).
+#[allow(dead_code)] // consumed by MP.3 (buffers picker)
+fn status_segments(dirty: bool, active: bool) -> Vec<AnnotationSegment> {
+    let mut out = Vec::with_capacity(2);
+    if active {
+        out.push(txt_seg("•", SLOT_STATUS_ACTIVE));
+    }
+    if dirty {
+        out.push(txt_seg("+", SLOT_STATUS_DIRTY));
+    }
+    out
+}
+
+/// MARG §9: command latency class, color-coded in the commands picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by MP.2 (commands picker)
+pub(crate) enum LatencyClass {
+    Reflex,
+    Display,
+    Background,
+}
+
+/// MARG §9: a single latency-class marginalia segment.
+#[allow(dead_code)] // consumed by MP.2 (commands picker)
+fn latency_segment(class: LatencyClass) -> AnnotationSegment {
+    let (text, slot) = match class {
+        LatencyClass::Reflex => ("[reflex]", SLOT_LATENCY_REFLEX),
+        LatencyClass::Display => ("[display]", SLOT_LATENCY_DISPLAY),
+        LatencyClass::Background => ("[background]", SLOT_LATENCY_BACKGROUND),
+    };
+    txt_seg(text, slot)
+}
+
 /// Format a byte size with a single-letter SI-ish suffix
 /// (`72` / `1.4K` / `70k` / `12M` / `4.2G`), matching the
 /// `ls -h` convention. Uses 1024-based units. Capped at 5
@@ -1711,6 +1784,54 @@ mod tests {
         assert_eq!(segs[0].text.as_ref(), "d");
         assert_eq!(segs[0].slot.as_ref(), SLOT_PERM_TYPE);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// MP.1: `location_segments` colors `path:line:col` — dim path, accent
+    /// line, dim column — with `:` separators on the dim slots.
+    #[test]
+    fn location_segments_full_path_line_col() {
+        let segs = location_segments(Some("src/main.rs"), 42, Some(7));
+        let text: String = segs.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(text, "src/main.rs:42:7");
+        assert_eq!(segs[0].slot.as_ref(), SLOT_LOC_PATH); // path
+        assert_eq!(segs[1].slot.as_ref(), SLOT_LOC_PATH); // ":" sep
+        assert_eq!(segs[2].slot.as_ref(), SLOT_LOC_LINE); // line
+        assert_eq!(segs[3].slot.as_ref(), SLOT_LOC_COL); // ":" sep
+        assert_eq!(segs[4].slot.as_ref(), SLOT_LOC_COL); // col
+    }
+
+    /// MP.1: line-only location (no path, no col) for lines/outline pickers.
+    #[test]
+    fn location_segments_line_only() {
+        let segs = location_segments(None, 12, None);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text.as_ref(), "12");
+        assert_eq!(segs[0].slot.as_ref(), SLOT_LOC_LINE);
+    }
+
+    /// MP.1: status markers — active `•` then dirty `+`, each its own slot;
+    /// empty when neither applies.
+    #[test]
+    fn status_segments_active_and_dirty() {
+        assert!(status_segments(false, false).is_empty());
+        let active = status_segments(false, true);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].slot.as_ref(), SLOT_STATUS_ACTIVE);
+        let both = status_segments(true, true);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].slot.as_ref(), SLOT_STATUS_ACTIVE);
+        assert_eq!(both[1].slot.as_ref(), SLOT_STATUS_DIRTY);
+    }
+
+    /// MP.1: each latency class maps to its own slot.
+    #[test]
+    fn latency_segment_maps_class_to_slot() {
+        assert_eq!(latency_segment(LatencyClass::Reflex).slot.as_ref(), SLOT_LATENCY_REFLEX);
+        assert_eq!(latency_segment(LatencyClass::Display).slot.as_ref(), SLOT_LATENCY_DISPLAY);
+        assert_eq!(
+            latency_segment(LatencyClass::Background).slot.as_ref(),
+            SLOT_LATENCY_BACKGROUND
+        );
     }
 
     /// Helper smoke: `format_args_hint` matches the

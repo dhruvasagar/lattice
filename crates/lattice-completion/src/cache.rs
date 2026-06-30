@@ -109,6 +109,7 @@ mod tests {
             data: CandidateData::Plain,
             source: None,
             accept_action: None,
+            annotations: Vec::new(),
         }
     }
 

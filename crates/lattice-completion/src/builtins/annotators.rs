@@ -166,6 +166,7 @@ mod tests {
                 data,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             },
             score: MatchScore::PERFECT,
             match_ranges: Vec::new(),

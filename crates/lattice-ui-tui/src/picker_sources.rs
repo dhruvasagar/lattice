@@ -67,12 +67,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Files source's display now carries the marginalia
-    /// columns (perms + size + mtime). Confirms the integration
-    /// by walking a temp dir with one known file and asserting
-    /// the display contains size + a relative-time phrase.
+    /// MR.3: the files source carries marginalia as typed `Styled`
+    /// annotations (perm / size / mtime columns), NOT baked into the
+    /// `display` string. `display` is the path so fuzzy matching runs on
+    /// the path; the renderer color-codes each annotation per its theme
+    /// slot. End-to-end through the source's `init` against a live
+    /// `PickerContext`.
     #[test]
-    fn files_source_display_carries_marginalia_columns() {
+    fn files_source_emits_metadata_annotations() {
         let tmp = std::env::temp_dir().join(format!("lattice-files-margin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -88,20 +90,24 @@ mod tests {
             panic!("expected Inline");
         };
         assert_eq!(pairs.len(), 1);
-        let display = &pairs[0].0.display;
-        // Path shows up.
-        assert!(display.contains("readme.md"), "got `{display}`");
-        // Size is 7 bytes -- shown as `7`.
+        let cand = &pairs[0].0;
+        // display is the path only — metadata moved to annotations.
+        assert!(cand.display.contains("readme.md"), "got `{}`", cand.display);
         assert!(
-            display.contains(" 7 "),
-            "expected size col, got `{display}`"
+            !cand.display.contains("minute") && !cand.display.contains("just now"),
+            "metadata must not leak into display: `{}`",
+            cand.display
         );
-        // mtime is a relative-time phrase. The file was just
-        // written so "just now" / "1 minute ago" depending
-        // on slow CI clocks.
+        // perm → size → mtime, each a Styled cell.
+        let cats: Vec<&str> = cand.annotations.iter().map(|a| a.category()).collect();
+        assert_eq!(cats, vec!["perm", "size", "mtime"]);
+        let size = cand.annotations.iter().find(|a| a.category() == "size").unwrap();
+        assert_eq!(size.display_text(), "7", "7-byte file → size `7`");
+        let mtime = cand.annotations.iter().find(|a| a.category() == "mtime").unwrap();
+        let mt = mtime.display_text();
         assert!(
-            display.contains("just now") || display.contains("minute"),
-            "expected relative mtime, got `{display}`"
+            mt.contains("just now") || mt.contains("minute"),
+            "expected relative mtime, got `{mt}`"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }

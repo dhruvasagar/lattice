@@ -179,6 +179,15 @@ pub struct RawCandidate {
     /// callsite when needed.
     #[serde(skip)]
     pub accept_action: Option<Box<crate::source_registration::AcceptAction>>,
+    /// MARG §8: source-supplied marginalia. A picker source that
+    /// knows its rows' metadata (the file/dir picker's perms / size /
+    /// mtime) attaches typed [`Annotation`]s here at build time; the
+    /// pipeline copies them onto the [`RenderedCandidate`] so the
+    /// renderer color-codes them. Empty for sources that contribute no
+    /// marginalia (the common case). `#[serde(skip)]`: annotations are
+    /// render-time data resolved against the live theme, never cached.
+    #[serde(skip)]
+    pub annotations: Vec<Annotation>,
 }
 
 impl RawCandidate {
@@ -195,6 +204,7 @@ impl RawCandidate {
             data: CandidateData::Plain,
             source: None,
             accept_action: None,
+            annotations: Vec::new(),
         }
     }
 
@@ -265,7 +275,7 @@ pub struct ScoredCandidate {
 /// See `docs/dev/architecture/marginalia.md` for the data-model
 /// rationale and the rejected `String + style` and pre-styled-
 /// spans alternatives.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Annotation {
     /// Category label like `(motion)`, `(command)`, `(file)`.
     /// Emitted by `KindLabelAnnotator`. Renderer styles with
@@ -318,7 +328,7 @@ pub enum Annotation {
 /// element name the renderer resolves at paint time (unknown slot
 /// → the custom/plugin annotation color); it is NEVER a baked
 /// color, so a `:colorscheme` swap recolors it live on both peers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationSegment {
     pub text: Arc<str>,
     pub slot: Arc<str>,
@@ -468,6 +478,13 @@ fn category_order(category: &str) -> u8 {
         "kind" => 1,
         "doc" => 2,
         "source" => 3,
+        // MARG §8: file-metadata columns render in `ls`-style order
+        // (permissions → size → mtime), to the right of any command
+        // columns. Explicit ranks because the default tie-break is
+        // alphabetical, which would mis-order them (mtime < perm < size).
+        "perm" => 5,
+        "size" => 6,
+        "mtime" => 7,
         _ => 4,
     }
 }
@@ -488,11 +505,16 @@ pub struct RenderedCandidate {
 
 impl RenderedCandidate {
     pub fn from_scored(s: ScoredCandidate) -> Self {
+        // MARG §8: carry any source-supplied marginalia through to the
+        // rendered candidate. Annotators (when present) append more on
+        // top; the picker runs no annotators, so for it this IS the
+        // annotation source.
+        let annotations = s.raw.annotations.clone();
         Self {
             raw: s.raw,
             score: s.score,
             match_ranges: s.match_ranges,
-            annotations: Vec::new(),
+            annotations,
         }
     }
 }

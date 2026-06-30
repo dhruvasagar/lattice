@@ -156,6 +156,7 @@ impl CandidateGenerator for HelpTopicsGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect()
     }

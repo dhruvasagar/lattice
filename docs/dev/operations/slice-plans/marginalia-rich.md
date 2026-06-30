@@ -2,7 +2,7 @@
 
 **Design:** [marginalia.md §8](../../architecture/marginalia.md).
 
-**Status:** 📝 planned (2026-06-30). Four sub-slices. Implements the §8 extension: `Annotation::Styled` (per-segment-colored column cell), eza-style permission/size/mtime theme slots, the file/dir picker as first producer, and closure of the TUI annotation-theme gap left open by MARG.1. Design fragment + bench + per-renderer tests + per-renderer palette ship together per CLAUDE.md heuristic #5.
+**Status:** 🚧 in progress (2026-06-30) — MR.1–MR.3 ✅ landed (the screenshot's rich coloring renders on both peers); MR.4 📝 remaining. Four sub-slices. Implements the §8 extension: `Annotation::Styled` (per-segment-colored column cell), eza-style permission/size/mtime theme slots, the file/dir picker as first producer, and closure of the TUI annotation-theme gap left open by MARG.1. Design fragment + bench + per-renderer tests + per-renderer palette ship together per CLAUDE.md heuristic #5.
 
 **Why:** The file/dir picker bakes `perms/size/mtime` into one flat `RawCandidate.display` string painted in a single uncolored run. The user wants the eza/`ls --color` treatment from the reference screenshot — per-bit permission colors, gold size, green mtime — integrated with the theme system, on both renderers. The MARG substrate already carries typed, column-aligned annotations (MARG.1–5) and GPUI already resolves their colors from the theme (T.6); the one missing primitive is coloring *within* a single column cell.
 
@@ -12,7 +12,7 @@
 
 ## Sequencing
 
-### MR.1 — Close the TUI annotation theme gap 📝
+### MR.1 — Close the TUI annotation theme gap ✅
 
 Prerequisite slice. No new feature; existing annotations become theme-driven on TUI (they already are on GPUI via T.6). Touches the TUI candidate render path only.
 
@@ -26,7 +26,7 @@ Acceptance: workspace check + tests green; existing completion/picker annotation
 
 Risk: TUI tests that assert exact hardcoded `Color::*` for annotations must move to resolved-slot assertions. Audit `grep -rn "annotation_color\|Color::Cyan" crates/lattice-ui-tui/`.
 
-### MR.2 — `Annotation::Styled` variant + per-segment theme slots + both-peer rendering 📝
+### MR.2 — `Annotation::Styled` variant + per-segment theme slots + both-peer rendering ✅
 
 Substrate slice. No producer yet → no user-visible change. Adds the variant (forcing exhaustive handling in both peers) and the new slots.
 
@@ -42,7 +42,7 @@ Acceptance: check + tests green on both peers; a synthetic `Styled` annotation r
 
 Risk: exhaustive-match breaks anywhere that matches `Annotation` — sweep `grep -rn "match .*Annotation\|Annotation::" crates/ --include="*.rs"` and add the `Styled` arm.
 
-### MR.3 — File/dir picker emits structured perm/size/mtime annotations 📝
+### MR.3 — File/dir picker emits structured perm/size/mtime annotations ✅
 
 Producer slice. The user-visible payoff. Depends on MR.2.
 

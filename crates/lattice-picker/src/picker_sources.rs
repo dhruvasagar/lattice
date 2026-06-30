@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use lattice_completion::{CandidateKind, RawCandidate};
+use lattice_completion::{Annotation, AnnotationSegment, CandidateKind, RawCandidate};
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
@@ -65,41 +65,120 @@ fn clip_to(s: &str, width: usize) -> String {
 /// `drwxr-xr-x`, `lrwxrwxrwx`). On platforms without unix
 /// mode bits, falls back to a six-char `<file>` / `<ro>`
 /// marker so the column stays width-aligned.
-fn format_perms(meta: &std::fs::Metadata) -> String {
+// MARG §8: theme slot keys for file-metadata marginalia segments.
+// Must match the elements registered in `lattice-theme` (MR.2).
+const SLOT_PERM_TYPE: &str = "completion.annotation.perm.type";
+const SLOT_PERM_READ: &str = "completion.annotation.perm.read";
+const SLOT_PERM_WRITE: &str = "completion.annotation.perm.write";
+const SLOT_PERM_EXEC: &str = "completion.annotation.perm.exec";
+const SLOT_PERM_SPECIAL: &str = "completion.annotation.perm.special";
+const SLOT_PERM_NONE: &str = "completion.annotation.perm.none";
+const SLOT_SIZE: &str = "completion.annotation.size";
+const SLOT_MTIME: &str = "completion.annotation.mtime";
+
+fn perm_seg(ch: char, slot: &str) -> AnnotationSegment {
+    AnnotationSegment { text: ch.to_string().into(), slot: slot.into() }
+}
+
+/// MARG §8: build the `drwxr-xr-x` permission string as one segment
+/// per bit class, each tagged with its theme slot (the eza / `ls
+/// --color` coloring). The bit→slot policy lives here, once; both
+/// renderers just resolve each segment's slot. Returns 10 segments on
+/// unix (type char + 9 perm bits, with setuid/setgid/sticky folded
+/// into the exec positions as s/S/t/T); a 4-char `<ro>`/`<rw>` label on
+/// other platforms.
+fn perm_segments(meta: &std::fs::Metadata) -> Vec<AnnotationSegment> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
         let mode = meta.permissions().mode();
         let ft = meta.file_type();
         let kind = if ft.is_dir() {
             'd'
         } else if ft.is_symlink() {
             'l'
+        } else if ft.is_block_device() {
+            'b'
+        } else if ft.is_char_device() {
+            'c'
+        } else if ft.is_fifo() {
+            'p'
+        } else if ft.is_socket() {
+            's'
         } else {
             '-'
         };
-        let bit = |mask, ch| if mode & mask != 0 { ch } else { '-' };
-        format!(
-            "{kind}{}{}{}{}{}{}{}{}{}",
-            bit(0o400, 'r'),
-            bit(0o200, 'w'),
-            bit(0o100, 'x'),
-            bit(0o040, 'r'),
-            bit(0o020, 'w'),
-            bit(0o010, 'x'),
-            bit(0o004, 'r'),
-            bit(0o002, 'w'),
-            bit(0o001, 'x'),
-        )
+        let mut out = Vec::with_capacity(10);
+        out.push(perm_seg(kind, SLOT_PERM_TYPE));
+        let rbit = |out: &mut Vec<AnnotationSegment>, set: bool| {
+            out.push(if set { perm_seg('r', SLOT_PERM_READ) } else { perm_seg('-', SLOT_PERM_NONE) });
+        };
+        let wbit = |out: &mut Vec<AnnotationSegment>, set: bool| {
+            out.push(if set { perm_seg('w', SLOT_PERM_WRITE) } else { perm_seg('-', SLOT_PERM_NONE) });
+        };
+        // exec-or-special: a set special bit (setuid/setgid/sticky)
+        // shows `lower` when exec is also set, `upper` otherwise.
+        let xbit = |out: &mut Vec<AnnotationSegment>,
+                    exec: bool,
+                    special: bool,
+                    lower: char,
+                    upper: char| {
+            if special {
+                out.push(perm_seg(if exec { lower } else { upper }, SLOT_PERM_SPECIAL));
+            } else if exec {
+                out.push(perm_seg('x', SLOT_PERM_EXEC));
+            } else {
+                out.push(perm_seg('-', SLOT_PERM_NONE));
+            }
+        };
+        rbit(&mut out, mode & 0o400 != 0);
+        wbit(&mut out, mode & 0o200 != 0);
+        xbit(&mut out, mode & 0o100 != 0, mode & 0o4000 != 0, 's', 'S');
+        rbit(&mut out, mode & 0o040 != 0);
+        wbit(&mut out, mode & 0o020 != 0);
+        xbit(&mut out, mode & 0o010 != 0, mode & 0o2000 != 0, 's', 'S');
+        rbit(&mut out, mode & 0o004 != 0);
+        wbit(&mut out, mode & 0o002 != 0);
+        xbit(&mut out, mode & 0o001 != 0, mode & 0o1000 != 0, 't', 'T');
+        out
     }
     #[cfg(not(unix))]
     {
-        if meta.permissions().readonly() {
-            "<ro>      ".to_string()
-        } else {
-            "<rw>      ".to_string()
-        }
+        let label = if meta.permissions().readonly() { "<ro>" } else { "<rw>" };
+        label.chars().map(|c| perm_seg(c, SLOT_PERM_TYPE)).collect()
     }
+}
+
+/// MARG §8: the file-metadata marginalia for one entry — a per-bit
+/// `perm` cell, a `size` cell, and (when `mtime` is available) an
+/// `mtime` cell, each an `Annotation::Styled` the renderer color-codes
+/// from its theme slot. Column order is fixed by `category_order`
+/// (perm → size → mtime). Single home so the file/dir picker and its
+/// test agree on the exact annotation set.
+fn metadata_annotations(meta: &std::fs::Metadata) -> Vec<Annotation> {
+    let mut annotations = vec![
+        Annotation::Styled {
+            category: "perm".into(),
+            segments: perm_segments(meta),
+        },
+        Annotation::Styled {
+            category: "size".into(),
+            segments: vec![AnnotationSegment {
+                text: format_size(meta.len()).into(),
+                slot: SLOT_SIZE.into(),
+            }],
+        },
+    ];
+    if let Ok(mt) = meta.modified() {
+        annotations.push(Annotation::Styled {
+            category: "mtime".into(),
+            segments: vec![AnnotationSegment {
+                text: format_mtime_relative(mt).into(),
+                slot: SLOT_MTIME.into(),
+            }],
+        });
+    }
+    annotations
 }
 
 /// Format a byte size with a single-letter SI-ish suffix
@@ -256,78 +335,36 @@ impl PickerSourceGenerator for FilesSource {
                 canonical_root.display()
             ));
         }
-        // Stat each entry for marginalia (perms / size /
-        // mtime). One syscall per file -- on a fast disk
-        // O(N µs); the walker's 5000-entry cap keeps this
-        // bounded to <100ms in the worst case. Files we
-        // can't stat (permission denied mid-walk) get an
-        // empty-metadata row -- the path still shows but
-        // the marginalia columns blank out.
-        struct Row {
-            abs: std::path::PathBuf,
-            rel_display: String,
-            perms: String,
-            size: String,
-            mtime: String,
-        }
-        let rows: Vec<Row> = entries
+        // MARG §8: stat each entry for marginalia (perms / size /
+        // mtime) and attach it as typed `Annotation::Styled` cells —
+        // the renderer color-codes each per its theme slot (per-bit
+        // permission colors, gold size, green mtime). One syscall per
+        // file -- on a fast disk O(N µs); the walker's 5000-entry cap
+        // keeps this bounded. The candidate `display` is just the path
+        // (so fuzzy matching runs on the path, not the metadata text);
+        // column alignment comes from `AnnotationColumns`, so the old
+        // manual per-column width / clip math is gone. A file we can't
+        // stat carries no metadata annotations → blank cells, the path
+        // still shows. This stat walk runs in the source's init (off
+        // the UI thread), never in a renderer.
+        let pairs = entries
             .into_iter()
             .map(|abs| {
                 let rel = abs
                     .strip_prefix(&canonical_root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|_| abs.clone());
-                let (perms, size, mtime) = match std::fs::metadata(&abs) {
-                    Ok(m) => (
-                        format_perms(&m),
-                        format_size(m.len()),
-                        m.modified().map(format_mtime_relative).unwrap_or_default(),
-                    ),
-                    Err(_) => (String::new(), String::new(), String::new()),
-                };
-                Row {
-                    abs,
-                    rel_display: rel.display().to_string(),
-                    perms,
-                    size,
-                    mtime,
-                }
-            })
-            .collect();
-        // Per-column widths adapt to the longest row in each
-        // column. Path column caps at 60 chars (clip with
-        // ellipsis) so the marginalia stays visible on
-        // narrow terminals. Size + mtime have fixed maximums
-        // by formatter design (~5 / ~16 chars); perms is
-        // 10 chars on unix.
-        let path_width = rows
-            .iter()
-            .map(|r| r.rel_display.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(60);
-        let perms_width = rows.iter().map(|r| r.perms.len()).max().unwrap_or(0);
-        let size_width = rows.iter().map(|r| r.size.len()).max().unwrap_or(0);
-        let pairs = rows
-            .into_iter()
-            .map(|row| {
-                let path_clipped = clip_to(&row.rel_display, path_width);
-                let display = format!(
-                    "{:<path$}  {:<perms$}  {:>size$}  {}",
-                    path_clipped,
-                    row.perms,
-                    row.size,
-                    row.mtime,
-                    path = path_width,
-                    perms = perms_width,
-                    size = size_width,
-                );
-                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let rel_display = rel.display().to_string();
+                let annotations = std::fs::metadata(&abs)
+                    .map(|m| metadata_annotations(&m))
+                    .unwrap_or_default();
+                let mut cand = RawCandidate::plain(rel_display, CandidateKind::Plain);
+                cand.annotations = annotations;
                 // Slice 7b.2: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
-                    path: row.abs.clone(),
+                    path: abs.clone(),
                 }));
-                (cand, RoutingPayload::OpenFile { path: row.abs })
+                (cand, RoutingPayload::OpenFile { path: abs })
             })
             .collect();
         Ok(PickerInitResult::Inline(pairs))
@@ -1595,23 +1632,85 @@ mod tests {
         assert_eq!(format_mtime_relative(days), "5 days ago");
     }
 
-    /// Unix permission bits format like `ls -l`.
+    /// MR.3: `perm_segments` yields one segment per bit class, each
+    /// tagged with its theme slot, in `ls -l` shape. Bits map to the
+    /// eza-convention slots; setuid/setgid/sticky fold into the exec
+    /// positions as s/S/t/T against `perm.special`.
     #[cfg(unix)]
     #[test]
-    fn format_perms_matches_ls_l_shape() {
-        // We can't easily construct a Metadata with arbitrary
-        // bits; instead stat a real fixture file and confirm
-        // the format shape.
-        let tmp = std::env::temp_dir().join(format!("lattice-perms-{}", std::process::id()));
+    fn perm_segments_map_bits_to_slots() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-perms-{}-{:?}", std::process::id(), std::thread::current().id()));
         std::fs::write(&tmp, b"x").unwrap();
+        // 0o755: rwx r-x r-x on a regular file.
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         let meta = std::fs::metadata(&tmp).unwrap();
-        let s = format_perms(&meta);
-        assert_eq!(s.len(), 10, "expected 10-char permission string, got `{s}`");
-        assert!(
-            s.starts_with('-'),
-            "file should render with `-` leader, got `{s}`"
-        );
+        let segs = perm_segments(&meta);
+        let text: String = segs.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(text, "-rwxr-xr-x", "ls -l shape");
+        assert_eq!(segs.len(), 10);
+        // Spot-check slot assignment for the user triad.
+        assert_eq!(segs[0].slot.as_ref(), SLOT_PERM_TYPE); // '-'
+        assert_eq!(segs[1].slot.as_ref(), SLOT_PERM_READ); // 'r'
+        assert_eq!(segs[2].slot.as_ref(), SLOT_PERM_WRITE); // 'w'
+        assert_eq!(segs[3].slot.as_ref(), SLOT_PERM_EXEC); // 'x'
+        // Group write bit is absent → '-' on the `none` slot.
+        assert_eq!(segs[5].text.as_ref(), "-");
+        assert_eq!(segs[5].slot.as_ref(), SLOT_PERM_NONE);
+
+        // setuid + sticky: user-exec becomes 's', other-exec 't', both
+        // on the special slot.
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o4751)).unwrap();
+        let meta = std::fs::metadata(&tmp).unwrap();
+        let segs = perm_segments(&meta);
+        let text: String = segs.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(text, "-rwsr-x--x", "setuid shows 's' in user-exec");
+        assert_eq!(segs[3].text.as_ref(), "s");
+        assert_eq!(segs[3].slot.as_ref(), SLOT_PERM_SPECIAL);
+
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// MR.3: a stattable entry yields exactly the perm / size / mtime
+    /// columns (in that order), each a `Styled` cell. `mtime` is present
+    /// because temp files always carry a modified time.
+    #[test]
+    fn metadata_annotations_yields_perm_size_mtime() {
+        use lattice_completion::Annotation;
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-meta-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::write(&tmp, b"hello").unwrap();
+        let meta = std::fs::metadata(&tmp).unwrap();
+        let anns = metadata_annotations(&meta);
+        let cats: Vec<&str> = anns.iter().map(|a| a.category()).collect();
+        assert_eq!(cats, vec!["perm", "size", "mtime"]);
+        // Every metadata annotation is a Styled cell.
+        assert!(anns.iter().all(|a| matches!(a, Annotation::Styled { .. })));
+        // The size cell carries the formatted size on the size slot.
+        if let Annotation::Styled { segments, .. } = &anns[1] {
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].text.as_ref(), "5");
+            assert_eq!(segments[0].slot.as_ref(), SLOT_SIZE);
+        } else {
+            panic!("size annotation should be Styled");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A directory renders with the `d` type char on `perm.type`.
+    #[cfg(unix)]
+    #[test]
+    fn perm_segments_directory_type_char() {
+        let dir = std::env::temp_dir()
+            .join(format!("lattice-permdir-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::create_dir(&dir);
+        let meta = std::fs::metadata(&dir).unwrap();
+        let segs = perm_segments(&meta);
+        assert_eq!(segs[0].text.as_ref(), "d");
+        assert_eq!(segs[0].slot.as_ref(), SLOT_PERM_TYPE);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     /// Helper smoke: `format_args_hint` matches the

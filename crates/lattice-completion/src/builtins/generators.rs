@@ -84,6 +84,7 @@ impl CandidateGenerator for CommandsGenerator {
                     },
                     source: None,
                     accept_action: None,
+                    annotations: Vec::new(),
                 })
             })
             .collect();
@@ -170,6 +171,7 @@ impl CandidateGenerator for FilesGenerator {
                 },
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             });
         }
         out.sort_by(|a, b| a.text.cmp(&b.text));

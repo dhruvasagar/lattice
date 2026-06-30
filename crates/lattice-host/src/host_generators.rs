@@ -55,6 +55,7 @@ impl CandidateGenerator for ModesGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -77,6 +78,7 @@ impl CandidateGenerator for EventsGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -100,6 +102,7 @@ impl CandidateGenerator for LogLevelsGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect()
     }
@@ -136,6 +139,7 @@ impl CandidateGenerator for PickerSourcesGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect()
     }
@@ -168,6 +172,7 @@ impl CandidateGenerator for LspServersGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             })
             .collect()
     }
@@ -200,6 +205,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                 data: CandidateData::Plain,
                 source: None,
                 accept_action: None,
+                annotations: Vec::new(),
             });
         }
         if let Some(registry) = self.registry.upgrade() {
@@ -211,6 +217,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                     data: CandidateData::Plain,
                     source: None,
                     accept_action: None,
+                    annotations: Vec::new(),
                 });
             }
         }

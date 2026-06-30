@@ -685,17 +685,16 @@ mod tests {
             }
             other => panic!("expected JumpInBuffer, got {other:?}"),
         }
-        // Display contains 1-based line + the name.
-        assert!(
-            pairs[0].0.display.contains("foo"),
-            "got {}",
-            pairs[0].0.display
-        );
-        assert!(
-            pairs[0].0.display.contains("3"),
-            "got {}",
-            pairs[0].0.display
-        );
+        // MP.4: symbol name is the matchable display; the 1-based line
+        // moves to a `location` marginalia cell.
+        assert_eq!(pairs[0].0.display, "foo");
+        let loc = pairs[0]
+            .0
+            .annotations
+            .iter()
+            .find(|a| a.category() == "location")
+            .expect("location cell");
+        assert_eq!(loc.display_text(), "3");
     }
 
     /// P.5: marks source returns `Err` when no marks set.
@@ -729,17 +728,20 @@ mod tests {
             RoutingPayload::JumpToMark { name } => assert_eq!(*name, 'a'),
             other => panic!("expected JumpToMark, got {other:?}"),
         }
-        // Display carries 1-based line:col.
-        assert!(
-            pairs[0].0.display.contains("3:1"),
-            "got {}",
-            pairs[0].0.display
-        );
-        assert!(
-            pairs[1].0.display.contains("6:4"),
-            "got {}",
-            pairs[1].0.display
-        );
+        // MP.4: mark name is the matchable display; 1-based line:col is a
+        // `location` marginalia cell.
+        let loc = |i: usize| {
+            pairs[i]
+                .0
+                .annotations
+                .iter()
+                .find(|a| a.category() == "location")
+                .map(|a| a.display_text().into_owned())
+        };
+        assert_eq!(pairs[0].0.display, "'a");
+        assert_eq!(loc(0).as_deref(), Some("3:1"));
+        assert_eq!(pairs[1].0.display, "'b");
+        assert_eq!(loc(1).as_deref(), Some("6:4"));
     }
 
     /// P.5: accept on a `JumpToMark` routing returns the
@@ -813,13 +815,24 @@ mod tests {
             }
             other => panic!("expected JumpInBuffer, got {other:?}"),
         }
-        // The named-mark row carries `'a` in its source tag.
-        assert!(pairs[1].0.display.contains("'a"), "{}", pairs[1].0.display);
-        // The auto row carries `auto`.
+        // MP.4: the provenance tag is a `Source` marginalia cell.
+        let source_tag = |i: usize| {
+            pairs[i]
+                .0
+                .annotations
+                .iter()
+                .find(|a| a.category() == "source")
+                .map(|a| a.display_text().into_owned())
+        };
+        assert_eq!(source_tag(1).as_deref(), Some("'a"));
+        assert_eq!(source_tag(2).as_deref(), Some("auto"));
+        // Each row also carries a line:col location cell.
         assert!(
-            pairs[2].0.display.contains("auto"),
-            "{}",
-            pairs[2].0.display
+            pairs[0]
+                .0
+                .annotations
+                .iter()
+                .any(|a| a.category() == "location")
         );
     }
 
@@ -852,13 +865,18 @@ mod tests {
                 }
                 other => panic!("expected JumpInBuffer, got {other:?}"),
             }
-            // Display starts with right-aligned line number then `:`.
-            assert!(
-                cand.display.contains(':'),
-                "missing `:` in {}",
-                cand.display
-            );
+            // MP.4: the line text is the matchable display; the 1-based
+            // line number is a `location` marginalia cell.
+            let loc = cand
+                .annotations
+                .iter()
+                .find(|a| a.category() == "location")
+                .map(|a| a.display_text().into_owned());
+            assert_eq!(loc.as_deref(), Some((i + 1).to_string().as_str()));
         }
+        // Spot-check the matchable text is the line content.
+        assert_eq!(pairs[0].0.display, "alpha");
+        assert_eq!(pairs[2].0.display, "gamma");
     }
 
     /// P.3: empty buffer surfaces an error echo (the

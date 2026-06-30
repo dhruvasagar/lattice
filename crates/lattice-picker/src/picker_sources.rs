@@ -189,7 +189,6 @@ fn txt_seg(text: impl Into<String>, slot: &str) -> AnnotationSegment {
 /// lives here so grep / jumps / outline / lines / marks (and the future
 /// LSP locations picker) share one coloring. Substrate helper, not a
 /// `Document` trait method — only specific picker sources consume it.
-#[allow(dead_code)] // consumed by MP.4 (location family)
 fn location_segments(path: Option<&str>, line: u32, col: Option<u32>) -> Vec<AnnotationSegment> {
     let mut out = Vec::with_capacity(5);
     if let Some(p) = path {
@@ -202,6 +201,15 @@ fn location_segments(path: Option<&str>, line: u32, col: Option<u32>) -> Vec<Ann
         out.push(txt_seg(c.to_string(), SLOT_LOC_COL));
     }
     out
+}
+
+/// MARG §9: a `location` marginalia cell (`Styled`) wrapping
+/// [`location_segments`]. The shared shape for every coordinate picker.
+fn location_annotation(path: Option<&str>, line: u32, col: Option<u32>) -> Annotation {
+    Annotation::Styled {
+        category: "location".into(),
+        segments: location_segments(path, line, col),
+    }
 }
 
 /// MARG §9: buffer status markers — an active `•` and/or a dirty `+`,
@@ -649,16 +657,15 @@ impl PickerSourceGenerator for LinesSource {
         } else {
             line_count - 1
         };
-        // Use the largest line number's digit count as the
-        // alignment width so the colon column lines up across
-        // rows.
-        let width = ((last + 1) as f64).log10().floor() as usize + 1;
         let mut pairs = Vec::with_capacity(last as usize + 1);
         for line in 0..=last {
             let text = buffer.line(line).unwrap_or_default();
             let text = text.trim_end_matches('\n');
-            let display = format!("{:>width$}: {}", line + 1, text, width = width);
-            let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+            // MP.4: the line text is the matchable `display` (and the
+            // future PH.2 syntax-highlight target); the line number moves
+            // to a `location` marginalia cell.
+            let mut cand = RawCandidate::plain(text.to_string(), CandidateKind::Plain);
+            cand.annotations = vec![location_annotation(None, line + 1, None)];
             // Slice 7b.4: typed accept payload.
             cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
@@ -762,12 +769,15 @@ impl PickerSourceGenerator for JumpsSource {
                             .unwrap_or_else(|| b.title.clone())
                     })
                     .unwrap_or_else(|| format!("#{}", entry.buffer_id));
-                let display = format!(
-                    "[{source_tag:6}] {buf_label}:{}:{}",
-                    entry.line + 1,
-                    entry.col + 1,
-                );
-                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // MP.4: buffer label is the matchable `display`; the
+                // provenance tag becomes a `Source` cell and the
+                // coordinates a `location` cell (line:col, no path — the
+                // path/label is already the display).
+                let mut cand = RawCandidate::plain(buf_label, CandidateKind::Plain);
+                cand.annotations = vec![
+                    Annotation::Source(source_tag.into()),
+                    location_annotation(None, entry.line + 1, Some(entry.col + 1)),
+                ];
                 // Slice 7b.4: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                     buffer_id: lattice_core::BufferId(entry.buffer_id),
@@ -1052,8 +1062,11 @@ impl PickerSourceGenerator for MarksSource {
             .marks
             .iter()
             .map(|(name, pos)| {
-                let display = format!("'{name:<2} {}:{}", pos.line + 1, pos.byte + 1);
-                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // MP.4: the mark name (`'a`) is the matchable `display`;
+                // line:col becomes a `location` cell.
+                let mut cand = RawCandidate::plain(format!("'{name}"), CandidateKind::Plain);
+                cand.annotations =
+                    vec![location_annotation(None, pos.line + 1, Some(pos.byte + 1))];
                 // Slice 7b.5: typed accept payload.
                 cand.accept_action =
                     Some(Box::new(lattice_completion::AcceptAction::JumpToMark { name: *name }));
@@ -1176,14 +1189,17 @@ impl GrepSource {
 fn hits_to_pairs(hits: Vec<GrepHit>) -> crate::CandidateBatch {
     hits.into_iter()
         .map(|hit| {
-            let display = format!(
-                "{}:{}:{}  {}",
-                hit.path.display(),
+            // MP.4: the matched preview text is the matchable `display`
+            // (and the future PH.3 syntax-highlight target); path:line:col
+            // becomes a `location` marginalia cell.
+            let path_display = hit.path.display().to_string();
+            let mut cand =
+                RawCandidate::plain(hit.preview.trim_start().to_string(), CandidateKind::Plain);
+            cand.annotations = vec![location_annotation(
+                Some(&path_display),
                 hit.line + 1,
-                hit.col + 1,
-                hit.preview.trim_start(),
-            );
-            let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                Some(hit.col + 1),
+            )];
             // Slice 7b.6: typed accept payload. Grep hits jump
             // to file:line:col — same shape as LSP references /
             // definitions / diagnostics → JumpToFileLocation.
@@ -1471,24 +1487,15 @@ impl PickerSourceGenerator for OutlineSource {
             ));
         }
         let buffer_id = ctx.active_buffer.buffer_id;
-        // Width-pad the line-number column so the symbol name
-        // column lines up.
-        let max_line = ctx
-            .active_buffer
-            .syntax_symbols
-            .iter()
-            .map(|(_, l, _)| *l)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let line_width = ((max_line as f64).log10().floor() as usize) + 1;
         let pairs = ctx
             .active_buffer
             .syntax_symbols
             .iter()
             .map(|(name, line, col)| {
-                let display = format!("{:>width$}: {name}", line + 1, width = line_width,);
-                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // MP.4: the symbol name is the matchable `display`; the
+                // line number moves to a `location` cell.
+                let mut cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                cand.annotations = vec![location_annotation(None, line + 1, None)];
                 // Slice 7b.4: typed accept payload.
                 cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                     buffer_id: lattice_core::BufferId(buffer_id),
@@ -1821,6 +1828,32 @@ mod tests {
             latency_segment(LatencyClass::Background).slot.as_ref(),
             SLOT_LATENCY_BACKGROUND
         );
+    }
+
+    /// MP.4: grep hits map to preview-as-display + a path:line:col
+    /// `location` marginalia cell (1-based), routing to the file location.
+    #[test]
+    fn hits_to_pairs_emits_preview_and_location() {
+        let pairs = hits_to_pairs(vec![GrepHit {
+            path: std::path::PathBuf::from("src/main.rs"),
+            line: 41,
+            col: 6,
+            preview: "    let x = 1;".to_string(),
+        }]);
+        assert_eq!(pairs.len(), 1);
+        let cand = &pairs[0].0;
+        // Preview (trimmed) is the matchable display.
+        assert_eq!(cand.display, "let x = 1;");
+        let loc = cand
+            .annotations
+            .iter()
+            .find(|a| a.category() == "location")
+            .expect("location cell");
+        assert_eq!(loc.display_text(), "src/main.rs:42:7");
+        assert!(matches!(
+            &pairs[0].1,
+            RoutingPayload::LspLocation { line: 41, col: 6, .. }
+        ));
     }
 
     /// Helper smoke: `format_args_hint` matches the

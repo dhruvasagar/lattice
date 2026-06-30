@@ -57,21 +57,19 @@ Changes (landed):
 
 Acceptance: `:picker buffers` shows colored id/status/kind marginalia (path matchable); `:picker recent` gets the eza-style perm/size/mtime treatment. No GPUI change (existing variants/slots). Green.
 
-### MP.4 — Location family (Grep, Jumps, Outline, Lines, Marks) 📝
+### MP.4 — Location family (Grep, Jumps, Outline, Lines, Marks) ✅
 
-The coordinate pickers, via the MP.1 `location_segments` helper. Depends on MP.1.
+The coordinate pickers, via the MP.1 `location_segments` helper (wrapped in a `location_annotation`). Depends on MP.1.
 
-Changes:
+Changes (landed):
 
-1. `GrepSource` — `display`=preview (matchable); `Styled{location}` for path:line:col.
-2. `JumpsSource` — `display`=buffer label; `Styled{location}`; source-tag (`auto`/`mark`/`plugin`/`<char>`) → categorical slot.
-3. `OutlineSource` / `LinesSource` — `display`=symbol name / line text; `Styled{location}` (line only). (PH.2 will add `display_spans` to the same two sources' preview text — keep the line text in `display` for that.)
-4. `MarksSource` — `display`=mark name; `Styled{location}`.
-5. Tests: each source emits the location cell with the right slots; the matchable text moves to `display` (fuzzy match still works).
+1. `GrepSource` (`hits_to_pairs`) — `display`=preview (matchable); `location_annotation(path, line, col)`.
+2. `JumpsSource` — `display`=buffer label; `location_annotation(None, line, col)` (no path — label is the display); source-tag (`auto`/`mark`/`plugin`/`'<char>`) → `Annotation::Source` (existing `source` slot, semantically provenance).
+3. `OutlineSource` / `LinesSource` — `display`=symbol name / line text; `location_annotation(None, line, None)` (line only). Line text stays in `display` so PH.2 can attach `display_spans` to it.
+4. `MarksSource` — `display`=mark name (`'a`); `location_annotation(None, line, col)`.
+5. Tests: outline/lines/marks/jumps row sets assert matchable display + location cell (and jumps source-tag); new `hits_to_pairs_emits_preview_and_location` covers grep.
 
-Acceptance: all five pickers show a colored location cell; Jumps shows a colored source-tag. Bisect-friendly: one commit.
-
-Risk: tests asserting `"path:line:col preview"` flat strings move to annotation assertions. Audit `grep -rn "hits_to_pairs\|source_tag" crates/`.
+Acceptance: all five pickers show a colored location cell; Jumps shows a colored provenance tag; the matchable text moved to `display`. No GPUI change (existing variants/slots). Green.
 
 ### MP.5 — Registers + four-artefact close 📝
 

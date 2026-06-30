@@ -104,6 +104,11 @@ pub enum RoutingPayload {
     /// (newtype-wrapped `u32` host-side; we hold the raw value
     /// to keep the picker module renderer-agnostic).
     Buffer { id: u32 },
+    /// Resolve a specific pending diff review by its primary buffer id with
+    /// Accept (`accept = true`) or Reject. Emitted by the diff-review picker
+    /// (`:diff-accept` / `:diff-reject` with >1 pending review) so the user
+    /// chooses WHICH diff to resolve. `primary` is the raw host `BufferId`.
+    ResolveDiff { primary: u32, accept: bool },
     /// `PickerAction::OpenLspLog` / `OpenLspTraceLog` -- the
     /// supervisor key. `workspace` rides for completeness but
     /// today's handlers only use `server_id`.

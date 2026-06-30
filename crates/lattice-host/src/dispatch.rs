@@ -3953,20 +3953,33 @@ impl Editor {
         outcome: crate::diff::subsystem::DiffOutcome,
         ok_message: &str,
     ) {
-        // Primary: the pending agent review, resolved from the registry
-        // regardless of which pane is focused. D-fix.1: capture the primary
-        // BEFORE teardown drops the session so `finish_programmatic_diff_panes`
-        // can close the transient diff panes + refocus the origin pane after
-        // the outcome fires + the Accept save lands.
-        if let Some(session) = self.diff_subsystem.sessions_awaiting_outcome().pop() {
-            let primary = session.buffer_id();
-            self.tear_down_single_diff_session(&session, Some(outcome));
-            // Wake the virtual-rows worker so the provider removals republish
-            // empty matrices (mirrors `tear_down_active_diff_session`'s wake).
-            self.virtual_rows_wake.0.notify_one();
-            self.finish_programmatic_diff_panes(primary);
-            self.set_message(EchoLevel::Info, ok_message);
-            return;
+        // Primary: pending agent reviews, resolved from the registry
+        // regardless of which pane is focused.
+        let pending = self.diff_subsystem.sessions_awaiting_outcome();
+        match pending.len() {
+            0 => {} // fall through to the focused-diff close below.
+            1 => {
+                // Exactly one — resolve it directly (the common case; no
+                // prompt). D-fix.1: capture the primary BEFORE teardown so
+                // `finish_programmatic_diff_panes` can close the transient
+                // panes + refocus the origin after the Accept save lands.
+                let session = &pending[0];
+                let primary = session.buffer_id();
+                self.tear_down_single_diff_session(session, Some(outcome));
+                self.virtual_rows_wake.0.notify_one();
+                self.finish_programmatic_diff_panes(primary);
+                self.set_message(EchoLevel::Info, ok_message);
+                return;
+            }
+            _ => {
+                // Several reviews open at once — prompt a diff picker so the
+                // user chooses which to resolve (the verdict is focus-
+                // independent, so we can't infer intent). `:diff-accept-all` /
+                // `:diff-reject-all` resolve them in bulk instead.
+                let accept = matches!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
+                self.open_diff_review_picker(&pending, accept);
+                return;
+            }
         }
         // No pending review — treat accept/reject as a close of the FOCUSED
         // diff view (`:diffsplit` / `:Gdiff`), preserving the historical force
@@ -4001,6 +4014,47 @@ impl Editor {
         }
         self.virtual_rows_wake.0.notify_one();
         self.set_message(EchoLevel::Info, format!("{verb} {count} diff review(s)"));
+    }
+
+    /// Open the diff-review picker (`:diff-accept` / `:diff-reject` with >1
+    /// pending review): one row per pending review, labelled by the file under
+    /// review; accepting a row routes [`lattice_picker::RoutingPayload::ResolveDiff`]
+    /// for that review with the chosen verdict. Built host-side and seated as a
+    /// plain (non-`SwitchToBuffer`) source so the picker's hover-preview no-ops
+    /// — arrowing through reviews must NOT resolve one.
+    fn open_diff_review_picker(
+        &mut self,
+        pending: &[std::sync::Arc<crate::diff::subsystem::DiffSession>],
+        accept: bool,
+    ) {
+        use lattice_completion::candidate::{CandidateKind, RawCandidate};
+        let verb = if accept { "accept" } else { "reject" };
+        let pairs: lattice_picker::CandidateBatch = pending
+            .iter()
+            .map(|session| {
+                let primary = session.buffer_id();
+                let label = self
+                    .programmatic_diff_accept_paths
+                    .get(&primary)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("review #{}", primary.0));
+                (
+                    RawCandidate::plain(label, CandidateKind::File),
+                    lattice_picker::RoutingPayload::ResolveDiff {
+                        primary: primary.0,
+                        accept,
+                    },
+                )
+            })
+            .collect();
+        let _ = self.seat_picker_from_pairs(format!("diff-{verb}"), pairs);
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "{} diff reviews pending — choose one to {verb} (or :diff-{verb}-all)",
+                pending.len()
+            ),
+        );
     }
 
     /// D-fix.6: tear down every *programmatic* diff opened by IDE-peer
@@ -23694,8 +23748,36 @@ impl Editor {
                     lattice_picker::PickerAcceptOutcome::ApplyColorscheme { name },
                 ));
             }
+            lattice_picker::RoutingPayload::ResolveDiff { primary, accept } => {
+                // The diff-review picker (opened when >1 review is pending):
+                // resolve the chosen review by its primary buffer id.
+                let outcome = if accept {
+                    crate::diff::subsystem::DiffOutcome::Accept
+                } else {
+                    crate::diff::subsystem::DiffOutcome::Reject
+                };
+                self.resolve_diff_by_primary(BufferId(primary), outcome);
+            }
         }
         out
+    }
+
+    /// Resolve a specific pending diff review by its primary `BufferId` (the
+    /// diff-review picker's accept path). Tears the session down with `outcome`
+    /// + closes its transient panes; no-op + message if it's already gone (the
+    /// user resolved it elsewhere between opening the picker and accepting).
+    fn resolve_diff_by_primary(
+        &mut self,
+        primary: BufferId,
+        outcome: crate::diff::subsystem::DiffOutcome,
+    ) {
+        let Some(session) = self.diff_subsystem.lookup_session_for(primary) else {
+            self.set_message(EchoLevel::Info, "That diff review is no longer open");
+            return;
+        };
+        self.tear_down_single_diff_session(&session, Some(outcome));
+        self.virtual_rows_wake.0.notify_one();
+        self.finish_programmatic_diff_panes(primary);
     }
 
     /// `:b` no-arg / `<leader>b` -- open the vertico-style buffer
@@ -30520,6 +30602,66 @@ mod tests {
             "the change line stays visible (context kept)"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// With MORE than one pending review, `:diff-accept` does NOT silently
+    /// resolve one — it opens the diff-review picker so the user chooses which.
+    /// The reviews stay pending (nothing fires) until a row is accepted.
+    #[tokio::test]
+    async fn multiple_pending_reviews_open_a_picker() {
+        use tokio::sync::oneshot;
+        let mut p1 = std::env::temp_dir();
+        p1.push("lattice-diff-multi-1.rs");
+        std::fs::write(&p1, "a\n").expect("write p1");
+        let mut p2 = std::env::temp_dir();
+        p2.push("lattice-diff-multi-2.rs");
+        std::fs::write(&p2, "b\n").expect("write p2");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx1, mut rx1) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: p1.clone(),
+            new_file_path: p1.clone(),
+            new_contents: "a2\n".to_string(),
+            tab_name: "one".to_string(),
+            origin_session: 1,
+            response: tx1,
+        });
+        let (tx2, mut rx2) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: p2.clone(),
+            new_file_path: p2.clone(),
+            new_contents: "b2\n".to_string(),
+            tab_name: "two".to_string(),
+            origin_session: 1,
+            response: tx2,
+        });
+        assert_eq!(
+            editor.diff_subsystem.sessions_awaiting_outcome().len(),
+            2,
+            "two pending agent reviews"
+        );
+
+        // >1 pending → the verdict opens a picker rather than resolving one.
+        editor.do_diff_accept();
+        assert!(editor.picker.is_some(), ">1 reviews ⇒ diff-review picker opens");
+        assert_eq!(
+            editor.diff_subsystem.sessions_awaiting_outcome().len(),
+            2,
+            "picker doesn't resolve anything; the user still chooses"
+        );
+        assert!(
+            matches!(rx1.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "review 1 still pending"
+        );
+        assert!(
+            matches!(rx2.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "review 2 still pending"
+        );
+
+        let _ = std::fs::remove_file(&p1);
+        let _ = std::fs::remove_file(&p2);
     }
 
     /// `:diff-reject` on a programmatic diff fires `Reject` to the producer.

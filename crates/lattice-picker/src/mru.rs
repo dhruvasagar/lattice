@@ -403,6 +403,8 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         | RoutingPayload::LspCodeLens { .. }
         | RoutingPayload::ColorPresentation { .. }
         | RoutingPayload::LspInstance { .. }
+        // Pending diffs are ephemeral (resolved + gone), so no MRU identity.
+        | RoutingPayload::ResolveDiff { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }
@@ -412,6 +414,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn resolve_diff_routing_has_no_mru_identity() {
+        // Pending diffs are ephemeral (resolved + gone), so the diff-review
+        // picker rows must never accrue MRU recency.
+        assert_eq!(
+            routing_identity(&RoutingPayload::ResolveDiff {
+                primary: 42,
+                accept: true,
+            }),
+            None
+        );
+    }
 
     #[test]
     fn routing_identity_returns_some_for_stable_variants() {

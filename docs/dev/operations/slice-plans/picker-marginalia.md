@@ -100,20 +100,22 @@ Acceptance: bench added; colorscheme test green; design ↔ code reconciled. No 
 
 ## PH — picker preview syntax highlighting
 
-### PH.1 — Substrate: `display_spans` field + both-peer paint + match composition 📝
+### PH.1 — Substrate: `display_spans` field + both-peer paint + match composition ✅
 
-No producer → no visible change. The one slice that changes both paint paths. Independent of MP; can run anytime after MP.1 or in parallel.
+No producer → no visible change. The one slice that changes both paint paths. Independent of MP; ran after the MP series.
 
-Changes:
+**Dependency-cycle check (resolved → primary design).** §4 flagged that `lattice-completion → lattice-cells` (for the semantic `Style`) might cycle, with a slot-key-string fallback if so. Verified at execution: `lattice-cells` is a *leaf* crate (no path deps), so the edge introduces no cycle. The primary design — semantic `Style` carried as data, resolved at the render seam — stands; no fallback needed.
 
-1. `crates/lattice-completion/src/candidate.rs` — add `display_spans: Vec<DisplaySpan>` (`DisplaySpan { range, style: Style }`) to the rendered candidate, default empty. **Verify** `lattice-completion → lattice-cells` (for `Style`) introduces no dependency cycle; if it does, fall back to a slot-key string + syntax-slot resolver (picker-preview-highlight.md §4).
-2. `crates/lattice-ui-tui/src/render.rs` `candidate_to_line` — when `display_spans` is non-empty, subdivide the display run by per-byte style lookup (`resolve_syntax_style`), composing with `match_ranges` so **match style wins on overlap** (picker-preview-highlight.md §5); uncovered runs stay row-fg.
-3. `crates/lattice-ui-gpui/src/window.rs` `paint_candidate_row` — same composition, per-cell.
-4. Tests: a span per `Style` resolves to its `syntax.*` fg on both peers; `:colorscheme` recolors; a char in both a span and a match-range paints the match style; uncovered runs are row-fg; empty `display_spans` = today's plain preview.
+Changes (landed):
 
-Acceptance: synthetic candidate with `display_spans` renders multi-colored, match-highlight overriding, on both peers. Bisect-friendly: one commit.
+1. `crates/lattice-completion/` — `RawCandidate` gains `display_spans: Vec<DisplaySpan>` (`#[serde(skip)]`, default empty) + the `DisplaySpan { range: Range<usize>, style: lattice_cells::style::Style }` type (root re-export). Field lives on `RawCandidate` (not `RenderedCandidate`) so producers set it and `from_scored` carries it through `raw` with no clone; the renderer reads `c.raw.display_spans`. Added `lattice-cells` as a dependency. Every `RawCandidate` literal across the workspace got the new field (same sweep the `annotations` field required).
+2. `crates/lattice-ui-tui/src/render.rs` — `push_preview_run` helper subdivides each *non-match gap* of the display run by `display_spans`, resolving each span's `Style` via `resolve_syntax_style`; match runs keep the match style (composition: match wins on overlap). Char-boundary-guarded (skip, never panic). Fast path (empty `display_spans`) is byte-identical to pre-PH.1 output.
+3. `crates/lattice-ui-gpui/src/window.rs` — `paint_candidate_row` per-char color decision extracted into the pure `preview_char_color_rgb` helper (mirrors `annotation_color_rgb`), same composition + shared `resolve_syntax_style` seam as the TUI peer.
+4. Tests (4): TUI + GPUI each get a composition test (match wins on overlap; non-match span keeps syntax color; uncovered → row-fg) and a `:colorscheme`-recolor test. GPUI composition tested via the pure `preview_char_color_rgb` (window-feature-gated module).
 
-Risk: the candidate-model field touches `RenderedCandidate`/`from_scored` constructors — sweep `grep -rn "RenderedCandidate" crates/`.
+Acceptance: synthetic candidate with `display_spans` renders multi-colored with match-highlight overriding, on both peers, recoloring on `:colorscheme`. Green. Bisect-friendly: one commit.
+
+**Bench deferred to PH.2.** The §9 per-frame resolution bench is most meaningful once a producer (PH.2) emits real spans and a picker render exercises the O(visible chars) path end-to-end; PH.1's synthetic data would measure the resolver in isolation. Lands with PH.2.
 
 ### PH.2 — Lines + Outline producers (cheap path) 📝
 

@@ -1187,10 +1187,20 @@ fn candidate_to_line<'a>(
     sorted_ranges.sort_by_key(|r| r.start);
     for range in sorted_ranges {
         if range.start > cursor {
-            spans.push(Span::styled(
-                text[cursor..range.start].to_string(),
+            // PH.1: the non-match gap is syntax-highlighted by
+            // `display_spans` when present (match runs below keep
+            // the match style — composition rule: match wins on
+            // overlap).
+            push_preview_run(
+                &mut spans,
+                text,
+                cursor,
+                range.start,
+                &c.raw.display_spans,
                 row_style,
-            ));
+                resolved,
+                ids,
+            );
         }
         spans.push(Span::styled(
             text[range.start..range.end].to_string(),
@@ -1199,7 +1209,16 @@ fn candidate_to_line<'a>(
         cursor = range.end;
     }
     if cursor < text.len() {
-        spans.push(Span::styled(text[cursor..].to_string(), row_style));
+        push_preview_run(
+            &mut spans,
+            text,
+            cursor,
+            text.len(),
+            &c.raw.display_spans,
+            row_style,
+            resolved,
+            ids,
+        );
     }
 
     // MARG.5 (2026-06-03): per-category column-aligned
@@ -1282,6 +1301,70 @@ fn candidate_to_line<'a>(
         }
     }
     Line::from(spans)
+}
+
+/// PH.1: paint the `[lo, hi)` byte slice of a candidate's
+/// display run, subdividing it by `display_spans` (the
+/// syntax-highlight overlay) when present. Each covered sub-run
+/// resolves its semantic `Style` to a theme fg via
+/// `resolve_syntax_style` — so `:colorscheme` recolors picker
+/// previews live, exactly like the main editor path; uncovered
+/// bytes paint in `base` (today's plain preview, so no new
+/// "plain" theme slot is needed). Called only for the
+/// non-match gaps; fuzzy-match runs keep the match style
+/// (composition: match wins on overlap, picker-preview-
+/// highlight.md §5).
+///
+/// `display_spans` are assumed sorted by `range.start` and
+/// non-overlapping (producer contract, PH.2). Ranges that don't
+/// land on a char boundary are skipped rather than panicking on
+/// the slice — graceful degradation over a hot-path panic.
+#[allow(clippy::too_many_arguments)]
+fn push_preview_run<'a>(
+    spans: &mut Vec<Span<'a>>,
+    text: &str,
+    lo: usize,
+    hi: usize,
+    display_spans: &[lattice_completion::DisplaySpan],
+    base: TuiStyle,
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+) {
+    if lo >= hi {
+        return;
+    }
+    // Fast path: no overlay → one plain run, byte-identical to
+    // the pre-PH.1 output.
+    if display_spans.is_empty() {
+        spans.push(Span::styled(text[lo..hi].to_string(), base));
+        return;
+    }
+    let mut pos = lo;
+    for ds in display_spans {
+        let s = ds.range.start.max(lo);
+        let e = ds.range.end.min(hi);
+        if s >= e {
+            continue; // span doesn't overlap this gap
+        }
+        if !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+            continue; // malformed range — skip, never panic
+        }
+        if s > pos && text.is_char_boundary(pos) {
+            spans.push(Span::styled(text[pos..s].to_string(), base));
+        }
+        let run_style = match lattice_host::ui::theme::resolve_syntax_style(resolved, ids, ds.style)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+        {
+            Some(c) => base.fg(c),
+            None => base,
+        };
+        spans.push(Span::styled(text[s..e].to_string(), run_style));
+        pos = e;
+    }
+    if pos < hi && text.is_char_boundary(pos) {
+        spans.push(Span::styled(text[pos..hi].to_string(), base));
+    }
 }
 
 /// MARG.1 (2026-06-03): pick a foreground colour per
@@ -8010,6 +8093,104 @@ mod tests {
         );
         let after = w_fg(&reg);
         assert_ne!(before, after, "styled marginalia tracks the active theme on TUI");
+    }
+
+    /// PH.1: a candidate's `display_spans` syntax-color the
+    /// preview run, composing with fuzzy match-highlight so the
+    /// match style wins on overlap (picker-preview-highlight.md
+    /// §5). The matched prefix paints cyan+bold (match), the
+    /// non-matched suffix keeps the keyword syntax color.
+    #[test]
+    fn display_spans_compose_with_match_highlight_tui() {
+        let app = app_with("x\n", 5);
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+
+        // "test": whole word colored as Keyword; first half "te"
+        // also a fuzzy match.
+        let scored = lattice_completion::ScoredCandidate {
+            raw: lattice_completion::RawCandidate::plain(
+                "test",
+                lattice_completion::CandidateKind::Plain,
+            ),
+            score: lattice_completion::MatchScore::PERFECT,
+            match_ranges: vec![0..2],
+        };
+        let mut c = lattice_completion::RenderedCandidate::from_scored(scored);
+        c.raw.display_spans = vec![lattice_completion::DisplaySpan {
+            range: 0..4,
+            style: lattice_cells::style::Style::Keyword,
+        }];
+        let cols = lattice_completion::AnnotationColumns::from_visible(std::iter::once(&c));
+        let line = super::candidate_to_line(&c, false, 1, &cols, resolved, ids);
+
+        let keyword_fg = resolved
+            .get(ids.syntax_keyword)
+            .fg
+            .map(crate::theme::host_color_to_ratatui);
+
+        // Matched prefix "te" paints the match style, NOT keyword.
+        let te = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "te")
+            .expect("matched run");
+        assert_eq!(te.style.fg, Some(Color::Cyan), "match wins on overlap");
+        assert!(te.style.add_modifier.contains(Modifier::BOLD));
+        // Non-matched suffix "st" keeps the keyword syntax color.
+        let st = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "st")
+            .expect("syntax run");
+        assert_eq!(st.style.fg, keyword_fg);
+        assert_ne!(st.style.fg, Some(Color::Cyan));
+    }
+
+    /// PH.1: a `:colorscheme` swap recolors preview syntax spans
+    /// live on the TUI peer — overriding `syntax.keyword` changes
+    /// the rendered keyword-span fg (semantic `Style` resolved at
+    /// the seam, never baked).
+    #[test]
+    fn display_spans_recolor_on_theme_change_tui() {
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, ElementName, InMemoryThemeRegistry, StyleSpec, ThemeRegistry,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let ids = BuiltinElementIds::capture(&reg);
+        let scored = lattice_completion::ScoredCandidate {
+            raw: lattice_completion::RawCandidate::plain(
+                "kw",
+                lattice_completion::CandidateKind::Plain,
+            ),
+            score: lattice_completion::MatchScore::PERFECT,
+            match_ranges: vec![],
+        };
+        let mut c = lattice_completion::RenderedCandidate::from_scored(scored);
+        c.raw.display_spans = vec![lattice_completion::DisplaySpan {
+            range: 0..2,
+            style: lattice_cells::style::Style::Keyword,
+        }];
+        let cols = lattice_completion::AnnotationColumns::from_visible(std::iter::once(&c));
+        let kw_fg = |reg: &InMemoryThemeRegistry| {
+            let r = reg.resolved();
+            let line = super::candidate_to_line(&c, false, 1, &cols, &r, &ids);
+            line.spans
+                .iter()
+                .find(|s| s.content.as_ref() == "kw")
+                .map(|s| s.style.fg)
+        };
+        let before = kw_fg(&reg);
+        reg.set_override(
+            ElementName::from_static("syntax.keyword"),
+            StyleSpec::new().fg("green"),
+        );
+        let after = kw_fg(&reg);
+        assert_ne!(
+            before, after,
+            "preview syntax color tracks the active theme on TUI"
+        );
     }
 
     /// 4.4.h: a seeded semantic-tokens cache repaints the

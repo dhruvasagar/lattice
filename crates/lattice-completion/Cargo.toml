@@ -9,6 +9,10 @@ license.workspace = true
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
+# PH.1: `Style` for `DisplaySpan` (syntax-colored picker previews).
+# `lattice-cells` is a leaf crate (no path deps), so this edge
+# introduces no dependency cycle — verified before adding.
+lattice-cells = { path = "../lattice-cells" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 

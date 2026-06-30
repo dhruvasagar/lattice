@@ -90,6 +90,7 @@ fn make_candidates(n: usize) -> Vec<RenderedCandidate> {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             },
             score: MatchScore::PERFECT,
             match_ranges: Vec::new(),

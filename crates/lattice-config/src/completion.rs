@@ -68,6 +68,7 @@ impl CandidateGenerator for OptionsGenerator {
                         source: None,
                         accept_action: None,
                         annotations: Vec::new(),
+                        display_spans: Vec::new(),
                     });
                 }
             }
@@ -100,6 +101,7 @@ impl CandidateGenerator for OptionsGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             };
             out.push(mk(spec.name().to_string()));
             for alt in spec.name_forms() {

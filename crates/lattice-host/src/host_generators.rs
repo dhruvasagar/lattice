@@ -56,6 +56,7 @@ impl CandidateGenerator for ModesGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -79,6 +80,7 @@ impl CandidateGenerator for EventsGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -103,6 +105,7 @@ impl CandidateGenerator for LogLevelsGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect()
     }
@@ -140,6 +143,7 @@ impl CandidateGenerator for PickerSourcesGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect()
     }
@@ -173,6 +177,7 @@ impl CandidateGenerator for LspServersGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect()
     }
@@ -206,6 +211,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                 source: None,
                 accept_action: None,
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             });
         }
         if let Some(registry) = self.registry.upgrade() {
@@ -218,6 +224,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                     source: None,
                     accept_action: None,
                     annotations: Vec::new(),
+                    display_spans: Vec::new(),
                 });
             }
         }

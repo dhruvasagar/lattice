@@ -188,6 +188,42 @@ pub struct RawCandidate {
     /// render-time data resolved against the live theme, never cached.
     #[serde(skip)]
     pub annotations: Vec<Annotation>,
+    /// PH.1: optional syntax-highlight overlay for the `display`
+    /// run (the matchable text itself, NOT a trailing column —
+    /// that's `annotations`). Each span carries a *semantic*
+    /// [`Style`](lattice_cells::style::Style), resolved to a
+    /// theme color only at the render seam (`resolve_syntax_style`),
+    /// so `:colorscheme` recolors picker previews live. Byte
+    /// offsets into `display`. Empty ⇒ today's plain single-color
+    /// preview. Producer contract (PH.2): spans are sorted by
+    /// `range.start`, non-overlapping, and aligned to char
+    /// boundaries; the renderer composes them under
+    /// `match_ranges` (fuzzy-match highlight wins on overlap).
+    /// `#[serde(skip)]` to match `annotations` — render-time
+    /// overlay, not cached.
+    /// See `docs/dev/architecture/picker-preview-highlight.md`.
+    #[serde(skip)]
+    pub display_spans: Vec<DisplaySpan>,
+}
+
+/// PH.1: a syntax-styled run within a candidate's `display`
+/// text. Carries a semantic [`Style`](lattice_cells::style::Style)
+/// (a closed enum with an existing `Style → ElementId` map),
+/// NOT a resolved color — the renderer resolves it via
+/// `resolve_syntax_style` at paint so `:colorscheme` recolors
+/// live, mirroring the `Annotation::Styled` carry-semantic /
+/// resolve-at-seam invariant (marginalia §3 / §8.2). `range`
+/// is a byte range into `display`.
+///
+/// Semantic `Style` (not a slot-key `Arc<str>` like
+/// `AnnotationSegment`) because syntax styles are a *closed*
+/// set with direct typed resolution, whereas annotation slots
+/// are *open* (plugins name arbitrary slots). See
+/// `docs/dev/architecture/picker-preview-highlight.md` §4.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplaySpan {
+    pub range: Range<usize>,
+    pub style: lattice_cells::style::Style,
 }
 
 impl RawCandidate {
@@ -205,6 +241,7 @@ impl RawCandidate {
             source: None,
             accept_action: None,
             annotations: Vec::new(),
+            display_spans: Vec::new(),
         }
     }
 

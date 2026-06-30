@@ -110,6 +110,7 @@ mod tests {
             source: None,
             accept_action: None,
             annotations: Vec::new(),
+            display_spans: Vec::new(),
         }
     }
 

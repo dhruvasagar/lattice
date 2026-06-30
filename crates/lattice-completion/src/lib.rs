@@ -43,7 +43,7 @@ pub use crate::builtins::{CompletionBuiltins, populate};
 pub use crate::cache::GeneratorCache;
 pub use crate::candidate::{
     Annotation, AnnotationColumns, AnnotationSegment, CacheKey, CandidateData, CandidateKind,
-    MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate,
+    DisplaySpan, MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate,
 };
 pub use crate::insert::{
     BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,

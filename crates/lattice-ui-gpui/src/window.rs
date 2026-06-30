@@ -561,8 +561,8 @@ fn paint_candidate_row(
     // distinct from `foreground`). Previously used
     // `cursor_background` which is identical to `foreground`
     // in the Catppuccin Mocha defaults — match highlights
-    // were invisible.
-    let match_hl_fg = rgb(theme.picker_match_highlight);
+    // were invisible. PH.1: the u32 is passed straight to
+    // `preview_char_color_rgb` (no `rgb()` wrap needed here).
     let row_bg = if selected {
         Some(rgb(theme.status_background))
     } else {
@@ -585,25 +585,38 @@ fn paint_candidate_row(
     let display = &cand.raw.display;
 
     // Left side: display text with optional per-char match
-    // highlighting. Fast path: no match ranges → single child
-    // (empty-query "show all" hits this every row).
-    let display_div: gpui::Div = if cand.match_ranges.is_empty() {
+    // highlighting + PH.1 syntax-highlight overlay. Fast path:
+    // no match ranges AND no syntax spans → single child
+    // (empty-query "show all" with a plain preview hits this
+    // every row).
+    let display_div: gpui::Div = if cand.match_ranges.is_empty()
+        && cand.raw.display_spans.is_empty()
+    {
         div().child(display.clone()).text_color(row_fg)
     } else {
-        let in_match = |byte_idx: usize| -> bool {
-            cand.match_ranges
-                .iter()
-                .any(|r| byte_idx >= r.start && byte_idx < r.end)
+        // PH.1: per-char composition — fuzzy-match highlight over
+        // the `display_spans` syntax overlay (match wins on
+        // overlap, picker-preview-highlight.md §5). Decision is a
+        // pure helper shared with the parity test; mirrors the TUI
+        // peer's `push_preview_run`.
+        let row_fg_u32 = if selected {
+            theme.status_foreground
+        } else {
+            theme.foreground
         };
         let cells: Vec<gpui::Div> = display
             .char_indices()
             .map(|(byte_idx, c)| {
-                let cell = div().child(c.to_string());
-                if in_match(byte_idx) {
-                    cell.text_color(match_hl_fg)
-                } else {
-                    cell.text_color(row_fg)
-                }
+                let fg = preview_char_color_rgb(
+                    byte_idx,
+                    &cand.match_ranges,
+                    &cand.raw.display_spans,
+                    resolved,
+                    ids,
+                    row_fg_u32,
+                    theme.picker_match_highlight,
+                );
+                div().child(c.to_string()).text_color(rgb(fg))
             })
             .collect();
         div().flex().flex_row().children(cells)
@@ -753,6 +766,42 @@ fn styled_segment_color_rgb(
         .fg
         .map(|c| c.to_rgb_u32(0x89b4fa))
         .unwrap_or(0x89b4fa)
+}
+
+/// PH.1: resolve one display char's foreground, composing the
+/// fuzzy-match highlight over the `display_spans` syntax overlay.
+/// **Match wins on overlap** (picker-preview-highlight.md §5): a
+/// char inside any `match_ranges` paints `match_fg`; otherwise
+/// the syntax color from the covering `display_spans` entry
+/// (resolved via `resolve_syntax_style`, so `:colorscheme`
+/// recolors live); otherwise `row_fg` (today's plain preview).
+/// Pure so the paint path and the parity test share one source
+/// of truth — the GPUI mirror of the TUI peer's
+/// `push_preview_run`.
+fn preview_char_color_rgb(
+    byte_idx: usize,
+    match_ranges: &[std::ops::Range<usize>],
+    display_spans: &[lattice_completion::DisplaySpan],
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+    row_fg: u32,
+    match_fg: u32,
+) -> u32 {
+    if match_ranges
+        .iter()
+        .any(|r| byte_idx >= r.start && byte_idx < r.end)
+    {
+        return match_fg;
+    }
+    display_spans
+        .iter()
+        .find(|ds| byte_idx >= ds.range.start && byte_idx < ds.range.end)
+        .and_then(|ds| {
+            lattice_host::ui::theme::resolve_syntax_style(resolved, ids, ds.style)
+                .fg
+                .map(|c| c.to_rgb_u32(row_fg))
+        })
+        .unwrap_or(row_fg)
 }
 
 /// MARG.3 (2026-06-03): map each [`lattice_completion::Annotation`]
@@ -4667,6 +4716,68 @@ mod modeline_tests {
         let after =
             super::styled_segment_color_rgb("completion.annotation.perm.write", &reg.resolved(), &ids);
         assert_ne!(before, after, "styled marginalia tracks the active theme on GPUI");
+    }
+
+    /// PH.1: GPUI per-char preview composition — match-highlight
+    /// wins over the syntax overlay, else syntax color, else row
+    /// fg. Parity with the TUI peer's `push_preview_run` (same
+    /// `resolve_syntax_style` seam).
+    #[test]
+    fn preview_char_color_composes_match_over_syntax_on_gpui() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let spans = vec![lattice_completion::DisplaySpan {
+            range: 0..4,
+            style: lattice_cells::style::Style::Keyword,
+        }];
+        let matches = vec![0..2usize];
+        const ROW: u32 = 0x0011_1111;
+        const MATCH: u32 = 0x00fa_b387;
+        let keyword = resolved.get(ids.syntax_keyword).fg.unwrap().to_rgb_u32(ROW);
+
+        // byte 0: in match AND keyword span → match wins.
+        assert_eq!(
+            super::preview_char_color_rgb(0, &matches, &spans, &resolved, &ids, ROW, MATCH),
+            MATCH,
+            "match wins on overlap"
+        );
+        // byte 2: keyword span only → syntax color.
+        assert_eq!(
+            super::preview_char_color_rgb(2, &matches, &spans, &resolved, &ids, ROW, MATCH),
+            keyword,
+        );
+        // byte 9 (uncovered) → row fg (plain preview).
+        assert_eq!(
+            super::preview_char_color_rgb(9, &matches, &spans, &resolved, &ids, ROW, MATCH),
+            ROW,
+        );
+    }
+
+    /// PH.1: GPUI preview syntax color tracks `:colorscheme` —
+    /// overriding `syntax.keyword` recolors the resolved span.
+    #[test]
+    fn preview_char_color_follows_colorscheme_on_gpui() {
+        use lattice_host::ui::theme::{ElementName, StyleSpec, ThemeRegistry as _};
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let ids = BuiltinElementIds::capture(&reg);
+        let spans = vec![lattice_completion::DisplaySpan {
+            range: 0..2,
+            style: lattice_cells::style::Style::Keyword,
+        }];
+        let no_match: Vec<std::ops::Range<usize>> = vec![];
+        let before =
+            super::preview_char_color_rgb(0, &no_match, &spans, &reg.resolved(), &ids, 0, 0);
+        reg.set_override(
+            ElementName::from_static("syntax.keyword"),
+            StyleSpec::new().fg("green"),
+        );
+        let after =
+            super::preview_char_color_rgb(0, &no_match, &spans, &reg.resolved(), &ids, 0, 0);
+        assert_ne!(
+            before, after,
+            "preview syntax color tracks the active theme on GPUI"
+        );
     }
 
     /// ML.2: the `modeline.*` elements GPUI's `modeline_row` paints through

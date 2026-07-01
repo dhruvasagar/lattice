@@ -51,9 +51,11 @@
 //! consumer of the `plugin` lifecycle world is the user's `init.rs`; the no-op
 //! component the tests instantiate is the degenerate `init.rs`.
 
+pub mod boundary;
 pub mod capability;
 pub mod manifest;
 
+pub use boundary::WitBoundary;
 pub use capability::{
     build_wasi_ctx, grant, CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier,
 };

@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅ landed; PH7.3 next. Design fragment:
+**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (decomposed into a–d, PH7.3a foundation landed). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -138,7 +138,7 @@ vs user-install consent); host-issued `SourceLayer::Plugin(id)` provenance stamp
   editor caps); error = denied capability → `LoadedPlugin::denied_capabilities()` + plugin loads
   degraded, missing/uncreatable data-dir or bad prefix → `warn!` + skip, never a panic or failed load.
 
-### PH7.3 — Boundary primitives (the crux — §4 of the fragment) 📝
+### PH7.3 — Boundary primitives (the crux — §4 of the fragment) 🚧
 The reusable adapter machinery every seam consumes: owned-snapshot projection (borrows →
 owned records + `document` resource handle with slice callbacks); callback-id ↔ guest-export
 dispatch; the `effect` WIT variant mirroring the closed `Effect` enum + back-mapping; explicit
@@ -149,6 +149,38 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
   `PickerAcceptOutcome`; a document resource handle serves `get-text-range` zero-copy.
 - **Artefacts:** bench = typed host-call overhead (< 500ns p99 — the headline gate); test =
   exhaustive enum round-trip + boundary projection; error = malformed WIT payload → rejected.
+- **Decomposed (2026-07-01)** into four independently-landable sub-slices (the slice bundled the
+  whole of §4; each reuses the conventions from PH7.3a):
+
+  #### PH7.3a — Boundary conventions + small-type round-trips 🚧 (foundation landed 2026-07-01)
+  The `WitBoundary` adapter trait (`to_wit`/`from_wit -> Result<_, String>` — the WIT
+  `result<_,string>` convention in one place); a shared `wit/types.wit` `types` interface for the
+  owned mirror records; `bindgen!` wiring (the `plugin` world `use types.{…}` so the host gets
+  generated Rust mirrors at the crate root — **proven**); round-trips for `Args`, `RawCandidate`,
+  `PickerAcceptOutcome`.
+  - **Landed:** `wit/types.wit` (`args`/`arg-value`), `boundary.rs` (`WitBoundary` + `Args`/`ArgValue`
+    round-trip, 3 tests green). Nested `ArgValue::Invocation` is a typed error until the command
+    mirror (§4.1) — it does not cross lossily.
+  - **Remaining:** `raw-candidate` + `picker-accept-outcome` WIT records + conversions (the
+    non-serde `RawCandidate` fields — `accept_action`/`annotations`/`display_spans` — do NOT cross;
+    crossable core is `text`/`display`/`kind`/`data`); the **< 500ns p99 typed-call bench** (the
+    headline §7 gate).
+
+  #### PH7.3b — The `Effect` variant mirror 📝
+  Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,
+  not a subset — `Effect` is pure data (no `dyn`/`tokio`/`lsp_types`; host-only payloads like
+  `WorkspaceEdit` are handled outside `Effect` via the BC.8d inbound-raw path), so a full 1:1 mirror
+  is feasible; fragment §4.4 rejects any partial/opaque `effect` seam, §14 flags WIT-design-wrong as
+  the highest risk). WIT `effect` variant + back-mapping + exhaustive round-trip; malformed payload
+  rejected.
+
+  #### PH7.3c — `document` resource handle + owned-snapshot projection 📝
+  Borrows→owned records (§4.2); the `buffer` WIT `document` resource; `get-text-range` zero-copy
+  slice callback so bulk rope text never rides a snapshot.
+
+  #### PH7.3d — Callback-id ↔ guest-export dispatch + async result carrier 📝
+  The trampoline (`command_id → guest_export_ref`, §4.1) + the async result-carrier adapter (guest
+  returns batches; host owns the `Future`/`mpsc`, §4.3).
 
 ### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 📝
 The `picker-source` WIT interface mirroring `PickerSourceGenerator`; host adapter wrapping a

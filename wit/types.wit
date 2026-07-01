@@ -1,0 +1,39 @@
+package lattice:plugin-host@0.1.0;
+
+/// Shared boundary records/variants — the owned, WIT-serializable mirrors of
+/// the native grammar + picker/completion types (plugin-host.md §4). Every
+/// interface that crosses one of these `use`s it from here; the host
+/// round-trips native ↔ these generated types via the `WitBoundary` adapter
+/// trait (`boundary.rs`, PH7.3a). Bulk rope text never rides these records —
+/// it crosses via the `buffer` `document` resource handle (PH7.3c).
+///
+/// Populated incrementally across PH7.3: `args`/`arg-value` (PH7.3a),
+/// `raw-candidate` + `picker-accept-outcome` (PH7.3a), the `effect` variant
+/// mirror (PH7.3b). Types whose native form carries a nested
+/// `CommandInvocation` (e.g. `arg-value::invocation`) are deferred to the
+/// command mirror (§4.1) and cross as a typed error until then.
+interface types {
+    /// Mirrors `lattice_grammar::args::ArgValue`. The native
+    /// `Invocation(Box<CommandInvocation>)` variant is intentionally absent
+    /// until the command mirror lands (§4.1); crossing it before then is a
+    /// typed `WitBoundary` error, never a lossy encoding.
+    variant arg-value {
+        %string(string),
+        %char(char),
+        %bool(bool),
+        int(s64),
+        pattern(string),
+        chord(string),
+        raw(string),
+    }
+
+    /// Mirrors `lattice_grammar::args::Args`. `bytes` is the msgpack escape
+    /// hatch (`Args::Bytes`) retained for now; typed calls prefer `list`.
+    variant args {
+        none,
+        %char(char),
+        %string(string),
+        bytes(list<u8>),
+        %list(list<arg-value>),
+    }
+}

@@ -8524,6 +8524,26 @@ impl Editor {
     /// `lattice-ui-tui::app::picker::App::open_lsp_locations_picker`
     /// so the GPUI peer reaches the same picker via host drains
     /// (`drain_pending_definitions` / `_references` / `_symbols`).
+    /// Syntax-highlight each LSP-location row's preview line grep-style
+    /// (grammar chosen by file extension), so LSP location pickers
+    /// (references / definitions / type-def / impl / symbols) colour like
+    /// the grep picker. Reuses the PH.3 `SyntaxGrepHighlighter`. Runs once
+    /// at picker-open on the actor thread — cheap: a single-line parse per
+    /// row with the grammar-compile cached per language across the batch.
+    /// Rows without a preview stay plain. `into_candidate_with_routing`
+    /// shifts the (preview-relative) spans past the `path:line:col` prefix.
+    fn highlight_lsp_location_rows(&self, rows: &mut [lattice_picker::LspLocationRow]) {
+        use lattice_picker::picker_sources::GrepPreviewHighlighter;
+        let highlighter =
+            crate::grep_highlight::SyntaxGrepHighlighter::new(self.lang_registry.clone());
+        for row in rows.iter_mut() {
+            let trimmed = row.preview.trim_start();
+            if !trimmed.is_empty() {
+                row.display_spans = highlighter.highlight_line(&row.path, trimmed);
+            }
+        }
+    }
+
     pub fn open_lsp_locations_picker(
         &mut self,
         title: impl Into<String>,
@@ -8534,7 +8554,7 @@ impl Editor {
         }
         let mut file_cache: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
             std::collections::HashMap::new();
-        let rows: Vec<lattice_picker::LspLocationRow> = locations
+        let mut rows: Vec<lattice_picker::LspLocationRow> = locations
             .iter()
             .filter_map(|loc| {
                 let path = lattice_lsp::actor::uri_to_path(&loc.uri)?;
@@ -8558,6 +8578,7 @@ impl Editor {
                     col,
                     preview,
                     marginalia: String::new(),
+                    display_spans: Vec::new(),
                 })
             })
             .collect();
@@ -8568,6 +8589,7 @@ impl Editor {
             );
             return;
         }
+        self.highlight_lsp_location_rows(&mut rows);
         let mut p = lattice_picker::Picker::new(
             title,
             lattice_picker::PickerSource::LspLocations,
@@ -8724,6 +8746,10 @@ impl Editor {
                             col: r.col,
                             preview,
                             marginalia: String::new(),
+                            // Symbols render a synthesized `glyph name` label,
+                            // not a source line, so grep-style highlighting
+                            // doesn't apply — stays plain.
+                            display_spans: Vec::new(),
                         }
                     })
                     .collect();
@@ -27443,6 +27469,10 @@ impl Editor {
                     col: d.range.start.character,
                     preview: lattice_help::one_line(&d.message),
                     marginalia: sev.to_string(),
+                    // The preview is the diagnostic MESSAGE (prose), not a
+                    // source line, so source-grammar highlighting doesn't
+                    // apply — stays plain.
+                    display_spans: Vec::new(),
                 });
             }
         }
@@ -29927,6 +29957,28 @@ mod tests {
         assert!(
             !sync_big,
             "a large file must DEFER its parse to the worker (async), not block"
+        );
+    }
+
+    /// LSP picker highlighting: a source-line preview (reference / nav) gets
+    /// grep-style syntax spans filled host-side, so the location picker
+    /// colours like the grep picker. (Symbol labels / diagnostic messages
+    /// stay plain — they aren't source lines.)
+    #[test]
+    fn highlight_lsp_location_rows_colors_rust_source_preview() {
+        let editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let mut rows = vec![lattice_picker::LspLocationRow {
+            path: std::path::PathBuf::from("src/main.rs"),
+            line: 0,
+            col: 0,
+            preview: "    let x = 1;".to_string(),
+            marginalia: String::new(),
+            display_spans: Vec::new(),
+        }];
+        editor.highlight_lsp_location_rows(&mut rows);
+        assert!(
+            !rows[0].display_spans.is_empty(),
+            "a rust source-line preview must receive syntax spans"
         );
     }
 

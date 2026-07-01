@@ -832,6 +832,13 @@ pub struct LspLocationRow {
     pub preview: String,
     /// Right-aligned annotation. Empty string skips the column.
     pub marginalia: String,
+    /// Syntax-highlight spans for `preview.trim_start()`, i.e. relative to
+    /// the preview text as it appears at the tail of the rendered `display`
+    /// (NOT yet offset by the `path:line:col` prefix). The host fills these
+    /// grep-style (grammar by file extension); `into_candidate_with_routing`
+    /// shifts them by the prefix length. Empty = plain preview. PH.2/PH.3
+    /// mechanism, extended to LSP location pickers.
+    pub display_spans: Vec<lattice_completion::DisplaySpan>,
 }
 
 impl LspLocationRow {
@@ -845,6 +852,7 @@ impl LspLocationRow {
             col,
             preview: String::new(),
             marginalia: String::new(),
+            display_spans: Vec::new(),
         }
     }
 
@@ -881,6 +889,26 @@ impl LspLocationRow {
             lattice_completion::CandidateKind::Plain,
         );
         raw.display = display;
+        // PH.2/PH.3: the host highlighted `preview.trim_start()` grep-style
+        // (grammar by file extension). Those spans are relative to the
+        // preview; shift them by the length of the rendered prefix
+        // (`[marginalia  ]path:line:col  `) so they land on the preview run
+        // inside `display`, then attach. Empty when unhighlighted (no
+        // grammar / no preview) → plain row, exactly as before.
+        if !self.display_spans.is_empty() {
+            let prefix_len = raw
+                .display
+                .len()
+                .saturating_sub(self.preview.trim_start().len());
+            raw.display_spans = self
+                .display_spans
+                .iter()
+                .map(|s| lattice_completion::DisplaySpan {
+                    range: (s.range.start + prefix_len)..(s.range.end + prefix_len),
+                    style: s.style,
+                })
+                .collect();
+        }
         // Slice 10: typed accept_action so LSP locations
         // (references / definitions / declaration / type-defs /
         // implementations / diagnostics) flow through 7d.0's
@@ -911,6 +939,45 @@ mod tests {
 
     use super::*;
     use lattice_completion::CandidateKind;
+
+    /// LSP-picker highlighting: the host highlights the *trimmed* preview
+    /// grep-style, so spans are preview-relative; `into_candidate_with_routing`
+    /// must shift them past the `path:line:col` prefix so they land on the
+    /// preview run within the rendered `display`.
+    #[test]
+    fn lsp_location_preview_spans_shift_past_prefix() {
+        let mut row = LspLocationRow::from_path_line_col("src/main.rs", 4, 8);
+        row.preview = "    let x = 1;".to_string(); // leading ws → trim_start drops it
+        let trimmed = "let x = 1;";
+        row.display_spans = vec![lattice_completion::DisplaySpan {
+            range: 0..3, // "let" within the trimmed preview
+            style: lattice_cells::style::Style::Keyword,
+        }];
+
+        let (raw, _routing) = row.into_candidate_with_routing();
+
+        assert!(raw.display.ends_with(trimmed), "display = {:?}", raw.display);
+        let prefix = raw.display.len() - trimmed.len();
+        assert_eq!(raw.display_spans.len(), 1);
+        let span = &raw.display_spans[0];
+        assert_eq!(span.range, prefix..prefix + 3, "span shifted by the prefix");
+        assert_eq!(
+            &raw.display[span.range.clone()],
+            "let",
+            "the shifted span must land exactly on the keyword in `display`"
+        );
+        assert_eq!(span.style, lattice_cells::style::Style::Keyword);
+    }
+
+    /// A row the host didn't highlight (no grammar / message preview / symbol
+    /// label) renders exactly as before — no spans, plain candidate.
+    #[test]
+    fn lsp_location_without_spans_stays_plain() {
+        let mut row = LspLocationRow::from_path_line_col("notes.txt", 0, 0);
+        row.preview = "just prose".to_string();
+        let (raw, _routing) = row.into_candidate_with_routing();
+        assert!(raw.display_spans.is_empty(), "unhighlighted row stays plain");
+    }
 
     /// Build a buffer-source-shaped raw candidate by hand. Mirrors
     /// the host's `raw_buffer_candidates` shape (`text = "#<id>"`,

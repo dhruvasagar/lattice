@@ -71,7 +71,7 @@ placeholder here (styled in DB.4).
 - *error handling:* `url:` link ⇒ `Unresolved` (no external opener in help-follow
   yet) ⇒ logged no-op, never panic.
 
-### DB.3 — `dashboard.*` theme elements  📝
+### DB.3 — `dashboard.*` theme elements  ✅
 Register the `dashboard.*` namespace (design §4) under
 `ElementOwner::Mode("dashboard-mode")`, copying
 `register_multibuffer_theme_elements`. Cache ids in a `Copy` struct; brand
@@ -172,7 +172,7 @@ gated on the plugin host + theme-remap seam.
 |---|---|
 | DB.1 — crate + registry + fragment + config | ✅ |
 | DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | ✅ |
-| DB.3 — `dashboard.*` theme elements | 📝 |
+| DB.3 — `dashboard.*` theme elements | ✅ |
 | DB.4 — branding block (art + symmetry + centring) | 📝 |
 | DB.5 — startup gating + mode-owned trigger | 📝 |
 | DB.6 — full override + recompose triggers | 📝 |

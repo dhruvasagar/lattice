@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1a ✅ landed; PH7.1b next. Design fragment:
+**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b) landed; PH7.2 next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -55,11 +55,11 @@ instantiates a component and calls its lifecycle exports.
     is synchronous and import-free; the `PluginHostError::Engine` variant is reserved for
     PH7.1's custom engine config.
 
-### PH7.1 — Host runtime core (Store-per-plugin, async ABI, fuel/epoch, AOT cache, lazy) 🚧
+### PH7.1 — Host runtime core (Store-per-plugin, async ABI, fuel/epoch, AOT cache, lazy) ✅ (2026-07-01)
 Split into two green-able steps (the slice bundled too much for one landing): **PH7.1a** async
 runtime core + fuel/epoch trapping; **PH7.1b** on-disk module cache + lazy instantiation.
 - **Depends:** PH7.0.
-- **Exit (whole PH7.1):** two plugins run CPU work on two cores in parallel; a fuel-exhausting
+- **Exit (whole PH7.1):** ✅ two plugins run CPU work on two cores in parallel; a fuel-exhausting
   plugin traps cleanly and the other keeps running; second launch reuses the cached module.
 
 #### PH7.1a — Async runtime core + fuel/epoch ✅ (2026-07-01)
@@ -83,15 +83,26 @@ never the `current_thread` actor.
   path is reserved for when host I/O calls land (they `await` and release the thread). CPU-bound
   wasm doesn't yield, so a runaway is bounded by fuel/epoch trapping, not cooperative yield.
 
-#### PH7.1b — On-disk module cache + lazy instantiation 📝
-Engine AOT serialize/deserialize; on-disk cache under `${XDG_CACHE_HOME}/lattice/plugin-cache/`
-keyed by `sha256(bytes + wasmtime_ver + triple + wit_rev)` (design.md §15 Q17); lazy
-instantiation (instantiate on first contribution invocation).
+#### PH7.1b — On-disk module cache + lazy instantiation ✅ (2026-07-01)
+On-disk AOT cache under `<user-cache>/lattice/plugin-cache/` (via `dirs::cache_dir()` —
+XDG/Application-Support/LocalAppData) so a second launch reuses the cached module.
+`PluginHost::with_cache_dir` for hermetic tests; `cache_hits()` / `cache_misses()` accessors.
+Lazy instantiation is *structural*: `compile` loads/caches a `Component` without instantiating;
+the `Store` + instance are created only by an explicit `instantiate` (which the contribution
+model, PH7.3+, will trigger on first invocation).
 - **Depends:** PH7.1a.
-- **Exit:** second launch reuses the cached module (no recompile).
-- **Artefacts:** bench = cold-start with N synthetic plugins (< 30ms/50, § perf); test =
-  cache hit + key-invalidation on version/triple/wit change; error = corrupt cache entry →
-  recompile, no panic.
+- **Exit:** ✅ a fresh host over the same cache dir reuses the cached module (`cache_hits() == 1`,
+  no recompile).
+- **Artefacts:** bench = `load_50_plugins_warm_cache` (~20ms/50 off-box, under the 30ms budget)
+  + `instantiate_50_plugins` (~76µs); test = `tests/cache.rs` — second-launch reuse,
+  distinct-components-don't-collide, compile-doesn't-run-guest-code (lazy); error =
+  `PluginHostError::Cache` on cache-init failure, never a panic.
+- **Decision (locked Dhruva 2026-07-01):** use **wasmtime's built-in cache** (`Config::cache` +
+  `CacheConfig::with_directory`), NOT the fragment §3 manual `sha256(...)` key +
+  `Component::deserialize`. wasmtime owns keying/invalidation (bytes + compiler config + target +
+  wasmtime version) and needs **no `unsafe`**, keeping the workspace `unsafe_code = "deny"` gate
+  intact (paramount-#2/security + heuristic #1: less code, upstream-maintained invalidation).
+  Fragment §3's manual-key text is superseded — see the note there.
 
 ### PH7.2 — Capability & security model 📝
 Manifest parsing (declared `fs:*`/`net:*`/`proc:*` + editor `CapabilitySet`); build each

@@ -3951,6 +3951,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "dirs 5.0.1",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "wasmtime",

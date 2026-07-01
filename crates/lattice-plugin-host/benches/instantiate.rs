@@ -46,5 +46,57 @@ fn instantiate(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, instantiate);
+/// A distinct valid lifecycle component per index (the index rides in an
+/// unused global, so each has distinct bytes → a distinct cache key).
+fn synthetic_component(i: usize) -> Vec<u8> {
+    let wat = format!(
+        "(component\n\
+         \t(core module $m\n\
+         \t\t(global $v i64 (i64.const {i}))\n\
+         \t\t(func (export \"activate\"))\n\
+         \t\t(func (export \"deactivate\")))\n\
+         \t(core instance $inst (instantiate $m))\n\
+         \t(func (export \"activate\") (canon lift (core func $inst \"activate\")))\n\
+         \t(func (export \"deactivate\") (canon lift (core func $inst \"deactivate\"))))"
+    );
+    wat::parse_str(&wat).expect("synthetic component WAT assembles")
+}
+
+/// Cold-start budget surface (design.md §8 / plugin-host.md §7: 50 plugins <
+/// 30ms). Not a gated ratchet yet — that lands at PH7.5. Measures loading 50
+/// distinct plugins from a warm on-disk cache (all hits, no recompile) and
+/// instantiating 50 plugins from one compiled component.
+fn cold_start(c: &mut Criterion) {
+    const N: usize = 50;
+    let cache = tempfile::tempdir().expect("cache tempdir");
+    let host = PluginHost::with_cache_dir(cache.path()).expect("host builds");
+    let components: Vec<Vec<u8>> = (0..N).map(synthetic_component).collect();
+
+    // Warm the cache: first compile of each is a miss that writes the artifact.
+    for bytes in &components {
+        host.compile(bytes).expect("warm compile");
+    }
+
+    c.bench_function("load_50_plugins_warm_cache", |b| {
+        b.iter(|| {
+            for bytes in &components {
+                black_box(host.compile(bytes).expect("cached compile"));
+            }
+        });
+    });
+
+    let rt = Runtime::new().expect("tokio runtime builds");
+    let component = host.compile(&components[0]).expect("compile one");
+    c.bench_function("instantiate_50_plugins", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                for _ in 0..N {
+                    black_box(host.instantiate(&component).await.expect("instantiates"));
+                }
+            });
+        });
+    });
+}
+
+criterion_group!(benches, instantiate, cold_start);
 criterion_main!(benches);

@@ -227,6 +227,9 @@ imara-diff = "0.1"
 insta = "1.43"
 proptest = "1.7"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+# Isolated temp dirs for tests (e.g. the plugin-host module-cache test points
+# wasmtime's on-disk cache at a per-test tempdir for a hermetic hit/miss count).
+tempfile = "3"
 
 # 2026-05-27: dev-profile tuning for fast iteration.
 #

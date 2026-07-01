@@ -17,19 +17,29 @@
 //! (the editor's multi-thread pool — never the `current_thread` actor)
 //! drives them. Running two plugins on two tasks runs them on two cores.
 //!
-//! Still owned by later slices: the on-disk module cache + lazy instantiation
-//! (PH7.1b); the per-plugin WASI capability view (PH7.2); every contribution
-//! seam (PH7.3+). The first consumer of the `plugin` lifecycle world is the
-//! user's `init.rs`; the no-op component the tests instantiate is the
-//! degenerate `init.rs`.
+//! **PH7.1b — module cache + lazy instantiation.** The AOT (Cranelift) compile
+//! of a component is cached on disk (via wasmtime's own cache, keyed on bytes +
+//! compiler config + target + wasmtime version), so a second launch reuses the
+//! cached module instead of recompiling. Lazy instantiation is *structural*
+//! here, not a new type: [`PluginHost::compile`] loads/caches a [`Component`]
+//! without instantiating it; the [`Store`] and instance are created only by an
+//! explicit [`PluginHost::instantiate`] call. When the contribution model lands
+//! (PH7.3+), that call is what a plugin's *first contribution invocation* will
+//! trigger.
+//!
+//! Still owned by later slices: the per-plugin WASI capability view (PH7.2);
+//! every contribution seam (PH7.3+). The first consumer of the `plugin`
+//! lifecycle world is the user's `init.rs`; the no-op component the tests
+//! instantiate is the degenerate `init.rs`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Cache, CacheConfig, Config, Engine, Store};
 
 // Host bindings for the `plugin` lifecycle world, async per the canonical
 // ABI. The generated `Plugin` type carries async `call_activate` /
@@ -111,6 +121,12 @@ pub enum PluginHostError {
     #[error("failed to build the wasmtime engine")]
     Engine(#[source] anyhow::Error),
 
+    /// The on-disk module cache could not be initialised (bad directory,
+    /// I/O error). A caching failure must never fail the host — callers may
+    /// fall back to an uncached host — so this is surfaced, never panicked.
+    #[error("failed to initialise the plugin module cache")]
+    Cache(#[source] anyhow::Error),
+
     /// Component bytes were malformed or failed AOT compilation.
     #[error("failed to compile the plugin component")]
     Compile(#[source] anyhow::Error),
@@ -187,28 +203,63 @@ impl Drop for EpochTicker {
 /// capability grant, and fuel meter.
 struct PluginState;
 
-/// The wasmtime engine, the (import-free) component linker, and the epoch
-/// ticker. One host per editor process; construct it once (the engine owns
-/// Cranelift).
+/// The default on-disk module-cache directory,
+/// `<user-cache>/lattice/plugin-cache/` (XDG on Linux, Application Support on
+/// macOS, LocalAppData on Windows). Falls back to the temp dir if no user
+/// cache dir can be resolved.
+fn default_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lattice")
+        .join("plugin-cache")
+}
+
+/// The wasmtime engine, the (import-free) component linker, the on-disk module
+/// cache, and the epoch ticker. One host per editor process; construct it once
+/// (the engine owns Cranelift).
 pub struct PluginHost {
     engine: Engine,
     linker: Linker<PluginState>,
-    // Dropped last-in-first-out after `engine`/`linker`; keeps the ticker
-    // alive for the host's lifetime and stops it on drop.
+    // A clone of the cache handed to the engine config; kept so callers can
+    // read hit/miss stats. `Cache` is a cheap Arc-backed handle.
+    cache: Cache,
+    // Dropped last; keeps the ticker alive for the host's lifetime and stops
+    // it on drop.
     _epoch_ticker: EpochTicker,
 }
 
 impl PluginHost {
-    /// Build a host with the async engine configuration: async support (the
-    /// canonical ABI), fuel metering, and epoch interruption. Spawns the
-    /// epoch-ticker thread.
+    /// Build a host caching compiled components under the default directory
+    /// ([`default_cache_dir`]). This is the production constructor.
     pub fn new() -> Result<Self, PluginHostError> {
+        Self::with_cache_dir(default_cache_dir())
+    }
+
+    /// Build a host caching compiled components under `cache_dir`.
+    ///
+    /// The AOT (Cranelift) compile of a component is cached on disk by
+    /// wasmtime, keyed on the component bytes, the compiler configuration, the
+    /// target, and the wasmtime version — so a **second launch reuses the
+    /// cached module** instead of recompiling (design.md §15 Q17). wasmtime
+    /// owns the keying and invalidation; the host owns only the location.
+    ///
+    /// Tests point this at a per-test tempdir for a hermetic hit/miss count.
+    pub fn with_cache_dir(cache_dir: impl Into<PathBuf>) -> Result<Self, PluginHostError> {
+        let cache_dir = cache_dir.into();
+        std::fs::create_dir_all(&cache_dir).map_err(|e| PluginHostError::Cache(e.into()))?;
+        let mut cache_config = CacheConfig::new();
+        cache_config.with_directory(cache_dir);
+        let cache = Cache::new(cache_config).map_err(|e| PluginHostError::Cache(e.into()))?;
+
         let mut config = Config::new();
         // Async is always available on the engine in wasmtime 46; the generated
         // exports are async (see the `bindgen!` above). Fuel + epoch give the
         // two hard per-call budgets.
         config.consume_fuel(true);
         config.epoch_interruption(true);
+        // Transparent AOT artifact cache: `Component::new` (in `compile`) skips
+        // recompilation on a cache hit.
+        config.cache(Some(cache.clone()));
 
         let engine = Engine::new(&config).map_err(|e| PluginHostError::Engine(e.into()))?;
         let linker = Linker::new(&engine);
@@ -217,8 +268,21 @@ impl PluginHost {
         Ok(Self {
             engine,
             linker,
+            cache,
             _epoch_ticker: epoch_ticker,
         })
+    }
+
+    /// Number of module-cache hits so far (a compiled artifact was reused from
+    /// disk instead of recompiled). Exposed for tests and future observability.
+    pub fn cache_hits(&self) -> usize {
+        self.cache.cache_hits()
+    }
+
+    /// Number of module-cache misses so far (a component was compiled and its
+    /// artifact written to the cache).
+    pub fn cache_misses(&self) -> usize {
+        self.cache.cache_misses()
     }
 
     /// Compile component bytes (AOT via Cranelift) into a reusable

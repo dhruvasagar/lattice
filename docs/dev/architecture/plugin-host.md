@@ -91,10 +91,18 @@ The `lattice-plugin-host` crate owns the wasmtime engine and the per-plugin life
   stack and releases the OS thread. This is what makes "no plugin can stall the UI, ever"
   hold *by construction*: there is no synchronous path from UI input to plugin code.
 - **AOT compile at install; module cache on disk.** Cranelift compiles the component ahead
-  of time; the artifact is cached under `${XDG_CACHE_HOME}/lattice/plugin-cache/` keyed by
-  `sha256(component_bytes + wasmtime_version + target_triple + wit_revision)` (resolves
-  `design.md` §15 Q17). Re-installs and editor upgrades reuse artifacts. Per-instantiation
-  cost is linear-memory allocation + import resolution, not codegen.
+  of time; the artifact is cached under `<user-cache>/lattice/plugin-cache/`
+  (`${XDG_CACHE_HOME}` on Linux, Application Support on macOS, LocalAppData on Windows) so a
+  second launch reuses it (resolves `design.md` §15 Q17). Re-installs and editor upgrades reuse
+  artifacts. Per-instantiation cost is linear-memory allocation + import resolution, not codegen.
+  > **Superseded (PH7.1b, 2026-07-01):** the original proposal — a hand-rolled
+  > `sha256(component_bytes + wasmtime_version + target_triple + wit_revision)` key plus
+  > `Component::serialize`/`deserialize` — is **not** how this shipped. wasmtime 46 provides a
+  > built-in on-disk cache (`Config::cache` + `CacheConfig::with_directory`) that owns the keying
+  > and invalidation (bytes + compiler config + target + wasmtime version) and needs **no
+  > `unsafe`**. The host sets only the directory. Chosen on paramount-#2/security (keeps the
+  > workspace `unsafe_code = "deny"` gate intact) + heuristic #1 (less code, upstream-maintained
+  > invalidation vs. a hand-rolled key). See the PH7.1b slice.
 - **Lazy instantiation.** A plugin that is never invoked is never instantiated. 50 installed
   plugins contribute 0 instantiation cost to startup; a plugin instantiates on first
   invocation of one of its contributions. Cold-start budget for 50 lazily-loaded plugins:

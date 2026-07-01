@@ -1878,11 +1878,15 @@ until re-run on the canonical box.
 | Workload | Provisional (macOS) | Notes |
 | ------------------------------------- | ------------------- | ----- |
 | `plugin_instantiate_noop` (warm) | ~1.6 µs | Instantiate a pre-compiled component into a fresh `Store` (async as of PH7.1a). The per-invocation cost the lazy-instantiation model (PH7.1b) pays on a plugin's first contribution call. |
-| `plugin_compile_instantiate_noop` (cold) | ~300 µs | AOT compile (Cranelift) + instantiate. The path a fresh component takes before the on-disk module cache (PH7.1b) exists; the cache makes re-launches skip the compile. |
+| `plugin_compile_instantiate_noop` (cold) | ~300 µs | AOT compile (Cranelift) + instantiate. The path a fresh component takes on a cold cache. |
+| `load_50_plugins_warm_cache` (PH7.1b) | ~20 ms | Loading 50 distinct plugins from a warm on-disk cache (all hits, no recompile) — the cold-start-load path a relaunch takes. Under the 30ms/50 budget. For these trivial components the cache-hit deserialize is comparable to a cold compile; the cache win scales with real (larger) plugins. |
+| `instantiate_50_plugins` (PH7.1b) | ~76 µs | Instantiating 50 plugins from one compiled component (lazy-instantiation cost). |
 
 PH7.1a additionally covers fuel/epoch trapping, parallel-on-two-cores, and
-off-actor-thread execution via `tests/runtime.rs` (correctness, not a bench).
-The per-call overhead ratchet from `plugin-host.md` §7 lands at PH7.5.
+off-actor-thread execution via `tests/runtime.rs`; PH7.1b covers cache
+hit/miss + lazy load via `tests/cache.rs` (correctness, not benches). The
+per-call overhead ratchet and the cold-start gate from `plugin-host.md` §7
+land at PH7.5.
 
 ---
 

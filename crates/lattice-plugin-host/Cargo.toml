@@ -26,6 +26,10 @@ wasmtime = { workspace = true }
 # it as the `#[source]` of each stage-specific variant.
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+# PH7.1b: cross-platform cache-dir resolution (XDG on Linux, Application
+# Support on macOS, LocalAppData on Windows) for the default on-disk module
+# cache location, `<cache>/lattice/plugin-cache/`.
+dirs = { workspace = true }
 
 [dev-dependencies]
 # Assembles the hand-written lifecycle components (no-op / busy / spin) from
@@ -36,6 +40,8 @@ criterion = { workspace = true }
 # The tests drive the async lifecycle exports and exercise parallelism /
 # off-actor-thread execution, so they own the runtime (the lib does not).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+# Hermetic per-test dir for the module-cache hit/miss test.
+tempfile = { workspace = true }
 
 [[bench]]
 name = "instantiate"

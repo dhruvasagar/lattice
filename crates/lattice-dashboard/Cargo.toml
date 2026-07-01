@@ -1,0 +1,20 @@
+[package]
+name = "lattice-dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# DB.1 (see docs/dev/architecture/dashboard.md + slice-plans/dashboard.md):
+# the launch *dashboard* buffer. This slice is the pure library core —
+# a DashboardSection trait + DashboardRegistry (the extensibility seam),
+# the DashboardFragment content contract, the eight built-in sections,
+# and the dashboard.* config options. Editor wiring (buffer, mode,
+# :dashboard, theme elements, branding art, startup) lands in DB.2+.
+#
+# Dep points DOWN the graph: only lattice-config (for the options! /
+# groups! macros). No crate depends on lattice-dashboard yet; the host
+# links it in the Phase-B install list (DB.2).
+
+[dependencies]
+lattice-config = { path = "../lattice-config" }
+tracing = { workspace = true }

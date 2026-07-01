@@ -19,6 +19,7 @@ members = [
 	"crates/lattice-lsp",
 	"crates/lattice-terminal",
 	"crates/lattice-theme",
+	"crates/lattice-dashboard",
 	"crates/lattice-cells",
 	"crates/lattice-multibuffer",
 	"crates/lattice-host",

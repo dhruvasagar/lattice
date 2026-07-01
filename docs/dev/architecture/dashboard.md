@@ -285,12 +285,15 @@ Three options, in a `dashboard.*` group (`options!` macro,
 | option | type | default | effect |
 |---|---|---|---|
 | `dashboard.enabled` | bool | `true` | auto-open `*dashboard*` on launch when no file arg |
-| `dashboard.sections` | list\<string\> | `[]` | ordered section ids; present ⇒ shown in this order, omitted ⇒ hidden; empty ⇒ all built-ins in default order |
-| `dashboard.source` | string? | *(none)* | path to a user file that **replaces** section composition (full override) |
+| `dashboard.sections` | string | `""` | ordered section ids; present ⇒ shown in this order, omitted ⇒ hidden; empty ⇒ all built-ins in default order |
+| `dashboard.source` | string | `""` | path to a user file that **replaces** section composition; empty ⇒ unset |
 
-The single ordered `dashboard.sections` list covers **both** toggle and reorder
-declaratively — chosen over per-section `dashboard.section.<id>.enabled`
-booleans, which cannot express order (§10). `dashboard.source` is the "author
+The single ordered `dashboard.sections` value covers **both** toggle and
+reorder declaratively — chosen over per-section `dashboard.section.<id>.enabled`
+booleans, which cannot express order (§10). The config system has no native
+list type, so the v1 encoding is a comma/whitespace-separated string parsed by
+`SectionSelection::parse` (empty ⇒ all built-ins in default order; a list ⇒
+exactly those ids in that order, unknown ids skipped). `dashboard.source` is the "author
 the entire dashboard" escape hatch; a missing/unreadable path logs a warning and
 falls back to section composition — never a panic, never an empty page.
 

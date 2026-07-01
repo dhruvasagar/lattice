@@ -10298,6 +10298,62 @@ impl Editor {
         self.open_fresh_into_active_slot(target, DoEditOpenAction::Open)
     }
 
+    /// Files at or below this byte size get a **synchronous** initial
+    /// tree-sitter parse on open. Measured ~7 ms (debug, `dispatch.rs`
+    /// grammar) at 128 KiB / ~2.5k lines — within one 120 Hz frame (8.3 ms),
+    /// so the block is imperceptible and colour is instant. Files ABOVE this
+    /// (generated code, logs, the 36k-line `dispatch.rs` that froze the
+    /// editor for ~118 ms) parse **asynchronously** off the actor thread:
+    /// the open never blocks (paramount #1), plain text shows immediately,
+    /// and colour lands a frame or two later via the syntax worker's
+    /// `async_landed` wake — a single plain→coloured transition, no restyle
+    /// or flicker of already-shown content.
+    const SYNC_PARSE_MAX_BYTES: usize = 128 * 1024;
+
+    /// Build the `SyntaxHandle` for a freshly-opened document, choosing a
+    /// synchronous or deferred initial parse by [`Self::SYNC_PARSE_MAX_BYTES`].
+    ///
+    /// Returns `(handle, parsed_sync)`. `parsed_sync` is `true` when the
+    /// initial parse ran inline (small file) OR there is no grammar (nothing
+    /// to parse); `false` when the parse was deferred to the worker. The
+    /// caller uses it to decide whether to stamp `last_parsed_text_version`
+    /// to the current version (sync — `maybe_reparse_syntax` then no-ops) or
+    /// leave a deliberate mismatch so `activate_buffer_state`'s
+    /// `maybe_reparse_syntax` kicks the async full parse off the actor thread.
+    fn build_open_syntax(
+        &self,
+        lang: lattice_syntax::Lang,
+        text: &str,
+        version: u64,
+    ) -> (Option<lattice_syntax::SyntaxHandle>, bool) {
+        let sync = text.len() <= Self::SYNC_PARSE_MAX_BYTES;
+        let handle = match lattice_syntax::Syntax::for_language_with_registry(
+            lang,
+            self.lang_registry.clone(),
+        ) {
+            Ok(Some(mut s)) => {
+                if sync {
+                    s.parse_at(text, version);
+                }
+                let al = self.async_landed.clone();
+                let eb = self.event_bus.clone();
+                Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                    s,
+                    lattice_runtime::runtime::lsp_runtime().handle(),
+                    Some(std::sync::Arc::new(move || {
+                        al.notify_one();
+                        eb.publish_typed(crate::events::SyntaxReparsed);
+                    })),
+                ))
+            }
+            _ => None,
+        };
+        // No grammar ⇒ nothing to reparse ⇒ treat as "sync" so the caller
+        // stamps the version normally (no spurious async kick).
+        let parsed_sync = sync || handle.is_none();
+        (handle, parsed_sync)
+    }
+
     /// M.0 (2026-05-31): the shared body of `:edit foo.rs`'s
     /// "open fresh + slot-replace" path. Both the brand-new-file
     /// case and the reload-current-buffer case route through
@@ -10323,28 +10379,13 @@ impl Editor {
         let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
         let initial_text = new_doc.text();
         let initial_text_version = new_doc.text_version();
-        let syntax: Option<lattice_syntax::SyntaxHandle> =
-            match lattice_syntax::Syntax::for_language_with_registry(
-                lang,
-                self.lang_registry.clone(),
-            ) {
-                Ok(Some(mut s)) => {
-                    s.parse_at(&initial_text, initial_text_version);
-                    {
-                        let al = self.async_landed.clone();
-                        let eb = self.event_bus.clone();
-                        Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                            s,
-                            lattice_runtime::runtime::lsp_runtime().handle(),
-                            Some(std::sync::Arc::new(move || {
-                                al.notify_one();
-                                eb.publish_typed(crate::events::SyntaxReparsed);
-                            })),
-                        ))
-                    }
-                }
-                _ => None,
-            };
+        // Freeze fix: small files parse synchronously (instant colour, sub-
+        // frame); files above SYNC_PARSE_MAX_BYTES parse asynchronously so
+        // opening a huge file (e.g. this 36k-line dispatch.rs, ~118 ms to
+        // parse) never blocks the actor thread. `parsed_sync` drives the
+        // version stamp below.
+        let (syntax, parsed_sync) =
+            self.build_open_syntax(lang, &initial_text, initial_text_version);
         // M.2.b.0.A: allocate BufferId first so the handle
         // carries it (used by `MotionContext::buffer_id` for
         // kind-specific motion handlers).
@@ -10371,7 +10412,15 @@ impl Editor {
         self.document = lattice_runtime::ActiveDocument::new(new_handle);
         self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = syntax;
-        self.last_parsed_text_version = self.document.text_version();
+        // Sync parse ⇒ stamp the current version so `maybe_reparse_syntax`
+        // no-ops. Async (deferred, large-file) parse ⇒ leave a deliberate
+        // mismatch so `activate_buffer_state`'s `maybe_reparse_syntax` kicks
+        // the full parse off the actor thread; it re-stamps on completion.
+        self.last_parsed_text_version = if parsed_sync {
+            self.document.text_version()
+        } else {
+            self.document.text_version().wrapping_sub(1)
+        };
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.current_match = None;
@@ -29848,6 +29897,39 @@ mod tests {
     }
 
     /// T.9.b: `:colorscheme <name>` swaps the active theme via the
+    /// Freeze fix: `build_open_syntax` parses synchronously below
+    /// `SYNC_PARSE_MAX_BYTES` (instant colour for the common small-file case)
+    /// and defers to the async worker above it (so opening a huge file like
+    /// the 36k-line dispatch.rs never blocks the actor thread). The
+    /// `parsed_sync` flag is the deterministic signal the open path uses to
+    /// choose the version stamp; assert it flips at the threshold.
+    #[test]
+    fn build_open_syntax_is_sync_below_threshold_async_above() {
+        let editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+
+        let small = "fn a() {}\n".repeat(20);
+        assert!(small.len() <= crate::editor::Editor::SYNC_PARSE_MAX_BYTES);
+        let (h_small, sync_small) =
+            editor.build_open_syntax(lattice_syntax::Lang::Rust, &small, 1);
+        assert!(h_small.is_some(), "rust grammar present");
+        assert!(sync_small, "a small file must parse synchronously (instant colour)");
+
+        // ~180 KiB of valid Rust — above the 128 KiB threshold.
+        let big = "fn a() { let x = 1; let y = x + 1; }\n".repeat(5000);
+        assert!(
+            big.len() > crate::editor::Editor::SYNC_PARSE_MAX_BYTES,
+            "corpus must exceed the sync threshold ({} bytes)",
+            big.len()
+        );
+        let (h_big, sync_big) =
+            editor.build_open_syntax(lattice_syntax::Lang::Rust, &big, 1);
+        assert!(h_big.is_some(), "rust grammar present");
+        assert!(
+            !sync_big,
+            "a large file must DEFER its parse to the worker (async), not block"
+        );
+    }
+
     /// registry service and emits `RendererSignal::ThemeChanged` so
     /// both renderer caches rebuild (mirrors `Effect::SetOption`'s
     /// `ui.*` path). After the swap, `syntax.keyword` resolves to

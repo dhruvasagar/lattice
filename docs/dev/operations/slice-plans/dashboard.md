@@ -38,7 +38,7 @@ pure library + unit tests.
 - *error handling:* unknown section id in `dashboard.sections` ⇒ warn + skip,
   never a hard error.
 
-### DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard`  📝
+### DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard`  ✅
 Realized as Option D (design §9.2). Add `BufferKind::Dashboard` +
 `BufferData::Dashboard(DocumentEntry)` (parallel to `Messages`; every forced
 `match BufferKind` arm grouped with the semantically-matching kind; regular-
@@ -171,7 +171,7 @@ gated on the plugin host + theme-remap seam.
 | Slice | State |
 |---|---|
 | DB.1 — crate + registry + fragment + config | ✅ |
-| DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | 📝 |
+| DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | ✅ |
 | DB.3 — `dashboard.*` theme elements | 📝 |
 | DB.4 — branding block (art + symmetry + centring) | 📝 |
 | DB.5 — startup gating + mode-owned trigger | 📝 |

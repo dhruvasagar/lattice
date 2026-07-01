@@ -8,6 +8,8 @@
 //!
 //! Design: `docs/dev/architecture/dashboard.md` §9.
 
+use std::collections::HashSet;
+
 use lattice_core::{BufferKind, Document as CoreDocument};
 use lattice_dashboard::DashboardMode;
 use lattice_host::editor::Editor;
@@ -15,6 +17,29 @@ use lattice_host::modes::HelpLinks;
 
 fn boot() -> Editor {
     Editor::boot(CoreDocument::from_text("scratch\n"))
+}
+
+/// Build the render state, run the cells worker, and return the set of
+/// distinct foreground colours across all non-blank rendered cells.
+fn rendered_fg_colors(editor: &mut Editor) -> HashSet<u32> {
+    let rs = editor.build_render_state();
+    editor.render_state.store(std::sync::Arc::new(rs));
+    lattice_host::cells_worker::recompute(&editor.render_state);
+    let cells = editor.render_state.load().cells.load();
+    let mut fgs = HashSet::new();
+    for pane in cells.panes.iter() {
+        let matrix = pane.matrix.load();
+        for chunk in matrix.chunks.iter() {
+            for row in chunk.rows.iter() {
+                for cell in row.cells.iter() {
+                    if cell.codepoint != 0x20 && cell.codepoint != 0 {
+                        fgs.insert(cell.fg);
+                    }
+                }
+            }
+        }
+    }
+    fgs
 }
 
 #[test]
@@ -95,6 +120,26 @@ fn dashboard_registers_theme_elements() {
             "{name} should be registered after :dashboard"
         );
     }
+}
+
+#[test]
+fn dashboard_renders_through_colored_matrix_not_raw_fallback() {
+    // Regression: the pane-cells builder allowlist must include
+    // BufferKind::Dashboard, else the dashboard pane is skipped, no
+    // DisplayMatrix is built, and the TUI falls back to uncoloured raw text
+    // (the "no colors on the dashboard" bug).
+    let mut editor = boot();
+    editor.viewport_height = 40;
+    editor.do_open_dashboard();
+
+    let fgs = rendered_fg_colors(&mut editor);
+    assert!(
+        fgs.len() >= 2,
+        "dashboard should render multiple distinct fg colors (markdown \
+         headings + links + body), got {} — the DisplayMatrix was likely \
+         skipped and the pane fell back to raw text",
+        fgs.len()
+    );
 }
 
 #[test]

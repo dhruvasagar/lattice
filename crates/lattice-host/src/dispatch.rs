@@ -11343,6 +11343,11 @@ impl Editor {
             lattice_core::BufferKind::Document
                 | lattice_core::BufferKind::Messages
                 | lattice_core::BufferKind::Multibuffer
+                // DB.2: the dashboard is activated through activate_document, so
+                // self.document holds its snapshot — the active dashboard pane
+                // must read the hot-path slot like the other document-backed
+                // active kinds (not re-fetch a registry snapshot).
+                | lattice_core::BufferKind::Dashboard
         );
         let active_buffer_id = self.document_buffer_id;
         let active_pane_id = self.pane_tree.active().id;
@@ -11394,6 +11399,12 @@ impl Editor {
                     | lattice_core::BufferKind::Messages
                     | lattice_core::BufferKind::Multibuffer
                     | lattice_core::BufferKind::Help
+                    // DB.2: the dashboard is a document-backed buffer with a
+                    // markdown SyntaxHandle + link ExtraHighlights (like in-pane
+                    // Help), so it renders through the same generic compose
+                    // path. Omitting it here skips its DisplayMatrix and the
+                    // pane falls back to uncoloured raw text.
+                    | lattice_core::BufferKind::Dashboard
             ) {
                 continue;
             }

@@ -1860,6 +1860,28 @@ surfaces here in CI.
 
 ---
 
+## Plugin host — instantiation smoke (`crates/lattice-plugin-host/benches/instantiate.rs`)
+
+PH7.0 scaffold bench. Measures the two component-load paths against the
+hand-written no-op lifecycle component (the degenerate `init.rs`): a warm
+instantiate of a pre-compiled component, and a cold compile+instantiate.
+Neither is a **gated budget yet** — the per-call (< 500 ns p99) and cold-start
+(50 plugins < 30 ms) ratchets from `plugin-host.md` §7 land at PH7.1 / PH7.5.
+This row exists so the surface is measured from day one (four-artefact
+discipline); it will be re-baselined on the canonical box when the gate lands.
+
+⚠️ **Provisional — off-box numbers.** Unlike every other row here (Ryzen 7
+9700X / WSL2), these were captured on a macOS dev machine, so they are not
+comparable to the §8.2 hardware baseline. Treat as order-of-magnitude only
+until re-run on the canonical box.
+
+| Workload | Provisional (macOS) | Notes |
+| ------------------------------------- | ------------------- | ----- |
+| `plugin_instantiate_noop` (warm) | ~1.5 µs | Instantiate a pre-compiled component into a fresh `Store`. The per-invocation cost the lazy-instantiation model (PH7.1) pays on a plugin's first contribution call. |
+| `plugin_compile_instantiate_noop` (cold) | ~180 µs | AOT compile (Cranelift) + instantiate. The path a fresh component takes before the on-disk module cache (PH7.1) exists; the cache makes re-launches skip the compile. |
+
+---
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

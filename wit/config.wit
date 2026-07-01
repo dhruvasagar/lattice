@@ -1,0 +1,9 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors `ConfigRegistry` + `OptionType`/`OptionSpec` (lattice-config).
+/// The guest declares a typed option (name + type_label + default + doc);
+/// the host registers via `register_with_typeid` into the *same* registry
+/// core options live in, so `:set` / `:describe-option` / `:customize` treat
+/// plugin options uniformly. Values round-trip as strings (the `OptionType`
+/// parse/format contract). Populated in PH7.10.
+interface config {}

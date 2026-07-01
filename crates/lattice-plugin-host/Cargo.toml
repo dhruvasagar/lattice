@@ -1,0 +1,43 @@
+[package]
+name = "lattice-plugin-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Phase 7: the WASM Component Model extension substrate. Design:
+# docs/dev/architecture/plugin-host.md. Slice plan:
+# docs/dev/operations/slice-plans/plugin-host.md.
+#
+# PH7.0 (this slice) is the scaffold: the wasmtime engine + the host side
+# of `wasmtime::component::bindgen!` against the `plugin` lifecycle world
+# (../../wit), and a `PluginHost` that compiles + instantiates a component
+# and calls its `activate` / `deactivate` exports. No WASI view is wired
+# yet -- the capability model (PH7.2) builds each Store's WASI grant -- so
+# the scaffold depends on `wasmtime` alone. The async ABI, Store-per-plugin
+# tasks, fuel, and the on-disk module cache land in PH7.1.
+
+[dependencies]
+# The runtime + Component Model + Cranelift AOT. Default features carry the
+# component-model + cranelift + wat stack; feature-trimming for build time
+# is a later optimization, not a scaffold concern.
+wasmtime = { workspace = true }
+# Typed host error surface (no panics on any path -- the four-artefact
+# graceful-error clause). `anyhow::Error` is wasmtime's error type; we carry
+# it as the `#[source]` of each stage-specific variant.
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Assembles the hand-written no-op lifecycle component (the degenerate
+# `init.rs`) from WebAssembly Text to component bytes inside the tests --
+# no wasm32-wasip2 target or separate guest build for the scaffold.
+wat = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "instantiate"
+harness = false
+
+[lints]
+workspace = true

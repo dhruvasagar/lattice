@@ -27,6 +27,7 @@ members = [
 	"crates/lattice-cli",
 	"crates/lattice-diff",
 	"crates/lattice-claude-code",
+	"crates/lattice-plugin-host",
 ]
 
 [workspace.package]
@@ -121,6 +122,33 @@ serde_json = "1.0"
 # primitive, no heavier `rand`/`uuid` dep pulled for one token.
 tokio-tungstenite = "0.24"
 getrandom = "0.2"
+
+# Plugin host (Phase 7 -- lattice-plugin-host). The WASM Component
+# Model extension substrate (design.md §5.5, docs/dev/architecture/
+# plugin-host.md). `wasmtime` is the runtime + Component Model + WASI
+# preview2 engine; `wasmtime-wasi` supplies the per-plugin WASI view
+# (scoped fs/net) built from each plugin's capability grant.
+# `wit-bindgen` generates the *guest* bindings (the host side uses
+# `wasmtime::component::bindgen!`).
+#
+# Consumption is staged across the PH7.x slices, so several of these
+# are declared here now (PH7.0 scaffold) but first exercised later:
+#   - `wasmtime`      : PH7.0  (host engine + instantiate).
+#   - `wasmtime-wasi` : PH7.2  (capability model builds the WASI view).
+#   - `wit-bindgen`   : first consumer is the user's `init.rs` compiled
+#                       to WASM (the degenerate no-op lifecycle component
+#                       PH7.0 instantiates is the empty `init.rs`);
+#                       `plugins/fuzzy-finder` (PH7.4) is the picker-seam
+#                       validation, not the first consumer.
+# Kept in lockstep: `wasmtime` and `wasmtime-wasi` share a major.
+wasmtime = "46"
+wasmtime-wasi = "46"
+wit-bindgen = "0.58"
+# `wat` assembles the hand-written no-op lifecycle component from
+# WebAssembly Text to component bytes inside `cargo test` -- no
+# `wasm32-wasip2` target or separate guest build needed for the PH7.0
+# scaffold (that toolchain arrives with the real Rust guest at PH7.4).
+wat = "1"
 
 # Mode system (lattice-mode, M.1+). `internment` interns mode names
 # (and later option / group names) so `ModeId` is `Copy + Eq + Hash`

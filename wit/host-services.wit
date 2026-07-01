@@ -1,0 +1,7 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors the native host services: tree-sitter, ripgrep, regex, fs, net,
+/// proc (plugin-host.md §5). Guest→host calls, capability-gated at the WASI
+/// layer (PH7.2). Populated as its seams land (fs/net for PH7.4's
+/// `fuzzy-finder`; tree-sitter query shape is design.md §15 Q15).
+interface host-services {}

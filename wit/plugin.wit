@@ -1,0 +1,38 @@
+// Canonical WIT for the lattice plugin host (Phase 7).
+//
+// Design: docs/dev/architecture/plugin-host.md §5 (the exercised-trait →
+// WIT mirror). Slice sequencing: docs/dev/operations/slice-plans/plugin-host.md.
+//
+// One file per interface. Every interface names the native trait it mirrors
+// and the slice that populates it; PH7.0 ships only the `plugin` lifecycle
+// world below, wired through `wasmtime::component::bindgen!` in
+// `lattice-plugin-host`. The rest are empty stubs so the package is sized
+// against the full exercised set from day one (design.md §14 mitigation).
+package lattice:plugin-host@0.1.0;
+
+/// The lifecycle surface every guest component implements.
+///
+/// **First consumer is the user's `init.rs`** — compiled to WASM and loaded
+/// by the host with a boot-capability set (CLAUDE.md tech stack; design.md
+/// §5.12.2). Its `activate` runs the user's configuration: registering
+/// keymaps, autocmds, hooks, and custom commands through the (stubbed here)
+/// host-services / grammar / command / config / events interfaces. A plugin
+/// is just another component implementing this same world with a narrower
+/// capability grant; `plugins/fuzzy-finder` (PH7.4) validates the picker
+/// seam but is *not* the first consumer.
+///
+/// The degenerate case — a component whose `activate` registers nothing — is
+/// the empty `init.rs`, and is exactly what the PH7.0 scaffold instantiates
+/// to prove the host round-trip end to end.
+///
+/// The async ABI (design.md §5.5) and the `on-event` lifecycle export land
+/// with the runtime core (PH7.1) and the event seam (PH7.8) respectively;
+/// PH7.0 wires the two synchronous exports needed to prove instantiation.
+world plugin {
+	/// Called once when the component is first instantiated. Runs config /
+	/// contribution registration for `init.rs`; no-op for the scaffold.
+	export activate: func();
+
+	/// Called on teardown / reload (the Guard-`Drop` teardown seam, §8).
+	export deactivate: func();
+}

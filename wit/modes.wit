@@ -1,0 +1,8 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors the `Mode` trait method set + `ModeRegistry` (lattice-mode). The
+/// guest declares a mode; the host registers `Arc<dyn DynMode>`; keymap
+/// contributions land at `KeymapLayer::MinorMode(id)` only (the
+/// `KeymapCapability` write-gate). PH7.11 lands the declaration WIT +
+/// registration path; bundled modes-as-components are Phase 8.
+interface modes {}

@@ -1,0 +1,7 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors `Mode::gutter_decorations` → per-line `GutterDecoration` data
+/// (no draw calls). The host builds the decoration snapshot off the render
+/// path; the renderer reads cached per-line values (the no-per-frame-WASM
+/// rule, §7). Populated in PH7.9. Gate: segment update < 50µs p99.
+interface decorations {}

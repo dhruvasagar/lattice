@@ -1,0 +1,8 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs). Guest
+/// exports spec/init/accept; the host wraps them as `Arc<dyn
+/// PickerSourceGenerator>` and registers via `PickerRegistry::register_generator`
+/// through the `SubsystemBoot` install seam. The ⭐ Phase-7-exit interface;
+/// populated in PH7.4 and validated by `plugins/fuzzy-finder`.
+interface picker-source {}

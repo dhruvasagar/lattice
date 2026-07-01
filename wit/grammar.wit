@@ -1,0 +1,8 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors `register_{motion,text_object,operator,ex_command}`
+/// (lattice-grammar). The closure seams become guest exports called by
+/// command id (§4.1); the host constructs the native spec with a trampoline
+/// `apply` stamped `SourceLayer::Plugin(id)`. Paramount #3 (plugin motions
+/// are first-class grammar). Populated in PH7.7. Gate: round-trip < 5µs p99.
+interface grammar {}

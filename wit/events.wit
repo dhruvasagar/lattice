@@ -1,0 +1,9 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors `EventBus::subscribe` + the `Event` enum (lattice-runtime). The
+/// host owns the mpsc and delivers each serialized `Event` to the guest's
+/// `on-event` export as a separate task (a slow handler never delays other
+/// subscribers, §5.10.4). `:autocmd` from a plugin desugars to `subscribe`.
+/// Fills the reserved `SubscriptionTarget::Plugin` variant. Populated in PH7.8.
+/// (Before-class veto/mutation stays out — the bus is observation-only in v1.)
+interface events {}

@@ -1,0 +1,7 @@
+package lattice:plugin-host@0.1.0;
+
+/// Mirrors the native `Document` / `Buffer` + `apply_edit` seam
+/// (plugin-host.md §5, §4.2). Host→guest `document` resource handle; the
+/// guest calls back for text slices (`get-text-range`) so bulk rope text
+/// never crosses the boundary. Populated in PH7.3 (boundary primitives).
+interface buffer {}

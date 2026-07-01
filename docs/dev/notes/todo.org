@@ -57,6 +57,7 @@
   - [X] <C-x><C-f> file :files
   - [X] <C-x>0 :close
   - [X] <C-x>1 :only
+- [ ] Tree sitter motions (next function, next block, prev function, etc)
 
 * Plugins
 - [ ] plugin manager
@@ -173,6 +174,9 @@
     inactive panes, when we switch to separate panes the folds reset
     for that pane. Folding key bindings should never effect inactive
     pane content.
+- [X] lsp `gr` waits for additional key before it launches picker
+- [X] `picker grep` takes a while after pattern entered to show
+  results, we should show a loader or something to indicate searching
 
 * Documentation
 - [X] lattice-tutor

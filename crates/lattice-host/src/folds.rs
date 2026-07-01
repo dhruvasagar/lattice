@@ -325,6 +325,34 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source);
 
+    // Precompute line-start byte offsets in ONE pass so the per-fold
+    // start-line-text lookup below is O(1). The old code called
+    // `line_at(source, start_line)`, which rescans from byte 0 every call;
+    // with one call per fold that is O(folds × file_size) = O(n²) — ~34 s on
+    // a 36k-line file (dispatch.rs), the freeze this fixes. `line_starts[i]`
+    // is the byte offset where line `i` begins.
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(
+            source
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &b)| (b == b'\n').then_some(i + 1)),
+        )
+        .collect();
+    let line_text = |line: u32| -> &str {
+        let li = line as usize;
+        let Some(&start) = line_starts.get(li) else {
+            return "";
+        };
+        // Content ends just before the next line's start (the `\n`), or at
+        // EOF for the last line.
+        let end = line_starts
+            .get(li + 1)
+            .map(|&next| next.saturating_sub(1))
+            .unwrap_or(source.len());
+        std::str::from_utf8(source.get(start..end).unwrap_or(&[])).unwrap_or("")
+    };
+
     let mut folds: Vec<Fold> = Vec::new();
     let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
 
@@ -359,7 +387,7 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
             if !seen.insert((start_line, end_line)) {
                 continue;
             }
-            let start_line_text = line_at(source, start_line);
+            let start_line_text = line_text(start_line);
             let identity = syntax_fold_identity(node.kind(), start_line_text);
             folds.push(Fold {
                 start_line,
@@ -375,33 +403,6 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
             .then_with(|| b.end_line.cmp(&a.end_line))
     });
     Some(folds)
-}
-
-/// Extract the text of `line_idx` from a source byte slice. Returns
-/// "" for out-of-range indices. Used by the syntax fold identity
-/// hash.
-fn line_at(source: &[u8], line_idx: u32) -> &str {
-    let mut line: u32 = 0;
-    let mut start: usize = 0;
-    for (i, b) in source.iter().enumerate() {
-        if line == line_idx {
-            // Found the start of the target line.
-            let end = source[i..]
-                .iter()
-                .position(|&c| c == b'\n')
-                .map(|d| i + d)
-                .unwrap_or(source.len());
-            return std::str::from_utf8(&source[start..end]).unwrap_or("");
-        }
-        if *b == b'\n' {
-            line += 1;
-            start = i + 1;
-        }
-    }
-    if line == line_idx {
-        return std::str::from_utf8(&source[start..]).unwrap_or("");
-    }
-    ""
 }
 
 /// Hash the user-visible signature of the current fold set.
@@ -948,6 +949,33 @@ mod tests {
     }
 
     // --- Syntax (tree-sitter) provider --------------------------
+
+    /// Regression guard: `compute_syntax_folds` must be ~O(n), not
+    /// O(folds × file_size). The old per-fold `line_at` rescanned the source
+    /// from byte 0 on every call, so a large file (dispatch.rs, 36k lines,
+    /// thousands of folds) took ~34 s and froze the editor. A file with
+    /// thousands of foldable items must compute well under a second.
+    #[test]
+    fn syntax_folds_are_linear_not_quadratic() {
+        let mut src = String::with_capacity(200_000);
+        for i in 0..3000 {
+            src.push_str(&format!("fn f{i}() {{\n    let x = {i};\n    x + 1\n}}\n\n"));
+        }
+        let syntax = rust_syntax_with(&src);
+        let t = std::time::Instant::now();
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds.scm");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            folds.len() >= 3000,
+            "each fn body should fold (got {})",
+            folds.len()
+        );
+        assert!(
+            ms < 2000.0,
+            "fold compute must stay ~linear; took {ms:.0}ms — an O(n²) regression \
+             (per-fold full-source rescan) would take many seconds here"
+        );
+    }
 
     fn rust_syntax_with(text: &str) -> lattice_syntax::Syntax {
         let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)

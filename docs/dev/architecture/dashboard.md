@@ -313,31 +313,42 @@ falls back to section composition — never a panic, never an empty page.
   buffer is `*dashboard*` instead of an empty scratch document. With a file
   arg, the file opens directly and the dashboard is merely reachable on demand.
 
-### 9.2 Buffer realization + link-follow (Option C')
+### 9.2 Buffer realization + link-follow (Option D)
 
-The `*dashboard*` buffer is `BufferKind::Dashboard` (parallel to `Messages`),
-read-only, flowing through the same Document code paths — no kind-specific
-render/motion/scroll branch. `dashboard-mode` is its **major** mode (identity,
-`target_buffer_kind = Dashboard`, the `dashboard.*` theme elements in §4, the
-branding provider in §5). It does **not** re-declare read-only options: instead
-**help-mode auto-activates as a companion minor** (registered in
-`auto_activated_minors_for_buffer_kind(Dashboard)`), so the buffer inherits
-help-mode's `ReadOnly`/`Wrap`/`NoFile`/`Number=false`/`signcolumn=no` +
-invocation routing, and its links follow.
+The `*dashboard*` buffer is a distinct `BufferKind::Dashboard`
+(`BufferData::Dashboard(DocumentEntry)`, parallel to `Messages`), read-only,
+flowing through the same Document code paths — no kind-specific
+render/motion/scroll branch. `dashboard-mode` is its **major** mode
+(`target_buffer_kind = Dashboard`), and owns its option surface directly —
+`ReadOnly`/`Wrap`/`NoFile`/`Number=false`/`signcolumn=no` (the same set
+help-mode contributes) — plus the `dashboard.*` theme elements (§4) and the
+branding provider (§5). It is self-contained: no help-mode dependency for
+behaviour.
 
-Link-follow reuses the help machinery, decoupled from the buffer *kind*. The
-host's `Action::FollowLink` and the `do_help_follow_link` guard change from
-`BufferKind::Help` to the **property "help-mode is active on the target (popup
-or active) buffer"** — `active_modes.get(id).has_minor(help-mode)`. This
-completes the decoupling help-mode's own module docstring already documents
-("gated on this minor being active") and is a strict generalisation: help
-buffers behave identically, and any buffer with help-mode active (the dashboard)
-now follows links. The per-buffer `HelpLinks` local remains the *data* the
-handler reads to find the link under the cursor — help-mode is the *authority*
-for whether follow is enabled, the local is not. Content + link metadata are
-seeded via `register_help_document`/`seed_help_metadata_locals`
-(reusing `lattice_help::link_highlights`), from a `HelpContent` the crate builds
-from the composed `DashboardFragment`s.
+Link-follow, Esc-dismiss, and markdown highlighting are **reused from the help
+machinery via the buffer kind**, not by activating help-mode. The three
+existing `BufferKind::Help` gates gain `BufferKind::Dashboard` alongside Help,
+because a dashboard is behaviourally the same shape — a read-only, link-bearing,
+help-style buffer:
+
+1. `input.rs` Normal-mode gate (`<CR>` → `FollowLink`, `<Esc>` → dismiss) —
+   `Help | FileTree` → `Help | FileTree | Dashboard`.
+2. `dispatch.rs` `Action::FollowLink` arm — `Help` → `Help | Dashboard` calls
+   `do_help_follow_link`.
+3. `do_help_follow_link` guard — `active_buffer != Help` → `!matches!(active,
+   Help | Dashboard)`.
+
+These are grouped-with-Help (identical behaviour, aligned by explicit
+enumeration + comment per the no-kind-branch rule), not divergent per-kind
+logic. The link *data* is seeded kind-agnostically: `do_open_dashboard` builds a
+`HelpContent` from the composed `DashboardFragment`s, writes the text via
+`append_to_owned_buffer`, and seeds the `HelpLinks`/`HelpAnchors`/
+`ExtraHighlights` locals + markdown syntax via `seed_help_metadata_locals`
+(reusing `lattice_help::link_highlights`). `do_help_follow_link` reads
+`HelpLinks` by `BufferId` — already kind-agnostic. Every new `match BufferKind`
+arm the variant forces is resolved by grouping `Dashboard` with the
+semantically-matching kind (mostly `Document`/`Messages`; `Help` for the follow
+gates), and the buffer must pass the regular-buffer parity test.
 
 ### 9.1 Mode-ownership of the startup trigger
 
@@ -348,33 +359,34 @@ dashboard.enabled`, it emits the *same* `Effect::OpenDashboard` the `:dashboard`
 command emits — one applier, two triggers. The activation-decision (no file +
 enabled) and all content live in `lattice-dashboard`.
 
-**Where the host boundary honestly sits.** The crate owns the mode, its keymap,
-its `dashboard.*` theme elements, the section registry, composition, and config
-— zero `Editor::` methods for *that* surface, zero new host `Action` variants
-(`FollowLink` already exists; it is only de-kinded). The irreducible host
-residue is exactly what every synthetic-buffer subsystem carries: one lifecycle
-effect (`Effect::OpenDashboard`) + its applier (`do_open_dashboard`), because
-buffer creation mutates `&mut Editor`. This mirrors `:messages`/`:diff`; it is
-the sanctioned boundary, not a mode-surface leak. (A future generic
+**Where the host boundary honestly sits.** The crate owns the mode, its
+options, its `dashboard.*` theme elements, the section registry, composition,
+and config — zero `Editor::` methods for *that* surface, zero new host `Action`
+variants. The host residue is (a) the `BufferKind::Dashboard` variant + its
+match arms (grouped with the semantically-matching kind, §9.2), (b) one
+lifecycle effect (`Effect::OpenDashboard`) + its applier (`do_open_dashboard`),
+because buffer creation mutates `&mut Editor` — exactly what every
+synthetic-buffer subsystem carries (`:messages`/`:diff`). This is the sanctioned
+boundary, not a mode-surface leak. (A future generic
 `Effect::ActivateNamedBuffer` could retire the per-feature appliers across
 messages/diff/dashboard alike — noted as a separate generalisation, not taken
 here.)
 
 ## 10. Rejected alternatives
 
-- **Make the dashboard a Help-kind buffer with markdown as the major
-  (help-mode's own shape).** Rejected as the *identity*: markdown tree-sitter
-  colouring fights the custom `dashboard.*` theme roles, and the buffer loses a
-  distinct `:ls` identity. The chosen shape (§9.2) instead keeps a `Dashboard`
-  major and reuses help-mode as a *companion minor* — help-mode's behaviour
-  (read-only, follow, dismiss) without help-mode's markdown major.
-  *(Heuristic #1: genuinely-better long-term fit — reuse the behaviour, not the
-  identity.)*
-- **Gate link-follow on the `HelpLinks` local instead of on help-mode.**
-  Rejected: help-mode *owns* follow behaviour (its docstring says so), so its
-  presence is the authority; a data local is not. Gating on the local would leak
-  follow to any buffer that ever carries link data. The local stays the *data*,
-  help-mode the *gate* (§9.2).
+- **Make the dashboard a Help-kind buffer (help-mode's own shape).** Rejected as
+  the *identity*: the buffer loses a distinct `:ls` identity and `dashboard-mode`
+  can't be its major. The chosen shape (§9.2) is a distinct `Dashboard` kind +
+  major, reusing help's *behaviour* (follow/dismiss/markdown) via the kind
+  gates.
+- **Property-gate link-follow on help-mode-active (de-kind the 3 help gates).**
+  Genuinely-better long-term (removes anti-pattern kind-branches, completes the
+  decoupling help-mode's docstring documents) — but it is *help-mode's* refactor,
+  spanning three sites (`input.rs` + two in `dispatch.rs`); doing only the slice
+  the dashboard needs is a half-migration. Rejected for DB.2 in favour of
+  extending the existing kind-gates (grouped-with-Help), which is self-contained.
+  The full de-kinding is noted as a future help-mode slice that would then let
+  the gates drop `Dashboard` again.
 - **Static markdown-file dashboard only.** Cannot carry plugin-contributed
   sections; the section registry is the stated requirement. *(Paramount #2.)*
 - **WASM-init contributes the content.** Static branding is *content*, not
@@ -431,8 +443,8 @@ here.)
   shape: motions/scroll/cursor identical to a Document.
 - **Link-follow** — `<CR>` on a `cmd:` / `topic:` / `url:` span fires the
   target; `url:` with no opener logs + skips; Esc dismisses. Regression: help
-  buffers still follow after the gate is de-kinded to help-mode-active; a
-  Dashboard buffer *without* help-mode active does not follow.
+  buffers still follow after `Dashboard` is added alongside `Help` in the three
+  gates (grouped, not replaced).
 - **Theme** — `dashboard.*` registered under `ElementOwner::Mode`; a theme
   override changes the rendered colour; default resolves to the brand colours.
 - **Branding** — nerd-font vs BMP-block art are the same cell width; toggle

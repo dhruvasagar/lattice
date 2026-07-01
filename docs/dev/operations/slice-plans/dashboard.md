@@ -39,34 +39,37 @@ pure library + unit tests.
   never a hard error.
 
 ### DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard`  📝
-Realized as Option C' (design §9.2). Add `BufferKind::Dashboard` (parallel to
-`Messages`; regular-buffer parity). Register `dashboard-mode` (major,
-`target_buffer_kind = Dashboard`), and register **help-mode as an auto-activated
-companion minor** for the Dashboard kind
-(`auto_activated_minors_for_buffer_kind`) so the buffer inherits
-`ReadOnly`/`Wrap`/`NoFile`/`Number=false`/`signcolumn=no` + invocation routing.
-**De-kind link-follow:** change `Action::FollowLink` + the `do_help_follow_link`
-guard from `BufferKind::Help` to "help-mode active on the target (popup/active)
-buffer" (`active_modes…has_minor(help-mode)`) — completes help-mode's documented
-decoupling, help buffers unchanged. `:dashboard` = `Effect::OpenDashboard` +
-`Editor::do_open_dashboard` (lifecycle residue mirroring `:messages`); the
-applier reads config, composes via the crate-owned `DashboardRegistry` service,
-builds a `HelpContent` from the fragments (body links via help-link markup),
-creates the buffer via `register_help_document`-style seeding, and activates it.
-Branding block is a plain-text placeholder here (styled in DB.4).
+Realized as Option D (design §9.2). Add `BufferKind::Dashboard` +
+`BufferData::Dashboard(DocumentEntry)` (parallel to `Messages`; every forced
+`match BufferKind` arm grouped with the semantically-matching kind; regular-
+buffer parity). Register `dashboard-mode` (major, `target_buffer_kind =
+Dashboard`) contributing `ReadOnly`/`Wrap`/`NoFile`/`Number=false`/
+`signcolumn=no` (help-mode's set) — self-contained, no help-mode dependency.
+**Extend the three `BufferKind::Help` gates to include `Dashboard`** (grouped +
+commented): `input.rs` `<CR>`→`FollowLink` / `<Esc>`→dismiss, `dispatch.rs`
+`Action::FollowLink` arm, and the `do_help_follow_link` guard. `:dashboard` =
+`Effect::OpenDashboard` + `Editor::do_open_dashboard` (lifecycle residue
+mirroring `:messages`); the applier reads config, composes via the crate-owned
+`DashboardRegistry` service, builds a `HelpContent` from the fragments (body
+links via help-link markup: `cmd:`→`execute:`, `topic:`→`topic:`), creates a
+`BufferData::Dashboard` buffer named `*dashboard*`, seeds content +
+`HelpLinks`/`ExtraHighlights` + markdown syntax via `seed_help_metadata_locals`,
+assigns `dashboard-mode` major, and activates. Branding block is a plain-text
+placeholder here (styled in DB.4).
 - *paramount:* #3 (a buffer reached by `:dashboard` / `:b *dashboard*` / `:ls`,
-  read-only via help-mode option contribution); mode-ownership (crate owns
-  mode/keymap/registry/composition/config; host residue is one lifecycle
-  effect + applier + a generic kind-branch removal, not mode-surface).
+  read-only via `dashboard-mode` option contribution); mode-ownership (crate
+  owns mode/options/registry/composition/config; host residue is the
+  `Dashboard` kind arms + one lifecycle effect + applier, the sanctioned
+  synthetic-buffer boundary).
 - *test:* `:dashboard` opens the buffer; `:b *dashboard*` resolves; read-only
   invariants (Insert/operators inert, never dirty, `:q` no prompt, excluded from
   modified set, `listed:false` skipped by `:bn`/`:bp` but reached by `:b`/`:ls`);
-  `<CR>` on a `cmd:`/`topic:`/`url:` span fires the target; Esc dismisses;
-  **help-buffer follow-link regression** (still works after de-kinding); a
-  Dashboard buffer without help-mode does not follow; regular-buffer parity
-  (`multibuffer_is_a_regular_buffer.rs` shape).
+  `<CR>` on a `cmd:`/`topic:` span fires the target; Esc dismisses; **help-buffer
+  follow-link regression** (still works with `Dashboard` added alongside);
+  regular-buffer parity (`multibuffer_is_a_regular_buffer.rs` shape).
 - *doc:* design §6, §9, §9.2.
-- *error handling:* `url:` with no configured opener ⇒ log + skip, never panic.
+- *error handling:* `url:` link ⇒ `Unresolved` (no external opener in help-follow
+  yet) ⇒ logged no-op, never panic.
 
 ### DB.3 — `dashboard.*` theme elements  📝
 Register the `dashboard.*` namespace (design §4) under

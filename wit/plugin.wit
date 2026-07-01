@@ -34,6 +34,8 @@ world plugin {
 	/// They are not yet used by a lifecycle function signature; the `use`
 	/// alone makes `bindgen!` emit them.
 	use types.{args, arg-value, candidate-kind, candidate-data, raw-candidate, picker-accept-outcome};
+	use types.{position, range, edit-kind, edit, edit-delta, applied-edit};
+	use types.{visual-mode, selection, selection-set, visual-kind, search-direction, modal-state, register, yank-kind};
 
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.

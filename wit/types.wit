@@ -155,4 +155,106 @@ interface types {
         handle: u64,
         index: u32,
     }
+
+    // ---- Effect payload mirrors (PH7.3b1a) ----
+    // The nested payload types the `effect` variant (PH7.3b1b) composes.
+
+    /// Mirrors `lattice_protocol::position::Position`.
+    record position {
+        line: u32,
+        byte: u32,
+    }
+    /// Mirrors `lattice_protocol::position::Range`.
+    record range {
+        start: position,
+        end: position,
+    }
+
+    /// Mirrors `lattice_protocol::edit::EditKind`.
+    variant edit-kind {
+        replace(string),
+    }
+    /// Mirrors `lattice_protocol::edit::Edit`.
+    record edit {
+        range: range,
+        kind: edit-kind,
+    }
+    /// Mirrors `lattice_protocol::edit::EditDelta`.
+    record edit-delta {
+        start-byte: u32,
+        old-end-byte: u32,
+        new-end-byte: u32,
+        start-position: position,
+        old-end-position: position,
+        new-end-position: position,
+    }
+    /// Mirrors `lattice_core::buffer::AppliedEdit`.
+    record applied-edit {
+        original-range: range,
+        inserted-range: range,
+        replaced-text: string,
+        inserted-text: string,
+        delta: edit-delta,
+    }
+
+    /// Mirrors `lattice_protocol::selection::VisualMode`.
+    variant visual-mode {
+        charwise,
+        linewise,
+        blockwise,
+    }
+    /// Mirrors `lattice_protocol::selection::Selection`.
+    record selection {
+        anchor: position,
+        head: position,
+        visual: option<visual-mode>,
+    }
+    /// Mirrors `lattice_protocol::selection::SelectionSet` (reconstructed via
+    /// `SelectionSet::from_parts`). Always non-empty; `primary` indexes
+    /// `selections`.
+    record selection-set {
+        selections: list<selection>,
+        primary: u32,
+    }
+
+    /// Mirrors `lattice_grammar::modal::VisualKind`.
+    variant visual-kind {
+        charwise,
+        linewise,
+        blockwise,
+    }
+    /// Mirrors `lattice_grammar::modal::SearchDirection`.
+    variant search-direction {
+        forward,
+        backward,
+    }
+    /// Mirrors `lattice_grammar::modal::ModalState`.
+    variant modal-state {
+        normal,
+        insert,
+        visual(visual-kind),
+        %select(visual-kind),
+        operator-pending,
+        command,
+        search(search-direction),
+        %replace,
+    }
+
+    /// Mirrors `lattice_grammar::register::Register`.
+    variant register {
+        unnamed,
+        named(char),
+        system,
+        black-hole,
+        expression,
+        read-only(char),
+        numbered(u8),
+    }
+
+    /// Mirrors `lattice_grammar::effect::YankKind`.
+    variant yank-kind {
+        charwise,
+        linewise,
+        blockwise,
+    }
 }

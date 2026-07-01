@@ -58,6 +58,11 @@ lattice-mode = { path = "../lattice-mode" }
 # among the exercised types the WIT mirror round-trips (fragment §4 exit).
 lattice-picker = { path = "../lattice-picker" }
 lattice-completion = { path = "../lattice-completion" }
+# PH7.3b Effect payload mirrors: Position/Range/Edit/Selection/SelectionSet
+# (lattice-protocol) and AppliedEdit/BufferId (lattice-core) are the nested
+# payload types the `effect` variant composes.
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-core = { path = "../lattice-core" }
 # PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
 # is skipped with a `warn!`, never a panic or a failed load.
 tracing = { workspace = true }

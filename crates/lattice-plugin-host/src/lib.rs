@@ -52,6 +52,7 @@
 //! component the tests instantiate is the degenerate `init.rs`.
 
 pub mod boundary;
+pub mod boundary_effect;
 pub mod capability;
 pub mod manifest;
 

@@ -173,13 +173,26 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
   - **Deferred:** the headline **< 500ns p99 end-to-end typed-call bench** lands at PH7.3d, where an
     actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
 
-  #### PH7.3b — The `Effect` variant mirror 📝
+  #### PH7.3b — The `Effect` variant mirror 🚧
   Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,
-  not a subset — `Effect` is pure data (no `dyn`/`tokio`/`lsp_types`; host-only payloads like
-  `WorkspaceEdit` are handled outside `Effect` via the BC.8d inbound-raw path), so a full 1:1 mirror
-  is feasible; fragment §4.4 rejects any partial/opaque `effect` seam, §14 flags WIT-design-wrong as
-  the highest risk). WIT `effect` variant + back-mapping + exhaustive round-trip; malformed payload
-  rejected.
+  not a subset — `Effect` is pure data, no `dyn`/`tokio`/`lsp_types`; §4.4 rejects any partial/opaque
+  `effect` seam, §14 flags WIT-design-wrong as the highest risk).
+  - **Recursion re-plan (LOCKED with Dhruva 2026-07-01):** `Effect` is *recursive* — `Many(Vec<Effect>)`,
+    `Global { body: Box<CommandInvocation> }` (and `CommandInvocation → Args → ArgValue::Invocation`),
+    plus `AppAction(AppEffect)` pulls in a peer-sized ~100-variant enum. WIT cannot express recursive
+    value types, so a literal 1:1 mirror is impossible for those arms. Resolution (Option A, chosen
+    over reviving the guest-producible subset): the boundary crosses **`list<effect>`** — `Many` is
+    associative composition, flattened non-lossily (`to_wit` flattens, `from_wit` rebuilds `Many` when
+    len>1); `Global` + `AppAction` + any `CommandInvocation`-carrying arm cross as typed `WitBoundary`
+    errors until their mirrors land (the `ArgValue::Invocation` precedent). No opaque blob — every
+    representable arm stays typed.
+  - **Staged:** **PH7.3b1a** = the ~12 nested payload record mirrors (`Position`/`Range`/`Edit`/
+    `EditKind`/`EditDelta`/`AppliedEdit`/`Register`/`ModalState`(+`VisualKind`/`SearchDirection`)/
+    `Selection`(+`VisualMode`)/`SelectionSet`) + their round-trips. Adds
+    `SelectionSet::from_parts(Vec<Selection>, usize)` to `lattice-protocol` (the boundary reconstruction
+    counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b**
+    = the ~95-case `effect` variant using those records + the `list<effect>` flatten + exhaustive
+    round-trip + typed-error arms. **PH7.3b2** = the `AppEffect` mirror (unblocks `AppAction`).
 
   #### PH7.3c — `document` resource handle + owned-snapshot projection 📝
   Borrows→owned records (§4.2); the `buffer` WIT `document` resource; `get-text-range` zero-copy

@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅ landed; PH7.1 next. Design fragment:
+**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1a ✅ landed; PH7.1b next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -55,17 +55,43 @@ instantiates a component and calls its lifecycle exports.
     is synchronous and import-free; the `PluginHostError::Engine` variant is reserved for
     PH7.1's custom engine config.
 
-### PH7.1 — Host runtime core (Store-per-plugin, tokio task, fuel, AOT cache, lazy) 📝
-Engine config (Cranelift AOT); `Store<PluginState>` per plugin; task-per-Store on the
-multi-thread runtime (never the `current_thread` actor); fuel + epoch-interruption budgets;
-on-disk module cache keyed by `sha256(bytes+wasmtime_ver+triple+wit_rev)` (design.md §15 Q17);
-lazy instantiation (instantiate on first contribution invocation).
+### PH7.1 — Host runtime core (Store-per-plugin, async ABI, fuel/epoch, AOT cache, lazy) 🚧
+Split into two green-able steps (the slice bundled too much for one landing): **PH7.1a** async
+runtime core + fuel/epoch trapping; **PH7.1b** on-disk module cache + lazy instantiation.
 - **Depends:** PH7.0.
-- **Exit:** two plugins run CPU work on two cores in parallel; a fuel-exhausting plugin traps
-  cleanly and the other keeps running; second launch reuses the cached module.
+- **Exit (whole PH7.1):** two plugins run CPU work on two cores in parallel; a fuel-exhausting
+  plugin traps cleanly and the other keeps running; second launch reuses the cached module.
+
+#### PH7.1a — Async runtime core + fuel/epoch ✅ (2026-07-01)
+Canonical async ABI (`bindgen!` `exports: { default: async }`; wasmtime 46 makes async always
+available, so `Config::async_support` is a no-op and not called); `consume_fuel` +
+`epoch_interruption`; a background epoch-ticker thread bumps the engine epoch (1ms) so
+wall-clock deadlines fire. Each lifecycle call re-arms two hard budgets — **fuel** (work cap)
+and **epoch** (wall-clock) — and either, on exhaustion, traps cleanly into a typed
+`PluginHostError::Trap { kind: Fuel | Epoch | Other }`. The lib owns no runtime (methods are
+`async fn`; `tokio` is a dev-dep only), so the caller's multi-thread pool drives plugin work —
+never the `current_thread` actor.
+- **Exit:** ✅ two `busy` plugins overlap on the pool (parallel wall-clock < 1.8× single);
+  a `spin` plugin fuel-traps as `TrapKind::Fuel` while a concurrent no-op stays `Ok`
+  (isolation); plugin work runs off the actor thread.
+- **Artefacts:** bench = instantiation smoke updated for async (~1.6µs warm / ~300µs cold,
+  provisional off-box); test = `tests/runtime.rs` (parallel + fuel-trap isolation +
+  off-actor-thread) + `tests/instantiate.rs` (async round-trip); fixtures `busy.wat` / `spin.wat`;
+  error = fuel/epoch/other traps → typed `Trap`, host stays live.
+- **Decisions (locked Dhruva 2026-07-01):** fuel = hard *trap* cap (deterministic in tests);
+  epoch = wall-clock *trap* deadline (default epoch behaviour, no async-yield) — the async-yield
+  path is reserved for when host I/O calls land (they `await` and release the thread). CPU-bound
+  wasm doesn't yield, so a runaway is bounded by fuel/epoch trapping, not cooperative yield.
+
+#### PH7.1b — On-disk module cache + lazy instantiation 📝
+Engine AOT serialize/deserialize; on-disk cache under `${XDG_CACHE_HOME}/lattice/plugin-cache/`
+keyed by `sha256(bytes + wasmtime_ver + triple + wit_rev)` (design.md §15 Q17); lazy
+instantiation (instantiate on first contribution invocation).
+- **Depends:** PH7.1a.
+- **Exit:** second launch reuses the cached module (no recompile).
 - **Artefacts:** bench = cold-start with N synthetic plugins (< 30ms/50, § perf); test =
-  parallel execution + fuel trap isolation + cache hit; error = trap → task killed, others
-  unaffected; **runtime-responsiveness assertion** (work lands off the actor thread).
+  cache hit + key-invalidation on version/triple/wit change; error = corrupt cache entry →
+  recompile, no panic.
 
 ### PH7.2 — Capability & security model 📝
 Manifest parsing (declared `fs:*`/`net:*`/`proc:*` + editor `CapabilitySet`); build each

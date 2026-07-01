@@ -1877,8 +1877,12 @@ until re-run on the canonical box.
 
 | Workload | Provisional (macOS) | Notes |
 | ------------------------------------- | ------------------- | ----- |
-| `plugin_instantiate_noop` (warm) | ~1.5 µs | Instantiate a pre-compiled component into a fresh `Store`. The per-invocation cost the lazy-instantiation model (PH7.1) pays on a plugin's first contribution call. |
-| `plugin_compile_instantiate_noop` (cold) | ~180 µs | AOT compile (Cranelift) + instantiate. The path a fresh component takes before the on-disk module cache (PH7.1) exists; the cache makes re-launches skip the compile. |
+| `plugin_instantiate_noop` (warm) | ~1.6 µs | Instantiate a pre-compiled component into a fresh `Store` (async as of PH7.1a). The per-invocation cost the lazy-instantiation model (PH7.1b) pays on a plugin's first contribution call. |
+| `plugin_compile_instantiate_noop` (cold) | ~300 µs | AOT compile (Cranelift) + instantiate. The path a fresh component takes before the on-disk module cache (PH7.1b) exists; the cache makes re-launches skip the compile. |
+
+PH7.1a additionally covers fuel/epoch trapping, parallel-on-two-cores, and
+off-actor-thread execution via `tests/runtime.rs` (correctness, not a bench).
+The per-call overhead ratchet from `plugin-host.md` §7 lands at PH7.5.
 
 ---
 

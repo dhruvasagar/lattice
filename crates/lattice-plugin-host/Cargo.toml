@@ -9,13 +9,12 @@ license.workspace = true
 # docs/dev/architecture/plugin-host.md. Slice plan:
 # docs/dev/operations/slice-plans/plugin-host.md.
 #
-# PH7.0 (this slice) is the scaffold: the wasmtime engine + the host side
-# of `wasmtime::component::bindgen!` against the `plugin` lifecycle world
-# (../../wit), and a `PluginHost` that compiles + instantiates a component
-# and calls its `activate` / `deactivate` exports. No WASI view is wired
-# yet -- the capability model (PH7.2) builds each Store's WASI grant -- so
-# the scaffold depends on `wasmtime` alone. The async ABI, Store-per-plugin
-# tasks, fuel, and the on-disk module cache land in PH7.1.
+# PH7.0 scaffolded the engine + `bindgen!` + compile/instantiate. PH7.1a
+# adds the async runtime core: async lifecycle exports, per-call fuel + epoch
+# budgets, and a background epoch-ticker. The lib owns no async runtime --
+# methods are `async fn`, so the caller (the editor's multi-thread pool)
+# drives them; `tokio` is a dev-dependency only, for the tests. No WASI view
+# yet (PH7.2); on-disk module cache + lazy instantiation land in PH7.1b.
 
 [dependencies]
 # The runtime + Component Model + Cranelift AOT. Default features carry the
@@ -29,11 +28,14 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
-# Assembles the hand-written no-op lifecycle component (the degenerate
-# `init.rs`) from WebAssembly Text to component bytes inside the tests --
-# no wasm32-wasip2 target or separate guest build for the scaffold.
+# Assembles the hand-written lifecycle components (no-op / busy / spin) from
+# WebAssembly Text to component bytes inside the tests -- no wasm32-wasip2
+# target or separate guest build for the scaffold.
 wat = { workspace = true }
 criterion = { workspace = true }
+# The tests drive the async lifecycle exports and exercise parallelism /
+# off-actor-thread execution, so they own the runtime (the lib does not).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [[bench]]
 name = "instantiate"

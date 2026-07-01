@@ -39,24 +39,33 @@ pure library + unit tests.
   never a hard error.
 
 ### DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard`  📝
-Register `dashboard-mode` (major): `ReadOnly`, `NoFile`, `Number=false`,
-`signcolumn=no`, dismiss-on-Esc, `<CR>` link-follow reusing the help-link
-mechanism (`crates/lattice-help`). Add `Editor`-generic-only wiring: create the
-synthetic `*dashboard*` Document via `ensure_named_document`
-(`name="*dashboard*"`, `listed:false`), compose **body sections** (§6) into rope
-content with `Style::Link` `ExtraHighlights` link spans. Register `:dashboard`
-as a mode-contributed ActionId + handler closure (ensure + compose-if-stale +
-activate). Keymap at `KeymapLayer::MajorMode("dashboard-mode")`. Branding block
-is a plain-text placeholder here (styled in DB.4).
-- *paramount:* #3 (a buffer, reached by `:dashboard` / `:b *dashboard*` / `:ls`,
-  read-only enforced at the dispatcher Insert/operator path); mode-ownership
-  (zero `Editor::do_dashboard`, zero new host `Action` variant).
+Realized as Option C' (design §9.2). Add `BufferKind::Dashboard` (parallel to
+`Messages`; regular-buffer parity). Register `dashboard-mode` (major,
+`target_buffer_kind = Dashboard`), and register **help-mode as an auto-activated
+companion minor** for the Dashboard kind
+(`auto_activated_minors_for_buffer_kind`) so the buffer inherits
+`ReadOnly`/`Wrap`/`NoFile`/`Number=false`/`signcolumn=no` + invocation routing.
+**De-kind link-follow:** change `Action::FollowLink` + the `do_help_follow_link`
+guard from `BufferKind::Help` to "help-mode active on the target (popup/active)
+buffer" (`active_modes…has_minor(help-mode)`) — completes help-mode's documented
+decoupling, help buffers unchanged. `:dashboard` = `Effect::OpenDashboard` +
+`Editor::do_open_dashboard` (lifecycle residue mirroring `:messages`); the
+applier reads config, composes via the crate-owned `DashboardRegistry` service,
+builds a `HelpContent` from the fragments (body links via help-link markup),
+creates the buffer via `register_help_document`-style seeding, and activates it.
+Branding block is a plain-text placeholder here (styled in DB.4).
+- *paramount:* #3 (a buffer reached by `:dashboard` / `:b *dashboard*` / `:ls`,
+  read-only via help-mode option contribution); mode-ownership (crate owns
+  mode/keymap/registry/composition/config; host residue is one lifecycle
+  effect + applier + a generic kind-branch removal, not mode-surface).
 - *test:* `:dashboard` opens the buffer; `:b *dashboard*` resolves; read-only
   invariants (Insert/operators inert, never dirty, `:q` no prompt, excluded from
   modified set, `listed:false` skipped by `:bn`/`:bp` but reached by `:b`/`:ls`);
   `<CR>` on a `cmd:`/`topic:`/`url:` span fires the target; Esc dismisses;
-  regular-buffer parity (`multibuffer_is_a_regular_buffer.rs` shape).
-- *doc:* design §6, §9.
+  **help-buffer follow-link regression** (still works after de-kinding); a
+  Dashboard buffer without help-mode does not follow; regular-buffer parity
+  (`multibuffer_is_a_regular_buffer.rs` shape).
+- *doc:* design §6, §9, §9.2.
 - *error handling:* `url:` with no configured opener ⇒ log + skip, never panic.
 
 ### DB.3 — `dashboard.*` theme elements  📝

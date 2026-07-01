@@ -299,9 +299,13 @@ falls back to section composition — never a panic, never an empty page.
 
 ## 9. Command & buffer surface
 
-- **`:dashboard`** — registered by the mode (ActionId + handler closure), not
-  the host. Ensures + composes + activates `*dashboard*`. Dashed, namespaced;
-  no invented short alias (short slots are reserved).
+- **`:dashboard`** — a `dashboard`-namespaced ex-command whose `apply` returns
+  the lifecycle effect `Effect::OpenDashboard`, handled host-side by
+  `do_open_dashboard` (ensure + compose + activate). This is the same sanctioned
+  lifecycle-open residue `:messages`→`OpenMessages` and `:diff`→`DiffOpen` use —
+  buffer creation mutates `&mut Editor`, which a mode crate cannot hold, so the
+  *applier* is the host boundary. The *content* is built entirely in the crate
+  (§9.2). Dashed, namespaced; no invented short alias (short slots are reserved).
 - **`:b *dashboard*`** — resolves via `BufferRegistry::by_name`, identical to
   `*messages*`. The buffer carries `listed:false`, so `:bn`/`:bp` skip it while
   `:b`/`:ls` reach it.
@@ -309,26 +313,68 @@ falls back to section composition — never a panic, never an empty page.
   buffer is `*dashboard*` instead of an empty scratch document. With a file
   arg, the file opens directly and the dashboard is merely reachable on demand.
 
+### 9.2 Buffer realization + link-follow (Option C')
+
+The `*dashboard*` buffer is `BufferKind::Dashboard` (parallel to `Messages`),
+read-only, flowing through the same Document code paths — no kind-specific
+render/motion/scroll branch. `dashboard-mode` is its **major** mode (identity,
+`target_buffer_kind = Dashboard`, the `dashboard.*` theme elements in §4, the
+branding provider in §5). It does **not** re-declare read-only options: instead
+**help-mode auto-activates as a companion minor** (registered in
+`auto_activated_minors_for_buffer_kind(Dashboard)`), so the buffer inherits
+help-mode's `ReadOnly`/`Wrap`/`NoFile`/`Number=false`/`signcolumn=no` +
+invocation routing, and its links follow.
+
+Link-follow reuses the help machinery, decoupled from the buffer *kind*. The
+host's `Action::FollowLink` and the `do_help_follow_link` guard change from
+`BufferKind::Help` to the **property "help-mode is active on the target (popup
+or active) buffer"** — `active_modes.get(id).has_minor(help-mode)`. This
+completes the decoupling help-mode's own module docstring already documents
+("gated on this minor being active") and is a strict generalisation: help
+buffers behave identically, and any buffer with help-mode active (the dashboard)
+now follows links. The per-buffer `HelpLinks` local remains the *data* the
+handler reads to find the link under the cursor — help-mode is the *authority*
+for whether follow is enabled, the local is not. Content + link metadata are
+seeded via `register_help_document`/`seed_help_metadata_locals`
+(reusing `lattice_help::link_highlights`), from a `HelpContent` the crate builds
+from the composed `DashboardFragment`s.
+
 ### 9.1 Mode-ownership of the startup trigger
 
-No `ensure_dashboard_buffer` / `do_dashboard` on `App` / `Editor`. Boot
-publishes a generic **`Startup { opened_file: Option<PathBuf> }`** event (or a
-`StartupContext` service). The dashboard mode's `install(&mut boot)` registers a
-subscription: on `Startup`, if `opened_file.is_none() && dashboard.enabled`, it
-creates the buffer through the generic `BufferStore` service, composes, and
-requests activation via the generic activate-buffer signal. Creation, content,
-and activation-decision all live in `lattice-dashboard`; the host contributes
-only generic primitives. **Acid test:** landing this crate requires zero
-`Editor::` method additions in `lattice-host` and zero new host `Action`
-variants.
+Boot publishes a generic **`Startup { opened_file: Option<PathBuf> }`** event
+(or a `StartupContext` service). The dashboard mode's `install(&mut boot)`
+registers a subscription: on `Startup`, if `opened_file.is_none() &&
+dashboard.enabled`, it emits the *same* `Effect::OpenDashboard` the `:dashboard`
+command emits — one applier, two triggers. The activation-decision (no file +
+enabled) and all content live in `lattice-dashboard`.
+
+**Where the host boundary honestly sits.** The crate owns the mode, its keymap,
+its `dashboard.*` theme elements, the section registry, composition, and config
+— zero `Editor::` methods for *that* surface, zero new host `Action` variants
+(`FollowLink` already exists; it is only de-kinded). The irreducible host
+residue is exactly what every synthetic-buffer subsystem carries: one lifecycle
+effect (`Effect::OpenDashboard`) + its applier (`do_open_dashboard`), because
+buffer creation mutates `&mut Editor`. This mirrors `:messages`/`:diff`; it is
+the sanctioned boundary, not a mode-surface leak. (A future generic
+`Effect::ActivateNamedBuffer` could retire the per-feature appliers across
+messages/diff/dashboard alike — noted as a separate generalisation, not taken
+here.)
 
 ## 10. Rejected alternatives
 
-- **Reuse the Help buffer / help-mode (markdown major).** Markdown tree-sitter
-  colouring fights the custom `dashboard.*` theme roles (two systems colouring
-  the same spans). The dashboard is a distinct content-type identity and
-  warrants its own major mode. *(Heuristic #1: genuinely-better long-term fit,
-  not novelty — the conflict is concrete.)*
+- **Make the dashboard a Help-kind buffer with markdown as the major
+  (help-mode's own shape).** Rejected as the *identity*: markdown tree-sitter
+  colouring fights the custom `dashboard.*` theme roles, and the buffer loses a
+  distinct `:ls` identity. The chosen shape (§9.2) instead keeps a `Dashboard`
+  major and reuses help-mode as a *companion minor* — help-mode's behaviour
+  (read-only, follow, dismiss) without help-mode's markdown major.
+  *(Heuristic #1: genuinely-better long-term fit — reuse the behaviour, not the
+  identity.)*
+- **Gate link-follow on the `HelpLinks` local instead of on help-mode.**
+  Rejected: help-mode *owns* follow behaviour (its docstring says so), so its
+  presence is the authority; a data local is not. Gating on the local would leak
+  follow to any buffer that ever carries link data. The local stays the *data*,
+  help-mode the *gate* (§9.2).
 - **Static markdown-file dashboard only.** Cannot carry plugin-contributed
   sections; the section registry is the stated requirement. *(Paramount #2.)*
 - **WASM-init contributes the content.** Static branding is *content*, not
@@ -343,10 +389,10 @@ variants.
   attribute only when a second consumer appears.
 - **Per-section `dashboard.section.<id>.enabled` booleans.** Cannot express
   order; the ordered list subsumes it.
-- **New `BufferKind::Dashboard` with kind-specific render logic.** A
-  `Dashboard` kind may exist for identity/labelling (parallel to `Messages`),
-  but it must flow through the same Document code paths — behaviour comes from
-  `dashboard-mode`, never a `match kind { Dashboard => … }` in
+- **Kind-specific render logic for `BufferKind::Dashboard`.** The `Dashboard`
+  kind exists for identity/labelling (parallel to `Messages`), but it must flow
+  through the same Document code paths — behaviour comes from `dashboard-mode`
+  and property-gated follow (§9.2), never a `match kind { Dashboard => … }` in
   render/motion/scroll. Must pass the regular-buffer parity test
   (`multibuffer_is_a_regular_buffer.rs` shape).
 
@@ -384,7 +430,9 @@ variants.
 - **Regular-buffer parity** — passes the `multibuffer_is_a_regular_buffer.rs`
   shape: motions/scroll/cursor identical to a Document.
 - **Link-follow** — `<CR>` on a `cmd:` / `topic:` / `url:` span fires the
-  target; `url:` with no opener logs + skips; Esc dismisses.
+  target; `url:` with no opener logs + skips; Esc dismisses. Regression: help
+  buffers still follow after the gate is de-kinded to help-mode-active; a
+  Dashboard buffer *without* help-mode active does not follow.
 - **Theme** — `dashboard.*` registered under `ElementOwner::Mode`; a theme
   override changes the rendered colour; default resolves to the brand colours.
 - **Branding** — nerd-font vs BMP-block art are the same cell width; toggle

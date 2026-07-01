@@ -2357,7 +2357,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             | BufferKind::Oil
             | BufferKind::Terminal
             | BufferKind::Messages
-            | BufferKind::Multibuffer => {}
+            | BufferKind::Multibuffer
+            // Dashboard is a persistent pane buffer, not a popup — Esc is
+            // inert here (like `*messages*`); there is no overlay to pop.
+            | BufferKind::Dashboard => {}
         },
         // Open the command picker (`:` / M-x). Editor::open_picker
         // handles source lookup + async init; renderer signals flow
@@ -2557,7 +2560,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 let signals = editor.do_file_tree_follow();
                 _out.renderer_signals.extend(signals);
             }
-            BufferKind::Help => {
+            // Dashboard groups with Help: same read-only, link-bearing,
+            // help-style follow behaviour (dashboard.md §9.2). Its HelpLinks
+            // local is seeded at creation; do_help_follow_link reads it by id.
+            BufferKind::Help | BufferKind::Dashboard => {
                 // 2026-05-27: hoisted from lattice-ui-tui app layer
                 // so the GPUI peer reaches the same dispatch.
                 editor.do_help_follow_link(_out);
@@ -5802,7 +5808,9 @@ impl Editor {
             | BufferKind::Oil
             | BufferKind::Terminal
             | BufferKind::Messages
-            | BufferKind::Multibuffer => self.pane_tree.active().buffer_id,
+            | BufferKind::Multibuffer
+            // Dashboard is an in-pane rope-backed buffer (like Messages).
+            | BufferKind::Dashboard => self.pane_tree.active().buffer_id,
         }
     }
 
@@ -5843,9 +5851,12 @@ impl Editor {
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             // `*messages*` shares Document storage; `self.document`
             // points at it when activated through `activate_document`.
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
-                self.document.snapshot().buffer.clone()
-            }
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            // Dashboard shares Document storage; activate_document points
+            // self.document at it.
+            | BufferKind::Dashboard => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
@@ -5878,7 +5889,10 @@ impl Editor {
     /// file-tree / oil.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
         match self.active_buffer {
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => self.cursor,
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            | BufferKind::Dashboard => self.cursor,
             BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
@@ -18733,7 +18747,8 @@ impl Editor {
                 | BufferKind::Oil
                 | BufferKind::Terminal
                 | BufferKind::Messages
-                | BufferKind::Multibuffer => self.buffers.contains(e.buffer_id),
+                | BufferKind::Multibuffer
+                | BufferKind::Dashboard => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
@@ -18762,10 +18777,13 @@ impl Editor {
         self.position_history_cursor = idx;
         let entry = self.position_history[idx];
         match entry.buffer {
-            // Messages buffers share the activate_document path
-            // (rope-backed); the kind tag is preserved via
+            // Messages + Dashboard buffers share the activate_document
+            // path (rope-backed); the kind tag is preserved via
             // self.active_buffer set inside activate_buffer.
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            | BufferKind::Dashboard => {
                 if self.buffers.contains_document(entry.buffer_id) {
                     let _ = self.activate_document(entry.buffer_id);
                     self.cursor = entry.position;
@@ -25599,6 +25617,13 @@ impl Editor {
                         id.0
                     ));
                 }
+                BufferKind::Dashboard => {
+                    let label = row.name.clone().unwrap_or_else(|| "*dashboard*".to_string());
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} dash     {label}",
+                        id.0
+                    ));
+                }
             }
         }
         lattice_help::HelpContent::from_lines("buffers", lines)
@@ -26471,9 +26496,12 @@ impl Editor {
                     o.scroll = scroll as usize;
                 });
             }
-            // Document + Messages share the same hot-path stash
-            // (cursor/scroll captured on the active pane below).
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {}
+            // Document + Messages + Dashboard share the same hot-path
+            // stash (cursor/scroll captured on the active pane below).
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            | BufferKind::Dashboard => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
             // introduces a scrollback-cursor model that may
@@ -26623,9 +26651,12 @@ impl Editor {
             // same activation pipeline; `activate_document` reads
             // the kind from the registry and propagates it onto
             // `self.active_buffer`.
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer => {
-                self.activate_document(id)
-            }
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            // Dashboard is rope-backed and activates through the same
+            // Document pipeline (dashboard.md §9.2).
+            | BufferKind::Dashboard => self.activate_document(id),
             BufferKind::FileTree => {
                 self.activate_file_tree(id);
                 false
@@ -27747,6 +27778,13 @@ pub fn raw_buffer_candidates(
                     format!("mb{active_marker}"),
                 )
             }
+            BufferData::Dashboard(_) => {
+                let label = entry.name.clone().unwrap_or_else(|| "*dashboard*".to_string());
+                (
+                    format!("#{:<3} {label}", id.0),
+                    format!("dash{active_marker}"),
+                )
+            }
         };
         rows.push((id, listed, body, kind_label));
     });
@@ -27884,6 +27922,13 @@ pub fn picker_buffer_entry(
                 .clone()
                 .unwrap_or_else(|| "*multibuffer*".to_string());
             ("mb".to_string(), None, title, false)
+        }
+        BufferData::Dashboard(_) => {
+            let title = entry
+                .name
+                .clone()
+                .unwrap_or_else(|| "*dashboard*".to_string());
+            ("dash".to_string(), None, title, false)
         }
     };
     lattice_picker::BufferEntry {

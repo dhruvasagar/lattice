@@ -3733,6 +3733,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-dashboard"
+version = "0.1.0"
+dependencies = [
+ "lattice-config",
+ "tracing",
+]
+
+[[package]]
 name = "lattice-diff"
 version = "0.1.0"
 dependencies = [

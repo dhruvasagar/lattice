@@ -122,6 +122,7 @@ impl BufferEntry {
             BufferData::Terminal(_) => BufferKind::Terminal,
             BufferData::Messages(_) => BufferKind::Messages,
             BufferData::Multibuffer(_) => BufferKind::Multibuffer,
+            BufferData::Dashboard(_) => BufferKind::Dashboard,
         }
     }
 
@@ -136,7 +137,8 @@ impl BufferEntry {
             BufferData::Document(d)
             | BufferData::Messages(d)
             | BufferData::Multibuffer(d)
-            | BufferData::Help(d) => Some(d),
+            | BufferData::Help(d)
+            | BufferData::Dashboard(d) => Some(d),
             _ => None,
         }
     }
@@ -146,7 +148,8 @@ impl BufferEntry {
             BufferData::Document(d)
             | BufferData::Messages(d)
             | BufferData::Multibuffer(d)
-            | BufferData::Help(d) => Some(d),
+            | BufferData::Help(d)
+            | BufferData::Dashboard(d) => Some(d),
             _ => None,
         }
     }
@@ -238,6 +241,13 @@ pub enum BufferData {
     /// `MultibufferMode` (M.2.b.2) is the major mode; H.3's
     /// `Event::BufferOpened` dispatch activates it.
     Multibuffer(DocumentEntry),
+    /// The `*dashboard*` launch page (DB.2). Storage is identical to
+    /// [`BufferData::Document`] (same [`DocumentEntry`]); the discriminator
+    /// exists so `:ls` / introspection tell the dashboard apart from a file,
+    /// and so the follow / dismiss gates group it with help-style buffers.
+    /// `dashboard-mode` is the major mode; it contributes `ReadOnly` +
+    /// `NoFile`. See `docs/dev/architecture/dashboard.md` §9.2.
+    Dashboard(DocumentEntry),
 }
 
 #[derive(Debug, Default)]

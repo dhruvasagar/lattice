@@ -273,12 +273,15 @@ pub fn major_mode_id_for_buffer_kind(registry: &ModeRegistry, kind: BufferKind) 
 pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
     match kind {
         BufferKind::Help => Some(HelpMode::mode_id()),
+        // Dashboard's major (`dashboard-mode`) carries its own full
+        // contribution set (read-only, gutterless); no default minor.
         BufferKind::Document
         | BufferKind::FileTree
         | BufferKind::Oil
         | BufferKind::Terminal
         | BufferKind::Messages
-        | BufferKind::Multibuffer => None,
+        | BufferKind::Multibuffer
+        | BufferKind::Dashboard => None,
     }
 }
 
@@ -322,7 +325,8 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
         | BufferKind::Oil
         | BufferKind::Terminal
         | BufferKind::Messages
-        | BufferKind::Multibuffer => Vec::new(),
+        | BufferKind::Multibuffer
+        | BufferKind::Dashboard => Vec::new(),
     }
 }
 

@@ -123,6 +123,24 @@ fn dashboard_seeds_help_links_for_follow() {
 }
 
 #[test]
+fn dashboard_activates_help_mode_and_is_gutterless() {
+    let mut editor = boot();
+    editor.do_open_dashboard();
+    let id = editor.buffers.by_name("*dashboard*").unwrap();
+
+    // help-mode is a companion minor (its good defaults: read-only, wrap,
+    // no-file, gutterless).
+    let has_help = editor
+        .active_modes
+        .get(&id)
+        .map(|m| m.has_minor(lattice_mode::HelpMode::mode_id()))
+        .unwrap_or(false);
+    assert!(has_help, "help-mode should be active on the dashboard");
+    assert!(!editor.option_cache.show_line_numbers, "no line numbers");
+    assert!(!editor.option_cache.sign_column, "no signcolumn");
+}
+
+#[test]
 fn dashboard_registers_theme_elements() {
     let mut editor = boot();
     editor.do_open_dashboard();

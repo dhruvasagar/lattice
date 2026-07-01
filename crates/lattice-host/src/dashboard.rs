@@ -44,11 +44,21 @@ impl Editor {
         };
         // DB.4: (re-)register the branding virtual-row block for this buffer.
         self.register_dashboard_branding(id);
-        if self.activate_buffer(id) {
+        let signals = if self.activate_buffer(id) {
             self.activate_buffer_state()
         } else {
             Vec::new()
-        }
+        };
+        // Activate help-mode as a companion minor for its good defaults —
+        // read-only, wrap, no-file, gutterless (no line numbers / signcolumn).
+        // Done after activate_buffer_state so its major re-activation doesn't
+        // clobber the minor; then recompute so the renderer's option cache
+        // reflects the gutterless treatment.
+        use lattice_mode::ModeActivator;
+        self.activate_minor_by_id(id, lattice_mode::HelpMode::mode_id());
+        self.recompute_options_for_buffer(id);
+        self.rebuild_option_cache();
+        signals
     }
 
     /// DB.4: register the branding virtual-row provider for the dashboard

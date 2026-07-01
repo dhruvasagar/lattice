@@ -501,6 +501,11 @@ impl Editor {
         // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
         // `lattice_multibuffer::install` for the full rationale.
         lattice_multibuffer::install(&mut boot);
+        // DB.2: dashboard subsystem — registers `dashboard-mode` (major), the
+        // `:dashboard` ex-command (returns `Effect::OpenDashboard`, applied by
+        // `Editor::do_open_dashboard`), and the built-in `DashboardRegistry`
+        // service. See `lattice_dashboard::install` + dashboard.md §9.
+        lattice_dashboard::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
         // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the

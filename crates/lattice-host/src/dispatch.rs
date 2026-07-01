@@ -2618,6 +2618,12 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
 pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut DispatchOutcome) {
     match effect {
         Effect::None => {}
+        // DB.2: open (or re-compose + activate) the *dashboard* launch
+        // page. Applied here in the renderer-neutral host path (like
+        // DiffOpen) so both TUI and GPUI peers reach it uniformly.
+        Effect::OpenDashboard => {
+            out.renderer_signals.extend(editor.do_open_dashboard());
+        }
         Effect::RecordJump => {
             // M.10.3 (2026-06-03): record the current cursor +
             // active buffer onto the position-history ring as an
@@ -28014,6 +28020,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenMessages
+        | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
@@ -28134,6 +28141,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenMessages
+        | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus

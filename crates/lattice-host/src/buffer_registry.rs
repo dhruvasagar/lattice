@@ -478,7 +478,12 @@ impl BufferRegistry {
             .map(|e| {
                 matches!(
                     e.data,
-                    BufferData::Document(_) | BufferData::Messages(_) | BufferData::Multibuffer(_)
+                    BufferData::Document(_)
+                        | BufferData::Messages(_)
+                        | BufferData::Multibuffer(_)
+                        // DB.2: Dashboard is document-backed and activates
+                        // through the same pipeline (dashboard.md §9.2).
+                        | BufferData::Dashboard(_)
                 )
             })
             .unwrap_or(false)

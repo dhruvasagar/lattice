@@ -29,6 +29,10 @@ license.workspace = true
 # from here for backward compat.
 lattice-core = { path = "../lattice-core" }
 lattice-help = { path = "../lattice-help" }
+# DB.2: host links lattice-dashboard for the mode id + registry service +
+# install (Phase-B). The host owns fragment -> HelpContent conversion +
+# BufferData::Dashboard creation (it owns the help machinery).
+lattice-dashboard = { path = "../lattice-dashboard" }
 lattice-file-tree = { path = "../lattice-file-tree" }
 lattice-oil = { path = "../lattice-oil" }
 # Phase 5.2 second wave: actions + excommand. Pure renderer-

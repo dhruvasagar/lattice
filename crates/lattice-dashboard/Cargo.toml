@@ -17,4 +17,13 @@ license.workspace = true
 
 [dependencies]
 lattice-config = { path = "../lattice-config" }
+# DB.2 editor wiring: the major mode + install (registers the mode,
+# the :dashboard ex-command returning Effect::OpenDashboard, and the
+# DashboardRegistry service). Deps point DOWN the graph; the host links
+# this crate in the Phase-B install list. The host owns the fragment ->
+# HelpContent conversion + buffer creation (it owns the help machinery),
+# so lattice-dashboard stays free of lattice-help.
+lattice-core = { path = "../lattice-core" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-grammar = { path = "../lattice-grammar" }
 tracing = { workspace = true }

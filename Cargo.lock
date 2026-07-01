@@ -3737,6 +3737,9 @@ name = "lattice-dashboard"
 version = "0.1.0"
 dependencies = [
  "lattice-config",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-mode",
  "tracing",
 ]
 
@@ -3813,6 +3816,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-dashboard",
  "lattice-diff",
  "lattice-file-tree",
  "lattice-grammar",

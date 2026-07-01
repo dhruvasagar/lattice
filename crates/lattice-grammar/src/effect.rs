@@ -518,6 +518,12 @@ pub enum Effect {
     /// of every echo / minibuffer notification; live-tails as
     /// new entries arrive via the typed event bus.
     OpenMessages,
+    /// `:dashboard` -- open (or re-compose + activate) the
+    /// `*dashboard*` launch page. The applier reads config, composes
+    /// the enabled sections via the crate-owned `DashboardRegistry`
+    /// service, and seeds a read-only `BufferKind::Dashboard` buffer.
+    /// See `docs/dev/architecture/dashboard.md` §9.
+    OpenDashboard,
     /// `:lsp-trace <server>` -- pure toggle of JSON-RPC tracing
     /// for the server. The trace buffer is opened separately via
     /// `:lsp-trace-log <server>` so peeking mid-stream doesn't

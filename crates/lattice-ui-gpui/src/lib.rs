@@ -1085,6 +1085,8 @@ impl GpuiApp {
             | Effect::DescribeEvent { .. }
             | Effect::DescribeDiff
             | Effect::DiffOpen
+            // DB.2: host-applied via handle_effect; peer no-op.
+            | Effect::OpenDashboard
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }

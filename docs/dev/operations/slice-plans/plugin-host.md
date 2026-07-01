@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (decomposed into a–d, PH7.3a foundation landed). Design fragment:
+**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b next). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -152,19 +152,26 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
 - **Decomposed (2026-07-01)** into four independently-landable sub-slices (the slice bundled the
   whole of §4; each reuses the conventions from PH7.3a):
 
-  #### PH7.3a — Boundary conventions + small-type round-trips 🚧 (foundation landed 2026-07-01)
+  #### PH7.3a — Boundary conventions + small-type round-trips ✅ (2026-07-01)
   The `WitBoundary` adapter trait (`to_wit`/`from_wit -> Result<_, String>` — the WIT
   `result<_,string>` convention in one place); a shared `wit/types.wit` `types` interface for the
   owned mirror records; `bindgen!` wiring (the `plugin` world `use types.{…}` so the host gets
-  generated Rust mirrors at the crate root — **proven**); round-trips for `Args`, `RawCandidate`,
-  `PickerAcceptOutcome`.
-  - **Landed:** `wit/types.wit` (`args`/`arg-value`), `boundary.rs` (`WitBoundary` + `Args`/`ArgValue`
-    round-trip, 3 tests green). Nested `ArgValue::Invocation` is a typed error until the command
-    mirror (§4.1) — it does not cross lossily.
-  - **Remaining:** `raw-candidate` + `picker-accept-outcome` WIT records + conversions (the
-    non-serde `RawCandidate` fields — `accept_action`/`annotations`/`display_spans` — do NOT cross;
-    crossable core is `text`/`display`/`kind`/`data`); the **< 500ns p99 typed-call bench** (the
-    headline §7 gate).
+  generated Rust mirrors — types `use`d in the world surface at the crate root, transitively-
+  referenced payload records at `crate::lattice::plugin_host::types::*`); round-trips for `Args`,
+  `RawCandidate`, `PickerAcceptOutcome`.
+  - **Landed:** `wit/types.wit` (`args`/`arg-value` + `candidate-kind`/`candidate-data` (+ payload
+    records) + `raw-candidate` + `picker-accept-outcome` (+ `jump-target`/`location`/`command-ref`/
+    `lsp-code-action-ref`)); `boundary.rs` (`WitBoundary` + impls for `Args`/`ArgValue`,
+    `CandidateKind`/`CandidateData`/`RawCandidate`, `PickerAcceptOutcome`); `benches/boundary.rs`
+    (conversion microbench, ~21–47ns off-box). 7 boundary tests green; deps `lattice-picker` +
+    `lattice-completion` added.
+  - **Typed-error (not lossy) boundaries:** nested `ArgValue::Invocation` (§4.1) and
+    `CandidateData::Command` (recursive `SourceLocation`, §4.4) cross only with the command /
+    provenance mirror — until then a `WitBoundary` `Err`. Non-serde `RawCandidate` fields
+    (`accept_action`/`annotations`/`display_spans`) do NOT cross (crossable core =
+    `text`/`display`/`source`/`kind`/`data`); a non-UTF-8 path is a typed error, never lossy.
+  - **Deferred:** the headline **< 500ns p99 end-to-end typed-call bench** lands at PH7.3d, where an
+    actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
 
   #### PH7.3b — The `Effect` variant mirror 📝
   Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,

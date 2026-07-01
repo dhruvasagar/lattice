@@ -36,4 +36,123 @@ interface types {
         bytes(list<u8>),
         %list(list<arg-value>),
     }
+
+    /// Mirrors `lattice_completion::candidate::CandidateKind`.
+    variant candidate-kind {
+        command,
+        %option,
+        file,
+        directory,
+        pattern,
+        buffer,
+        register,
+        mark,
+        chord,
+        plain,
+        /// Plugin-defined kind; the u32 is the registered kind tag.
+        extension(u32),
+    }
+
+    /// Mirrors `lattice_completion::candidate::CandidateData`. The native
+    /// `Command { .., source: SourceLocation }` variant is intentionally
+    /// absent: `SourceLocation` is recursive (`DotRepeat(Box<Self>)`), which a
+    /// WIT variant cannot express directly, and command candidates are a
+    /// native-generator concern, not a plugin one. Crossing it is a typed
+    /// `WitBoundary` error until the provenance mirror lands — never lossy.
+    variant candidate-data {
+        file(candidate-file),
+        %option(candidate-option),
+        option-value(candidate-option-value),
+        chord(candidate-chord),
+        register(candidate-register),
+        mark(candidate-mark),
+        plain,
+        /// Plugin-defined arbitrary payload (the `Extension` hatch): the
+        /// `kind-id` routes to the registering plugin's annotator, which
+        /// decodes `payload`.
+        extension(candidate-extension),
+    }
+
+    record candidate-file {
+        path: string,
+        is-dir: bool,
+        size: option<u64>,
+    }
+    record candidate-option {
+        name: string,
+        current-value: string,
+        doc: string,
+    }
+    record candidate-option-value {
+        option-name: string,
+        value: string,
+        doc: string,
+    }
+    record candidate-chord {
+        chord: string,
+        mode-label: string,
+        doc: string,
+    }
+    record candidate-register {
+        name: char,
+        preview: string,
+    }
+    record candidate-mark {
+        name: char,
+        position: string,
+    }
+    record candidate-extension {
+        kind-id: u32,
+        payload: list<u8>,
+    }
+
+    /// Mirrors the crossable core of `lattice_completion::candidate::RawCandidate`.
+    /// The render-time / host-only fields (`accept_action`, `annotations`,
+    /// `display_spans`) are `#[serde(skip)]` and do NOT cross — they are
+    /// reconstructed host-side (§4.4). `source` is the optional source id.
+    record raw-candidate {
+        text: string,
+        display: string,
+        source: option<string>,
+        kind: candidate-kind,
+        data: candidate-data,
+    }
+
+    /// Mirrors `lattice_picker::outcome::PickerAcceptOutcome`. All flat pure
+    /// data; paths cross as strings; `invoke-command` reuses `args`.
+    variant picker-accept-outcome {
+        open-file(string),
+        switch-buffer(u32),
+        jump-in-buffer(jump-target),
+        jump-to-mark(char),
+        jump-to-location(location),
+        invoke-command(command-ref),
+        paste-register(char),
+        expand-snippet(string),
+        open-lsp-log(string),
+        open-lsp-trace-log(string),
+        apply-lsp-code-action(lsp-code-action-ref),
+        apply-lsp-completion(u32),
+        apply-colorscheme(string),
+        no-op,
+    }
+
+    record jump-target {
+        buffer-id: u32,
+        line: u32,
+        col: u32,
+    }
+    record location {
+        path: string,
+        line: u32,
+        col: u32,
+    }
+    record command-ref {
+        id: string,
+        args: args,
+    }
+    record lsp-code-action-ref {
+        handle: u64,
+        index: u32,
+    }
 }

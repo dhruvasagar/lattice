@@ -53,6 +53,11 @@ lattice-grammar = { path = "../lattice-grammar" }
 # (enforcement stays the mode-activation path; this slice only sizes the
 # manifest honestly per fragment §6).
 lattice-mode = { path = "../lattice-mode" }
+# PH7.3a boundary mirrors: `PickerAcceptOutcome` (lattice-picker) and
+# `RawCandidate` / `CandidateData` / `CandidateKind` (lattice-completion) are
+# among the exercised types the WIT mirror round-trips (fragment §4 exit).
+lattice-picker = { path = "../lattice-picker" }
+lattice-completion = { path = "../lattice-completion" }
 # PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
 # is skipped with a `warn!`, never a panic or a failed load.
 tracing = { workspace = true }
@@ -71,6 +76,10 @@ tempfile = { workspace = true }
 
 [[bench]]
 name = "instantiate"
+harness = false
+
+[[bench]]
+name = "boundary"
 harness = false
 
 [lints]

@@ -33,7 +33,7 @@ world plugin {
 	/// generated Rust mirrors to round-trip against (`boundary.rs`, PH7.3a).
 	/// They are not yet used by a lifecycle function signature; the `use`
 	/// alone makes `bindgen!` emit them.
-	use types.{args, arg-value};
+	use types.{args, arg-value, candidate-kind, candidate-data, raw-candidate, picker-accept-outcome};
 
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.

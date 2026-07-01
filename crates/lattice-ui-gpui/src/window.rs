@@ -1027,29 +1027,26 @@ impl EditorView {
         // Slice 3c.final.B-extension: paint_request cached on GpuiApp
         // at boot (no read_editor round-trip — wait-free Arc clone).
         //
-        // 2026-05-27 X1b extension: also drain pending LSP / event /
-        // mode-lifecycle results inside the bridge. Without this,
-        // an idle LSP response (e.g. the first `K` hover) fires
-        // paint_request.notify_one() but the resulting paint runs
-        // a render that never calls `run_tick_pending` (X1 moved
-        // it to the keystroke dispatch tail for perf), so the
-        // response sits in `pending_hover_rx` until the user
-        // presses another key. Draining here closes that gap
-        // while keeping the keystroke fast path's amortization.
+        // AW.3: this bridge is a PURE repaint forwarder — `paint_request`
+        // → `cx.notify()`. It no longer drains `run_tick_pending` itself.
+        // The editor actor's `async_landed` arm (`editor_actor.rs`) is the
+        // single, renderer-agnostic drain chokepoint: every async result
+        // (LSP action requests, picker init / live-query, event-bus
+        // arrivals, worker recomputes) fires `async_landed`, and the actor
+        // runs `run_tick_pending` + `publish_render_state` + fires
+        // `paint_request` ON THE ACTOR THREAD before this bridge ever wakes.
+        // So by the time we get here the result is already in the published
+        // `RenderState`; we only need to schedule a GPUI paint. This makes
+        // the GPUI peer a pure consumer of published state, exactly like the
+        // TUI's `Wake::Repaint` arm — the drain is no longer duplicated in a
+        // renderer-specific path. (Previously the bridge ran its own
+        // `run_tick_pending` to close the idle-hover gap; that gap is now
+        // closed uniformly by `async_landed` — see lsp-architecture §12.)
         let paint_request = app.paint_request.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;
-                if this
-                    .update(cx, |view, cx| {
-                        let signals = view.app.mutate_editor_with(|e| e.run_tick_pending());
-                        for signal in signals {
-                            view.app.handle_renderer_signal(signal);
-                        }
-                        cx.notify();
-                    })
-                    .is_err()
-                {
+                if this.update(cx, |_view, cx| cx.notify()).is_err() {
                     break;
                 }
             }

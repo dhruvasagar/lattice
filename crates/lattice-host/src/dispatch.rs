@@ -9363,16 +9363,20 @@ impl Editor {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let cancel = lattice_protocol::CancellationToken::new();
                 let cancel_clone = cancel.clone();
-                // Wake the event-driven loop once the grep result lands
-                // so it drains + repaints WITHOUT waiting for the next
-                // keystroke (mirrors the LSP-hover X1b fix). Without
-                // this, results sit invisible on an idle picker.
-                let paint_notify = self.paint_request.clone();
+                // AW.3: fire the single renderer-agnostic wake once the
+                // picker-init result lands so the actor drains
+                // `drain_pending_picker_init` + repaints in BOTH peers
+                // WITHOUT a keystroke. The previous `paint_request` clone
+                // only drained in GPUI (its paint bridge runs
+                // `run_tick_pending`); the TUI `Wake::Repaint` redraws
+                // without draining, so an idle picker's results stayed
+                // invisible until the next key. See lsp-architecture §12.
+                let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
                     let result = fut.await;
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result);
-                        paint_notify.notify_one();
+                        async_landed.notify_one();
                     }
                 });
                 self.pending_picker_init = Some(crate::state::PendingPickerInit {
@@ -16964,15 +16968,19 @@ impl Editor {
         // The event-driven loop has no timer wake of its own, so a
         // debounce deadline reached while the loop is parked would
         // never fire the re-query until the next keystroke. Schedule a
-        // one-shot wake after the quiet window: the loop ticks, and
+        // one-shot wake after the quiet window: the actor's
+        // `async_landed` arm ticks `run_tick_pending`, and
         // `drain_pending_live_picker_query`'s `now >= debounce_until`
         // gate fires exactly once (after the LATEST bump — earlier
         // wakes from a typing burst find the deadline still in the
-        // future and no-op). Mirrors the grep-result wake above.
-        let paint_notify = self.paint_request.clone();
+        // future and no-op; `fire_live_picker_query_changed` clears
+        // `debounce_until`, so an unrelated later wake can't re-fire).
+        // AW.3: `async_landed`, not `paint_request` — the latter only
+        // drains in GPUI's paint bridge; the TUI needs the actor arm.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             tokio::time::sleep(crate::state::LIVE_PICKER_DEBOUNCE).await;
-            paint_notify.notify_one();
+            async_landed.notify_one();
         });
     }
 
@@ -17471,14 +17479,17 @@ impl Editor {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let cancel = lattice_protocol::CancellationToken::new();
                 let cancel_clone = cancel.clone();
-                // Wake the loop when this live re-query resolves so the
-                // refreshed results paint without another keystroke.
-                let paint_notify = self.paint_request.clone();
+                // AW.3: wake the actor's `async_landed` arm when this live
+                // re-query resolves so `drain_inflight_live_picker_query`
+                // re-seats the refreshed results in BOTH peers without
+                // another keystroke (`paint_request` alone only drains in
+                // GPUI). See lsp-architecture §12.
+                let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
                     let result = fut.await;
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
-                        paint_notify.notify_one();
+                        async_landed.notify_one();
                     }
                 });
                 if let Some(state) = self.live_picker_query.as_mut() {

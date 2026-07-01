@@ -918,6 +918,18 @@ historically did not (see "the historical gap" below).
 > jump — fires `async_landed`, and the actor arm (which re-fires `paint_request`
 > when a `paint_revision` surface like the popup moves) drives both peers. The
 > wake is a **core** concern, not a renderer concern.
+>
+> This is not LSP-specific. The same rule fixed the **picker** paths
+> (`open_picker` init future, `fire_live_picker_query_changed` live re-query,
+> and the `bump_live_picker_debounce` *timer* wake), which had the identical
+> latent TUI bug (AW.3). Once every async drain-path fires `async_landed`, the
+> actor's `async_landed` arm is the **single** drain chokepoint, so the GPUI
+> paint bridge was simplified to a pure repaint forwarder (`paint_request` →
+> `cx.notify()`) — it no longer runs its own `run_tick_pending`. Both peers are
+> now pure consumers of published `RenderState`; the drain lives in exactly one
+> renderer-agnostic place. Workers (cells / overlay / virtual-rows) still fire
+> `paint_request` directly — that is correct: they publish their content
+> *before* firing and need only a repaint, not a channel drain.
 
 ### The historical gap (the bug L1 closes)
 

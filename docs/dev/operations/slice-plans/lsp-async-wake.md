@@ -101,40 +101,42 @@ setter).
   picker opens and the token is cancelled.
 - *doc:* AW.4 + §7 (cancellation) cross-ref.
 
-### AW.3 — GPUI paint-bridge unification (drop the renderer-specific drain)  ⛔ BLOCKED / rescoped
-**Original idea:** once AW.1 lands, the GPUI paint bridge's own
-`run_tick_pending` (`window.rs`, the "X1b extension") is redundant for LSP —
-the actor arm already drained + published + forwarded before firing
-`paint_request` — so simplify the bridge to just `cx.notify()`.
+### AW.3 — GPUI paint-bridge unification (drop the renderer-specific drain)  ✅
+**Landed in two steps (2026-07-01).**
 
-**Why it is BLOCKED (investigated 2026-07-01).** The bridge's
-`run_tick_pending` is **still load-bearing for non-LSP paint_request paths**.
-GPUI does NOT poll the actor's `signal_rx`; it obtains renderer signals only
-from its OWN `mutate_editor_with(|e| e.run_tick_pending())` calls (keystroke
-tail `lib.rs`, paint bridge `window.rs`). Several async paths still fire the
-renderer-specific `paint_request` clone rather than `async_landed` —
-notably the **live-picker query** pump (`fire_live_picker_query_changed` /
-`bump_live_picker_debounce`, drained by `drain_pending_live_picker_query`)
-and `open_picker`. Those rely on the GPUI bridge running `run_tick_pending`
-on the `paint_request` wake. Removing it would regress GPUI's live picker
-(and the TUI equivalent is already latent — same class as the AW.1 hover
-bug). So the bridge cannot be dropped until **all** remaining
-`paint_request`-only async paths are first converted to `async_landed`.
+**Prereq — convert the remaining non-LSP `paint_request` drain paths to
+`async_landed`.** The investigation found the GPUI paint bridge's own
+`run_tick_pending` was still load-bearing for three **picker** paths that
+fired the renderer-specific `paint_request` clone rather than `async_landed`:
+`open_picker` (init future), `fire_live_picker_query_changed` (live re-query
+future), and `bump_live_picker_debounce` (the debounce *timer* wake — its own
+comment noted "the event-driven loop has no timer wake of its own"). Same
+latent class as the AW.1 hover bug: they drained only in GPUI (its bridge ran
+`run_tick_pending`); the TUI `Wake::Repaint` redrew without draining, so an
+idle picker's results/re-query stalled until the next keystroke. All three now
+fire `async_landed`, so the actor arm drains `drain_pending_picker_init` /
+`drain_pending_live_picker_query` uniformly. No loop: `fire_live_picker_query_changed`
+clears `debounce_until` at entry, so `should_fire` goes false and an unrelated
+later wake can't re-fire.
 
-**Rescoped follow-up (separate slice, out of the LSP-async-wake scope):**
-1. Convert the picker `paint_request` paths (`fire_live_picker_query_changed`,
-   `bump_live_picker_debounce`, `open_picker`) to fire `async_landed`
-   (same fix as AW.1, applied to the picker subsystem).
-2. THEN drop the GPUI bridge's `run_tick_pending`, leaving `cx.notify()`.
-3. Requires **GPUI runtime testing** (`cargo run --features gui -- --gui`),
-   which the editing environment can't do — must be verified interactively.
+**Step 2 — drop the GPUI bridge's `run_tick_pending`.** With every async
+drain-path now firing `async_landed`, the actor's `async_landed` arm is the
+**single** drain chokepoint (runs `run_tick_pending` + `publish_render_state`
++ fires `paint_request` on the actor thread). Neither peer reads the actor's
+`signal_rx` in production — both render from published `RenderState` — and the
+now-correct TUI proves `RenderState` is sufficient for every async result.
+So the GPUI bridge is simplified to a **pure repaint forwarder**
+(`paint_request` → `cx.notify()`), matching the TUI's `Wake::Repaint` arm.
+The drain is no longer duplicated in a renderer-specific path.
 
-AW.1 already delivers the behavioral unification the directive asked for:
-`async_landed` is the single renderer-agnostic wake for every async LSP
-result, and hover no longer uses the renderer-specific `paint_request` clone.
-The GPUI bridge's residual `run_tick_pending` is now a redundant-but-harmless
-idempotent double-drain for LSP results (the actor arm already drained them),
-so leaving it in place is correct until the picker paths are converted.
+**Verification.** `lattice-host` lib 609/609, `lattice-ui-tui` lib 1523/1523,
+picker suite 9/9, integration 6/6; `lattice-ui-gpui --features window` and the
+default workspace build compile clean. The picker→`async_landed` conversion
+reuses the mechanism AW.1's tests already cover (async result → actor arm →
+off-keystroke drain), and the debounce-clear invariant is verified in code.
+**Recommended interactive check** (the editing environment can't run a GPU
+window): `cargo run --features gui -- --gui`, then confirm an idle `K` hover
+and an idle live-grep picker both surface results WITHOUT an extra keystroke.
 
 ### AW.4 — docs: §12 arrival-shapes correction + App::apply-tail audit  ✅
 Rewrite §12 "The three arrival shapes": add the missing **mpsc-channel
@@ -158,6 +160,18 @@ this tail; every async result also fires `async_landed`. Keep the tail
 ## Sequencing
 
 AW.1 → AW.2 (independent, can interleave) → AW.4/AW.5 (docs, after AW.1) →
-AW.3 (GPUI cleanup, after AW.1 + parity gate). AW.1 alone fixes issues
-#1/#3 for **both** peers via the actor arm; AW.3 is the code-level
-unification cleanup, not a behavioral fix.
+AW.3 (picker `paint_request` → `async_landed` conversion, then the GPUI
+paint-bridge simplification). AW.1 alone fixed issues #1/#3 for **both** peers
+via the actor arm; AW.3 also fixed the same latent bug in the **picker** paths
+(idle live-grep results/re-query stalling in the TUI) and made the actor arm
+the single drain chokepoint. **All slices landed.**
+
+## Status
+
+| Slice | State |
+|---|---|
+| AW.1 — `async_landed` on every channel-delivered LSP result | ✅ |
+| AW.2 — cancel position-anchored lookups on cursor move | ✅ |
+| AW.3 — picker paths → `async_landed` + GPUI bridge is a pure forwarder | ✅ (GPUI runtime check recommended) |
+| AW.4 — §12 docs + arrival-shapes correction | ✅ |
+| AW.5 — App::apply-tail audit conclusion | ✅ |

@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b) landed; PH7.2 next. Design fragment:
+**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅ landed; PH7.3 next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -104,16 +104,39 @@ model, PH7.3+, will trigger on first invocation).
   intact (paramount-#2/security + heuristic #1: less code, upstream-maintained invalidation).
   Fragment §3's manual-key text is superseded — see the note there.
 
-### PH7.2 — Capability & security model 📝
+### PH7.2 — Capability & security model ✅ (2026-07-01)
 Manifest parsing (declared `fs:*`/`net:*`/`proc:*` + editor `CapabilitySet`); build each
 Store's WASI view from its grant; per-plugin data dir mount; trust tiers (bundled pre-grant
 vs user-install consent); host-issued `SourceLayer::Plugin(id)` provenance stamping.
 - **Depends:** PH7.1.
-- **Exit:** a plugin without `fs:write` cannot write outside its data dir (denied at the WASI
-  layer, not by discipline); provenance on a plugin-registered command shows `Plugin(id)`.
-- **Artefacts:** bench = n/a (correctness slice); test = capability grant/deny matrix,
-  provenance non-forgeability; error = denied capability → plugin loads degraded + notification,
-  boot never fails.
+- **Exit:** ✅ (host-layer) a plugin's WASI view is built from exactly its grant — a no-`fs:write`
+  plugin's `Store` preopens only its data dir, so a path outside the grant is unreachable at the
+  WASI layer (WASI has no ambient authority); `LoadedPlugin::source_layer()` stamps `Plugin(id)`
+  from a host-issued, per-instance, guest-unforgeable id. **The guest-level end-to-end write-denied
+  proof is deferred to PH7.4** — it needs the real `wasm32-wasip2` guest (the toolchain PH7.0
+  deferred to that slice); PH7.2 proves the model at the host layer (grant computation, grant→preopen
+  mapping, provenance issuance), the WASI OS-enforcement itself resting on wasmtime's tested guarantee.
+- **What landed:** `manifest.rs` (`Capability` enum + `PluginManifest` TOML round-trip);
+  `capability.rs` (`TrustTier`, `grant()->GrantOutcome{grant,denied}`, `CapabilityGrant::preopens`,
+  `build_wasi_ctx`); `lib.rs` (`PluginState: WasiView`, `p2::add_to_linker_async`, `PluginId`
+  allocator, `PluginHost::{with_dirs,instantiate_plugin}`, `LoadedPlugin::{id,source_layer,grant,
+  denied_capabilities,data_dir}`). New deps: `wasmtime-wasi 46`, `serde`, `toml`, `lattice-grammar`,
+  `lattice-mode`, `tracing`.
+- **Decisions (locked with Dhruva 2026-07-01):**
+  - *Enforcement proof depth:* host-layer at PH7.2 + guest-level e2e at PH7.4 (respects the PH7.0
+    toolchain deferral; heuristic #1 — the WASI OS-enforcement is upstream's, we test our mapping).
+  - *Manifest form:* committed TOML format **and** typed `PluginManifest` (fragment §6 "ships a
+    manifest"); trust tier stays a host-supplied input, never a self-declared manifest field.
+  - *WASI enforcement scope = filesystem only.* `net:http`/`proc:spawn` ride the grant as metadata
+    for the capability-gated `host-services` seam (PH7.3+); wiring raw WASI sockets/subprocess for a
+    `net`/`proc` grant would be *broader* than intended, so `build_wasi_ctx` leaves them disabled.
+    (Refines fragment §6's "`wasi:filesystem`/`wasi:http` view" — see the §6 note there.)
+- **Artefacts:** bench = n/a (correctness slice); test = 8 unit (`manifest`/`capability` mods:
+  parse matrix + malformed rejection + grant/deny + preopen specs + graceful skip) + 6 integration
+  (`tests/capability.rs`: grant load + data-dir mount, no-grant reaches no fs, proc-spawn tier
+  matrix + surfaced denial, missing-prefix degrades, provenance uniqueness + `Plugin(id)` stamp,
+  editor caps); error = denied capability → `LoadedPlugin::denied_capabilities()` + plugin loads
+  degraded, missing/uncreatable data-dir or bad prefix → `warn!` + skip, never a panic or failed load.
 
 ### PH7.3 — Boundary primitives (the crux — §4 of the fragment) 📝
 The reusable adapter machinery every seam consumes: owned-snapshot projection (borrows →

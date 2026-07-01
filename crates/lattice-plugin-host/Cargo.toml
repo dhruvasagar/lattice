@@ -21,6 +21,11 @@ license.workspace = true
 # component-model + cranelift + wat stack; feature-trimming for build time
 # is a later optimization, not a scaffold concern.
 wasmtime = { workspace = true }
+# PH7.2: the per-plugin WASI (preview2) view. Each plugin's `Store` is built
+# with exactly its granted `wasi:filesystem`/`wasi:cli` capabilities, so a
+# plugin without an `fs:write` grant cannot reach a path outside its data dir
+# at the WASI layer -- enforced by the runtime, not by discipline.
+wasmtime-wasi = { workspace = true }
 # Typed host error surface (no panics on any path -- the four-artefact
 # graceful-error clause). `anyhow::Error` is wasmtime's error type; we carry
 # it as the `#[source]` of each stage-specific variant.
@@ -28,8 +33,29 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 # PH7.1b: cross-platform cache-dir resolution (XDG on Linux, Application
 # Support on macOS, LocalAppData on Windows) for the default on-disk module
-# cache location, `<cache>/lattice/plugin-cache/`.
+# cache location, `<cache>/lattice/plugin-cache/`. PH7.2 reuses it for the
+# default per-plugin data-dir base, `<data>/lattice/plugins/`.
 dirs = { workspace = true }
+# PH7.2: the plugin manifest is a committed TOML format (id + requested OS
+# capabilities + editor capabilities); `serde` derives the model, `toml`
+# parses the file. The Phase-8 plugin manager will discover + parse it; the
+# host consumes the already-parsed `PluginManifest`.
+serde = { workspace = true }
+toml = { workspace = true }
+# PH7.2 provenance: the host stamps `SourceLayer::Plugin(id)` for every plugin
+# contribution from its own ground truth (a plugin cannot forge provenance --
+# `source.rs` has no public `SourceLocation` setter). The numeric plugin id is
+# host-issued; this crate is the "plugin host bridge" `source.rs` names.
+lattice-grammar = { path = "../lattice-grammar" }
+# PH7.2 editor capabilities: the manifest's `editor_capabilities` parse into
+# the same `CapabilitySet` `Mode::required_capabilities` returns, so a
+# plugin-declared mode's capability requirements are typed from day one
+# (enforcement stays the mode-activation path; this slice only sizes the
+# manifest honestly per fragment §6).
+lattice-mode = { path = "../lattice-mode" }
+# PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
+# is skipped with a `warn!`, never a panic or a failed load.
+tracing = { workspace = true }
 
 [dev-dependencies]
 # Assembles the hand-written lifecycle components (no-op / busy / spin) from

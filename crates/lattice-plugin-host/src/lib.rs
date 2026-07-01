@@ -27,19 +27,48 @@
 //! (PH7.3+), that call is what a plugin's *first contribution invocation* will
 //! trigger.
 //!
-//! Still owned by later slices: the per-plugin WASI capability view (PH7.2);
-//! every contribution seam (PH7.3+). The first consumer of the `plugin`
-//! lifecycle world is the user's `init.rs`; the no-op component the tests
-//! instantiate is the degenerate `init.rs`.
+//! **PH7.2 — capability & security model.** Each plugin now instantiates
+//! under a [`CapabilityGrant`] computed from its [`PluginManifest`] and
+//! [`TrustTier`] (fragment §6). The grant is *enforced*, not advisory: each
+//! [`Store`]'s WASI view is built with exactly its granted filesystem preopens
+//! plus a private per-plugin data dir, so a plugin without an `fs:write` grant
+//! cannot reach a path outside its data dir at the WASI layer (WASI has no
+//! ambient authority). `net:http` / `proc:spawn` ride the grant as metadata for
+//! the capability-gated `host-services` seam (PH7.3+); they are deliberately
+//! *not* wired into the raw WASI view (see [`capability`]). The host also
+//! issues each plugin a monotonic [`PluginId`] and stamps
+//! [`SourceLayer::Plugin`] provenance from its own ground truth — a plugin
+//! cannot forge provenance (`lattice_grammar::source` has no public
+//! `SourceLocation` setter). See [`manifest`] and [`capability`].
+//!
+//! The end-to-end "a guest attempts a write and WASI denies it" proof lands at
+//! PH7.4 with the real `wasm32-wasip2` `fuzzy-finder` (the guest toolchain PH7.0
+//! deferred to that slice); PH7.2 proves the model at the host layer — grant
+//! computation, the grant→preopen mapping, provenance issuance — with the
+//! WASI-layer OS enforcement itself resting on wasmtime's tested guarantee.
+//!
+//! Still owned by later slices: every contribution seam (PH7.3+). The first
+//! consumer of the `plugin` lifecycle world is the user's `init.rs`; the no-op
+//! component the tests instantiate is the degenerate `init.rs`.
 
-use std::path::PathBuf;
+pub mod capability;
+pub mod manifest;
+
+pub use capability::{
+    build_wasi_ctx, grant, CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier,
+};
+pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use lattice_grammar::SourceLayer;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Cache, CacheConfig, Config, Engine, Store};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 // Host bindings for the `plugin` lifecycle world, async per the canonical
 // ABI. The generated `Plugin` type carries async `call_activate` /
@@ -121,6 +150,11 @@ pub enum PluginHostError {
     #[error("failed to build the wasmtime engine")]
     Engine(#[source] anyhow::Error),
 
+    /// The component linker could not be populated with the WASI host
+    /// functions (PH7.2). A host-setup failure, surfaced rather than panicked.
+    #[error("failed to add WASI to the plugin component linker")]
+    Linker(#[source] anyhow::Error),
+
     /// The on-disk module cache could not be initialised (bad directory,
     /// I/O error). A caching failure must never fail the host — callers may
     /// fall back to an uncached host — so this is surfaced, never panicked.
@@ -198,10 +232,35 @@ impl Drop for EpochTicker {
     }
 }
 
-/// Per-`Store` host state. Empty in the scaffold — no host imports to service
-/// yet. PH7.2 grows this into the plugin's WASI view, resource tables,
-/// capability grant, and fuel meter.
-struct PluginState;
+/// Per-`Store` host state. PH7.2 gives it the plugin's WASI view (built from
+/// its [`CapabilityGrant`], §6) and the resource table WASI resources live in.
+/// A plugin's `Store` reaches exactly the filesystem its grant preopened; the
+/// [`WasiView`] impl is what wires the WASI host functions to this state.
+///
+/// Later slices grow this with the plugin's document-handle / callback
+/// resource tables (PH7.3) — they share this same `ResourceTable`.
+struct PluginState {
+    /// The scoped WASI context (granted filesystem preopens + nothing else).
+    wasi: WasiCtx,
+    /// The resource table WASI (and, later, boundary) resources live in.
+    table: ResourceTable,
+}
+
+impl WasiView for PluginState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+/// A host-issued plugin identity. Monotonic, allocated by the [`PluginHost`] at
+/// instantiation — never supplied by the guest. It is the `u32` inside
+/// [`SourceLayer::Plugin`], so every contribution a plugin registers (PH7.3+)
+/// traces back to a provenance the guest cannot forge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PluginId(pub u32);
 
 /// The default on-disk module-cache directory,
 /// `<user-cache>/lattice/plugin-cache/` (XDG on Linux, Application Support on
@@ -214,6 +273,17 @@ fn default_cache_dir() -> PathBuf {
         .join("plugin-cache")
 }
 
+/// The default per-plugin data-dir base, `<user-data>/lattice/plugins/`
+/// (`${XDG_DATA_HOME}` on Linux, Application Support on macOS, LocalAppData on
+/// Windows). Each plugin's private dir is `<base>/<plugin-id>/data/` (fragment
+/// §6). Falls back to the temp dir if no user data dir can be resolved.
+fn default_data_dir_base() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lattice")
+        .join("plugins")
+}
+
 /// The wasmtime engine, the (import-free) component linker, the on-disk module
 /// cache, and the epoch ticker. One host per editor process; construct it once
 /// (the engine owns Cranelift).
@@ -223,19 +293,35 @@ pub struct PluginHost {
     // A clone of the cache handed to the engine config; kept so callers can
     // read hit/miss stats. `Cache` is a cheap Arc-backed handle.
     cache: Cache,
+    // Base dir under which each plugin's private data dir is created:
+    // `<data_dir_base>/<plugin-id>/data/` (PH7.2, fragment §6).
+    data_dir_base: PathBuf,
+    // Monotonic source of host-issued `PluginId`s. `&self` methods allocate,
+    // so this is atomic.
+    next_id: AtomicU32,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
 }
 
 impl PluginHost {
-    /// Build a host caching compiled components under the default directory
-    /// ([`default_cache_dir`]). This is the production constructor.
+    /// Build a host with the default module-cache directory
+    /// ([`default_cache_dir`]) and per-plugin data-dir base
+    /// ([`default_data_dir_base`]). This is the production constructor.
     pub fn new() -> Result<Self, PluginHostError> {
-        Self::with_cache_dir(default_cache_dir())
+        Self::with_dirs(default_cache_dir(), default_data_dir_base())
     }
 
-    /// Build a host caching compiled components under `cache_dir`.
+    /// Build a host caching compiled components under `cache_dir`, with the
+    /// default per-plugin data-dir base. Kept as the narrow constructor the
+    /// cache tests already use.
+    pub fn with_cache_dir(cache_dir: impl Into<PathBuf>) -> Result<Self, PluginHostError> {
+        Self::with_dirs(cache_dir, default_data_dir_base())
+    }
+
+    /// Build a host with an explicit module-cache directory *and* per-plugin
+    /// data-dir base. Capability tests point both at per-test tempdirs so the
+    /// data-dir mounts and provenance are hermetic.
     ///
     /// The AOT (Cranelift) compile of a component is cached on disk by
     /// wasmtime, keyed on the component bytes, the compiler configuration, the
@@ -243,8 +329,14 @@ impl PluginHost {
     /// cached module** instead of recompiling (design.md §15 Q17). wasmtime
     /// owns the keying and invalidation; the host owns only the location.
     ///
-    /// Tests point this at a per-test tempdir for a hermetic hit/miss count.
-    pub fn with_cache_dir(cache_dir: impl Into<PathBuf>) -> Result<Self, PluginHostError> {
+    /// The linker is populated with the WASI (preview2) host functions once
+    /// here; each plugin's *view* onto them is scoped per-`Store` from its
+    /// grant (PH7.2). Components that import no WASI (the hand-written
+    /// lifecycle fixtures) instantiate fine against the populated linker.
+    pub fn with_dirs(
+        cache_dir: impl Into<PathBuf>,
+        data_dir_base: impl Into<PathBuf>,
+    ) -> Result<Self, PluginHostError> {
         let cache_dir = cache_dir.into();
         std::fs::create_dir_all(&cache_dir).map_err(|e| PluginHostError::Cache(e.into()))?;
         let mut cache_config = CacheConfig::new();
@@ -262,15 +354,28 @@ impl PluginHost {
         config.cache(Some(cache.clone()));
 
         let engine = Engine::new(&config).map_err(|e| PluginHostError::Engine(e.into()))?;
-        let linker = Linker::new(&engine);
+        let mut linker = Linker::new(&engine);
+        // Wire the WASI host functions to `PluginState`'s `WasiView`. Async to
+        // match the canonical ABI — a WASI host call suspends the guest stack,
+        // never pins the caller's thread.
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)
+            .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL);
 
         Ok(Self {
             engine,
             linker,
             cache,
+            data_dir_base: data_dir_base.into(),
+            next_id: AtomicU32::new(0),
             _epoch_ticker: epoch_ticker,
         })
+    }
+
+    /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
+    /// host's lifetime; the guest never influences it.
+    fn alloc_id(&self) -> PluginId {
+        PluginId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Number of module-cache hits so far (a compiled artifact was reused from
@@ -294,7 +399,10 @@ impl PluginHost {
     }
 
     /// Instantiate a compiled component into a live [`LoadedPlugin`] with the
-    /// default per-call budget.
+    /// default per-call budget and **no capability grant** (an empty WASI view
+    /// — zero filesystem access, no data dir). This is the degenerate load; a
+    /// real plugin uses [`instantiate_plugin`](Self::instantiate_plugin) with a
+    /// manifest.
     pub async fn instantiate(
         &self,
         component: &Component,
@@ -303,19 +411,88 @@ impl PluginHost {
             .await
     }
 
-    /// Instantiate a compiled component into a live [`LoadedPlugin`], setting
-    /// the per-call resource budget its lifecycle exports will run under.
-    ///
-    /// Each instantiation gets its own [`Store`] — the Store-per-plugin
-    /// isolation boundary. Instantiation itself runs with generous
-    /// [`INSTANTIATION_FUEL`]; the tighter [`PluginBudget`] applies per
-    /// lifecycle call.
+    /// Instantiate a compiled component with an explicit per-call budget and
+    /// **no capability grant** (empty WASI view). See [`instantiate`](Self::instantiate).
     pub async fn instantiate_with_budget(
         &self,
         component: &Component,
         budget: PluginBudget,
     ) -> Result<LoadedPlugin, PluginHostError> {
-        let mut store = Store::new(&self.engine, PluginState);
+        // No grant, no data dir: the guest reaches no filesystem at all.
+        let wasi = WasiCtxBuilder::new().build();
+        let (store, bindings) = self.instantiate_inner(component, wasi, budget).await?;
+        Ok(LoadedPlugin {
+            store,
+            bindings,
+            budget,
+            id: self.alloc_id(),
+            grant: CapabilityGrant::default(),
+            denied: Vec::new(),
+            data_dir: None,
+        })
+    }
+
+    /// Instantiate a plugin **under its capability grant** (PH7.2, fragment §6).
+    ///
+    /// The grant is computed from `manifest` + `tier`; a private data dir
+    /// (`<data-base>/<manifest.id>/data/`) is created and mounted writable, and
+    /// each granted `fs:*` prefix is preopened at its own path. The resulting
+    /// [`Store`]'s WASI view reaches **exactly** the granted filesystem and
+    /// nothing else — a plugin without an `fs:write` grant cannot write outside
+    /// its data dir at the WASI layer. Requested capabilities the tier withheld
+    /// (e.g. `proc:spawn` for a user-installed plugin) are surfaced on
+    /// [`LoadedPlugin::denied_capabilities`] so the host can notify the user;
+    /// the load still succeeds (graceful degradation).
+    ///
+    /// Each instantiation gets its own `Store` (the isolation boundary) and a
+    /// fresh host-issued [`PluginId`]. Instantiation runs with generous
+    /// [`INSTANTIATION_FUEL`]; the tighter [`PluginBudget`] applies per call.
+    pub async fn instantiate_plugin(
+        &self,
+        component: &Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        budget: PluginBudget,
+    ) -> Result<LoadedPlugin, PluginHostError> {
+        let outcome = grant(manifest, tier);
+        let data_dir = self.data_dir_base.join(&manifest.id).join("data");
+        // Best-effort: a data dir we cannot create degrades to "no data mount"
+        // (build_wasi_ctx then skips it) rather than failing the load — never
+        // fail boot on a recoverable filesystem error (fragment §6).
+        if let Err(err) = std::fs::create_dir_all(&data_dir) {
+            tracing::warn!(
+                path = %data_dir.display(),
+                error = %err,
+                "plugin data dir create failed; the data mount is degraded"
+            );
+        }
+        let wasi = build_wasi_ctx(&outcome.grant, &data_dir);
+        let (store, bindings) = self.instantiate_inner(component, wasi, budget).await?;
+        Ok(LoadedPlugin {
+            store,
+            bindings,
+            budget,
+            id: self.alloc_id(),
+            grant: outcome.grant,
+            denied: outcome.denied,
+            data_dir: Some(data_dir),
+        })
+    }
+
+    /// Shared instantiation core: build the `Store` around `wasi`, arm the
+    /// instantiation fuel/epoch, and instantiate the component against the
+    /// WASI-populated linker.
+    async fn instantiate_inner(
+        &self,
+        component: &Component,
+        wasi: WasiCtx,
+        budget: PluginBudget,
+    ) -> Result<(Store<PluginState>, Plugin), PluginHostError> {
+        let state = PluginState {
+            wasi,
+            table: ResourceTable::new(),
+        };
+        let mut store = Store::new(&self.engine, state);
         store
             .set_fuel(INSTANTIATION_FUEL)
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
@@ -326,25 +503,57 @@ impl PluginHost {
         let bindings = Plugin::instantiate_async(&mut store, component, &self.linker)
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
-
-        Ok(LoadedPlugin {
-            store,
-            bindings,
-            budget,
-        })
+        Ok((store, bindings))
     }
 }
 
-/// A live plugin instance: its `Store`, the lifecycle bindings, and the
-/// per-call budget. Dropping it tears the `Store` down (the reload/teardown
+/// A live plugin instance: its `Store` (holding the scoped WASI view), the
+/// lifecycle bindings, the per-call budget, its host-issued identity and
+/// effective grant. Dropping it tears the `Store` down (the reload/teardown
 /// seam PH7.12 formalises).
 pub struct LoadedPlugin {
     store: Store<PluginState>,
     bindings: Plugin,
     budget: PluginBudget,
+    id: PluginId,
+    grant: CapabilityGrant,
+    denied: Vec<Capability>,
+    data_dir: Option<PathBuf>,
 }
 
 impl LoadedPlugin {
+    /// The host-issued identity for this instance. The guest never influences
+    /// it; it is the numeric id inside this plugin's provenance.
+    pub fn id(&self) -> PluginId {
+        self.id
+    }
+
+    /// The provenance layer the host stamps for every contribution this plugin
+    /// registers (PH7.3+). Host-issued from [`PluginId`], so a plugin cannot
+    /// forge a builtin/user provenance — the acid test of §6.
+    pub fn source_layer(&self) -> SourceLayer {
+        SourceLayer::Plugin(self.id.0)
+    }
+
+    /// The effective capability grant this plugin runs under.
+    pub fn grant(&self) -> &CapabilityGrant {
+        &self.grant
+    }
+
+    /// Requested capabilities the trust tier withheld (e.g. `proc:spawn` for a
+    /// user-installed plugin). The host turns these into a "loaded with reduced
+    /// function" notification; the plugin still loaded.
+    pub fn denied_capabilities(&self) -> &[Capability] {
+        &self.denied
+    }
+
+    /// The plugin's private data dir, if it was instantiated with a grant
+    /// ([`PluginHost::instantiate_plugin`]). `None` for the degenerate
+    /// no-grant load.
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
+    }
+
     /// Re-arm the fuel + epoch budget before a lifecycle call, so each call
     /// gets a fresh allowance rather than sharing a running total.
     fn arm_budget(&mut self) -> Result<(), PluginHostError> {

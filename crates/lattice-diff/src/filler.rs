@@ -247,6 +247,7 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
                 // alignment, not deleted content.
                 kind: lattice_cells::VirtualRowKind::Filler,
                 bg: None,
+                align: lattice_cells::VirtualRowAlign::Left,
             });
         }
     }

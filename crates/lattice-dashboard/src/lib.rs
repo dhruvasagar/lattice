@@ -12,6 +12,7 @@
 //! Design: `docs/dev/architecture/dashboard.md`. Slice plan:
 //! `docs/dev/operations/slice-plans/dashboard.md`.
 
+pub mod branding;
 pub mod fragment;
 pub mod install;
 pub mod mode;
@@ -21,6 +22,7 @@ pub mod section;
 pub mod sections;
 pub mod theme;
 
+pub use branding::{DashboardBrandingProvider, BRANDING_ROW_COUNT};
 pub use fragment::{Align, DashboardFragment, DashboardRole, DashboardRow, DashboardSpan, LinkTarget};
 pub use install::install;
 pub use mode::{register_dashboard_modes, DashboardMode};

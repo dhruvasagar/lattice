@@ -86,6 +86,18 @@ pub enum VirtualRowKind {
 	Sticky,
 }
 
+/// Horizontal alignment of a virtual row's cells within the pane content
+/// width. `Left` (default) matches historical behaviour — cells paint after
+/// the gutter, padded on the right. `Center` asks the renderer to inset the
+/// cells so the row is centred in the content area (used by the dashboard
+/// branding block; the renderer has the pane width, the provider does not).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum VirtualRowAlign {
+	#[default]
+	Left,
+	Center,
+}
+
 /// One virtual row's anchor + content.
 ///
 /// `anchor_line` is the 0-based source line this row attaches
@@ -116,6 +128,9 @@ pub struct VirtualRow {
 	pub height: u16,
 	pub kind: VirtualRowKind,
 	pub bg: Option<u32>,
+	/// Horizontal alignment within the pane content width. Defaults to
+	/// [`VirtualRowAlign::Left`] (historical behaviour).
+	pub align: VirtualRowAlign,
 }
 
 /// A monotonically-increasing counter; bumped by the
@@ -353,6 +368,7 @@ mod tests {
 			height: 1,
 			kind: VirtualRowKind::Generic,
 			bg: None,
+			align: VirtualRowAlign::Left,
 		}
 	}
 

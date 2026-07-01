@@ -29,4 +29,6 @@ lattice-grammar = { path = "../lattice-grammar" }
 # DB.3: the mode owns its `dashboard.*` theme element vocabulary; register
 # them against the ThemeRegistry (a leaf crate) in on_activate.
 lattice-theme = { path = "../lattice-theme" }
+# DB.4: the branding block is a VirtualRowProvider building colored Cells.
+lattice-cells = { path = "../lattice-cells" }
 tracing = { workspace = true }

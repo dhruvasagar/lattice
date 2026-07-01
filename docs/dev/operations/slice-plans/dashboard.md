@@ -83,26 +83,39 @@ deferred, DB.8).
   resolved colour; default resolves to the brand colours.
 - *doc:* design §4.
 
-### DB.4 — branding block (terminal art + symmetry + centring)  📝
-Render the mark (`assets/lattice-mark.svg`) as a fixed-cell terminal-art block
-with two same-width palettes — Nerd-Font-v3 (`ui.nerd_fonts=on`) and BMP-block
-fallback (default) — in `dashboard.logo`, amber cursor bar in `dashboard.cursor`.
-Lay out the wordmark (`dashboard.title`) + tagline (`dashboard.tagline`) to the
-right, **vertically centred against the mark with a fixed 2-cell gap** — the
-`banner-dark.svg` symmetry, correcting the current lockup's loose/low placement
-(design §5.2). Emit the block as **virtual rows** with resolved cells + centring
-padding computed against `ctx.pane_width` (design §5.3). TUI + GPUI in the same
-patch; GPUI may optionally scale the wordmark (Thread F) — same layout.
-- *paramount:* #1 (resolved cells paint through the existing fast path, no new
-  hot-path field, no renderer kind-branch); UX (icon palette degrades
-  gracefully, same-width toggle).
-- *test:* nerd-font vs BMP-block art identical cell width; toggle re-renders;
-  wordmark block vertically centred against the mark with the fixed gap
-  (dimension assertions); colours resolve from `dashboard.*`.
+### DB.4 — branding block (terminal art + symmetry + centring)  🚧
+`DashboardBrandingProvider` (a per-buffer `VirtualRowProvider` in
+`lattice-dashboard`) emits the mark (`assets/lattice-mark.svg`) as a BMP-block
+terminal-art grid — 7-col × 5-row (wide-and-short so it reads ~square given the
+~2:1 cell aspect; two opposite corners cut for the interlocking look; amber
+cursor bar with a gap row above *and* below) — plus the "Lattice" wordmark +
+tagline to the right, vertically centred against the mark. Colours resolve from
+the `dashboard.*` elements (DB.3) at `collect()` time (theme-overridable);
+`Filler` kind ⇒ **transparent** backdrop (no bg block, gutter-aligned). Rows are
+padded to one block width and tagged `VirtualRowAlign::Center` so the renderer
+centres the block as a unit. Registered host-side in `do_open_dashboard`
+(unregister-first, mirroring tutor). The brand mark is no longer a document
+section — it is this virtual-row block above the body.
+
+**Centring** promotes the line-level alignment attribute the design deferred
+(§10): a new `VirtualRowAlign` field on `VirtualRow` (default `Left`), honored
+by the renderer (it has the pane width; the provider does not). **TUI honors it
+now**; **GPUI honors it as part of DB.4-gpui** (below) — a tracked, intentional
+interim divergence, since GPUI's branding is being reworked there anyway.
+
+- *paramount:* #1 (resolved cells through the existing fast path; no renderer
+  kind-branch — centring is a generic `align` property); #2 (theme-overridable).
+- *test:* provider emits the mark + wordmark with brand colours; rows padded to
+  one block width + `Center`; branding reaches the pane virtual-row matrix
+  (regression: registered-but-not-rendered).
+- *deferred to DB.4-gpui:* GPUI `align` honoring + the **(ii) 2-D GPUI branding
+  component** (mark block + independently-scaled wordmark matching the mark
+  height + tight leading) — the custom-paint class the design scopes with the
+  post-1.0 GPUI branding image (§5, §5.6.7). Uniform block-art stays the interim
+  GPUI treatment.
 - *doc:* design §5.
-- *cross-renderer:* end-of-slice grep — no TUI-only / GPUI-only branch for the
-  branding path.
-- *error handling:* pane too narrow for centred art ⇒ clamp padding to 0, never
+- *error handling (superseded — kept for reference):* pane too narrow ⇒ clamp
+  padding to 0, never
   underflow.
 
 ### DB.5 — startup gating + mode-owned trigger  📝
@@ -173,7 +186,8 @@ gated on the plugin host + theme-remap seam.
 | DB.1 — crate + registry + fragment + config | ✅ |
 | DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | ✅ |
 | DB.3 — `dashboard.*` theme elements | ✅ |
-| DB.4 — branding block (art + symmetry + centring) | 📝 |
+| DB.4 — branding block (art + symmetry + TUI centring) | 🚧 |
+| DB.4-gpui — GPUI `align` + 2-D branding component (scaled wordmark) | 📝 |
 | DB.5 — startup gating + mode-owned trigger | 📝 |
 | DB.6 — full override + recompose triggers | 📝 |
 | DB.7 — benches + ledger | 📝 |

@@ -11,8 +11,8 @@
 //! See `docs/dev/architecture/dashboard.md` §9.
 
 use lattice_dashboard::{
-    DashboardCtx, DashboardFragment, DashboardRegistry, DashboardRole, DashboardRow, DashboardSource,
-    LinkTarget, SectionSelection,
+    DashboardBrandingProvider, DashboardCtx, DashboardFragment, DashboardRegistry, DashboardRole,
+    DashboardRow, DashboardSource, LinkTarget, SectionSelection,
 };
 
 use crate::dispatch::RendererSignal;
@@ -42,11 +42,38 @@ impl Editor {
                 id
             }
         };
+        // DB.4: (re-)register the branding virtual-row block for this buffer.
+        self.register_dashboard_branding(id);
         if self.activate_buffer(id) {
             self.activate_buffer_state()
         } else {
             Vec::new()
         }
+    }
+
+    /// DB.4: register the branding virtual-row provider for the dashboard
+    /// buffer (idempotent — unregister-first, mirroring tutor). The provider
+    /// resolves the `dashboard.*` colours (DB.3) at collect time. Skipped when
+    /// the theme service is absent (headless harness); production always has
+    /// it.
+    fn register_dashboard_branding(&mut self, id: lattice_core::BufferId) {
+        let provider_id = DashboardBrandingProvider::provider_id_for(id.0 as u64);
+        self.virtual_row_providers.unregister(id, provider_id);
+        let Some(theme) = self
+            .services
+            .get::<lattice_theme::ThemeRegistryHandle>()
+            .map(|outer| (*outer).clone())
+        else {
+            return;
+        };
+        let owner = lattice_theme::ElementOwner::Mode(
+            lattice_dashboard::DashboardMode::mode_id().as_str().to_string().into(),
+        );
+        // Idempotent: returns the same interned ids on-activate already
+        // registered.
+        let ids = lattice_dashboard::register_dashboard_theme_elements(theme.as_ref(), owner);
+        let provider = DashboardBrandingProvider::new(provider_id, Some(theme), ids);
+        self.virtual_row_providers.register(id, std::sync::Arc::new(provider));
     }
 
     /// Compose the enabled sections (config-selected) into a `HelpContent`.

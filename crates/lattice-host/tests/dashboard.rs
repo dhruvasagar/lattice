@@ -70,16 +70,37 @@ fn dashboard_major_is_dashboard_mode() {
 }
 
 #[test]
-fn dashboard_content_has_branding_and_pointers() {
+fn dashboard_content_has_section_pointers() {
     let mut editor = boot();
     editor.do_open_dashboard();
 
-    // The dashboard is active, so active_text() is its content.
+    // The dashboard is active, so active_text() is its body content. The brand
+    // wordmark lives in the DB.4 virtual-row banner, not the body.
     let text = editor.active_text().as_string();
-    assert!(text.contains("Lattice"), "branding wordmark missing:\n{text}");
-    // A couple of the built-in section pointers.
     assert!(text.contains("tutor"), "tutor pointer missing");
     assert!(text.contains("help"), "help pointer missing");
+}
+
+#[test]
+fn dashboard_registers_branding_virtual_rows() {
+    let mut editor = boot();
+    editor.do_open_dashboard();
+    let id = editor.buffers.by_name("*dashboard*").unwrap();
+
+    // DB.4: the branding provider is registered for the dashboard buffer and
+    // emits the mark + wordmark rows, colored with the brand blue.
+    let providers = editor.virtual_row_providers.snapshot(id);
+    assert!(!providers.is_empty(), "branding provider should be registered");
+    let brand_blue = lattice_theme::Color::Rgb(0x1f, 0x6f, 0xeb).to_rgb_u32(0);
+    let has_blue_glyph = providers.iter().flat_map(|p| p.collect()).any(|row| {
+        row.cells.iter().any(|c| c.fg == brand_blue && c.codepoint != 0x20)
+    });
+    let has_wordmark = providers.iter().flat_map(|p| p.collect()).any(|row| {
+        let t: String = row.cells.iter().filter_map(|c| char::from_u32(c.codepoint)).collect();
+        t.contains("Lattice")
+    });
+    assert!(has_blue_glyph, "branding should render brand-blue mark glyphs");
+    assert!(has_wordmark, "branding should render the Lattice wordmark");
 }
 
 #[test]
@@ -139,6 +160,37 @@ fn dashboard_renders_through_colored_matrix_not_raw_fallback() {
          headings + links + body), got {} — the DisplayMatrix was likely \
          skipped and the pane fell back to raw text",
         fgs.len()
+    );
+}
+
+#[test]
+fn dashboard_branding_reaches_pane_virtual_row_matrix() {
+    // Regression: registering the provider is not enough — the branding rows
+    // must reach the pane's VirtualRowMatrix (the "registered but not
+    // rendered" failure mode). Drive the virtual-rows worker and assert the
+    // dashboard pane's matrix carries the banner rows.
+    let mut editor = boot();
+    editor.viewport_height = 40;
+    editor.do_open_dashboard();
+
+    let rs = editor.build_render_state();
+    editor.render_state.store(std::sync::Arc::new(rs));
+    let mut state = lattice_host::virtual_rows_worker::VirtualRowsWorkerState::default();
+    lattice_host::virtual_rows_worker::recompute(
+        &mut state,
+        &editor.render_state,
+        &editor.virtual_row_providers,
+    );
+
+    let cells = editor.render_state.load().cells.load();
+    let total_rows: usize = cells
+        .panes
+        .iter()
+        .map(|p| p.virtual_rows_matrix.load().rows.len())
+        .sum();
+    assert!(
+        total_rows >= lattice_dashboard::BRANDING_ROW_COUNT,
+        "branding rows should reach the pane virtual-row matrix, got {total_rows}"
     );
 }
 

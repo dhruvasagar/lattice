@@ -15,12 +15,14 @@ use crate::section::{DashboardCtx, DashboardSection};
 /// The canonical GitHub repository.
 const REPO_URL: &str = "https://github.com/dhruvasagar/lattice";
 /// The one-line tagline (matches the brand assets).
-const TAGLINE: &str = "A modal, GPU-accelerated, plugin-first text editor in Rust";
 
 /// Build a registry pre-loaded with every built-in section.
+///
+/// Note: the brand mark + wordmark are NOT a document section — they render
+/// as the DB.4 branding virtual-row block above the body (see
+/// [`crate::branding`]). The body starts with `about`.
 pub fn builtin_registry() -> DashboardRegistry {
     let mut reg = DashboardRegistry::new();
-    reg.register(Arc::new(Branding));
     reg.register(Arc::new(About));
     reg.register(Arc::new(Links));
     reg.register(Arc::new(GettingStarted));
@@ -41,33 +43,6 @@ fn heading(frag: &mut DashboardFragment, text: &str) {
 /// e.g. `body_link("Open the interactive tutorial: ", ":tutor", cmd:tutor)`.
 fn body_link(prefix: &str, label: &str, target: LinkTarget) -> DashboardRow {
     DashboardRow::line(prefix, DashboardRole::Body).push(DashboardSpan::link(label, target))
-}
-
-// ---------------------------------------------------------------------------
-// branding
-// ---------------------------------------------------------------------------
-
-/// The brand mark + wordmark + tagline. DB.1 emits text rows; DB.4 replaces
-/// the mark with centred terminal art and applies the `dashboard.*` colours.
-struct Branding;
-
-impl DashboardSection for Branding {
-    fn id(&self) -> &str {
-        "branding"
-    }
-    fn order(&self) -> i32 {
-        0
-    }
-    fn render(&self, ctx: &DashboardCtx) -> DashboardFragment {
-        let mut f = DashboardFragment::new();
-        f.push(DashboardRow::centered("Lattice", DashboardRole::Title));
-        f.push(DashboardRow::centered(TAGLINE, DashboardRole::Tagline));
-        f.push(DashboardRow::centered(
-            format!("v{}", ctx.version),
-            DashboardRole::Hint,
-        ));
-        f
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +284,8 @@ mod tests {
     use crate::registry::SectionSelection;
 
     #[test]
-    fn builtin_registry_has_eight_sections_in_order() {
+    fn builtin_registry_sections_in_order() {
+        // Branding is a virtual-row block (DB.4), not a document section.
         let reg = builtin_registry();
         let ids: Vec<String> = reg
             .ordered(&SectionSelection::Default)
@@ -319,7 +295,6 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "branding",
                 "about",
                 "links",
                 "getting-started",

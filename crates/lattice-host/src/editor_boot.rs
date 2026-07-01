@@ -1800,13 +1800,15 @@ impl Editor {
             }],
             snippet_session,
             // Default user snippet dir: `~/.config/lattice/snippets`
-            // (the same config root as `lattice.toml`, via
-            // `dirs::config_dir`). `:reload-snippets` merges any
-            // `<language>.json` packs here on top of the embedded
-            // built-ins. Absent dir → skipped gracefully by the
-            // reload path (not an error — the user just hasn't
-            // added any packs).
-            snippet_dirs: dirs::config_dir()
+            // (the same XDG config root as `lattice.toml`, via
+            // `lattice_config::config_home` — honours `$XDG_CONFIG_HOME`
+            // and reads `~/.config` on macOS, NOT the platform-native
+            // dir, so config + snippets always live together).
+            // `:reload-snippets` merges any `<language>.json` packs here
+            // on top of the embedded built-ins. Absent dir → skipped
+            // gracefully by the reload path (not an error — the user just
+            // hasn't added any packs).
+            snippet_dirs: lattice_config::config_home()
                 .map(|d| d.join("lattice").join("snippets"))
                 .into_iter()
                 .collect(),

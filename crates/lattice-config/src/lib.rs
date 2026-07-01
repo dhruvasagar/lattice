@@ -138,8 +138,8 @@ pub use group::{
     Terminal, ends_with_mode_suffix,
 };
 pub use loader::{
-    LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
-    load_file, lookup_dotted_path, project_config_path,
+    LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,
+    load_default_paths, load_file, lookup_dotted_path, project_config_path,
 };
 // ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
 // right}`). The first list-valued option; see `modeline_zone`.

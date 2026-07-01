@@ -2,9 +2,9 @@
 //! TOML surface called out in the design doc's "TOML covers static
 //! option overrides only" line).
 //!
-//! Reads `lattice.toml` from the user config dir
-//! (`~/.config/lattice/lattice.toml` on Linux, the XDG-equivalent on
-//! macOS / Windows via [`dirs::config_dir`]) and `.lattice/config.toml`
+//! Reads `lattice.toml` from the XDG config home
+//! (`~/.config/lattice/lattice.toml` on all Unix incl. macOS, honouring
+//! `$XDG_CONFIG_HOME`; see [`config_home`]) and `.lattice/config.toml`
 //! from the workspace root, in that precedence order. Project beats
 //! user; `:set` writes after startup beat both.
 //!
@@ -140,11 +140,49 @@ pub fn lookup_dotted_path<'a>(tree: &'a toml::Table, path: &str) -> Option<&'a t
     None
 }
 
-/// Default user config path. `Some` on platforms where
-/// [`dirs::config_dir`] resolves; `None` on a few obscure
-/// platforms or when `$HOME` is unset.
+/// The XDG config base directory for lattice's config root.
+///
+/// Resolves the XDG Base Directory config home so lattice's config lives
+/// under `~/.config/lattice/` on **every** Unix — macOS included — instead of
+/// the platform-native `~/Library/Application Support` that `dirs::config_dir`
+/// returns there. This matches the convention every developer CLI / editor
+/// uses (Helix, Neovim, Zed's CLI, alacritty, starship, …): on macOS they read
+/// `~/.config/<app>`, not `~/Library/Application Support/<app>`.
+///
+/// Precedence (per the XDG Base Directory spec):
+/// 1. `$XDG_CONFIG_HOME` when set to an **absolute** path — honoured on every
+///    platform so an explicit override always wins (a set-but-relative or
+///    empty value is spec-invalid and ignored).
+/// 2. `~/.config` on Unix (via `$HOME`).
+/// 3. `dirs::config_dir()` elsewhere (Windows → `%APPDATA%`).
+///
+/// `None` only when neither the override nor the home directory resolves.
+pub fn config_home() -> Option<PathBuf> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    #[cfg(unix)]
+    let fallback = dirs::home_dir().map(|h| h.join(".config"));
+    #[cfg(not(unix))]
+    let fallback = dirs::config_dir();
+    resolve_config_home(xdg, fallback)
+}
+
+/// Pure resolver behind [`config_home`], split out so the precedence logic is
+/// unit-testable without mutating process-global environment variables.
+fn resolve_config_home(xdg_config_home: Option<PathBuf>, fallback: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(xdg) = xdg_config_home
+        && xdg.is_absolute()
+    {
+        return Some(xdg);
+    }
+    fallback
+}
+
+/// Default user config path: `<config_home>/lattice/lattice.toml`, i.e.
+/// `~/.config/lattice/lattice.toml` (honouring `$XDG_CONFIG_HOME`). See
+/// [`config_home`] for the cross-platform resolution. `None` when no config
+/// home resolves (no `$XDG_CONFIG_HOME` override and no `$HOME`).
 pub fn default_user_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("lattice").join("lattice.toml"))
+    config_home().map(|d| d.join("lattice").join("lattice.toml"))
 }
 
 /// Default project config path: `<workspace_root>/.lattice/config.toml`.
@@ -436,6 +474,56 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::option::Option as ConfigOption;
+
+    #[test]
+    fn config_home_prefers_absolute_xdg_override() {
+        // An absolute $XDG_CONFIG_HOME wins over the platform fallback,
+        // on every platform.
+        let got = resolve_config_home(
+            Some(PathBuf::from("/custom/xdg")),
+            Some(PathBuf::from("/home/u/.config")),
+        );
+        assert_eq!(got, Some(PathBuf::from("/custom/xdg")));
+    }
+
+    #[test]
+    fn config_home_ignores_relative_or_empty_xdg() {
+        // A set-but-relative $XDG_CONFIG_HOME is spec-invalid → fall back.
+        let fallback = Some(PathBuf::from("/home/u/.config"));
+        assert_eq!(
+            resolve_config_home(Some(PathBuf::from("relative/path")), fallback.clone()),
+            fallback
+        );
+        // Empty value → PathBuf::from("") is not absolute → fall back.
+        assert_eq!(
+            resolve_config_home(Some(PathBuf::from("")), fallback.clone()),
+            fallback
+        );
+    }
+
+    #[test]
+    fn config_home_falls_back_when_no_override() {
+        let fallback = Some(PathBuf::from("/home/u/.config"));
+        assert_eq!(resolve_config_home(None, fallback.clone()), fallback);
+    }
+
+    #[test]
+    fn config_home_is_none_when_nothing_resolves() {
+        assert_eq!(resolve_config_home(None, None), None);
+    }
+
+    #[test]
+    fn default_user_config_path_ends_with_xdg_lattice_toml() {
+        // The public entry point composes <config_home>/lattice/lattice.toml.
+        // We can't assert the absolute prefix (env-dependent), but the tail is
+        // stable and proves we no longer hard-code the platform-native dir.
+        if let Some(p) = default_user_config_path() {
+            assert!(
+                p.ends_with("lattice/lattice.toml"),
+                "expected .../lattice/lattice.toml, got {p:?}"
+            );
+        }
+    }
 
     fn registry_with_options() -> ConfigRegistry {
         let r = ConfigRegistry::new();

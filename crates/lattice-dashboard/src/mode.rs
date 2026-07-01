@@ -12,6 +12,9 @@
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
 use lattice_mode::{LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry};
+use lattice_theme::{ElementOwner, ThemeRegistryHandle};
+
+use crate::theme::register_dashboard_theme_elements;
 
 pub struct DashboardMode;
 
@@ -52,8 +55,21 @@ impl Mode for DashboardMode {
         }
     }
 
-    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async move {
+            // DB.3: the mode owns its `dashboard.*` theme element vocabulary
+            // — register it here (idempotent by name). A missing service
+            // (test harness) just skips; the branding provider then renders
+            // with fallback colours.
+            if let Some(theme) = ctx
+                .service::<ThemeRegistryHandle>()
+                .map(|outer| (*outer).clone())
+            {
+                let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
+                let _ = register_dashboard_theme_elements(theme.as_ref(), owner);
+            }
+            Ok(())
+        })
     }
 }
 

@@ -19,10 +19,12 @@ pub mod options;
 pub mod registry;
 pub mod section;
 pub mod sections;
+pub mod theme;
 
 pub use fragment::{Align, DashboardFragment, DashboardRole, DashboardRow, DashboardSpan, LinkTarget};
 pub use install::install;
 pub use mode::{register_dashboard_modes, DashboardMode};
+pub use theme::{register_dashboard_theme_elements, DashboardElementIds};
 pub use options::{Dashboard, DashboardEnabled, DashboardSections, DashboardSource};
 pub use registry::{DashboardRegistry, SectionSelection};
 pub use section::{DashboardCtx, DashboardSection};

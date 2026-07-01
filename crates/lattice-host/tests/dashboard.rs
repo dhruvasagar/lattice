@@ -77,6 +77,27 @@ fn dashboard_seeds_help_links_for_follow() {
 }
 
 #[test]
+fn dashboard_registers_theme_elements() {
+    let mut editor = boot();
+    editor.do_open_dashboard();
+
+    // dashboard-mode's on_activate registers the dashboard.* elements against
+    // the host's ThemeRegistry service (DB.3).
+    let theme = editor
+        .services
+        .get::<lattice_theme::ThemeRegistryHandle>()
+        .expect("theme registry service registered at boot");
+    for name in ["dashboard.logo", "dashboard.cursor", "dashboard.title"] {
+        assert!(
+            theme
+                .id(&lattice_theme::ElementName::from(name.to_string()))
+                .is_some(),
+            "{name} should be registered after :dashboard"
+        );
+    }
+}
+
+#[test]
 fn dashboard_reopen_is_idempotent() {
     let mut editor = boot();
     editor.do_open_dashboard();

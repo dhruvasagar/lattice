@@ -26,4 +26,7 @@ lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-grammar = { path = "../lattice-grammar" }
+# DB.3: the mode owns its `dashboard.*` theme element vocabulary; register
+# them against the ThemeRegistry (a leaf crate) in on_activate.
+lattice-theme = { path = "../lattice-theme" }
 tracing = { workspace = true }

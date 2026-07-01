@@ -3740,6 +3740,7 @@ dependencies = [
  "lattice-core",
  "lattice-grammar",
  "lattice-mode",
+ "lattice-theme",
  "tracing",
 ]
 

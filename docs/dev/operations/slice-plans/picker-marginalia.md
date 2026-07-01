@@ -2,7 +2,7 @@
 
 **Designs:** [marginalia.md §9](../../architecture/marginalia.md) (MP — annotation columns across all pickers) and [picker-preview-highlight.md](../../architecture/picker-preview-highlight.md) (PH — syntax-highlighted preview text).
 
-**Status:** 📝 planned (2026-06-30). Two independent series. **MP** extends the §8 `Styled` mechanism to every remaining picker source (no candidate-model change). **PH** adds a new `display_spans` field carrying tree-sitter highlight spans for code previews. They touch the same producers but different candidate fields, so they sequence independently; land **MP first** (lower risk — no model change), then **PH**.
+**Status:** ✅ complete (2026-07-01). Two independent series, both landed. **MP** (MP.1–MP.5 + MP.2b) extended the §8 `Styled` mechanism to every remaining picker source (no candidate-model change). **PH** (PH.1–PH.3) added the `display_spans` field carrying tree-sitter highlight spans for code previews. They touched the same producers but different candidate fields, so they sequenced independently; **MP landed first** (lower risk — no model change), then **PH**.
 
 **Why:** Only `FilesSource` emits annotations today (MR). Every other picker bakes metadata into flat, hand-width-padded `display` strings (MP fixes this). And code shown in pickers (Grep/Lines/Outline previews) renders in one flat color — PH gives it the buffer's syntax colors. Both ride machinery that already exists: MP reuses `Annotation::Styled` + the theme-slot seam (MR §8); PH reuses `SyntaxSnapshot::highlight_lines` + `resolve_syntax_style` (the main-editor highlight path).
 
@@ -12,7 +12,7 @@
 
 ## MP — picker marginalia rollout
 
-### MP.1 — Substrate: shared segment builders + new theme slots 📝
+### MP.1 — Substrate: shared segment builders + new theme slots ✅
 
 No producer change → no user-visible change. Establishes the shared helpers and slot families everything else consumes.
 
@@ -150,6 +150,5 @@ Acceptance: `:picker grep` previews render in the file's syntax colors on both p
 ## Out of scope (deferred)
 
 - `ThemePickerSource` color swatch — needs an explicit-color segment primitive (marginalia §9.6); deferred until a second consumer needs it.
-- Grep preview highlighting (PH.3) — per-hit parsing + grammar cache; post-v1.
 - `KeybindingAnnotator` for non-command picker candidates (file open-in-split binds, etc.) — marginalia §10 open question; defer until a use case lands.
 - Unicode-width column math — inherited `chars().count()` limitation (MARG.5); a future pass lands in both sites at once.

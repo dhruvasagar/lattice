@@ -51,6 +51,7 @@ same surface).
 | Themes & colours (`:colorscheme` + the live-preview picker, the builtin theme catalog, `:customize`, `register_theme`) | [themes.md](themes.md)   | ✅     |
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
 | Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
+| Picker & marginalia (`:picker <source>` fuzzy finder — files/grep/buffers/lines/outline/…; typed annotation columns; syntax-highlighted previews; frecency ranking) | [picker.md](picker.md) | ✅ |
 | Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |
 | LSP (servers, capabilities, attach lifecycle, every `:lsp-*` command in context)                            | [lsp.md](lsp.md)                    | ✅     |
 | `lsp-mode` (the umbrella minor + 9 sub-modes that gate per-feature LSP traffic)                             | [lsp-mode.md](lsp-mode.md)          | ✅     |

@@ -900,13 +900,24 @@ This is the SAME mechanism a tree-sitter reparse uses: the
 tree-sitter recolour appears on idle but LSP semantic-token recolour
 historically did not (see "the historical gap" below).
 
-### The three arrival shapes
+### The arrival shapes
 
 | Shape | Examples | Wake wiring |
 |---|---|---|
 | **Direct-write request task** | `semanticTokens`, `inlayHint`, `foldingRange`, `codeLens`, `documentColor`, `documentLink`, `documentHighlight`, `textDocument/diagnostic` (pull) | The task is spawned on the LSP runtime, writes its result into a `PerBufferCache` via `insert_for`, then **must** `async_landed.notify_one()`. |
+| **Channel-delivered action result** | `references` (`gr`), `definition`/`declaration`/`typeDefinition`/`implementation` (`gd`/`gD`/`gy`/`gI`), `hover` (`K`), `signatureHelp`, `completion`, `document`/`workspace` `symbol`, `codeAction` + resolve/apply, `format`, `rename`, `callHierarchy`, `typeHierarchy`, `moniker`, on-type formatting, `selectionRange`, `executeCommand` | The task is spawned on the LSP runtime and delivers its result over an `mpsc` channel drained by a `drain_pending_*` inside `run_tick_pending`. After **each** terminal `tx.send(...)` it **must** `async_landed.notify_one()` (every arm — `NoServers`, `Found`, empty, error). This is the single renderer-agnostic wake: the actor arm turns it into drain + publish + `paint_request` for BOTH peers. Slice AW.1. |
 | **Event-bus arrival** | `$/progress`, `publishDiagnostics`, `*/refresh`, log records | A forwarder task subscribes the typed event and fires `async_landed.notify_one()` on each delivery so `run_tick_pending`'s drain runs off-keystroke. Template: the `MultibufferExcerptsReady` forwarder in `editor_boot.rs`. |
-| **Popup overlay arrival** | `hover`, `signatureHelp` | Owns a dedicated `paint_request` clone and notifies it directly -- the result is a separate overlay, not part of the cells/overlay grid, so no cells rebuild is needed. (Already wired under "X1b".) |
+
+> **Do NOT reach for a renderer-specific `paint_request` clone.** `hover` /
+> `signatureHelp` historically fired the actor's `paint_request` directly (the
+> "X1b" popup-overlay shape). That is wrong: `paint_request` only *repaints*.
+> The GPUI peer's paint bridge happens to also call `run_tick_pending`, so the
+> popup drained there — but the TUI peer's `Wake::Repaint` redraws WITHOUT
+> draining (X1 removed the per-frame `run_tick_pending`), so the popup waited
+> for the next keystroke. Every channel-delivered result — popup, picker, or
+> jump — fires `async_landed`, and the actor arm (which re-fires `paint_request`
+> when a `paint_revision` surface like the popup moves) drives both peers. The
+> wake is a **core** concern, not a renderer concern.
 
 ### The historical gap (the bug L1 closes)
 
@@ -918,10 +929,38 @@ invisible until the next keystroke happened to run `run_tick_pending`
 + publish. The `render-thread-discipline-remediation.md` doc that once
 tracked this (the deferred "X1b") now lives in `docs/dev/archive/`
 (a stale comment in `lattice-ui-tui/src/runtime.rs` still points at its
-old path); this section is its permanent home. The fix is uniform -- fire `async_landed` from the
-two off-keystroke arrival shapes -- and is sequenced in
+old path); this section is its permanent home. The L1 fix fired
+`async_landed` from the **direct-write** and **event-bus** shapes and is
+sequenced in
 [`../operations/slice-plans/archive/lsp.md`](../operations/slice-plans/archive/lsp.md)
 (slice L1).
+
+### The remaining gap: channel-delivered action results (slice AW.1)
+
+L1 left the **channel-delivered action result** shape unfixed — the row
+added above. Every one-shot user request (`gr` references, `gd`/`gD`/`gy`/
+`gI` nav, `K` hover, code-actions, rename, format, symbols, signature,
+completion, call/type hierarchy, moniker, selection-range) delivers over an
+`mpsc` channel drained by a `drain_pending_*` in `run_tick_pending`, but
+fired **no** wake (except `hover`, which fired the renderer-specific
+`paint_request` clone — see the callout above). So the picker / jump / popup
+waited for the next keystroke. "Often, not always" for `gr`: an unrelated
+`async_landed` (a syntax reparse, a diagnostics push) landing in the window
+would drain the pending result as a side effect. Slice **AW.1** fires
+`async_landed` after every `tx.send` on these paths (and converts `hover`
+from `paint_request` to `async_landed`), making the wake uniform across all
+arrival shapes and both renderers. Sequenced in
+[`../operations/slice-plans/lsp-async-wake.md`](../operations/slice-plans/lsp-async-wake.md).
+
+> **`App::apply`-tail `run_tick_pending` (audit, AW.5).** The TUI/GPUI
+> keystroke path also runs `run_tick_pending` at the tail of `App::apply`
+> (`app/dispatch.rs`). That is a *synchronous fast-path*: a result already
+> back by the time the firing keystroke finishes drains on the same
+> round-trip (latency win). It is correct to keep — but it must **never** be
+> the ONLY drain path for a result. After AW.1 it is not: every async LSP
+> result also fires `async_landed`, so an idle arrival (no keystroke in
+> flight) drains via the actor arm. If you add a new async result whose only
+> drain is the `App::apply` tail, you have re-introduced the AW.1 bug.
 
 ### The second gap: a publish must REQUEST a frame (slice L6)
 

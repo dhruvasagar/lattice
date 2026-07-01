@@ -441,9 +441,15 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // ~30-channel aggregator we used to call here is exactly
         // the kind of work the spec forbids on this thread.
         //
-        // Idle LSP arrivals (response with no keystroke in
-        // flight) are pending X1b. See
-        // `docs/dev/operations/render-thread-discipline-remediation.md`.
+        // Idle LSP arrivals (a response with no keystroke in flight)
+        // drain off-keystroke via the editor actor's `async_landed`
+        // arm, NOT here: every async LSP result fires `async_landed`
+        // (direct-write caches, event-bus forwarders, and — since slice
+        // AW.1 — the channel-delivered action results: gr/gd/K/code-
+        // actions/rename/format/…). The actor runs `run_tick_pending` +
+        // publish + `paint_request` on that wake, which lands here as a
+        // `Wake::Repaint`. See `docs/dev/architecture/lsp-architecture.md`
+        // §12 ("Async-result render-wake").
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

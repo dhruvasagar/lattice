@@ -364,6 +364,21 @@ impl Editor {
             self.dismiss_popup();
         }
 
+        // AW.2: cancel in-flight position-anchored LSP lookups when the cursor
+        // moved this dispatch. `gr` references, `gd`/`gD`/`gy`/`gI` nav, and
+        // `K` hover all anchor to the symbol under the cursor at request time;
+        // if the cursor has since moved, a late result would open a picker /
+        // jump / popup for a symbol the user has left. Cancelling the token
+        // stops the server request; clearing the `rx` drops any result already
+        // in the channel so `run_tick_pending` doesn't act on it. Reuses the
+        // existing cursor-motion chokepoint (there is no single cursor setter).
+        // Whole-buffer decorations (highlight / inlay / folding / semantic) are
+        // position-independent and re-fire single-flight via `maybe_request_*`,
+        // so they are intentionally excluded. See lsp-architecture §7 + §12.
+        if self.cursor != pre_cursor {
+            self.cancel_position_anchored_lsp_requests();
+        }
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c
@@ -381,6 +396,39 @@ impl Editor {
             .publish_batch_depth -= 1;
         self.publish_render_state();
         out
+    }
+
+    /// AW.2: cancel every in-flight *position-anchored* LSP lookup — the
+    /// one-shot browse/nav/hover requests whose result is meaningful only
+    /// while the cursor sits on the symbol they were fired from. Called from
+    /// [`Self::dispatch`] whenever a dispatch moved the cursor.
+    ///
+    /// For each pending request: cancel the [`CancellationToken`] (so the
+    /// server request is dropped and the actor frees the slot, per §7's
+    /// editor-driven supersession) and clear the receiver (so a result already
+    /// sitting in the channel is discarded rather than drained by
+    /// `run_tick_pending`). Also clears the nav bookkeeping (`pending_nav_kind`,
+    /// `pending_tag_origin`) so a superseded nav can't push a stale tag-stack
+    /// entry. Whole-buffer decorations are intentionally NOT cancelled here —
+    /// they are position-independent and self-correct via their single-flight
+    /// `maybe_request_*` pumps. See lsp-architecture §12.
+    fn cancel_position_anchored_lsp_requests(&mut self) {
+        if let Some(token) = self.pending_references_token.take() {
+            token.cancel();
+        }
+        self.pending_references_rx = None;
+
+        if let Some(token) = self.pending_definition_token.take() {
+            token.cancel();
+        }
+        self.pending_definition_rx = None;
+        self.pending_nav_kind = None;
+        self.pending_tag_origin = None;
+
+        if let Some(token) = self.pending_hover_token.take() {
+            token.cancel();
+        }
+        self.pending_hover_rx = None;
     }
 
     /// Slice I.7 — one-round-trip keystroke apply.
@@ -7809,10 +7857,13 @@ impl Editor {
         self.pending_signature_help_rx = Some(rx);
         self.pending_signature_help_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::NoServers);
+                async_landed.notify_one();
                 return;
             }
             for handle in handles {
@@ -7837,11 +7888,13 @@ impl Editor {
                     let body = crate::lsp_helpers::signature_help_to_markdown(&sh);
                     if !body.is_empty() {
                         let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::Body(body));
+                        async_landed.notify_one();
                         return;
                     }
                 }
             }
             let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::Body(String::new()));
+            async_landed.notify_one();
         });
     }
 
@@ -7898,10 +7951,13 @@ impl Editor {
         self.pending_completion_rx = Some(rx);
         self.pending_completion_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::CompletionOutcome::NoServers);
+                async_landed.notify_one();
                 return;
             }
             let mut all: Vec<lattice_lsp::cache::CompletionItemRow> = Vec::new();
@@ -7953,6 +8009,7 @@ impl Editor {
             });
             all.dedup_by(|a, b| a.label == b.label && a.kind_glyph == b.kind_glyph);
             let _ = tx.send(lattice_lsp::cache::CompletionOutcome::Items(all));
+            async_landed.notify_one();
         });
     }
 
@@ -7995,10 +8052,13 @@ impl Editor {
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::NoServers);
+                async_landed.notify_one();
                 return;
             }
             let mut all: Vec<lattice_lsp::cache::SymbolRow> = Vec::new();
@@ -8030,6 +8090,7 @@ impl Editor {
             });
             let title = format!("symbols ({})", all.len());
             let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows: all });
+            async_landed.notify_one();
         });
     }
 
@@ -8055,10 +8116,13 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.all_running_handles();
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::NoServers);
+                async_landed.notify_one();
                 return;
             }
             let mut all: Vec<lattice_lsp::cache::SymbolRow> = Vec::new();
@@ -8112,6 +8176,7 @@ impl Editor {
                 format!("workspace-symbols {query:?} ({})", all.len())
             };
             let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows: all });
+            async_landed.notify_one();
         });
     }
 
@@ -8166,10 +8231,17 @@ impl Editor {
         self.pending_references_rx = Some(rx);
         self.pending_references_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: the result is delivered over `tx` and drained by
+        // `run_tick_pending`; fire `async_landed` after each send so the
+        // actor drains + publishes + repaints the picker WITHOUT a keystroke.
+        // `async_landed` is the single renderer-agnostic wake (lsp-architecture
+        // §12); mirrors the decoration-request pattern.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::ReferencesOutcome::NoServers);
+                async_landed.notify_one();
                 return;
             }
             let mut all: Vec<lattice_lsp::lsp_types::Location> = Vec::new();
@@ -8207,6 +8279,7 @@ impl Editor {
                 symbol,
                 locations: all,
             });
+            async_landed.notify_one();
         });
     }
 
@@ -8311,6 +8384,9 @@ impl Editor {
         self.pending_definition_token = Some(token.clone());
         self.pending_nav_kind = Some(kind);
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the nav result lands so
+        // the actor jumps / opens the picker off-keystroke (§12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let mut all: Vec<lattice_lsp::lsp_types::Location> = Vec::new();
@@ -8394,6 +8470,7 @@ impl Editor {
             });
             all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
             let _ = tx.send(all);
+            async_landed.notify_one();
         });
     }
 
@@ -12828,6 +12905,8 @@ impl Editor {
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
         self.pending_code_action_handle = Some(handle.clone());
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             if token.is_cancelled() {
                 return;
@@ -12837,6 +12916,7 @@ impl Editor {
                 Err(_) => action,
             };
             let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Resolved(resolved));
+            async_landed.notify_one();
         });
     }
 
@@ -12939,10 +13019,15 @@ impl Editor {
         let logger = self.lsp_logger.clone();
         let request_started = std::time::Instant::now();
         let request_uri = uri.as_str().to_string();
-        // X1b: notify GPUI after the async hover result arrives so the
-        // first `K` renders the popup without waiting for the next
-        // keystroke to trigger run_tick_pending().
-        let paint_notify = self.paint_request.clone();
+        // AW.1: fire the single renderer-agnostic wake after the hover
+        // result lands so the first `K` renders the popup off-keystroke in
+        // BOTH peers. The previous `paint_request` clone only worked in
+        // GPUI (whose paint bridge drains `run_tick_pending`); the TUI
+        // `Wake::Repaint` redraws without draining, so the popup waited for
+        // the next key. `async_landed`'s actor arm drains + publishes +
+        // re-fires `paint_request` (the popup is a `paint_revision` surface),
+        // so both peers repaint. See lsp-architecture §12.
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             // Snapshot the attached handles under the supervisor
             // lock, then drop it before awaiting any per-server
@@ -12950,7 +13035,7 @@ impl Editor {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoServers);
-                paint_notify.notify_one();
+                async_landed.notify_one();
                 return;
             }
             let mut tried = 0usize;
@@ -12994,7 +13079,7 @@ impl Editor {
                                 ),
                             );
                             let _ = tx.send(lattice_lsp::cache::HoverOutcome::Body(body));
-                            paint_notify.notify_one();
+                            async_landed.notify_one();
                             return;
                         }
                         // Server replied but the body's empty.
@@ -13028,7 +13113,7 @@ impl Editor {
             let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoBody {
                 servers_tried: tried,
             });
-            paint_notify.notify_one();
+            async_landed.notify_one();
         });
     }
 
@@ -19735,6 +19820,8 @@ impl Editor {
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
@@ -19742,6 +19829,7 @@ impl Editor {
                 .find(|h| h.capabilities().supports_code_action());
             let Some(handle) = chosen else {
                 let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::NoProvider);
+                async_landed.notify_one();
                 return;
             };
             let params = lattice_lsp::lsp_types::CodeActionParams {
@@ -19773,8 +19861,10 @@ impl Editor {
                     })
                     .collect();
                 let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Items(rows));
+                async_landed.notify_one();
             } else {
                 let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Items(Vec::new()));
+                async_landed.notify_one();
             }
         });
     }
@@ -19848,6 +19938,8 @@ impl Editor {
             insert_final_newline: Some(true),
             trim_final_newlines: Some(true),
         };
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen: Option<lattice_lsp::ServerHandle> = handles.into_iter().find(|h| {
@@ -19862,6 +19954,7 @@ impl Editor {
                 let _ = tx.send(lattice_lsp::cache::FormatOutcome::NoProvider {
                     is_range: lsp_range.is_some(),
                 });
+                async_landed.notify_one();
                 return;
             };
             let edits: Option<Vec<lattice_lsp::lsp_types::TextEdit>> =
@@ -19895,6 +19988,7 @@ impl Editor {
                 };
             let edits = edits.unwrap_or_default();
             let _ = tx.send(lattice_lsp::cache::FormatOutcome::Edits(edits));
+            async_landed.notify_one();
         });
     }
 
@@ -19934,6 +20028,8 @@ impl Editor {
         self.pending_rename_rx = Some(rx);
         self.pending_rename_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
@@ -19941,6 +20037,7 @@ impl Editor {
                 .find(|h| h.capabilities().supports_rename());
             let Some(handle) = chosen else {
                 let _ = tx.send(lattice_lsp::cache::RenameOutcome::NoProvider);
+                async_landed.notify_one();
                 return;
             };
             let mut effective_name = new_name.clone();
@@ -19965,6 +20062,7 @@ impl Editor {
                         let _ = tx.send(lattice_lsp::cache::RenameOutcome::NotRenameable {
                             reason: "server refused rename at this position".into(),
                         });
+                        async_landed.notify_one();
                         return;
                     }
                     Err(_) => {}
@@ -19974,6 +20072,7 @@ impl Editor {
                 let _ = tx.send(lattice_lsp::cache::RenameOutcome::NotRenameable {
                     reason: "rename requires a new name".into(),
                 });
+                async_landed.notify_one();
                 return;
             }
             let params = lattice_lsp::lsp_types::RenameParams {
@@ -19991,15 +20090,18 @@ impl Editor {
                     let per_file = flatten_workspace_edit(workspace_edit);
                     if per_file.is_empty() {
                         let _ = tx.send(lattice_lsp::cache::RenameOutcome::Empty);
+                        async_landed.notify_one();
                     } else {
                         let _ = tx.send(lattice_lsp::cache::RenameOutcome::Edits {
                             per_file,
                             new_name: effective_name,
                         });
+                        async_landed.notify_one();
                     }
                 }
                 _ => {
                     let _ = tx.send(lattice_lsp::cache::RenameOutcome::Empty);
+                    async_landed.notify_one();
                 }
             }
         });
@@ -20054,6 +20156,8 @@ impl Editor {
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
         let direction_label = if outgoing { "outgoing" } else { "incoming" };
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let prepare_params = lattice_lsp::lsp_types::CallHierarchyPrepareParams {
                 text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
@@ -20072,6 +20176,7 @@ impl Editor {
                         title: format!("{direction_label}-calls (no item at cursor)"),
                         rows: Vec::new(),
                     });
+                    async_landed.notify_one();
                     return;
                 }
             };
@@ -20124,6 +20229,7 @@ impl Editor {
             });
             let title = format!("{direction_label}-calls of {item_name} ({})", rows.len());
             let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows });
+            async_landed.notify_one();
         });
     }
 
@@ -20175,6 +20281,8 @@ impl Editor {
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
         let direction_label = if subtypes { "subtypes" } else { "supertypes" };
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let prepare_params = lattice_lsp::lsp_types::TypeHierarchyPrepareParams {
                 text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
@@ -20193,6 +20301,7 @@ impl Editor {
                         title: format!("{direction_label} (no type at cursor)"),
                         rows: Vec::new(),
                     });
+                    async_landed.notify_one();
                     return;
                 }
             };
@@ -20237,6 +20346,7 @@ impl Editor {
             });
             let title = format!("{direction_label} of {item_name} ({})", rows.len());
             let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows });
+            async_landed.notify_one();
         });
     }
 
@@ -20275,6 +20385,8 @@ impl Editor {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         self.pending_moniker_rx = Some(rx);
         let token = lattice_protocol::CancellationToken::new();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let params = lattice_lsp::lsp_types::MonikerParams {
                 text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
@@ -20303,6 +20415,7 @@ impl Editor {
                 _ => "(none)".to_string(),
             };
             let _ = tx.send(outcome);
+            async_landed.notify_one();
         });
     }
 
@@ -21269,6 +21382,8 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
@@ -21276,6 +21391,7 @@ impl Editor {
                 .find(|h| h.capabilities().supports_on_type_formatting());
             let Some(handle) = chosen else {
                 let _ = tx.send(lattice_lsp::cache::FormatOutcome::NoProvider { is_range: false });
+                async_landed.notify_one();
                 return;
             };
             let params = lattice_lsp::lsp_types::DocumentOnTypeFormattingParams {
@@ -21293,6 +21409,7 @@ impl Editor {
                 .flatten()
                 .unwrap_or_default();
             let _ = tx.send(lattice_lsp::cache::FormatOutcome::Edits(edits));
+            async_landed.notify_one();
         });
     }
 
@@ -21906,6 +22023,8 @@ impl Editor {
         let sink = std::sync::Arc::new(InsertCompletionBatchingSink::new());
         let sink_for_fut = sink.clone();
         let token_for_fut = token.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
             fut.await;
@@ -21914,6 +22033,7 @@ impl Editor {
                 candidates,
                 is_incomplete,
             });
+            async_landed.notify_one();
         });
     }
 
@@ -22047,6 +22167,8 @@ impl Editor {
         self.pending_completion_resolve_rx = Some(rx);
         self.pending_completion_resolve_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handle = lsp
                 .servers_for(&uri)
@@ -22074,6 +22196,7 @@ impl Editor {
                 meta_index,
                 resolved,
             });
+            async_landed.notify_one();
         });
     }
 
@@ -23411,6 +23534,8 @@ impl Editor {
         self.pending_selection_range_rx = Some(rx);
         self.pending_selection_range_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
+        let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -23418,6 +23543,7 @@ impl Editor {
                 .find(|h| h.capabilities().supports_selection_range())
             else {
                 let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::NoProvider);
+                async_landed.notify_one();
                 return;
             };
             let params = lattice_lsp::lsp_types::SelectionRangeParams {
@@ -23431,6 +23557,7 @@ impl Editor {
                     let flat = crate::lsp_helpers::flatten_selection_range_chain(&ranges[0]);
                     if flat.is_empty() {
                         let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Empty);
+                        async_landed.notify_one();
                         return;
                     }
                     let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Items {
@@ -23439,9 +23566,11 @@ impl Editor {
                         ranges: flat,
                         pending_step: step,
                     });
+                    async_landed.notify_one();
                 }
                 _ => {
                     let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Empty);
+                    async_landed.notify_one();
                 }
             }
         });

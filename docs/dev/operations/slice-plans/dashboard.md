@@ -22,7 +22,7 @@ escape hatch — each slice landing green on its own.
 
 ## Slices
 
-### DB.1 — crate + section registry + fragment model + config  📝
+### DB.1 — crate + section registry + fragment model + config  ✅
 New leaf crate `lattice-dashboard`. Define `DashboardSection` trait,
 `DashboardRegistry` (ordered, id-keyed), `DashboardFragment` / `DashboardRow` /
 `DashboardSpan` / `DashboardRole` / `Align` / `LinkTarget` (design §3). Register
@@ -158,7 +158,7 @@ gated on the plugin host + theme-remap seam.
 
 | Slice | State |
 |---|---|
-| DB.1 — crate + registry + fragment + config | 📝 |
+| DB.1 — crate + registry + fragment + config | ✅ |
 | DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | 📝 |
 | DB.3 — `dashboard.*` theme elements | 📝 |
 | DB.4 — branding block (art + symmetry + centring) | 📝 |

@@ -227,7 +227,7 @@ gated on the plugin host + theme-remap seam.
 | DB.4 — branding block (art, colour, gutter-centring, help-mode, cursorline) | ✅ |
 | DB.4-cleanup — revert redundant `VirtualRowAlign` (gutter supersedes it) | ✅ |
 | DB.4-gpui — per-token virtual-row scaling (F.3) + scaled wordmark; side-by-side custom-paint lockup deferred (post-1.0 w/ image) | ✅ |
-| DB.5 — startup gating + mode-owned trigger | 📝 |
+| DB.5 — startup gating + mode-owned trigger | ✅ |
 | DB.6 — full override + recompose triggers | 📝 |
 | DB.7 — benches + ledger | 📝 |
 | DB.8 — plugin sections + body custom roles (deferred) | 📝 |

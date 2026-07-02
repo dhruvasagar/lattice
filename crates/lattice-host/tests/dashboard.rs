@@ -242,3 +242,125 @@ fn dashboard_reopen_is_idempotent() {
     let second = editor.buffers.by_name("*dashboard*").unwrap();
     assert_eq!(first, second, "re-opening must not create a second buffer");
 }
+
+// DB.5 — startup gating + mode-owned trigger.
+//
+// `lattice_dashboard::install`'s startup-trigger subscription (design.md
+// §9.1) spawns its wait-for-`Startup` task on the shared LSP runtime (the
+// same process-wide runtime `Editor::boot` hands every subsystem via
+// `boot.runtime_handle()`), so these tests need their own `#[tokio::test]`
+// runtime to `.await` the cross-runtime `async_landed` wake — same pattern
+// `lsp_async_wake.rs` (AW.1) uses.
+mod startup_gating {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use lattice_core::DocumentBuilder;
+    use lattice_dashboard::DashboardEnabled;
+
+    use super::*;
+
+    /// Simulate a renderer's post-boot seam: capture `opened_file` from the
+    /// `Document` BEFORE it moves into `Editor::boot` (mirrors
+    /// `lattice-ui-tui`'s `App::new` / `lattice-ui-gpui`'s `GpuiApp::new`),
+    /// boot, then publish `Startup` — exactly what DB.5 wires at both
+    /// renderer seams.
+    fn boot_with_startup(document: CoreDocument) -> Editor {
+        let opened_file = document.path().map(|p| p.to_path_buf());
+        let editor = Editor::boot(document);
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file });
+        editor
+    }
+
+    /// Wait (bounded) for the startup-trigger task to wake the editor, then
+    /// drain the tick so a pending `Effect::OpenDashboard` (if any) applies.
+    /// A bounded timeout, not an unconditional wait, because the
+    /// dashboard-disabled / file-arg cases never send anything — those
+    /// paths only need the timeout to elapse without a false failure.
+    async fn settle_startup_trigger(editor: &mut Editor) {
+        let _ = tokio::time::timeout(Duration::from_secs(2), editor.async_landed.notified()).await;
+        editor.run_tick_pending();
+    }
+
+    #[tokio::test]
+    async fn no_file_and_enabled_auto_opens_dashboard() {
+        let mut editor = boot_with_startup(CoreDocument::from_text("scratch\n"));
+        settle_startup_trigger(&mut editor).await;
+
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Dashboard,
+            "no file + dashboard.enabled (default true) should auto-open *dashboard*"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_arg_leaves_file_active_but_dashboard_stays_reachable() {
+        let doc = DocumentBuilder::default()
+            .with_text("fn main() {}\n")
+            .with_path(PathBuf::from("/tmp/db5_startup_gating_test.rs"))
+            .build();
+        let mut editor = boot_with_startup(doc);
+        settle_startup_trigger(&mut editor).await;
+
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Dashboard,
+            "opening with a file argument must not auto-show the dashboard"
+        );
+        // Reachable on demand — the applier is the same one `:dashboard` uses.
+        editor.do_open_dashboard();
+        assert_eq!(editor.active_buffer, BufferKind::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn disabled_skips_auto_open_but_command_still_works() {
+        let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+        editor
+            .config
+            .set_typed::<DashboardEnabled>(false)
+            .expect("dashboard.enabled should accept a bool");
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file: None });
+        settle_startup_trigger(&mut editor).await;
+
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Dashboard,
+            "dashboard.enabled=false must not auto-open *dashboard*"
+        );
+        editor.do_open_dashboard();
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Dashboard,
+            ":dashboard should still work on demand when auto-open is disabled"
+        );
+    }
+
+    /// Regression pin for the DB.5 `ConfigRegistry` hoist
+    /// (`editor_boot.rs`): `Arc<ConfigRegistry>` must land as a Phase-A
+    /// service (registered before the Phase-B install list runs), or
+    /// `lattice_dashboard::install`'s `boot.service::<Arc<ConfigRegistry>>()`
+    /// call — made synchronously, during Phase-B — permanently observes
+    /// `None` (a `ServiceRegistry` lookup from inside a Phase-B installer
+    /// can never see a registration added later in the same boot call).
+    /// Pinning service-availability post-boot guards against a future
+    /// refactor silently moving the registration back down.
+    #[test]
+    fn config_registry_is_resolvable_as_a_service_after_boot() {
+        let editor = boot();
+        assert!(
+            editor
+                .services
+                .get::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                .is_some(),
+            "Arc<ConfigRegistry> should be a resolvable service after boot — \
+             lattice_dashboard::install (and any other Phase-B installer) \
+             reads it synchronously during install, so it must be a Phase-A \
+             registration"
+        );
+    }
+}

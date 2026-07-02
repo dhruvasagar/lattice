@@ -3742,6 +3742,7 @@ dependencies = [
  "lattice-grammar",
  "lattice-mode",
  "lattice-theme",
+ "tokio",
  "tracing",
 ]
 

@@ -32,3 +32,11 @@ lattice-theme = { path = "../lattice-theme" }
 # DB.4: the branding block is a VirtualRowProvider building colored Cells.
 lattice-cells = { path = "../lattice-cells" }
 tracing = { workspace = true }
+# DB.5: the startup-trigger subscription (`install.rs`) spawns a one-shot
+# task on the shared runtime that waits for `lattice_mode::Startup`, so it
+# needs `tokio::sync::mpsc` for the channel and `rt` to call
+# `Handle::spawn`. This crate's own dependency subtree doesn't otherwise
+# pull in a full-featured `tokio` (unlike `lattice-host`), so both features
+# are declared explicitly rather than relying on workspace-build
+# unification.
+tokio = { workspace = true, features = ["sync", "rt"] }

@@ -98,6 +98,10 @@ pub mod modeline;
 pub mod modes;
 pub mod registry;
 pub mod services;
+// DB.5 (design.md §9.1): the generic `Startup` boot-completion typed event.
+// Declared here (alongside `ModeEvent`) so subsystem `install(&mut boot)`
+// fns can subscribe without a `lattice-host` dependency.
+pub mod startup;
 // IDE-protocol I1.1: the one generic host primitive — a per-tick drain
 // closure registry. Generalizes the host's hardcoded `drain_<x>` methods
 // so a mode owns its channel + drain body (`feedback_mode_owns_its_surface`).
@@ -136,6 +140,7 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::services::ServiceRegistry;
+pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;
 // BC.5: the host pushes the `<C-x>` leader layer (it owns the `KeymapHandle` +
 // config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys

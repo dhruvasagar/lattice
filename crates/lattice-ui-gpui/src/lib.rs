@@ -341,7 +341,14 @@ impl GpuiApp {
     /// this peer will call the same methods via its own renderer-
     /// signal handler.
     pub fn new(document: Document) -> Self {
+        // DB.5 (design.md §9.1): capture the opened-file path BEFORE
+        // `document` moves into `Editor::boot` (which consumes it) —
+        // mirrors the TUI seam in `lattice-ui-tui/src/app/boot.rs`.
+        let opened_file = document.path().map(|p| p.to_path_buf());
         let mut editor = Editor::boot(document);
+        // DB.5: publish `Startup` once `editor` exists, right after `boot`
+        // returns — see the TUI seam for the full rationale.
+        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
         let render_state = editor.render_state.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. The

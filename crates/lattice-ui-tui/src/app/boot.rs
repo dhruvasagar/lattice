@@ -26,9 +26,20 @@ use super::{App, BufferKind};
 
 impl App {
     pub fn new(document: Document) -> Self {
+        // DB.5 (design.md §9.1): capture the opened-file path BEFORE
+        // `document` moves into `Editor::boot` (which consumes it) — this
+        // is the only point where the renderer still owns the `Document`.
+        let opened_file = document.path().map(|p| p.to_path_buf());
         // Phase 5.7.B.1: the renderer-neutral construction body
         // moved to `lattice_host::editor::Editor::boot`.
         let mut editor = lattice_host::editor::Editor::boot(document);
+        // DB.5: publish `Startup` once `editor` exists (right after `boot`
+        // returns), so `lattice_dashboard::install`'s subscription (wired
+        // during `boot`, Phase-B) can decide whether to auto-open
+        // `*dashboard*`. One publish per boot, TUI + GPUI both wire this at
+        // their own post-boot seam; the subscription itself lives once in
+        // `lattice-dashboard`.
+        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
         // Slice 3c.atomic.A: renderer-side clone of the editor's
         // RenderState cell, captured before Editor moves to the
         // actor thread.

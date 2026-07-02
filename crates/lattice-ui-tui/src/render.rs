@@ -342,39 +342,17 @@ pub fn draw_frame(
     // and does NOT allocate an extra band -- the centered
     // overlay is drawn on top of the buffer area instead.
     let picker_is_minibuffer = picker_display_is_minibuffer(app);
-    // Slice 3c.final.E.5j: picker / completion popup row counts
-    // read from the published `picker_state()` / `completion()`
-    // sub-states (already populated by slice B.3).
-    let picker_rows = if picker_is_minibuffer {
-        app.picker_state()
-            .state
-            .as_deref()
-            .map(|p| popup_height(p.candidates.len().max(1)))
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    // Slice 3c.gpui-cmdline-completion: cmdline-completion honors
-    // the same `picker.display` setting as the picker. In minibuffer
-    // mode it claims strip rows below the buffer area; in popup
-    // mode it floats centered over the buffer like the picker
-    // overlay, so the strip count is zero.
-    let completion_rows = if picker_is_minibuffer {
-        app.completion()
-            .state
-            .as_deref()
-            .map(|s| popup_height(s.candidates.len()))
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let extra_rows = picker_rows.max(completion_rows);
+    // `chrome_rows` is the single source of truth for tabline + candidate-
+    // band rows, shared with the runtime loop's viewport/pane-rect push
+    // (see its doc comment) — this and that push can no longer diverge.
+    let chrome = chrome_rows(app);
+    let extra_rows = chrome.extra();
 
     // Issue #29 (2026-05-22): tabline row at the top. Visibility
     // is resolved by the publisher (`build_tabs_render_state`)
     // based on `tabline.show` × tabs.len().
-    let tabline_visible = app.render_state.load().tabs.visible;
-    let tabline_rows: u16 = if tabline_visible { 1 } else { 0 };
+    let tabline_rows: u16 = chrome.tabline;
+    let tabline_visible = tabline_rows > 0;
 
     // MO.4.b / Option-A: global modeline removed. Each pane owns its
     // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
@@ -435,9 +413,9 @@ pub fn draw_frame(
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
-    if picker_rows > 0 {
+    if chrome.picker > 0 {
         draw_picker_candidates(frame, chunks[3], app);
-    } else if completion_rows > 0 {
+    } else if chrome.completion > 0 {
         draw_completion_popup(frame, chunks[3], app);
     }
     // Picker popup overlay -- only drawn when `picker.display`
@@ -519,6 +497,63 @@ fn draw_tabline(frame: &mut Frame, area: Rect, app: &App) {
 fn popup_height(candidate_count: usize) -> usize {
     const MAX_ROWS: usize = 10;
     candidate_count.min(MAX_ROWS).max(1)
+}
+
+/// Rows outside the buffer area: the tabline (0/1) and the picker/
+/// completion candidate band (0 when neither is open, or when
+/// `picker.display = "popup"` floats it over the buffer instead of
+/// claiming a strip).
+pub(crate) struct ChromeRows {
+    pub tabline: u16,
+    pub picker: u16,
+    pub completion: u16,
+}
+
+impl ChromeRows {
+    /// The candidate-band height: picker takes precedence when both are
+    /// open (only one is interactively reachable at a time).
+    pub fn extra(&self) -> u16 {
+        self.picker.max(self.completion)
+    }
+}
+
+/// SINGLE source of truth for [`ChromeRows`]. Before this existed,
+/// `draw_frame`'s paint layout and the runtime loop's viewport / pane-rect
+/// push each computed these rows independently (the runtime loop even had
+/// its own hand-synced copy of `popup_height`, `popup_height_for`,
+/// explicitly commented "kept in sync by hand for now"). The tabline term
+/// was missing from the runtime's copy entirely: the scroll/viewport logic
+/// believed it had one more row than `draw_frame` actually painted, so the
+/// last visible line (by the viewport's reckoning) was never drawn once the
+/// tabline showed. `popup_feedback_inner_dims` no longer needs its own
+/// local tabline recomputation either — callers pass a `buffer_height`
+/// that already excludes it via this function.
+pub(crate) fn chrome_rows(app: &App) -> ChromeRows {
+    let tabline = if app.render_state.load().tabs.visible { 1 } else { 0 };
+    let picker_is_minibuffer = picker_display_is_minibuffer(app);
+    let picker_rows = if picker_is_minibuffer {
+        app.picker_state()
+            .state
+            .as_deref()
+            .map(|p| popup_height(p.candidates.len().max(1)))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let completion_rows = if picker_is_minibuffer {
+        app.completion()
+            .state
+            .as_deref()
+            .map(|s| popup_height(s.candidates.len()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    ChromeRows {
+        tabline,
+        picker: picker_rows as u16,
+        completion: completion_rows as u16,
+    }
 }
 
 /// Vertico-style cmdline completion popup (DESIGN.md §5.11.3,
@@ -1777,11 +1812,12 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
 /// Returns `None` when no FLOATING popup is open (no popup, or help is
 /// shown as an in-pane leaf — that case is a real pane). The buffer
 /// area is reconstructed from the terminal width + the runtime's
-/// already-resolved `buffer_height` (terminal minus cmdline/candidate
-/// rows) minus the tabline row, so the `popup_outer_size` inputs match
-/// exactly what `draw_help_overlay` paints into — the synthetic
-/// popup-pane matrix and the painted box agree on width. Inner =
-/// outer − 2 (the `Borders::ALL` block).
+/// already-resolved `buffer_height`, so the `popup_outer_size` inputs
+/// match exactly what `draw_help_overlay` paints into — the synthetic
+/// popup-pane matrix and the painted box agree on width. `buffer_height`
+/// already excludes the tabline row (the caller computes it via
+/// `chrome_rows`, the single source of truth — no local recomputation
+/// here). Inner = outer − 2 (the `Borders::ALL` block).
 pub(crate) fn popup_feedback_inner_dims(
     app: &App,
     terminal_width: u16,
@@ -1796,19 +1832,10 @@ pub(crate) fn popup_feedback_inner_dims(
         return None;
     }
     let help = app.popup_help()?;
-    // `draw_frame`'s `chunks[1]` (the buffer area the overlay sizes
-    // against) is the terminal minus the tabline (0/1) and the
-    // cmdline/candidate band the runtime folded into `buffer_height`.
-    let tabline_rows: u32 = if app.render_state.load().tabs.visible {
-        1
-    } else {
-        0
-    };
-    let buffer_h = buffer_height.saturating_sub(tabline_rows);
     let line_count = u16::try_from(help.line_count().max(1)).unwrap_or(u16::MAX);
     let (outer_w, outer_h) = lattice_core::ui::popup::popup_outer_size(
         terminal_width,
-        u16::try_from(buffer_h).unwrap_or(u16::MAX),
+        u16::try_from(buffer_height).unwrap_or(u16::MAX),
         line_count,
         app.popup().placement,
     );
@@ -6007,6 +6034,90 @@ mod tests {
         // through the cells / `DisplayMatrix` substrate (rebuilt on
         // publish); no explicit prime is needed for these render tests.
         a
+    }
+
+    /// `chrome_rows` is the single source of truth the runtime loop and
+    /// `draw_frame` both read; verify it actually reflects tabline
+    /// visibility (Auto mode: visible iff more than one tab is open).
+    #[test]
+    fn chrome_rows_reflects_tabline_visibility() {
+        let mut a = app_with("one\ntwo\nthree\n", 10);
+        assert_eq!(chrome_rows(&a).tabline, 0, "single tab: no tabline row");
+        a.editor.do_new_tab();
+        a.editor.publish_render_state();
+        assert_eq!(chrome_rows(&a).tabline, 1, "two tabs: tabline claims one row");
+    }
+
+    /// Regression guard for the "last line off-screen once the tabline is
+    /// visible" bug: the runtime loop's `buffer_height` formula (terminal
+    /// height minus cmdline, tabline, and candidate-band rows) must always
+    /// equal the pane area `draw_frame` actually lays out via the ratatui
+    /// `Layout`. Before this fix the runtime's copy never subtracted the
+    /// tabline row at all, so the viewport/scroll logic believed it had one
+    /// more row to show than `draw_frame` ever painted — the "last" line by
+    /// its reckoning was never physically drawn. Both sides now read
+    /// `chrome_rows`, so this test also guards against a future edit
+    /// reintroducing a hand-duplicated, divergent copy of either formula.
+    #[test]
+    fn runtime_buffer_height_matches_draw_frame_pane_area_with_tabline() {
+        let mut a = app_with("one\ntwo\nthree\n", 10);
+        a.editor.do_new_tab();
+        a.editor.publish_render_state();
+        let chrome = chrome_rows(&a);
+        assert_eq!(chrome.tabline, 1, "precondition: tabline visible");
+
+        let terminal_width: u16 = 80;
+        let terminal_height: u16 = 40;
+        // Mirrors `runtime.rs`'s `buffer_height` formula exactly.
+        let runtime_buffer_height = terminal_height
+            .saturating_sub(1)
+            .saturating_sub(chrome.tabline)
+            .saturating_sub(chrome.extra());
+
+        // Mirrors `draw_frame`'s own Layout constraints (no candidate band
+        // open in this scenario).
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chrome.tabline),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(Rect::new(0, 0, terminal_width, terminal_height));
+
+        assert_eq!(
+            runtime_buffer_height, chunks[1].height,
+            "runtime's buffer_height must equal draw_frame's actual pane-area \
+             height — a mismatch means the viewport/scroll logic and the paint \
+             layout disagree on how many rows are visible"
+        );
+    }
+
+    /// Same invariant as above, tabline hidden (single tab) — the two
+    /// computations must still agree when there's nothing extra to reserve.
+    #[test]
+    fn runtime_buffer_height_matches_draw_frame_pane_area_without_tabline() {
+        let a = app_with("one\ntwo\nthree\n", 10);
+        let chrome = chrome_rows(&a);
+        assert_eq!(chrome.tabline, 0, "precondition: tabline hidden");
+
+        let terminal_width: u16 = 80;
+        let terminal_height: u16 = 40;
+        let runtime_buffer_height = terminal_height
+            .saturating_sub(1)
+            .saturating_sub(chrome.tabline)
+            .saturating_sub(chrome.extra());
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chrome.tabline),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(Rect::new(0, 0, terminal_width, terminal_height));
+
+        assert_eq!(runtime_buffer_height, chunks[1].height);
     }
 
     fn line_text(line: &Line<'_>) -> String {

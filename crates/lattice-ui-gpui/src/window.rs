@@ -182,6 +182,30 @@ pub(crate) fn popup_body_h_px(popup_h_px: f32, rem: f32, row_px: f32) -> f32 {
     (popup_h_px - popup_chrome_v_px(rem, row_px)).max(row_px)
 }
 
+/// The real line height GPUI resolves for plain UI text — the per-pane
+/// modeline/status row and the global cmdline row — at the `text_sm` font
+/// size (0.875rem). Those elements are `div().child(text)` and never call
+/// `.line_height(...)`, so they get GPUI's DEFAULT `TextStyle::line_height`
+/// (`phi()`, the golden ratio, ≈1.618× font_size) — NOT the `1.3×`
+/// multiplier `EditorElement` uses for its own content rows (an explicit,
+/// unrelated override at `editor_element.rs:618`). A prior version of this
+/// file reused the `1.3×` content-row estimate for these UI rows too,
+/// undercounting their real height by ~25%: the per-pane chrome budget came
+/// out too small, the computed row count one too many, and the extra row
+/// was silently clipped by `overflow_hidden` right where the modeline
+/// starts ("last line behind the modeline," independent of the tabline).
+/// Measured via GPUI's own `TextStyle::line_height_in_pixels` so this can't
+/// silently drift from GPUI's actual default again.
+pub(crate) fn default_ui_row_px(rem_size: gpui::Pixels) -> f32 {
+    f32::from(
+        gpui::TextStyle {
+            font_size: gpui::rems(0.875).into(),
+            ..Default::default()
+        }
+        .line_height_in_pixels(rem_size),
+    )
+}
+
 /// Reads the typed `picker.display` option and returns `true` iff
 /// the user wants the vertico-style minibuffer layout (default).
 /// Unknown / missing values fall back to the design default rather
@@ -3056,9 +3080,14 @@ impl Render for EditorView {
         let pane_padding_v_px = rem * 0.75 * 2.0; // .p_3() top + bottom = 1.5rem
         let pane_padding_h_px = rem * 0.75 * 2.0; // .p_3() left + right = 1.5rem
         let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let pane_status_row_px = estimated_row_px; // status text line
+        // 2026-07-02 (regression #3 of the same class as Issue #17 and the
+        // popup fix, d7c5f450): see `default_ui_row_px`'s doc — the
+        // modeline/status row and the global cmdline row resolve to GPUI's
+        // default line height (phi), not `estimated_row_px`'s 1.3x.
+        let default_row_px: f32 = default_ui_row_px(window.rem_size());
+        let pane_status_row_px = default_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let global_bottom_row_px = estimated_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
+        let global_bottom_row_px = default_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
         let per_leaf_v_chrome_px =
             pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
         let per_leaf_h_chrome_px = pane_padding_h_px;
@@ -4641,7 +4670,7 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 
 #[cfg(test)]
 mod popup_geometry_tests {
-    use super::{popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
+    use super::{default_ui_row_px, popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
 
     /// The popup body div must hold every inner row WITH slack, and never
     /// overflow the popup. Regression guard for the "last line partially
@@ -4676,6 +4705,42 @@ mod popup_geometry_tests {
         assert!(
             body > rows as f32 * 18.0,
             "expected rounding slack; re-flooring the body would regress the clip"
+        );
+    }
+
+    /// Regression guard for the "last line behind the modeline" bug
+    /// (independent of the tabline, GPUI-only): the modeline/status row
+    /// and the global cmdline row resolve to GPUI's DEFAULT `TextStyle`
+    /// line height (phi, the golden ratio ≈1.618×), not `EditorElement`'s
+    /// own 1.3× content-row multiplier. A prior version of this file
+    /// reused the 1.3× estimate for these UI rows, undercounting their
+    /// real height and reserving too little chrome — the pane geometry
+    /// computed one row too many, and the extra row was clipped by
+    /// `overflow_hidden` right under the modeline. This pins the
+    /// default-row measurement to the actual golden-ratio formula so a
+    /// future edit can't silently reintroduce the 1.3× estimate here.
+    #[test]
+    fn default_ui_row_px_uses_golden_ratio_not_content_row_multiplier() {
+        let rem = gpui::px(16.0);
+        let font_size_px = 16.0 * 0.875; // text_sm()
+        let content_row_px = font_size_px * 1.3; // EditorElement::line_height
+        let ui_row_px = default_ui_row_px(rem);
+
+        // GPUI's default TextStyle::line_height is phi() ≈ 1.618×, which
+        // is meaningfully taller than EditorElement's 1.3× — the two must
+        // NOT collapse to the same value, or this fix has regressed.
+        assert!(
+            ui_row_px > content_row_px * 1.1,
+            "default UI row height ({ui_row_px}) must exceed the content \
+             row estimate ({content_row_px}) by a wide margin — reusing \
+             the content-row multiplier here is exactly the bug this \
+             guards against"
+        );
+        // Sanity bound: phi × font_size, rounded to the nearest pixel.
+        let expected = (font_size_px * 1.618_034).round();
+        assert!(
+            (ui_row_px - expected).abs() < 1.0,
+            "expected ~{expected}px (phi × font_size), got {ui_row_px}"
         );
     }
 }

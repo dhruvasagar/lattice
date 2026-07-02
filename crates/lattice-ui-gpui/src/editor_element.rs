@@ -416,23 +416,75 @@ pub(crate) struct EditorElement {
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
 pub(crate) struct EditorElementLayoutState;
 
-/// F.2 (Thread F): a heading row split into a base-size leading marker
-/// prefix (`# `/`## `) + a scaled title, so only the title scales
-/// (emacs `markdown-header-delimiter-face` keeps the markers base-size).
-/// Both paint paths read this for a scaled row: the active cell path
-/// paints the two column ranges at base / scaled advance sharing one
-/// baseline; the fallback (inactive / folded) path paints
-/// `prefix_shaped` + `title_shaped` side by side. `None` for ordinary
-/// rows (the untouched fast path).
-struct HeadingSplit {
-    /// Leading display columns rendered at base size (the markers).
-    prefix_cols: u32,
-    /// The title's scale (`> 1.0`).
-    title_scale: f32,
-    /// Prefix shaped at base size — fallback path.
-    prefix_shaped: ShapedLine,
-    /// Title shaped at `font_size * title_scale` — fallback path.
-    title_shaped: ShapedLine,
+/// F.2/F.3 (Thread F): a display row whose columns are NOT uniformly the
+/// base font size — one or more contiguous column runs render at a larger
+/// scale, all sharing ONE baseline (the emacs markdown-heading model: the
+/// `#`/`##` markers stay base-size, the title scales). F.2 introduced this
+/// for headings as a fixed 2-piece split; F.3 generalizes it to N pieces
+/// so **virtual rows** (the dashboard branding wordmark) get the same
+/// per-token scaling.
+///
+/// A heading is the 2-piece case `[base markers][scaled title]`; a
+/// branding row is `[base mark blocks][base gap][scaled wordmark]`; any
+/// `VirtualRow::scales` pattern maps to its coalesced runs. `None` for
+/// ordinary uniform rows (the untouched fast path).
+///
+/// Both paint paths read this: the active cell path paints each piece's
+/// column range at its scaled advance sharing one baseline; the fallback
+/// (inactive / folded / virtual-row) path paints each piece's pre-shaped
+/// line side by side. A `ScaledLine` always holds ≥ 1 piece and at least
+/// one piece with `scale > 1.0` (a fully-base row is the `None` fast path).
+struct ScaledLine {
+    /// Pieces in column order, contiguous, covering the whole row.
+    pieces: Vec<ScaledPiece>,
+    /// The tallest piece scale — the row's height multiplier
+    /// (`row_scale`) and the shared-baseline ascent factor.
+    max_scale: f32,
+}
+
+/// One contiguous run of display columns at a single scale within a
+/// [`ScaledLine`].
+struct ScaledPiece {
+    /// First display column of this piece.
+    start_col: u32,
+    /// Number of display columns the piece spans.
+    cols: u32,
+    /// Font scale (`1.0` = base). Shaped at `font_size * scale`.
+    scale: f32,
+    /// The piece's text shaped at `font_size * scale` — fallback path.
+    shaped: ShapedLine,
+}
+
+impl ScaledLine {
+    /// The piece containing display column `col`, if any.
+    fn piece_at(&self, col: u32) -> Option<&ScaledPiece> {
+        self.pieces
+            .iter()
+            .find(|p| col >= p.start_col && col < p.start_col + p.cols)
+    }
+
+    /// The font scale at display column `col` (`1.0` past the last piece).
+    fn scale_at(&self, col: u32) -> f32 {
+        self.piece_at(col).map(|p| p.scale).unwrap_or(1.0)
+    }
+
+    /// The x offset (in `advance` units, from the row's text origin) of
+    /// display column `col`, summing each preceding piece's scaled
+    /// advance plus the partial advance within the piece holding `col`.
+    /// `col` at/after the row end returns the full scaled width.
+    fn x_offset(&self, col: u32, advance: Pixels) -> Pixels {
+        let mut x = Pixels::ZERO;
+        for p in &self.pieces {
+            let end = p.start_col + p.cols;
+            if col >= end {
+                x += advance * p.scale * (p.cols as f32);
+            } else {
+                x += advance * p.scale * (col.saturating_sub(p.start_col) as f32);
+                return x;
+            }
+        }
+        x
+    }
 }
 
 /// State produced in `prepaint`, consumed by `paint`.
@@ -546,7 +598,7 @@ pub(crate) struct EditorElementPrepaintState {
     /// title). `Some` only for scaled heading rows; `None` for ordinary
     /// rows (1:1 with `shaped_text`). Drives the title-only scaling in
     /// both paint paths so the leading `#` markers stay base-size.
-    row_split: Vec<Option<HeadingSplit>>,
+    row_split: Vec<Option<ScaledLine>>,
     /// L4a.3 (lsp-architecture.md §15): the inline cursor-line
     /// diagnostic summary, pre-shaped, as `(viewport_row, shaped)`.
     /// `Some` only when `self.inline_diag_summary` is set and its line
@@ -684,7 +736,7 @@ impl Element for EditorElement {
         // glyph advance / font metrics. The TUI peer has no analogue.
         let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
         // F.2: per-row heading split (None for ordinary rows).
-        let mut row_split: Vec<Option<HeadingSplit>> = Vec::with_capacity(row_capacity);
+        let mut row_split: Vec<Option<ScaledLine>> = Vec::with_capacity(row_capacity);
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
@@ -1477,15 +1529,13 @@ impl Element for EditorElement {
                                     underline: None,
                                     strikethrough: None,
                                 }];
-                                // F.2: a block cursor on a heading row
+                                // F.2/F.3: a block cursor on a scaled row
                                 // shapes its covered char at that column's
                                 // scale — base over the markers, scaled
                                 // over the title — so the re-stamped glyph
                                 // matches the underlying text.
                                 let cur_scale = match row_split.get(cursor_row as usize) {
-                                    Some(Some(split)) if body_col >= split.prefix_cols => {
-                                        split.title_scale
-                                    }
+                                    Some(Some(sl)) => sl.scale_at(body_col),
                                     _ => 1.0,
                                 };
                                 Some(window.text_system().shape_line(
@@ -1626,26 +1676,23 @@ impl Element for EditorElement {
                 .unwrap_or(bounds.origin.y + line_height * (i as f32))
         };
         let row_h = |i: usize| -> Pixels { row_heights.get(i).copied().unwrap_or(line_height) };
-        // F.2: title-only scaling makes the glyph advance NON-uniform
-        // within a heading row — base over the leading markers, scaled
-        // over the title. `col_x` maps a display column to its x pixel;
+        // F.2/F.3: per-token scaling makes the glyph advance NON-uniform
+        // within a scaled row — base over the base pieces, scaled over the
+        // scaled ones. `col_x` maps a display column to its x pixel;
         // `col_scale` gives that column's font scale. Ordinary rows (no
         // split) reduce to the uniform `text_origin_x + advance * col`.
         let row_split = &prepaint.row_split;
         let col_scale = |i: usize, col: u32| -> f32 {
             match row_split.get(i) {
-                Some(Some(split)) if col >= split.prefix_cols => split.title_scale,
+                Some(Some(sl)) => sl.scale_at(col),
                 _ => 1.0,
             }
         };
         let col_x = |i: usize, col: u32| -> Pixels {
             match row_split.get(i) {
-                Some(Some(split)) if col > split.prefix_cols => {
-                    // Heading title: no h-scroll offset yet (follow-up).
-                    text_origin_x
-                        + advance * (split.prefix_cols as f32)
-                        + advance * split.title_scale * ((col - split.prefix_cols) as f32)
-                }
+                // Scaled rows: sum each preceding piece's scaled advance.
+                // No h-scroll offset on scaled content yet (follow-up).
+                Some(Some(sl)) => text_origin_x + sl.x_offset(col, advance),
                 // Ordinary rows pan left by `leftcol` (wrap off).
                 _ => text_origin_x + advance * (col.saturating_sub(leftcol) as f32),
             }
@@ -1810,69 +1857,62 @@ impl Element for EditorElement {
                                 {
                                     false
                                 } else {
-                                    // F.2 (Thread F): a heading row paints
-                                    // in two pieces sharing ONE baseline —
-                                    // the markers at base size, the title at
-                                    // `title_scale` — so only the title
-                                    // scales (emacs markdown convention).
-                                    // Ordinary rows paint once at base
-                                    // (byte-identical to pre-F.2). LG.1
-                                    // ligatures-on emits bg-only here +
-                                    // glyphs via the ShapedLine fallback.
+                                    // F.2/F.3 (Thread F): a scaled row paints
+                                    // in N pieces sharing ONE baseline — each
+                                    // piece's column run at its own scale
+                                    // (base markers, scaled title; base mark
+                                    // blocks, scaled wordmark). Ordinary rows
+                                    // paint once at base (byte-identical to
+                                    // pre-F.2). LG.1 ligatures-on emits bg-only
+                                    // here + glyphs via the ShapedLine
+                                    // fallback.
                                     match row_split.get(i) {
-                                        Some(Some(sp)) => {
-                                            // Shared baseline = the title's
-                                            // (taller) ascent, so the base
-                                            // markers sit on the title's
-                                            // baseline.
+                                        Some(Some(sl)) => {
+                                            // Shared baseline = the tallest
+                                            // piece's ascent, so base pieces
+                                            // sit on the scaled baseline.
                                             let shared_ascent =
-                                                prepaint.text_ascent * sp.title_scale;
-                                            let pn = (sp.prefix_cols as usize)
-                                                .min(seg_cells.len());
-                                            let (pre, title) = seg_cells.split_at(pn);
-                                            let title_origin = point(
-                                                origin.x + advance * (pn as f32),
-                                                line_y,
-                                            );
-                                            if ligatures {
-                                                crate::paint_cells::paint_cells_row_bg_only(
-                                                    pre, origin, advance, row_h(i), window,
+                                                prepaint.text_ascent * sl.max_scale;
+                                            for p in &sl.pieces {
+                                                let start = (p.start_col as usize)
+                                                    .min(seg_cells.len());
+                                                let end = ((p.start_col + p.cols)
+                                                    as usize)
+                                                    .min(seg_cells.len());
+                                                let piece_cells = &seg_cells[start..end];
+                                                let piece_origin = point(
+                                                    origin.x + sl.x_offset(
+                                                        p.start_col,
+                                                        advance,
+                                                    ),
+                                                    line_y,
                                                 );
-                                                crate::paint_cells::paint_cells_row_bg_only(
-                                                    title,
-                                                    title_origin,
-                                                    advance * sp.title_scale,
-                                                    row_h(i),
-                                                    window,
-                                                );
-                                                false
-                                            } else {
-                                                crate::paint_cells::paint_cells_row(
-                                                    pre,
-                                                    origin,
-                                                    advance,
-                                                    row_h(i),
-                                                    shared_ascent,
-                                                    &prepaint.font,
-                                                    prepaint.font_size,
-                                                    self.theme.foreground,
-                                                    &self.glyph_resolver,
-                                                    window,
-                                                );
-                                                crate::paint_cells::paint_cells_row(
-                                                    title,
-                                                    title_origin,
-                                                    advance * sp.title_scale,
-                                                    row_h(i),
-                                                    shared_ascent,
-                                                    &prepaint.font,
-                                                    prepaint.font_size * sp.title_scale,
-                                                    self.theme.foreground,
-                                                    &self.glyph_resolver,
-                                                    window,
-                                                );
-                                                true
+                                                if ligatures {
+                                                    crate::paint_cells::paint_cells_row_bg_only(
+                                                        piece_cells,
+                                                        piece_origin,
+                                                        advance * p.scale,
+                                                        row_h(i),
+                                                        window,
+                                                    );
+                                                } else {
+                                                    crate::paint_cells::paint_cells_row(
+                                                        piece_cells,
+                                                        piece_origin,
+                                                        advance * p.scale,
+                                                        row_h(i),
+                                                        shared_ascent,
+                                                        &prepaint.font,
+                                                        prepaint.font_size * p.scale,
+                                                        self.theme.foreground,
+                                                        &self.glyph_resolver,
+                                                        window,
+                                                    );
+                                                }
                                             }
+                                            // ligatures: glyphs still come
+                                            // from the ShapedLine fallback.
+                                            !ligatures
                                         }
                                         _ => {
                                             if ligatures {
@@ -1912,32 +1952,37 @@ impl Element for EditorElement {
                 false
             };
             if !painted_via_cells {
-                // F.2: fallback (inactive / folded / ligatures-glyph) path.
-                // A heading row paints its pre-shaped marker prefix (base)
-                // + title (scaled) side by side, sharing one baseline so
-                // the markers stay base-size — kept consistent with the
-                // active cell path above so a focus change never resizes
-                // anything ([[feedback_decorations_update_in_place]]).
+                // F.2/F.3: fallback (inactive / folded / ligatures-glyph /
+                // virtual-row) path. A scaled row paints its N pre-shaped
+                // pieces side by side, all sharing one baseline so base
+                // pieces stay base-size — kept consistent with the active
+                // cell path above so a focus change never resizes anything
+                // ([[feedback_decorations_update_in_place]]).
                 match row_split.get(i) {
-                    Some(Some(sp)) => {
+                    Some(Some(sl)) => {
                         // Align baselines: gpui paints a line's baseline at
                         // `origin.y + (line_height + ascent - descent)/2`
-                        // (text_system/line.rs). Shift the base prefix down
-                        // so its baseline matches the taller title's.
+                        // (text_system/line.rs). The tallest piece defines
+                        // the baseline (painted at `line_y`); every shorter
+                        // piece shifts DOWN so its baseline matches.
                         let h = row_h(i);
-                        let prefix_y = line_y
-                            + ((sp.title_shaped.ascent - sp.title_shaped.descent)
-                                - (sp.prefix_shaped.ascent - sp.prefix_shaped.descent))
-                                * 0.5;
-                        let title_x =
-                            text_origin_x + advance * (sp.prefix_cols as f32);
-                        let _ = sp.prefix_shaped.paint(
-                            point(text_origin_x, prefix_y),
-                            h,
-                            window,
-                            cx,
-                        );
-                        let _ = sp.title_shaped.paint(point(title_x, line_y), h, window, cx);
+                        let max_ad = sl
+                            .pieces
+                            .iter()
+                            .map(|p| p.shaped.ascent - p.shaped.descent)
+                            .fold(Pixels::ZERO, |a, b| if b > a { b } else { a });
+                        for p in &sl.pieces {
+                            let piece_ad = p.shaped.ascent - p.shaped.descent;
+                            let piece_y = line_y + (max_ad - piece_ad) * 0.5;
+                            let piece_x =
+                                text_origin_x + sl.x_offset(p.start_col, advance);
+                            let _ = p.shaped.paint(
+                                point(piece_x, piece_y),
+                                h,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                     _ => {
                         if let Err(err) = shaped_line.paint(origin, row_h(i), window, cx) {
@@ -2436,7 +2481,7 @@ fn push_wrapped_doc_row(
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
-    row_split: &mut Vec<Option<HeadingSplit>>,
+    row_split: &mut Vec<Option<ScaledLine>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -2492,35 +2537,50 @@ fn push_wrapped_doc_row(
         }
         row_meta.push((line_idx, line_text.to_string()));
         row_segment.push(seg);
-        // F.2: build the heading split for an eligible (single-segment)
-        // scaled row — the markers shaped at base, the title at
-        // `font_size * title_scale`, both for the fallback paint path. The
-        // row's height multiplier (`row_scale`) is `title_scale`. Ordinary
+        // F.2/F.3: build the scaled line for an eligible (single-segment)
+        // heading row — the markers shaped at base, the title at
+        // `font_size * title_scale`, both for the fallback paint path. This
+        // is the 2-piece case of the general N-piece `ScaledLine` (virtual
+        // rows build N pieces from `VirtualRow::scales`). The row's height
+        // multiplier (`row_scale`) is the tallest piece scale. Ordinary
         // rows push `None` + `1.0` (fast path).
         match heading {
             Some((prefix_cols, title_scale)) => {
-                let (pre_text, pre_runs) =
-                    slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                let mut pieces: Vec<ScaledPiece> = Vec::with_capacity(2);
+                if prefix_cols > 0 {
+                    let (pre_text, pre_runs) =
+                        slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                    let prefix_shaped = window.text_system().shape_line(
+                        SharedString::from(pre_text),
+                        font_size,
+                        &pre_runs,
+                        None,
+                    );
+                    pieces.push(ScaledPiece {
+                        start_col: 0,
+                        cols: prefix_cols,
+                        scale: 1.0,
+                        shaped: prefix_shaped,
+                    });
+                }
                 let (title_text, title_runs) =
                     slice_runs_to_char_range(combined, runs, prefix_cols as usize, total_chars);
-                let prefix_shaped = window.text_system().shape_line(
-                    SharedString::from(pre_text),
-                    font_size,
-                    &pre_runs,
-                    None,
-                );
                 let title_shaped = window.text_system().shape_line(
                     SharedString::from(title_text),
                     font_size * title_scale,
                     &title_runs,
                     None,
                 );
+                pieces.push(ScaledPiece {
+                    start_col: prefix_cols,
+                    cols: (total_chars as u32).saturating_sub(prefix_cols),
+                    scale: title_scale,
+                    shaped: title_shaped,
+                });
                 row_scale.push(title_scale);
-                row_split.push(Some(HeadingSplit {
-                    prefix_cols,
-                    title_scale,
-                    prefix_shaped,
-                    title_shaped,
+                row_split.push(Some(ScaledLine {
+                    pieces,
+                    max_scale: title_scale,
                 }));
             }
             None => {
@@ -2570,6 +2630,60 @@ fn virtual_rows_at_gpui<'a>(
         .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
 }
 
+/// F.3 (Thread F): build the N-piece [`ScaledLine`] for a virtual row
+/// from its per-column [`lattice_cells::VirtualRow::scales`], or `None`
+/// when the row is uniformly base size (the fast path). Coalesces the
+/// scales into contiguous runs — exactly as the shaping loop coalesces
+/// per-cell `fg` — and shapes each run's text slice at `font_size *
+/// scale` for the fallback paint path. The dashboard branding wordmark
+/// is the first consumer: its "Lattice" run scales while the mark blocks
+/// stay base.
+fn build_virtual_row_scaled_line(
+    vrow: &lattice_cells::VirtualRow,
+    content: &str,
+    content_cols: u32,
+    runs: &[TextRun],
+    font_size: Pixels,
+    window: &mut Window,
+) -> Option<ScaledLine> {
+    let scales = vrow.scales.as_ref()?;
+    let scale_runs = lattice_cells::coalesce_scales(scales, content_cols);
+    // Fast path: every run is base size ⇒ no ScaledLine (uniform row).
+    if !scale_runs
+        .iter()
+        .any(|r| r.scale != lattice_cells::BASE_SCALE)
+    {
+        return None;
+    }
+    let mut pieces: Vec<ScaledPiece> = Vec::with_capacity(scale_runs.len());
+    let mut max_scale = 1.0f32;
+    for r in &scale_runs {
+        let scale = r.scale as f32 / lattice_cells::BASE_SCALE as f32;
+        if scale > max_scale {
+            max_scale = scale;
+        }
+        let (piece_text, piece_runs) = slice_runs_to_char_range(
+            content,
+            runs,
+            r.start_col as usize,
+            (r.start_col + r.cols) as usize,
+        );
+        let shaped = window.text_system().shape_line(
+            SharedString::from(piece_text),
+            font_size * scale,
+            &piece_runs,
+            None,
+        );
+        pieces.push(ScaledPiece {
+            start_col: r.start_col,
+            cols: r.cols,
+            scale,
+            shaped,
+        });
+    }
+    Some(ScaledLine { pieces, max_scale })
+}
+
 /// D.3.b.1.gpui (2026-05-29): shape a virtual row's content
 /// and push it + placeholder entries into every parallel
 /// per-row array so the row participates in the paint pass.
@@ -2592,7 +2706,7 @@ fn push_virtual_row(
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
-    row_split: &mut Vec<Option<HeadingSplit>>,
+    row_split: &mut Vec<Option<ScaledLine>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -2656,6 +2770,17 @@ fn push_virtual_row(
         });
     }
     let content_cols = content.chars().count() as u32;
+    // F.3 (Thread F): per-token scaling for virtual rows. Coalesce the
+    // row's per-column `scales` into contiguous runs (mirroring the fg
+    // coalescing above) and, if any run is larger than base, build the
+    // N-piece `ScaledLine` the paint path reads — each piece shaped at
+    // `font_size * scale` on a shared baseline. A row with no scaled run
+    // stays on the fast path (`None` + `row_scale = 1.0`). Built from
+    // `&content` before it is moved into the base `shaped_body`.
+    let scaled_line = build_virtual_row_scaled_line(
+        vrow, &content, content_cols, &runs, font_size, window,
+    );
+    let row_scale_val = scaled_line.as_ref().map(|s| s.max_scale).unwrap_or(1.0);
     let shaped_body = window.text_system().shape_line(
         SharedString::from(content),
         font_size,
@@ -2719,9 +2844,11 @@ fn push_virtual_row(
     row_meta.push((u32::MAX, String::new()));
     // W.5: virtual rows are a single display row each (segment 0).
     row_segment.push(0);
-    // F.2: virtual rows render at the base font size (no scaling / split).
-    row_scale.push(1.0);
-    row_split.push(None);
+    // F.3: virtual rows honor per-token scaling — `row_scale_val` grows
+    // the row height to the tallest piece; `scaled_line` carries the
+    // pieces (or `None` for an all-base row, the fast path).
+    row_scale.push(row_scale_val);
+    row_split.push(scaled_line);
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);

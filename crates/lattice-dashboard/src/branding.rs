@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use lattice_cells::{
     AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowKind,
-    VirtualRowProvider,
+    VirtualRowProvider, BASE_SCALE,
 };
 use lattice_theme::{Color, ElementId, ResolvedTheme, ThemeRegistryHandle};
 
@@ -34,6 +34,15 @@ pub const DASHBOARD_BRANDING_TAG: u64 = 0xDA5B_0A2D_0000_0000;
 const TAGLINE: &str = "A modal, GPU-accelerated, plugin-first text editor in Rust";
 /// Gap (cells) between the mark and the wordmark.
 const GAP: usize = 2;
+/// The "Lattice" wordmark.
+const WORDMARK: &str = "Lattice";
+/// F.3 (Thread F): the wordmark's font scale in hundredths (`100` =
+/// base). The GPUI peer renders the "Lattice" run larger than the mark
+/// blocks and tagline via the per-token virtual-row scaling primitive
+/// (`VirtualRow::scales`); the TUI peer ignores it (terminal cells can't
+/// vary size) and renders every cell base-size. Kept modest so the shared
+/// row's growth stays subtle.
+const WORDMARK_SCALE: u16 = 150;
 
 /// The mark as a glyph grid: `L` = logo block, `C` = cursor block, ` ` =
 /// empty. Eight columns × five rows: wide-and-short so it renders roughly
@@ -132,20 +141,29 @@ impl VirtualRowProvider for DashboardBrandingProvider {
 
         let gap = (" ".repeat(GAP), 0u32);
 
-        // Build each row's cells. The wordmark block (name + tagline) is
-        // vertically centred against the five-row mark: name on row 2,
-        // tagline on row 3. A blank spacer row above AND below the mark gives
-        // the banner breathing room. Horizontal centring is handled by the
-        // gutter (content_left_pad) — rows are left-aligned within the gutter,
-        // so the mark's columns line up.
-        let mut cell_rows: Vec<Vec<Cell>> = Vec::with_capacity(MARK.len() + 2);
-        cell_rows.push(Vec::new()); // spacer above
+        // Build each row's cells + per-column scales. The wordmark block
+        // (name + tagline) is vertically centred against the five-row mark:
+        // name on row 2, tagline on row 3. A blank spacer row above AND below
+        // the mark gives the banner breathing room. Horizontal centring is
+        // handled by the gutter (content_left_pad) — rows are left-aligned
+        // within the gutter, so the mark's columns line up.
+        //
+        // F.3: the "Lattice" run carries `WORDMARK_SCALE` in its per-column
+        // `scales` (the mark blocks + gap stay base); GPUI renders it larger
+        // via the shared-baseline per-token scaling path, the TUI ignores it.
+        let mut cell_rows: Vec<(Vec<Cell>, Option<Vec<u16>>)> =
+            Vec::with_capacity(MARK.len() + 2);
+        cell_rows.push((Vec::new(), None)); // spacer above
         for (i, mark_row) in MARK.iter().enumerate() {
             let mut runs = mark_runs_for(mark_row, logo_fg, cursor_fg);
+            // The wordmark row appends a scaled "Lattice" run; every other
+            // run (mark blocks, gap, tagline) stays base size.
+            let mut wordmark_at: Option<usize> = None;
             match i {
                 2 => {
                     runs.push(gap.clone());
-                    runs.push(("Lattice".to_string(), title_fg));
+                    wordmark_at = Some(runs.iter().map(|(t, _)| t.chars().count()).sum());
+                    runs.push((WORDMARK.to_string(), title_fg));
                 }
                 3 => {
                     runs.push(gap.clone());
@@ -153,13 +171,21 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                 }
                 _ => {}
             }
-            cell_rows.push(row_cells(&runs));
+            let cells = row_cells(&runs);
+            let scales = wordmark_at.map(|start| {
+                let mut s = vec![BASE_SCALE; cells.len()];
+                for slot in s.iter_mut().skip(start).take(WORDMARK.chars().count()) {
+                    *slot = WORDMARK_SCALE;
+                }
+                s
+            });
+            cell_rows.push((cells, scales));
         }
-        cell_rows.push(Vec::new()); // spacer below
+        cell_rows.push((Vec::new(), None)); // spacer below
 
         cell_rows
             .into_iter()
-            .map(|cells| {
+            .map(|(cells, scales)| {
                 VirtualRow {
                     anchor_line: 0,
                     position: AnchorPosition::Above,
@@ -167,6 +193,7 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     height: 1,
                     kind: VirtualRowKind::Filler,
                     bg: None,
+                    scales: scales.map(|s| Arc::from(s.into_boxed_slice())),
                 }
             })
             .collect()
@@ -263,6 +290,29 @@ mod tests {
         };
         assert!(text_of(&rows[3]).contains("Lattice"), "wordmark on row 3");
         assert!(text_of(&rows[4]).contains("modal"), "tagline on row 4");
+    }
+
+    #[test]
+    fn wordmark_run_carries_scale_over_base_mark_and_gap() {
+        // F.3: the "Lattice" run scales (WORDMARK_SCALE); the mark blocks,
+        // gap, and everything else on the row stay base. Only row 3 (the
+        // wordmark row, after the spacer) carries a `scales` channel.
+        let p = provider_with_theme();
+        let rows = p.collect();
+        let wordmark_row = &rows[3];
+        let scales = wordmark_row
+            .scales
+            .as_ref()
+            .expect("wordmark row carries per-column scales");
+        assert_eq!(scales.len(), wordmark_row.cells.len());
+        // The scaled columns are exactly the "Lattice" run.
+        let scaled = scales.iter().filter(|s| **s == WORDMARK_SCALE).count();
+        assert_eq!(scaled, WORDMARK.chars().count(), "only the wordmark scales");
+        // The leading mark blocks + gap are base size.
+        assert_eq!(scales[0], BASE_SCALE, "mark blocks stay base size");
+        // The tagline row (row 4) and mark-only rows carry no scale channel.
+        assert!(rows[4].scales.is_none(), "tagline stays base (no scale channel)");
+        assert!(rows[1].scales.is_none(), "mark-only row has no scale channel");
     }
 
     #[test]

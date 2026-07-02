@@ -33156,6 +33156,7 @@ mod tests {
                 height: 1,
                 kind: lattice_cells::VirtualRowKind::Generic,
                 bg: None,
+                scales: None,
             })
             .collect();
         let matrix = lattice_cells::VirtualRowMatrix::build(

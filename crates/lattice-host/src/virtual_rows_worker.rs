@@ -462,6 +462,7 @@ mod tests {
             height: 1,
             kind: lattice_cells::VirtualRowKind::Generic,
             bg: None,
+            scales: None,
         }
     }
 

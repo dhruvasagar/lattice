@@ -2360,6 +2360,7 @@ pub fn compose_header_rows(
                 height: 1,
                 kind: VirtualRowKind::Generic,
                 bg: None,
+                scales: None,
             });
             last_source = Some(excerpt.source);
         }

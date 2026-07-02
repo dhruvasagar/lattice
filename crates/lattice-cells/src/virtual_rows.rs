@@ -116,6 +116,87 @@ pub struct VirtualRow {
 	pub height: u16,
 	pub kind: VirtualRowKind,
 	pub bg: Option<u32>,
+	/// F.3 (Thread F): per-display-column font scale in
+	/// **hundredths** (`100` = 1.0×, the base size), parallel to
+	/// [`Self::cells`] by display column. `None` ⇒ the whole row
+	/// is base size (the common case — zero cost, no allocation).
+	///
+	/// This extends the variable-font commitment (per-token
+	/// scaling, the emacs markdown-heading model — only the title
+	/// scales, not the leading markers) from document rows to
+	/// virtual rows. A renderer coalesces contiguous equal scales
+	/// into runs (mirroring how it coalesces per-cell `fg`), shapes
+	/// each run at `font_size × scale/100` on a **shared baseline**,
+	/// and grows the row height to the tallest run. The dashboard
+	/// branding block (DB.4-gpui) is the first consumer: the
+	/// "Lattice" wordmark scales while the mark blocks stay base.
+	///
+	/// The GPUI peer honors it; the TUI peer ignores it (a terminal
+	/// cell grid cannot vary font size). When present, its length
+	/// matches `cells`; a shorter/absent entry defaults to `100`.
+	pub scales: Option<Arc<[u16]>>,
+}
+
+/// F.3 (Thread F): one contiguous run of display columns rendered
+/// at a single font scale, produced by [`coalesce_scales`]. The
+/// renderer shapes each run at `font_size × scale/100`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ScaleRun {
+	/// First display column of the run (0-based, into the row's
+	/// cells).
+	pub start_col: u32,
+	/// Number of display columns the run spans.
+	pub cols: u32,
+	/// Font scale in hundredths (`100` = 1.0×).
+	pub scale: u16,
+}
+
+/// Base font scale in hundredths (`100` = 1.0×). A column with this
+/// scale (or no scale entry) renders at the base font size.
+pub const BASE_SCALE: u16 = 100;
+
+/// F.3 (Thread F): coalesce a per-column `scales` slice into
+/// contiguous same-scale [`ScaleRun`]s across `total_cols` columns,
+/// exactly as a renderer coalesces per-cell `fg` into text runs.
+///
+/// Columns beyond `scales.len()` (or when `scales` is empty) default
+/// to [`BASE_SCALE`]. The returned runs cover `0..total_cols`
+/// contiguously, in column order, and never split two adjacent
+/// columns that share a scale. `total_cols == 0` ⇒ empty. Pure and
+/// allocation-light (O(total_cols)); unit-testable without a
+/// renderer.
+pub fn coalesce_scales(scales: &[u16], total_cols: u32) -> Vec<ScaleRun> {
+	let mut runs: Vec<ScaleRun> = Vec::new();
+	if total_cols == 0 {
+		return runs;
+	}
+	let scale_at = |col: u32| -> u16 {
+		scales
+			.get(col as usize)
+			.copied()
+			.filter(|s| *s != 0)
+			.unwrap_or(BASE_SCALE)
+	};
+	let mut start = 0u32;
+	let mut cur = scale_at(0);
+	for col in 1..total_cols {
+		let s = scale_at(col);
+		if s != cur {
+			runs.push(ScaleRun {
+				start_col: start,
+				cols: col - start,
+				scale: cur,
+			});
+			start = col;
+			cur = s;
+		}
+	}
+	runs.push(ScaleRun {
+		start_col: start,
+		cols: total_cols - start,
+		scale: cur,
+	});
+	runs
 }
 
 /// A monotonically-increasing counter; bumped by the
@@ -353,7 +434,56 @@ mod tests {
 			height: 1,
 			kind: VirtualRowKind::Generic,
 			bg: None,
+			scales: None,
 		}
+	}
+
+	#[test]
+	fn coalesce_scales_empty_is_empty() {
+		assert!(coalesce_scales(&[], 0).is_empty());
+		assert!(coalesce_scales(&[150, 150], 0).is_empty());
+	}
+
+	#[test]
+	fn coalesce_scales_no_scales_is_one_base_run() {
+		// No per-column scales ⇒ one base-size run spanning the row.
+		let runs = coalesce_scales(&[], 5);
+		assert_eq!(
+			runs,
+			vec![ScaleRun { start_col: 0, cols: 5, scale: BASE_SCALE }]
+		);
+	}
+
+	#[test]
+	fn coalesce_scales_splits_only_on_transition() {
+		// The markdown-heading shape: base markers, scaled title —
+		// "## " at base, the rest at 1.6×. Two runs, split at col 3.
+		let scales = [100, 100, 100, 160, 160, 160];
+		let runs = coalesce_scales(&scales, 6);
+		assert_eq!(
+			runs,
+			vec![
+				ScaleRun { start_col: 0, cols: 3, scale: 100 },
+				ScaleRun { start_col: 3, cols: 3, scale: 160 },
+			]
+		);
+	}
+
+	#[test]
+	fn coalesce_scales_handles_multiple_runs_and_zero_sentinel() {
+		// A general per-token row: base, scaled, base again — plus a
+		// `0` sentinel column that defaults to base, and a trailing
+		// column past `scales.len()` that also defaults to base.
+		let scales = [100, 250, 250, 0];
+		let runs = coalesce_scales(&scales, 6);
+		assert_eq!(
+			runs,
+			vec![
+				ScaleRun { start_col: 0, cols: 1, scale: 100 },
+				ScaleRun { start_col: 1, cols: 2, scale: 250 },
+				ScaleRun { start_col: 3, cols: 3, scale: 100 },
+			]
+		);
 	}
 
 	#[test]

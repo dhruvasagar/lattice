@@ -66,7 +66,7 @@ pub use row::{CellRow, InlayOffset};
 pub use style::{ExcerptHighlight, ExcerptHighlighter, Style, StyledSpan};
 pub use version::MatrixVersion;
 pub use virtual_rows::{
-	AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowMatrix,
-	VirtualRowProvider, VirtualRowVersion,
+	coalesce_scales, AnchorPosition, ProviderId, ScaleRun, VirtualRow, VirtualRowKind,
+	VirtualRowMatrix, VirtualRowProvider, VirtualRowVersion, BASE_SCALE,
 };
 pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};

@@ -169,7 +169,11 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         .map_err(|e| SpawnError::CloneReader(e.to_string()))?;
 
     let handle = PtyHandle::new(pair.master, writer, rows, cols);
-    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
+    // `empty_sized` (not `empty`): the placeholder shown before the reader
+    // thread processes the child's first output must match the REAL spawn
+    // geometry — see its doc comment for the clipping regression a
+    // hardcoded 24×80 placeholder caused.
+    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty_sized(rows, cols)));
     let term = spawn_reader(
         reader,
         Arc::clone(&snapshot),

@@ -49,13 +49,32 @@ pub struct TerminalSnapshot {
 }
 
 impl TerminalSnapshot {
-    /// Empty snapshot for a freshly-spawned terminal that
-    /// hasn't received any output yet. `rows × cols` defaults
-    /// to 24 × 80 — overridden as soon as the renderer's
-    /// first layout pass resizes.
+    /// Empty 24×80 snapshot — the vim/xterm-conventional fallback size for
+    /// contexts with no real spawn geometry yet (tests, `Default`). NOT used
+    /// by `spawn()`'s initial publish — see [`Self::empty_sized`].
     pub fn empty() -> Self {
-        let rows = 24u16;
-        let cols = 80u16;
+        Self::empty_sized(24, 80)
+    }
+
+    /// Empty snapshot at a CALLER-SUPPLIED size. `spawn()` publishes this
+    /// (at the real `SpawnConfig::{rows,cols}`) as the placeholder shown
+    /// before the reader thread processes the child's first output chunk.
+    ///
+    /// Regression (2026-07-02): `spawn()` used to publish `Self::empty()`
+    /// unconditionally — a hardcoded 24×80 disconnected from the real spawn
+    /// size. The alacritty `Term` (`build_term`) and the kernel PTY
+    /// (`openpty`) were ALWAYS sized correctly from `SpawnConfig`; only this
+    /// placeholder lied about it. When the real pane is taller than 24 rows
+    /// (the common case), a paint landing in the placeholder's brief window
+    /// caps `rows_to_paint` at 24, and — critically — the mismatch does NOT
+    /// self-correct via a renderer resize the way the old doc comment
+    /// claimed: `SetPaneViewport`'s diff-then-send gate only fires a PTY
+    /// resize when the computed row count DIFFERS from the pane's already-
+    /// published `viewport_height`, which `do_terminal_spawn` already read
+    /// to size the spawn — so there is no delta to trigger a correcting
+    /// resize. The window closes only once the reader thread republishes a
+    /// snapshot from real output, whenever that first arrives.
+    pub fn empty_sized(rows: u16, cols: u16) -> Self {
         let cells = vec![Cell::default(); rows as usize * cols as usize];
         Self {
             cells: cells.into(),
@@ -110,5 +129,21 @@ mod tests {
         let s = TerminalSnapshot::empty();
         assert_eq!(s.cell_at(99, 99), Cell::default());
         assert_eq!(s.cell_at(s.rows, 0), Cell::default());
+    }
+
+    /// Regression guard for the "last line clipped" bug: `spawn()`'s
+    /// initial placeholder must report the REAL spawn geometry, not a
+    /// hardcoded 24×80 disconnected from it. A pane taller than 24 rows
+    /// (the common case) painting during the placeholder's window would
+    /// otherwise cap `rows_to_paint` at 24 and clip everything below —
+    /// see `empty_sized`'s doc comment for why this doesn't self-correct
+    /// on the next frame the way a stale-size bug normally would.
+    #[test]
+    fn empty_sized_reports_the_caller_supplied_geometry() {
+        let s = TerminalSnapshot::empty_sized(45, 120);
+        assert_eq!(s.rows, 45);
+        assert_eq!(s.cols, 120);
+        assert_eq!(s.cells.len(), 45 * 120);
+        assert!(s.cells.iter().all(|c| *c == Cell::default()));
     }
 }

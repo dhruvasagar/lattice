@@ -2390,6 +2390,28 @@ fn draw_terminal_pane(
     }
     let rows_to_paint = area.height.min(snap_arc.rows);
     let cols_to_paint = area.width.min(snap_arc.cols);
+    // Diagnostic probe (opt-in via RUST_LOG=lattice_ui_tui::terminal_clip=debug):
+    // fires whenever the PTY's own row/col count (what alacritty and the
+    // child process believe their screen size is) exceeds this frame's real
+    // paint area. That gap is exactly what makes `rows_to_paint` cut the
+    // BOTTOM of the terminal's content (the last N rows of the PTY grid —
+    // often where a full-screen program like `claude` puts its prompt /
+    // status — are never painted). If the "last line clipped" bug persists
+    // after the `empty_sized` placeholder fix (spawner.rs), enable this to
+    // capture the exact PTY-vs-pane numbers at the moment it happens.
+    if snap_arc.rows > area.height || snap_arc.cols > area.width {
+        tracing::debug!(
+            target: "lattice_ui_tui::terminal_clip",
+            pty_rows = snap_arc.rows,
+            pty_cols = snap_arc.cols,
+            pane_area_rows = area.height,
+            pane_area_cols = area.width,
+            rows_to_paint,
+            cols_to_paint,
+            "draw_terminal_pane: PTY believes it is larger than the paint area — \
+             the bottom/right of its content is not being painted",
+        );
+    }
     // 2026-05-25: nav_cursor overrides the PTY cursor in
     // Normal-in-terminal so the user sees a "you are here"
     // marker that j / k / etc. moves. When nav_cursor is None

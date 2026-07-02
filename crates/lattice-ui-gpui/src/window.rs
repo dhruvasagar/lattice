@@ -4746,6 +4746,216 @@ mod popup_geometry_tests {
 }
 
 #[cfg(test)]
+mod pane_geometry_split_tests {
+    use super::{collect_pane_geometries, default_ui_row_px};
+    use lattice_core::ui::pane::PaneNode;
+
+    fn leaf(idx: usize) -> PaneNode {
+        PaneNode::Leaf(idx)
+    }
+
+    fn hsplit(top: PaneNode, bottom: PaneNode) -> PaneNode {
+        PaneNode::HorizontalSplit {
+            top: Box::new(top),
+            bottom: Box::new(bottom),
+            ratio: 0.5,
+        }
+    }
+
+    fn vsplit(left: PaneNode, right: PaneNode) -> PaneNode {
+        PaneNode::VerticalSplit {
+            left: Box::new(left),
+            right: Box::new(right),
+            ratio: 0.5,
+        }
+    }
+
+    /// Generalises the "last line behind the modeline" fix from "one pane"
+    /// to ARBITRARY split trees and ARBITRARY viewport sizes — the
+    /// `per_leaf_v_chrome_px` (built from `default_ui_row_px`, not the
+    /// content-row estimate) must apply correctly at every leaf regardless
+    /// of split depth, and `collect_pane_geometries` must never silently
+    /// drop a leaf or double/under-count a split's share.
+    ///
+    /// `collect_pane_geometries` is a pure recursive function of `(tree,
+    /// available px, chrome px, row/col px)` — it has no notion of "the
+    /// user resized" or "the user split N times"; every call re-derives
+    /// geometry from scratch off whatever the CURRENT tree and CURRENT
+    /// viewport pixels are. So this test doesn't assume any particular
+    /// window size or split shape reflects real usage — it sweeps a
+    /// deliberately wide matrix (1-way through 4-way splits, both split
+    /// orientations, viewport sizes from small to large) and asserts the
+    /// per-leaf INVARIANT holds identically at every point, rather than
+    /// spot-checking one shape and generalising by assumption.
+    #[test]
+    fn per_leaf_chrome_applies_correctly_across_arbitrary_splits_and_sizes() {
+        let trees: Vec<(&str, PaneNode)> = vec![
+            ("1-way", leaf(0)),
+            ("2-way h", hsplit(leaf(0), leaf(1))),
+            ("2-way v", vsplit(leaf(0), leaf(1))),
+            ("3-way", hsplit(leaf(0), vsplit(leaf(1), leaf(2)))),
+            (
+                "4-way",
+                hsplit(vsplit(leaf(0), leaf(1)), vsplit(leaf(2), leaf(3))),
+            ),
+        ];
+
+        // Viewport sizes standing in for "the user resized the GPUI
+        // window" — including sizes small enough that some leaves clamp
+        // to the `.max(1.0)` floor.
+        let viewport_sizes: &[(f32, f32)] = &[
+            (1200.0, 800.0),
+            (800.0, 600.0),
+            (400.0, 300.0),
+            (200.0, 120.0),
+            (100.0, 60.0),
+        ];
+
+        let rem = 16.0_f32;
+        let font_size_px = rem * 0.875;
+        let row_px = font_size_px * 1.3; // EditorElement's own content row height
+        let col_px = font_size_px * 0.6; // monospace glyph advance approximation
+        // Mirrors window.rs's real per_leaf_v_chrome_px composition, using
+        // the FIXED default_ui_row_px (not the content-row estimate) —
+        // this is the exact value under test.
+        let pane_padding_v_px = rem * 0.75 * 2.0;
+        let pane_status_padding_px = rem * 0.25 * 2.0;
+        let default_row_px = default_ui_row_px(gpui::px(rem));
+        let per_leaf_v_chrome_px = pane_padding_v_px + pane_status_padding_px + default_row_px;
+        let per_leaf_h_chrome_px = rem * 0.75 * 2.0;
+
+        for (tree_name, tree) in &trees {
+            let expected_leaf_count = match tree_name {
+                &"1-way" => 1,
+                &"2-way h" | &"2-way v" => 2,
+                &"3-way" => 3,
+                &"4-way" => 4,
+                _ => unreachable!(),
+            };
+            for &(avail_w, avail_h) in viewport_sizes {
+                let mut out = Vec::new();
+                collect_pane_geometries(
+                    tree,
+                    avail_w,
+                    avail_h,
+                    per_leaf_v_chrome_px,
+                    per_leaf_h_chrome_px,
+                    row_px,
+                    col_px,
+                    &mut out,
+                );
+
+                assert_eq!(
+                    out.len(),
+                    expected_leaf_count,
+                    "{tree_name} at ({avail_w}x{avail_h}): every leaf must get a \
+                     geometry entry — none dropped, none duplicated"
+                );
+
+                // Every leaf gets at least 1 row/col (the `.max(1.0)`
+                // floor) even when its allocated split share is smaller
+                // than one row/col of chrome + content — never zero,
+                // never negative (usize can't go negative, but a
+                // mis-derived huge value would also be wrong).
+                for (idx, rows, cols) in &out {
+                    assert!(
+                        *rows >= 1 && *cols >= 1,
+                        "{tree_name} leaf {idx} at ({avail_w}x{avail_h}): rows={rows} \
+                         cols={cols} must both be >= 1"
+                    );
+                    // Upper bound sanity: a leaf can never claim more rows
+                    // than the WHOLE viewport could hold at this row_px,
+                    // regardless of split depth — proves chrome is being
+                    // subtracted somewhere in the chain, not lost.
+                    let max_possible_rows = (avail_h / row_px).ceil() as u32 + 1;
+                    assert!(
+                        *rows <= max_possible_rows,
+                        "{tree_name} leaf {idx} at ({avail_w}x{avail_h}): rows={rows} \
+                         exceeds what the whole viewport could hold ({max_possible_rows}) \
+                         — chrome subtraction is being lost across the split recursion"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pins the specific regression this whole fix addresses, but at EVERY
+    /// leaf of a 4-way split rather than just a single pane: using the
+    /// (wrong) content-row estimate for `per_leaf_v_chrome_px` instead of
+    /// `default_ui_row_px` under-reserves chrome enough that some
+    /// split configurations compute one MORE row than the correct chrome
+    /// value would — the off-by-one that clips the last line under the
+    /// modeline. This must hold for every leaf, not just an unsplit pane.
+    #[test]
+    fn wrong_chrome_estimate_would_overcount_rows_at_every_split_leaf() {
+        let rem = 16.0_f32;
+        let font_size_px = rem * 0.875;
+        let row_px = font_size_px * 1.3;
+        let col_px = font_size_px * 0.6;
+        let pane_padding_v_px = rem * 0.75 * 2.0;
+        let pane_status_padding_px = rem * 0.25 * 2.0;
+
+        let correct_chrome =
+            pane_padding_v_px + pane_status_padding_px + default_ui_row_px(gpui::px(rem));
+        // The bug: reusing the content-row estimate instead of the real
+        // (larger, golden-ratio) default UI row height.
+        let wrong_chrome = pane_padding_v_px + pane_status_padding_px + row_px;
+        assert!(
+            wrong_chrome < correct_chrome,
+            "sanity: the bug under-reserves chrome relative to the fix"
+        );
+
+        let tree = hsplit(vsplit(leaf(0), leaf(1)), vsplit(leaf(2), leaf(3)));
+        let avail_w = 1000.0_f32;
+
+        // The correct-vs-wrong chrome delta (~4.8px here) is smaller than
+        // one row (~18.2px), so whether it crosses an integer-row boundary
+        // depends on the fractional remainder of `usable_h / row_px` at
+        // the exact height — it won't trigger at every height. Rather than
+        // assume any ONE particular window size happens to expose it
+        // (exactly the kind of external-factor assumption to avoid), sweep
+        // a dense, deterministic range of viewport heights and require
+        // that the invariant (`wrong_rows >= correct_rows` everywhere) holds
+        // at EVERY size tried, while confirming the regression is exercised
+        // by AT LEAST ONE size in the swept range.
+        let mut saw_overcount = false;
+        for avail_h_int in (100..=1000).step_by(2) {
+            let avail_h = avail_h_int as f32;
+            let mut correct_out = Vec::new();
+            collect_pane_geometries(
+                &tree, avail_w, avail_h, correct_chrome, 0.0, row_px, col_px, &mut correct_out,
+            );
+            let mut wrong_out = Vec::new();
+            collect_pane_geometries(
+                &tree, avail_w, avail_h, wrong_chrome, 0.0, row_px, col_px, &mut wrong_out,
+            );
+            correct_out.sort_by_key(|(idx, _, _)| *idx);
+            wrong_out.sort_by_key(|(idx, _, _)| *idx);
+
+            for ((idx, correct_rows, _), (_, wrong_rows, _)) in
+                correct_out.iter().zip(&wrong_out)
+            {
+                assert!(
+                    wrong_rows >= correct_rows,
+                    "leaf {idx} at avail_h={avail_h}: the under-reserving estimate must \
+                     never compute FEWER rows than the fix (it only ever over-counts or \
+                     matches) — got wrong={wrong_rows} correct={correct_rows}"
+                );
+                if wrong_rows > correct_rows {
+                    saw_overcount = true;
+                }
+            }
+        }
+        assert!(
+            saw_overcount,
+            "expected at least one viewport height in the swept range where the wrong \
+             estimate over-counts rows by at least one — otherwise this test doesn't \
+             exercise the regression"
+        );
+    }
+}
+
+#[cfg(test)]
 mod modeline_tests {
     use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
 

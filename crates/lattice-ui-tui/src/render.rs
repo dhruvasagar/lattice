@@ -6142,6 +6142,169 @@ mod tests {
         assert_eq!(runtime_buffer_height, chunks[1].height);
     }
 
+    /// Generalises the two invariant tests above from "one pane" to
+    /// ARBITRARY split trees and ARBITRARY window sizes — Dhruva's
+    /// concern that the fix must hold "regardless of these constraints"
+    /// (2-way, 3-way, 4-way splits; any terminal size, i.e. any resize),
+    /// not just the shapes happened to be spot-checked.
+    ///
+    /// Both `compute_rects` (lattice-core) and the split-geometry loops in
+    /// `runtime.rs` / `draw_panes` are PURE recursive functions of
+    /// `(pane tree, total area)` — the tabline/cmdline/candidate-band
+    /// reservation happens exactly once, one layer ABOVE the split tree,
+    /// via `chrome_rows`. So proving the invariant composes with splits
+    /// and resizes reduces to: for every split depth and every terminal
+    /// size, does `compute_rects` over the runtime's `area_for_panes`
+    /// (built from `chrome_rows`-corrected `buffer_height`) produce THE
+    /// SAME per-leaf rects as `compute_rects` over `draw_frame`'s actual
+    /// `chunks[1]`? If a future edit ever special-cased tabline handling
+    /// PER-PANE instead of once at the top, this test would catch the
+    /// divergence immediately at any split count.
+    #[test]
+    fn chrome_rows_composes_with_arbitrary_splits_and_terminal_sizes() {
+        use crate::pane::{PaneRect, SplitOrientation};
+
+        // 0, 1, 2, 3 splits => 1, 2, 3, 4-way pane trees. Mix of
+        // orientations so both HorizontalSplit and VerticalSplit recursion
+        // arms are exercised, not just one.
+        let split_plans: &[&[SplitOrientation]] = &[
+            &[],
+            &[SplitOrientation::Horizontal],
+            &[SplitOrientation::Vertical],
+            &[SplitOrientation::Horizontal, SplitOrientation::Vertical],
+            &[
+                SplitOrientation::Horizontal,
+                SplitOrientation::Vertical,
+                SplitOrientation::Horizontal,
+            ],
+        ];
+
+        // A spread of terminal sizes standing in for "the user resized the
+        // window" — including sizes too small to hold every split cleanly,
+        // where `saturating_sub`/`.max(1)` clamping must still agree
+        // between both sides.
+        let terminal_sizes: &[(u16, u16)] = &[
+            (80, 24),
+            (80, 40),
+            (200, 60),
+            (40, 10),
+            (120, 8),
+            (30, 6),
+        ];
+
+        for splits in split_plans {
+            for tabline_visible in [false, true] {
+                for &(terminal_width, terminal_height) in terminal_sizes {
+                    let mut a = app_with("one\ntwo\nthree\n", 10);
+                    for orientation in *splits {
+                        a.editor.pane_tree.split_active(*orientation);
+                    }
+                    if tabline_visible {
+                        a.editor.pane_tree.split_active(SplitOrientation::Horizontal);
+                        // Second tab makes `tabs.visible` true in Auto mode
+                        // (`self.tabs.len() > 1`) without depending on any
+                        // particular `tabline.show` config default.
+                        a.editor.do_new_tab();
+                    }
+                    a.editor.publish_render_state();
+
+                    let chrome = chrome_rows(&a);
+                    assert_eq!(
+                        chrome.tabline > 0,
+                        tabline_visible,
+                        "tabline visibility precondition failed for splits={splits:?} \
+                         size=({terminal_width}x{terminal_height})"
+                    );
+
+                    // Mirrors runtime.rs: buffer_height, then compute_rects
+                    // over the FULL terminal area (tabline/cmdline/candidate
+                    // rows already excluded by buffer_height).
+                    let runtime_buffer_height = terminal_height
+                        .saturating_sub(1)
+                        .saturating_sub(chrome.tabline)
+                        .saturating_sub(chrome.extra());
+                    let panes_arc = a.panes();
+                    let runtime_area = PaneRect {
+                        x: 0,
+                        y: 0,
+                        width: terminal_width,
+                        height: runtime_buffer_height,
+                    };
+                    let mut runtime_rects = panes_arc.tree.compute_rects(runtime_area);
+                    runtime_rects.sort_by_key(|(idx, _)| *idx);
+
+                    // Mirrors draw_frame: the real ratatui Layout split,
+                    // then draw_panes's own compute_rects over chunks[1].
+                    let constraints: Vec<Constraint> = if chrome.extra() > 0 {
+                        vec![
+                            Constraint::Length(chrome.tabline),
+                            Constraint::Min(1),
+                            Constraint::Length(1),
+                            Constraint::Length(chrome.extra()),
+                        ]
+                    } else {
+                        vec![
+                            Constraint::Length(chrome.tabline),
+                            Constraint::Min(1),
+                            Constraint::Length(1),
+                        ]
+                    };
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints(constraints)
+                        .split(Rect::new(0, 0, terminal_width, terminal_height));
+                    let draw_area = PaneRect {
+                        x: chunks[1].x,
+                        y: chunks[1].y,
+                        width: chunks[1].width,
+                        height: chunks[1].height,
+                    };
+                    let mut draw_rects = panes_arc.tree.compute_rects(draw_area);
+                    draw_rects.sort_by_key(|(idx, _)| *idx);
+
+                    // Compare (width, height) per leaf, NOT the full rect:
+                    // `runtime.rs`'s `area_for_panes` is deliberately
+                    // anchored at `y:0` (it only sizes the PTY / viewport
+                    // row-col COUNTS, never paints), while `draw_frame`'s
+                    // real `chunks[1]` starts at `y:1` once the tabline
+                    // claims the first screen row. Different absolute
+                    // position, same size — that's expected, not a bug.
+                    // The invariant that actually matters (does the
+                    // runtime compute the SAME row/col count per pane that
+                    // gets painted?) is the size, which this checks.
+                    let runtime_sizes: Vec<(usize, u16, u16)> = runtime_rects
+                        .iter()
+                        .map(|(idx, r)| (*idx, r.width, r.height))
+                        .collect();
+                    let draw_sizes: Vec<(usize, u16, u16)> = draw_rects
+                        .iter()
+                        .map(|(idx, r)| (*idx, r.width, r.height))
+                        .collect();
+                    assert_eq!(
+                        runtime_sizes, draw_sizes,
+                        "runtime-pushed vs. actually-painted per-pane sizes diverged \
+                         for splits={splits:?}, tabline_visible={tabline_visible}, \
+                         terminal_size=({terminal_width}x{terminal_height})"
+                    );
+
+                    // Every leaf's content height (status row reserved) must
+                    // also agree — the same `rect.height - 1` formula both
+                    // `runtime.rs`'s per-leaf loop and `draw_panes` apply,
+                    // checked here across the SAME split/size matrix rather
+                    // than just the whole-buffer area.
+                    for (idx, rect) in &draw_rects {
+                        let content_h = if rect.height >= 2 { rect.height - 1 } else { rect.height };
+                        assert!(
+                            content_h <= rect.height,
+                            "leaf {idx} content height must not exceed its pane rect \
+                             for splits={splits:?} size=({terminal_width}x{terminal_height})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }

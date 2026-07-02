@@ -45,18 +45,21 @@ const WORDMARK: &str = "Lattice";
 const WORDMARK_SCALE: u16 = 150;
 
 /// The mark as a glyph grid: `L` = logo block, `C` = cursor block, ` ` =
-/// empty. Eight columns × five rows: wide-and-short so it renders roughly
-/// square (terminal cells are ~2:1 tall, and 8×5 cells ≈ 8×10 visual ≈ the
-/// SVG's 100×120). Mirrors the SVG paths — top bar, left + right columns,
-/// bottom bar — with the two opposite corners cut (the interlocking look:
-/// top-left and bottom-right are open). The amber cursor bar sits in the
-/// middle with a gap row above it (the SVG cursor starts below the top bar).
-const MARK: [&str; 5] = [
-    " LLLLLL", //  top bar (top-left corner cut)
-    "L     L", //  gap row ABOVE the cursor
-    "L  C  L", //  cursor bar
-    "L     L", //  gap row BELOW the cursor
-    "LLLLLL ", //  bottom bar (bottom-right corner cut)
+/// empty. **5 cols × 6 rows**, a faithful 20-unit rasterisation of
+/// `assets/lattice-mark.svg` (100×120 = 5:6 portrait): a hollow bracket
+/// with 1-cell-thick walls and a 3-wide interior, formed by the two
+/// interlocking SVG paths — the `L` foot (left wall x0-20 + bottom bar
+/// x0-80) and the `7` hook (top bar x20-100 + right wall x80-100). The two
+/// diagonally-opposite corners are cut (top-left and bottom-right open),
+/// giving the interlocking look. The amber cursor bar (`C`, SVG rect
+/// x40-60 y36-84) is 2 cells tall, dead-centre (col 2, rows 2-3).
+const MARK: [&str; 6] = [
+    " LLLL", //  top bar (cols 1-4); top-left corner open
+    "L   L", //  left + right walls
+    "L C L", //  walls + amber cursor bar (upper)
+    "L C L", //  walls + amber cursor bar (lower)
+    "L   L", //  left + right walls
+    "LLLL ", //  bottom bar (cols 0-3); bottom-right corner open
 ];
 /// Full block glyph for the mark segments.
 const BLOCK: char = '█';

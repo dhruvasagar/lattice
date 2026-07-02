@@ -2202,24 +2202,22 @@ impl Element for EditorElement {
 
         // DB.4-gpui: the dashboard branding, painted as a 2-D composition
         // over the (blanked) BrandingBlock rows — the mark as crisp square
-        // quads (absent grid cells = cut corners preserved) and the
-        // "Lattice" wordmark shaped large, vertically centred beside it.
-        // The knobs below (tile size, gap, wordmark scale, mark↔text gap)
-        // are deliberately in one place so the look can be dialled in-app.
+        // quads (absent grid cells = cut corners preserved), TOP-ALIGNED
+        // with the "Lattice" wordmark so the mark's top edge lines up
+        // precisely with the wordmark's cap-height top (not vertically
+        // centred against the whole title+subtitle block — that visibly
+        // sinks the mark below the title). The subtitle sits on its own
+        // line below, slightly larger than body text so it stands out,
+        // starting at the SAME pen origin as the wordmark. The knobs below
+        // (mark↔text gap, title↔subtitle gap, subtitle scale) are
+        // deliberately in one place so the look can be dialled in-app.
         if let Some(b) = &prepaint.branding {
             let clamp0 = |p: Pixels| if p < Pixels::ZERO { Pixels::ZERO } else { p };
-            // --- tunable geometry ---
-            let tile_w = line_height * 0.44; // mark tile size (square)
-            let tile_h = tile_w;
-            let gap = tile_w * 0.22; // gap between tiles
-            let word_scale = 2.4_f32; // "Lattice" font scale vs base
-            let mark_text_gap = tile_w * 1.6; // gap between mark and wordmark
+            let word_scale = 3.7_f32; // "Lattice" font scale vs base
 
-            let mark_w = (tile_w + gap) * (b.mark_cols as f32) - gap;
-            let mark_h = (tile_h + gap) * (b.mark_rows as f32) - gap;
-
-            // Shape the wordmark (scaled) + tagline (base). Empty strings
-            // degrade to a single space so `shape_line` never sees length 0.
+            // Shape the wordmark (scaled) + tagline (slightly-larger-than-
+            // body). Empty strings degrade to a single space so
+            // `shape_line` never sees a zero-length input.
             let word_fs = prepaint.font_size * word_scale;
             let word_color = if b.wordmark.1 == 0 {
                 self.theme.foreground
@@ -2245,6 +2243,8 @@ impl Element for EditorElement {
                 &[word_run],
                 None,
             );
+            let tag_scale = 1.15_f32; // subtitle: slightly bigger than body, to stand out
+            let tag_fs = prepaint.font_size * tag_scale;
             let tag_color = if b.tagline.1 == 0 {
                 self.theme.foreground
             } else {
@@ -2265,48 +2265,84 @@ impl Element for EditorElement {
             };
             let tag_shaped = window.text_system().shape_line(
                 SharedString::from(tag_text),
-                prepaint.font_size,
+                tag_fs,
                 &[tag_run],
                 None,
             );
-            let word_lh = word_fs * 1.15; // tight leading over the tagline
-            let tag_lh = line_height;
-            let text_h = word_lh + tag_lh;
-            let text_w = if word_shaped.width > tag_shaped.width {
-                word_shaped.width
-            } else {
-                tag_shaped.width
-            };
 
-            // The blanked branding rows reserve this vertical box.
+            // Tight (no built-in leading padding) glyph extents: painting
+            // at `line_height == ascent - descent` makes `ShapedLine::paint`
+            // put the glyph top EXACTLY at the given origin (zero padding),
+            // so "mark top == wordmark top" is exact, not approximate.
+            // "Lattice" has no descenders, so its VISIBLE height (top of
+            // "L" to baseline) is `ascent` alone — `ascent - descent` is the
+            // full glyph BOX (including the empty space reserved below the
+            // baseline for descenders like g/y), which is why deriving the
+            // mark from it made the mark overshoot past "Lattice"'s
+            // baseline. `ascent` is the anatomically precise reference.
+            let word_h = word_shaped.ascent;
+            let tag_h = tag_shaped.ascent - tag_shaped.descent;
+            let title_subtitle_gap = word_h * 0.4; // push the subtitle clearly onto its own line
+
+            // The mark matches the wordmark's cap-height EXACTLY (derived,
+            // not independently tuned): same number of rows, so `tile_h`
+            // falls out of `word_h`. Square cells; no gap between them (the
+            // SVG mark is solid bars, not dashed).
+            let mark_h = word_h;
+            let tile_h = mark_h * (1.0 / b.mark_rows.max(1) as f32);
+            let tile_w = tile_h;
+            let mark_w = tile_w * (b.mark_cols as f32);
+            let mark_text_gap = tile_w * 1.4;
+
+            let block_h = mark_h.max(word_h + title_subtitle_gap + tag_h);
+
+            // The blanked branding rows reserve this vertical box; centre
+            // the composition's bounding box within it (vertical only).
             let box_top = row_top(b.first_row);
             let box_h = line_height * (b.row_count as f32);
-            let block_h = if mark_h > text_h { mark_h } else { text_h };
             let block_top = box_top + clamp0((box_h - block_h) * 0.5);
 
-            // Centre [mark | gap | text] horizontally in the content area.
-            let content_w = bounds.size.width - prepaint.gutter_width_px;
-            let total_w = mark_w + mark_text_gap + text_w;
-            let block_x = text_origin_x + clamp0((content_w - total_w) * 0.5);
-
-            // Mark tiles — vertically centred in the block; the amber cursor
-            // tile paints in its own fg (carried through from the cell).
-            let mark_x = block_x;
-            let mark_y = block_top + clamp0((block_h - mark_h) * 0.5);
+            // Horizontal placement: start at `text_origin_x`, the SAME
+            // left edge every other dashboard row uses. The host already
+            // centres the whole dashboard's content column in the pane via
+            // `content_left_pad` (baked into `gutter_width_px` — see
+            // `crates/lattice-host/src/dispatch.rs` `rebuild_option_cache`
+            // and `dashboard.md` §5.3 "rows are left-aligned within the
+            // gutter, so the mark's columns line up"). Re-centring here
+            // against the raw pane width — what an earlier version of this
+            // code did — computes a DIFFERENT reference than the rest of
+            // the page, which is exactly what made the branding look
+            // off-centre relative to the body text below it.
+            let mark_x = text_origin_x;
+            let mark_y = block_top;
             for (r, c, color) in &b.tiles {
-                let tx = mark_x + (tile_w + gap) * (*c as f32);
-                let ty = mark_y + (tile_h + gap) * (*r as f32);
+                let tx = mark_x + tile_w * (*c as f32);
+                let ty = mark_y + tile_h * (*r as f32);
                 window.paint_quad(fill(
                     Bounds::new(point(tx, ty), size(tile_w, tile_h)),
                     rgb(*color),
                 ));
             }
 
-            // Wordmark + tagline — vertically centred beside the mark.
+            // Wordmark — glyph top exactly at `block_top` (tight line
+            // height `word_h` means zero built-in padding, so this is
+            // exact, not approximate).
             let text_x = mark_x + mark_w + mark_text_gap;
-            let text_top = block_top + clamp0((block_h - text_h) * 0.5);
-            let _ = word_shaped.paint(point(text_x, text_top), word_lh, window, cx);
-            let _ = tag_shaped.paint(point(text_x, text_top + word_lh), tag_lh, window, cx);
+            let _ = word_shaped.paint(point(text_x, block_top), word_h, window, cx);
+
+            // Subtitle — same pen origin `text_x` is not quite enough: a
+            // larger font's left side-bearing (the gap between the pen
+            // origin and the glyph's visible ink) is proportionally larger
+            // in absolute pixels than a smaller font's, so pinning both to
+            // the same pen origin leaves the subtitle's ink start slightly
+            // LEFT of the wordmark's ink start. `bearing_frac` is an
+            // approximation of that side-bearing as a fraction of font
+            // size (gpui doesn't expose per-glyph ink bounds here); nudge
+            // it if the "A" and "L" ink still don't line up exactly.
+            let bearing_frac = 0.055_f32;
+            let tag_indent = (word_fs - tag_fs) * bearing_frac;
+            let tag_top = block_top + word_h + title_subtitle_gap;
+            let _ = tag_shaped.paint(point(text_x + tag_indent, tag_top), tag_h, window, cx);
         }
     }
 }

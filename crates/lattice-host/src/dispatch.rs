@@ -5561,7 +5561,7 @@ impl Editor {
     /// few columns of slack, so a transient gutter-width disagreement
     /// degrades gracefully (the cursor stays visible, the centre is
     /// off by the gutter delta) rather than hiding the cursor.
-    fn body_text_width(&self) -> u32 {
+    pub(crate) fn body_text_width(&self) -> u32 {
         let full = self.pane_tree.active().viewport_width;
         if full == 0 {
             return 0;

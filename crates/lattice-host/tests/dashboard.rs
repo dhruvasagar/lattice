@@ -213,6 +213,27 @@ fn dashboard_branding_reaches_pane_virtual_row_matrix() {
 }
 
 #[test]
+fn dashboard_body_is_block_centered_to_pane_width() {
+    let mut editor = boot();
+    editor.pane_tree.active_mut().viewport_width = 120;
+    editor.do_open_dashboard();
+
+    // Body content is block-centred: every non-blank line carries a uniform
+    // leading inset (lines that had internal indentation carry inset + that).
+    let text = editor.active_text().as_string();
+    let min_inset = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    assert!(
+        min_inset > 0,
+        "body should be centred (non-zero leading inset) at width 120"
+    );
+}
+
+#[test]
 fn dashboard_reopen_is_idempotent() {
     let mut editor = boot();
     editor.do_open_dashboard();

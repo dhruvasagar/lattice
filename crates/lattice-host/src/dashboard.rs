@@ -113,8 +113,50 @@ impl Editor {
                 Vec::new()
             }
         };
-        dashboard_fragments_to_help_content(fragments)
+        let content = dashboard_fragments_to_help_content(fragments);
+        // Block-centre the body against the pane content width (the branding
+        // virtual rows centre via VirtualRowAlign). Width is 0 before the
+        // renderer feeds geometry (startup) → left-aligned until the resize
+        // recompute (DB.6) recentres.
+        center_help_content(content, self.body_text_width() as usize)
     }
+}
+
+/// Block-centre a `HelpContent` horizontally: prepend a uniform leading inset
+/// to every line so the content block is centred in `width`, shifting the link
+/// + anchor byte ranges by the same inset. Lines stay left-aligned *within*
+/// the block. No-op when the block is already ≥ `width` or `width` is unknown.
+fn center_help_content(mut content: lattice_help::HelpContent, width: usize) -> lattice_help::HelpContent {
+    let text = content.buffer.content.as_string();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let block_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    if width <= block_w {
+        return content;
+    }
+    let inset = (width - block_w) / 2;
+    if inset == 0 {
+        return content;
+    }
+    let pad = " ".repeat(inset);
+    let padded = lines
+        .iter()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{pad}{l}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    content.buffer.content = lattice_core::Buffer::from_text(&padded);
+    let ins = inset as u32;
+    for link in &mut content.metadata.links {
+        link.range.start.byte += ins;
+        link.range.end.byte += ins;
+    }
+    // Anchors are line-based (no byte range) — leading pad doesn't affect them.
+    content
 }
 
 /// Render one dashboard row to a markdown line. Link spans become

@@ -258,6 +258,21 @@ deletes 5 lines.
 `.` repeats the last *change* (operator + motion). Yank-only
 invocations don't go on the dot register; only mutating ops.
 
+### Replace characters — `r` / `R`
+
+Overwrite in place, without deleting-and-retyping:
+
+| Key            | Action                                                                 |
+|----------------|-----------------------------------------------------------------------|
+| `r{char}`      | Replace the character under the cursor with `{char}`; stay in Normal   |
+| `{count}r{char}` | Replace `{count}` characters with `{char}`; a no-op if fewer than `{count}` remain on the line |
+| `R`            | Enter **Replace mode** — every printable key overwrites; `<BS>` restores the char it replaced; `<Esc>` returns to Normal |
+| `{visual} r{char}` | Replace **every selected character** with `{char}`, then return to Normal (charwise, linewise, and blockwise selections all work; newlines are preserved) |
+
+`r` and Visual `r` wait for the next key to use as the replacement,
+so `<Esc>` there cancels the pending replace. Line breaks are never
+overwritten — a multi-line selection keeps its line structure.
+
 ---
 
 ## Text objects

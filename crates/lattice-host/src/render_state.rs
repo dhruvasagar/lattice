@@ -1271,6 +1271,19 @@ pub struct PaneCellsInputs {
     /// display rows. `false` ⇒ `wrap_width` stays `0` (one
     /// display row per source line — the historical default).
     pub wrap: bool,
+    /// Columns reserved for this pane's gutter (line-number column
+    /// + diagnostic + diff-sign cells). The cells worker subtracts
+    /// this from `viewport_width` to get the soft-wrap width, so
+    /// the stamped `wrap_width` — read by `segment_count` (the
+    /// vertical scroll clamp) and both renderers' paint paths —
+    /// matches the width the renderer actually wraps body text at.
+    /// Without this the clamp under-counts wrapped display rows and
+    /// `G` clips the document tail. `0` for gutterless panes (the
+    /// floating popups). Computed via
+    /// [`crate::cells_worker::gutter_cols`], shared with
+    /// [`crate::editor::Editor::body_text_width`] to keep the
+    /// vertical and horizontal clamps in lockstep.
+    pub wrap_reserved_cols: u32,
     /// Per-pane foldenable. Global today (no per-buffer
     /// setting); kept here so a future per-buffer
     /// `foldenable` doesn't require a substate reshape.

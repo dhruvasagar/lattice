@@ -5566,16 +5566,13 @@ impl Editor {
         if full == 0 {
             return 0;
         }
-        // gutter_width(n) = digits(n) + 1 (leading pad) +
-        // GUTTER_TRAILING_PAD(2); DIAG + DIFF sign cells add 2 more.
-        let gutter = if self.option_cache.show_line_numbers {
-            let total_lines = self.document.snapshot().buffer.line_count().max(1);
-            let digits = total_lines.ilog10() + 1;
-            digits + 5
-        } else {
-            // Bare 2-cell margin (`:set nonumber`) + DIAG(1) + DIFF(1).
-            4
-        };
+        // Shared derivation with the vertical clamp's soft-wrap width:
+        // both go through `cells_worker::gutter_cols` so the horizontal
+        // and vertical clamps can never drift on the gutter reservation
+        // (the drift that produced the `G` tail-clip regression).
+        let total_lines = self.document.snapshot().buffer.line_count().max(1);
+        let gutter =
+            crate::cells_worker::gutter_cols(total_lines, self.option_cache.show_line_numbers);
         full.saturating_sub(gutter)
     }
 
@@ -11434,6 +11431,10 @@ impl Editor {
                 theme_hash,
                 whitespace_hash,
                 last_edit,
+                // Real document leaves have a gutter (line numbers +
+                // diagnostic/diff sign cells) → reserve it from the
+                // wrap width.
+                true,
             ));
         }
         // PU.1b-3 / PU.5: synthetic popup panes. Floating overlays (the
@@ -11464,6 +11465,9 @@ impl Editor {
                 theme_hash,
                 whitespace_hash,
                 None,
+                // Floating popups have no gutter — their fed inner
+                // width is already the text width, so reserve nothing.
+                false,
             ));
         }
         Arc::from(entries.into_boxed_slice())
@@ -11495,6 +11499,7 @@ impl Editor {
         theme_hash: u64,
         whitespace_hash: u64,
         last_edit: Option<lattice_cells::EditDelta>,
+        has_gutter: bool,
     ) -> crate::render_state::PaneCellsInputs {
         use crate::render_state::PaneCellsInputs;
 
@@ -11631,6 +11636,26 @@ impl Editor {
             whitespace: whitespace_hash,
         };
 
+        // G-clip: gutter columns to hold out of the soft-wrap width so
+        // `segment_count` (the vertical scroll clamp) and the painted
+        // wrap width agree (see `cells_worker::gutter_cols`). Reads the
+        // same `option_cache.show_line_numbers` that `body_text_width`
+        // (the horizontal clamp) uses — keeping the two clamps in exact
+        // lockstep and avoiding a per-buffer option resolve that panics
+        // on the minimal configs some tests boot. Line count comes from
+        // this pane's snapshot for the digit width. Gutterless panes
+        // (floating popups: `has_gutter == false`) reserve nothing —
+        // their fed `viewport_width` is already the inner text width.
+        let wrap_reserved_cols = if has_gutter {
+            let line_count = snapshot
+                .as_ref()
+                .map(|s| s.buffer.line_count())
+                .unwrap_or(1);
+            crate::cells_worker::gutter_cols(line_count, self.option_cache.show_line_numbers)
+        } else {
+            0
+        };
+
         PaneCellsInputs {
             pane_id,
             buffer_id,
@@ -11668,6 +11693,7 @@ impl Editor {
             // established per-publish source (mirrors
             // `foldenable` above).
             wrap,
+            wrap_reserved_cols,
             foldenable,
             last_edit,
             excerpt_syntax,
@@ -35686,7 +35712,118 @@ mod tests {
         let pane = cells.panes.first().expect("at least one pane");
         assert!(pane.wrap, "wrap on");
         assert_eq!(pane.viewport_width, 80, "width propagated");
-        // cells_worker: effective_wrap = viewport_width = 80 when wrap is true
+        // G-clip fix: the worker wraps at the BODY width (pane minus
+        // gutter), NOT the full 80. The reservation must be non-zero
+        // (line numbers on by default) so `segment_count` matches the
+        // renderer's wrapped rows.
+        let gutter = crate::cells_worker::gutter_cols(
+            editor.document.snapshot().buffer.line_count().max(1),
+            editor.option_cache.show_line_numbers,
+        );
+        assert!(gutter > 0, "line-numbered pane reserves a gutter");
+        assert_eq!(
+            pane.wrap_reserved_cols, gutter,
+            "wrap reservation = gutter cols"
+        );
+        let effective_wrap = pane.viewport_width - pane.wrap_reserved_cols;
+        assert!(effective_wrap > 0 && effective_wrap < 80);
+    }
+
+    /// G-clip regression: the vertical scroll clamp (which reads the
+    /// cells matrix `wrap_width` via `segment_count`) and the
+    /// horizontal clamp (`body_text_width`) MUST wrap body text at the
+    /// same width, or `G` under-counts wrapped rows and clips the tail.
+    /// They diverged because the cells worker wrapped at the full pane
+    /// width while the renderer + horizontal clamp subtract the gutter.
+    #[test]
+    fn wrap_reserved_cols_matches_horizontal_clamp_body_width() {
+        // Enough lines that the gutter is 2 digits (line_count >= 10),
+        // proving the digit-aware branch is exercised, not just the
+        // constant.
+        let text = "some fairly long line of text here\n".repeat(40);
+        let mut editor = Editor::boot(lattice_core::Document::from_text(&text));
+        {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[0].viewport_width = 60;
+        }
+        let _ = editor.do_set("wrap");
+        editor.publish_render_state();
+        let cells = editor.render_state.load_full().cells.load_full();
+        let pane = cells.panes.first().expect("pane");
+        // The width the worker will stamp as `wrap_width` …
+        let effective_wrap = pane.viewport_width - pane.wrap_reserved_cols;
+        // … equals the width the horizontal clamp calls the body.
+        assert_eq!(
+            effective_wrap,
+            editor.body_text_width(),
+            "vertical-clamp wrap width must equal horizontal-clamp body width"
+        );
+    }
+
+    /// Floating popups have no gutter: their fed inner width is already
+    /// the text width, so the wrap reservation must stay 0 (otherwise
+    /// popup content would wrap several columns too early).
+    #[test]
+    fn floating_popup_reserves_no_gutter() {
+        use crate::popup::PopupPlacement;
+        use lattice_core::ui::pane::PaneId;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
+        let content = lattice_help::HelpContent::from_lines(
+            "test-help",
+            vec!["# Title".into(), "some body text".into()],
+        );
+        let _ = editor.open_floating_popup(content, PopupPlacement::Centered);
+        editor.popup_viewport_height = 18;
+        editor.popup_viewport_width = 60;
+        let panes = editor.build_cells_panes(None);
+        let pop = panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("popup pane");
+        assert_eq!(pop.wrap_reserved_cols, 0, "gutterless popup reserves nothing");
+    }
+
+    /// The clamp's display-row accounting must compose wrap segments
+    /// AND folds: a closed fold removes its body's rows while wrapped
+    /// lines add rows. `goto_last_line` must still scroll far enough
+    /// that the last line is inside the viewport. Guards that the
+    /// wrap-width fix didn't disturb fold hopping in
+    /// `bottom_anchored_scroll`.
+    #[test]
+    fn goto_last_line_keeps_last_line_visible_with_wrap_and_fold() {
+        // 12 source lines; wrap_width 4 with each line 8 cols wide ⇒
+        // every visible line costs 2 display rows.
+        let doc = lattice_core::Document::from_text(&"abcdefgh\n".repeat(12));
+        let mut editor = Editor::boot(doc);
+        seed_wrap_matrix(&editor, 4, 12);
+        // Close a fold over lines 2..=5 (its 3 hidden body lines must
+        // NOT consume budget — the walk hops to the head).
+        editor.folds = vec![lattice_core::Fold {
+            start_line: 2,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        }];
+        // Small viewport so the clamp actually has to scroll.
+        editor.viewport_height = 8;
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        // The window [scroll..=11], skipping the closed fold body,
+        // must fit the cursor's line within the budget: the display
+        // rows from `scroll` to the last line cannot exceed the
+        // viewport, i.e. the last line is visible.
+        let budget = editor.viewport_height;
+        let rows = editor.bottom_anchored_scroll(11, budget);
+        assert!(
+            rows <= editor.scroll,
+            "scroll ({}) must reach the bottom-anchored minimum ({}) so line 11 is on-screen",
+            editor.scroll,
+            rows
+        );
+        assert!(
+            editor.scroll > 0,
+            "with 2-row-per-line wrap and an 8-row viewport, G must scroll"
+        );
     }
 
     /// PU.1b-3 (Fork 1): an open floating help popup gets a synthetic

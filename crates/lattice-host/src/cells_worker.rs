@@ -317,6 +317,33 @@ fn highlight_range_multibuffer(
     Some(result)
 }
 
+/// Non-body columns a *document* pane reserves for its gutter:
+/// line-number column + diagnostic + diff-sign cells. Mirrors the
+/// TUI renderer's `gutter_width + DIAG + DIFF` (`lattice-ui-tui::
+/// render`) and the GPUI peer's gutter, reducing to `digits + 5`
+/// with line numbers on (leading pad 1 + digits + trailing pad 2 +
+/// DIAG 1 + DIFF 1) or a bare `4` with them off (2-cell margin +
+/// DIAG 1 + DIFF 1).
+///
+/// SINGLE SOURCE OF TRUTH shared with [`crate::editor::Editor::
+/// body_text_width`]. The soft-wrap width the worker stamps on the
+/// matrix (`wrap_width`, read by `segment_count` — the vertical
+/// scroll clamp's display-row model — AND by both renderers' paint
+/// paths) MUST equal the width the renderer wraps body text at, or
+/// `G`/`bottom_anchored_scroll` under-counts wrapped rows and clips
+/// the document tail (the recurring "last lines off-screen" bug).
+/// Because the horizontal clamp already derives its body width the
+/// same way, keeping both on this one function is what prevents the
+/// two clamps from drifting again.
+pub(crate) fn gutter_cols(line_count: u32, show_line_numbers: bool) -> u32 {
+    if show_line_numbers {
+        let digits = line_count.max(1).ilog10() + 1;
+        digits + 5
+    } else {
+        4
+    }
+}
+
 /// D.4.d.1.b (2026-05-29): per-pane recompute. Same algorithm
 /// the pre-d.1.b `recompute` ran against the top-level
 /// active-doc fields, now keyed off a single
@@ -368,7 +395,22 @@ pub fn recompute_pane(
     // unchanged (A2 keeps identical rows) but must still re-stamp
     // the matrix, so the cache-hit check below compares
     // `wrap_width` alongside the version.
-    let effective_wrap = if pane.wrap { pane.viewport_width } else { 0 };
+    //
+    // Wrap at the BODY width (pane minus gutter), not the full pane
+    // width: `segment_count` (the scroll clamp) and both renderers'
+    // paint paths read this, and the renderer wraps text into
+    // `viewport_width - gutter`. `wrap_reserved_cols` is the gutter
+    // reservation the builder computed via `gutter_cols` (0 for
+    // gutterless floating popups). `.max(1)` mirrors the renderer's
+    // own `.max(1)` so a pane narrower than its gutter still wraps
+    // (rather than the `0` sentinel silently turning wrapping off).
+    let effective_wrap = if pane.wrap {
+        pane.viewport_width
+            .saturating_sub(pane.wrap_reserved_cols)
+            .max(1)
+    } else {
+        0
+    };
 
     // H.3 (2026-06-04): the source-line range the renderer needs
     // covered this tick. For a windowed large-file matrix the
@@ -532,8 +574,15 @@ pub fn sync_rebuild_pane_on_edit(
     };
     // Match `recompute_pane`'s wrap + coverage model so an accepted sync
     // result is one the worker treats as a cache hit (no redundant
-    // rebuild) on its following wake.
-    let effective_wrap = if pane.wrap { pane.viewport_width } else { 0 };
+    // rebuild) on its following wake. Body-width wrap (pane minus the
+    // builder-supplied gutter reservation) — see `recompute_pane`.
+    let effective_wrap = if pane.wrap {
+        pane.viewport_width
+            .saturating_sub(pane.wrap_reserved_cols)
+            .max(1)
+    } else {
+        0
+    };
     let coverage_line_count = snapshot.buffer.line_count();
     let visible_lo = pane.scroll.min(coverage_line_count);
     let visible_hi = pane
@@ -2438,6 +2487,7 @@ mod tests {
             scroll: 0,
             viewport_width: 0,
             wrap: false,
+            wrap_reserved_cols: 0,
             foldenable,
             last_edit,
             excerpt_syntax: Arc::from([]),
@@ -4946,6 +4996,7 @@ mod tests {
                         scroll: 0,
                         viewport_width: 0,
                         wrap: false,
+                        wrap_reserved_cols: 0,
                         foldenable: true,
                         last_edit,
                         excerpt_syntax: Arc::from([]),
@@ -5098,6 +5149,7 @@ mod tests {
                 scroll: 0,
                 viewport_width: 0,
                 wrap: false,
+                wrap_reserved_cols: 0,
                 foldenable: true,
                 last_edit: None,
                 excerpt_syntax: Arc::from([]),
@@ -5188,6 +5240,7 @@ mod tests {
             scroll: 0,
             viewport_width: 0,
             wrap: false,
+            wrap_reserved_cols: 0,
             foldenable: true,
             last_edit: None,
             excerpt_syntax: Arc::from([]),

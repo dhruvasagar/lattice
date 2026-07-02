@@ -15,13 +15,19 @@
 use std::hint::black_box;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
+use lattice_core::buffer::Buffer;
 use lattice_grammar::app_effect::AppEffect;
 use lattice_grammar::args::{ArgValue, Args};
 use lattice_grammar::effect::{Effect, QuitScope};
 use lattice_picker::outcome::PickerAcceptOutcome;
 use lattice_plugin_host::WitBoundary;
+use lattice_plugin_host::buffer::DocumentResource;
+use lattice_protocol::position::{Position, Range};
+use lattice_runtime::snapshot::DocumentSnapshot;
 
 fn boundary_round_trip(c: &mut Criterion) {
     let args = Args::List(vec![
@@ -111,6 +117,37 @@ fn boundary_round_trip(c: &mut Criterion) {
             let wit = black_box(&app_effect).to_wit().expect("to_wit");
             let back = AppEffect::from_wit(wit).expect("from_wit");
             black_box(back);
+        })
+    });
+
+    // PH7.3c: the `document` resource's `get-text-range` slices only the
+    // requested span out of the rope — the "zero-copy at the slice level"
+    // claim (§9.6). Backing a 10k-line buffer and reading one line shows the
+    // cost is O(slice), not O(document): the whole rope is never materialised.
+    let big = (0..10_000)
+        .map(|i| format!("line {i} with some representative content"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let doc = DocumentResource::new(Arc::new(DocumentSnapshot {
+        buffer: Buffer::from_text(&big),
+        ..Default::default()
+    }));
+    let one_line = Range {
+        start: Position {
+            line: 5_000,
+            byte: 0,
+        },
+        end: Position {
+            line: 5_000,
+            byte: 12,
+        },
+    };
+    c.bench_function("document_get_text_range_one_line", |b| {
+        b.iter(|| {
+            let text = black_box(&doc)
+                .get_text_range(black_box(one_line))
+                .expect("slice");
+            black_box(text);
         })
     });
 }

@@ -46,6 +46,15 @@ world plugin {
 	/// is transitively referenced, so it surfaces without a world-level `use`.
 	use types.{app-effect, viewport-pos, scroll-pos, pane-direction, hscroll};
 
+	/// The owned `buffer-snapshot` projection record (PH7.3c, §4.2). `use`d (not
+	/// `import`ed) so `bindgen!` emits the Rust mirror the host projects into
+	/// (`buffer.rs::project_buffer_snapshot`). The `document` **resource** is
+	/// defined in `buffer.wit` but is not referenced by any world function yet,
+	/// so bindgen won't wire it here; its host `HostDocument` trait +
+	/// `add_to_linker` land at PH7.3d, when the picker-source signature takes a
+	/// `document` handle (bindgen only generates a resource a signature uses).
+	use buffer.{buffer-snapshot};
+
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.
 	export activate: func();

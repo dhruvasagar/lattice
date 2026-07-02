@@ -1911,6 +1911,7 @@ baseline. Order-of-magnitude only until re-run on the canonical box.
 | `boundary_picker_outcome_round_trip` (PH7.3a) | ~21–47 ns | A `PickerAcceptOutcome::JumpToLocation`. |
 | `boundary_effect_round_trip` (PH7.3b1b) | ~92 ns | A composite `Effect::Many` of 4 arms (RecordJump + OpenBufferAt + QuitEditor + Echo) — exercises the `list<effect>` flatten/rebuild + a spread of payload records. The cost an operator/ex-command guest export pays to return an effect. |
 | `boundary_app_effect_round_trip` (PH7.3b2) | ~13 ns | A single `AppEffect` (`EnterVisual(Linewise)`) — the payload of the `Effect::AppAction` arm. Exercises the reused `ModalState`/`VisualKind` mirrors + the `app-effect` variant a chord-bound plugin action marshals. |
+| `document_get_text_range_one_line` (PH7.3c) | ~400 ns | The `document` resource slicing one line out of a **10k-line** buffer. Demonstrates "zero-copy at the slice level" (§9.6): the cost is O(log n) locate + O(slice) copy, NOT O(document) — the whole rope is never materialised across the boundary. |
 
 ---
 

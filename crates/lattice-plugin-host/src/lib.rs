@@ -54,6 +54,7 @@
 pub mod boundary;
 pub mod boundary_app_effect;
 pub mod boundary_effect;
+pub mod buffer;
 pub mod capability;
 pub mod manifest;
 
@@ -85,6 +86,13 @@ wasmtime::component::bindgen!({
     // with this per-function form; async is always available on the engine,
     // so `Config::async_support` is a no-op and intentionally not called.)
     exports: { default: async },
+    // NB: the `document` resource's host trait + `with`-mapping to
+    // `DocumentResource` land at PH7.3d, not here. bindgen only lets a `with`
+    // entry bind a resource that a *world function signature* references, and
+    // no signature takes a `document` until the picker-source `init(ctx)` seam
+    // (PH7.3d/PH7.4). `use buffer.{buffer-snapshot}` (in `plugin.wit`) emits the
+    // owned record mirror this slice projects into; the resource backing
+    // (`buffer::DocumentResource`) is ready to be `with`-mapped then.
 });
 
 /// Fuel granted for the (trivial) instantiation step, before per-call budgets
@@ -246,7 +254,8 @@ impl Drop for EpochTicker {
 struct PluginState {
     /// The scoped WASI context (granted filesystem preopens + nothing else).
     wasi: WasiCtx,
-    /// The resource table WASI (and, later, boundary) resources live in.
+    /// The resource table WASI (and, at PH7.3d, the `document` handle)
+    /// resources live in.
     table: ResourceTable,
 }
 

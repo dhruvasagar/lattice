@@ -63,6 +63,10 @@ lattice-completion = { path = "../lattice-completion" }
 # payload types the `effect` variant composes.
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
+# PH7.3c: the `document` resource is backed by `Arc<DocumentSnapshot>` (decision
+# A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
+# rope). `DocumentSnapshot` lives in lattice-runtime.
+lattice-runtime = { path = "../lattice-runtime" }
 # PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
 # is skipped with a `warn!`, never a panic or a failed load.
 tracing = { workspace = true }

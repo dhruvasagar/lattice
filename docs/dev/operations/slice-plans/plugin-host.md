@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b ✅ (b1a+b1b+b2), PH7.3c next). Design fragment:
+**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b ✅ (b1a+b1b+b2), PH7.3c ✅, PH7.3d next). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -225,11 +225,41 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
       arms), unit-arm round-trips, helper-enum round-trips, `Many` flatten+rebuild, single/empty
       normalisation, `Global`/`AppAction` typed-error (incl. nested-in-`Many`).
 
-  #### PH7.3c — `document` resource handle + owned-snapshot projection 📝
+  #### PH7.3c — `document` resource handle + owned-snapshot projection ✅ (2026-07-02)
   Borrows→owned records (§4.2); the `buffer` WIT `document` resource; `get-text-range` zero-copy
   slice callback so bulk rope text never rides a snapshot.
+  - **Decisions (locked with Dhruva 2026-07-02):** *(A)* the `document` resource is backed by an
+    `Arc<DocumentSnapshot>` — a point-in-time immutable view; edits after the handle is minted never
+    shift byte ranges under the guest (chosen over a live `Arc<dyn Document>` = mutation-under-read
+    hazard, or a rope-only clone = drops the metadata the snapshot already carries). *(A)* prove at the
+    host layer, deferring the guest→host call through the canonical ABI to PH7.3d (the b-series
+    precedent). *(C)* `get-text-range(range) -> result<string,string>` (reuses the `range` record; OOB /
+    `end<start` is a typed error, mirroring `Buffer::slice`); metadata readers `line-count`/`byte-len`/
+    `line`; the owned `buffer-snapshot` record carries id/path/language/cursor/selection.
+  - **Landed:** `wit/buffer.wit` — the `document` resource + `buffer-snapshot` record (fills the empty
+    stub). `wit/plugin.wit` — `use buffer.{buffer-snapshot}` (emits the record mirror the projection
+    targets). New `buffer.rs` — `DocumentResource` (the `Arc<DocumentSnapshot>` backing +
+    `get_text_range` slice / `line_count` / `byte_len` / `line_at`, native-typed + unit-tested) +
+    `project_buffer_snapshot(&ActiveBufferSnapshot) -> Result<BufferSnapshot, String>` (one-way borrows→
+    owned projection; non-UTF-8 path = typed error). Dep: +lattice-runtime (`DocumentSnapshot`).
+    `benches/boundary.rs` — `document_get_text_range_one_line` (~400 ns to slice one line out of a
+    10k-line buffer: O(log n) locate + O(slice) copy, NOT O(document) — the "zero-copy at the slice
+    level" claim, §9.6).
+  - **Deferred to PH7.3d (bindgen constraint, not a scope cut):** the resource's host `HostDocument`
+    trait impl + `with`-mapping (`document` → `DocumentResource`) + `add_to_linker`. bindgen only binds a
+    `with` entry for a resource that a *world function signature* references, and no signature takes a
+    `document` until the picker-source `init(ctx)` seam (PH7.4). `use buffer.{buffer-snapshot}` emits the
+    record mirror but does NOT satisfy that check; forcing it now (a premature guest fn, or stuffing the
+    handle into the snapshot record — which would couple the projection to a `Store` and break its
+    unit-testability) was rejected on heuristic #1. `DocumentResource` is the ready-to-`with`-map backing.
+  - **Tests (7, 47 lib green):** `get_text_range` slices the requested span; OOB + `end<start` typed
+    errors; metadata readers match the buffer (`Buffer::line` strips the trailing newline); snapshot
+    backing is immutable under a later edit (decision A); projection projects metadata-not-text +
+    handles absent optionals. Existing instantiate tests unaffected by the world change.
 
   #### PH7.3d — Callback-id ↔ guest-export dispatch + async result carrier 📝
+  (Also lands the deferred PH7.3c `document` host-trait wiring — `with`-mapping + `HostDocument` impl +
+  `add_to_linker` — once the picker-source `init(ctx)` signature references a `document` handle.)
   The trampoline (`command_id → guest_export_ref`, §4.1) + the async result-carrier adapter (guest
   returns batches; host owns the `Future`/`mpsc`, §4.3).
 

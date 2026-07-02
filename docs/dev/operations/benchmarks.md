@@ -1913,6 +1913,27 @@ baseline. Order-of-magnitude only until re-run on the canonical box.
 | `boundary_app_effect_round_trip` (PH7.3b2) | ~13 ns | A single `AppEffect` (`EnterVisual(Linewise)`) — the payload of the `Effect::AppAction` arm. Exercises the reused `ModalState`/`VisualKind` mirrors + the `app-effect` variant a chord-bound plugin action marshals. |
 | `document_get_text_range_one_line` (PH7.3c) | ~400 ns | The `document` resource slicing one line out of a **10k-line** buffer. Demonstrates "zero-copy at the slice level" (§9.6): the cost is O(log n) locate + O(slice) copy, NOT O(document) — the whole rope is never materialised across the boundary. |
 
+## Plugin host — end-to-end typed call (`crates/lattice-plugin-host/benches/trampoline.rs`)
+
+PH7.3d bench — the §7 **headline** gate "typed host function call < 100 ns p50 /
+< 500 ns p99", deferred from PH7.3a (which benched only the marshalling
+component) to here, where a **real `wasm32-wasip2` guest export** exists to call.
+This is the full round trip the §4.1 trampoline pays: a host→guest call across
+the canonical ABI (lower the `args`, run the guest, lift the returned
+`list<effect>`), measured WARM (the guest is instantiated once, the call runs in
+a tight loop — so it is per-call overhead, not instantiation). It validates the
+whole `effect` mirror crossing a live component boundary (§14's highest risk),
+not a stub. Skips when the `wasm32-wasip2` target isn't installed (see
+`build.rs`); CI installs it so the gate runs. Not a CI ratchet yet (PH7.5).
+
+⚠️ **Provisional — off-box.** Captured on the same non-canonical box as the rows
+above; order-of-magnitude only until re-run on the §8.2 hardware.
+
+| Workload | Provisional | Notes |
+| ------------------------------------- | ----------- | ----- |
+| `trampoline_apply_effect_warm_call` (PH7.3d) | ~437 ns median | `args` in → `list<effect>` out through the fixture guest — the operator/motion `apply` shape. Right at the < 500 ns p99 target for a real end-to-end typed call. |
+| `trampoline_next_batch_warm_call` (PH7.3d) | ~sub-µs | One `next-batch` pull (the §4.3 result-carrier's per-batch call); same order as the apply call. |
+
 ---
 
 ## What's NOT here

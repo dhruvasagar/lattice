@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b ✅ (b1a+b1b+b2), PH7.3c ✅, PH7.3d next). Design fragment:
+**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅** (a + b(b1a+b1b+b2) + c + d); PH7.4 (⭐ exit) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -138,7 +138,7 @@ vs user-install consent); host-issued `SourceLayer::Plugin(id)` provenance stamp
   editor caps); error = denied capability → `LoadedPlugin::denied_capabilities()` + plugin loads
   degraded, missing/uncreatable data-dir or bad prefix → `warn!` + skip, never a panic or failed load.
 
-### PH7.3 — Boundary primitives (the crux — §4 of the fragment) 🚧
+### PH7.3 — Boundary primitives (the crux — §4 of the fragment) ✅ (2026-07-02)
 The reusable adapter machinery every seam consumes: owned-snapshot projection (borrows →
 owned records + `document` resource handle with slice callbacks); callback-id ↔ guest-export
 dispatch; the `effect` WIT variant mirroring the closed `Effect` enum + back-mapping; explicit
@@ -245,10 +245,11 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
     `benches/boundary.rs` — `document_get_text_range_one_line` (~400 ns to slice one line out of a
     10k-line buffer: O(log n) locate + O(slice) copy, NOT O(document) — the "zero-copy at the slice
     level" claim, §9.6).
-  - **Deferred to PH7.3d (bindgen constraint, not a scope cut):** the resource's host `HostDocument`
+  - **Deferred to PH7.4 (bindgen constraint, not a scope cut):** the resource's host `HostDocument`
     trait impl + `with`-mapping (`document` → `DocumentResource`) + `add_to_linker`. bindgen only binds a
     `with` entry for a resource that a *world function signature* references, and no signature takes a
-    `document` until the picker-source `init(ctx)` seam (PH7.4). `use buffer.{buffer-snapshot}` emits the
+    `document` until the picker-source `init(ctx)` seam (PH7.4). (Originally slated for 3d, but 3d proved
+    the generic trampoline via the fixture world, which doesn't reference `document`.) `use buffer.{buffer-snapshot}` emits the
     record mirror but does NOT satisfy that check; forcing it now (a premature guest fn, or stuffing the
     handle into the snapshot record — which would couple the projection to a `Store` and break its
     unit-testability) was rejected on heuristic #1. `DocumentResource` is the ready-to-`with`-map backing.
@@ -257,11 +258,40 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
     backing is immutable under a later edit (decision A); projection projects metadata-not-text +
     handles absent optionals. Existing instantiate tests unaffected by the world change.
 
-  #### PH7.3d — Callback-id ↔ guest-export dispatch + async result carrier 📝
-  (Also lands the deferred PH7.3c `document` host-trait wiring — `with`-mapping + `HostDocument` impl +
-  `add_to_linker` — once the picker-source `init(ctx)` signature references a `document` handle.)
-  The trampoline (`command_id → guest_export_ref`, §4.1) + the async result-carrier adapter (guest
-  returns batches; host owns the `Future`/`mpsc`, §4.3).
+  #### PH7.3d — Callback-id ↔ guest-export dispatch + async result carrier ✅ (2026-07-02)
+  The trampoline (§4.1) + the async result-carrier adapter (guest returns batches; host owns the
+  loop, §4.3), proven **end-to-end against a real guest**.
+  - **Decision (locked with Dhruva 2026-07-02, option A):** 3d's substance — a guest-export call
+    through the canonical ABI + the `<500ns` bench — cannot be stubbed (unlike a/b/c, there's no
+    host-only layer left; the projection is 3c, the effect back-map is 3b). So bring a **minimal
+    `wasm32-wasip2` fixture guest** forward (the toolchain PH7.0 deferred to PH7.4) rather than defer
+    again (B, leaves §14's highest risk — ABI-design-wrong — unvalidated two more slices) or merge into
+    a PH7.4 mega-slice (C). The fixture is the permanent ABI regression test.
+  - **Landed:** `wit/trampoline-fixture.wit` — a test-only world exporting `apply-effect(args) ->
+    list<effect>` (§4.1 shape) + `next-batch() -> list<string>` (§4.3 shape). `tests/fixtures/
+    trampoline-guest/` — a standalone-workspace guest crate (own `target/`, gitignored) built with
+    `wit-bindgen` to a `wasm32-wasip2` **component**. `build.rs` — builds the guest at host-compile time
+    (env-scrubbed nested cargo + pinned `--target-dir` so leaked `CARGO_ENCODED_RUSTFLAGS` /
+    `CARGO_TARGET_DIR` can't break the wasm build), hands the path via `TRAMPOLINE_GUEST_WASM`, and
+    **degrades gracefully** (empty var → test/bench skip) when the target is absent. `src/trampoline.rs`
+    — the generic `collect_batches` §4.3 carrier (host owns the loop; empty batch = exhausted) as real
+    lib machinery PH7.4's picker Stream reuses, + a `#[cfg(test)]` fixture module whose **second
+    `bindgen!` reuses the host's generated `types`** (`with:` → so the guest-returned `Effect` is the
+    SAME Rust type `WitBoundary::from_wit` consumes) driving real guest calls. `benches/trampoline.rs`
+    — the deferred `<500ns` headline: `trampoline_apply_effect_warm_call` ~437 ns median (a real warm
+    guest↔host typed call), retiring §14's highest risk with a real number.
+  - **Toolchain:** `rustup target add wasm32-wasip2` (Rust 1.94 emits a component directly — no
+    `wasm-tools`/`cargo-component` needed). CI must add the target for the fixture test + perf gate to
+    run (they skip otherwise).
+  - **Tests (5, 52 lib green):** `collect_batches` aggregate + error-propagation (no guest); and 3
+    fixture tests through a REAL component — `apply-effect` round-trips an `Echo` payload arm (data
+    flows in), rebuilds `Many` from a `list<effect>`, and the `next-batch` carrier aggregates
+    `["a","b","c"]` host-side.
+  - **NB — the PH7.3c `document` resource wiring lands at PH7.4, not here.** 3d proved the *generic*
+    trampoline/carrier mechanism via the fixture world; the `document` resource's `HostDocument` impl +
+    `with`-mapping + `add_to_linker` still need a *world function signature* that references a `document`
+    handle, which first appears in the picker-source `init(ctx)` seam (PH7.4). `DocumentResource` is the
+    ready backing.
 
 ### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 📝
 The `picker-source` WIT interface mirroring `PickerSourceGenerator`; host adapter wrapping a

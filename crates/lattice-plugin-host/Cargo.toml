@@ -91,5 +91,12 @@ harness = false
 name = "boundary"
 harness = false
 
+# PH7.3d: the end-to-end guest↔host typed-call bench (the §7 <500ns headline,
+# deferred from 3a to where a real guest call exists). Skips when the
+# wasm32-wasip2 fixture wasn't built (see build.rs).
+[[bench]]
+name = "trampoline"
+harness = false
+
 [lints]
 workspace = true

@@ -57,6 +57,7 @@ pub mod boundary_effect;
 pub mod buffer;
 pub mod capability;
 pub mod manifest;
+pub mod trampoline;
 
 pub use boundary::WitBoundary;
 pub use capability::{

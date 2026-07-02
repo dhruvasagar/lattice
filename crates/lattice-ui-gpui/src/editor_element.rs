@@ -240,6 +240,11 @@ pub(crate) struct EditorElement {
     /// Line-number column width in chars (max digits in
     /// `total_lines`).
     pub(crate) gutter_width: usize,
+    /// DB.4: extra leading gutter cells to horizontally centre the buffer's
+    /// content (dashboard). Added to `gutter_chars` (document lines + cursor)
+    /// and to the virtual-row gutter (branding), so the whole buffer shifts
+    /// right — centred with no text mutation. `0` for non-centred buffers.
+    pub(crate) content_left_pad: u32,
     /// PU.1b-1a (`signcolumn`): whether to reserve the gutter sign
     /// columns (diagnostics severity + diff sign). `true` (default)
     /// keeps both cells — byte-identical to the prior render; `false`
@@ -638,7 +643,8 @@ impl Element for EditorElement {
                 .shape_line(SharedString::from("M"), font_size, &[ref_run], None)
                 .width
         };
-        let gutter_chars: usize = if self.gutter.is_empty() {
+        let gutter_chars: usize = self.content_left_pad as usize
+            + if self.gutter.is_empty() {
             0
         } else {
             // PU.1b-1a: the leading `2` is the severity + diff sign

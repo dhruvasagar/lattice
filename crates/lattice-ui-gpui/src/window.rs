@@ -2258,6 +2258,9 @@ impl EditorView {
             // pre-existing per-pane-option limitation as the rest of
             // this element. TUI peer: `FrameView::sign_column`.
             sign_column: rs_guard.active_document.load().option_cache.sign_column,
+            // DB.4: gutter-based horizontal centring (dashboard). Active pane
+            // reads the resolved pad; inactive panes render normally (0).
+            content_left_pad: rs_guard.active_document.load().option_cache.content_left_pad,
             cursor: cursor_state,
             is_active: render_active,
             visual_range,
@@ -3628,6 +3631,7 @@ impl Render for EditorView {
                         // signcolumn=no ⇒ empty gutter (text-only walk).
                         gutter: Vec::new(),
                         gutter_width: 0,
+                content_left_pad: 0,
                         sign_column: false,
                         // Docs popup is never focused — no cursor / overlays.
                         cursor: None,
@@ -4161,6 +4165,7 @@ impl Render for EditorView {
                 // + `signcolumn=no`, so there is no gutter to paint.
                 gutter: Vec::new(),
                 gutter_width: 0,
+                content_left_pad: 0,
                 sign_column: false,
                 cursor,
                 is_active: popup_focused,

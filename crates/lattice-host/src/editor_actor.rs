@@ -754,6 +754,10 @@ async fn run_actor(
                 if idx == active_idx {
                     editor.viewport_height = height.max(1);
                     editor.ensure_cursor_visible();
+                    // DB.4: content-centring pad depends on the pane width, so
+                    // recompute it (and the rest of the option cache) when the
+                    // active pane resizes — keeps the dashboard centred.
+                    editor.rebuild_option_cache();
                 }
                 // T4.1 (2026-05-25): when the pane hosts a
                 // terminal, propagate the new geometry to both

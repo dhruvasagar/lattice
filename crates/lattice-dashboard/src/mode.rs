@@ -52,6 +52,9 @@ impl Mode for DashboardMode {
             lattice_config::NoFile = true,
             lattice_config::Number = false,
             lattice_config::SignColumnOption = lattice_config::SignColumn::No,
+            // The dashboard is a splash page, not an editing surface — no
+            // current-line highlight (dashboard-only, via the major mode).
+            lattice_config::CursorLine = false,
         }
     }
 
@@ -98,7 +101,7 @@ mod tests {
 
     #[test]
     fn contributes_read_only_gutterless_set() {
-        // ReadOnly + Wrap + NoFile + Number + SignColumn.
-        assert_eq!(DashboardMode.options().iter().count(), 5);
+        // ReadOnly + Wrap + NoFile + Number + SignColumn + CursorLine.
+        assert_eq!(DashboardMode.options().iter().count(), 6);
     }
 }

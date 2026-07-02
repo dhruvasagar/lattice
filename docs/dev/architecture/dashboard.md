@@ -228,9 +228,20 @@ irrelevant here.
 Concretely: the mark occupies the left N rows; "Lattice"
 (`dashboard.title`) + tagline (`dashboard.tagline`) form a right block whose
 vertical centre aligns to the mark's vertical centre, separated by a fixed
-2-cell gap. In the TUI the wordmark is one styled row (fonts don't scale); in
-GPUI it may use the element `scale` vocabulary (`theme-system.md` Thread F) for
-a larger wordmark — a progressive enhancement, same layout.
+2-cell gap. In the TUI the wordmark is one styled row (fonts don't scale).
+
+**GPUI (DB.4-gpui, landed):** the "Lattice" wordmark renders **larger** than
+the mark blocks and tagline via **per-token virtual-row scaling** — the
+branding provider tags the wordmark's columns with a scale (`WORDMARK_SCALE`)
+in `VirtualRow::scales`, and the GPUI peer shapes that run at
+`font_size × scale` on a shared baseline (the N-piece `ScaledLine` path, shared
+with document headings). This is the general variable-font primitive
+(`virtual-rows.md` §3.4, `theme-system.md` Thread F), not a dashboard-specific
+render branch. The mark blocks and tagline stay base-size; the TUI ignores the
+scale and paints every cell base-size (tracked cross-renderer divergence).
+A pixel-perfect *side-by-side* scaled lockup (a big wordmark spanning the mark's
+full height beside it) is a renderer-side custom-paint follow-on; the per-token
+primitive scales the wordmark within the shared row model.
 
 ### 5.3 Centring
 

@@ -416,6 +416,17 @@ and it is *more* than a font-size attribute.
 > the host assumes; the renderer clips rows past the pane bottom (no
 > bleed over the modeline). Making the host height-aware (or having
 > GPUI feed back true capacity) is the follow-on.
+>
+> **Extension (F.3): per-token scaling in virtual rows.** The scaled
+> row is no longer a heading-only, single-transition (`[markers]
+> [title]`) construct. F.3 generalizes the GPUI shaping into an
+> **N-piece `ScaledLine`** — any number of column runs at differing
+> scales sharing one baseline — used by *both* the document heading
+> path (the 2-piece case) and **virtual rows**, which carry the scale
+> as a per-column channel (`VirtualRow::scales`, `virtual-rows.md`
+> §3.4). First virtual-row consumer: the dashboard branding wordmark
+> (DB.4-gpui). Same host invariants: one logical row painted taller,
+> TUI ignores the scale.
 
 Still deferred (the **rest** of Layer 2 — a separate, larger renderer
 initiative, gated behind `design.md` §5.6.7 "Path 4 — full inline

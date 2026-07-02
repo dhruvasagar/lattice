@@ -97,6 +97,9 @@ pub struct VirtualRow {
 	pub position: AnchorPosition,
 	pub cells: Arc<[Cell]>,
 	pub height: u16,
+	pub kind: VirtualRowKind,      // D.6.i — backdrop/decoration discriminant
+	pub bg: Option<u32>,           // D.6.i — per-row background override
+	pub scales: Option<Arc<[u16]>>, // F.3  — per-column font scale (hundredths)
 }
 
 pub enum AnchorPosition {
@@ -114,13 +117,19 @@ casing. `height` is 1 for the common case; values >1 are
 reserved for future multi-row blocks (code-lens summaries,
 multi-line signature previews).
 
-There is intentionally **no** kind tag (e.g., no enum
-discriminating `DiffDeletion` vs `ExcerptHeader`). The
-renderer paints `cells` uniformly; theme styling rides on the
-cell-level `Style` field that already exists. When a future
-consumer needs cross-row theming context, a typed extension
-lands at that point — D.0a doesn't pre-shape for
-hypothetical needs.
+`kind` and `bg` (D.6.i) let a renderer pick the right backdrop
+without inspecting cell content (deletion-block red vs. blank
+filler vs. an explicit `bg` override); they are a *painting*
+discriminant, never a motion/scroll/cursor branch — virtual
+rows still flow through the uniform Document paths.
+
+`scales` (**F.3**, Thread F) is an optional per-display-column
+font scale in **hundredths** (`100` = base), parallel to
+`cells`. `None` ⇒ the whole row is base size (the common case,
+zero-cost). It extends the variable-font commitment — per-token
+scaling, the emacs markdown-heading model where only the title
+scales, not the leading `#` markers — from document rows to
+virtual rows. See §3.4.
 
 ### 3.2 `VirtualRowMatrix`
 
@@ -176,6 +185,43 @@ slices can register providers immediately when they land.
 D.0a tests build `VirtualRowMatrix` directly via
 `VirtualRowMatrix::build(rows, source_line_count, version)`
 to exercise the lane end-to-end.
+
+### 3.4 Per-token font scaling (F.3)
+
+`VirtualRow::scales` is the substrate for **variable-sized
+fonts inside a virtual row**. It is a `u16`-hundredths scale
+per display column (`100` = base), stored parallel to `cells`
+so the tight 16-byte `Cell` never grows — scale rides beside
+the grid, not inside it. `lattice-cells` owns the encoding and
+the pure `coalesce_scales(scales, total_cols) -> [ScaleRun]`
+helper (contiguous same-scale runs, mirroring how a renderer
+already coalesces per-cell `fg`); `BASE_SCALE = 100`.
+
+The model is **per token, not per row** — the emacs
+markdown-heading convention where the title scales but the
+leading `#`/`##` markers stay base-size. A branding row is
+`[base mark blocks][base gap][scaled wordmark]`; a heading is
+`[base markers][scaled title]`; both are just column runs at
+different scales.
+
+Rendering is renderer-specific and **additive**:
+
+- **GPUI** honors it. The peer coalesces the scales, shapes
+  each run at `font_size × scale` on **one shared baseline**,
+  and grows the row height to the tallest run — the *same*
+  N-piece `ScaledLine` path the document heading rows use
+  (F.2 generalized to N pieces in F.3). The host scroll model
+  is unchanged: a scaled virtual row is still **one** logical
+  row, painted taller (per-row cumulative tops, O(viewport)).
+- **TUI** ignores it: a terminal cell grid cannot vary font
+  size, so every cell paints base-size. This is a tracked,
+  intentional cross-renderer divergence (GPUI is the peer
+  where rich formatting is a differentiator).
+
+First consumer: the dashboard branding block (DB.4-gpui) —
+the "Lattice" wordmark carries a scale > 1.0 while the mark
+blocks and tagline stay base. See `theme-system.md` Thread F
+and `dashboard.md` §5.2.
 
 ## 4. The display interleaver
 

@@ -363,12 +363,20 @@ gates), and the buffer must pass the regular-buffer parity test.
 
 ### 9.1 Mode-ownership of the startup trigger
 
-Boot publishes a generic **`Startup { opened_file: Option<PathBuf> }`** event
-(or a `StartupContext` service). The dashboard mode's `install(&mut boot)`
-registers a subscription: on `Startup`, if `opened_file.is_none() &&
-dashboard.enabled`, it emits the *same* `Effect::OpenDashboard` the `:dashboard`
-command emits — one applier, two triggers. The activation-decision (no file +
-enabled) and all content live in `lattice-dashboard`.
+Boot publishes a generic **`Startup { opened_file: Option<PathBuf> }`** typed
+event — declared in `lattice-mode` alongside the existing `ModeEvent`
+precedent, dispatched via the typed-event registry (`register_event!` /
+`subscribe_typed`). Not a `StartupContext` service: the typed-event registry is
+already the generic seam for one-shot boot signals, and `lattice-dashboard`
+depends on `lattice-mode` today, so no new dependency is needed to see the
+type. The dashboard mode's `install(&mut boot)` registers a subscription: on
+`Startup`, if `opened_file.is_none() && dashboard.enabled`, it emits the *same*
+`Effect::OpenDashboard` the `:dashboard` command emits — one applier, two
+triggers. The activation-decision (no file + enabled) and all content live in
+`lattice-dashboard`. `BufferStore` supports buffer *creation* only — there is
+no buffer-activation / pane-focus operation on it today — which is why the
+trigger routes through the existing effect/applier rather than a generic
+buffer-store call.
 
 **Where the host boundary honestly sits.** The crate owns the mode, its
 options, its `dashboard.*` theme elements, the section registry, composition,

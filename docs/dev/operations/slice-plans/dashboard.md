@@ -119,20 +119,58 @@ interim divergence, since GPUI's branding is being reworked there anyway.
   underflow.
 
 ### DB.5 — startup gating + mode-owned trigger  📝
-Publish a generic `Startup { opened_file: Option<PathBuf> }` event at boot
-(verify one doesn't already exist; add the minimal generic seam if not). The
-mode's `install(&mut boot)` subscribes: on `Startup`, if
-`opened_file.is_none() && dashboard.enabled`, create + compose + activate
-`*dashboard*` through the generic `BufferStore` + activate-buffer signal (design
-§9.1). Wire the same at both post-boot seams — TUI
-`crates/lattice-ui-tui/src/app/boot.rs` and GPUI `App::new` — in one patch.
+Publish a generic `Startup { opened_file: Option<PathBuf> }` typed event at
+boot, declared in `lattice-mode` alongside the existing `ModeEvent` precedent
+(confirmed: no such event, and no `opened_file`/boot-signal type, exists
+anywhere today). `opened_file` must be captured (`document.path().map(...)`)
+at each renderer's boot seam *before* `document` is moved into
+`Editor::boot(document)` (which consumes it), then published once `editor`
+exists.
+
+**Sequencing prerequisite (found during investigation — land as this slice's
+first commit).** `Arc<ConfigRegistry>` isn't registered as a service until
+*after* the Phase-B `install(&mut boot)` list runs in `editor_boot.rs`
+(`ConfigRegistry::new()` + `register_service` happen post-list; `lattice_dashboard::install`
+runs inside the list). `ServiceRegistry` is a plain map frozen at the end of
+boot, so a closure built during the Phase-B list can never observe a
+registration added later in the same boot call — `lattice-dashboard` cannot
+read `dashboard.enabled` at install-time under the current ordering. Hoist
+`ConfigRegistry` construction + `register_service::<Arc<ConfigRegistry>>` into
+the existing Phase-A block (next to `event_bus`'s creation, its only
+dependency) — the same class of hoist already done there for
+`async_landed`/`tick_callbacks`/`buffers`. Mechanical reorder, no behavior
+change for existing subsystems.
+
+**Mechanism.** `lattice-dashboard` gains `tokio` (`sync` feature) as a new
+direct dependency. `install(&mut boot)` spawns a task via
+`boot.runtime_handle()` that `event_bus().subscribe_typed::<Startup>(tx)`s; on
+receipt, if `opened_file.is_none() && dashboard.enabled` (read via
+`boot.service::<Arc<ConfigRegistry>>()`, available post-hoist), it sends into a
+`boot.inbound(|_: DashboardStartupTrigger| vec![Effect::OpenDashboard])`
+sender — reusing the *same* `Effect::OpenDashboard` / `do_open_dashboard`
+applier `:dashboard` already uses (DB.2), not a new generic
+buffer-store-activation primitive. (Design §9.1 explicitly defers a generic
+`Effect::ActivateNamedBuffer` as future work, and `BufferStore` has no
+buffer-activation/pane-focus operation today — only mode-activation-on-create.
+An earlier draft of this slice said "generic `BufferStore` + activate-buffer
+signal"; that was a loose paraphrase of §9.1 and is corrected here to match
+the design doc, which is authoritative.) Wire the `opened_file`-capture +
+`Startup`-publish at both post-boot seams — TUI
+`crates/lattice-ui-tui/src/app/boot.rs`'s `App::new` and GPUI
+`crates/lattice-ui-gpui/src/lib.rs`'s `GpuiApp::new`, right after
+`Editor::boot(document)` returns — in one patch; the *subscription* is wired
+once, inside `lattice_dashboard::install`, shared by both renderers.
 - *paramount:* #4 (event-driven, off the UI thread); mode-ownership (creation +
   activation-decision live in `lattice-dashboard`; acid test: zero `Editor::`
-  additions, zero new host `Action`).
+  additions, zero new host `Action` — satisfied by reusing `Effect::OpenDashboard`
+  verbatim).
 - *test:* no file + enabled ⇒ `*dashboard*` is the active buffer; file arg ⇒
   file active, dashboard reachable not auto-shown; `enabled=false` ⇒ not
-  auto-shown but `:dashboard` still works.
-- *doc:* design §9.1.
+  auto-shown but `:dashboard` still works; regression — the `ConfigRegistry`
+  hoist doesn't change service-availability timing for any other Phase-B
+  subsystem.
+- *doc:* design §9.1 (updated to lock the event type + `lattice-mode` home and
+  drop the `StartupContext` alternative).
 - *error handling:* compose failure at startup ⇒ log + fall back to the empty
   scratch buffer, never a blank/broken initial frame.
 

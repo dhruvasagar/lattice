@@ -187,7 +187,7 @@ gated on the plugin host + theme-remap seam.
 | DB.2 — `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | ✅ |
 | DB.3 — `dashboard.*` theme elements | ✅ |
 | DB.4 — branding block (art, colour, gutter-centring, help-mode, cursorline) | ✅ |
-| DB.4-cleanup — revert redundant `VirtualRowAlign` (gutter supersedes it) | 📝 |
+| DB.4-cleanup — revert redundant `VirtualRowAlign` (gutter supersedes it) | ✅ |
 | DB.4-gpui — 2-D branding component (scaled wordmark, post-1.0 w/ image) | 📝 |
 | DB.5 — startup gating + mode-owned trigger | 📝 |
 | DB.6 — full override + recompose triggers | 📝 |

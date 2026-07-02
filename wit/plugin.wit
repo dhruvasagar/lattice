@@ -41,6 +41,10 @@ world plugin {
 	/// referenced by `effect`, so they surface under
 	/// `crate::lattice::plugin_host::types::*` without a world-level `use`.
 	use types.{effect, quit-scope, echo-level, substitute-scope, utf16-pos, lsp-request};
+	/// The `app-effect` variant mirror (PH7.3b2) — the payload of the
+	/// `effect::app-action` arm — plus its helper enums. `narrow-lines-payload`
+	/// is transitively referenced, so it surfaces without a world-level `use`.
+	use types.{app-effect, viewport-pos, scroll-pos, pane-direction, hscroll};
 
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.

@@ -34,6 +34,7 @@ use crate::lattice::plugin_host::types::{
 };
 use lattice_core::BufferId;
 use lattice_core::buffer::AppliedEdit as NativeAppliedEdit;
+use lattice_grammar::app_effect::AppEffect as NativeAppEffect;
 use lattice_grammar::effect::{
     EchoLevel as NativeEchoLevel, Effect as NativeEffect, LspRequest as NativeLspRequest,
     QuitScope as NativeQuitScope, SubstituteScope as NativeSubstituteScope,
@@ -700,13 +701,9 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::Customize { name } => WitEffect::Customize(name.clone()),
         NativeEffect::Tutor { lesson } => WitEffect::Tutor(*lesson),
         NativeEffect::ToggleMode { mode_name } => WitEffect::ToggleMode(mode_name.clone()),
-        NativeEffect::AppAction(_) => {
-            return Err(
-                "Effect::AppAction carries an AppEffect; it crosses with the AppEffect \
-                        mirror (PH7.3b2)"
-                    .to_string(),
-            );
-        }
+        // PH7.3b2: the AppEffect mirror landed — AppAction now crosses (a
+        // NarrowTrigger-carrying AppEffect still propagates its typed error).
+        NativeEffect::AppAction(app) => WitEffect::AppAction(app.to_wit()?),
         NativeEffect::RecordJump => WitEffect::RecordJump,
         NativeEffect::Many(_) => {
             return Err(
@@ -891,6 +888,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::Customize(name) => NativeEffect::Customize { name },
         WitEffect::Tutor(lesson) => NativeEffect::Tutor { lesson },
         WitEffect::ToggleMode(mode_name) => NativeEffect::ToggleMode { mode_name },
+        WitEffect::AppAction(app) => NativeEffect::AppAction(NativeAppEffect::from_wit(app)?),
         WitEffect::RecordJump => NativeEffect::RecordJump,
     })
 }
@@ -1386,11 +1384,11 @@ mod tests {
         assert!(matches!(empty, NativeEffect::None));
     }
 
-    /// `Global` / `AppAction` cannot cross yet (§4.1 / PH7.3b2); they surface as
-    /// typed errors, never a panic or a lossy encoding — even nested inside a
-    /// `Many`, the error propagates out of the whole conversion.
+    /// `Global` cannot cross yet (§4.1); it surfaces as a typed error, never a
+    /// panic or a lossy encoding — even nested inside a `Many`, the error
+    /// propagates out of the whole conversion.
     #[test]
-    fn global_and_app_action_are_typed_errors() {
+    fn global_is_a_typed_error() {
         use lattice_grammar::CommandId;
         use lattice_grammar::command::CommandInvocation;
 
@@ -1408,9 +1406,33 @@ mod tests {
             nested.to_wit().is_err(),
             "nested Global fails the whole list"
         );
+    }
 
-        let app = NativeEffect::AppAction(lattice_grammar::app_effect::AppEffect::Quit);
-        let err = app.to_wit().expect_err("AppAction must not cross yet");
-        assert!(err.contains("AppEffect"), "error names the culprit: {err}");
+    /// PH7.3b2: `AppAction` now crosses (the `AppEffect` mirror landed). A
+    /// representable `AppEffect` round-trips through the `effect` boundary; an
+    /// `AppEffect::NarrowTrigger` (recursive `Range`) still propagates its typed
+    /// error out of the `AppAction` arm.
+    #[test]
+    fn app_action_crosses_and_narrow_trigger_still_errors() {
+        use lattice_grammar::app_effect::AppEffect;
+
+        let app = NativeEffect::AppAction(AppEffect::SplitPaneVertical);
+        assert_effect_round_trips(app);
+
+        // A whole Many of AppActions round-trips too.
+        assert_effect_round_trips(NativeEffect::Many(vec![
+            NativeEffect::AppAction(AppEffect::Quit),
+            NativeEffect::RecordJump,
+            NativeEffect::AppAction(AppEffect::NextTab),
+        ]));
+
+        let narrow = NativeEffect::AppAction(AppEffect::NarrowTrigger { range: None });
+        let err = narrow
+            .to_wit()
+            .expect_err("NarrowTrigger-carrying AppAction must not cross yet");
+        assert!(
+            err.contains("NarrowTrigger"),
+            "error names the culprit: {err}"
+        );
     }
 }

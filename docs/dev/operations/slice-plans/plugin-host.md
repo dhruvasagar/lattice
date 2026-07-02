@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b1a ✅, PH7.3b1b ✅, PH7.3b2 next). Design fragment:
+**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b ✅ (b1a+b1b+b2), PH7.3c next). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -173,7 +173,7 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
   - **Deferred:** the headline **< 500ns p99 end-to-end typed-call bench** lands at PH7.3d, where an
     actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
 
-  #### PH7.3b — The `Effect` variant mirror 🚧 (PH7.3b1a ✅, PH7.3b1b ✅; PH7.3b2 next)
+  #### PH7.3b — The `Effect` variant mirror ✅ (PH7.3b1a ✅, PH7.3b1b ✅, PH7.3b2 ✅)
   Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,
   not a subset — `Effect` is pure data, no `dyn`/`tokio`/`lsp_types`; §4.4 rejects any partial/opaque
   `effect` seam, §14 flags WIT-design-wrong as the highest risk).
@@ -192,7 +192,23 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
     `SelectionSet::from_parts(Vec<Selection>, usize)` to `lattice-protocol` (the boundary reconstruction
     counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b
     ✅ (2026-07-02)** = the ~101-arm `effect` variant using those records + the `list<effect>` flatten
-    + exhaustive round-trip + typed-error arms. **PH7.3b2** = the `AppEffect` mirror (unblocks `AppAction`).
+    + exhaustive round-trip + typed-error arms. **PH7.3b2 ✅ (2026-07-02)** = the `AppEffect` mirror (unblocks `AppAction`).
+  - **PH7.3b2 landed:** `wit/types.wit` — the `app-effect` variant (~110 arms) + 4 helper enums
+    (`viewport-pos`/`scroll-pos`/`pane-direction`/`hscroll`) + `narrow-lines-payload`; the `effect`
+    variant grew an `app-action(app-effect)` arm. `wit/plugin.wit` — world `use` of the new types.
+    New module `boundary_app_effect.rs` — `WitBoundary for AppEffect` (compiler-exhaustive both ways)
+    + the 4 helper-enum impls, reusing the shared `ModalState`/`VisualKind`/`SearchDirection`/`Register`
+    mirrors. `boundary_effect.rs` — the `AppAction` arm now crosses (`app.to_wit()?` / `from_wit`),
+    replacing its PH7.3b1b typed error. `benches/boundary.rs` — `boundary_app_effect_round_trip`
+    (~13 ns off-box). `OperatorId → CommandId(u64)` crosses via `.0.raw()` / `OperatorId(CommandId::new)`.
+    - **Typed-error (not lossy) arm:** `AppEffect::NarrowTrigger { range: Option<Range> }` carries the
+      recursive ex-command `lattice_grammar::range::Range` (`RangeBound::Offset { base: Box<RangeBound> }`)
+      + a plugin `RangeId` — an `Err` until a range mirror lands (the `Global` precedent). It propagates
+      out of the `Effect::AppAction` arm, so an `AppAction(NarrowTrigger)` fails the whole effect cross.
+    - Tests (5 new, 45 lib green): AppEffect payload arms (4 helpers + shared mirrors + primitives + the
+      `OperatorId` round-trip), unit arms, helper enums, `NarrowTrigger` typed-error; and in
+      `boundary_effect.rs`, `AppAction` now round-trips (incl. a `Many` of AppActions) while
+      `AppAction(NarrowTrigger)` still errors (the `global_is_a_typed_error` test was split out).
   - **PH7.3b1b landed:** `wit/types.wit` — the `effect` variant (~101 crossable arms) + 5 helper types
     (`quit-scope`/`echo-level`/`substitute-scope`/`utf16-pos`/`lsp-request`) + 14 multi-field payload
     records (`apply-edit-payload`, `yank-payload`, …); `wit/plugin.wit` — world-level `use` of the new

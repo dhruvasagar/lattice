@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
+use lattice_grammar::app_effect::AppEffect;
 use lattice_grammar::args::{ArgValue, Args};
 use lattice_grammar::effect::{Effect, QuitScope};
 use lattice_picker::outcome::PickerAcceptOutcome;
@@ -96,6 +97,19 @@ fn boundary_round_trip(c: &mut Criterion) {
         b.iter(|| {
             let wit = black_box(&effect).to_wit().expect("to_wit");
             let back = Effect::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+
+    // The AppEffect mirror (PH7.3b2) — the payload of the Effect::AppAction arm.
+    // A payload-bearing variant (mode-state) exercises the reused ModalState
+    // mirror + the app-effect variant marshalling a plugin's chord-bound action
+    // would pay.
+    let app_effect = AppEffect::EnterVisual(lattice_grammar::modal::VisualKind::Linewise);
+    c.bench_function("boundary_app_effect_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&app_effect).to_wit().expect("to_wit");
+            let back = AppEffect::from_wit(wit).expect("from_wit");
             black_box(back);
         })
     });

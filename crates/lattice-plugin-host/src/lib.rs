@@ -52,13 +52,14 @@
 //! component the tests instantiate is the degenerate `init.rs`.
 
 pub mod boundary;
+pub mod boundary_app_effect;
 pub mod boundary_effect;
 pub mod capability;
 pub mod manifest;
 
 pub use boundary::WitBoundary;
 pub use capability::{
-    build_wasi_ctx, grant, CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier,
+    CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier, build_wasi_ctx, grant,
 };
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
 

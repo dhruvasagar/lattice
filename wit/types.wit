@@ -461,6 +461,164 @@ interface types {
         customize(option<string>),
         tutor(option<u32>),
         toggle-mode(string),
+        app-action(app-effect),
         record-jump,
+    }
+
+    // ---- The `app-effect` variant mirror (PH7.3b2) ----
+    // Mirrors `lattice_grammar::app_effect::AppEffect` — the App-side typed
+    // effect carried by `Effect::AppAction` (chord-bound work with no grammar
+    // concept: `<Esc>`, `<C-w>v`, `o`, …). Pure, flat, non-recursive data. One
+    // arm is absent by design: `AppEffect::NarrowTrigger { range: Option<Range> }`
+    // carries `lattice_grammar::range::Range`, which is recursive
+    // (`RangeBound::Offset { base: Box<RangeBound> }`) and carries a plugin
+    // `RangeId` — WIT cannot express it, so `NarrowTrigger` crosses as a typed
+    // `WitBoundary` error until a range mirror lands (the `Global` precedent).
+    // `NarrowLines` (pre-resolved line span) crosses fine.
+
+    /// Mirrors `lattice_grammar::app_effect::ViewportPos` (`H`/`M`/`L`).
+    variant viewport-pos { top, middle, bottom }
+    /// Mirrors `lattice_grammar::app_effect::ScrollPos` (`zt`/`zz`/`zb`).
+    variant scroll-pos { top, center, bottom }
+    /// Mirrors `lattice_grammar::app_effect::PaneDirection`.
+    variant pane-direction { left, down, up, right }
+    /// Mirrors `lattice_grammar::app_effect::HScroll` (vim `z{l,h,L,H,s,e}`).
+    /// Each arm's bool is the native struct field: `columns`/`half-screen`
+    /// carry `right`, `cursor-to-edge` carries `end`.
+    variant hscroll {
+        columns(bool),
+        half-screen(bool),
+        cursor-to-edge(bool),
+    }
+    /// Mirrors `AppEffect::NarrowLines` (pre-resolved inclusive 0-based span).
+    record narrow-lines-payload {
+        start-line: u32,
+        end-line: u32,
+    }
+
+    /// Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`
+    /// is absent by design (recursive `Range`; see the note above).
+    variant app-effect {
+        quit,
+        match-bracket,
+        toggle-case-at-cursor,
+        open-line-below,
+        open-line-above,
+        search-next,
+        search-previous,
+        jump-history-back,
+        jump-history-forward,
+        walk-mark-history-back,
+        walk-mark-history-forward,
+        tag-stack-pop,
+        open-fold-at-cursor,
+        close-fold-at-cursor,
+        toggle-fold-at-cursor,
+        open-all-folds,
+        close-all-folds,
+        cycle-fold-at-cursor,
+        cycle-folds-global,
+        goto-parent-fold,
+        delete-fold-at-cursor,
+        goto-next-fold,
+        goto-prev-fold,
+        toggle-fold-enable,
+        undo,
+        redo,
+        repeat-last-change,
+        page-down,
+        page-up,
+        scroll-line-up,
+        scroll-line-down,
+        redraw-screen,
+        open-command-picker,
+        enter-command-line,
+        oil-navigate-up,
+        reselect-last-visual,
+        swap-visual-ends,
+        paste-after,
+        paste-before,
+        enter-append,
+        enter-insert-first-non-blank,
+        enter-append-end-of-line,
+        display-line-down,
+        display-line-up,
+        display-line-start,
+        display-line-end,
+        create-fold-from-visual,
+        delete-char-backward,
+        completion-trigger,
+        exit-visual,
+        replace-undo-last,
+        enter-mode(modal-state),
+        enter-visual(visual-kind),
+        enter-select(visual-kind),
+        enter-search(search-direction),
+        search-word-under-cursor(search-direction),
+        jump-viewport(viewport-pos),
+        scroll-cursor-to(scroll-pos),
+        horizontal-scroll(hscroll),
+        join-lines(bool),
+        find-repeat(bool),
+        insert-newline,
+        insert-tab,
+        overwrite-char(char),
+        set-mark(char),
+        jump-to-mark-line(char),
+        jump-to-mark-exact(char),
+        select-register(register),
+        start-macro-record(char),
+        play-macro(char),
+        play-last-macro,
+        absorb-operator-prefix(u64),
+        split-pane-horizontal,
+        split-pane-vertical,
+        close-pane,
+        only-pane,
+        navigate-pane(pane-direction),
+        next-pane,
+        prev-pane,
+        next-tab,
+        prev-tab,
+        go-to-tab(u32),
+        new-tab,
+        new-tab-at(string),
+        terminal-spawn(option<string>),
+        terminal-spawn-in-new-tab(option<string>),
+        move-pane-to-new-tab,
+        close-tab,
+        only-tab,
+        move-tab(u32),
+        picker-accept-in-split,
+        picker-accept-in-vsplit,
+        picker-accept-in-tab,
+        equalize-panes,
+        grow-pane-height,
+        shrink-pane-height,
+        grow-pane-width,
+        shrink-pane-width,
+        completion-next,
+        completion-prev,
+        completion-accept,
+        completion-cancel,
+        completion-cancel-and-exit-insert,
+        completion-toggle-docs,
+        completion-docs-scroll-down,
+        completion-docs-scroll-up,
+        completion-accept-then-insert(char),
+        snippet-next-placeholder,
+        snippet-prev-placeholder,
+        completion-filter-to-source(string),
+        completion-filter-clear,
+        diff-get,
+        diff-put,
+        tutor-advance,
+        tutor-retreat,
+        multibuffer-expand(s32),
+        narrow-widen,
+        narrow-lines(narrow-lines-payload),
+        search-trigger(string),
+        search-jump-to-source,
+        search-refresh,
     }
 }

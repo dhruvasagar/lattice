@@ -2360,7 +2360,6 @@ pub fn compose_header_rows(
                 height: 1,
                 kind: VirtualRowKind::Generic,
                 bg: None,
-                align: lattice_cells::VirtualRowAlign::Left,
             });
             last_source = Some(excerpt.source);
         }

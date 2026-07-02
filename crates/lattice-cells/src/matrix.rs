@@ -807,7 +807,6 @@ mod tests {
             height: 1,
             kind: crate::VirtualRowKind::Generic,
             bg: None,
-            align: crate::VirtualRowAlign::Left,
         }
     }
 

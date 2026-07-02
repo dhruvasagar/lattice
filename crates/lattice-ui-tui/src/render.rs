@@ -5005,36 +5005,22 @@ fn render_virtual_row(
         run_text.push(ch);
     }
     flush(&mut run_text, run_fg, &mut spans);
-    let pad_span = |n: usize| -> Span<'static> {
+    // Pad the row out to body_width so the backdrop (when present — deletion
+    // blocks; not filler rows) covers the full body column. Horizontal
+    // centring is handled upstream by the gutter (content_left_pad), not here.
+    let used: u32 = spans.iter().map(|s| s.content.chars().count() as u32).sum();
+    if used < body_width {
         let mut pad_style = TuiStyle::default();
         if let Some(c) = bg {
             pad_style = pad_style.bg(c);
         }
-        Span::styled(" ".repeat(n), pad_style)
-    };
-    // Centred rows (dashboard branding) inset the cells by half the slack so
-    // the row is centred in the content area; all branding rows are padded to
-    // one block width by the provider, so the inset is uniform and the mark's
-    // columns stay aligned. Other rows stay left-aligned.
-    let used: u32 = spans.iter().map(|s| s.content.chars().count() as u32).sum();
-    let leading: u32 = match vrow.align {
-        lattice_cells::VirtualRowAlign::Center if used < body_width => (body_width - used) / 2,
-        _ => 0,
-    };
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(4 + spans.len());
+        spans.push(Span::styled(" ".repeat((body_width - used) as usize), pad_style));
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
     out.push(severity_blank);
     out.push(diff_sign_blank);
     out.push(gutter_blank);
-    if leading > 0 {
-        out.push(pad_span(leading as usize));
-    }
     out.extend(spans);
-    // Pad the tail out to body_width so the backdrop (deletion blocks) covers
-    // the full body column.
-    let filled = leading + used;
-    if filled < body_width {
-        out.push(pad_span((body_width - filled) as usize));
-    }
     Line::from(out)
 }
 

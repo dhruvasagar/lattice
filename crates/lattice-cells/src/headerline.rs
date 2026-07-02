@@ -203,7 +203,6 @@ impl VirtualRowProvider for HeaderlineProvider {
             height: 1,
             kind: VirtualRowKind::Sticky,
             bg: row.bg,
-            align: crate::virtual_rows::VirtualRowAlign::Left,
         }]
     }
 }

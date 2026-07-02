@@ -399,7 +399,6 @@ impl DiffOverlayVirtualRowProvider {
                     // diff-deletion-block backdrop.
                     kind: lattice_cells::VirtualRowKind::DeletionBlock,
                     bg: None,
-                    align: lattice_cells::VirtualRowAlign::Left,
                 });
             }
         }

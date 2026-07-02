@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use lattice_cells::{
-    AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowAlign, VirtualRowKind,
+    AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowKind,
     VirtualRowProvider,
 };
 use lattice_theme::{Color, ElementId, ResolvedTheme, ThemeRegistryHandle};
@@ -167,7 +167,6 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     height: 1,
                     kind: VirtualRowKind::Filler,
                     bg: None,
-                    align: VirtualRowAlign::Left,
                 }
             })
             .collect()
@@ -267,13 +266,11 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_left_aligned_gutter_centres_the_block() {
-        // Horizontal centring is gutter-based (content_left_pad); the rows
-        // themselves are Left-aligned so the mark's columns line up.
+    fn has_spacer_rows_above_and_below() {
+        // Horizontal centring is gutter-based (content_left_pad, host-side);
+        // the rows are plain left-aligned cells so the mark's columns line up.
         let p = provider_with_theme();
         let rows = p.collect();
-        assert!(rows.iter().all(|r| r.align == VirtualRowAlign::Left));
-        // A spacer row above and below.
         assert!(rows.first().unwrap().cells.is_empty(), "spacer above");
         assert!(rows.last().unwrap().cells.is_empty(), "spacer below");
     }

@@ -1660,7 +1660,14 @@ impl EditorView {
         // pre-existing slice 1 limitation; the per-pane span
         // cache resync into the element is a follow-up slice.
         let total_lines_for_gutter = total_lines.max(1);
-        let gutter_width = total_lines_for_gutter.to_string().len();
+        // PU.1b-1a: reserve line-number digits only when `number` is set;
+        // gutterless buffers (help / dashboard) get 0 (matches the TUI gate).
+        let show_line_numbers = rs_guard.active_document.load().option_cache.show_line_numbers;
+        let gutter_width = if show_line_numbers {
+            total_lines_for_gutter.to_string().len()
+        } else {
+            0
+        };
 
         // MO.4.a: URI + render_state used by the gutter-decoration
         // pre-loop below to inject LspDiagnosticsData service.
@@ -2261,6 +2268,7 @@ impl EditorView {
             // DB.4: gutter-based horizontal centring (dashboard). Active pane
             // reads the resolved pad; inactive panes render normally (0).
             content_left_pad: rs_guard.active_document.load().option_cache.content_left_pad,
+            show_line_numbers,
             cursor: cursor_state,
             is_active: render_active,
             visual_range,
@@ -3632,6 +3640,7 @@ impl Render for EditorView {
                         gutter: Vec::new(),
                         gutter_width: 0,
                 content_left_pad: 0,
+                show_line_numbers: false,
                         sign_column: false,
                         // Docs popup is never focused — no cursor / overlays.
                         cursor: None,
@@ -4166,6 +4175,7 @@ impl Render for EditorView {
                 gutter: Vec::new(),
                 gutter_width: 0,
                 content_left_pad: 0,
+                show_line_numbers: false,
                 sign_column: false,
                 cursor,
                 is_active: popup_focused,

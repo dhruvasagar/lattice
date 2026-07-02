@@ -1,0 +1,150 @@
+#+TITLE: Lattice Keet Client - Detailed Implementation Architecture
+#+AUTHOR: ChatGPT
+#+OPTIONS: toc:3 num:t
+
+* Overview
+This document is an implementation-oriented architecture specification for building
+a Keet client as a WASM plugin for the Lattice editor. It assumes the Lattice
+plugin system already exists and focuses on plugin/runtime interaction.
+
+* Design Principles
+- Thin WASM UI plugin
+- Native networking runtime
+- Capability-based host API
+- Typed RPC
+- Immutable state
+- Event sourcing
+- Async everywhere
+- Crash isolation
+- Deterministic rendering
+
+* Repository Layout
+#+begin_example
+crates/
+  lattice-host/
+  lattice-plugin-api/
+  lattice-keet-plugin/
+  lattice-keet-runtime/
+  lattice-keet-common/
+docs/
+#+end_example
+
+* Host Responsibilities
+- Load WASM
+- Schedule async tasks
+- Render panels
+- Persist settings
+- Provide secure capabilities
+- Bridge RPC
+
+* WASM Plugin Responsibilities
+** UI
+Conversation list, chat view, search, settings.
+
+** State
+Single AppState with reducers.
+
+#+begin_src rust
+struct AppState {
+    identity: IdentityState,
+    conversations: ConversationsState,
+    active: Option<ConversationId>,
+    messages: MessageStore,
+    presence: PresenceStore,
+    transfers: TransferStore,
+}
+#+end_src
+
+* Runtime
+Owns Peer networking, Hypercore replication, identity, storage,
+attachments, media, synchronization and reconnection.
+
+* RPC Contract
+Every request contains request id, method and payload.
+
+Methods:
+- Login
+- Logout
+- ListConversations
+- OpenConversation
+- SendMessage
+- EditMessage
+- DeleteMessage
+- UploadAttachment
+- DownloadAttachment
+- Search
+- SubscribeEvents
+
+* Event Bus
+Events are append-only.
+
+- Connected
+- Disconnected
+- ConversationAdded
+- ConversationUpdated
+- MessageReceived
+- MessageEdited
+- PresenceChanged
+- TransferProgress
+
+Reducers consume events to update state.
+
+* Storage
+Runtime:
+- Corestore
+- Hypercore
+- Identity
+- Attachments
+
+Plugin:
+- Window layout
+- Drafts
+- Scroll position
+
+* UI Components
+- Conversation Tree
+- Message View
+- Composer
+- Member List
+- Search
+- Notifications
+- Settings
+
+* Synchronization
+Runtime owns:
+- Peer discovery
+- Replication
+- Conflict resolution
+- Offline queue
+
+* Security
+- Private keys never enter WASM
+- Capability gated APIs
+- Signed RPC
+- Attachment sandbox
+- Permission prompts
+
+* Testing
+- Unit tests
+- Reducer tests
+- RPC compatibility
+- Mock runtime
+- Integration swarm tests
+- UI snapshot tests
+
+* Future RFCs
+Each subsystem should become its own RFC:
+- WASI extensions
+- RPC schema
+- Runtime traits
+- Storage formats
+- Media subsystem
+- Voice/video
+- Search indexing
+- AI integration
+
+* Appendix
+This document is intentionally structured as the root architecture.
+Each top-level section should expand into a dedicated Org document
+with sequence diagrams, trait definitions, state machines, protocol
+schemas and implementation details.

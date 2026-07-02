@@ -251,6 +251,10 @@ pub(crate) struct EditorElement {
     /// (`signcolumn=no`) drops them so content abuts the line-number
     /// column. TUI peer: `FrameView::sign_column` / `sign_columns_width`.
     pub(crate) sign_column: bool,
+    /// PU.1b-1a (`number`): whether the gutter shows line numbers. `false`
+    /// (help / dashboard / `:set nonumber`) omits the digits so the gutter is
+    /// fold + trail only. TUI peer: `FrameView::show_line_numbers`.
+    pub(crate) show_line_numbers: bool,
     /// Active-pane cursor state. `None` => inactive pane (no
     /// cursor marker painted).
     pub(crate) cursor: Option<CursorState>,
@@ -1292,7 +1296,7 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column);
+                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column, self.show_line_numbers);
                 let gutter_runs =
                     build_gutter_runs(&gutter_text, meta, font.clone(), self.sign_column);
                 let shaped_g = window.text_system().shape_line(
@@ -2723,7 +2727,20 @@ fn push_virtual_row(
     overlay_quads_per_row.push(quads);
 }
 
-fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: bool) -> String {
+fn format_gutter_text(
+    meta: &GutterLineMeta,
+    gutter_width: usize,
+    sign_column: bool,
+    show_line_numbers: bool,
+) -> String {
+    // The line-number digits are shown only when `number` is set; otherwise the
+    // digit slot is blank (gutter_width is 0 in that case anyway). Matches the
+    // TUI `show_line_numbers` gate.
+    let num: String = if show_line_numbers {
+        (meta.display_line as usize + 1).to_string()
+    } else {
+        String::new()
+    };
     // PU.1b-1a: the two sign cells (severity + diff) are present only
     // when `signcolumn=yes` (default). `signcolumn=no` drops them so
     // the gutter is fold + line-number + trail only — content abuts
@@ -2745,7 +2762,7 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: b
         return format!(
             "{fold}{num:>width$} ",
             fold = fold,
-            num = meta.display_line as usize + 1,
+            num = num,
             width = gutter_width,
         );
     }
@@ -2764,7 +2781,7 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: b
         fold = fold,
         sev = sev,
         diff = diff,
-        num = meta.display_line as usize + 1,
+        num = num,
         width = gutter_width,
     )
 }
@@ -2881,12 +2898,12 @@ mod tests {
             let sign_cells = if sign { 2 } else { 0 };
             let reserved = sign_cells + gutter_width + 2;
             assert_eq!(
-                format_gutter_text(&doc, gutter_width, sign).chars().count(),
+                format_gutter_text(&doc, gutter_width, sign, true).chars().count(),
                 reserved,
                 "document gutter must fill the reserved width (sign={sign})"
             );
             assert_eq!(
-                format_gutter_text(&virt, gutter_width, sign).chars().count(),
+                format_gutter_text(&virt, gutter_width, sign, true).chars().count(),
                 reserved,
                 "virtual gutter must match the reserved width (sign={sign})"
             );
@@ -3068,7 +3085,7 @@ mod tests {
             is_virtual: false,
         };
         // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true), "     1 ");
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "     1 ");
     }
 
     #[test]
@@ -3082,7 +3099,7 @@ mod tests {
             is_virtual: false,
         };
         // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true), "►   42 ");
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "►   42 ");
     }
 
     #[test]
@@ -3096,7 +3113,7 @@ mod tests {
             is_virtual: false,
         };
         // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true), " E 10 ");
+        assert_eq!(format_gutter_text(&meta, 2, true, true), " E 10 ");
     }
 
     #[test]
@@ -3110,7 +3127,7 @@ mod tests {
             is_virtual: false,
         };
         // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true), "  +10 ");
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "  +10 ");
     }
 
     #[test]
@@ -3126,9 +3143,9 @@ mod tests {
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        assert_eq!(format_gutter_text(&meta, 2, false), " 10 ");
+        assert_eq!(format_gutter_text(&meta, 2, false, true), " 10 ");
         // The reserved (default) form keeps both sign cells.
-        assert_eq!(format_gutter_text(&meta, 2, true), " E+10 ");
+        assert_eq!(format_gutter_text(&meta, 2, true, true), " E+10 ");
         // build_gutter_runs must not mis-slice the gated text: fold +
         // (line-number + trail) = 2 runs, lengths summing to the text.
         let runs = build_gutter_runs(" 10 ", &meta, gpui::font("monospace"), false);

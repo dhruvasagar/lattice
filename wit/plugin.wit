@@ -36,6 +36,11 @@ world plugin {
 	use types.{args, arg-value, candidate-kind, candidate-data, raw-candidate, picker-accept-outcome};
 	use types.{position, range, edit-kind, edit, edit-delta, applied-edit};
 	use types.{visual-mode, selection, selection-set, visual-kind, search-direction, modal-state, register, yank-kind};
+	/// The whole `effect` variant mirror + its helper types (PH7.3b1b). The
+	/// multi-field payload records (`apply-edit-payload`, …) are transitively
+	/// referenced by `effect`, so they surface under
+	/// `crate::lattice::plugin_host::types::*` without a world-level `use`.
+	use types.{effect, quit-scope, echo-level, substitute-scope, utf16-pos, lsp-request};
 
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.

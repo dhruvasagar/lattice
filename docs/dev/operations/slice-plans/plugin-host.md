@@ -1,6 +1,6 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-01) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b next). Design fragment:
+**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅; PH7.3 🚧 (a–d; PH7.3a ✅, PH7.3b1a ✅, PH7.3b1b ✅, PH7.3b2 next). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -173,7 +173,7 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
   - **Deferred:** the headline **< 500ns p99 end-to-end typed-call bench** lands at PH7.3d, where an
     actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
 
-  #### PH7.3b — The `Effect` variant mirror 🚧
+  #### PH7.3b — The `Effect` variant mirror 🚧 (PH7.3b1a ✅, PH7.3b1b ✅; PH7.3b2 next)
   Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,
   not a subset — `Effect` is pure data, no `dyn`/`tokio`/`lsp_types`; §4.4 rejects any partial/opaque
   `effect` seam, §14 flags WIT-design-wrong as the highest risk).
@@ -190,9 +190,24 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
     `EditKind`/`EditDelta`/`AppliedEdit`/`Register`/`ModalState`(+`VisualKind`/`SearchDirection`)/
     `Selection`(+`VisualMode`)/`SelectionSet`) + their round-trips. Adds
     `SelectionSet::from_parts(Vec<Selection>, usize)` to `lattice-protocol` (the boundary reconstruction
-    counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b**
-    = the ~95-case `effect` variant using those records + the `list<effect>` flatten + exhaustive
-    round-trip + typed-error arms. **PH7.3b2** = the `AppEffect` mirror (unblocks `AppAction`).
+    counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b
+    ✅ (2026-07-02)** = the ~101-arm `effect` variant using those records + the `list<effect>` flatten
+    + exhaustive round-trip + typed-error arms. **PH7.3b2** = the `AppEffect` mirror (unblocks `AppAction`).
+  - **PH7.3b1b landed:** `wit/types.wit` — the `effect` variant (~101 crossable arms) + 5 helper types
+    (`quit-scope`/`echo-level`/`substitute-scope`/`utf16-pos`/`lsp-request`) + 14 multi-field payload
+    records (`apply-edit-payload`, `yank-payload`, …); `wit/plugin.wit` — world-level `use` of the new
+    types so `bindgen!` emits them. `boundary_effect.rs` — `WitBoundary for Effect` with
+    `type Wit = Vec<WitEffect>` (the `list<effect>` seam: `to_wit` flattens `Many` recursively,
+    `from_wit` rebuilds `Many` when len>1, collapses len==1 to the atom, empty→`None`) + `WitBoundary`
+    impls for the 5 helpers + `effect_to_wit`/`effect_from_wit` (both **compiler-exhaustive** — the real
+    "every variant covered" guarantee: a new `Effect` arm cannot land without a mapping here).
+    `benches/boundary.rs` — `boundary_effect_round_trip` (~92 ns off-box for a 4-arm `Many`).
+    - **Typed-error (not lossy) arms:** `Global` (Box<CommandInvocation>, §4.1), `AppAction` (AppEffect,
+      PH7.3b2), and defensively `Many` reaching `effect_to_wit` — each an `Err`, propagated out of the
+      whole `list<effect>` even when nested inside a `Many`. No opaque blob; every representable arm typed.
+    - Tests (6 new, 35 lib green): payload-arm round-trips (all 14 records + 5 helpers + path/option/list
+      arms), unit-arm round-trips, helper-enum round-trips, `Many` flatten+rebuild, single/empty
+      normalisation, `Global`/`AppAction` typed-error (incl. nested-in-`Many`).
 
   #### PH7.3c — `document` resource handle + owned-snapshot projection 📝
   Borrows→owned records (§4.2); the `buffer` WIT `document` resource; `get-text-range` zero-copy

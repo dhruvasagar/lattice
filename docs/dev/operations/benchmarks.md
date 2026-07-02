@@ -1888,6 +1888,29 @@ hit/miss + lazy load via `tests/cache.rs` (correctness, not benches). The
 per-call overhead ratchet and the cold-start gate from `plugin-host.md` §7
 land at PH7.5.
 
+## Plugin host — boundary conversion (`crates/lattice-plugin-host/benches/boundary.rs`)
+
+PH7.3a/b bench. Measures the per-value **marshalling** cost of the
+`WitBoundary` adapter (`to_wit` then `from_wit`) for the representative
+boundary types. This is only the *marshalling* component of the §7 "typed host
+function call" budget (< 100 ns p50 / < 500 ns p99); the **end-to-end
+guest↔host typed-call** gate — which also pays the wasmtime canonical-ABI
+lift/lower + the async suspend — lands with the call machinery at PH7.3d, where
+there is an actual call to measure. Not a gated CI budget yet (that is PH7.5);
+this row exists so the marshalling surface is measured from day one
+(four-artefact discipline).
+
+⚠️ **Provisional — off-box numbers.** Same caveat as the instantiation smoke
+above: captured on a macOS dev machine, not comparable to the §8.2 hardware
+baseline. Order-of-magnitude only until re-run on the canonical box.
+
+| Workload | Provisional (macOS) | Notes |
+| ------------------------------------- | ------------------- | ----- |
+| `boundary_args_round_trip` (PH7.3a) | ~21–47 ns | A 4-element `Args::List` (string/int/bool/chord). |
+| `boundary_raw_candidate_round_trip` (PH7.3a) | ~21–47 ns | A `RawCandidate` with a `File` data payload. |
+| `boundary_picker_outcome_round_trip` (PH7.3a) | ~21–47 ns | A `PickerAcceptOutcome::JumpToLocation`. |
+| `boundary_effect_round_trip` (PH7.3b1b) | ~92 ns | A composite `Effect::Many` of 4 arms (RecordJump + OpenBufferAt + QuitEditor + Echo) — exercises the `list<effect>` flatten/rebuild + a spread of payload records. The cost an operator/ex-command guest export pays to return an effect. |
+
 ---
 
 ## What's NOT here

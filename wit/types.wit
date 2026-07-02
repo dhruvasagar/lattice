@@ -257,4 +257,210 @@ interface types {
         linewise,
         blockwise,
     }
+
+    // ---- The `effect` variant mirror (PH7.3b1b) ----
+    // Mirrors the whole crossable surface of `lattice_grammar::effect::Effect`
+    // (§4.4: the closed "host boundary vocabulary"). Three arms are absent by
+    // design and cross as typed `WitBoundary` errors (never lossy):
+    //   - `Effect::Many(Vec<Effect>)` — WIT value types cannot be recursive, so
+    //     `Many` is not an arm. The boundary crosses `list<effect>` instead:
+    //     `to_wit` flattens `Many` (associative composition), `from_wit`
+    //     rebuilds `Many` when the list has >1 element.
+    //   - `Effect::Global { body: Box<CommandInvocation>, .. }` — needs the
+    //     command mirror (§4.1); typed error until then.
+    //   - `Effect::AppAction(AppEffect)` — needs the `AppEffect` mirror (PH7.3b2);
+    //     typed error until then.
+
+    /// Mirrors `lattice_grammar::effect::QuitScope`.
+    variant quit-scope { pane, all }
+    /// Mirrors `lattice_grammar::effect::EchoLevel`.
+    variant echo-level { trace, debug, info, warn, error }
+    /// Mirrors `lattice_grammar::effect::SubstituteScope`.
+    variant substitute-scope { current-line, whole }
+    /// Mirrors `lattice_grammar::effect::Utf16Pos`.
+    record utf16-pos { line: u32, col: u32 }
+    /// Mirrors `lattice_grammar::effect::LspRequest`.
+    variant lsp-request {
+        hover,
+        definition,
+        declaration,
+        type-definition,
+        implementation,
+        references,
+        follow-link,
+    }
+
+    // Payload records for the multi-field `effect` arms. Paths cross as
+    // `option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
+    record apply-edit-payload {
+        /// The target `BufferId` (its inner `u32`).
+        target: u32,
+        edit: edit,
+        cursor: option<u32>,
+    }
+    record yank-payload {
+        register: register,
+        content: string,
+        kind: yank-kind,
+    }
+    record quit-payload {
+        force: bool,
+        scope: quit-scope,
+    }
+    record open-buffer-payload {
+        path: option<string>,
+        force: bool,
+    }
+    record open-buffer-at-payload {
+        path: option<string>,
+        position: position,
+        force: bool,
+    }
+    record open-buffer-at-column-payload {
+        path: option<string>,
+        column: option<utf16-pos>,
+        force: bool,
+    }
+    record spawn-terminal-payload {
+        cmd-line: option<string>,
+        env: list<tuple<string, string>>,
+        activate-minor: option<string>,
+    }
+    record echo-payload {
+        level: echo-level,
+        text: string,
+    }
+    record substitute-payload {
+        scope: substitute-scope,
+        pattern: string,
+        replacement: string,
+        global: bool,
+    }
+    record describe-command-payload {
+        name: string,
+        anchor: option<string>,
+    }
+    record open-picker-payload {
+        source: string,
+        args: list<string>,
+    }
+    record set-lsp-log-level-payload {
+        server-id: option<string>,
+        level: string,
+    }
+    record diffsplit-payload {
+        path: string,
+        remote: option<string>,
+    }
+    record close-session-diffs-payload {
+        origin-session: u64,
+        tab-name: string,
+    }
+
+    /// Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
+    /// `Many`/`Global`/`AppAction` are absent by design (see the note above).
+    variant effect {
+        none,
+        edits(list<applied-edit>),
+        apply-edit(apply-edit-payload),
+        selection-change(selection-set),
+        yank(yank-payload),
+        enter-mode(modal-state),
+        save-buffer(option<string>),
+        quit-editor(quit-payload),
+        open-buffer(open-buffer-payload),
+        open-buffer-at(open-buffer-at-payload),
+        open-external-uri(string),
+        open-buffer-at-column(open-buffer-at-column-payload),
+        spawn-terminal(spawn-terminal-payload),
+        terminal-input(list<u8>),
+        set-option(string),
+        set-local-option(string),
+        set-global-option(string),
+        clear-search-highlight,
+        set-colorscheme(string),
+        echo(echo-payload),
+        show-diagnostics-popup(list<tuple<string, u8>>),
+        lsp(lsp-request),
+        echo-registers,
+        echo-marks,
+        substitute(substitute-payload),
+        delete-current-line,
+        describe-command(describe-command-payload),
+        describe-buffer,
+        apropos(string),
+        describe-key(string),
+        list-keymap,
+        buffer-next,
+        buffer-prev,
+        list-buffers,
+        open-buffer-picker,
+        open-picker(open-picker-payload),
+        buffer-delete(bool),
+        open-file-tree(option<string>),
+        close-file-tree,
+        open-oil(option<string>),
+        describe-option(string),
+        describe-element(string),
+        list-options,
+        open-hover(string),
+        close-hover,
+        open-help-topic(option<string>),
+        list-diagnostics,
+        next-diagnostic,
+        prev-diagnostic,
+        open-lsp-log(option<string>),
+        open-messages,
+        toggle-lsp-trace(string),
+        open-lsp-trace-log(option<string>),
+        lsp-status,
+        lsp-server-log-listing,
+        lsp-restart(string),
+        lsp-progress-cancel(option<string>),
+        lsp-expand-region,
+        lsp-shrink-region,
+        set-lsp-log-level(set-lsp-log-level-payload),
+        lsp-log-clear(option<string>),
+        lsp-document-symbol,
+        lsp-workspace-symbol(string),
+        lsp-incoming-calls,
+        lsp-outgoing-calls,
+        lsp-supertypes,
+        lsp-subtypes,
+        lsp-moniker,
+        lsp-code-lens,
+        lsp-color-presentation,
+        lsp-format,
+        lsp-format-range,
+        lsp-signature-help,
+        lsp-complete,
+        lsp-rename(string),
+        lsp-code-action,
+        expand-snippet(range),
+        reload-snippets,
+        describe-events,
+        describe-diff,
+        diff-open,
+        diff-off(bool),
+        diffthis,
+        diffsplit(diffsplit-payload),
+        diff-get-cmd(option<u32>),
+        diff-put-cmd(option<u32>),
+        diff-accept,
+        diff-reject,
+        diff-accept-all,
+        diff-reject-all,
+        close-session-diffs(close-session-diffs-payload),
+        close-all-session-diffs(u64),
+        next-hunk,
+        prev-hunk,
+        describe-event(string),
+        list-modes,
+        describe-mode(string),
+        describe-option-resolution(string),
+        customize(option<string>),
+        tutor(option<u32>),
+        toggle-mode(string),
+        record-jump,
+    }
 }

@@ -47,7 +47,7 @@ use lattice_picker::outcome::PickerAcceptOutcome as NativePickerAcceptOutcome;
 /// A host path crosses the boundary as a WIT `string`, which must be UTF-8. A
 /// non-UTF-8 path cannot cross faithfully, so it is a typed error rather than a
 /// lossy `to_string_lossy`.
-fn path_to_wit(path: &Path) -> Result<String, String> {
+pub(crate) fn path_to_wit(path: &Path) -> Result<String, String> {
     path.to_str().map(str::to_string).ok_or_else(|| {
         format!(
             "path is not valid UTF-8 and cannot cross the boundary: {}",
@@ -196,15 +196,13 @@ impl WitBoundary for NativeCandidateData {
                         .to_string(),
                 );
             }
-            NativeCandidateData::File {
-                path,
-                is_dir,
-                size,
-            } => WitCandidateData::File(WitCandidateFile {
-                path: path_to_wit(path)?,
-                is_dir: *is_dir,
-                size: *size,
-            }),
+            NativeCandidateData::File { path, is_dir, size } => {
+                WitCandidateData::File(WitCandidateFile {
+                    path: path_to_wit(path)?,
+                    is_dir: *is_dir,
+                    size: *size,
+                })
+            }
             NativeCandidateData::Option {
                 name,
                 current_value,

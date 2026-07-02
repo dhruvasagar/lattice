@@ -2,7 +2,8 @@
 //!
 //! Measures the per-value marshalling cost of the `WitBoundary` adapter —
 //! `to_wit` then `from_wit` — for the representative boundary types (`Args`,
-//! `RawCandidate`, `PickerAcceptOutcome`). This is the *marshalling* component
+//! `RawCandidate`, `PickerAcceptOutcome`, `Effect`). This is the *marshalling*
+//! component
 //! of the §7 "typed host function call" budget (< 100ns p50 / < 500ns p99);
 //! the **end-to-end guest↔host typed-call** gate — which also includes the
 //! wasmtime canonical-ABI lift/lower + the async suspend — lands with the
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 use criterion::{Criterion, criterion_group, criterion_main};
 use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
 use lattice_grammar::args::{ArgValue, Args};
+use lattice_grammar::effect::{Effect, QuitScope};
 use lattice_picker::outcome::PickerAcceptOutcome;
 use lattice_plugin_host::WitBoundary;
 
@@ -66,6 +68,34 @@ fn boundary_round_trip(c: &mut Criterion) {
         b.iter(|| {
             let wit = black_box(&outcome).to_wit().expect("to_wit");
             let back = PickerAcceptOutcome::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+
+    // A representative composite `Effect::Many` — exercises the `list<effect>`
+    // flatten/rebuild plus a spread of payload arms (paths, options, a nested
+    // scope enum). This is the marshalling cost an operator/ex-command guest
+    // export pays to return an effect (PH7.3b1b).
+    let effect = Effect::Many(vec![
+        Effect::RecordJump,
+        Effect::OpenBufferAt {
+            path: Some(PathBuf::from("/home/alice/project/src/main.rs")),
+            position: lattice_protocol::position::Position { line: 120, byte: 8 },
+            force: false,
+        },
+        Effect::QuitEditor {
+            force: false,
+            scope: QuitScope::Pane,
+        },
+        Effect::Echo {
+            level: lattice_grammar::effect::EchoLevel::Info,
+            text: "saved".into(),
+        },
+    ]);
+    c.bench_function("boundary_effect_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&effect).to_wit().expect("to_wit");
+            let back = Effect::from_wit(wit).expect("from_wit");
             black_box(back);
         })
     });

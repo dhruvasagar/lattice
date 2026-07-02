@@ -43,3 +43,10 @@ description = "Change with  cw"
 anchor      = "---> Replace some words:"
 success     = "manual_advance"
 hint        = "cw deletes to end of word and enters Insert mode"
+
+[[exercises]]
+id          = "1.7"
+description = "Replace one char with  r"
+anchor      = "---> Fix the zero: put the cursor on the 0 and press r O"
+success     = { text_contains = "HELLO WORLD" }
+hint        = "Put the cursor on the 0, then press r followed by capital O"

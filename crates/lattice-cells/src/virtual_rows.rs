@@ -84,6 +84,15 @@ pub enum VirtualRowKind {
 	/// anchor line is in the viewport. Use `VirtualRow::bg` to supply
 	/// a background colour; falls back to no backdrop if `bg` is `None`.
 	Sticky,
+	/// Dashboard branding block (DB.4-gpui). A contiguous group of
+	/// these rows carries the mark's block cells + the wordmark/tagline
+	/// text; the **GPUI peer** intercepts the group and paints a 2-D
+	/// composition instead of the flat cells — the mark as crisp square
+	/// quads (corner cuts preserved) and the "Lattice" wordmark shaped
+	/// large, vertically centred beside the mark. The **TUI peer** paints
+	/// the cells normally (its terminal-art treatment). A *paint*
+	/// discriminant only — never a motion/scroll/cursor branch.
+	BrandingBlock,
 }
 
 /// One virtual row's anchor + content.

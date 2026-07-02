@@ -611,6 +611,100 @@ pub(crate) struct EditorElementPrepaintState {
     /// width). Using the cell column count avoids landing mid-line when
     /// the cell + combined column models differ (inlay edge cases).
     inline_diag_overlay: Option<(usize, Option<u32>, ShapedLine)>,
+    /// DB.4-gpui: the parsed dashboard branding composition, if the
+    /// viewport holds a `BrandingBlock` virtual-row group. `paint` draws
+    /// it as a 2-D composition (quad mark + shaped wordmark) over the
+    /// blanked branding rows. `None` for every non-dashboard buffer.
+    branding: Option<BrandingPaint>,
+}
+
+/// DB.4-gpui: the dashboard branding composition, parsed from a
+/// `VirtualRowKind::BrandingBlock` row group's cells and laid out by the
+/// GPUI peer as a 2-D image the flat cell grid can't express — the mark
+/// as crisp square quads (corner cuts preserved), the "Lattice" wordmark
+/// shaped large and vertically centred beside it. The TUI peer paints the
+/// same rows as cells (its terminal-art treatment); this struct is
+/// GPUI-only. Tunable geometry lives in `paint` (tile size, gap, wordmark
+/// scale) so the look can be dialled in-app.
+struct BrandingPaint {
+    /// Display-row index of the first branding row (its `y` = `row_top`).
+    first_row: usize,
+    /// Number of branding rows in the group (defines the vertical box).
+    row_count: usize,
+    /// Mark grid extent (rows × cols), for square-tile layout.
+    mark_rows: u32,
+    mark_cols: u32,
+    /// Each mark block as `(local_row, col, rgb)` — logo blue or cursor
+    /// amber, straight from the cell fg. Absent grid cells (the cut
+    /// corners) simply have no tile, so the negative space is preserved.
+    tiles: Vec<(u32, u32, u32)>,
+    /// The wordmark + tagline as `(text, rgb)`, parsed from the row group.
+    wordmark: (String, u32),
+    tagline: (String, u32),
+}
+
+/// The full-block glyph the branding provider uses for a mark cell (both
+/// the logo bracket and the amber cursor bar). GPUI turns each such cell
+/// into a square quad.
+const BRANDING_MARK_GLYPH: u32 = 0x2588; // █
+
+/// DB.4-gpui: parse a `BrandingBlock` row group (each entry is
+/// `(display_row_index, cells)`) into a [`BrandingPaint`]. Block-glyph
+/// cells become mark tiles (keyed by their fg colour); the remaining
+/// printable cells accumulate per row into the wordmark (first text row)
+/// and tagline (second). Returns `None` if there are no mark tiles.
+fn build_branding_paint(
+    rows: &[(usize, std::sync::Arc<[lattice_cells::Cell]>)],
+) -> Option<BrandingPaint> {
+    let first_row = rows.first()?.0;
+    let mut tiles: Vec<(u32, u32, u32)> = Vec::new();
+    let mut texts: Vec<(usize, String, u32)> = Vec::new();
+    for (gi, (_, cells)) in rows.iter().enumerate() {
+        let mut text = String::new();
+        let mut text_color = 0u32;
+        for (col, cell) in cells.iter().enumerate() {
+            if cell.codepoint == BRANDING_MARK_GLYPH {
+                tiles.push((gi as u32, col as u32, cell.fg));
+            } else if let Some(ch) = char::from_u32(cell.codepoint) {
+                if ch == ' ' {
+                    // Interior spaces only (skip the leading mark/gap run).
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                } else if !ch.is_control() {
+                    text.push(ch);
+                    if text_color == 0 && cell.fg != 0 {
+                        text_color = cell.fg;
+                    }
+                }
+            }
+        }
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            texts.push((gi, trimmed.to_string(), text_color));
+        }
+    }
+    if tiles.is_empty() {
+        return None;
+    }
+    let min_row = tiles.iter().map(|t| t.0).min().unwrap_or(0);
+    let max_row = tiles.iter().map(|t| t.0).max().unwrap_or(0);
+    let max_col = tiles.iter().map(|t| t.1).max().unwrap_or(0);
+    for t in tiles.iter_mut() {
+        t.0 -= min_row;
+    }
+    texts.sort_by_key(|t| t.0);
+    let wordmark = texts.first().map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    let tagline = texts.get(1).map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    Some(BrandingPaint {
+        first_row,
+        row_count: rows.len(),
+        mark_rows: max_row - min_row + 1,
+        mark_cols: max_col + 1,
+        tiles,
+        wordmark,
+        tagline,
+    })
 }
 
 impl IntoElement for EditorElement {
@@ -743,6 +837,10 @@ impl Element for EditorElement {
             Vec::with_capacity(row_capacity);
         let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
+        // DB.4-gpui: `(display_row, cells)` for each BrandingBlock virtual
+        // row emitted this frame; parsed into a `BrandingPaint` below.
+        let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> =
+            Vec::new();
         // D.3.b.1.gpui (2026-05-29): for each entry in
         // `self.gutter`, the shaped_text row index of the
         // corresponding doc row after virtual-row interleaving.
@@ -1271,6 +1369,7 @@ impl Element for EditorElement {
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
+                    &mut branding_rows,
                 );
             }
             'rows: for meta in &self.gutter {
@@ -1309,6 +1408,7 @@ impl Element for EditorElement {
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
+                        &mut branding_rows,
                     );
                 }
                 // The doc row itself must also respect the budget:
@@ -1429,6 +1529,7 @@ impl Element for EditorElement {
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
+                        &mut branding_rows,
                     );
                 }
             }
@@ -1615,6 +1716,7 @@ impl Element for EditorElement {
             row_scale,
             row_split,
             inline_diag_overlay,
+            branding: build_branding_paint(&branding_rows),
         }
     }
 
@@ -2096,6 +2198,115 @@ impl Element for EditorElement {
                     window.paint_quad(fill(underline, rgb(self.theme.cursor_background)));
                 }
             }
+        }
+
+        // DB.4-gpui: the dashboard branding, painted as a 2-D composition
+        // over the (blanked) BrandingBlock rows — the mark as crisp square
+        // quads (absent grid cells = cut corners preserved) and the
+        // "Lattice" wordmark shaped large, vertically centred beside it.
+        // The knobs below (tile size, gap, wordmark scale, mark↔text gap)
+        // are deliberately in one place so the look can be dialled in-app.
+        if let Some(b) = &prepaint.branding {
+            let clamp0 = |p: Pixels| if p < Pixels::ZERO { Pixels::ZERO } else { p };
+            // --- tunable geometry ---
+            let tile_w = line_height * 0.44; // mark tile size (square)
+            let tile_h = tile_w;
+            let gap = tile_w * 0.22; // gap between tiles
+            let word_scale = 2.4_f32; // "Lattice" font scale vs base
+            let mark_text_gap = tile_w * 1.6; // gap between mark and wordmark
+
+            let mark_w = (tile_w + gap) * (b.mark_cols as f32) - gap;
+            let mark_h = (tile_h + gap) * (b.mark_rows as f32) - gap;
+
+            // Shape the wordmark (scaled) + tagline (base). Empty strings
+            // degrade to a single space so `shape_line` never sees length 0.
+            let word_fs = prepaint.font_size * word_scale;
+            let word_color = if b.wordmark.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.wordmark.1
+            };
+            let word_text = if b.wordmark.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.wordmark.0.clone()
+            };
+            let word_run = TextRun {
+                len: word_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(word_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let word_shaped = window.text_system().shape_line(
+                SharedString::from(word_text),
+                word_fs,
+                &[word_run],
+                None,
+            );
+            let tag_color = if b.tagline.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.tagline.1
+            };
+            let tag_text = if b.tagline.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.tagline.0.clone()
+            };
+            let tag_run = TextRun {
+                len: tag_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(tag_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let tag_shaped = window.text_system().shape_line(
+                SharedString::from(tag_text),
+                prepaint.font_size,
+                &[tag_run],
+                None,
+            );
+            let word_lh = word_fs * 1.15; // tight leading over the tagline
+            let tag_lh = line_height;
+            let text_h = word_lh + tag_lh;
+            let text_w = if word_shaped.width > tag_shaped.width {
+                word_shaped.width
+            } else {
+                tag_shaped.width
+            };
+
+            // The blanked branding rows reserve this vertical box.
+            let box_top = row_top(b.first_row);
+            let box_h = line_height * (b.row_count as f32);
+            let block_h = if mark_h > text_h { mark_h } else { text_h };
+            let block_top = box_top + clamp0((box_h - block_h) * 0.5);
+
+            // Centre [mark | gap | text] horizontally in the content area.
+            let content_w = bounds.size.width - prepaint.gutter_width_px;
+            let total_w = mark_w + mark_text_gap + text_w;
+            let block_x = text_origin_x + clamp0((content_w - total_w) * 0.5);
+
+            // Mark tiles — vertically centred in the block; the amber cursor
+            // tile paints in its own fg (carried through from the cell).
+            let mark_x = block_x;
+            let mark_y = block_top + clamp0((block_h - mark_h) * 0.5);
+            for (r, c, color) in &b.tiles {
+                let tx = mark_x + (tile_w + gap) * (*c as f32);
+                let ty = mark_y + (tile_h + gap) * (*r as f32);
+                window.paint_quad(fill(
+                    Bounds::new(point(tx, ty), size(tile_w, tile_h)),
+                    rgb(*color),
+                ));
+            }
+
+            // Wordmark + tagline — vertically centred beside the mark.
+            let text_x = mark_x + mark_w + mark_text_gap;
+            let text_top = block_top + clamp0((block_h - text_h) * 0.5);
+            let _ = word_shaped.paint(point(text_x, text_top), word_lh, window, cx);
+            let _ = tag_shaped.paint(point(text_x, text_top + word_lh), tag_lh, window, cx);
         }
     }
 }
@@ -2710,7 +2921,53 @@ fn push_virtual_row(
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+    branding_rows: &mut Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)>,
 ) {
+    // DB.4-gpui: a BrandingBlock row is recorded (with its display index +
+    // cells) for the 2-D branding pass and then rendered BLANK here — the
+    // GPUI peer paints the quad mark + shaped wordmark over it, so the raw
+    // mark/wordmark cells must not double-paint. (The TUI peer paints the
+    // cells directly; it never reaches this function.)
+    if vrow.kind == lattice_cells::VirtualRowKind::BrandingBlock {
+        branding_rows.push((shaped_text.len(), vrow.cells.clone()));
+        let blank = window.text_system().shape_line(
+            SharedString::from(" "),
+            font_size,
+            &[TextRun {
+                len: 1,
+                font: font.clone(),
+                color: rgb(body_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let blank_gutter: String = " ".repeat(gutter_width + 4);
+        let shaped_g = window.text_system().shape_line(
+            SharedString::from(blank_gutter.clone()),
+            font_size,
+            &[TextRun {
+                len: blank_gutter.len(),
+                font: font.clone(),
+                color: rgb(GUTTER_NORMAL_COLOR).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        shaped_text.push(blank);
+        shaped_gutter.push(shaped_g);
+        row_meta.push((u32::MAX, String::new()));
+        row_segment.push(0);
+        row_scale.push(1.0);
+        row_split.push(None);
+        inlay_offsets_per_row.push(Vec::new());
+        diagnostic_segments_per_row.push(Vec::new());
+        overlay_quads_per_row.push(Vec::new());
+        return;
+    }
     // D.3.b.2 (2026-05-29): build the body text + a parallel
     // `Vec<TextRun>` keyed by per-cell `fg`. Adjacent cells
     // sharing the same fg coalesce into a single TextRun so
@@ -2837,7 +3094,11 @@ fn push_virtual_row(
                 Vec::new()
             }
         }
-        lattice_cells::VirtualRowKind::Filler => Vec::new(),
+        // Filler: no backdrop (blank padding). BrandingBlock: no cell
+        // backdrop either — the GPUI branding pass (DB.4-gpui) paints the
+        // 2-D composition over these rows itself.
+        lattice_cells::VirtualRowKind::Filler
+        | lattice_cells::VirtualRowKind::BrandingBlock => Vec::new(),
     };
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
@@ -2994,6 +3255,60 @@ fn build_gutter_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DB.4-gpui: the branding parser turns a `BrandingBlock` row group's
+    /// cells into mark tiles (by fg colour) + wordmark/tagline text, and —
+    /// critically — leaves absent grid cells (the cut corners) tile-less so
+    /// the interlocking negative space is preserved.
+    #[test]
+    fn build_branding_paint_parses_tiles_and_text_preserving_corners() {
+        use lattice_cells::Cell;
+        let block = BRANDING_MARK_GLYPH;
+        let blue = 0x1f6febu32;
+        let amber = 0xf59e0bu32;
+        let white = 0xffffffu32;
+        let cell = |cp: u32, fg: u32| Cell::new(cp, fg, 0, 0);
+        let sp = cell(' ' as u32, 0);
+        // Row at display index 3: blocks at cols 0 and 2 (col 1 is a CUT
+        // corner — a space), then the wordmark "Hi".
+        let row_a = vec![
+            cell(block, blue),
+            sp,
+            cell(block, blue),
+            sp,
+            cell('H' as u32, white),
+            cell('i' as u32, white),
+        ];
+        // Row at index 4: amber cursor tile at col 1, then tagline "yo".
+        let row_b = vec![
+            sp,
+            cell(block, amber),
+            sp,
+            sp,
+            cell('y' as u32, 0x999999),
+            cell('o' as u32, 0x999999),
+        ];
+        let rows = vec![
+            (3usize, std::sync::Arc::from(row_a.into_boxed_slice())),
+            (4usize, std::sync::Arc::from(row_b.into_boxed_slice())),
+        ];
+        let b = build_branding_paint(&rows).expect("branding parses");
+        assert_eq!(b.first_row, 3);
+        assert_eq!(b.row_count, 2);
+        assert_eq!(b.mark_cols, 3, "widest mark col is 2 → 3 cols");
+        assert_eq!(b.mark_rows, 2);
+        // Tiles present with their colours; the cut corner (row 0, col 1)
+        // has NO tile — negative space preserved.
+        assert!(b.tiles.contains(&(0, 0, blue)));
+        assert!(b.tiles.contains(&(0, 2, blue)));
+        assert!(b.tiles.contains(&(1, 1, amber)), "amber cursor tile");
+        assert!(
+            !b.tiles.iter().any(|t| t.0 == 0 && t.1 == 1),
+            "cut corner stays tile-less"
+        );
+        assert_eq!(b.wordmark, ("Hi".to_string(), white));
+        assert_eq!(b.tagline.0, "yo");
+    }
 
     /// The rendered gutter text MUST be exactly the width the element
     /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 2`,

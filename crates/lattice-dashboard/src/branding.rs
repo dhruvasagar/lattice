@@ -191,7 +191,11 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     position: AnchorPosition::Above,
                     cells: Arc::from(cells.into_boxed_slice()),
                     height: 1,
-                    kind: VirtualRowKind::Filler,
+                    // BrandingBlock (DB.4-gpui): the GPUI peer intercepts this
+                    // row group and paints a 2-D composition (quad mark +
+                    // shaped wordmark); the TUI paints the cells as-is. No
+                    // backdrop either way (was Filler).
+                    kind: VirtualRowKind::BrandingBlock,
                     bg: None,
                     scales: scales.map(|s| Arc::from(s.into_boxed_slice())),
                 }

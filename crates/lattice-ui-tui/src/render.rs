@@ -5015,8 +5015,12 @@ fn render_virtual_row(
             | lattice_cells::VirtualRowKind::Generic => {
                 Some(view.app.theme.diff_deletion_block_bg)
             }
+            // Filler/Sticky/BrandingBlock: no kind backdrop. The TUI paints
+            // the branding cells as its terminal-art treatment (half-block
+            // mark); no full-row backdrop behind them.
             lattice_cells::VirtualRowKind::Filler
-            | lattice_cells::VirtualRowKind::Sticky => None,
+            | lattice_cells::VirtualRowKind::Sticky
+            | lattice_cells::VirtualRowKind::BrandingBlock => None,
         });
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();

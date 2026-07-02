@@ -134,6 +134,11 @@ pub struct FrameView<'a> {
     /// `signcolumn=no` (help-mode, synthetic buffers) renders
     /// gutterless without the renderer knowing it's help.
     pub sign_column: bool,
+    /// DB.4: extra leading gutter cells to horizontally centre the buffer's
+    /// content (dashboard). Added to the computed gutter width for both
+    /// document lines and virtual rows, so content + cursor shift right. `0`
+    /// for every non-centred buffer.
+    pub content_left_pad: u32,
 }
 
 impl<'a> FrameView<'a> {
@@ -185,6 +190,7 @@ impl<'a> FrameView<'a> {
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: app.ad().option_cache.wrap_lines,
             sign_column: app.ad().option_cache.sign_column,
+            content_left_pad: app.ad().option_cache.content_left_pad,
         }
     }
 
@@ -207,10 +213,19 @@ impl<'a> FrameView<'a> {
         let (folds, foldenable) = rs.folds_for_buffer(buffer_id);
         let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
         let inlay_hints = rs.inlay_hints_for_buffer(buffer_id);
+        // DB.4: content-centring pad is resolved from the active buffer's
+        // option cache; a pane showing the centred buffer picks it up, others
+        // render normally (0).
+        let content_left_pad = if buffer_id == app.ad().document_buffer_id {
+            app.ad().option_cache.content_left_pad
+        } else {
+            0
+        };
         Self {
             app,
             folds,
             inlay_hints,
+            content_left_pad,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -3382,14 +3397,17 @@ pub(crate) fn compose_pane_lines(
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if view.show_line_numbers {
+    let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         // Keep one cell of left padding for the empty-marker `~` line
         // and to mirror vim's `:set nonumber` (no gutter, but content
         // still has a one-cell margin from the edge).
         2
-    };
+    })
+    // DB.4: horizontal centring widens the gutter (content + cursor shift
+    // right); 0 for non-centred buffers.
+    + view.content_left_pad;
     // Severity column is prepended (Phase 4.1.d.iii); reserve
     // one cell so buffer width stays correct. D.3.d.1: diff
     // sign column sits between severity and gutter, costs one
@@ -5750,11 +5768,11 @@ fn cursor_screen_position_at(
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
-    let gutter_w = if view.show_line_numbers {
+    let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
-    };
+    }) + view.content_left_pad; // DB.4: keep cursor col aligned with centring.
     // W.4.t: body content width = the columns a wrapped line is
     // broken at. Must match `compose_visible_lines_inner`'s
     // `buffer_w` exactly so the cursor row/col agree with what is

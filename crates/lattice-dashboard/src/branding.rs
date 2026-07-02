@@ -134,8 +134,12 @@ impl VirtualRowProvider for DashboardBrandingProvider {
 
         // Build each row's cells. The wordmark block (name + tagline) is
         // vertically centred against the five-row mark: name on row 2,
-        // tagline on row 3.
-        let mut cell_rows: Vec<Vec<Cell>> = Vec::with_capacity(MARK.len() + 1);
+        // tagline on row 3. A blank spacer row above AND below the mark gives
+        // the banner breathing room. Horizontal centring is handled by the
+        // gutter (content_left_pad) — rows are left-aligned within the gutter,
+        // so the mark's columns line up.
+        let mut cell_rows: Vec<Vec<Cell>> = Vec::with_capacity(MARK.len() + 2);
+        cell_rows.push(Vec::new()); // spacer above
         for (i, mark_row) in MARK.iter().enumerate() {
             let mut runs = mark_runs_for(mark_row, logo_fg, cursor_fg);
             match i {
@@ -151,17 +155,11 @@ impl VirtualRowProvider for DashboardBrandingProvider {
             }
             cell_rows.push(row_cells(&runs));
         }
-        // Trailing blank spacer between the banner and the body.
-        cell_rows.push(Vec::new());
+        cell_rows.push(Vec::new()); // spacer below
 
-        // Pad every row to the block's max width so per-row centring insets
-        // them all equally — the block centres as a unit and the mark's
-        // columns stay aligned vertically.
-        let block_width = cell_rows.iter().map(|c| c.len()).max().unwrap_or(0);
         cell_rows
             .into_iter()
-            .map(|mut cells| {
-                cells.resize(block_width, Cell::new(b' ' as u32, 0, 0, 0));
+            .map(|cells| {
                 VirtualRow {
                     anchor_line: 0,
                     position: AnchorPosition::Above,
@@ -169,7 +167,7 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     height: 1,
                     kind: VirtualRowKind::Filler,
                     bg: None,
-                    align: VirtualRowAlign::Center,
+                    align: VirtualRowAlign::Left,
                 }
             })
             .collect()
@@ -199,9 +197,18 @@ fn mark_runs_for(mark_row: &str, logo_fg: u32, cursor_fg: u32) -> Vec<(String, u
     runs
 }
 
-/// The number of display rows the branding block occupies (mark rows + one
-/// spacer). Used by tests and future layout.
-pub const BRANDING_ROW_COUNT: usize = MARK.len() + 1;
+/// The number of display rows the branding block occupies (mark rows + a
+/// spacer above and below). Used by tests and future layout.
+pub const BRANDING_ROW_COUNT: usize = MARK.len() + 2;
+
+/// The branding block width in cells (mark + gap + the wider of wordmark /
+/// tagline). The host feeds this into the content-centring block width so the
+/// banner and body share one centred margin.
+pub fn branding_block_width() -> u32 {
+    let mark_w = MARK.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    let text_w = "Lattice".chars().count().max(TAGLINE.chars().count());
+    (mark_w + GAP + text_w) as u32
+}
 
 #[cfg(test)]
 mod tests {
@@ -244,7 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn wordmark_is_vertically_centered_on_rows_2_and_3() {
+    fn wordmark_is_vertically_centered_against_the_mark() {
+        // Row 0 is the spacer above, so MARK rows are 1..=5 and the wordmark
+        // (MARK row 2 / 3) lands on rows 3 / 4.
         let p = provider_with_theme();
         let rows = p.collect();
         let text_of = |row: &VirtualRow| -> String {
@@ -253,24 +262,20 @@ mod tests {
                 .filter_map(|c| char::from_u32(c.codepoint))
                 .collect()
         };
-        assert!(text_of(&rows[2]).contains("Lattice"), "wordmark on row 2");
-        assert!(text_of(&rows[3]).contains("modal"), "tagline on row 3");
-        // Rows 0/1/4/5 carry no wordmark text.
-        for i in [0usize, 1, 4, 5] {
-            assert!(!text_of(&rows[i]).contains("Lattice"));
-        }
+        assert!(text_of(&rows[3]).contains("Lattice"), "wordmark on row 3");
+        assert!(text_of(&rows[4]).contains("modal"), "tagline on row 4");
     }
 
     #[test]
-    fn rows_are_padded_to_one_block_width_and_centered() {
-        // For the block to centre as a unit (not per-row), every row must be
-        // the same width and tagged Center.
+    fn rows_are_left_aligned_gutter_centres_the_block() {
+        // Horizontal centring is gutter-based (content_left_pad); the rows
+        // themselves are Left-aligned so the mark's columns line up.
         let p = provider_with_theme();
         let rows = p.collect();
-        let widths: std::collections::HashSet<usize> =
-            rows.iter().map(|r| r.cells.len()).collect();
-        assert_eq!(widths.len(), 1, "all rows must share one block width: {widths:?}");
-        assert!(rows.iter().all(|r| r.align == VirtualRowAlign::Center));
+        assert!(rows.iter().all(|r| r.align == VirtualRowAlign::Left));
+        // A spacer row above and below.
+        assert!(rows.first().unwrap().cells.is_empty(), "spacer above");
+        assert!(rows.last().unwrap().cells.is_empty(), "spacer below");
     }
 
     #[test]

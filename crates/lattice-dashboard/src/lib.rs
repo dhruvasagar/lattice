@@ -22,7 +22,7 @@ pub mod section;
 pub mod sections;
 pub mod theme;
 
-pub use branding::{DashboardBrandingProvider, BRANDING_ROW_COUNT};
+pub use branding::{branding_block_width, DashboardBrandingProvider, BRANDING_ROW_COUNT};
 pub use fragment::{Align, DashboardFragment, DashboardRole, DashboardRow, DashboardSpan, LinkTarget};
 pub use install::install;
 pub use mode::{register_dashboard_modes, DashboardMode};

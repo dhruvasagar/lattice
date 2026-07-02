@@ -96,6 +96,23 @@ impl BufferLocal for ExtraHighlights {
     }
 }
 
+/// DB.4: the content block width (widest line, in cells) for a buffer that
+/// should be horizontally centred by widening its gutter. Set by the dashboard;
+/// the renderer computes `left_pad = (viewport_width - width) / 2` and adds it
+/// to the gutter, so content + cursor shift right (centred) with no text
+/// mutation — markdown / links stay intact. Absent = not centred.
+#[derive(Debug, Clone, Default)]
+pub struct CenterContentWidth(pub u32);
+
+impl BufferLocal for CenterContentWidth {
+    const NAME: &'static str = "text-mode.center-content-width";
+    const DOC: &'static str = "Content block width (cells) for gutter-based horizontal centring.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("center to block width {}", self.0)
+    }
+}
+
 // ---- file-tree-mode buffer-locals ----
 //
 // All three live in `lattice_file_tree::modes` alongside their

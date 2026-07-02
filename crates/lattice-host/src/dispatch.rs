@@ -24974,7 +24974,20 @@ impl Editor {
         // M.7.3.a: parse a typed-option `String` into a single
         // glyph. Empty string ⇒ category is not decorated.
         let glyph = |s: &str| -> Option<char> { s.chars().next() };
+        // DB.4: gutter-based horizontal centring. A buffer with the
+        // CenterContentWidth local is centred by padding its gutter with
+        // `(viewport_width - block_width)/2` cells (no text mutation).
+        let content_left_pad = self
+            .buffer_locals
+            .get(&buffer)
+            .and_then(|l| l.get::<crate::modes::CenterContentWidth>())
+            .map(|w| {
+                let vw = self.pane_tree.active().viewport_width;
+                vw.saturating_sub(w.0) / 2
+            })
+            .unwrap_or(0);
         self.option_cache = crate::state::OptionCache {
+            content_left_pad,
             show_line_numbers: *self.resolved_option::<Number>(buffer),
             relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
             wrap_lines: *self.resolved_option::<Wrap>(buffer),

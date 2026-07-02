@@ -24,6 +24,19 @@ impl Editor {
     /// creating a duplicate.
     pub fn do_open_dashboard(&mut self) -> Vec<RendererSignal> {
         let content = self.build_dashboard_content();
+        // DB.4: the content block width (widest body line vs the branding
+        // block) drives gutter-based horizontal centring — the renderer pads
+        // the gutter by `(viewport_width - block_width)/2` so the banner + body
+        // share one centred margin, with no text mutation (markdown intact).
+        let body_max = content
+            .buffer
+            .content
+            .as_string()
+            .lines()
+            .map(|l| l.chars().count() as u32)
+            .max()
+            .unwrap_or(0);
+        let block_width = body_max.max(lattice_dashboard::branding_block_width());
         let id = match self.buffers.by_name("*dashboard*") {
             Some(existing) => {
                 // Re-compose in place (config / future refresh triggers) —
@@ -42,7 +55,13 @@ impl Editor {
                 id
             }
         };
-        // DB.4: (re-)register the branding virtual-row block for this buffer.
+        // DB.4: mark the buffer for gutter-based horizontal centring (read by
+        // rebuild_option_cache to compute content_left_pad).
+        self.buffer_locals
+            .entry(id)
+            .or_default()
+            .insert(crate::modes::CenterContentWidth(block_width));
+        // (re-)register the branding virtual-row block for this buffer.
         self.register_dashboard_branding(id);
         let signals = if self.activate_buffer(id) {
             self.activate_buffer_state()
@@ -113,50 +132,12 @@ impl Editor {
                 Vec::new()
             }
         };
-        let content = dashboard_fragments_to_help_content(fragments);
-        // Block-centre the body against the pane content width (the branding
-        // virtual rows centre via VirtualRowAlign). Width is 0 before the
-        // renderer feeds geometry (startup) → left-aligned until the resize
-        // recompute (DB.6) recentres.
-        center_help_content(content, self.body_text_width() as usize)
+        // Body is left-aligned for now: block-centring by padding the text
+        // broke markdown header styling (leading spaces => indented code
+        // block). Centring-with-markdown needs renderer-side content align
+        // (see DB.4 slice plan) — pending.
+        dashboard_fragments_to_help_content(fragments)
     }
-}
-
-/// Block-centre a `HelpContent` horizontally: prepend a uniform leading inset
-/// to every line so the content block is centred in `width`, shifting the link
-/// + anchor byte ranges by the same inset. Lines stay left-aligned *within*
-/// the block. No-op when the block is already ≥ `width` or `width` is unknown.
-fn center_help_content(mut content: lattice_help::HelpContent, width: usize) -> lattice_help::HelpContent {
-    let text = content.buffer.content.as_string();
-    let lines: Vec<&str> = text.split('\n').collect();
-    let block_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    if width <= block_w {
-        return content;
-    }
-    let inset = (width - block_w) / 2;
-    if inset == 0 {
-        return content;
-    }
-    let pad = " ".repeat(inset);
-    let padded = lines
-        .iter()
-        .map(|l| {
-            if l.is_empty() {
-                String::new()
-            } else {
-                format!("{pad}{l}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    content.buffer.content = lattice_core::Buffer::from_text(&padded);
-    let ins = inset as u32;
-    for link in &mut content.metadata.links {
-        link.range.start.byte += ins;
-        link.range.end.byte += ins;
-    }
-    // Anchors are line-based (no byte range) — leading pad doesn't affect them.
-    content
 }
 
 /// Render one dashboard row to a markdown line. Link spans become

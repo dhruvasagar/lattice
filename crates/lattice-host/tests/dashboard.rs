@@ -213,23 +213,21 @@ fn dashboard_branding_reaches_pane_virtual_row_matrix() {
 }
 
 #[test]
-fn dashboard_body_is_block_centered_to_pane_width() {
+fn dashboard_centering_widens_the_gutter_not_the_text() {
     let mut editor = boot();
     editor.pane_tree.active_mut().viewport_width = 120;
     editor.do_open_dashboard();
 
-    // Body content is block-centred: every non-blank line carries a uniform
-    // leading inset (lines that had internal indentation carry inset + that).
-    let text = editor.active_text().as_string();
-    let min_inset = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.len() - l.trim_start().len())
-        .min()
-        .unwrap_or(0);
+    // Centring is gutter-based: content_left_pad > 0, and the buffer TEXT is
+    // NOT mutated (markdown headers stay at column 0 so their styling survives).
     assert!(
-        min_inset > 0,
-        "body should be centred (non-zero leading inset) at width 120"
+        editor.option_cache.content_left_pad > 0,
+        "content_left_pad should be set for centring at width 120"
+    );
+    let text = editor.active_text().as_string();
+    assert!(
+        text.lines().any(|l| l.starts_with('#')),
+        "markdown headers must remain at column 0 (no text padding)"
     );
 }
 

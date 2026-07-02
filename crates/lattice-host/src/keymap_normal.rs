@@ -938,6 +938,25 @@ pub fn register_normal_bindings(
     // `Invoke(find_char_*, Args::Char(captured))`.
     register_find_char_paths(handle, &[], None, builtins);
 
+    // `r<X>` -- replace the char(s) under the cursor with X (vim's
+    // `r{char}`). The affected span is `char_right x count`, exactly
+    // as `x` = delete over `char_right`; the `replace-char` operator
+    // overwrites that range and stays in Normal. The target motion
+    // carries a non-`None` `Args::Char('\0')` placeholder so
+    // `substitute_invocation_char_arg` routes the captured char to the
+    // OPERATOR's args (the replacement) rather than to the motion --
+    // `char_right` ignores its args. `[r]` alone returns Partial (the
+    // `[r, CharLiteral]` child exists) → the App arms its partial-chord
+    // state and waits for the replacement key.
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('r'), ChordPattern::CharLiteral],
+        CommandInvocation::of(builtins.replace_char.0)
+            .with_target(Target::Motion(builtins.char_right, Args::Char('\0'))),
+        source(),
+    );
+
     // ---- d/c/y/>/< as single-chord terminals that arm the
     // operator-pending state. `[g, U]` / `[g, u]` / `[g, ~]` were
     // already registered at slice 8.g.ii; their depth-2 binding

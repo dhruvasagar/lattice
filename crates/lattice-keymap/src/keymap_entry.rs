@@ -322,6 +322,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Normal, chord: "<", doc: "Indent-left operator", cmd: "operator:indent-left" },
         // ---- Normal: standalone deletes/changes ----
         keymap_entry! { mode: Normal, chord: "x", doc: "Delete one char to the right", cmd: "operator:delete" },
+        keymap_entry! { mode: Normal, chord: "r", doc: "Replace [count] char(s) under the cursor with the next typed char (waits for it); stays in Normal", cmd: "operator:replace-char" },
         keymap_entry! { mode: Normal, chord: "D", doc: "Delete to end of line (== d$)", cmd: "operator:delete" },
         keymap_entry! { mode: Normal, chord: "C", doc: "Change to end of line (== c$)", cmd: "operator:change" },
         keymap_entry! { mode: Normal, chord: "S", doc: "Substitute current line (== cc)", cmd: "operator:change" },
@@ -444,6 +445,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Visual, chord: "c", doc: "Change selection (delete + Insert)", cmd: "operator:change" },
         keymap_entry! { mode: Visual, chord: "s", doc: "Change selection (alias of c)", cmd: "operator:change" },
         keymap_entry! { mode: Visual, chord: "y", doc: "Yank selection", cmd: "operator:yank" },
+        keymap_entry! { mode: Visual, chord: "r", doc: "Replace every selected char with the next typed char (waits for it); returns to Normal", cmd: "operator:replace-char" },
         // ---- Insert mode ----
         keymap_entry! { mode: Insert, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Insert, chord: "<BS>", doc: "Delete char to the left" },

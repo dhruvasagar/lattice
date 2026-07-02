@@ -335,6 +335,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             blockwise_per_row: false,
         },
     );
+    let replace_char = registry.register_operator(
+        "operator:replace-char",
+        "Overwrite each non-newline char in the range with the captured char (vim's `r{char}` and Visual `r`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_replace_char),
+            // Args::Char(replacement) is folded in by the keymap's
+            // wildcard capture (same shape as `f{char}`, which also
+            // leaves its schema empty).
+            args_schema: vec![],
+            // Blockwise visual `r` overwrites each row's column slice
+            // independently, exactly like `d` / `y` / `c`.
+            blockwise_per_row: true,
+        },
+    );
 
     let inner_sentence = registry.register_text_object(
         "text-object:inner-sentence",
@@ -583,6 +598,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         upper,
         lower,
         toggle_case,
+        replace_char,
         inner_paragraph,
         around_paragraph,
         inner_sentence,
@@ -645,6 +661,7 @@ pub struct Builtins {
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
+    pub replace_char: OperatorId,
     pub inner_paragraph: TextObjectId,
     pub around_paragraph: TextObjectId,
     pub inner_sentence: TextObjectId,
@@ -2058,6 +2075,52 @@ fn operator_change(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
         },
         Effect::EnterMode(crate::modal::ModalState::Insert),
     ]))
+}
+
+// ---- Operator: replace-char (vim's `r{char}` and Visual `r`) ----
+//
+// Overwrite each non-newline char in the target range with the captured
+// replacement char, producing one `Effect::Edits` -- so both renderers
+// pick it up through the standard edit path with no per-renderer arm.
+//
+// One body serves both entry points:
+//
+// * Normal `Nr{char}`: the keymap binds the range to `char_right x count`
+//   (pre-clamped to the current line, exactly as `x` = delete+char_right).
+//   Vim's "no-op when fewer than N chars remain" falls out of the
+//   `n_chars < count` guard -- the clamped range simply holds fewer chars
+//   than the requested count. Stays in Normal.
+// * Visual `r{char}`: dispatched with `Range::Selection` (count defaults
+//   to 1), so the guard degenerates to "no-op on an empty span" and every
+//   selected char is overwritten. Blockwise routes per-row via
+//   `blockwise_per_row`. The host auto-exits Visual after any operator
+//   (like `d` / `c` / `y`), so no explicit mode transition is emitted.
+//
+// Newlines inside the range are preserved, so a charwise / linewise
+// multi-line selection keeps its line structure (vim replaces characters,
+// never line breaks).
+fn operator_replace_char(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    let replacement = match &ctx.args {
+        crate::args::Args::Char(c) => *c,
+        _ => return Err(CommandError::InvalidArgs("r requires Args::Char")),
+    };
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let text = ctx.document.buffer().slice(ctx.range)?;
+    let n_chars = text.chars().filter(|c| *c != '\n').count() as u32;
+    // Vim's `Nr{char}` requires N characters on the line; a too-large
+    // count is a no-op (vim bells). For Visual the count is 1, so any
+    // non-empty span replaces.
+    if n_chars < ctx.count.get().max(1) {
+        return Ok(Effect::None);
+    }
+    let replaced: String = text
+        .chars()
+        .map(|c| if c == '\n' { '\n' } else { replacement })
+        .collect();
+    let applied = ctx.document.apply_edit(Edit::replace(ctx.range, replaced))?;
+    Ok(Effect::Edits(vec![applied]))
 }
 
 // ---- Operator: yank ----
@@ -4190,6 +4253,224 @@ mod tests {
             other => panic!("expected Effect::Many, got {other:?}"),
         }
         assert_eq!(doc.text(), "hello");
+    }
+
+    // ---- replace-char operator (r{char} / Visual r) ----
+
+    /// Helper: build a single visual selection on `doc`.
+    fn set_visual(
+        doc: &mut Document,
+        anchor: Position,
+        head: Position,
+        visual: lattice_protocol::selection::VisualMode,
+    ) {
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        doc.set_selections(SelectionSet::single(Selection {
+            anchor,
+            head,
+            visual: Some(visual),
+        }));
+    }
+
+    #[test]
+    fn replace_char_overwrites_single_char_under_cursor() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('a'));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::Edits(_)));
+        assert_eq!(doc.text(), "aello");
+    }
+
+    #[test]
+    fn replace_char_with_count_overwrites_count_chars() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('a'))
+            .with_count(Count(3));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "aaalo");
+    }
+
+    #[test]
+    fn replace_char_count_too_large_is_a_no_op() {
+        // Vim's `3r` on a 2-char line replaces nothing (bells).
+        let (registry, b, mut doc) = fixture("ab");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('x'))
+            .with_count(Count(3));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None));
+        assert_eq!(doc.text(), "ab");
+    }
+
+    #[test]
+    fn replace_char_on_empty_line_is_a_no_op() {
+        let (registry, b, mut doc) = fixture("");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('x'));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None));
+        assert_eq!(doc.text(), "");
+    }
+
+    #[test]
+    fn visual_replace_char_overwrites_selection() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("hello world");
+        // Charwise select "hello": anchor byte 0, head byte 4
+        // (inclusive-head extends to [0, 5)).
+        set_visual(
+            &mut doc,
+            Position::new(0, 0),
+            Position::new(0, 4),
+            VisualMode::Charwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('x'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "xxxxx world");
+    }
+
+    #[test]
+    fn visual_replace_char_preserves_newlines_across_lines() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("ab\ncd");
+        // Charwise from (0,1) through (1,0): covers "b\nc" (inclusive
+        // head extends the end to (1,1)).
+        set_visual(
+            &mut doc,
+            Position::new(0, 1),
+            Position::new(1, 0),
+            VisualMode::Charwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('X'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 1),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        // Line structure preserved; only the two chars overwritten.
+        assert_eq!(doc.text(), "aX\nXd");
+    }
+
+    #[test]
+    fn visual_linewise_replace_char_overwrites_whole_lines() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("aaa\nbbb\nccc");
+        set_visual(
+            &mut doc,
+            Position::new(0, 0),
+            Position::new(1, 0),
+            VisualMode::Linewise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('z'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "zzz\nzzz\nccc");
+    }
+
+    #[test]
+    fn visual_blockwise_replace_char_overwrites_each_row_slice() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("abcd\nefgh\nijkl");
+        // Block from (0,1) to (2,2): columns 1..=2 on each row.
+        set_visual(
+            &mut doc,
+            Position::new(0, 1),
+            Position::new(2, 2),
+            VisualMode::Blockwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('*'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 1),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "a**d\ne**h\ni**l");
+    }
+
+    #[test]
+    fn replace_char_without_char_arg_errors() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None));
+        let err = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .expect_err("replace-char requires Args::Char");
+        assert!(matches!(err, CommandError::InvalidArgs(_)));
     }
 
     // ---- yank operator (y) ----

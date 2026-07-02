@@ -882,6 +882,46 @@ mod tests {
     }
 
     #[test]
+    fn r_x_resolves_to_replace_char_with_char_arg_on_operator() {
+        // `r<X>` -- the captured char must land on the OPERATOR's
+        // args (the replacement), NOT on the `char_right` target
+        // (which only sizes the range and ignores its args).
+        let (h, b, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('r')],
+            &ev(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.replace_char.0);
+                assert!(
+                    matches!(inv.args, lattice_grammar::args::Args::Char('X')),
+                    "replacement char rides on the operator args, got {:?}",
+                    inv.args
+                );
+                assert!(
+                    matches!(inv.target, Some(Target::Motion(m, _)) if m == b.char_right),
+                    "range sized by char_right, got {:?}",
+                    inv.target
+                );
+            }
+            other => panic!("expected Invoke(replace_char, Char('X')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r_alone_absorbs_partial_chord() {
+        // `r` with no following key must wait for the replacement.
+        let (h, _, _) = populated_handle();
+        let r = lookup_normal(&h, &ev(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(
+            matches!(r, Some(Action::AbsorbPartialChord(c)) if c == KeyChord::char('r')),
+            "expected AbsorbPartialChord(r), got {r:?}"
+        );
+    }
+
+    #[test]
     fn dfx_resolves_to_delete_with_find_char_target() {
         // `df<X>` -- delete forward up to and including 'X'.
         let (h, b, _) = populated_handle();

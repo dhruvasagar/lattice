@@ -15533,12 +15533,26 @@ impl Editor {
         }
     }
 
+    /// Enter Insert for a Normal-mode insert-entry command
+    /// (`a` / `A` / `I` / `o` / `O`) that deliberately bypasses the full
+    /// `enter_mode` lifecycle. Opens the undo-coalescing group so the
+    /// whole insert session collapses to a single `u`, matching `i`
+    /// (which routes through `enter_mode`). Without this, only `i` got the
+    /// group and `a` / `A` / `I` / `o` / `O` undid one character at a
+    /// time. The matching `end_undo_group` fires when `<Esc>` returns to
+    /// Normal through `enter_mode`.
+    fn begin_insert_session(&mut self) {
+        self.document.begin_undo_group();
+        self.modal = ModalState::Insert;
+    }
+
     /// Vim's `a` -- step the cursor one byte to the right (clamped
     /// to EOL) and switch to Insert. Does NOT route through the
     /// canonical `enter_mode` lifecycle (the App-side `EnterMode`
     /// arm does that with recording_insert plumbing). The semantics
     /// here mirror the App-side helper retired in this slice: pure
-    /// field writes.
+    /// field writes, plus opening the undo group via
+    /// [`Self::begin_insert_session`].
     pub fn do_enter_append(&mut self) {
         let len = self
             .document
@@ -15548,7 +15562,7 @@ impl Editor {
         if self.cursor.byte < len {
             self.cursor.byte += 1;
         }
-        self.modal = ModalState::Insert;
+        self.begin_insert_session();
     }
 
     /// Vim's `I` -- move to the first non-blank column of the
@@ -15561,7 +15575,7 @@ impl Editor {
             .map(|s| s.bytes().take_while(|b| b.is_ascii_whitespace()).count() as u32)
             .unwrap_or(0);
         self.cursor.byte = byte_offset;
-        self.modal = ModalState::Insert;
+        self.begin_insert_session();
     }
 
     /// Vim's `A` -- move to end of the current line (past the last
@@ -15573,7 +15587,7 @@ impl Editor {
             .buffer
             .line_byte_len(self.cursor.line);
         self.cursor.byte = len;
-        self.modal = ModalState::Insert;
+        self.begin_insert_session();
     }
 
     /// Return the wrap_width for the active buffer's cell matrix.
@@ -15702,6 +15716,12 @@ impl Editor {
     /// blank line, switch to Insert. Uses [`Self::active_text`] so
     /// the path works uniformly across Document / Oil / etc.
     pub fn do_open_line_below(&mut self) {
+        // Open the undo group BEFORE the auto-inserted newline so the whole
+        // `o` session (the newline + the text typed after) collapses into a
+        // single `u`. Setting the modal directly at the end avoids a second
+        // `begin_undo_group` (which would reset the group and split the
+        // newline off from the typed text).
+        self.document.begin_undo_group();
         let buf = self.active_text();
         let len = buf.line_byte_len(self.cursor.line);
         let eol = lattice_protocol::position::Position::new(self.cursor.line, len);
@@ -15718,6 +15738,9 @@ impl Editor {
     /// inserts `\n` at BOL and keeps the cursor on the inserted
     /// (now upper) row.
     pub fn do_open_line_above(&mut self) {
+        // See `do_open_line_below`: group opens before the newline edit so
+        // the whole `O` session is one undo unit.
+        self.document.begin_undo_group();
         let bol = lattice_protocol::position::Position::new(self.cursor.line, 0);
         if self
             .apply_edit_blocking(lattice_protocol::edit::Edit::insert(bol, "\n"))

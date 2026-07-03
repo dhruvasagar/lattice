@@ -472,6 +472,94 @@ mod tests {
         assert_eq!(a.editor.document.text(), "");
     }
 
+    /// The insert-entry commands that bypass `enter_mode`
+    /// (`a` / `A` / `I` / `o` / `O`) must open the undo group too, so a
+    /// whole session collapses to one `u` -- not just `i`. Each case types
+    /// several characters, leaves Insert, and asserts a single undo reverts
+    /// the entire session.
+    fn assert_entry_is_one_undo_unit(
+        start: &str,
+        cursor: Position,
+        entry: Action,
+        typed: &[&str],
+        after_typing: &str,
+    ) {
+        let mut a = app_with(start, 10);
+        a.editor.cursor = cursor;
+        a.apply(entry);
+        for ch in typed {
+            a.apply(Action::Insert((*ch).into()));
+        }
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), after_typing);
+        a.apply(Action::Undo);
+        assert_eq!(
+            a.editor.document.text(),
+            start,
+            "one undo should revert the whole insert session"
+        );
+    }
+
+    #[test]
+    fn append_session_is_one_undo_unit() {
+        // `a`: append after the cursor.
+        assert_entry_is_one_undo_unit(
+            "x",
+            Position::new(0, 0),
+            Action::EnterAppend,
+            &["a", "b", "c"],
+            "xabc",
+        );
+    }
+
+    #[test]
+    fn append_eol_session_is_one_undo_unit() {
+        // `A`: append at end of line.
+        assert_entry_is_one_undo_unit(
+            "hi",
+            Position::new(0, 0),
+            Action::EnterAppendEndOfLine,
+            &["!", "?"],
+            "hi!?",
+        );
+    }
+
+    #[test]
+    fn insert_first_non_blank_session_is_one_undo_unit() {
+        // `I`: insert at first non-blank column.
+        assert_entry_is_one_undo_unit(
+            "  x",
+            Position::new(0, 3),
+            Action::EnterInsertFirstNonBlank,
+            &["a", "b"],
+            "  abx",
+        );
+    }
+
+    #[test]
+    fn open_line_below_session_is_one_undo_unit() {
+        // `o`: open a new line below.
+        assert_entry_is_one_undo_unit(
+            "top",
+            Position::new(0, 0),
+            Action::OpenLineBelow,
+            &["n", "e", "w"],
+            "top\nnew",
+        );
+    }
+
+    #[test]
+    fn open_line_above_session_is_one_undo_unit() {
+        // `O`: open a new line above.
+        assert_entry_is_one_undo_unit(
+            "bot",
+            Position::new(0, 0),
+            Action::OpenLineAbove,
+            &["n", "e", "w"],
+            "new\nbot",
+        );
+    }
+
     #[test]
     fn cw_deletes_word_and_enters_insert_mode() {
         let mut a = app_with("hello world", 10);

@@ -4839,9 +4839,21 @@ fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
 /// `signcolumn`-on-the-right convention -- e.g. ` 99 ▸` for a
 /// closed fold's heading.
 fn format_gutter_cell(label: &str, width: u32, glyph: Option<char>) -> String {
+    use unicode_width::UnicodeWidthStr;
     // Rightmost cell is the glyph; one separator space sits before
     // the label. Leading pad fills the rest.
-    let leading = (width as usize).saturating_sub(label.len() + 2);
+    //
+    // Pad by the label's DISPLAY WIDTH, not its byte length: the wrap
+    // continuation marker `↪` (U+21AA) is 3 bytes but occupies a single
+    // terminal cell, so `label.len()` under-counts it by 2 and the
+    // gutter comes out one cell short (the extra byte-vs-cell gap gets
+    // clamped by `saturating_sub`). That made wrapped continuation rows
+    // paint one column left of segment 0's body and, because the cursor
+    // math uses segment 0's `gutter_w`, put the cursor one cell right of
+    // the glyph on every wrapped line. For ASCII numeric labels
+    // display-width == byte-len, so the numbered gutter is unchanged.
+    let label_cols = UnicodeWidthStr::width(label);
+    let leading = (width as usize).saturating_sub(label_cols + 2);
     let g = glyph.unwrap_or(' ');
     format!("{:lead$}{label} {g}", "", lead = leading)
 }
@@ -6974,6 +6986,89 @@ mod tests {
         )
         .unwrap();
         assert_eq!(within.1, 3, "cursor in the 3rd wrap segment sits at display row 3");
+    }
+
+    /// Screen column (char index) where the first non-gutter body char
+    /// appears on `composed[row]`. The gutter/marker prefix is all
+    /// spaces + at most one glyph; the body starts at the first char
+    /// that isn't part of that prefix. We find it by counting the
+    /// leading run of prefix cells the compose loop emits, which equals
+    /// the display width of the gutter.
+    fn body_start_col(line: &Line<'static>, body_first_char: char) -> usize {
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        s.chars().position(|c| c == body_first_char).unwrap()
+    }
+
+    #[test]
+    fn wrapped_continuation_gutter_aligns_body_and_cursor() {
+        // Regression (2026-07-03): the wrap continuation marker `↪`
+        // (U+21AA, 3 bytes / 1 display column) made `format_gutter_cell`
+        // under-pad the continuation gutter, because it computed the
+        // leading pad from `label.len()` (BYTES) instead of display
+        // width. The wrapped body then painted one column LEFT of
+        // segment 0's body, while `cursor_screen_position_at` kept using
+        // the segment-0 `gutter_w` — so the cursor sat one cell RIGHT of
+        // the glyph on every wrapped continuation segment.
+        //
+        // 56-char ASCII line, viewport 40, line numbers on (default):
+        // segment 0 body is 34 chars, segment 1 starts at source char 34
+        // (the digit '8').
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRST";
+        assert_eq!(long.len(), 56);
+        let text = format!("{long}\n");
+        let mut app = app_with(&text, 20);
+        app.editor.option_cache.wrap_lines = true;
+        app.editor.publish_render_state();
+        let area = Rect::new(0, 0, 40, 20);
+        let snap = app.ad().snapshot.clone();
+        let view = FrameView::from_app(&app);
+
+        let composed = compose_pane_lines(
+            &view,
+            &snap,
+            area.height as u32,
+            area.width as u32,
+            &PaneComposeCtx {
+                buffer_id: app.ad().document_buffer_id,
+                pane_id: app.panes().tree.active().id,
+                is_active: true,
+                scroll: 0,
+                cursor_line: app.ad().cursor.line,
+                leftcol: 0,
+                display_line_numbers: app.ad().display_line_numbers.clone(),
+            },
+        );
+
+        // Segment 0 body ('a') and segment 1 body ('8') must start at the
+        // SAME screen column — the continuation gutter is the same width
+        // as the numbered gutter, so wrapped text aligns vertically.
+        let seg0_col = body_start_col(&composed[0], 'a');
+        let seg1_col = body_start_col(&composed[1], '8');
+        assert_eq!(
+            seg0_col, seg1_col,
+            "wrapped continuation body must align with segment 0 body \
+             (seg0 at {seg0_col}, continuation at {seg1_col})"
+        );
+
+        // And the cursor on a continuation-segment byte must land on the
+        // exact screen column where that glyph is painted. Byte 37 is
+        // 'B' — the 4th char of segment 1 (source chars 34='8', 35='9',
+        // 36='A', 37='B'), so painted at `seg1_col + 3`.
+        let pos = cursor_screen_position_at(
+            &view,
+            &snap,
+            area,
+            lattice_protocol::Position::new(0, 37),
+            0,
+        )
+        .unwrap();
+        assert_eq!(pos.1, 1, "byte 37 sits on the first wrap continuation row");
+        assert_eq!(
+            pos.0 as usize,
+            seg1_col + 3,
+            "cursor column must match the painted glyph column on the \
+             continuation segment"
+        );
     }
 
     #[test]

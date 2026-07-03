@@ -186,8 +186,8 @@
 - [X] `o` seems to visually duplicate content of the line, it should be an empty line
 - [X] editing a wrapped line seems to be a bit broken when cursor is on the wrapped part, cursor offset seems to be off by a couple of characters and does not match visually
 - [X] `r` replace mode seems to be broken
-- [ ] modeline line / column number indicators don't update as the cursor moves and lag behind
-- [ ] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
+- [X] modeline line / column number indicators don't update as the cursor moves and lag behind
+- [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
 - [ ] yanking does not seem to work
   - [ ] clipboard support is not there
 - [ ] fold `...` is missing

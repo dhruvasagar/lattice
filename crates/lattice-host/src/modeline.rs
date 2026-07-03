@@ -221,10 +221,23 @@ pub fn resolve_builtin_content(
                 ElementContent::text(text, ModelineRole::new(ROLE_PATH))
             }
         }
-        CORE_POSITION => ElementContent::text(
-            format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte),
-            ModelineRole::new(ROLE_POSITION),
-        ),
+        CORE_POSITION => {
+            // The active (focused) pane's live cursor lives in
+            // `rs.active_document` (published from `self.cursor` on every
+            // motion); the pane-tree stash `pane.cursor` is only written
+            // back when the pane goes inactive, so reading it here would
+            // freeze line/col on the focused pane. Inactive panes keep
+            // their stashed cursor.
+            let cursor = if is_active {
+                rs.active_document.load().cursor
+            } else {
+                pane.cursor
+            };
+            ElementContent::text(
+                format!("{}:{}", cursor.line + 1, cursor.byte),
+                ModelineRole::new(ROLE_POSITION),
+            )
+        }
         CORE_LANG => {
             let lang = if is_active { lang_label(pane, rs) } else { "" };
             if lang.is_empty() {
@@ -542,6 +555,33 @@ mod tests {
         // Position renders regardless of active/inactive; row 1, col 0.
         let pos = resolve_builtin_content(CORE_POSITION, &pane, false, &rs, None);
         assert_eq!(pos.plain(), "1:0");
+    }
+
+    /// Regression: `core.position` on the ACTIVE pane tracks the live
+    /// cursor (`self.cursor` → `rs.active_document.cursor`), not the
+    /// pane-tree stash (`pane.cursor`), which is only written back when
+    /// the pane goes inactive. Before the fix the modeline froze at the
+    /// stashed position while the caret moved.
+    #[test]
+    fn builtin_position_tracks_live_cursor_on_active_pane() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        // Move the live cursor without switching panes, so the pane-tree
+        // stash stays at origin (motion doesn't sync it back).
+        editor.set_cursor(lattice_protocol::position::Position::new(1, 4));
+        let rs = editor.build_render_state();
+        let pane = editor.pane_tree.active().clone();
+
+        // The pane-tree stash is still at origin.
+        assert_eq!(pane.cursor, lattice_protocol::position::Position::ZERO);
+
+        // Active pane reads the live cursor: line 2 (1-based), byte 4.
+        let active = resolve_builtin_content(CORE_POSITION, &pane, true, &rs, None);
+        assert_eq!(active.plain(), "2:4");
+
+        // Inactive panes keep their own stashed cursor.
+        let inactive = resolve_builtin_content(CORE_POSITION, &pane, false, &rs, None);
+        assert_eq!(inactive.plain(), "1:0");
     }
 
     /// A provider label overrides `core.path`; without one, the empty

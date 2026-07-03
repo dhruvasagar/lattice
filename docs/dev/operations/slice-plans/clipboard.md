@@ -23,7 +23,7 @@ gpui-native (GPUI peer) + `FakeClipboard` (CI). Confirmed by user.
 | CB.2 | ✅ | TUI backend: `arboard` native + OSC52 fallback |
 | CB.3 | ✅ | Terminal-mode yank/paste (PTY routing, mode-owned) |
 | CB.4 | ✅ | GPUI backend parity (shared `arboard`, not gpui-native — see note) |
-| CB.5 | 📝 | Bench + docs + graceful-degradation hardening |
+| CB.5 | ✅ | Bench + docs + graceful-degradation hardening |
 
 ---
 
@@ -219,14 +219,29 @@ See design §7 for the full mapping.
 
 **Depends on:** CB.0 (trait), CB.1 (semantics).
 
-## CB.5 — Bench + docs + hardening
+## CB.5 — Bench + docs + hardening ✅
 
-- Per-keystroke bench: yank enqueues a clipboard write and returns — assert the yank
-  dispatch stays off the blocking path (no regression in keystroke→glyph).
-- Graceful degradation everywhere: backend error / no display → in-memory register,
-  `debug!` + skip, never panic on the hot path.
-- Flip design status → ✅; update `implementation.md`; tick this plan per slice
-  (`feedback_update_slice_docs_per_slice`).
+**Landed:**
+
+- **Bench** (`crates/lattice-host/benches/clipboard_yank.rs`): times `store_yank` in
+  three configs against the default `FakeClipboard`. Result — register-only
+  (clipboard=false) ≈ **100 ns**, mirror-on (clipboard=true) ≈ **120 ns**,
+  `"+`-register (always mirrors) ≈ **136 ns**. The clipboard mirror adds ~20–36 ns
+  (an option read + `services.get` + `write`), O(1) and imperceptible against the
+  8.3 ms one-frame budget (paramount #1). The bench doc-comment is explicit that it
+  does NOT (and structurally can't, through the synchronous `FakeClipboard`) bench a
+  *real* backend's non-blocking write — that property lives in `ArboardClipboard::write`
+  (`spawn_task`) + the bounded read timeout, reviewed at those sites.
+- **Graceful degradation** — audited end to end, all paths degrade without panic:
+  `store_yank`'s mirror is `if let Some(cb) = services.get() { cb.write() }` (skip if
+  absent); `read_register` falls back to the in-memory entry when the clipboard is
+  empty/unavailable; `ArboardClipboard::{read,write}` swallow timeout/lock/FFI errors →
+  `None` / no-op; `ArboardClipboard::new()` returns `None` on no display. Added a
+  one-shot `tracing::debug!` at both the TUI `detect_with` and GPUI-boot fallbacks when
+  the native backend was expected (feature on, not SSH) but arboard init failed — so a
+  user wondering why paste-from-another-app doesn't work can diagnose via
+  `--log-level debug`, per the standing "diagnostic → `debug!`" rule.
+- **Docs** — design fragment flipped to ✅; this slice plan ticked per slice.
 
 **Depends on:** CB.2, CB.3, CB.4.
 

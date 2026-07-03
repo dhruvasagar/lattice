@@ -363,11 +363,23 @@ impl GpuiApp {
         // is a freshly-frozen, uniquely-owned Arc immediately after
         // `Editor::boot`.
         #[cfg(feature = "system-clipboard")]
-        if let Some(native) = lattice_host::clipboard::ArboardClipboard::new()
-            && let Some(services) = std::sync::Arc::get_mut(&mut editor.services)
-        {
-            let clipboard: lattice_core::ClipboardHandle = std::sync::Arc::new(native);
-            services.register(clipboard);
+        match lattice_host::clipboard::ArboardClipboard::new() {
+            Some(native) => {
+                if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
+                    let clipboard: lattice_core::ClipboardHandle = std::sync::Arc::new(native);
+                    services.register(clipboard);
+                }
+            }
+            None => {
+                // No reachable display clipboard — leave CB.0's
+                // FakeClipboard (in-memory register behavior). Unusual for
+                // a GUI (which owns a window), so note it once for
+                // diagnosis; never fatal.
+                tracing::debug!(
+                    "clipboard: native (arboard) init failed at GPUI boot; \
+                     paste-from-another-app unavailable this session"
+                );
+            }
         }
         // DB.5 (test isolation): disable the dashboard auto-open BEFORE
         // the `Startup` publish so unit tests (which build pathless

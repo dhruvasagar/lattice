@@ -82,8 +82,22 @@ impl TuiClipboard {
     fn detect_with(under_ssh: bool) -> Self {
         #[cfg(feature = "system-clipboard")]
         {
-            if !under_ssh && let Some(native) = ArboardClipboard::new() {
-                return Self::Native(native);
+            if !under_ssh {
+                match ArboardClipboard::new() {
+                    Some(native) => return Self::Native(native),
+                    None => {
+                        // Feature is compiled in and we're not under SSH, so
+                        // a native backend was expected — arboard couldn't
+                        // reach a display server. Fall back to OSC52 (write-
+                        // only) and note it once so a user wondering why
+                        // paste-from-another-app doesn't work can find out
+                        // via `--log-level debug`. Graceful, never fatal.
+                        tracing::debug!(
+                            "clipboard: native (arboard) init failed; \
+                             falling back to OSC52 write-only (no display?)"
+                        );
+                    }
+                }
             }
         }
         let _ = under_ssh;

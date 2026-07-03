@@ -238,6 +238,12 @@ harness = false
 name = "dashboard"
 harness = false
 
+# CB.5: yank-path cost — the clipboard mirror must add only constant
+# overhead to `store_yank` on the keystroke path (paramount #1).
+[[bench]]
+name = "clipboard_yank"
+harness = false
+
 [features]
 # M.6 (2026-06-01): toggle the project-search provider on /
 # off. Forwards to `lattice-multibuffer`'s `search` feature so

@@ -188,8 +188,8 @@
 - [X] `r` replace mode seems to be broken
 - [X] modeline line / column number indicators don't update as the cursor moves and lag behind
 - [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
-- [ ] yanking does not seem to work
-  - [ ] clipboard support is not there
+- [X] yanking does not seem to work
+  - [X] clipboard support is not there (CB series — clipboard.md; default-on `clipboard` bool, yank-only sync, terminal PTY paste, both peers)
 - [ ] fold `...` is missing
 - [ ] fold line count is wrong when we have consequtive fold groups back to back, the first one's count includes the subsequent fold lines within it
 - [ ] undo grouping is broken

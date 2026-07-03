@@ -714,7 +714,7 @@ status here. Anchor: ../architecture/design.md §5.2 + the seven unifications in
 | Named registers `"a-z`, `"A-Z`                 | ✅ (uppercase replaces, append TBD)   | §5.2.2         |
 | Numbered registers `"0-"9`                     | ✅ (storage; `"0` auto-populate TBD)  | §5.2.2         |
 | Black hole register `"_`                       | ✅                                    |                |
-| System / clipboard `"+`, `"*`                  | ⚠️ storage only; no clipboard wire-up  | §15 (deferred) |
+| System / clipboard `"+`, `"*`                  | ✅ OS clipboard wired (CB series)      | [clipboard.md](../architecture/clipboard.md) |
 | Last-yank `"0`                                 | ⚠️ readable; auto-populate TBD         |                |
 | Ex-command ranges (1,5 / % / 'a,'b / patterns) | 🟡 % and CurrentLine work             | §5.2.2         |
 | Marks (m / ' / \`)                             | ✅                                    | §5.1.1         |

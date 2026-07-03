@@ -240,6 +240,71 @@ mod tests {
     }
 
     #[test]
+    fn zz_family_scrolls_the_terminal_scrollback_viewport() {
+        // Regression: `zz` / `zt` / `zb` did nothing in Terminal-Normal
+        // because do_scroll_cursor_to only moved the (inert-for-terminals)
+        // document `scroll` field. They must reposition the alacritty
+        // scrollback viewport. Spawn a shell that emits 40 lines into a
+        // 10-row terminal (so ~30 lines of scrollback exist), enter
+        // Terminal-Normal, park the nav cursor mid-history, and check that
+        // `zt` and `zb` produce different viewport offsets.
+        let mut a = app_with("", 10);
+        // `seq 60` prints 60 lines into a 10-row terminal -> ~50 lines of
+        // scrollback. A single-token program + arg, because the spawn
+        // command line is whitespace-split (no shell-quote parsing). `seq`
+        // exits after printing; the grid retains its scrollback.
+        a.apply(crate::app::Action::TerminalSpawn(Some("seq 60".to_string())));
+        let id = a.editor.active_pane_buffer_id();
+
+        // Wait for the child's output to build scrollback history.
+        let mut history = 0i32;
+        for _ in 0..300 {
+            history = a
+                .editor
+                .buffers
+                .with_terminal(id, |t| -t.term.line_bounds().0)
+                .unwrap_or(0);
+            if history >= 25 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            history >= 25,
+            "terminal never built enough scrollback (history={history})"
+        );
+
+        // Enter Terminal-Normal (spawn leaves us in Insert) — builds the
+        // scrollback SyntheticDoc — and park the nav cursor mid-history so
+        // both zt and zb have room to move the viewport.
+        a.apply(crate::app::Action::ExitTerminalInsert);
+        a.editor.cursor = lattice_protocol::position::Position::new(10, 0);
+
+        let offset = |a: &super::App| {
+            a.editor
+                .buffers
+                .with_terminal(id, |t| t.snapshot.load().scroll_offset)
+                .unwrap()
+        };
+        a.apply(crate::app::Action::ScrollCursorTo(
+            lattice_grammar::ScrollPos::Top,
+        ));
+        let off_top = offset(&a);
+        a.apply(crate::app::Action::ScrollCursorTo(
+            lattice_grammar::ScrollPos::Bottom,
+        ));
+        let off_bot = offset(&a);
+
+        // `zt` puts the cursor row at the top of the window, `zb` at the
+        // bottom; the viewport offsets must differ (pre-fix both were 0 —
+        // the command was a no-op). `zb` scrolls further up than `zt`.
+        assert!(
+            off_bot > off_top,
+            "zt/zb must move the terminal viewport (off_top={off_top}, off_bot={off_bot})"
+        );
+    }
+
+    #[test]
     fn line_numbers_mode_overrides_typed_option_layer() {
         // M.7.0: the mode-contribution layer wins against the
         // typed-option layer. `Number` defaults to `true`; the

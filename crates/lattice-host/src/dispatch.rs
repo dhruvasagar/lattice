@@ -16197,6 +16197,15 @@ impl Editor {
     /// Vim's `zt` / `zz` / `zb` -- adjust scroll so the cursor
     /// lands at the requested viewport row; cursor doesn't move.
     pub fn do_scroll_cursor_to(&mut self, spos: lattice_grammar::ScrollPos) {
+        // Terminal-Normal repositions the alacritty scrollback viewport,
+        // not the document `self.scroll` field (which is inert for
+        // terminals) -- same reason `do_page` special-cases Terminal.
+        // Without this, `zz` / `zt` / `zb` silently did nothing in a
+        // terminal buffer.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            self.terminal_scroll_cursor_to(self.active_pane_buffer_id(), spos);
+            return;
+        }
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             lattice_grammar::ScrollPos::Top => self.cursor.line,
@@ -16213,6 +16222,32 @@ impl Editor {
                 self.bottom_anchored_scroll(self.cursor.line, height)
             }
         };
+    }
+
+    /// Terminal-Normal `zt` / `zz` / `zb`: reposition the alacritty
+    /// scrollback viewport so the nav cursor's grid row lands at the
+    /// top / centre / bottom of the visible window. The cursor itself
+    /// does not move (vim semantics). No-op without a `SyntheticDoc`
+    /// (i.e. outside Terminal-Normal).
+    fn terminal_scroll_cursor_to(&mut self, buf_id: BufferId, spos: lattice_grammar::ScrollPos) {
+        let cur = self.cursor;
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let Some(s) = t.synthetic.as_ref() else {
+                return;
+            };
+            // Nav cursor's line in alacritty grid space (negative =
+            // scrollback history), then the viewport top row that puts it
+            // at the requested position. `scroll_to_line(top)` places
+            // `top` at the top of the window, clamped at the live edge.
+            let grid_line = s.origin_top_line + cur.line as i32;
+            let rows = t.snapshot.load().rows as i32;
+            let top = match spos {
+                lattice_grammar::ScrollPos::Top => grid_line,
+                lattice_grammar::ScrollPos::Center => grid_line - rows / 2,
+                lattice_grammar::ScrollPos::Bottom => grid_line - (rows - 1),
+            };
+            t.term.scroll_to_line(top);
+        });
     }
 
     /// Vim's `<C-f>` (down) / `<C-b>` (up) -- step cursor by

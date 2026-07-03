@@ -3741,6 +3741,8 @@ dependencies = [
  "lattice-core",
  "lattice-grammar",
  "lattice-mode",
+ "lattice-protocol",
+ "lattice-runtime",
  "lattice-theme",
  "tokio",
  "tracing",

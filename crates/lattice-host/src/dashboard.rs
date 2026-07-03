@@ -105,23 +105,61 @@ impl Editor {
         self.virtual_row_providers.register(id, std::sync::Arc::new(provider));
     }
 
-    /// Compose the enabled sections (config-selected) into a `HelpContent`.
-    /// A `dashboard.source` override is handled in DB.6; DB.2 composes the
-    /// built-in sections only.
+    /// Compose the dashboard body into a `HelpContent`. `dashboard.source`
+    /// (DB.6, design §8) is the "author the entire page" escape hatch: when
+    /// set to a readable path, its content REPLACES section composition
+    /// entirely. Unset, empty, missing, or unreadable ⇒ fall back to the
+    /// normal registry-composed sections — never a panic, never an empty
+    /// page (a read error is logged once per call, not silently dropped).
     fn build_dashboard_content(&self) -> lattice_help::HelpContent {
+        if let Some(path) = self.dashboard_source_path() {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                    return lattice_help::HelpContent::from_lines("*dashboard*", lines);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path,
+                        error = %err,
+                        "dashboard.source unreadable; falling back to section composition"
+                    );
+                }
+            }
+        }
+        self.compose_dashboard_sections()
+    }
+
+    /// `dashboard.source`, trimmed and filtered to `None` when unset/blank
+    /// (the config system has no native `Option<String>`, so empty-string is
+    /// the "unset" sentinel — design §8).
+    fn dashboard_source_path(&self) -> Option<String> {
+        self.config
+            .get_typed::<DashboardSource>()
+            .map(|raw| raw.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Compose the config-selected built-in sections into a `HelpContent`.
+    /// `pane_width` / `nerd_fonts` read the live viewport + `ui.nerd_fonts`
+    /// (DB.6 — no built-in section consumes either yet, but the plumbing is
+    /// real rather than a placeholder, so a future icon-aware section needs
+    /// no host-side change).
+    fn compose_dashboard_sections(&self) -> lattice_help::HelpContent {
         let selection = self
             .config
             .get_typed::<lattice_dashboard::DashboardSections>()
             .map(|raw| SectionSelection::parse(raw.as_str()))
             .unwrap_or(SectionSelection::Default);
 
-        // DB.2: pane_width / nerd_fonts are placeholders until DB.4 (branding
-        // centring) wires the live viewport + config; the built-in sections
-        // do not yet consume them.
-        let _ = self.config.get_typed::<DashboardSource>();
+        let nerd_fonts = self
+            .config
+            .get_typed::<crate::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
         let ctx = DashboardCtx {
-            pane_width: 80,
-            nerd_fonts: false,
+            pane_width: self.pane_tree.active().viewport_width as usize,
+            nerd_fonts,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 

@@ -231,6 +231,32 @@ fn dashboard_centering_widens_the_gutter_not_the_text() {
     );
 }
 
+/// DB.6 test-bullet pin ("resize re-centres"): a resize AFTER the dashboard
+/// is already open must re-derive `content_left_pad` from the new width —
+/// WITHOUT a recompose. `content_left_pad` is computed fresh from the live
+/// viewport width on every `rebuild_option_cache` call (not baked in at
+/// compose time), and `Editor::set_pane_viewport`'s actor handler already
+/// calls `rebuild_option_cache` on every active-pane resize (DB.4) — this
+/// pins that behavior directly against the `Editor` method a resize
+/// ultimately drives, without needing the full actor.
+#[test]
+fn dashboard_resize_after_open_recentres_without_recompose() {
+    let mut editor = boot();
+    editor.pane_tree.active_mut().viewport_width = 120;
+    editor.do_open_dashboard();
+    let narrow_pad = editor.option_cache.content_left_pad;
+
+    editor.pane_tree.active_mut().viewport_width = 200;
+    editor.rebuild_option_cache();
+    let wide_pad = editor.option_cache.content_left_pad;
+
+    assert!(
+        wide_pad > narrow_pad,
+        "widening the pane should increase content_left_pad \
+         (narrow={narrow_pad}, wide={wide_pad})"
+    );
+}
+
 #[test]
 fn dashboard_reopen_is_idempotent() {
     let mut editor = boot();
@@ -361,6 +387,137 @@ mod startup_gating {
              lattice_dashboard::install (and any other Phase-B installer) \
              reads it synchronously during install, so it must be a Phase-A \
              registration"
+        );
+    }
+}
+
+// DB.6 — `dashboard.source` full override + recompose triggers.
+//
+// The recompose-trigger tests need their own `#[tokio::test]` runtime for
+// the same cross-runtime-wake reason `startup_gating` does: the
+// subscription's drain task runs on the shared LSP runtime
+// (`boot.runtime_handle()`), and `send` on its matching `InboundBus` wakes
+// `editor.async_landed`, which only a live async context can `.await`.
+mod source_override_and_recompose {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use lattice_dashboard::{DashboardSections, DashboardSource};
+
+    use super::*;
+
+    /// A scratch file for `dashboard.source` tests. Removed on drop so
+    /// parallel test runs never see each other's fixtures and nothing
+    /// leaks into the real temp dir.
+    struct TempFile(PathBuf);
+
+    impl TempFile {
+        fn write(name: &str, contents: &str) -> Self {
+            let path = std::env::temp_dir().join(name);
+            fs::write(&path, contents).expect("write temp dashboard.source fixture");
+            Self(path)
+        }
+
+        fn path_string(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn dashboard_source_replaces_section_composition() {
+        let file = TempFile::write(
+            "db6_source_override_test.md",
+            "# Custom Page\n\nHand-authored content.\n",
+        );
+        let mut editor = boot();
+        editor
+            .config
+            .set_typed::<DashboardSource>(file.path_string())
+            .expect("dashboard.source should accept a path string");
+        editor.do_open_dashboard();
+
+        let text = editor.active_text().as_string();
+        assert!(
+            text.contains("Custom Page"),
+            "override file content should appear verbatim, got: {text:?}"
+        );
+        assert!(
+            !text.contains("tutor"),
+            "an active dashboard.source override should fully REPLACE section \
+             composition, not merge with it — got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_source_missing_falls_back_to_sections() {
+        let mut editor = boot();
+        editor
+            .config
+            .set_typed::<DashboardSource>("/nonexistent/db6_missing_source.md".to_string())
+            .expect("dashboard.source should accept a path string");
+        editor.do_open_dashboard();
+
+        let text = editor.active_text().as_string();
+        assert!(
+            text.contains("tutor"),
+            "a missing dashboard.source must fall back to section composition, \
+             never an empty page — got: {text:?}"
+        );
+    }
+
+    /// Wait (bounded) for the recompose-trigger task to wake the editor,
+    /// then drain the tick so a pending `Effect::OpenDashboard` (if any)
+    /// applies. Mirrors `startup_gating::settle_startup_trigger`.
+    async fn settle_recompose_trigger(editor: &mut Editor) {
+        let _ = tokio::time::timeout(Duration::from_secs(2), editor.async_landed.notified()).await;
+        editor.run_tick_pending();
+    }
+
+    #[tokio::test]
+    async fn dashboard_sections_change_recomposes_an_open_dashboard() {
+        let mut editor = boot();
+        editor.do_open_dashboard();
+        assert!(
+            editor.active_text().as_string().contains("tutor"),
+            "sanity: the default selection includes the tutor pointer"
+        );
+
+        editor
+            .config
+            .set_typed::<DashboardSections>("about".to_string())
+            .expect("dashboard.sections should accept a string");
+        settle_recompose_trigger(&mut editor).await;
+
+        let text = editor.active_text().as_string();
+        assert!(
+            !text.contains("tutor"),
+            "dashboard.sections=about should recompose the OPEN dashboard down to \
+             just the about section, got: {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_sections_change_does_not_auto_open_a_closed_dashboard() {
+        let mut editor = boot();
+        // Dashboard never opened — active buffer is still the scratch doc.
+        editor
+            .config
+            .set_typed::<DashboardSections>("about".to_string())
+            .expect("dashboard.sections should accept a string");
+        settle_recompose_trigger(&mut editor).await;
+
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Dashboard,
+            "a dashboard.sections edit must not auto-open the dashboard when it \
+             isn't already open — only :dashboard / startup do that"
         );
     }
 }

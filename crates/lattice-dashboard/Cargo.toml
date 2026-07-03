@@ -40,3 +40,10 @@ tracing = { workspace = true }
 # are declared explicitly rather than relying on workspace-build
 # unification.
 tokio = { workspace = true, features = ["sync", "rt"] }
+# DB.6: the recompose-trigger subscription (`install.rs`) listens on the
+# legacy `Event::OptionChanged` bus for `dashboard.sections` /
+# `dashboard.source` / `ui.nerd_fonts` — the same `EventFilter` +
+# `SubscriptionTarget::Channel` shape `lattice-diff`'s `DiffSubsystem::bind`
+# and `lattice-multibuffer` use for their own event-bus subscriptions.
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-runtime = { path = "../lattice-runtime" }

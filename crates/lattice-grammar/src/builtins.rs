@@ -2042,6 +2042,9 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: yanked,
             kind: yank_kind,
+            // Delete populates registers but is NOT an explicit yank —
+            // it must not mirror to the system clipboard (yank-only rule).
+            explicit_yank: false,
         },
     ]))
 }
@@ -2072,6 +2075,9 @@ fn operator_change(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: yanked,
             kind: yank_kind,
+            // Change deletes + yanks the range like delete — not an
+            // explicit yank, so no clipboard mirror (yank-only rule).
+            explicit_yank: false,
         },
         Effect::EnterMode(crate::modal::ModalState::Insert),
     ]))
@@ -2160,11 +2166,17 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: content.clone(),
             kind,
+            // The one explicit-yank write: eligible for the clipboard
+            // mirror under the `clipboard` option.
+            explicit_yank: true,
         },
         Effect::Yank {
             register: crate::register::Register::Numbered(0),
             content,
             kind,
+            // The `"0` mirror is a register-only bookkeeping write; the
+            // primary write above already handled the clipboard.
+            explicit_yank: false,
         },
     ]))
 }
@@ -4500,10 +4512,15 @@ mod tests {
                         content,
                         kind,
                         register,
+                        explicit_yank,
                     } => {
                         assert_eq!(content, "hello ");
                         assert_eq!(*kind, YankKind::Charwise);
                         assert_eq!(*register, crate::register::Register::Unnamed);
+                        assert!(
+                            *explicit_yank,
+                            "the primary yank write is clipboard-eligible"
+                        );
                     }
                     other => panic!("expected Yank at [0], got {other:?}"),
                 }

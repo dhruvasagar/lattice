@@ -13,6 +13,7 @@ pub mod labeled_enum;
 
 pub mod buffer;
 pub mod buffers;
+pub mod clipboard;
 pub mod document;
 pub mod error;
 pub mod folding;
@@ -22,6 +23,7 @@ pub mod undo;
 
 pub use crate::buffer::Buffer;
 pub use crate::buffers::{BufferFlags, BufferId, BufferKind};
+pub use crate::clipboard::{Clipboard, ClipboardHandle, FakeClipboard};
 pub use crate::document::{Document, DocumentBuilder};
 pub use crate::error::{CoreError, CoreResult};
 pub use crate::folding::{

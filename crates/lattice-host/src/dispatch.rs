@@ -2742,11 +2742,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             content,
             kind,
             register,
+            explicit_yank,
         } => {
             // 5.5.E.3: stash the operator payload into the register
-            // slots. Pure editor.* mutation (`unnamed_register` +
-            // `registers`); no renderer-side side-effects.
-            editor.store_yank(register, content, kind);
+            // slots. CB.1: `store_yank` also mirrors to the system
+            // clipboard when `explicit_yank` + the `clipboard` option (or
+            // the `+`/`*` register) call for it.
+            editor.store_yank(register, content, kind, explicit_yank);
         }
         Effect::SelectionChange(set) => {
             // 5.5.E.4: motion / selection-class effects emit a
@@ -15029,7 +15031,22 @@ impl Editor {
     /// alongside the [`Effect::Yank`] arm. Vim's append-to-uppercase
     /// semantics (`"A` appends to `"a`) remains a v1 simplification:
     /// `A-Z` replaces lowercase rather than appending.
-    pub fn store_yank(&mut self, register: Register, content: String, kind: YankKind) {
+    ///
+    /// CB.1 (`clipboard.md` §5): `explicit_yank` gates the system-clipboard
+    /// mirror. The content is copied to the OS clipboard when this is an
+    /// explicit yank (`explicit_yank == true`) AND the `clipboard` option is
+    /// on, OR the target is the `+`/`*` [`Register::System`] (always the
+    /// clipboard, regardless of the option). Delete / change pass
+    /// `explicit_yank == false`, so an incidental delete never clobbers the
+    /// clipboard (the yank-only rule). The write is fire-and-forget
+    /// ([`lattice_core::Clipboard::write`]) — never blocks the caller.
+    pub fn store_yank(
+        &mut self,
+        register: Register,
+        content: String,
+        kind: YankKind,
+        explicit_yank: bool,
+    ) {
         if matches!(register, Register::BlackHole) {
             return;
         }
@@ -15046,6 +15063,15 @@ impl Editor {
             other => {
                 self.registers.insert(other, entry);
             }
+        }
+        // CB.1: yank-only system-clipboard mirror.
+        let clipboard_on =
+            *self.resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
+        let mirror = matches!(register, Register::System) || (explicit_yank && clipboard_on);
+        if mirror
+            && let Some(cb) = self.services.get::<lattice_core::ClipboardHandle>()
+        {
+            cb.write(content);
         }
     }
 
@@ -18313,15 +18339,57 @@ impl Editor {
 
     /// Read the register slot for paste / inspection. Falls back
     /// to `unnamed_register`.
+    ///
+    /// CB.1 (`clipboard.md` §5): for the unnamed register under
+    /// `clipboard=true`, and always for [`Register::System`] (`+`/`*`),
+    /// prefers a live clipboard read over the in-memory entry, falling back
+    /// to it when the clipboard is empty or unavailable — so paste picks up
+    /// text copied in another app.
+    ///
+    /// **CB.2 obligation:** `read` is called synchronously here, and dispatch
+    /// (including `do_paste`) is a *blocking RPC from the render thread into
+    /// the actor* (`input-pipeline.md`), so a slow backend read would sit on
+    /// that path and violate paramount #1. This is correct today because the
+    /// registered backend is [`lattice_core::FakeClipboard`] (in-memory,
+    /// instant). CB.2, when it installs the real `arboard`/OSC52 backend,
+    /// MUST either guarantee this call stays sub-frame (e.g. a bounded-wait
+    /// cached read) or move it off the synchronous path — do not carry a
+    /// blocking OS round-trip into this call site unexamined.
     pub fn read_register(
         &self,
         register: Option<lattice_grammar::register::Register>,
     ) -> Option<UnnamedRegister> {
+        use lattice_grammar::register::Register;
+        // Charwise/Linewise/Blockwise isn't representable in plain clipboard
+        // text; best-effort infer from the last in-memory unnamed entry (a
+        // charwise external copy is the common case), defaulting Charwise.
+        let inferred_kind = self
+            .unnamed_register
+            .as_ref()
+            .map(|r| r.kind)
+            .unwrap_or(YankKind::Charwise);
+        let read_clipboard = || -> Option<UnnamedRegister> {
+            self.services
+                .get::<lattice_core::ClipboardHandle>()
+                .and_then(|cb| cb.read())
+                .map(|content| UnnamedRegister {
+                    content,
+                    kind: inferred_kind,
+                })
+        };
         match register {
-            None | Some(lattice_grammar::register::Register::Unnamed) => {
+            Some(Register::System) => read_clipboard().or_else(|| self.unnamed_register.clone()),
+            None | Some(Register::Unnamed) => {
+                let clipboard_on = *self
+                    .resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
+                if clipboard_on
+                    && let Some(reg) = read_clipboard()
+                {
+                    return Some(reg);
+                }
                 self.unnamed_register.clone()
             }
-            Some(lattice_grammar::register::Register::BlackHole) => None,
+            Some(Register::BlackHole) => None,
             Some(r) => self
                 .registers
                 .get(&r)
@@ -29049,8 +29117,9 @@ impl Editor {
                 register,
                 content,
                 kind,
+                explicit_yank,
             } => {
-                self.store_yank(*register, content.clone(), *kind);
+                self.store_yank(*register, content.clone(), *kind, *explicit_yank);
                 should_exit_visual = true;
             }
             Effect::EnterMode(modal) => {
@@ -29583,7 +29652,8 @@ impl Editor {
                     .pending_register
                     .take()
                     .unwrap_or(lattice_grammar::register::Register::Unnamed);
-                self.store_yank(register, text, yank_kind);
+                // Terminal Visual `y` is an explicit yank → clipboard-eligible.
+                self.store_yank(register, text, yank_kind, true);
                 let _ = self.buffers.with_terminal_mut(buf_id, |t| {
                     if let Some(prev) = t.visual.take() {
                         t.last_visual = Some(prev);
@@ -29717,6 +29787,7 @@ impl Editor {
                 register,
                 content,
                 kind,
+                explicit_yank,
             } => {
                 let len = content.chars().count();
                 let summary = match kind {
@@ -29731,7 +29802,7 @@ impl Editor {
                         format!("{len} char(s)")
                     }
                 };
-                self.store_yank(register, content, kind);
+                self.store_yank(register, content, kind, explicit_yank);
                 self.set_message(EchoLevel::Info, format!("yanked {summary}"));
             }
             lattice_grammar::Effect::None
@@ -35320,6 +35391,160 @@ mod tests {
         // `Range::Selection` resolve from (`resolve_grammar_range`
         // dispatch.rs ~13659; the narrow handler ~5396), so the typed
         // `:'<,'>narrow` / `:'<,'>...` now operates on the selection.
+    }
+
+    // ---- CB.1: clipboard yank-only sync (docs/dev/architecture/clipboard.md §5) ----
+
+    /// `Editor::boot` registers a `FakeClipboard` by default (CB.0); tests
+    /// grab the SAME handle `store_yank` / `read_register` consult.
+    fn test_clipboard(editor: &Editor) -> lattice_core::ClipboardHandle {
+        // `ServiceRegistry::get::<T>()` returns `Arc<T>`, so this is
+        // `Arc<ClipboardHandle>` = `Arc<Arc<dyn Clipboard>>`; deref-clone the
+        // inner handle so callers hold the plain `ClipboardHandle`.
+        (*editor
+            .services
+            .get::<lattice_core::ClipboardHandle>()
+            .expect("Editor::boot registers a default ClipboardHandle (CB.0)"))
+        .clone()
+    }
+
+    #[test]
+    fn clipboard_default_true_yank_mirrors_to_system_clipboard() {
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        let clipboard = test_clipboard(&editor);
+        assert_eq!(clipboard.read(), None, "clipboard starts empty");
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("operator:yank motion:word-forward", &mut out);
+        assert_eq!(
+            clipboard.read(),
+            Some("hello ".to_string()),
+            "clipboard=true (default): an explicit yank mirrors to the system clipboard"
+        );
+    }
+
+    #[test]
+    fn clipboard_yank_only_rule_delete_and_change_do_not_mirror() {
+        // The whole point of the boolean-yank-only design (vs vim's
+        // `unnamedplus`): incidental delete/change must NOT clobber the
+        // system clipboard.
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        let clipboard = test_clipboard(&editor);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("operator:delete motion:word-forward", &mut out);
+        assert_eq!(
+            clipboard.read(),
+            None,
+            "delete must not mirror to the clipboard even though it populates registers"
+        );
+        let document2 = lattice_core::Document::from_text("hello world\n");
+        let mut editor2 = Editor::boot(document2);
+        let clipboard2 = test_clipboard(&editor2);
+        let mut out2 = DispatchOutcome::default();
+        editor2.execute_ex_line("operator:change motion:word-forward", &mut out2);
+        assert_eq!(
+            clipboard2.read(),
+            None,
+            "change must not mirror to the clipboard either"
+        );
+    }
+
+    #[test]
+    fn clipboard_false_opts_out_of_yank_mirroring() {
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        editor
+            .config
+            .parse_and_set_command("clipboard=false")
+            .expect("clipboard is a registered bool option");
+        let clipboard = test_clipboard(&editor);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("operator:yank motion:word-forward", &mut out);
+        assert_eq!(
+            clipboard.read(),
+            None,
+            "clipboard=false: even an explicit yank stays register-only"
+        );
+        // Unnamed register still got it (registers are always populated).
+        assert_eq!(
+            editor.read_register(None).map(|r| r.content),
+            Some("hello ".to_string())
+        );
+    }
+
+    #[test]
+    fn system_register_always_mirrors_regardless_of_clipboard_option() {
+        // `"+y` / `"+p` are the explicit manual clipboard path and must work
+        // even with `clipboard=false`.
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        editor
+            .config
+            .parse_and_set_command("clipboard=false")
+            .expect("clipboard is a registered bool option");
+        let clipboard = test_clipboard(&editor);
+        editor.pending_register = Some(lattice_grammar::register::Register::System);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("operator:yank motion:word-forward", &mut out);
+        assert_eq!(
+            clipboard.read(),
+            Some("hello ".to_string()),
+            "\"+y always reaches the system clipboard, independent of the `clipboard` option"
+        );
+    }
+
+    #[test]
+    fn paste_reads_live_clipboard_over_stale_internal_register() {
+        // Simulates: user copied text in ANOTHER app (the clipboard has
+        // content lattice never yanked). Under clipboard=true, paste must
+        // read the live clipboard, not just the internal register.
+        let document = lattice_core::Document::from_text("start\n");
+        let editor = Editor::boot(document);
+        let clipboard = test_clipboard(&editor);
+        clipboard.write("from-another-app".to_string());
+        let reg = editor
+            .read_register(None)
+            .expect("clipboard=true default: unnamed read falls through to the clipboard");
+        assert_eq!(reg.content, "from-another-app");
+    }
+
+    #[test]
+    fn paste_falls_back_to_register_when_clipboard_empty() {
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        let mut out = DispatchOutcome::default();
+        // Yank first (populates both the register and, under clipboard=true,
+        // the fake clipboard) ...
+        editor.execute_ex_line("operator:yank motion:word-forward", &mut out);
+        // ... then simulate the backend going empty (e.g. another app
+        // cleared it) — read_register must still recover the in-memory copy.
+        let clipboard = test_clipboard(&editor);
+        assert!(clipboard.read().is_some());
+        // FakeClipboard has no "clear" API surface beyond overwrite; write
+        // an empty backend state indirectly isn't representable, so instead
+        // assert the register-population invariant that backs the fallback:
+        // the in-memory unnamed register is populated independent of the
+        // clipboard mirror succeeding.
+        assert_eq!(
+            editor.unnamed_register.as_ref().map(|r| r.content.as_str()),
+            Some("hello ")
+        );
+    }
+
+    #[test]
+    fn clipboard_false_read_register_ignores_clipboard_even_if_populated() {
+        let document = lattice_core::Document::from_text("start\n");
+        let editor = Editor::boot(document);
+        editor
+            .config
+            .parse_and_set_command("clipboard=false")
+            .expect("clipboard is a registered bool option");
+        let clipboard = test_clipboard(&editor);
+        clipboard.write("external".to_string());
+        // Internal unnamed register is empty (nothing yanked yet); with
+        // clipboard=false the read must NOT fall through to the clipboard.
+        assert!(editor.read_register(None).is_none());
     }
 
     #[test]

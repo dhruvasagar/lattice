@@ -121,7 +121,7 @@ pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
-    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, ClipboardEnabled, CursorLine,
     DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,

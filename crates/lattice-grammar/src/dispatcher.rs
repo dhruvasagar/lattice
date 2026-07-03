@@ -512,14 +512,21 @@ fn merge_blockwise_effects(
     }
 
     let mut combined_edits: Vec<lattice_core::buffer::AppliedEdit> = Vec::new();
-    let mut yank_registers: Vec<crate::register::Register> = Vec::new();
+    // Each entry keeps its `explicit_yank` flag so the collapsed blockwise
+    // yank preserves clipboard eligibility (a Visual-block `y` mirrors; a
+    // block delete does not).
+    let mut yank_registers: Vec<(crate::register::Register, bool)> = Vec::new();
     let mut enter_mode: Option<ModalState> = None;
     for e in flat {
         match e {
             Effect::Edits(edits) => combined_edits.extend(edits),
-            Effect::Yank { register, .. } => {
-                if !yank_registers.contains(&register) {
-                    yank_registers.push(register);
+            Effect::Yank {
+                register,
+                explicit_yank,
+                ..
+            } => {
+                if !yank_registers.iter().any(|(r, _)| *r == register) {
+                    yank_registers.push((register, explicit_yank));
                 }
             }
             Effect::EnterMode(m) => enter_mode = Some(m),
@@ -547,11 +554,12 @@ fn merge_blockwise_effects(
     // numbered register (`"0` for yank). Preserve that fan-out, but
     // collapse content to one Blockwise blob.
     if !yank_registers.is_empty() {
-        for reg in yank_registers {
+        for (reg, explicit_yank) in yank_registers {
             out.push(Effect::Yank {
                 register: reg,
                 content: joined.clone(),
                 kind: YankKind::Blockwise,
+                explicit_yank,
             });
         }
     } else if !joined.is_empty() {

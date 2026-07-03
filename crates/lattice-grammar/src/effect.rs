@@ -181,6 +181,14 @@ pub enum Effect {
         register: Register,
         content: String,
         kind: YankKind,
+        /// `true` when this write came from an explicit **yank** (`y`,
+        /// `yy`, Visual `y`); `false` for the register writes that
+        /// delete / change / `x` also perform. Drives the *yank-only*
+        /// system-clipboard mirror (`clipboard.md` §5): the host mirrors
+        /// to the OS clipboard only when this is an explicit yank (under
+        /// the `clipboard` option) or the target is the `+`/`*` register,
+        /// so an incidental delete never clobbers the clipboard.
+        explicit_yank: bool,
     },
     /// Transition the modal state machine. Used by operators that change
     /// modes after committing edits (vim's `c` -> Insert, future `s`,
@@ -936,16 +944,19 @@ mod tests {
             register: Register::Unnamed,
             content: "hello".into(),
             kind: YankKind::Charwise,
+            explicit_yank: true,
         };
         match e {
             Effect::Yank {
                 register,
                 content,
                 kind,
+                explicit_yank,
             } => {
                 assert_eq!(register, Register::Unnamed);
                 assert_eq!(content, "hello");
                 assert_eq!(kind, YankKind::Charwise);
+                assert!(explicit_yank);
             }
             _ => panic!("expected Yank"),
         }

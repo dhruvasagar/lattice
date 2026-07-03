@@ -1375,6 +1375,16 @@ impl Editor {
         // holds a clone via `BootContext::new`); register the clone for mode
         // lookups via `services().get::<BufferStoreHandle>()`.
         boot.register_service(buffer_store_handle.clone());
+        // CB.0 (clipboard.md): default clipboard backing. `FakeClipboard` is
+        // the safe default (no OS resource, no display dependency); the TUI
+        // peer (CB.2 — `arboard` + OSC52 fallback) and the GPUI peer (CB.4 —
+        // gpui-native) override this with a real backend at renderer boot.
+        // Registered under `ClipboardHandle` per the ServiceRegistry Arc/TypeId
+        // rule so the host register layer (CB.1) AND `terminal-mode` (CB.3)
+        // look it up by that exact type.
+        let clipboard: lattice_core::ClipboardHandle =
+            Arc::new(lattice_core::FakeClipboard::new());
+        boot.register_service(clipboard);
         boot.register_service(lsp_logger.clone());
         // L4b (lsp-architecture.md §15): the diagnostics-query service
         // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read

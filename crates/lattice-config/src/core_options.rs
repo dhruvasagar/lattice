@@ -178,6 +178,20 @@ crate::options! {
     #[name("signcolumn")]
     pub SignColumnOption: SignColumn = SignColumn::Yes;
 
+    /// When `true` (default), an explicit **yank** (`y`, `yy`, Visual
+    /// `y`) also copies to the system clipboard, and paste of the
+    /// unnamed register reads it — the clipboard is the default yank
+    /// target. Delete / change / `x` stay in registers and never touch
+    /// the clipboard (the *yank-only* rule — no incidental clobber).
+    /// `false` = pure registers; only the explicit `"+` / `"*`
+    /// registers reach the clipboard.
+    ///
+    /// A plain boolean by deliberate design (`clipboard.md` §5):
+    /// lattice rejects vim's crude `unnamed` / `unnamedplus` string
+    /// names in favour of a self-documenting on/off.
+    #[name("clipboard")]
+    pub ClipboardEnabled: bool = true;
+
     /// Ignore case in search patterns.
     #[aliases("ic")]
     #[name("ignorecase")]

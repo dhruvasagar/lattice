@@ -28093,6 +28093,25 @@ pub fn picker_buffer_entry(
     }
 }
 
+/// CB.3 (`docs/dev/architecture/clipboard.md` §6): build the byte
+/// payload `run_terminal_invocation`'s paste handler writes to the PTY.
+/// Wraps `content` in the DEC private-mode-2004 bracketed-paste markers
+/// (`\x1b[200~` … `\x1b[201~`) when `bracketed` is true, so a program that
+/// enabled the mode (shells with readline/zle, vim, …) treats the whole
+/// payload as literal pasted text instead of interpreting it keystroke by
+/// keystroke. Pure / no PTY access, so it's independently testable
+/// without a real terminal.
+fn terminal_paste_payload(content: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return content.as_bytes().to_vec();
+    }
+    let mut out = Vec::with_capacity(content.len() + 12);
+    out.extend_from_slice(b"\x1b[200~");
+    out.extend_from_slice(content.as_bytes());
+    out.extend_from_slice(b"\x1b[201~");
+    out
+}
+
 /// Render a register's content into a one-line preview (truncated
 /// and with newlines escaped). Used by [`Editor::do_list_registers`]
 /// (`:reg`) and the picker-source register listing. Moved here from
@@ -29715,6 +29734,34 @@ impl Editor {
                     // bespoke behaviour.
                 }
             }
+            return true;
+        }
+        // CB.3 (docs/dev/architecture/clipboard.md §6): `p` / `P` are
+        // `CommandKind::Action` (bound to `Action::PasteAfter/Before`), so
+        // without this intercept they'd fall through to the generic
+        // `Action` gate below → `Editor::do_paste`, which splices into
+        // `self.document` -- the wrong target for a terminal buffer (it
+        // has no `self.document`; a terminal is a PTY, not an editable
+        // rope). Route the register/clipboard payload to the PTY instead,
+        // bracketed-paste-wrapped when the running program asked for it
+        // (DEC private mode 2004) so shells/programs that understand it
+        // treat the paste as literal text rather than typed keystrokes.
+        // Terminal-Visual has no paste (vim has no "paste over a
+        // read-only scrollback selection" concept), so this only applies
+        // to the non-Visual path already established above.
+        if cmd == self.action_ids.paste_after || cmd == self.action_ids.paste_before {
+            self.pending_count = 0;
+            self.op_count = 0;
+            let chosen = self.pending_register.take();
+            let Some(reg) = self.read_register(chosen) else {
+                self.set_message(EchoLevel::Error, "register empty".to_string());
+                return true;
+            };
+            let bracketed = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.bracketed_paste())
+                .unwrap_or(false);
+            self.do_terminal_input(&terminal_paste_payload(&reg.content, bracketed));
             return true;
         }
         // 2026-05-28: page-scroll Actions (`<C-d>` / `<C-u>`)
@@ -35545,6 +35592,29 @@ mod tests {
         // Internal unnamed register is empty (nothing yanked yet); with
         // clipboard=false the read must NOT fall through to the clipboard.
         assert!(editor.read_register(None).is_none());
+    }
+
+    // ---- CB.3: terminal paste payload (docs/dev/architecture/clipboard.md §6) ----
+    //
+    // `terminal_paste_payload` is the one piece of CB.3 testable without a
+    // real PTY (this codebase's established boundary: `lattice-terminal`'s
+    // own real-process-spawning modules -- `buffer.rs` / `handle.rs` /
+    // `spawner.rs` -- carry zero unit tests; only the pure VT-state-machine
+    // logic, exercised via `SharedTerm::fixture`, is unit-tested). The
+    // `SharedTerm::bracketed_paste` accessor has its own fixture-based test
+    // in `lattice-terminal::reader`.
+
+    #[test]
+    fn terminal_paste_payload_wraps_when_bracketed() {
+        assert_eq!(
+            terminal_paste_payload("hello", true),
+            b"\x1b[200~hello\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn terminal_paste_payload_passes_through_when_not_bracketed() {
+        assert_eq!(terminal_paste_payload("hello", false), b"hello".to_vec());
     }
 
     #[test]

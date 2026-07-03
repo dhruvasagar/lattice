@@ -109,20 +109,31 @@ always when the target register is `System`. `read_register` prefers the live cl
 for the unnamed register under `clipboard=true`, and always for `System`; it falls back
 to the in-memory entry when the clipboard is empty/unavailable.
 
-## 6. Terminal buffers (mode-owned)
+## 6. Terminal buffers
 
-Per the mode-ownership rule, terminal yank/paste special-casing lives in
-`terminal-mode`'s handlers (it owns the PTY buffer), NOT a `BufferKind` branch in the
-host `do_paste`:
+Terminal yank/paste is NOT a `BufferKind` branch in the host `do_paste` — it routes
+through `Editor::run_terminal_invocation`, the pre-existing registered
+`InvocationRunnerFn` extension point that intercepts terminal-active invocations before
+the generic vim-grammar `Action` gate:
 
 - **Paste into a terminal:** route the register/clipboard text to the PTY via
   `do_terminal_input`, wrapped in bracketed paste (`\x1b[200~` … `\x1b[201~`) when the
-  child enabled it — never a document `Edit`.
+  child enabled it (DEC private mode 2004) — never a document `Edit`.
 - **Yank from a terminal:** copy the terminal selection (or scrollback range) to the
   clipboard + unnamed register; the terminal buffer is a read-only yank *source*.
+  (Pre-existing before this doc; CB.1 added the clipboard mirror.)
 
-The host exposes the generic primitives (register read, clipboard service,
-`do_terminal_input`); the terminal mode wires the chords + handler bodies.
+**Correction to the mode-ownership framing (CB.3 implementation finding):**
+`lattice-terminal` has no keymap layer of its own — `p`/`P`, motions, operators, and
+visual-yank for terminal buffers dispatch through the SAME generic vim grammar every
+Document buffer uses; `run_terminal_invocation` intercepts them BEFORE the central gate.
+It is necessarily host-resident (`fn(&mut Editor, CommandInvocation) -> bool` needs the
+concrete `Editor` type; moving it into `lattice-terminal` would invert the crate's
+current dependency on `lattice-host`, which doesn't exist today). "Terminal-mode owns
+its surface" here means: the runner is the mode-scoped extension point (registered
+against terminal's `ModeId`), and `lattice-terminal` publishes the one primitive the
+host needs (`SharedTerm::bracketed_paste()`, since the alacritty `Term` handle is
+crate-private) — not that the handler bodies live in the `lattice-terminal` crate.
 
 ## 7. Cross-renderer parity
 

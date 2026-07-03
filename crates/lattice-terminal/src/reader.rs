@@ -374,6 +374,19 @@ impl SharedTerm {
         }
     }
 
+    /// CB.3 (`docs/dev/architecture/clipboard.md` §6): whether the running
+    /// program has enabled DEC private mode 2004 (bracketed paste). Read
+    /// by the host's terminal-paste handler to decide whether to wrap
+    /// pasted text in `\x1b[200~` / `\x1b[201~` before writing it to the
+    /// PTY -- programs that understand bracketed paste (shells with
+    /// readline/zle, vim, etc.) use the markers to treat the whole paste
+    /// as literal text instead of interpreting it as typed keystrokes.
+    /// `inner` is crate-private, so this accessor is the published
+    /// primitive; the host never reaches into the `Term` directly.
+    pub fn bracketed_paste(&self) -> bool {
+        self.inner.lock().mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     /// T3.b (2026-05-25): walk the grid (history + live screen)
     /// row by row, matching each row's cell text against
     /// `regex`. Returns the first hit in `direction`'s walk
@@ -832,6 +845,27 @@ mod tests {
         let mut processor: Processor = Processor::new();
         processor.advance(&mut term, bytes);
         term_to_snapshot(&term, 1)
+    }
+
+    // CB.3 (docs/dev/architecture/clipboard.md §6): the host's
+    // terminal-paste handler reads `SharedTerm::bracketed_paste` to decide
+    // whether to wrap pasted text in DEC-2004 markers.
+
+    #[test]
+    fn bracketed_paste_defaults_to_disabled() {
+        let term = SharedTerm::fixture(3, 10, 0);
+        assert!(!term.bracketed_paste());
+    }
+
+    #[test]
+    fn bracketed_paste_tracks_dec_private_mode_2004() {
+        let term = SharedTerm::fixture(3, 10, 0);
+        // CSI ? 2004 h -- enable bracketed paste.
+        term.feed_for_fixture(b"\x1b[?2004h");
+        assert!(term.bracketed_paste());
+        // CSI ? 2004 l -- disable it again.
+        term.feed_for_fixture(b"\x1b[?2004l");
+        assert!(!term.bracketed_paste());
     }
 
     #[test]

@@ -21,7 +21,7 @@ gpui-native (GPUI peer) + `FakeClipboard` (CI). Confirmed by user.
 | CB.0 | ✅ | Clipboard trait + `FakeClipboard` + host `ClipboardHandle` service |
 | CB.1 | ✅ | `clipboard` bool option + `store_yank`/`read_register` cutover (yank-only) |
 | CB.2 | ✅ | TUI backend: `arboard` native + OSC52 fallback |
-| CB.3 | 📝 | Terminal-mode yank/paste (PTY routing, mode-owned) |
+| CB.3 | ✅ | Terminal-mode yank/paste (PTY routing, mode-owned) |
 | CB.4 | 📝 | GPUI backend parity (gpui native clipboard) |
 | CB.5 | 📝 | Bench + docs + graceful-degradation hardening |
 
@@ -120,18 +120,60 @@ The semantics seam (§5). Landed against `FakeClipboard` (headless-testable).
 
 **Depends on:** CB.1.
 
-## CB.3 — Terminal-mode yank/paste (mode-owned)
+## CB.3 — Terminal-mode yank/paste ✅
 
-Implements §6 without a host `BufferKind` branch.
+**Scope correction found during implementation:** terminal Visual-mode yank
+**already existed** host-side in `Editor::run_terminal_invocation`
+(`lattice-host/src/dispatch.rs`) before this slice — it got the `explicit_yank: true`
+treatment in CB.1 already. What design §6 called "mode-owned handlers" doesn't map
+onto a `terminal-mode`-owned keymap layer the way it first sounded: `lattice-terminal`
+has no keymap of its own (`p`/`P`/motions/operators/visual-yank for terminal buffers
+all dispatch through the SAME generic vim `Action`/`CommandInvocation` grammar every
+Document buffer uses); `run_terminal_invocation` is the pre-existing, registered
+[`InvocationRunnerFn`] extension point that intercepts terminal-active invocations
+BEFORE the generic gate — and it's necessarily host-resident because its signature is
+`fn(&mut Editor, CommandInvocation) -> bool` (moving it into `lattice-terminal` would
+mean `lattice-terminal` depending on `lattice-host`, inverting the existing dependency
+direction — out of scope for a clipboard slice). CB.3 therefore extends this EXISTING
+extension point, following its established yank precedent, rather than introducing a
+new architectural pattern.
 
-- In `terminal-mode` handlers: paste routes register/clipboard text to `do_terminal_input`
-  bracketed-paste-wrapped (not a document `Edit`); yank copies terminal selection /
-  scrollback range to clipboard + unnamed register (read-only source).
-- Host exposes only generic primitives (register read, `ClipboardHandle`,
-  `do_terminal_input`); the mode owns chords + handler bodies (acid test: zero new
-  `Editor::` methods, zero new host `Action` variants).
-- Test: paste into a terminal buffer writes bracketed-paste bytes to the PTY (fake PTY),
-  document unchanged; yank from a terminal selection populates the clipboard.
+**Landed:**
+
+- **Gap found:** `p`/`P` (`CommandKind::Action`, bound to `Action::PasteAfter/Before`)
+  were NOT intercepted by `run_terminal_invocation` — its own tail-classification match
+  returns `false` for `Action`-kind commands (by design, for things like `:`, `/`, `K`
+  hover, LSP nav that genuinely should dispatch centrally), which meant terminal-buffer
+  paste fell through to the generic `Editor::do_paste` — splicing into `self.document`,
+  the wrong target (a terminal has no document; it's a PTY). Confirmed via trace, not
+  assumed.
+- Added an explicit intercept in `run_terminal_invocation`: on `paste_after`/
+  `paste_before`, resolve the register/clipboard payload via the EXISTING
+  `Editor::read_register` (so terminal paste gets the CB.1 live-clipboard preference
+  for free), bracketed-paste-wrap it when the running program enabled DEC private mode
+  2004, and write it via the existing `do_terminal_input` (PTY, not a document `Edit`).
+  Terminal-Visual has no paste (no "paste over a read-only scrollback selection"
+  concept in vim), so this only applies to the non-Visual path.
+- New published primitive: `SharedTerm::bracketed_paste()` (`lattice-terminal/src/
+  reader.rs`) — `inner` (the alacritty `Term`) is crate-private, so this is the one new
+  accessor `lattice-terminal` needed to publish; the host never reaches into `Term`
+  directly. Reads `TermMode::BRACKETED_PASTE`.
+- Extracted the wrap-or-passthrough logic into a pure free function
+  `terminal_paste_payload(content, bracketed) -> Vec<u8>` so it's unit-testable without
+  a PTY.
+- **Testing boundary, documented not silently skipped:** this codebase does not unit-
+  test real-PTY-spawning code anywhere (`lattice-terminal`'s `buffer.rs` / `handle.rs`
+  / `spawner.rs` carry zero tests; only the pure VT-state-machine logic, via
+  `SharedTerm::fixture`, is tested) — so the full `run_terminal_invocation` paste path
+  (spawn → dispatch → real PTY write) is NOT covered by an automated test, matching
+  that existing boundary rather than introducing a new one. What IS covered: the
+  `terminal_paste_payload` wrap logic (2 tests) and the `bracketed_paste()` accessor
+  against the real DEC-2004 escape sequences via `SharedTerm::fixture` (2 tests).
+  Manual verification via the `run` skill is the practical check for the PTY-touching
+  glue, consistent with how the rest of this crate handles PTY-adjacent code.
+- Full regression: 2697 tests across host/terminal/grammar/config/core/TUI (6 suites,
+  up from 2650/5 suites at CB.2 — the jump includes lattice-terminal's full existing
+  suite entering the combined run for the first time), workspace + GPUI build clean.
 
 **Depends on:** CB.1 (register seam). Independent of CB.2 (works with any backend).
 

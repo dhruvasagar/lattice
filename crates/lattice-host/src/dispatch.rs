@@ -16825,22 +16825,35 @@ impl Editor {
         let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
         if entering_insert_like && !was_insert_like {
             self.recording_insert = Some(String::new());
+            // Undo grouping: the whole insert session (this point until
+            // `<Esc>`) collapses to a single undo unit -- vim's insert
+            // undo contract. Typed characters, in-session backspaces, and
+            // completion inserts all fold into one entry on the document
+            // actor. Re-entering Insert from Insert/Replace (dot-repeat's
+            // bounce) hits `was_insert_like`, so the group is opened once
+            // per real session, not on every mode touch.
+            self.document.begin_undo_group();
         }
-        if was_insert_like
-            && !entering_insert_like
-            && let Some(rec) = self.recording_insert.take()
-        {
-            let block_spec = self.pending_block_insert.take();
-            if !rec.is_empty() {
-                self.last_insert = Some(rec.clone());
+        if was_insert_like && !entering_insert_like {
+            // Close the coalescing group FIRST, before any block-insert
+            // commit: `replicate_block_insert` rewinds the (now single)
+            // coalesced top-row entry and re-applies all rows as its own
+            // batch, which must land as a fresh undo unit rather than
+            // folding back into the just-closed group.
+            self.document.end_undo_group();
+            if let Some(rec) = self.recording_insert.take() {
+                let block_spec = self.pending_block_insert.take();
+                if !rec.is_empty() {
+                    self.last_insert = Some(rec.clone());
+                }
+                if let Some(spec) = block_spec
+                    && !rec.is_empty()
+                {
+                    self.replicate_block_insert(spec, &rec);
+                }
+            } else {
+                self.pending_block_insert = None;
             }
-            if let Some(spec) = block_spec
-                && !rec.is_empty()
-            {
-                self.replicate_block_insert(spec, &rec);
-            }
-        } else if was_insert_like && !entering_insert_like {
-            self.pending_block_insert = None;
         }
         self.modal = state;
         if matches!(state, ModalState::Normal) {
@@ -16905,7 +16918,14 @@ impl Editor {
     /// undo unit. Rewinds the `live_edits` typed on the top row,
     /// then builds + applies the multi-row insert batch.
     pub fn replicate_block_insert(&mut self, spec: crate::state::PendingBlockInsert, text: &str) {
-        for _ in 0..spec.live_edits {
+        // The top-row keystrokes typed during this session coalesced into
+        // ONE undo entry (the insert group opened on entering Insert), so
+        // a single `undo` rewinds the whole top-row insertion regardless
+        // of how many characters / backspaces `live_edits` counted. Skip
+        // the rewind when nothing was typed (`live_edits == 0`): there is
+        // no entry to pop, and popping would clobber an unrelated prior
+        // edit.
+        if spec.live_edits > 0 {
             let _ = self.undo_blocking();
         }
         let buffer = self.document.snapshot().buffer.clone();

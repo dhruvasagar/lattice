@@ -39,6 +39,17 @@ pub struct Document {
     /// an `apply_edit` cleared a redo entry that contained the saved state,
     /// so we can no longer undo back to disk parity.
     clean_position: Option<usize>,
+    /// Undo-coalescing group state. While `coalescing` is true, an
+    /// `apply_edit` / `apply_edit_batch` folds into the most recent undo
+    /// entry (via [`UndoStack::amend_top`]) instead of pushing a fresh
+    /// one, so a whole vim insert session (`i` .. `<Esc>`, backspaces
+    /// included) is a single undo unit. `group_has_entry` tracks whether
+    /// the open group has already pushed its initial entry: the first
+    /// edit in the group `push`es (creating the entry to fold into), and
+    /// every edit after it amends. Both reset on
+    /// [`Self::begin_undo_group`] / [`Self::end_undo_group`].
+    coalescing: bool,
+    group_has_entry: bool,
     // M.4 follow-up: `modes: ActiveModes` removed. The canonical
     // active-modes map is `App.active_modes: HashMap<BufferId,
     // ActiveModes>` (M.2.1) -- per-buffer, not per-document, and
@@ -109,6 +120,9 @@ impl DocumentBuilder {
             // initial buffer (whether empty, from_text, or just-loaded
             // from disk) is by definition the saved state.
             clean_position: Some(0),
+            // No undo group open at construction; the first edit pushes.
+            coalescing: false,
+            group_has_entry: false,
         }
     }
 }
@@ -194,12 +208,7 @@ impl Document {
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
         let applied = self.buffer.apply_edit(&edit)?;
         let inverse = inverse_edit(&applied);
-        let pre_push_depth = self.undo.undo_depth();
-        self.undo.push(UndoEntry {
-            inverse_edits: vec![inverse],
-            label: String::new(),
-        });
-        self.invalidate_clean_if_lost(pre_push_depth);
+        self.record_inverses(vec![inverse]);
         self.version += 1;
         self.text_version += 1;
         Ok(applied)
@@ -217,15 +226,57 @@ impl Document {
         }
         // Inverses replay in reverse order during undo.
         inverses.reverse();
-        let pre_push_depth = self.undo.undo_depth();
-        self.undo.push(UndoEntry {
-            inverse_edits: inverses,
-            label: String::new(),
-        });
-        self.invalidate_clean_if_lost(pre_push_depth);
+        self.record_inverses(inverses);
         self.version += 1;
         self.text_version += 1;
         Ok(applied_set)
+    }
+
+    /// Open an undo-coalescing group: every edit applied until
+    /// [`Self::end_undo_group`] folds into a single undo entry rather
+    /// than pushing its own. This is how a vim insert session
+    /// (`i`/`a`/`o`/`cw` .. `<Esc>`) becomes one `u` step -- typed
+    /// characters, in-session backspaces, and completion inserts all
+    /// collapse together. Re-opening an already-open group starts a
+    /// fresh coalescing run (the next edit pushes a new entry).
+    pub fn begin_undo_group(&mut self) {
+        self.coalescing = true;
+        self.group_has_entry = false;
+    }
+
+    /// Close the group opened by [`Self::begin_undo_group`]. Subsequent
+    /// edits push their own entries again. Idempotent when no group is
+    /// open.
+    pub fn end_undo_group(&mut self) {
+        self.coalescing = false;
+        self.group_has_entry = false;
+    }
+
+    /// Route a just-applied operation's inverse edits onto the undo
+    /// stack. Outside a coalescing group (the common case) this pushes a
+    /// new entry -- one operation, one undo unit. Inside an open group,
+    /// the first operation pushes (creating the entry to fold into) and
+    /// every operation after it amends that entry, so the whole group is
+    /// a single undo unit. `inverses` arrive in stored order
+    /// (reverse-application), matching [`UndoStack::push`] /
+    /// [`UndoStack::amend_top`].
+    fn record_inverses(&mut self, inverses: Vec<Edit>) {
+        if self.coalescing && self.group_has_entry {
+            // Fold into the group's existing entry. Depth is unchanged
+            // and redo stays cleared (the group's first push cleared it),
+            // so clean-position tracking needs no adjustment here.
+            self.undo.amend_top(inverses);
+        } else {
+            let pre_push_depth = self.undo.undo_depth();
+            self.undo.push(UndoEntry {
+                inverse_edits: inverses,
+                label: String::new(),
+            });
+            self.invalidate_clean_if_lost(pre_push_depth);
+            if self.coalescing {
+                self.group_has_entry = true;
+            }
+        }
     }
 
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
@@ -458,6 +509,116 @@ mod tests {
         assert_eq!(d.text(), "CDxxx");
         d.undo().unwrap();
         assert_eq!(d.text(), "xxxxx");
+    }
+
+    #[test]
+    fn undo_group_collapses_edits_into_one_unit() {
+        // The reported bug: per-character inserts must undo as one batch.
+        let mut d = Document::empty();
+        d.begin_undo_group();
+        for (i, ch) in "hello".chars().enumerate() {
+            d.apply_edit(Edit::insert(Position::new(0, i as u32), &ch.to_string()))
+                .unwrap();
+        }
+        d.end_undo_group();
+        assert_eq!(d.text(), "hello");
+        // A single undo reverts the whole session, not one char.
+        d.undo().unwrap();
+        assert_eq!(d.text(), "");
+        // And a single redo replays it whole.
+        d.redo().unwrap();
+        assert_eq!(d.text(), "hello");
+    }
+
+    #[test]
+    fn edits_outside_a_group_stay_separate_units() {
+        // Guard against over-coalescing: normal-mode edits are individual.
+        let mut d = Document::empty();
+        d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.undo().unwrap();
+        assert_eq!(d.text(), "a", "only the last edit reverts");
+    }
+
+    #[test]
+    fn two_groups_are_two_undo_units() {
+        // Two insert sessions with no intervening edit must NOT merge.
+        let mut d = Document::empty();
+        d.begin_undo_group();
+        d.apply_edit(Edit::insert(Position::ZERO, "ab")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "cd")).unwrap();
+        d.end_undo_group();
+        d.begin_undo_group();
+        d.apply_edit(Edit::insert(Position::new(0, 4), "ef")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 6), "gh")).unwrap();
+        d.end_undo_group();
+        assert_eq!(d.text(), "abcdefgh");
+        d.undo().unwrap();
+        assert_eq!(d.text(), "abcd", "second group reverts as one unit");
+        d.undo().unwrap();
+        assert_eq!(d.text(), "", "first group reverts as one unit");
+    }
+
+    #[test]
+    fn group_coalesces_inserts_and_in_session_deletes() {
+        // Backspaces typed during an insert session are part of the same
+        // undo unit (vim). Mixes push + amend across edit kinds.
+        let mut d = Document::empty();
+        d.begin_undo_group();
+        d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "c")).unwrap();
+        // Backspace the 'c'.
+        d.apply_edit(Edit::replace(
+            Range::new(Position::new(0, 2), Position::new(0, 3)),
+            "",
+        ))
+        .unwrap();
+        d.end_undo_group();
+        assert_eq!(d.text(), "ab");
+        d.undo().unwrap();
+        assert_eq!(d.text(), "", "insert+delete session reverts as one unit");
+    }
+
+    #[test]
+    fn group_coalescing_preserves_dirty_tracking() {
+        let mut d = Document::empty();
+        assert!(!d.dirty());
+        d.begin_undo_group();
+        d.apply_edit(Edit::insert(Position::ZERO, "x")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "y")).unwrap();
+        d.end_undo_group();
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert!(!d.dirty(), "undo of the whole group returns to clean");
+    }
+
+    #[test]
+    fn empty_group_pushes_nothing() {
+        // Entering and leaving insert without typing adds no undo history.
+        let mut d = Document::empty();
+        d.begin_undo_group();
+        d.end_undo_group();
+        assert!(matches!(d.undo(), Err(CoreError::NothingToUndo)));
+    }
+
+    #[test]
+    fn batch_inside_a_group_folds_into_the_session() {
+        // A batched edit (e.g. completion accept) mid-session joins the
+        // insert unit rather than splitting it.
+        let mut d = Document::empty();
+        d.begin_undo_group();
+        d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
+        d.apply_edit_batch(vec![
+            Edit::insert(Position::new(0, 1), "b"),
+            Edit::insert(Position::new(0, 2), "c"),
+        ])
+        .unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 3), "d")).unwrap();
+        d.end_undo_group();
+        assert_eq!(d.text(), "abcd");
+        d.undo().unwrap();
+        assert_eq!(d.text(), "", "single + batch edits collapse together");
     }
 
     #[test]

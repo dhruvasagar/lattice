@@ -90,6 +90,15 @@ pub(crate) enum ActorMsg {
         selections: SelectionSet,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    /// Open / close an undo-coalescing group on the owned document
+    /// (vim's insert session = one undo unit). Fire-and-forget: no
+    /// reply and no snapshot mutation -- opening a group changes no
+    /// buffer-visible state. The mailbox is FIFO, so a `BeginUndoGroup`
+    /// enqueued before a burst of `ApplyEdit` is guaranteed to be
+    /// observed first, and `EndUndoGroup` after -- the caller never has
+    /// to await these.
+    BeginUndoGroup,
+    EndUndoGroup,
     /// Run a [`lattice_grammar::execute`] dispatch against the
     /// document. The actor holds the only `&mut Document` so all
     /// invocation-driven mutations route here. Returns the
@@ -212,6 +221,11 @@ impl DocumentActor {
                 self.publish();
                 let _ = reply.send(Ok(()));
             }
+            // Undo-group toggles: no reply, no publish (buffer text is
+            // untouched; only how the *next* edits fold onto the undo
+            // stack changes).
+            ActorMsg::BeginUndoGroup => self.document.begin_undo_group(),
+            ActorMsg::EndUndoGroup => self.document.end_undo_group(),
             ActorMsg::Dispatch {
                 buffer_id,
                 invocation,

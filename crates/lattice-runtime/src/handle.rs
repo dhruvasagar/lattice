@@ -228,6 +228,22 @@ impl RopeDocumentHandle {
         self.send(|reply| ActorMsg::SetSelections { selections, reply })
     }
 
+    /// Open an undo-coalescing group on the actor so a run of edits (a
+    /// vim insert session) collapses into a single undo unit until
+    /// [`Self::end_undo_group`]. Fire-and-forget -- ordering against the
+    /// following `apply_edit` burst is guaranteed by the FIFO mailbox,
+    /// so there is nothing to await. A closed receiver (actor gone) is a
+    /// silent no-op: there is nothing to coalesce on a dead actor.
+    pub fn begin_undo_group(&self) {
+        let _ = self.sender.send(ActorMsg::BeginUndoGroup);
+    }
+
+    /// Close the group opened by [`Self::begin_undo_group`]. Same
+    /// fire-and-forget semantics.
+    pub fn end_undo_group(&self) {
+        let _ = self.sender.send(ActorMsg::EndUndoGroup);
+    }
+
     /// Dispatch a [`CommandInvocation`] through
     /// [`lattice_grammar::execute`] inside the actor. The actor
     /// holds the only `&mut Document` so all grammar-driven
@@ -388,6 +404,14 @@ impl crate::document::Document for RopeDocumentHandle {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
         RopeDocumentHandle::set_selections(self, selections)
+    }
+
+    fn begin_undo_group(&self) {
+        RopeDocumentHandle::begin_undo_group(self)
+    }
+
+    fn end_undo_group(&self) {
+        RopeDocumentHandle::end_undo_group(self)
     }
 
     fn dispatch_with_cancel(

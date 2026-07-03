@@ -35,6 +35,33 @@ impl UndoStack {
         self.redo.clear();
     }
 
+    /// Fold `inverses` into the most recent undo entry instead of
+    /// pushing a new one -- the primitive behind undo-group coalescing
+    /// (a vim insert session collapses to a single undo unit). The
+    /// caller passes the just-applied operation's inverse edits in the
+    /// same stored order [`push`] would use (reverse-application order);
+    /// they are prepended so the combined entry still replays
+    /// newest -> oldest during undo (`inv(eN) .. inv(e1)`).
+    ///
+    /// Redo is intentionally not cleared: an amend never diverges the
+    /// history (the initiating `push` that opened the group already
+    /// cleared redo, and no redo can accrue mid-group). If there is no
+    /// top entry to amend -- which the group bookkeeping is meant to
+    /// prevent -- it falls back to a plain push so the edit stays
+    /// undoable rather than being silently lost.
+    pub fn amend_top(&mut self, mut inverses: Vec<Edit>) {
+        match self.undo.last_mut() {
+            Some(top) => {
+                inverses.append(&mut top.inverse_edits);
+                top.inverse_edits = inverses;
+            }
+            None => self.undo.push(UndoEntry {
+                inverse_edits: inverses,
+                label: String::new(),
+            }),
+        }
+    }
+
     /// Take the most recent undo entry and move it onto the redo stack as
     /// `redo_entry`. The caller is expected to apply `entry.inverse_edits` to
     /// the buffer and pass the resulting "inverse-of-the-inverse" back via
@@ -143,6 +170,45 @@ mod tests {
 
         s.push(entry("b"));
         assert_eq!(s.redo_depth(), 0);
+    }
+
+    #[test]
+    fn amend_top_prepends_into_the_latest_entry() {
+        // Two edits folded into one entry: the second edit's inverse is
+        // prepended so undo replays newest -> oldest. Depth stays 1.
+        let mut s = UndoStack::new();
+        s.push(UndoEntry {
+            inverse_edits: vec![Edit::insert(Position::ZERO, "first")],
+            label: String::new(),
+        });
+        s.amend_top(vec![Edit::insert(Position::new(0, 5), "second")]);
+        assert_eq!(s.undo_depth(), 1);
+        let top = s.pop_for_undo().unwrap();
+        assert_eq!(top.inverse_edits.len(), 2);
+        // Prepended: the later edit's inverse comes first.
+        assert_eq!(
+            top.inverse_edits[0],
+            Edit::insert(Position::new(0, 5), "second")
+        );
+        assert_eq!(top.inverse_edits[1], Edit::insert(Position::ZERO, "first"));
+    }
+
+    #[test]
+    fn amend_top_on_empty_stack_falls_back_to_push() {
+        let mut s = UndoStack::new();
+        s.amend_top(vec![Edit::insert(Position::ZERO, "x")]);
+        assert_eq!(s.undo_depth(), 1);
+    }
+
+    #[test]
+    fn amend_top_does_not_clear_redo() {
+        // Unlike `push`, amending an open group must not drop redo.
+        let mut s = UndoStack::new();
+        s.record_redo(entry("r"));
+        s.push(entry("open")); // clears redo per the push invariant...
+        s.record_redo(entry("r2")); // ...re-seed to prove amend leaves it be
+        s.amend_top(vec![Edit::insert(Position::ZERO, "y")]);
+        assert_eq!(s.redo_depth(), 1);
     }
 
     #[test]

@@ -179,8 +179,8 @@ impl Editor {
 }
 
 /// Render one dashboard row to a markdown line. Link spans become
-/// `[label](scheme:value)` using the help-link schemes (`execute:` for
-/// commands, `topic:` for topics); a `Title` / `SectionHeading` first span
+/// `[label](scheme:value)` using the help-link schemes (`exec:` for
+/// commands, `help:` for topics); a `Title` / `SectionHeading` first span
 /// gets a markdown heading prefix so the help markdown highlighter styles it.
 /// Centre alignment is ignored here (DB.4 wires branding centring).
 fn render_row(row: &DashboardRow) -> String {
@@ -201,13 +201,21 @@ fn render_row(row: &DashboardRow) -> String {
 }
 
 /// Map a dashboard [`LinkTarget`] to the help-link `scheme:value` form the
-/// follow handler consumes. `execute:` runs an ex-command; `topic:` opens a
-/// help topic. A URL has no external opener in help-follow yet, so it renders
-/// as a plain URL (classified as `Unresolved` — a logged no-op on `<CR>`).
+/// follow handler consumes. These scheme names MUST match
+/// `lattice_help::classify_link_url` exactly, or the seeded link classifies
+/// as `Unresolved` and the `<CR>`-follow is a silent no-op.
+///
+/// - `exec:CMD` → `HelpLinkTarget::Execute` → runs `:CMD` (so a dashboard
+///   `LinkTarget::Command("tutor")` actually STARTS the tutor, not describes
+///   it — every dashboard command link is an action to run).
+/// - `help:TOPIC` → `HelpLinkTarget::Topic` → opens the `:help TOPIC` page.
+///
+/// A URL has no external opener in help-follow yet, so it renders as a plain
+/// URL (classified as `Unresolved` — a logged no-op on `<CR>`).
 fn help_link_scheme(target: &LinkTarget) -> String {
     match target {
-        LinkTarget::Command(cmd) => format!("execute:{cmd}"),
-        LinkTarget::Topic(topic) => format!("topic:{topic}"),
+        LinkTarget::Command(cmd) => format!("exec:{cmd}"),
+        LinkTarget::Topic(topic) => format!("help:{topic}"),
         LinkTarget::Url(url) => url.clone(),
     }
 }
@@ -234,17 +242,22 @@ mod tests {
     use lattice_dashboard::{DashboardRow, DashboardSpan};
 
     #[test]
-    fn command_link_becomes_execute_scheme() {
+    fn command_link_becomes_exec_scheme() {
+        // `exec:` (not `execute:`) — the scheme `classify_link_url`
+        // recognizes as "run this ex-command". `execute:` classifies as
+        // Unresolved, i.e. a dead link.
         let row = DashboardRow::line("Run ", DashboardRole::Body)
             .push(DashboardSpan::link(":tutor", LinkTarget::Command("tutor".into())));
-        assert_eq!(render_row(&row), "Run [:tutor](execute:tutor)");
+        assert_eq!(render_row(&row), "Run [:tutor](exec:tutor)");
     }
 
     #[test]
-    fn topic_link_becomes_topic_scheme() {
+    fn topic_link_becomes_help_scheme() {
+        // `help:` (not `topic:`) — the scheme `classify_link_url` maps to
+        // `HelpLinkTarget::Topic`, opening the `:help` page.
         let row = DashboardRow::line("", DashboardRole::Body)
             .push(DashboardSpan::link(":help modes", LinkTarget::Topic("modes".into())));
-        assert_eq!(render_row(&row), "[:help modes](topic:modes)");
+        assert_eq!(render_row(&row), "[:help modes](help:modes)");
     }
 
     #[test]

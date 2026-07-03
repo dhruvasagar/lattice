@@ -296,6 +296,21 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         }
     }
 
+    // Dashboard is a read-only, link-bearing help-style buffer: `<CR>`
+    // follows the link under the cursor (dashboard.md §9.2), routed to the
+    // same `do_help_follow_link` dispatcher via the `Action::FollowLink` arm.
+    // Deliberately NOT folded into the Help / FileTree gate above: that gate
+    // also maps `-` → `OilNavigateUp`, which on a non-oil buffer OPENS the
+    // oil file browser — surprising on the launch page. Only link-follow is
+    // special here; every other key keeps its plain Normal-mode meaning.
+    if matches!(ctx.active_buffer, BufferKind::Dashboard)
+        && matches!(ctx.modal, ModalState::Normal)
+        && ctx.partial_chord.is_empty()
+        && matches!(chord.key, KeyKind::Special(SpecialKey::Enter))
+    {
+        return Action::FollowLink;
+    }
+
     if matches!(ctx.active_buffer, BufferKind::Oil)
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()

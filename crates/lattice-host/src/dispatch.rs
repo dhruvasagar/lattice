@@ -21385,8 +21385,15 @@ impl Editor {
             true
         }
 
-        // Not in a help context: nothing to follow.
-        if self.popup_buffer.is_none() && self.active_buffer != BufferKind::Help {
+        // Not in a help context: nothing to follow. Dashboard groups with
+        // Help here (dashboard.md §9.2) — it's a read-only, link-bearing,
+        // help-style buffer whose HelpLinks local is seeded at creation, so
+        // its `<CR>`-follow routes through this same dispatcher. Without
+        // Dashboard in this guard the follow bails before the link lookup
+        // and every dashboard link is a silent no-op.
+        if self.popup_buffer.is_none()
+            && !matches!(self.active_buffer, BufferKind::Help | BufferKind::Dashboard)
+        {
             return;
         }
         let cursor = self.cursor;

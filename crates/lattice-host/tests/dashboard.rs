@@ -115,6 +115,103 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
     assert!(checked > 0, "expected the dashboard to render some help-topic links");
 }
 
+// Following a dashboard link end-to-end: `<CR>` (Action::FollowLink) on a
+// link must resolve to the correct behaviour. Covers the follow-guard
+// (Dashboard grouped with Help) + the link scheme (`exec:` runs a command,
+// `help:` opens a topic) — the three bugs that made every dashboard link a
+// silent no-op. The input-gate half (`<CR>` → Action::FollowLink for the
+// Dashboard buffer) is pinned in `lattice-ui-tui/src/input.rs`
+// (`dashboard_active_routes_enter_to_follow_link`).
+mod link_following {
+    use lattice_grammar::Effect;
+    use lattice_host::action::Action;
+    use lattice_host::dispatch::RendererSignal;
+    use lattice_host::modes::HelpLinks;
+    use lattice_help::HelpLinkTarget;
+
+    use super::*;
+
+    /// Open the dashboard, then move the cursor onto the first link whose
+    /// target satisfies `want`, and return that link's target. Panics if no
+    /// such link is seeded — a regression in the scheme mapping.
+    fn cursor_on_link(
+        editor: &mut Editor,
+        want: impl Fn(&HelpLinkTarget) -> bool,
+    ) -> HelpLinkTarget {
+        editor.do_open_dashboard();
+        let id = editor.buffers.by_name("*dashboard*").unwrap();
+        let link = editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<HelpLinks>())
+            .and_then(|hl| hl.0.iter().find(|l| want(&l.target)).cloned())
+            .expect("a dashboard link matching the predicate should be seeded");
+        editor.cursor = link.range.start;
+        link.target
+    }
+
+    #[test]
+    fn following_the_tutor_link_starts_the_tutor() {
+        let mut editor = boot();
+        // The tutor pointer is `LinkTarget::Command("tutor")` → seeded as
+        // `Execute("tutor")` (runs `:tutor`), NOT `Command` (which would only
+        // *describe* the command).
+        let target = cursor_on_link(&mut editor, |t| {
+            matches!(t, HelpLinkTarget::Execute(c) if c == "tutor")
+        });
+        assert_eq!(target, HelpLinkTarget::Execute("tutor".to_string()));
+
+        // Following the link runs `:tutor`, which resolves to
+        // `Effect::Tutor` — the effect that starts the tutor. (The effect's
+        // application, `do_tutor`, is renderer-coupled — it opens the lesson
+        // file — so it lands in `App::apply_effect`, not the host's
+        // `handle_effect`; the host-observable proof is that the correct
+        // effect is emitted, i.e. the scheme + follow-guard resolved.)
+        let outcome = editor.dispatch(Action::FollowLink);
+        assert!(
+            outcome
+                .effects
+                .iter()
+                .any(|e| matches!(e, Effect::Tutor { lesson: None })),
+            "following the tutor link should emit Effect::Tutor (start the \
+             tutor); got effects={:?}",
+            outcome.effects
+        );
+    }
+
+    #[test]
+    fn following_a_help_topic_link_opens_that_help_page() {
+        let mut editor = boot();
+        // A `:help <topic>` pointer is `LinkTarget::Topic(name)` → seeded as
+        // `Topic(name)` (opens the help page), NOT `Unresolved`.
+        let target = cursor_on_link(&mut editor, |t| matches!(t, HelpLinkTarget::Topic(_)));
+        let HelpLinkTarget::Topic(topic_name) = target.clone() else {
+            unreachable!()
+        };
+
+        let outcome = editor.dispatch(Action::FollowLink);
+
+        // Opening a help topic emits a `DisplayBuffer` signal categorised as
+        // a help topic — the renderer turns that into the visible help page.
+        let opened_help_topic = outcome.renderer_signals.iter().any(|s| {
+            matches!(
+                s,
+                RendererSignal::DisplayBuffer(req)
+                    if matches!(
+                        req.category,
+                        lattice_core::ui::display::BufferDisplayCategory::HelpTopic
+                    )
+            )
+        });
+        assert!(
+            opened_help_topic,
+            "following the `:help {topic_name}` link should open that help page \
+             (expected a DisplayBuffer/HelpTopic signal, got {:?})",
+            outcome.renderer_signals
+        );
+    }
+}
+
 #[test]
 fn dashboard_registers_branding_virtual_rows() {
     let mut editor = boot();
@@ -595,3 +692,5 @@ mod idle_frame_does_no_recompose {
         );
     }
 }
+
+

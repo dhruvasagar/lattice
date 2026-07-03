@@ -1413,6 +1413,43 @@ mod tests {
         ));
     }
 
+    fn ctx_dashboard_active<'a>(modal: ModalState, b: &'a Builtins) -> TranslateContext<'a> {
+        TranslateContext {
+            active_buffer: BufferKind::Dashboard,
+            ..ctx_help_active(modal, b)
+        }
+    }
+
+    #[test]
+    fn dashboard_active_routes_enter_to_follow_link() {
+        // The launch dashboard's clickable links: `<CR>` on a link follows
+        // it (dashboard.md §9.2). Without this gate the dashboard links are
+        // dead — Enter falls through to plain Normal-mode.
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_dashboard_active(ModalState::Normal, &b),
+                key(KeyCode::Enter)
+            ),
+            Action::FollowLink
+        ));
+    }
+
+    #[test]
+    fn dashboard_active_does_not_map_dash_to_oil_navigate_up() {
+        // Deliberately NOT folded into the Help/FileTree gate: that gate maps
+        // `-` → OilNavigateUp, which on the dashboard would open the oil file
+        // browser. `-` must keep its plain Normal-mode meaning here.
+        let (_, b) = fixture();
+        assert!(!matches!(
+            translate(
+                ctx_dashboard_active(ModalState::Normal, &b),
+                key(KeyCode::Char('-'))
+            ),
+            Action::OilNavigateUp
+        ));
+    }
+
     #[test]
     fn help_active_routes_jk_through_normal_motions() {
         // `j` in help is the *same* line_down motion as in Normal --

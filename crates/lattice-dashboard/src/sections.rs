@@ -267,7 +267,11 @@ impl DashboardSection for HelpTopics {
     fn render(&self, _ctx: &DashboardCtx) -> DashboardFragment {
         let mut f = DashboardFragment::new();
         heading(&mut f, "Help topics");
-        for topic in ["getting-started", "modes", "commands", "config"] {
+        // Topic names must match a registered `:help` topic (the doc's
+        // file stem under `docs/user/`), or the `<CR>`-follow is a dead
+        // link. `commands`/`config` were such dead links — the actual
+        // docs are `ex-commands.md` and `options.md`.
+        for topic in ["getting-started", "modes", "ex-commands", "options"] {
             f.push(body_link(
                 "",
                 &format!(":help {topic}"),

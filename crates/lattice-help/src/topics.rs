@@ -207,6 +207,26 @@ mod tests {
         assert!(r.lookup("buffers").is_some());
     }
 
+    #[test]
+    fn getting_started_topic_is_registered_for_the_dashboard_link() {
+        // The launch dashboard's help-topics section links
+        // `:help getting-started` (topic:getting-started). Pin that the
+        // topic actually resolves — a dashboard link with no backing doc
+        // is a dead `<CR>`.
+        let r = builtin_topics();
+        let topic = r
+            .lookup("getting-started")
+            .expect("getting-started topic must exist for the dashboard link");
+        assert!(
+            !topic.summary.is_empty(),
+            "getting-started should carry a frontmatter summary"
+        );
+        assert!(
+            topic.body.render().contains("modal"),
+            "getting-started body should cover the modal loop"
+        );
+    }
+
     /// Soft binary-size budget for embedded user docs. When the total
     /// size of `docs/user/*.md` exceeds this threshold, this test
     /// fails and forces a re-evaluation of the `include_str!`-based

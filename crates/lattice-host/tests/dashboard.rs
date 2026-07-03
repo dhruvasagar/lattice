@@ -81,6 +81,40 @@ fn dashboard_content_has_section_pointers() {
     assert!(text.contains("help"), "help pointer missing");
 }
 
+/// Every `:help <topic>` link the dashboard renders must resolve to a
+/// registered help topic — a `LinkTarget::Topic` with no backing doc is a
+/// dead `<CR>`. This is the seam where the dashboard's section registry and
+/// the help-topic registry (both linked by the host) actually meet, so it's
+/// the right place to pin cross-consistency. Guards the `getting-started`
+/// link the launch page leads with, and the earlier `commands`/`config`
+/// dead links (the real docs are `ex-commands`/`options`).
+#[test]
+fn dashboard_help_topic_links_resolve_to_registered_topics() {
+    use lattice_dashboard::{DashboardCtx, LinkTarget, SectionSelection};
+
+    let topics = lattice_help::topics::builtin_topics();
+    let registry = lattice_dashboard::builtin_registry();
+    let ctx = DashboardCtx::default();
+
+    let mut checked = 0;
+    for section in registry.ordered(&SectionSelection::Default) {
+        for row in section.render(&ctx).rows {
+            for span in row.spans {
+                if let Some(LinkTarget::Topic(name)) = span.link {
+                    assert!(
+                        topics.lookup(&name).is_some(),
+                        "dashboard links `:help {name}` but no such help topic \
+                         is registered (topic name must match a docs/user/*.md \
+                         file stem)"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "expected the dashboard to render some help-topic links");
+}
+
 #[test]
 fn dashboard_registers_branding_virtual_rows() {
     let mut editor = boot();

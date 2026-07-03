@@ -19269,18 +19269,31 @@ impl Editor {
 
         // Activate in the active pane.
         let _ = self.activate_buffer(id);
-        // T-mode-1 (2026-05-27): freshly-spawned terminals land
-        // in Normal-in-terminal by default (per `terminal-mode.md`
-        // §5.1). Activate `TerminalNormalMode` so the central vim
-        // grammar has its SyntheticDoc to operate on; otherwise
-        // the first `i` / `a` exits an empty Normal state with
-        // no rope behind it.
-        let _ = self.activate_mode_by_id(id, lattice_terminal::TerminalNormalMode::mode_id());
-        // T-cursor-1 (2026-05-28): seed `self.cursor` from the
-        // freshly-built SyntheticDoc so the doc-space cursor is
-        // valid the moment the pane becomes active. Search /
-        // marks / text objects read through `self.cursor`.
-        self.seed_terminal_doc_cursor(id);
+        // T-scrollback-fix (2026-07-03): freshly-spawned terminals land
+        // in Terminal-Insert (Job) mode — matching vim `:terminal`,
+        // tmux, and kitty, where a new terminal is focused for input.
+        //
+        // This supersedes the earlier "land in Normal-in-terminal" default
+        // (`terminal-mode.md` §5.1). Spawning into Normal activated
+        // `TerminalNormalMode` immediately, whose `on_activate` freezes a
+        // read-only scrollback `SyntheticDoc` from the grid *as it is right
+        // now* — which, at spawn, is still empty (the child hasn't rendered
+        // yet). The renderer paints the live grid as output streams, but
+        // scrollback navigation (`k`/`gg`) reads the frozen empty rope, so
+        // the user could not scroll into the history the child was
+        // generating until the first insert→normal round-trip rebuilt the
+        // doc. Entering Insert here means the Normal-in-terminal rope is
+        // built on the user's *first deliberate* `<C-\><C-n>`/`<Esc>` into
+        // Normal, by which point the child has produced real output.
+        //
+        // `do_enter_terminal_insert` is the canonical entry: it snaps to the
+        // live edge, clears any stale match/nav state, and activates
+        // `TerminalInsertMode`. There is no `TerminalNormalMode` active to
+        // deactivate at spawn (the terminal major auto-activates no minor),
+        // so its deactivate step is a no-op. No `SyntheticDoc` exists in
+        // Insert, so cursor-seeding is deferred to the first Normal entry
+        // (`do_exit_terminal_insert` seeds it then).
+        self.do_enter_terminal_insert();
         self.set_message(
             EchoLevel::Info,
             format!("terminal: spawned `{program}` (#{} )", id.0),

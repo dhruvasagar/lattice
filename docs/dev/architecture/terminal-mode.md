@@ -139,13 +139,24 @@ operates on it. The summary below is the user-visible behaviour;
 see the companion doc for the lifecycle, coord adapter, and
 slice plan.
 
-### 5.1 Normal-in-terminal (default on entry)
+### 5.1 Normal-in-terminal
 
 - Mode-line: `-- TERMINAL --`
 - Vim grammar applies to a **synthetic Document built from the
   scrollback view** (NOT the PTY). See
   [`terminal-as-document.md`](terminal-as-document.md) §3 for
   the build-on-entry / drop-on-exit mechanism.
+- **A freshly spawned terminal starts in Terminal-Insert, not
+  here** (2026-07-03; vim `:terminal` / tmux / kitty convention —
+  a new terminal is focused for input). This is load-bearing, not
+  cosmetic: the synthetic scrollback rope is *frozen at Normal
+  entry*, so entering Normal at spawn — when the child has not yet
+  rendered — would freeze an **empty** scrollback and leave `k`/`gg`
+  unable to reach the history the child then streams, until the
+  first insert→normal round-trip rebuilt the rope. Deferring the
+  first Normal entry to a deliberate `<C-\><C-n>` guarantees the
+  rope is built over real output. See the T-scrollback-fix note in
+  `do_terminal_spawn`.
 - Keystrokes flow through the standard Normal-mode keymap; the
   full grammar applies because the active text *is* a
   rope-backed Document:
@@ -183,6 +194,7 @@ slice plan.
 
 | From | Key | To |
 |---|---|---|
+| _(spawn)_ | `:terminal` / `:claude` | Terminal-Insert |
 | Normal-in-terminal | `i` / `a` / `I` / `A` | Terminal-Insert |
 | Terminal-Insert | `<C-\><C-n>` | Normal-in-terminal |
 | Terminal-Insert | `<Esc>` (if `terminal.esc_exits`) | Normal-in-terminal |

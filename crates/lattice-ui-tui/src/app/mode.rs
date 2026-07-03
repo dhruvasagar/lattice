@@ -205,6 +205,41 @@ mod tests {
     use crate::app::test_helpers::app_with;
 
     #[test]
+    fn spawned_terminal_starts_in_terminal_insert_mode() {
+        // T-scrollback-fix (2026-07-03): a freshly spawned terminal lands
+        // in Terminal-Insert (Job) mode — vim `:terminal` / tmux / kitty
+        // convention. The earlier "spawn into Normal-in-terminal" default
+        // activated `TerminalNormalMode` immediately, freezing a read-only
+        // scrollback `SyntheticDoc` from the still-empty grid (the child
+        // hasn't rendered at spawn), so `k`/`gg` could not reach the history
+        // the child then streamed in until the first insert→normal
+        // round-trip rebuilt the doc. Starting in Insert defers that rope
+        // build to the user's first deliberate `<C-\><C-n>` into Normal.
+        let mut a = app_with("", 24);
+        a.apply(crate::app::Action::TerminalSpawn(Some("sh".to_string())));
+
+        assert_eq!(
+            a.editor.active_buffer,
+            super::BufferKind::Terminal,
+            "spawn should activate the terminal buffer",
+        );
+        let buf_id = a.editor.active_pane_buffer_id();
+        let modes = a
+            .editor
+            .active_modes
+            .get(&buf_id)
+            .expect("spawned terminal buffer has active modes");
+        assert!(
+            modes.is_active(lattice_terminal::TerminalInsertMode::mode_id()),
+            "spawned terminal should start in Terminal-Insert (Job) mode",
+        );
+        assert!(
+            !modes.is_active(lattice_terminal::TerminalNormalMode::mode_id()),
+            "spawned terminal must NOT start frozen in Normal-in-terminal",
+        );
+    }
+
+    #[test]
     fn line_numbers_mode_overrides_typed_option_layer() {
         // M.7.0: the mode-contribution layer wins against the
         // typed-option layer. `Number` defaults to `true`; the

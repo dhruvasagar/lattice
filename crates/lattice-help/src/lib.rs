@@ -420,6 +420,13 @@ pub enum HelpLinkTarget {
     /// pushes a position-history entry so `<C-o>` walks back into
     /// the originating help buffer.
     Mode(String),
+    /// `[label](URL)` where URL carries a real network / app scheme
+    /// (`http://`, `https://`, `mailto:`, or any `scheme://…` such as
+    /// `slack://`, `vscode://`). Follow-link hands it to the OS handler
+    /// (`open` / `xdg-open` / `explorer`) so the default browser / app
+    /// opens it. Distinct from [`Self::Source`] (`file:` → open in-editor)
+    /// and [`Self::Unresolved`] (no handler).
+    Url(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -628,9 +635,39 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
             path: PathBuf::from(rest),
             line: 0,
         }
+    } else if is_external_url(url) {
+        // A real network / app URL — opened by the OS handler on follow.
+        // Checked AFTER every known help scheme (`command:`, `exec:`,
+        // `help:`, `customize:`, `file:`, …) so those never leak here;
+        // none of them use a `scheme://` authority or the `mailto:`
+        // scheme, so this can't shadow them.
+        HelpLinkTarget::Url(url.to_string())
     } else {
         HelpLinkTarget::Unresolved(url.to_string())
     }
+}
+
+/// Whether `url` carries a real network / application scheme that the OS
+/// handler should open (browser, mail client, registered app). True for
+/// any `scheme://…` authority form (`http://`, `https://`, `ftp://`, and
+/// app links like `slack://` / `vscode://`) and for `mailto:`. Bare
+/// schemeless strings (`github.com/x`, a relative path) are NOT treated as
+/// URLs — they stay `Unresolved` rather than risk shelling out on ambiguous
+/// input.
+fn is_external_url(url: &str) -> bool {
+    if url.starts_with("mailto:") {
+        return true;
+    }
+    // `scheme://authority`: a non-empty scheme of URL-safe characters
+    // followed by `://`. Guarding the scheme shape (rather than a bare
+    // `contains("://")`) keeps this from matching stray text.
+    if let Some((scheme, _)) = url.split_once("://") {
+        return !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+    }
+    false
 }
 
 /// Convert a markdown heading line ("## 1. Tree-sitter, core") into
@@ -950,6 +987,55 @@ mod tests {
             HelpLinkTarget::Customize(s) => assert_eq!(s, "editor"),
             other => panic!("expected Customize, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_link_url_routes_external_urls() {
+        // Real network / app schemes → Url (opened by the OS handler).
+        for url in [
+            "https://github.com/dhruvasagar/lattice",
+            "http://example.com/x",
+            "ftp://host/file",
+            "slack://channel?team=T&id=C",
+            "vscode://file/abs/path",
+            "mailto:hi@example.com",
+        ] {
+            match classify_link_url(url) {
+                HelpLinkTarget::Url(s) => assert_eq!(s, url),
+                other => panic!("expected Url for {url:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_link_url_does_not_treat_help_schemes_or_bare_text_as_urls() {
+        // Known help schemes must NOT be captured by the URL check (it runs
+        // last, and none use a `scheme://` authority).
+        assert!(matches!(
+            classify_link_url("help:modes"),
+            HelpLinkTarget::Topic(_)
+        ));
+        assert!(matches!(
+            classify_link_url("exec:tutor"),
+            HelpLinkTarget::Execute(_)
+        ));
+        assert!(matches!(
+            classify_link_url("customize:editor"),
+            HelpLinkTarget::Customize(_)
+        ));
+        // Schemeless / ambiguous strings stay Unresolved — no shelling out.
+        assert!(matches!(
+            classify_link_url("github.com/x"),
+            HelpLinkTarget::Unresolved(_)
+        ));
+        assert!(matches!(
+            classify_link_url("just some text"),
+            HelpLinkTarget::Unresolved(_)
+        ));
+        assert!(matches!(
+            classify_link_url("://no-scheme"),
+            HelpLinkTarget::Unresolved(_)
+        ));
     }
 
     #[test]

@@ -210,8 +210,9 @@ fn render_row(row: &DashboardRow) -> String {
 ///   it — every dashboard command link is an action to run).
 /// - `help:TOPIC` → `HelpLinkTarget::Topic` → opens the `:help TOPIC` page.
 ///
-/// A URL has no external opener in help-follow yet, so it renders as a plain
-/// URL (classified as `Unresolved` — a logged no-op on `<CR>`).
+/// A URL renders verbatim; `classify_link_url` maps a real `scheme://…`
+/// (or `mailto:`) form to `HelpLinkTarget::Url`, which follow-link opens
+/// via the OS handler (default browser / app).
 fn help_link_scheme(target: &LinkTarget) -> String {
     match target {
         LinkTarget::Command(cmd) => format!("exec:{cmd}"),

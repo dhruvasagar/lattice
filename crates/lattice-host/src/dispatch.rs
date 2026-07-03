@@ -21498,6 +21498,17 @@ impl Editor {
                 let target_line = line.saturating_sub(1).min(last);
                 self.set_cursor(lattice_protocol::position::Position::new(target_line, 0));
             }
+            HelpLinkTarget::Url(url) => {
+                // Hand a real network / app URL to the OS handler
+                // (`open` / `xdg-open` / `explorer`) so it opens in the
+                // default browser / registered app. Emitted as an effect
+                // (rather than calling `open_external_uri` inline) to match
+                // the LSP show-document path and keep the actual `spawn`
+                // out of the pure follow logic — the host applies the
+                // effect via its `Effect::OpenExternalUri` arm.
+                out.effects
+                    .push(lattice_grammar::Effect::OpenExternalUri { uri: url });
+            }
             HelpLinkTarget::Unresolved(url) => {
                 self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
             }

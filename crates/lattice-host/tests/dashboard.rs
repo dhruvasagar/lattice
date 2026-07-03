@@ -210,6 +210,35 @@ mod link_following {
             outcome.renderer_signals
         );
     }
+
+    #[test]
+    fn following_a_url_link_opens_it_externally() {
+        let mut editor = boot();
+        // The dashboard's project links are `LinkTarget::Url(https://…)` →
+        // classified as `HelpLinkTarget::Url` → follow emits
+        // `Effect::OpenExternalUri`, which the host applies via the OS
+        // handler (`open` / `xdg-open`). We assert the EFFECT (not an actual
+        // browser spawn) so the test has no side effects.
+        let target = cursor_on_link(&mut editor, |t| matches!(t, HelpLinkTarget::Url(_)));
+        let HelpLinkTarget::Url(url) = target else {
+            unreachable!()
+        };
+        assert!(
+            url.starts_with("https://"),
+            "expected an https project link, got {url:?}"
+        );
+
+        let outcome = editor.dispatch(Action::FollowLink);
+        assert!(
+            outcome
+                .effects
+                .iter()
+                .any(|e| matches!(e, Effect::OpenExternalUri { uri } if *uri == url)),
+            "following a URL link should emit Effect::OpenExternalUri({url:?}); \
+             got effects={:?}",
+            outcome.effects
+        );
+    }
 }
 
 #[test]

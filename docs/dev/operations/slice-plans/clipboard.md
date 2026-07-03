@@ -20,7 +20,7 @@ gpui-native (GPUI peer) + `FakeClipboard` (CI). Confirmed by user.
 |---|---|---|
 | CB.0 | ✅ | Clipboard trait + `FakeClipboard` + host `ClipboardHandle` service |
 | CB.1 | ✅ | `clipboard` bool option + `store_yank`/`read_register` cutover (yank-only) |
-| CB.2 | 📝 | TUI backend: `arboard` native + OSC52 fallback |
+| CB.2 | ✅ | TUI backend: `arboard` native + OSC52 fallback |
 | CB.3 | 📝 | Terminal-mode yank/paste (PTY routing, mode-owned) |
 | CB.4 | 📝 | GPUI backend parity (gpui native clipboard) |
 | CB.5 | 📝 | Bench + docs + graceful-degradation hardening |
@@ -77,22 +77,46 @@ The semantics seam (§5). Landed against `FakeClipboard` (headless-testable).
 
 **Depends on:** CB.0.
 
-## CB.2 — TUI native backend
+## CB.2 — TUI native backend ✅
 
-- `arboard`-backed `Clipboard` impl; **feature-gated / optional dep** so the TUI-only
-  and headless CI builds don't hard-require X11/Wayland libs (mirror gpui optional-dep;
-  see design §9.1).
-- OSC52 write fallback when no display (`$SSH_TTY` / arboard init fails); OSC52 read
-  unsupported → in-memory fallback (documented).
-- Bind the real backend at TUI boot (replacing `FakeClipboard`).
-- `read` only ever invoked under `spawn_blocking`; `write` fire-and-forget. Verify no
-  clipboard call on the synchronous keystroke path — **specifically**,
-  `Editor::read_register`'s synchronous `cb.read()` (CB.1, `dispatch.rs`) sits on the
-  blocking render→actor RPC path; it's correct today only because `FakeClipboard` is
-  instant. Before binding `arboard` here, either make that call bounded/cached or move
-  it off the synchronous path (see the CB.2-obligation comment on `read_register`).
-- Test (gated, real backend where available): roundtrip; headless → OSC52 write path
-  exercised without asserting a real read.
+**Landed:** `crates/lattice-ui-tui/src/clipboard.rs`.
+
+- `Osc52Clipboard` — write-only, zero link deps, always compiled in. `read()` always
+  `None` (most terminals block OSC52 read-back for security) — falls back to the
+  in-memory register, as documented. `write()` base64-encodes and emits
+  `ESC ] 52 ; c ; <b64> BEL` directly to `stdout`, fire-and-forget, never panics on a
+  broken pipe.
+- `ArboardClipboard` (behind the new `lattice-ui-tui` **`system-clipboard`** feature,
+  default off — mirrors `lattice-ui-gpui`'s `window` optional-dep exactly, because
+  `arboard` pulls X11/Wayland link libs the default `cargo test --workspace` CI job
+  doesn't install). `lattice-cli` gained a matching `clipboard` feature
+  (`cargo build --features clipboard`) wiring `lattice-ui-tui/system-clipboard`.
+  Without the feature, yank still reaches the real clipboard via OSC52 write — only
+  *read* (paste-from-another-app) and native Wayland/X11 write need the feature.
+- **The CB.2 obligation is resolved, not deferred:** `ArboardClipboard::read()` bounds
+  the OS round-trip with `tokio::time::timeout(30ms, spawn_blocking(...))`, driven via
+  the existing `lattice_runtime::block_on` sync-to-async bridge (the same escape hatch
+  `Editor::apply_edit_blocking` et al. already use from the actor thread) — so a hung
+  display server degrades to `None` (register fallback) instead of stalling dispatch.
+  `write()` is genuinely fire-and-forget via `lattice_runtime::spawn_task` (no bound
+  needed — nothing awaits the result).
+- `TuiClipboard::detect()` composes the two: prefers OSC52 under SSH (`$SSH_TTY` /
+  `$SSH_CONNECTION`) even when `system-clipboard` is compiled in and arboard *could*
+  connect — over `ssh -X`, arboard would reach the **forwarded** X server's clipboard,
+  not the user's local machine clipboard, so OSC52 (which tunnels through the terminal
+  emulator directly) is the semantically correct backend there. The SSH-detection
+  logic is split into a pure `detect_with(bool)` so it's unit-testable without mutating
+  process-global env vars (which would race parallel tests).
+- Bound at TUI boot: `App::new` (`lattice-ui-tui/src/app/boot.rs`) overrides CB.0's
+  default `FakeClipboard` via `Arc::get_mut(&mut editor.services)` immediately after
+  `Editor::boot` returns (the registry is still a freshly-frozen, uniquely-owned Arc at
+  that point — `Arc::get_mut` is guaranteed to succeed, verified by a dedicated
+  regression test plus the full 1538-test TUI suite passing unchanged).
+- Tests: `Osc52Clipboard` read-always-None + write-never-panics; `detect_with`'s
+  SSH-preference rule (both with and without the feature); a boot-level regression
+  test pinning that `App::new` leaves a working `ClipboardHandle` registered. All green
+  in both feature configurations; full workspace + GPUI build clean; 2650 tests total
+  across host/grammar/config/core/TUI (up from 2645 at CB.1, +5 new).
 
 **Depends on:** CB.1.
 

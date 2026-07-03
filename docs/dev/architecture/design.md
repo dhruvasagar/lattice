@@ -52,7 +52,12 @@ the same shape as `keymap-architecture.md` for §5.2.
   the lifecycle `Effect` appliers (`&mut Editor`-bound: pane /
   actor / spawn) called out as legitimate host residue (the
   cycle constraint; `host-provider-boundary.md`). Worked example:
-  the diff subsystem (`diff-extraction.md` §4).
+  the diff subsystem (`diff-extraction.md` §4). For how an `Effect`
+  actually reaches its host + renderer appliers — the
+  "everything in `out.effects` was already host-applied" invariant
+  and the sync-direct-call vs `apply_effect_host` vs async-inbound
+  paths — see the audit
+  [`../audit/effect-dispatch.md`](../audit/effect-dispatch.md).
 - **Options and groups are typed identities, not strings.**
   Cross-crate uniqueness enforced by Rust's type system;
   display-name uniqueness by `linkme` aggregation. Strings

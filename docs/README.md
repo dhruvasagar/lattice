@@ -8,6 +8,7 @@ docs/
 └── dev/         ← reference for *building* lattice
     ├── architecture/   live design specs
     ├── operations/     implementation status, benchmarks, verification
+    ├── audit/          point-in-time design traces + load-bearing invariants
     ├── notes/          ongoing tracking docs (lsp-features, ui-tui-refactor)
     └── archive/        completed planning + audit artefacts (historical)
 ```
@@ -65,6 +66,22 @@ right now."**
 | [embedded-docs-budget.md](dev/operations/embedded-docs-budget.md)         | Size-budget rationale + escape options when embedded user docs grow past the trigger. |
 | [slice-plans/](dev/operations/slice-plans/)                               | Sliced rollout plans, one file per subsystem (diff, multibuffer, virtual rows, terminal, completion-pipeline). Sequencing-only; design lives in `dev/architecture/`. |
 
+## dev/audit/
+
+Point-in-time traces of *how a subsystem actually works*, written when a
+bug or a "this smells redundant" hunch turns into a full investigation.
+Each audit names the **load-bearing invariant** it found, the paths that
+honour it, and the anomaly that motivated the write-up — kept live (not
+archived) because the invariant still governs the code. Unlike
+`dev/architecture/` (the stable *what/why*) an audit is dated and
+trace-shaped; unlike `dev/archive/` it documents a *current* invariant,
+not a landed refactor.
+
+| Doc                                                       | What it covers                                                                                     |
+|-----------------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| [audit/README.md](dev/audit/README.md)                    | Index + what an audit is for.                                                                       |
+| [effect-dispatch.md](dev/audit/effect-dispatch.md)        | How an `Effect` reaches its host + renderer appliers; the "everything in `out.effects` was already host-applied" invariant. |
+
 ## dev/notes/
 
 Ongoing tracking docs.
@@ -86,7 +103,9 @@ pointing to the closing slice. See
 - **You want to use a feature** — start at `user/README.md`.
 - **You're changing a subsystem** — read its spec under
   `dev/architecture/`, then check `dev/operations/implementation.md`
-  for the build status.
+  for the build status. If an [`dev/audit/`](dev/audit/README.md) doc
+  covers the area, read it too — it names the invariant a change most
+  easily breaks.
 - **You're auditing what ships today** — start with
   `dev/operations/`. Implementation > Benchmarks > Verify.
 - **You're catching up on prior work** — `dev/notes/` for

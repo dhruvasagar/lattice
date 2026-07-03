@@ -33,6 +33,23 @@ impl App {
         // Phase 5.7.B.1: the renderer-neutral construction body
         // moved to `lattice_host::editor::Editor::boot`.
         let mut editor = lattice_host::editor::Editor::boot(document);
+        // DB.5 (test isolation): unit tests construct `App::new` with a
+        // pathless `Document::from_text`, which looks exactly like a
+        // real no-file launch — so the startup trigger below would
+        // auto-open `*dashboard*` and every render test would see the
+        // dashboard buffer instead of its own text. Disable the auto-open
+        // BEFORE the `Startup` publish: the trigger's async task reads
+        // `dashboard.enabled` only AFTER it receives `Startup`, and its
+        // `recv()` cannot complete before `publish_typed` sends — so
+        // setting it here is race-free (any later `set` would race the
+        // background task). Production launch (`main`) never takes this
+        // branch, so the real no-file→dashboard behavior is untouched.
+        #[cfg(test)]
+        {
+            let _ = editor
+                .config
+                .parse_and_set_command("dashboard.enabled=false");
+        }
         // DB.5: publish `Startup` once `editor` exists (right after `boot`
         // returns), so `lattice_dashboard::install`'s subscription (wired
         // during `boot`, Phase-B) can decide whether to auto-open

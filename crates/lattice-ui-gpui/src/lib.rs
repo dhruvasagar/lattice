@@ -346,6 +346,19 @@ impl GpuiApp {
         // mirrors the TUI seam in `lattice-ui-tui/src/app/boot.rs`.
         let opened_file = document.path().map(|p| p.to_path_buf());
         let mut editor = Editor::boot(document);
+        // DB.5 (test isolation): disable the dashboard auto-open BEFORE
+        // the `Startup` publish so unit tests (which build pathless
+        // documents that look like a no-file launch) don't get the
+        // dashboard buffer instead of their own text. Race-free — the
+        // trigger's task reads `dashboard.enabled` only after receiving
+        // `Startup`, which can't arrive before this publish. Mirrors the
+        // TUI seam in `lattice-ui-tui/src/app/boot.rs`.
+        #[cfg(test)]
+        {
+            let _ = editor
+                .config
+                .parse_and_set_command("dashboard.enabled=false");
+        }
         // DB.5: publish `Startup` once `editor` exists, right after `boot`
         // returns — see the TUI seam for the full rationale.
         editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });

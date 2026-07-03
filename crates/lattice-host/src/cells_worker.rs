@@ -1838,29 +1838,42 @@ fn try_incremental_display_build(
     }
 
     let edit_lo = edit.start_line;
-    // B2.3 intra-line staleness fix (2026-06-05): the row-reuse partition
-    // treats lines `>= pre_edit_end_line()` as the unchanged SUFFIX (reused,
-    // shifted by `net`). But `EditDelta` counts only FULL lines added/removed,
-    // so a **pure intra-line edit** — the COMMON typing case, inserting or
-    // deleting a char without crossing a newline — reports
-    // `lines_added == lines_removed == 0`, which makes
-    // `pre_edit_end_line() == start_line == the EDITED line`. Reusing it as
-    // suffix paints the PRE-edit row while the matrix version is stamped
-    // current, so the renderer's per-line staleness fallback never fires and
-    // the typed glyph visibly lags the cursor for a frame
-    // (`|word` → `w|ord` → ` |word`; felt as "one key behind" because the
-    // TUI's 100ms poll only redraws on the NEXT keystroke). For an intra-line
-    // edit the edited line MUST be rebuilt, so the reusable suffix starts one
-    // past it. Gated to `removed == added == 0`: for a structural edit
-    // (`lines_*` > 0) `pre_edit_end_line()` is a genuinely-unchanged line that
-    // only SHIFTS — reusing its row (and thus its syntax colour) is correct,
-    // and extending the boundary there would needlessly recolour it (a flicker
-    // the async worker would have to repaint — feedback_decorations_update_in_place).
-    // Boundary-line CONTENT changes from mid-line splits / joins (same
-    // `EditDelta` shape as a clean line insert/delete, distinguishable only
-    // with intra-line column info) remain a rarer, self-healing follow-up.
-    let suffix_lo = if edit.lines_removed == 0 && edit.lines_added == 0 {
-        edit.pre_edit_end_line().saturating_add(1)
+    // B2.3 intra-line staleness fix (2026-06-05) + open-line dup fix
+    // (2026-07-03): the row-reuse partition treats lines
+    // `>= pre_edit_end_line()` as the unchanged SUFFIX (reused, shifted by
+    // `net`). But `EditDelta` counts only FULL lines added/removed, so a
+    // **pure insert** (`lines_removed == 0`) reports
+    // `pre_edit_end_line() == start_line`, which would reuse-and-shift the
+    // START line itself. That is wrong for EVERY pure insert:
+    //
+    // - **Intra-line insert** (the COMMON typing case, `added == 0`): the
+    //   edited line is reused stale while the matrix version is stamped
+    //   current, so the typed glyph lags the cursor by a frame
+    //   (`|word` → `w|ord` → ` |word`; felt as "one key behind").
+    // - **Line-opening / mid-line-split insert** (`added > 0`, e.g. vim
+    //   `o`/`O`): `\n` inserted at EOL leaves the start line's content
+    //   unchanged but creates a new blank line after it. Reusing the start
+    //   row and shifting it into the new line's slot DUPLICATES the start
+    //   line's content (the "`o` duplicates the line" bug). The async
+    //   worker's full rebuild fixes it a frame later, so it read as an
+    //   occasional flicker.
+    //
+    // A pure insert always modifies or splits the start line and/or creates
+    // new lines at/after it, so the start line MUST be rebuilt and only
+    // strictly-later pre-edit lines may shift — the reusable suffix starts
+    // one past `start_line`. Rebuilding `[start_line, added]` from the new
+    // snapshot is correct regardless of the insert column, so this also
+    // covers mid-line splits.
+    //
+    // Gated to `removed == 0`: for an edit that removes lines
+    // (`lines_removed > 0`) `pre_edit_end_line()` is a genuinely-unchanged
+    // line that only SHIFTS — reusing its row (and its syntax colour) is
+    // correct, and extending the boundary there would needlessly recolour it
+    // (a flicker the async worker would have to repaint —
+    // feedback_decorations_update_in_place). Boundary-line CONTENT changes
+    // from mid-line joins / deletions remain a rarer, self-healing follow-up.
+    let suffix_lo = if edit.lines_removed == 0 {
+        edit.start_line.saturating_add(1)
     } else {
         edit.pre_edit_end_line()
     };
@@ -3864,6 +3877,83 @@ mod tests {
         );
     }
 
+    /// Regression (2026-07-03): `o` (open line below) visually duplicated
+    /// the current line. `o` inserts `\n` at END of line L, producing
+    /// `EditDelta {start: L, removed: 0, added: 1}` — a PURE insert whose
+    /// start line's content is unchanged but which creates a new blank
+    /// line at L+1. The old partition set `suffix_lo = pre_edit_end_line()
+    /// == L`, so the prior row L ("word") was reused-and-shifted to L+1
+    /// (where the new blank line belongs) AND rebuilt at L — the line
+    /// appeared twice. The async worker's full rebuild corrected it a
+    /// frame later, so it read as an occasional flicker.
+    #[test]
+    fn whole_doc_incremental_open_line_below_does_not_duplicate() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let snap1 = snap_of_versioned("word\nbb\ncc", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // whole-doc
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+
+        // `o` on line 0: insert `\n` at EOL of "word" → "word\n\nbb\ncc".
+        // The new blank line is at source line 1; "bb"/"cc" shift down.
+        let snap2 = snap_of_versioned("word\n\nbb\ncc", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(0, 0, 1); // start:0, removed:0, added:1
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let d2 = dm_cell.load_full();
+        assert_eq!(
+            &*d2.row_at_source_line(0).unwrap().text,
+            "word",
+            "line 0 is unchanged"
+        );
+        assert_eq!(
+            &*d2.row_at_source_line(1).unwrap().text,
+            "",
+            "the newly-opened line must render EMPTY, not a duplicate of line 0"
+        );
+        assert_eq!(
+            &*d2.row_at_source_line(2).unwrap().text,
+            "bb",
+            "old line 1 (bb) shifts to source line 2"
+        );
+        assert_eq!(
+            &*d2.row_at_source_line(3).unwrap().text,
+            "cc",
+            "old line 2 (cc) shifts to source line 3"
+        );
+    }
+
     /// 2026-06-04: whole-doc incremental rebuild must REUSE the prior
     /// chunk's `DisplayLine`s for unchanged lines (same `text` Arc),
     /// not rebuild them — that reuse is what keeps their syntax colours
@@ -3903,7 +3993,7 @@ mod tests {
         let dm_cell = display_cell_for(&matrix_cell);
         let d1 = dm_cell.load_full();
         let aa_pre = Arc::clone(&d1.row_at_source_line(0).unwrap().text);
-        let bb_pre = Arc::clone(&d1.row_at_source_line(1).unwrap().text);
+        let cc_pre = Arc::clone(&d1.row_at_source_line(2).unwrap().text);
 
         // Insert a line at line 1 → "aa\nNEW\nbb\ncc".
         let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
@@ -3930,9 +4020,20 @@ mod tests {
             Arc::ptr_eq(&aa_pre, &d2.row_at_source_line(0).unwrap().text),
             "unchanged prefix row (line 0) must reuse the prior DisplayLine text Arc — keeps its colours"
         );
+        // The row immediately after the insert start (`start_line == 1`, i.e.
+        // old line 1 "bb" → new line 2) is now REBUILT, not reused: a pure
+        // insert's `EditDelta {start:1, removed:0, added:1}` is ambiguous —
+        // the same delta is produced by "insert a full line at BOL of line 1"
+        // (old "bb" shifts unchanged) and by `o` on line 1 (old "bb" stays,
+        // new blank appears after). Since they can't be told apart without
+        // column info, the boundary line is rebuilt from the new snapshot so
+        // content is always correct (the open-line-dup fix); its colour catches
+        // up on the async worker's next pass. Rows STRICTLY past the boundary
+        // are unambiguously shifted and still Arc-reuse — assert "cc"
+        // (old line 2 → new line 3) keeps its prior text Arc.
         assert!(
-            Arc::ptr_eq(&bb_pre, &d2.row_at_source_line(2).unwrap().text),
-            "shifted suffix row (\"bb\": line 1 → 2) must reuse the prior DisplayLine text Arc — keeps its colours"
+            Arc::ptr_eq(&cc_pre, &d2.row_at_source_line(3).unwrap().text),
+            "shifted suffix row (\"cc\": line 2 → 3) must reuse the prior DisplayLine text Arc — keeps its colours"
         );
     }
 

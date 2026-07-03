@@ -1,17 +1,20 @@
-//! CB.2 (`docs/dev/architecture/clipboard.md` §4): the TUI's
+//! CB.2 / CB.4 (`docs/dev/architecture/clipboard.md` §4): the TUI's
 //! [`lattice_core::Clipboard`] backend. Two implementations composed by
 //! [`TuiClipboard::detect`]:
 //!
 //! - [`Osc52Clipboard`] — terminal escape-sequence write. No link deps,
 //!   always compiled in. Read-back is unsupported (most terminals block the
 //!   OSC52 read half for security reasons), so `read` always returns
-//!   `None` and callers fall back to the in-memory register.
-//! - [`ArboardClipboard`] (behind the `system-clipboard` feature) — native
-//!   OS clipboard (macOS / X11 / Wayland / Windows) via `arboard`. Full
-//!   read + write, but pulls X11/Wayland link libs on Linux, so it's
-//!   feature-gated (mirrors `lattice-ui-gpui`'s `window` optional-dep
-//!   pattern) — the default `cargo test --workspace` CI job doesn't
-//!   install those libs.
+//!   `None` and callers fall back to the in-memory register. This is the
+//!   TUI-specific half (writing escape codes to stdout only makes sense for
+//!   a terminal), so it lives here rather than in the shared host module.
+//! - [`lattice_host::clipboard::ArboardClipboard`] (behind the
+//!   `system-clipboard` feature) — native OS clipboard via `arboard`, the
+//!   **shared** backend both renderer peers use (CB.4 moved it to
+//!   `lattice-host` so the bounded-read logic isn't duplicated; see that
+//!   module's doc). Feature-gated because it pulls X11/Wayland link libs;
+//!   `lattice-ui-tui/system-clipboard` forwards to
+//!   `lattice-host/system-clipboard`.
 //!
 //! `TuiClipboard::detect()` prefers OSC52 under SSH even when `arboard`
 //! would technically succeed: over `ssh -X`, `arboard` can connect to the
@@ -21,6 +24,8 @@
 //! is the semantically correct backend for SSH sessions.
 
 use lattice_core::Clipboard;
+#[cfg(feature = "system-clipboard")]
+use lattice_host::clipboard::ArboardClipboard;
 
 /// OSC52 clipboard-write escape sequence
 /// (`ESC ] 52 ; c ; <base64> BEL`, `c` = the clipboard selection). No
@@ -49,75 +54,6 @@ impl Clipboard for Osc52Clipboard {
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(seq.as_bytes());
         let _ = stdout.flush();
-    }
-}
-
-/// Native OS clipboard via `arboard`. Only compiled in behind the
-/// `system-clipboard` feature.
-#[cfg(feature = "system-clipboard")]
-pub struct ArboardClipboard {
-    inner: std::sync::Arc<std::sync::Mutex<arboard::Clipboard>>,
-}
-
-#[cfg(feature = "system-clipboard")]
-impl ArboardClipboard {
-    /// `None` when no display is reachable (headless, or the display
-    /// server refused the connection) — the caller falls back to OSC52.
-    pub fn new() -> Option<Self> {
-        arboard::Clipboard::new().ok().map(|inner| Self {
-            inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
-        })
-    }
-
-    /// Bounded wait so a hung display-server round-trip can't stall
-    /// dispatch (paramount #1). `read_register`'s call sits on the
-    /// blocking render→actor RPC (`input-pipeline.md`); this bound is the
-    /// CB.2 half of the obligation flagged on
-    /// `Editor::read_register` (`lattice-host/src/dispatch.rs`). 30ms is
-    /// generous headroom over the common case (a local X11/Wayland/macOS
-    /// clipboard round-trip is sub-5ms) while still bounding the worst
-    /// case. `spawn_blocking` moves the actual FFI call off whatever
-    /// thread drives the future; `lattice_runtime::block_on` is the
-    /// existing sync-to-async bridge this codebase already uses from the
-    /// editor actor (e.g. `Editor::apply_edit_blocking`).
-    const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(30);
-}
-
-#[cfg(feature = "system-clipboard")]
-impl Clipboard for ArboardClipboard {
-    fn read(&self) -> Option<String> {
-        let clipboard = self.inner.clone();
-        let fut = async move {
-            tokio::time::timeout(
-                Self::READ_TIMEOUT,
-                tokio::task::spawn_blocking(move || {
-                    clipboard.lock().ok()?.get_text().ok()
-                }),
-            )
-            .await
-        };
-        match lattice_runtime::block_on(fut) {
-            Ok(Ok(text)) => text,
-            // Timed out, the blocking task panicked, or the mutex was
-            // poisoned -- any of these degrade to "no clipboard value",
-            // never a panic on the hot path.
-            _ => None,
-        }
-    }
-
-    fn write(&self, text: String) {
-        // True fire-and-forget: schedule onto the shared runtime and
-        // return immediately, no bound needed (nothing awaits the
-        // result).
-        let clipboard = self.inner.clone();
-        lattice_runtime::spawn_task(async move {
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Ok(mut cb) = clipboard.lock() {
-                    let _ = cb.set_text(text);
-                }
-            })
-            .await;
-        });
     }
 }
 

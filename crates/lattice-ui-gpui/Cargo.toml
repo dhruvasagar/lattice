@@ -106,7 +106,13 @@ default = []
 # Phase 5.8.M: the previous `lattice-gpui` shim binary was removed
 # in favour of the single `lattice` entry in lattice-cli; this
 # crate now ships only as a lib.
-window = ["dep:gpui"]
+window = ["dep:gpui", "system-clipboard"]
+# CB.4 (docs/dev/architecture/clipboard.md): native OS clipboard via the
+# shared `lattice-host` `ArboardClipboard`. Implied by `window` (a real
+# GUI build always links display libs, so arboard is always available and
+# a GUI always wants a working clipboard). Kept as a distinct feature so
+# the dependency chain is explicit and the boot override is cfg-gated.
+system-clipboard = ["lattice-host/system-clipboard"]
 # Phase 5.8.AF.6 / Slice X5: re-export `editor_element` internals
 # (build_line_with_inlays, byte_to_combined_col, run-collapse
 # helpers) so the frame-budget bench can call them without

@@ -137,9 +137,28 @@ crate-private) — not that the handler bodies live in the `lattice-terminal` cr
 
 ## 7. Cross-renderer parity
 
-TUI and GPUI move in lockstep: the clipboard trait is renderer-neutral; the TUI binds
-`arboard`/OSC52, GPUI binds gpui-clipboard, both at boot behind the same
-`ClipboardHandle`. No renderer reads the clipboard directly.
+TUI and GPUI move in lockstep behind the same `ClipboardHandle`, both overriding CB.0's
+default `FakeClipboard` at boot; no renderer reads the clipboard directly.
+
+**The native backend is shared, not per-peer (CB.4 finding).** Fork 1 named
+"gpui-native" for the GPUI peer, but gpui's clipboard is reachable only through `&App`
+on the main thread (`AsyncApp` holds `Weak<AppCell>` = `Rc`/`RefCell`, not `Send`), and
+the `Clipboard` trait is `Send + Sync` with a **synchronous `read` on the editor actor
+thread** (`Editor::read_register`). A main-thread-only gpui context cannot satisfy that
+synchronous cross-thread read except via a stale main-thread-refreshed cache. `arboard`
+is `Send + Sync` and reads synchronously (bounded, §4), so it is the sound resolution —
+and since the GPUI peer always links display libs (its `window` feature), `arboard` is
+always available in a real GUI build with no extra system-dep cost.
+
+So a **single** `ArboardClipboard` (in `lattice-host`, behind `system-clipboard`) serves
+both peers — the load-bearing bounded-read (paramount #1) exists once, can't drift. The
+TUI composes it with its own OSC52 write-only fallback (`Osc52Clipboard`, TUI-specific
+since it writes terminal escape codes to stdout) for headless / SSH; the GPUI peer uses
+`ArboardClipboard` directly (a GUI is never a headless terminal, so no OSC52 fallback).
+The trade-off accepted: on Wayland, arboard's own connection is marginally less reliable
+for *writes* than a window-owned selection would be — acceptable given arboard 3.x's
+`wl-clipboard-rs` handling, and far outweighed by keeping the synchronous-read contract
+and one shared impl (heuristic #1).
 
 ## 8. Rejected alternatives
 

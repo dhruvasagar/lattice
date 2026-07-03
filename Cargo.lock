@@ -3845,6 +3845,7 @@ dependencies = [
 name = "lattice-host"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "arc-swap",
  "criterion",
  "dirs 5.0.1",
@@ -4140,7 +4141,6 @@ name = "lattice-ui-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "arc-swap",
  "base64",
  "criterion",

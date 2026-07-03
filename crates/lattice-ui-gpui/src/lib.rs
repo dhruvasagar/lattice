@@ -346,6 +346,29 @@ impl GpuiApp {
         // mirrors the TUI seam in `lattice-ui-tui/src/app/boot.rs`.
         let opened_file = document.path().map(|p| p.to_path_buf());
         let mut editor = Editor::boot(document);
+        // CB.4 (docs/dev/architecture/clipboard.md §4/§7): override CB.0's
+        // default `FakeClipboard` with the shared native `arboard` backend
+        // (the same `lattice_host::clipboard::ArboardClipboard` the TUI
+        // peer uses — one impl, honoring the synchronous-read contract).
+        // The GPUI peer always links display libs (the `window` feature),
+        // so `arboard` is always available in a real GUI build and needs
+        // no OSC52 fallback (a GUI is never a headless terminal). Fork-1
+        // named "gpui-native" here, but gpui's own clipboard is reachable
+        // only via `&App` on the main thread, which can't satisfy the
+        // `Send + Sync` trait's synchronous read from the editor actor
+        // thread; arboard is the sound resolution (see the slice plan
+        // CB.4 note). Gated on `system-clipboard` (pulled by `window`) so
+        // the non-window scaffold build stays dep-light. `Arc::get_mut`
+        // succeeds here for the same reason as the TUI seam: the registry
+        // is a freshly-frozen, uniquely-owned Arc immediately after
+        // `Editor::boot`.
+        #[cfg(feature = "system-clipboard")]
+        if let Some(native) = lattice_host::clipboard::ArboardClipboard::new()
+            && let Some(services) = std::sync::Arc::get_mut(&mut editor.services)
+        {
+            let clipboard: lattice_core::ClipboardHandle = std::sync::Arc::new(native);
+            services.register(clipboard);
+        }
         // DB.5 (test isolation): disable the dashboard auto-open BEFORE
         // the `Startup` publish so unit tests (which build pathless
         // documents that look like a no-file launch) don't get the
@@ -1410,6 +1433,27 @@ mod tests {
         let probe: &dyn ProviderLookup = &app.pane_render_registry;
         let dummy = lattice_mode::ModeId::new("__scaffold_probe__");
         assert!(!probe.has_provider(dummy));
+    }
+
+    /// CB.4 regression guard: `GpuiApp::new` must always leave a working
+    /// `ClipboardHandle` registered and never panic through its
+    /// clipboard-override path. In a default (`system-clipboard`-off) test
+    /// run this is CB.0's `FakeClipboard`, preserved through GPUI boot; the
+    /// arboard override (feature-on, real display) is exercised on the dev
+    /// machine + via the `--features window` build. The point pinned here
+    /// is the invariant that survives regardless of feature/display: boot
+    /// completes and a handle resolves.
+    #[test]
+    fn new_leaves_a_working_clipboard_handle() {
+        let app = GpuiApp::new(Document::empty());
+        let clipboard = app
+            .editor
+            .services
+            .get::<lattice_core::ClipboardHandle>()
+            .expect("GpuiApp::new must leave a ClipboardHandle registered");
+        // Whatever backend is bound, write+read must not panic.
+        clipboard.write("cb4-gpui-probe".to_string());
+        let _ = clipboard.read();
     }
 
     /// End-to-end pipeline assertion: a key string flows through

@@ -66,12 +66,10 @@ serde_json = { workspace = true }
 # 4.4.l.2: cross-platform fs watcher driving the LSP
 # `workspace/didChangeWatchedFiles` fan-out.
 notify = { workspace = true }
-# CB.2 (docs/dev/architecture/clipboard.md): native OS clipboard, gated
-# behind the `system-clipboard` feature (X11/Wayland link libs on Linux;
-# see the `[features]` block below).
-arboard = { workspace = true, optional = true }
 # CB.2: OSC52 clipboard-write escape sequences are base64-encoded. No
-# system-lib dependency, always compiled in.
+# system-lib dependency, always compiled in. (The native `arboard` backend
+# is CB.4-shared and lives in `lattice-host` behind its own
+# `system-clipboard` feature; this crate forwards to it — see `[features]`.)
 base64 = { workspace = true }
 
 [dev-dependencies]
@@ -80,15 +78,17 @@ criterion = { workspace = true }
 
 [features]
 default = []
-# CB.2: real OS clipboard support (macOS / X11 / Wayland / Windows) via
-# `arboard`. Off by default so `cargo test --workspace` and `cargo build -p
-# lattice-cli` stay headless-friendly (no display-system libs required at
-# link time on Linux: `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`
-# for X11, `libwayland-dev` for Wayland) -- mirrors `lattice-ui-gpui`'s
-# `window` feature. Without this feature, yank still reaches the real
-# system clipboard via the OSC52 write fallback (no link deps); only
-# clipboard *read* (paste-from-another-app) needs this feature enabled.
-system-clipboard = ["dep:arboard"]
+# CB.2/CB.4: real OS clipboard support (macOS / X11 / Wayland / Windows).
+# Forwards to the shared `lattice-host/system-clipboard` backend (CB.4
+# moved `ArboardClipboard` there so both peers share one impl). Off by
+# default so `cargo test --workspace` and `cargo build -p lattice-cli` stay
+# headless-friendly (no display-system libs required at link time on Linux:
+# `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev` for X11,
+# `libwayland-dev` for Wayland) -- mirrors `lattice-ui-gpui`'s `window`
+# feature. Without this feature, yank still reaches the real system
+# clipboard via the OSC52 write fallback (no link deps); only clipboard
+# *read* (paste-from-another-app) needs this feature enabled.
+system-clipboard = ["lattice-host/system-clipboard"]
 
 [[bench]]
 name = "folds"

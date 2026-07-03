@@ -104,6 +104,13 @@ lattice-multibuffer = { path = "../lattice-multibuffer" }
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+# CB.4 (docs/dev/architecture/clipboard.md): the native `arboard`
+# clipboard backend shared by BOTH renderer peers lives here (host has
+# tokio for the bounded read + is depended on by both peers). Optional /
+# feature-gated behind `system-clipboard` so host's default build stays
+# free of the X11/Wayland link libs; a peer opts in via
+# `lattice-host/system-clipboard`.
+arboard = { workspace = true, optional = true }
 # Phase 5.B.18 / refactor #70: LSP request channels carry
 # `lsp_types::*` values (CodeLens, ColorPresentation, Range,
 # Location, MessageActionItem). These are reached through
@@ -237,6 +244,11 @@ harness = false
 # the `ignore` dep lights up only when this is enabled.
 default = ["search"]
 search = ["lattice-multibuffer/search"]
+# CB.4: compile the native `arboard` clipboard backend
+# (`crate::clipboard::ArboardClipboard`). Off by default; the TUI peer
+# (`lattice-ui-tui/system-clipboard`) and GPUI peer (via its `window`
+# feature) forward to this. Pulls X11/Wayland link libs on Linux.
+system-clipboard = ["dep:arboard"]
 
 [lints]
 workspace = true

@@ -22,7 +22,7 @@ gpui-native (GPUI peer) + `FakeClipboard` (CI). Confirmed by user.
 | CB.1 | ✅ | `clipboard` bool option + `store_yank`/`read_register` cutover (yank-only) |
 | CB.2 | ✅ | TUI backend: `arboard` native + OSC52 fallback |
 | CB.3 | ✅ | Terminal-mode yank/paste (PTY routing, mode-owned) |
-| CB.4 | 📝 | GPUI backend parity (gpui native clipboard) |
+| CB.4 | ✅ | GPUI backend parity (shared `arboard`, not gpui-native — see note) |
 | CB.5 | 📝 | Bench + docs + graceful-degradation hardening |
 
 ---
@@ -177,13 +177,45 @@ new architectural pattern.
 
 **Depends on:** CB.1 (register seam). Independent of CB.2 (works with any backend).
 
-## CB.4 — GPUI backend parity
+## CB.4 — GPUI backend parity ✅
 
-- gpui-clipboard-backed `Clipboard` impl bound at GPUI boot behind the same
-  `ClipboardHandle`.
-- GPUI is feature-gated — verify with `cargo build -p lattice-ui-gpui --features window`
-  (a plain `-p lattice-cli` build won't compile it; see CLAUDE.md).
-- Audit: `grep -rn "ClipboardHandle\|read_from_clipboard" crates/lattice-ui-gpui/` non-empty.
+**Fork-1 deviation, user-confirmed (2026-07-03): shared `arboard`, NOT gpui-native.**
+Implementing gpui-native surfaced a thread-model conflict invisible when Fork 1 was
+decided: gpui's clipboard is reachable only via `&App` on the main thread (`AsyncApp`
+holds `Weak<AppCell>` = `Rc`/`RefCell`, not `Send`), but `lattice_core::Clipboard` is
+`Send + Sync` with a **synchronous `read` on the editor actor thread**
+(`Editor::read_register`, on the blocking render→actor path). A main-thread-only gpui
+context can't serve that synchronous cross-thread read except from a stale cache + new
+per-frame/focus polling (a paramount-#1 hazard). Presented options A (shared arboard) /
+B (true gpui-native + cache) / C (hybrid: gpui write + arboard read); user chose **A**.
+See design §7 for the full mapping.
+
+**Landed:**
+
+- Moved the native backend to `lattice-host/src/clipboard.rs` (`ArboardClipboard`)
+  behind a new `lattice-host/system-clipboard` feature — host has `tokio` +
+  `lattice_runtime::block_on` for the bounded read and is depended on by BOTH peers, so
+  the load-bearing bounded-read logic (paramount #1) exists exactly once and can't drift.
+  `Osc52Clipboard` stays TUI-local (writing escape codes to stdout is terminal-specific).
+- TUI (`lattice-ui-tui/system-clipboard`) now forwards to `lattice-host/system-clipboard`
+  and imports `lattice_host::clipboard::ArboardClipboard` — its `arboard` direct dep is
+  dropped; `TuiClipboard::detect` composition (SSH→OSC52 preference) is unchanged.
+- GPUI: `GpuiApp::new` overrides CB.0's `FakeClipboard` with the shared
+  `ArboardClipboard` via the same `Arc::get_mut(&mut editor.services)` seam as the TUI.
+  Gated on a new `lattice-ui-gpui/system-clipboard` feature that its **`window` feature
+  pulls** (a real GUI build always links display libs, so arboard is always available and
+  a GUI always wants a working clipboard). No OSC52 fallback for GPUI (a GUI is never a
+  headless terminal). `--features gui` on `lattice-cli` transitively enables it.
+- Feature-matrix builds all clean: gpui default (no clipboard), gpui `system-clipboard`
+  alone (clipboard override compiles without the gpui window link — good for CI), gpui
+  `window` (full macOS display link), cli `clipboard`, cli `gui`.
+- Tests: a GPUI boot regression guard (`new_leaves_a_working_clipboard_handle`) pinning
+  that boot always leaves a resolvable, panic-free `ClipboardHandle` (the
+  environment-independent invariant; the arboard override itself needs a real display,
+  exercised on-device + via the `window` build). Host's `ArboardClipboard` module builds
+  + the existing 7 host clipboard tests pass under `--features system-clipboard`. Full
+  regression: 2725 tests across host/terminal/grammar/config/core/TUI/GPUI (7 suites),
+  clippy clean under the feature.
 
 **Depends on:** CB.0 (trait), CB.1 (semantics).
 

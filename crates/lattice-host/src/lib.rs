@@ -42,6 +42,11 @@ pub mod boot_context;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
+// CB.4: native `arboard` clipboard backend shared by both renderer peers.
+// Only compiled with the `system-clipboard` feature (pulls X11/Wayland
+// libs); host's default build stays headless-friendly.
+#[cfg(feature = "system-clipboard")]
+pub mod clipboard;
 pub mod cursor_shape;
 pub mod dashboard;
 pub mod diagnostics_query;

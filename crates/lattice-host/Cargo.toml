@@ -223,6 +223,14 @@ harness = false
 name = "modeline"
 harness = false
 
+# DB.7 (design.md §13): dashboard creation-time compose+seed +
+# idle-frame tick cost. The dashboard has no keystroke path, so these
+# two assertions (not a keystroke bench) are the coverage. See
+# `benches/dashboard.rs`.
+[[bench]]
+name = "dashboard"
+harness = false
+
 [features]
 # M.6 (2026-06-01): toggle the project-search provider on /
 # off. Forwards to `lattice-multibuffer`'s `search` feature so

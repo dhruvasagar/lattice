@@ -521,3 +521,43 @@ mod source_override_and_recompose {
         );
     }
 }
+
+// DB.7 — the idle-frame correctness half of design.md §13's two assertions.
+// `benches/dashboard.rs`'s `dashboard_idle_tick` bench is the numeric half
+// (idle ticks are fast); this is the "enforced, not asserted" pin that
+// they're not just fast but do literally ZERO recompose work — the
+// document's version must not advance across idle ticks with nothing
+// published, the same class of guarantee the H.3 bug story
+// (BENCHMARKS.md) argues a bench alone can't prove.
+mod idle_frame_does_no_recompose {
+    use super::*;
+
+    fn document_version(editor: &Editor, id: lattice_core::BufferId) -> u64 {
+        editor
+            .buffers
+            .with_document(id, |doc| doc.handle.snapshot().version)
+            .expect("dashboard document should exist")
+    }
+
+    #[test]
+    fn dashboard_idle_ticks_do_not_recompose() {
+        let mut editor = boot();
+        editor.do_open_dashboard();
+        let id = editor.buffers.by_name("*dashboard*").unwrap();
+        let before = document_version(&editor, id);
+
+        // No effect, no config change, no event published — just idle ticks,
+        // the same drain a renderer runs every frame.
+        for _ in 0..20 {
+            editor.run_tick_pending();
+        }
+
+        let after = document_version(&editor, id);
+        assert_eq!(
+            before, after,
+            "idle ticks with nothing published must not recompose the \
+             dashboard document — its version should not advance (guards \
+             paramount #1: idle frames do zero dashboard work)"
+        );
+    }
+}

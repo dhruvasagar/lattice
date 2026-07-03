@@ -71,6 +71,46 @@ target rather than just a slower number.
 
 ---
 
+## DB.7 — dashboard creation-time + idle-frame benches (2026-07-03)
+
+Dashboard feature, slice DB.7 (design: `../architecture/dashboard.md` §13;
+slice plan: `slice-plans/dashboard.md`). The dashboard is **not on the
+keystroke path** — it composes once at creation (`:dashboard`, startup, or a
+`dashboard.sections`/`dashboard.source`/`ui.nerd_fonts` recompose), never
+per keystroke — so there is no keystroke→glyph bench here, per design §13.
+Coverage is the two assertions §13 calls for instead.
+
+Bench file: `crates/lattice-host/benches/dashboard.rs`. Run: `cargo bench -p
+lattice-host --bench dashboard`.
+
+| Bench | Median time | Notes |
+|---|---|---|
+| `dashboard_creation` | ~571 µs | Cold `Editor::do_open_dashboard` from a freshly booted, not-yet-opened editor — buffer creation + default-section compose + `HelpContent` seed + branding provider registration. Fires once per launch (or `:dashboard`), never per keystroke. |
+| `dashboard_idle_tick` | ~906 ns | `run_tick_pending` on an editor with the dashboard already open and nothing new published — the idle-frame cost. |
+
+> ⚠️ **Hardware note for this row only.** Captured on the local macOS
+> (Apple Silicon) dev machine, NOT the WSL2/Ryzen 7 9700X box the rest of
+> this document's numbers are pinned to (see the hardware caveat above).
+> These are first-recorded floors with no same-hardware predecessor to
+> compare against, so the absolute numbers aren't cross-comparable with the
+> rest of this document — re-baseline on the primary dev box before relying
+> on them for cross-feature comparison. The regression-detection principle
+> (compare future runs against these, on the same machine) still holds.
+
+**Envelope for future regressions:** `dashboard_creation` past ~1.5 ms
+(≈2.6× the recorded floor) or `dashboard_idle_tick` past ~2 µs suggests
+composition work leaked onto a path it shouldn't be on (e.g. a section
+doing I/O, or the recompose-in-place path running when nothing changed).
+`dashboard_idle_tick`'s near-zero cost is the numeric half of the "idle
+frames do zero dashboard work" guarantee (paramount #1); the correctness
+half — that it's not just fast but literally does no recompose — is pinned
+directly as a regression test (`dashboard_idle_ticks_do_not_recompose` in
+`crates/lattice-host/tests/dashboard.rs`), which asserts the dashboard
+document's version does not advance across idle ticks. A bench alone can
+show "fast"; it can't prove "zero work happened," which is why the test
+exists alongside it — the same "enforced, not asserted" bar the B2.3 bug
+story (below) argues for.
+
 ## B2.3 — synchronous edit-path display rebuild (2026-06-04)
 
 Display-line migration, slice B2.3 (design:

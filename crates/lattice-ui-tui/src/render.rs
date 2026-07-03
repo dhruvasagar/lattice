@@ -5613,11 +5613,17 @@ pub(crate) fn apply_underline_overlay(
 
 /// Number of buffer lines actually collapsed onto the visible row
 /// where `fold` is rendered. Walks forward from `fold.end_line + 1`
-/// through any chained closed folds whose ranges abut or sit
-/// inside the cumulative hidden region, so the "N lines folded"
-/// summary matches what the user just collapsed even when several
-/// sibling folds touch (e.g. `(1, 3)` + `(3, 5)` from
-/// `foldmethod=indent` on a top-level if/else).
+/// through any chained closed folds whose *heading is itself hidden*
+/// by the cumulative collapsed region, so the "N lines folded"
+/// summary matches what the user just collapsed when sibling folds
+/// OVERLAP (e.g. `(1, 3)` + `(3, 5)` from `foldmethod=indent`, where
+/// the second fold's heading at line 3 is hidden inside the first).
+///
+/// Folds that merely ABUT (the next fold starts at `end + 1`, the
+/// first *visible* line after this one) are NOT chained: that fold's
+/// heading is on screen, so the user sees it as a separate fold with
+/// its own summary. Counting its lines here double-counted them and
+/// reported e.g. 6 for two adjacent 3-line folds.
 fn closed_fold_display_span(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
@@ -5627,13 +5633,16 @@ fn closed_fold_display_span(
     let mut end = fold.end_line;
     let mut probe = end.saturating_add(1);
     while probe < total_lines {
-        // Probe land inside another closed fold's hidden body?
-        // (Includes the case where the next fold *starts* at the
-        // probe -- start_line is its heading, which would be
-        // hidden by *us* extending across it.)
-        let next_closed = view.folds.iter().find(|f| {
-            f.closed && (probe == f.start_line || (probe > f.start_line && probe <= f.end_line))
-        });
+        // Chain only when `probe` lands strictly INSIDE another closed
+        // fold's hidden body (`start_line < probe <= end_line`) -- that
+        // fold's heading is itself hidden by the region we've already
+        // collapsed, so its lines are part of the same visual collapse.
+        // A fold whose heading sits AT `probe` (== end + 1) is a
+        // separate, visible fold and must not be counted here.
+        let next_closed = view
+            .folds
+            .iter()
+            .find(|f| f.closed && probe > f.start_line && probe <= f.end_line);
         match next_closed {
             Some(f) => {
                 end = end.max(f.end_line);
@@ -7843,6 +7852,42 @@ mod tests {
         assert!(
             row1_text.contains("5 lines folded"),
             "expected '5 lines folded' for chained folds, got: {row1_text:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_folds_count_only_their_own_lines() {
+        // Two back-to-back but NON-overlapping closed folds (foldmethod=
+        // indent on two sibling blocks): (0, 2) then (3, 5). The second
+        // fold's heading at line 3 is the first VISIBLE row after fold
+        // one, so each fold summarises only its own 3 lines. Regression:
+        // the display-span walk used to chain a fold starting at `end+1`,
+        // making the first fold report all 6 lines.
+        let mut app = app_with("a\nb\nc\nd\ne\nf\n", 7);
+        app.editor.folds.push(crate::app::Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+            identity: None,
+        });
+        app.editor.folds.push(crate::app::Fold {
+            start_line: 3,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        });
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 7, 80);
+        // Row 0 = fold one's heading; row 1 = fold two's heading (visible).
+        let row0_text = line_text(&lines[0]);
+        let row1_text = line_text(&lines[1]);
+        assert!(
+            row0_text.contains("3 lines folded"),
+            "first fold should count only its own 3 lines, got: {row0_text:?}"
+        );
+        assert!(
+            row1_text.contains("3 lines folded"),
+            "second fold should count only its own 3 lines, got: {row1_text:?}"
         );
     }
 

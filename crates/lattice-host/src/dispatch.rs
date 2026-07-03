@@ -21499,15 +21499,26 @@ impl Editor {
                 self.set_cursor(lattice_protocol::position::Position::new(target_line, 0));
             }
             HelpLinkTarget::Url(url) => {
-                // Hand a real network / app URL to the OS handler
-                // (`open` / `xdg-open` / `explorer`) so it opens in the
-                // default browser / registered app. Emitted as an effect
-                // (rather than calling `open_external_uri` inline) to match
-                // the LSP show-document path and keep the actual `spawn`
-                // out of the pure follow logic — the host applies the
-                // effect via its `Effect::OpenExternalUri` arm.
-                out.effects
-                    .push(lattice_grammar::Effect::OpenExternalUri { uri: url });
+                // Hand a real network / app URL to the OS handler (`open` /
+                // `xdg-open` / `explorer`) so it opens in the default
+                // browser / registered app. Called INLINE — the same way
+                // this handler's sibling arms invoke their host method
+                // directly (`do_edit`, `do_open_help_topic`, …) and the way
+                // the analogous documentLink follow does
+                // (`follow_document_link_target` → `self.open_external_uri`).
+                //
+                // NOT emitted as `Effect::OpenExternalUri`: that effect
+                // exists for the ASYNC/off-keystroke path (LSP
+                // show-document, drained by `run_tick_pending` →
+                // `handle_effect`), where peer-applied effects are dropped.
+                // A synchronous follow like this runs during dispatch, where
+                // the on-keystroke App path applies only the renderer half
+                // of `out.effects` (`apply_effect_app_arms`) and no-ops
+                // `OpenExternalUri` — so pushing the raw effect here would
+                // silently drop it.
+                if !self.open_external_uri(&url) {
+                    self.set_message(EchoLevel::Warn, format!("could not open {url}"));
+                }
             }
             HelpLinkTarget::Unresolved(url) => {
                 self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));

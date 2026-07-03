@@ -212,31 +212,40 @@ mod link_following {
     }
 
     #[test]
-    fn following_a_url_link_opens_it_externally() {
+    fn dashboard_project_links_seed_as_external_urls() {
+        // The dashboard's project links (`GitHub`, `Issues`) are
+        // `LinkTarget::Url(https://…)` and must seed as `HelpLinkTarget::Url`
+        // so the follow handler routes them to the OS handler
+        // (`open` / `xdg-open`). We pin the CLASSIFICATION, not the follow:
+        // following would call `open_external_uri`, whose spawn the codebase
+        // convention deliberately leaves untested (it pops a real browser —
+        // see `tests/show_document_open_effect.rs`). The `Url` arm itself is
+        // a one-line inline `self.open_external_uri(&url)`, identical to the
+        // documentLink follow.
         let mut editor = boot();
-        // The dashboard's project links are `LinkTarget::Url(https://…)` →
-        // classified as `HelpLinkTarget::Url` → follow emits
-        // `Effect::OpenExternalUri`, which the host applies via the OS
-        // handler (`open` / `xdg-open`). We assert the EFFECT (not an actual
-        // browser spawn) so the test has no side effects.
-        let target = cursor_on_link(&mut editor, |t| matches!(t, HelpLinkTarget::Url(_)));
-        let HelpLinkTarget::Url(url) = target else {
-            unreachable!()
-        };
+        editor.do_open_dashboard();
+        let id = editor.buffers.by_name("*dashboard*").unwrap();
+        let urls: Vec<String> = editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<HelpLinks>())
+            .map(|hl| {
+                hl.0.iter()
+                    .filter_map(|l| match &l.target {
+                        HelpLinkTarget::Url(u) => Some(u.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         assert!(
-            url.starts_with("https://"),
-            "expected an https project link, got {url:?}"
+            urls.iter().any(|u| u == "https://github.com/dhruvasagar/lattice"),
+            "the GitHub link should seed as HelpLinkTarget::Url; got {urls:?}"
         );
-
-        let outcome = editor.dispatch(Action::FollowLink);
         assert!(
-            outcome
-                .effects
-                .iter()
-                .any(|e| matches!(e, Effect::OpenExternalUri { uri } if *uri == url)),
-            "following a URL link should emit Effect::OpenExternalUri({url:?}); \
-             got effects={:?}",
-            outcome.effects
+            urls.iter()
+                .any(|u| u == "https://github.com/dhruvasagar/lattice/issues"),
+            "the Issues link should seed as HelpLinkTarget::Url; got {urls:?}"
         );
     }
 }
@@ -721,5 +730,6 @@ mod idle_frame_does_no_recompose {
         );
     }
 }
+
 
 

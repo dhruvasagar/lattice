@@ -2219,10 +2219,10 @@ mod tests {
             ),
         );
         a.apply(Action::Invoke(inv));
-        // dispatcher uses [start, end) range; find_char_forward returns the
-        // position of the comma (byte 5), so [0, 5) = "hello" is deleted.
-        // The trailing comma stays in place.
-        assert_eq!(a.editor.document.text(), ", world");
+        // `f` is inclusive: find_char_forward lands on the comma (byte 5) and
+        // the operator covers it too -> [0, 6) = "hello," is deleted, leaving
+        // " world". (Vim parity; the inclusive flag is now honoured.)
+        assert_eq!(a.editor.document.text(), " world");
     }
 
     #[test]

@@ -1685,10 +1685,12 @@ mod tests {
     }
 
     #[test]
-    fn key_harness_df_delim_deletes_up_to_match() {
+    fn key_harness_df_delim_deletes_through_match() {
+        // `f` is inclusive: `df,` deletes through the first comma, leaving
+        // " beta, gamma" (vim parity).
         let mut a = app_with("alpha, beta, gamma", 10);
         press_chars(&mut a, "df,");
-        assert_eq!(a.editor.document.text(), ", beta, gamma");
+        assert_eq!(a.editor.document.text(), " beta, gamma");
     }
 
     #[test]

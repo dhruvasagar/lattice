@@ -622,7 +622,26 @@ fn resolve_target(
                 cancel,
             };
             let r = (motion.apply)(&ctx)?;
-            Ok(motion_to_range(cursor, r.target, motion.exclusive))
+            let mut target = r.target;
+            // Vim word-motion special case (`:help word-motions`): when a
+            // word-forward motion (`w` / `W`) is used with an operator and
+            // the last word moved over is at the end of a line, the operated
+            // text ends at that line end -- it does NOT reach over the
+            // newline into the next line's first word. Fires only for
+            // word-forward-class motions and only when the motion actually
+            // landed on a later line. (This is the operator path only;
+            // plain `w` navigation still crosses lines.)
+            if registry.is_word_forward_motion(motion_id.0) && target.line > cursor.line {
+                let buffer = document.buffer();
+                target = Position::new(cursor.line, line_byte_len(buffer, cursor.line));
+            }
+            Ok(motion_to_range(
+                document.buffer(),
+                cursor,
+                target,
+                motion.exclusive,
+                r.linewise,
+            ))
         }
         Target::TextObject(tobj_id, args) => {
             let entry = registry
@@ -712,9 +731,60 @@ fn resolve_grammar_range(
     }
 }
 
-fn motion_to_range(from: Position, to: Position, _exclusive: bool) -> ProtoRange {
-    let (a, b) = ordered(from, to);
-    ProtoRange::new(a, b)
+/// Turn an operator's `(cursor, motion-target)` pair into the byte range
+/// the operator acts on, honouring vim's exclusive/inclusive motion
+/// distinction. Ranges are half-open `[start, end)`.
+///
+/// - **Exclusive** motions (`w`, `b`, `0`, ...) delete up to but not
+///   including the target: `[min, max)`.
+/// - **Inclusive** motions (`e`, `f`, `t`, `$`, ...) also cover the
+///   character *at* the target. For a forward motion that means extending
+///   the end one character past the target (so `de` deletes through the
+///   last letter of the word, matching vim -- previously the target char
+///   was left behind). For a backward inclusive motion the target already
+///   is the range start, so the range is `[target, cursor)` unchanged.
+fn motion_to_range(
+    buffer: &lattice_core::Buffer,
+    from: Position,
+    to: Position,
+    exclusive: bool,
+    linewise: bool,
+) -> ProtoRange {
+    // Linewise motions (`j`/`k`/`gg`/`G`) don't take a charwise
+    // inclusive-end adjustment -- their whole-line semantics are handled
+    // by the linewise path, and advancing a character here would be
+    // meaningless. Exclusive motions and empty ranges are `[min, max)`.
+    if exclusive || linewise || to == from {
+        let (a, b) = ordered(from, to);
+        return ProtoRange::new(a, b);
+    }
+    if to > from {
+        // Forward inclusive: cover the character under the target.
+        ProtoRange::new(from, advance_one_char(buffer, to))
+    } else {
+        // Backward inclusive: target is the range start; the character
+        // under the original cursor is not part of the operation.
+        ProtoRange::new(to, from)
+    }
+}
+
+/// Byte position one UTF-8 character past `pos`, clamped to the buffer
+/// end. `pos` is assumed to be a char boundary (motion targets always
+/// are); a target at end-of-buffer returns `pos` unchanged.
+fn advance_one_char(buffer: &lattice_core::Buffer, pos: Position) -> Position {
+    let Ok(idx) = buffer.position_to_byte(pos) else {
+        return pos;
+    };
+    let text = buffer.as_string();
+    let step = text
+        .get(idx..)
+        .and_then(|s| s.chars().next())
+        .map(|c| c.len_utf8())
+        .unwrap_or(0);
+    if step == 0 {
+        return pos;
+    }
+    buffer.byte_to_position(idx + step).unwrap_or(pos)
 }
 
 fn ordered(a: Position, b: Position) -> (Position, Position) {

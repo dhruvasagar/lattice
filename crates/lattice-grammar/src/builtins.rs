@@ -57,7 +57,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the first non-whitespace byte of the current line (vim's `^`).",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `^` is exclusive in vim. (Was mis-registered inclusive while
+            // the dispatcher ignored the flag; now honoured, so it must be
+            // correct.)
+            exclusive: true,
             apply: Box::new(motion_first_non_blank),
             args_schema: vec![],
         },
@@ -112,6 +115,13 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    // Vim word-motion special case (`:help word-motions`): under an
+    // operator, `dw` / `cw` / `yw` on the last word of a line stop at the
+    // line end instead of reaching into the next line's first word. Tag
+    // both word-forward motions so the operator range resolver applies it.
+    registry.tag_word_forward_motion(word_forward);
+    registry.tag_word_forward_motion(big_word_forward);
+
     let big_word_backward = registry.register_motion(
         "motion:big-word-backward",
         "Move to the start of the previous WORD (vim's `B`).",
@@ -137,7 +147,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the next paragraph boundary -- the next blank line at or after the cursor (vim's `}`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `}` is exclusive in vim (`d}` does not include the blank line).
+            exclusive: true,
             apply: Box::new(motion_paragraph_forward),
             args_schema: vec![],
         },
@@ -147,7 +158,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the previous paragraph boundary (vim's `{`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `{` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_paragraph_backward),
             args_schema: vec![],
         },
@@ -157,7 +169,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the start of the next sentence (vim's `)`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `)` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_sentence_forward),
             args_schema: vec![],
         },
@@ -167,7 +180,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the start of the previous sentence (vim's `(`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `(` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_sentence_backward),
             args_schema: vec![],
         },
@@ -177,7 +191,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move one byte to the left within the current line.",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `h` is exclusive in vim. (Backward motion, so behaviour is
+            // unchanged either way, but the registration should be correct.)
+            exclusive: true,
             apply: Box::new(motion_char_left),
             args_schema: vec![],
         },
@@ -217,7 +233,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the first byte of the current line.",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `0` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_line_start),
             args_schema: vec![],
         },
@@ -4695,8 +4712,11 @@ mod tests {
 
     #[test]
     fn delete_with_word_end_target_de_semantics() {
-        // `de` from start of "hello world" deletes "hello" (word_end is
-        // inclusive, so range covers [0, 5)).
+        // `de` from start of "hello world": word_end (`e`) is INCLUSIVE, so
+        // it lands on the last char of "hello" ('o', byte 4) and the operator
+        // covers that char too -- range [0, 5) -> deletes "hello", leaving
+        // " world". Vim parity; previously the inclusive flag was ignored and
+        // this left the trailing 'o' ("o world").
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_end, crate::args::Args::None));
@@ -4708,12 +4728,68 @@ mod tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        // word_end lands at byte 4 ('o' of "hello"). Our dispatcher uses
-        // [start, end) ranges so the resulting deletion covers [0, 4) = "hell".
-        // (This documents current dispatcher behavior; vim's inclusive
-        // semantics for `de` would delete "hello", a refinement tracked in
-        // §15:N.)
-        assert_eq!(doc.text(), "o world");
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn change_with_word_end_target_ce_is_inclusive() {
+        // `ce` deletes through the end of the word (inclusive `e`), same as
+        // `de` but leaving the operator in change-mode. From byte 0 of
+        // "hello world" it removes "hello" -> " world".
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.change.0)
+            .with_target(Target::Motion(b.word_end, crate::args::Args::None));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn delete_with_find_char_target_df_is_inclusive() {
+        // `dfl` deletes up to AND including the found char (inclusive `f`).
+        // From byte 0 of "hello", `f` for 'l' lands on byte 2; deletion
+        // covers [0, 3) -> "lo".
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.delete.0).with_target(Target::Motion(
+            b.find_char_forward,
+            crate::args::Args::Char('l'),
+        ));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "lo");
+    }
+
+    #[test]
+    fn dw_on_last_word_of_line_stops_at_line_end() {
+        // Vim word-motion special case: `dw` on the last word of a line
+        // deletes to the line end and does NOT join the next line. Cursor on
+        // 'f' of "foo" (byte 6 of line 0); `w` would cross to "bar" on line 1,
+        // but under the operator the range is clamped to the end of line 0.
+        let (registry, b, mut doc) = fixture("hello foo\nbar");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "hello \nbar", "dw must not cross the newline");
     }
 
     #[test]

@@ -235,6 +235,37 @@ impl RenderState {
     /// `cells.panes` (sourced from its `DocumentFolds` buffer-local).
     /// A buffer in no pane (no `cells.panes` entry) yields an empty
     /// list — nothing to elide.
+    /// PI.0: the horizontal-centring pad for a pane rendering `buffer_id`.
+    /// Resolved from THAT buffer's `CenterContentWidth` local + the width
+    /// of the pane showing it — never the active-buffer identity.
+    ///
+    /// Previously the renderers gated centring on `buffer_id ==
+    /// document_buffer_id`, so a picker preview that swapped
+    /// `document_buffer_id` to the previewed file collapsed the dashboard's
+    /// centring to 0 while the pane still showed the dashboard. Reading the
+    /// rendered buffer's own local keeps centring attached to the buffer
+    /// that carries it. Shared by the TUI and GPUI peers.
+    pub fn content_left_pad_for(&self, buffer_id: lattice_core::BufferId) -> u32 {
+        let block_width = self
+            .buffer_locals
+            .map
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::CenterContentWidth>())
+            .map(|c| c.0)
+            .unwrap_or(0);
+        if block_width == 0 {
+            return 0;
+        }
+        let tree = &self.panes.tree;
+        let viewport_width = tree
+            .leaves()
+            .iter()
+            .find(|p| p.buffer_id == buffer_id)
+            .map(|p| p.viewport_width)
+            .unwrap_or_else(|| tree.active().viewport_width);
+        viewport_width.saturating_sub(block_width) / 2
+    }
+
     pub fn folds_for_buffer(
         &self,
         buffer_id: lattice_core::BufferId,
@@ -2837,6 +2868,56 @@ mod tests {
             b_folds.is_empty(),
             "active buffer B resolves to its own (empty) folds, got {b_folds:?}"
         );
+    }
+
+    /// PI.0: content-centring follows the buffer that carries
+    /// `CenterContentWidth`, not the active-buffer identity. A centred
+    /// buffer keeps its pad even when a DIFFERENT buffer is the active
+    /// document — the picker-preview scenario that used to collapse the
+    /// dashboard's centring to 0 the instant `document_buffer_id` pointed
+    /// at the previewed file.
+    #[test]
+    fn content_left_pad_follows_rendered_buffer_not_active_identity() {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let document = lattice_core::Document::from_text("centered\n");
+        let mut editor = Editor::boot(document);
+        let a_id = editor.document_buffer_id;
+
+        // Open B in a split and focus it, so A is no longer the active doc.
+        let path = write_temp_rs("b0\nb1\n");
+        let new_idx = editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(new_idx);
+        let _ = editor.do_edit(Some(path.0.clone()), false);
+        let b_id = editor.pane_tree.active().buffer_id;
+        assert_ne!(a_id, b_id, "B must be distinct from A");
+        assert_ne!(editor.document_buffer_id, a_id, "A is no longer active");
+
+        // Mark A for centring within a 20-col block; give A's (now
+        // inactive) pane an 80-col viewport.
+        editor
+            .buffer_locals
+            .entry(a_id)
+            .or_default()
+            .insert(crate::modes::CenterContentWidth(20));
+        for leaf in editor.pane_tree.leaves_mut() {
+            if leaf.buffer_id == a_id {
+                leaf.viewport_width = 80;
+            }
+        }
+
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        // A keeps its centring pad = (80 - 20) / 2 = 30 despite being
+        // inactive; the fix reads A's own local, not `== document_buffer_id`.
+        assert_eq!(
+            rs.content_left_pad_for(a_id),
+            30,
+            "centred buffer A keeps its pad when a different buffer is active"
+        );
+        // B carries no CenterContentWidth → no pad.
+        assert_eq!(rs.content_left_pad_for(b_id), 0);
     }
 
     /// Exact user repro (2026-06-30): A in pane1, B (folded) active in

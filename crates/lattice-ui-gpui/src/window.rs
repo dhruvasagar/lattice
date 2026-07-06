@@ -2316,9 +2316,12 @@ impl EditorView {
             // pre-existing per-pane-option limitation as the rest of
             // this element. TUI peer: `FrameView::sign_column`.
             sign_column: rs_guard.active_document.load().option_cache.sign_column,
-            // DB.4: gutter-based horizontal centring (dashboard). Active pane
-            // reads the resolved pad; inactive panes render normally (0).
-            content_left_pad: rs_guard.active_document.load().option_cache.content_left_pad,
+            // PI.0: centring pad follows the *rendered* buffer's
+            // `CenterContentWidth` local + this pane's width, not the
+            // active-buffer identity — so the dashboard keeps its centring
+            // even when a picker preview swaps `document_buffer_id` to the
+            // previewed file. Shared resolver with the TUI peer.
+            content_left_pad: rs_guard.content_left_pad_for(pane.buffer_id),
             show_line_numbers,
             cursor: cursor_state,
             is_active: render_active,

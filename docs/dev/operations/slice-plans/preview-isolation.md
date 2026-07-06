@@ -12,7 +12,7 @@ All slices land green (build + touched suites) and keep TUI/GPUI in lockstep.
 
 | Slice | Status | Summary |
 |---|---|---|
-| PI.0 | 📝 | Per-buffer `content_left_pad` + failing isolation/regression tests |
+| PI.0 | 🚧 | Per-buffer `content_left_pad` (render fix) landed both peers + green regression test; the RED-until-PI.3 isolation acid test lands with PI.3 |
 | PI.1 | 📝 | Pane preview-override plumbing (state + render_state + worker key) |
 | PI.2 | 📝 | Preview buffer resolved-options isolation (read-only marking) |
 | PI.3 | 📝 | Cut picker preview dispatch over to the override |

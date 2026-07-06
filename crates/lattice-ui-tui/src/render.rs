@@ -213,14 +213,12 @@ impl<'a> FrameView<'a> {
         let (folds, foldenable) = rs.folds_for_buffer(buffer_id);
         let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
         let inlay_hints = rs.inlay_hints_for_buffer(buffer_id);
-        // DB.4: content-centring pad is resolved from the active buffer's
-        // option cache; a pane showing the centred buffer picks it up, others
-        // render normally (0).
-        let content_left_pad = if buffer_id == app.ad().document_buffer_id {
-            app.ad().option_cache.content_left_pad
-        } else {
-            0
-        };
+        // PI.0: content-centring pad follows the *rendered* buffer's
+        // `CenterContentWidth` local + its pane's width, not the
+        // active-buffer identity — so a pane keeps its centring even when
+        // `document_buffer_id` points elsewhere (e.g. during a picker
+        // preview that swapped the active buffer to the previewed file).
+        let content_left_pad = rs.content_left_pad_for(buffer_id);
         Self {
             app,
             folds,

@@ -25,8 +25,8 @@ pub fn builtin_registry() -> DashboardRegistry {
     let mut reg = DashboardRegistry::new();
     reg.register(Arc::new(About));
     reg.register(Arc::new(Links));
-    reg.register(Arc::new(GettingStarted));
     reg.register(Arc::new(Tutor));
+    reg.register(Arc::new(Commands));
     reg.register(Arc::new(HelpAndBindings));
     reg.register(Arc::new(Describe));
     reg.register(Arc::new(HelpTopics));
@@ -112,43 +112,6 @@ impl DashboardSection for Links {
 }
 
 // ---------------------------------------------------------------------------
-// getting-started
-// ---------------------------------------------------------------------------
-
-/// First steps.
-struct GettingStarted;
-
-impl DashboardSection for GettingStarted {
-    fn id(&self) -> &str {
-        "getting-started"
-    }
-    fn order(&self) -> i32 {
-        30
-    }
-    fn render(&self, _ctx: &DashboardCtx) -> DashboardFragment {
-        let mut f = DashboardFragment::new();
-        heading(&mut f, "Getting started");
-        f.push(
-            DashboardRow::line("Open a file        ", DashboardRole::Body)
-                .push(DashboardSpan::new(":e <path>", DashboardRole::Key)),
-        );
-        f.push(
-            DashboardRow::line("Command line       ", DashboardRole::Body)
-                .push(DashboardSpan::new(":", DashboardRole::Key)),
-        );
-        f.push(
-            DashboardRow::line("Back to Normal     ", DashboardRole::Body)
-                .push(DashboardSpan::new("<Esc>", DashboardRole::Key)),
-        );
-        f.push(
-            DashboardRow::line("Quit               ", DashboardRole::Body)
-                .push(DashboardSpan::new(":q", DashboardRole::Key)),
-        );
-        f
-    }
-}
-
-// ---------------------------------------------------------------------------
 // tutor
 // ---------------------------------------------------------------------------
 
@@ -227,6 +190,13 @@ impl DashboardSection for Describe {
     fn render(&self, _ctx: &DashboardCtx) -> DashboardFragment {
         let mut f = DashboardFragment::new();
         heading(&mut f, "Introspection (:describe-*)");
+        // Each entry opens the command's own help page (`:describe-command
+        // <cmd>`) rather than *running* the bare command — several of these
+        // (`describe-key`, `describe-option`) would otherwise sit waiting
+        // for an interactive argument. `:describe-command` is always
+        // available (every command is self-documenting), so none of these
+        // are dead links. The `commands` section below is where the
+        // click-to-run entries live.
         for (cmd, what) in [
             ("describe-key", "what a key is bound to"),
             ("describe-command", "what a command does"),
@@ -238,12 +208,50 @@ impl DashboardSection for Describe {
                 body_link(
                     "",
                     &format!(":{cmd}"),
-                    LinkTarget::Command(cmd.to_string()),
+                    LinkTarget::Command(format!("describe-command {cmd}")),
                 )
                 .push(DashboardSpan::new(
                     format!("  — {what}"),
                     DashboardRole::Hint,
                 )),
+            );
+        }
+        f
+    }
+}
+
+// ---------------------------------------------------------------------------
+// commands
+// ---------------------------------------------------------------------------
+
+/// Commonly useful commands, run on click. Unlike the introspection
+/// section (which opens help *about* each command), these entries invoke
+/// the command directly — they are safe, non-destructive discovery tools.
+struct Commands;
+
+impl DashboardSection for Commands {
+    fn id(&self) -> &str {
+        "commands"
+    }
+    fn order(&self) -> i32 {
+        45
+    }
+    fn render(&self, _ctx: &DashboardCtx) -> DashboardFragment {
+        let mut f = DashboardFragment::new();
+        heading(&mut f, "Commonly useful commands");
+        for (cmd, what) in [
+            ("files", "fuzzy-find files in the project"),
+            ("buffers", "switch buffers (fuzzy picker)"),
+            ("recent", "reopen a recently edited file"),
+            ("marks", "jump to a mark"),
+            ("registers", "inspect register contents"),
+        ] {
+            f.push(
+                body_link("", &format!(":{cmd}"), LinkTarget::Command(cmd.to_string()))
+                    .push(DashboardSpan::new(
+                        format!("  — {what}"),
+                        DashboardRole::Hint,
+                    )),
             );
         }
         f
@@ -301,8 +309,8 @@ mod tests {
             [
                 "about",
                 "links",
-                "getting-started",
                 "tutor",
+                "commands",
                 "help-and-bindings",
                 "describe",
                 "help-topics",
@@ -357,5 +365,53 @@ mod tests {
             .flat_map(|r| &r.spans)
             .any(|s| matches!(&s.link, Some(LinkTarget::Command(c)) if c == "tutor"));
         assert!(has_cmd, "tutor section should link to cmd:tutor");
+    }
+
+    /// Collect the `LinkTarget::Command` payloads from a section's fragment.
+    fn command_links(section_id: &str) -> Vec<String> {
+        let reg = builtin_registry();
+        reg.ordered(&SectionSelection::Explicit(vec![section_id.into()]))
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("section {section_id} missing"))
+            .render(&DashboardCtx::default())
+            .rows
+            .iter()
+            .flat_map(|r| &r.spans)
+            .filter_map(|s| match &s.link {
+                Some(LinkTarget::Command(c)) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn describe_section_links_to_help_pages_not_bare_commands() {
+        // Introspection entries open each command's help page
+        // (`:describe-command <cmd>`), not the bare command — so clicking
+        // `describe-key` explains it instead of waiting for a keypress.
+        let cmds = command_links("describe");
+        assert!(!cmds.is_empty(), "describe section should carry links");
+        assert!(
+            cmds.iter().all(|c| c.starts_with("describe-command ")),
+            "all introspection links must open help pages: {cmds:?}"
+        );
+        assert!(
+            cmds.iter().any(|c| c == "describe-command describe-key"),
+            "expected a help-page link for describe-key: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn commands_section_runs_useful_commands() {
+        // The commands section invokes each command directly (safe,
+        // non-destructive discovery tools).
+        let cmds = command_links("commands");
+        for expect in ["files", "buffers", "recent", "marks", "registers"] {
+            assert!(
+                cmds.iter().any(|c| c == expect),
+                "missing :{expect} run-link in {cmds:?}"
+            );
+        }
     }
 }

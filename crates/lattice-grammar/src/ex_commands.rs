@@ -805,7 +805,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let list_buffers = registry.register_ex_command(
         "ex:buffers",
-        "List every open document buffer (`:ls` / `:buffers`).",
+        "List every open document buffer as a static text view (`:ls`). \
+         For the fuzzy switcher, see `:buffers` / `:b`.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
@@ -818,7 +819,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let _buffer_picker = registry.register_ex_command(
         "ex:buffer-picker",
-        "Open the vertico-style buffer switcher (`:b`). Type to filter; `<CR>` to switch.",
+        "Open the vertico-style buffer switcher (`:buffers` / `:b`). \
+         Type to filter; `<CR>` to switch. For the static text listing, see `:ls`.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,

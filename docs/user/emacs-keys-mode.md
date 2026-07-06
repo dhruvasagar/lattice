@@ -87,8 +87,8 @@ leader introduces no new commands of its own.
 |--------------|-------------------|-------------------------------------------------|
 | `<C-x><C-f>` | `:files`          | Find file — open the file picker                |
 | `<C-x><C-s>` | `:write`          | Save the current buffer                         |
-| `<C-x>b`     | `:buffer-picker`  | Switch buffer — open the buffer picker          |
-| `<C-x><C-b>` | `:buffers`        | List buffers (the `:ls` listing)                |
+| `<C-x>b`     | `:buffers`        | Switch buffer — open the buffer picker          |
+| `<C-x><C-b>` | `:ls`             | List buffers (the static `:ls` text listing)    |
 | `<C-x>k`     | `:bdelete`        | Kill (delete) the current buffer                |
 | `<C-x><C-c>` | `:quit-all`       | Quit the whole editor — **dirty-guarded**       |
 

@@ -24,7 +24,8 @@ into; you arrange them with vim-style window splits.
 | `:b[uffer] N`               | (planned) Switch the active pane to buffer `#N`.                |
 | `:bn[ext]`                  | Cycle to the next listed buffer (any kind).                     |
 | `:bp[rev]`                  | Cycle to the previous listed buffer.                            |
-| `:ls` / `:buffers`          | List every open buffer; `%` marks the one in the active pane.   |
+| `:ls`                       | List every open buffer as static text; `%` marks the active one.|
+| `:buffers` / `:b`           | Open the fuzzy buffer switcher (picker) — type to filter.       |
 | `:bd[elete][!]`             | Close the active buffer. `!` discards unsaved document changes. |
 | `:TreeClose`                | Close the active pane's tree (alternative to `:bd`).            |
 

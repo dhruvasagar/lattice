@@ -121,8 +121,14 @@ pub(crate) struct GutterLineMeta {
     /// click handling stay on `line_idx` (composed coords) while
     /// the user sees the meaningful source-file numbers.
     pub(crate) display_line: u32,
-    /// `true` => render the fold-start marker (►) in column 0.
-    pub(crate) fold_start: bool,
+    /// Fold-start marker for this head row: `Some((glyph, colour))`
+    /// where `glyph` is `▾` (open/expanded fold) or `▸` (closed/collapsed
+    /// fold) and `colour` is the resolved `gutter.fold.open` /
+    /// `gutter.fold.closed` theme colour. `None` when no fold starts on
+    /// this row — a blank cell keeps the column aligned. Painted AFTER
+    /// the line number (a separator space, the glyph, then a trailing
+    /// gap: `… 99 ▸ code`), mirroring the TUI gutter, not at column 0.
+    pub(crate) fold_marker: Option<(char, u32)>,
     /// Pre-resolved diagnostic severity (glyph, colour). `None`
     /// renders a blank space in the severity column so alignment
     /// stays stable.
@@ -801,17 +807,16 @@ impl Element for EditorElement {
             // cells — dropped when `signcolumn=no` so the px width
             // tracks `format_gutter_text`'s gated output.
             //
-            // The trailing `2` is the fold-marker cell (1, always
-            // present) PLUS the separator space after the digits (1).
-            // This MUST match `format_gutter_text`'s full width
-            // (`{fold}{sev}{diff}{num:>width$} ` = sign + digits + 2)
-            // and the virtual-row reservation (`gutter_width + 2 +
-            // sign_cells`). It was `+ 1` — omitting the fold cell — so
-            // `gutter_width_px` was one glyph too narrow and the code's
-            // first column landed on the gutter's trailing space (no gap
-            // between the line number and the code).
+            // The trailing `3` is the separator space after the digits
+            // (1) + the fold-marker cell (1) + the trailing gap after the
+            // glyph (1) — the `… 99 ▸ code` layout. This MUST match
+            // `format_gutter_text`'s full width (`{sev}{diff}{num:>width$}
+            // {fold} ` = sign + digits + 3) and the virtual-row
+            // reservation (`gutter_width + 3 + sign_cells`). If it
+            // undercounts, the code's first column lands inside the
+            // gutter and the line number runs flush against the code.
             let sign_cells = if self.sign_column { 2 } else { 0 };
-            sign_cells + self.gutter_width + 2
+            sign_cells + self.gutter_width + 3
         };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -1869,7 +1874,18 @@ impl Element for EditorElement {
             if line_y >= pane_bottom {
                 break;
             }
-            let origin = point(bounds.origin.x, line_y);
+            // DB.4: the shaped gutter text is `gutter_chars − content_left_pad`
+            // cells wide (`format_gutter_text` omits the centring pad), while
+            // the body starts at the full `gutter_width_px`. Paint the gutter
+            // shifted right by the pad so its RIGHT edge meets the body —
+            // otherwise the gutter (and its fold marker) strands at the pane's
+            // left edge while the centred content sits far to the right. The
+            // TUI peer gets this for free by folding the pad into `gutter_w`
+            // and right-aligning the glyph. `content_left_pad` is 0 for
+            // non-centred buffers, so this is a no-op off the dashboard.
+            let gutter_x =
+                bounds.origin.x + prepaint.glyph_advance * self.content_left_pad as f32;
+            let origin = point(gutter_x, line_y);
             if let Err(err) = shaped_g.paint(origin, row_h(i), window, cx) {
                 tracing::warn!(
                     target: "lattice_gpui::editor_element",
@@ -2567,10 +2583,14 @@ pub(crate) fn make_run_with_color(color: u32, len: usize, font: &gpui::Font) -> 
 /// Catppuccin Mocha overlay2 -- gutter line-number colour for
 /// non-cursor lines.
 const GUTTER_NORMAL_COLOR: u32 = 0x9399b2;
-/// Catppuccin Mocha peach -- fold-start marker colour.
-const FOLD_MARKER_COLOR: u32 = 0xfab387;
-/// Fold-start glyph (right-pointing triangle).
-const FOLD_MARKER_GLYPH: char = '►';
+/// Fold-marker glyphs, shared with the TUI peer (`fold_glyph_for`):
+/// `▾` on an open (expanded) foldable head, `▸` on a closed (collapsed)
+/// one. Small triangles that render in any monospace font — no Nerd-Font
+/// dependency. The colour is resolved per-marker from the theme
+/// (`gutter.fold.open` / `gutter.fold.closed`) and carried in
+/// `GutterLineMeta::fold_marker`, so these consts are glyph-only.
+pub(crate) const FOLD_GLYPH_OPEN: char = '▾';
+pub(crate) const FOLD_GLYPH_CLOSED: char = '▸';
 
 /// W.5 (soft-wrap): continuation-row gutter marker. U+21AA
 /// (rightwards arrow with hook); no Nerd-Font dependency, so it
@@ -2660,9 +2680,9 @@ fn quads_for_segment(full: &[(u32, u32, u32)], lo: u32, hi: u32) -> Vec<(u32, u3
 
 /// W.5 (soft-wrap): shape the gutter for a wrapped continuation row —
 /// a dim `↪` right-aligned in the line-number column, with the
-/// fold / severity / diff columns blank. Same total width as
-/// `format_gutter_text` (`gutter_width + 4`) so continuation rows
-/// align with their source line's gutter.
+/// severity / diff / fold columns blank. Same total width as
+/// `format_gutter_text` (`sign_cells + gutter_width + 3`) so
+/// continuation rows align with their source line's gutter.
 fn shaped_continuation_gutter(
     gutter_width: usize,
     font: &gpui::Font,
@@ -2670,12 +2690,14 @@ fn shaped_continuation_gutter(
     sign_column: bool,
     window: &mut Window,
 ) -> ShapedLine {
-    // Leading blanks: fold [+ severity + diff when signcolumn=yes] +
-    // right-aligned marker in the number column + 1 trailing space.
+    // Leading blanks: [severity + diff when signcolumn=yes] +
+    // right-aligned marker in the number column + 3 trailing blanks
+    // (separator space + blank fold slot + trailing gap) — the fold
+    // marker now sits AFTER the digits, so it is a trailing blank here.
     // PU.1b-1a: drop the two sign blanks when `signcolumn=no` so the
     // continuation gutter matches `format_gutter_text`'s gated width.
-    let lead = if sign_column { "   " } else { " " };
-    let text = format!("{lead}{WRAP_CONT_MARKER:>gutter_width$} ");
+    let lead = if sign_column { "  " } else { "" };
+    let text = format!("{lead}{WRAP_CONT_MARKER:>gutter_width$}   ");
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -2872,9 +2894,10 @@ fn virtual_rows_at_gpui<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
-        // Sticky rows are rendered at the pane top in the pre-pass;
-        // skip them here so they don't double-paint in the content loop.
-        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
+        // Pinned rows (sticky headerlines + the branding masthead) are
+        // rendered at the pane top in the pre-pass; skip them here so they
+        // don't double-paint in the content loop.
+        .filter(|r| !r.kind.is_pinned())
 }
 
 /// F.3 (Thread F): build the N-piece [`ScaledLine`] for a virtual row
@@ -2979,7 +3002,7 @@ fn push_virtual_row(
             }],
             None,
         );
-        let blank_gutter: String = " ".repeat(gutter_width + 4);
+        let blank_gutter: String = " ".repeat(gutter_width + 5);
         let shaped_g = window.text_system().shape_line(
             SharedString::from(blank_gutter.clone()),
             font_size,
@@ -3082,7 +3105,7 @@ fn push_virtual_row(
     );
     // Gutter: fully blank-padded to match
     // `format_gutter_text`'s virtual-row width.
-    let blank_gutter: String = " ".repeat(gutter_width + 4);
+    let blank_gutter: String = " ".repeat(gutter_width + 5);
     let gutter_run = TextRun {
         len: blank_gutter.len(),
         font: font.clone(),
@@ -3172,22 +3195,22 @@ fn format_gutter_text(
     if meta.is_virtual {
         // D.3.b.1.gpui: virtual rows render a fully-blank gutter so
         // the column stays the same width as document rows. Width =
-        // 1 (fold) [+ 1 (sev) + 1 (diff) when reserved] + gutter_width
-        // + 1 (trail).
+        // [1 (sev) + 1 (diff) when reserved] + gutter_width + 3 (the
+        // separator space + fold-marker slot + trailing gap).
         let sign_cells = if sign_column { 2 } else { 0 };
-        return " ".repeat(gutter_width + 2 + sign_cells);
+        return " ".repeat(gutter_width + 3 + sign_cells);
     }
-    let fold = if meta.fold_start {
-        FOLD_MARKER_GLYPH
-    } else {
-        ' '
-    };
+    // Fold marker now sits AFTER the line number (a separator space,
+    // the glyph, then a trailing gap: `… 99 ▸ code`), mirroring the
+    // TUI gutter — not at column 0. A blank glyph keeps non-fold rows
+    // the same width.
+    let fold = meta.fold_marker.map(|(g, _)| g).unwrap_or(' ');
     if !sign_column {
         return format!(
-            "{fold}{num:>width$} ",
-            fold = fold,
+            "{num:>width$} {fold} ",
             num = num,
             width = gutter_width,
+            fold = fold,
         );
     }
     let sev = meta.severity.map(|(g, _)| g).unwrap_or(' ');
@@ -3201,80 +3224,86 @@ fn format_gutter_text(
     // :diffoff.
     let diff = meta.diff_sign.map(|(g, _)| g).unwrap_or(' ');
     format!(
-        "{fold}{sev}{diff}{num:>width$} ",
-        fold = fold,
+        "{sev}{diff}{num:>width$} {fold} ",
         sev = sev,
         diff = diff,
         num = num,
         width = gutter_width,
+        fold = fold,
     )
 }
 
-/// Build the `TextRun`s for a gutter row. Three runs (fold, sev,
-/// linenum+trailing-space) with their respective colours.
+/// Build the `TextRun`s for a gutter row. The text is
+/// `{sev}{diff}{num} {fold} ` (severity + diff omitted when
+/// `signcolumn=no`): severity, diff sign, then the line-number column +
+/// separator space in the normal gutter colour, the fold glyph in its
+/// own resolved colour, and a trailing gap. Colouring the fold glyph
+/// separately is why it gets its own run rather than riding along with
+/// the digits.
 fn build_gutter_runs(
     text: &str,
     meta: &GutterLineMeta,
     font: gpui::Font,
     sign_column: bool,
 ) -> Vec<TextRun> {
-    let mut runs = Vec::with_capacity(3);
+    let mut runs = Vec::with_capacity(5);
     let mut bytes_consumed = 0usize;
-
-    // Run 1: fold marker.
-    let fold_color = if meta.fold_start {
-        FOLD_MARKER_COLOR
-    } else {
-        GUTTER_NORMAL_COLOR
+    let push = |runs: &mut Vec<TextRun>, len: usize, color: u32| {
+        if len == 0 {
+            return;
+        }
+        runs.push(TextRun {
+            len,
+            font: font.clone(),
+            color: rgb(color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
     };
-    let fold_char = text.chars().next().unwrap_or(' ');
-    let fold_len = fold_char.len_utf8();
-    runs.push(TextRun {
-        len: fold_len,
-        font: font.clone(),
-        color: rgb(fold_color).into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    });
-    bytes_consumed += fold_len;
 
     // PU.1b-1a: the severity + diff sign runs exist only when
     // `signcolumn=yes` — `format_gutter_text` omitted those two chars
     // for `no`, so consuming them here would mis-slice the digits.
     if sign_column {
-        // Run 2: severity sign.
+        // Run: severity sign.
         let sev_color = meta.severity.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let sev_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-        let sev_len = sev_char.len_utf8();
-        runs.push(TextRun {
-            len: sev_len,
-            font: font.clone(),
-            color: rgb(sev_color).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
+        let sev_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        push(&mut runs, sev_len, sev_color);
         bytes_consumed += sev_len;
 
-        // Run 3: D.3.d.2 diff sign (left of line number, between
+        // Run: D.3.d.2 diff sign (left of line number, between
         // severity and digits — Vim/Helix/Zed/VSCode convention).
         let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let diff_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-        let diff_len = diff_char.len_utf8();
-        runs.push(TextRun {
-            len: diff_len,
-            font: font.clone(),
-            color: rgb(diff_color).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
+        let diff_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        push(&mut runs, diff_len, diff_color);
         bytes_consumed += diff_len;
     }
 
-    // Run 4: line number + trailing space.
-    let tail_len = text.len() - bytes_consumed;
+    // Tail layout: `{num:>width} {fold} ` — the fold glyph is the
+    // second-to-last char and the trailing gap is the last. Slice from
+    // the END so a multi-byte glyph (`▸`/`▾`, 3 bytes) or a blank space
+    // are handled uniformly.
+    let trailing_len = text
+        .chars()
+        .next_back()
+        .map(char::len_utf8)
+        .unwrap_or(0);
+    let before_trailing = &text[..text.len() - trailing_len];
+    let fold_len = before_trailing
+        .chars()
+        .next_back()
+        .map(char::len_utf8)
+        .unwrap_or(0);
+    // Line number + separator space (normal colour), up to the glyph.
+    let mid_len = before_trailing.len() - fold_len - bytes_consumed;
+    push(&mut runs, mid_len, GUTTER_NORMAL_COLOR);
+    // The fold glyph in its resolved colour (falls back to the normal
+    // gutter tone for a blank non-fold row).
+    let fold_color = meta.fold_marker.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
+    push(&mut runs, fold_len, fold_color);
+    // Trailing gap.
+    let tail_len = trailing_len;
     if tail_len > 0 {
         runs.push(TextRun {
             len: tail_len,
@@ -3347,18 +3376,18 @@ mod tests {
     }
 
     /// The rendered gutter text MUST be exactly the width the element
-    /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 2`,
-    /// where the `+2` is the fold cell + the separator space). If the
-    /// reservation undercounts (it was `+ 1`, omitting the fold cell), the
-    /// code's first column lands on the gutter's trailing space → no gap
-    /// between the line number and the code. Pins both the document and the
-    /// virtual-row branch against the reservation formula.
+    /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 3`,
+    /// where the `+3` is the separator space + fold-marker cell + the
+    /// trailing gap — the `… 99 ▸ code` layout). If the reservation
+    /// mismatches, the code's first column lands inside the gutter and the
+    /// line number runs flush against the code. Pins both the document and
+    /// the virtual-row branch against the reservation formula.
     #[test]
     fn gutter_text_width_matches_reserved_chars() {
         let doc = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
@@ -3366,7 +3395,7 @@ mod tests {
         let virt = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: true,
@@ -3374,7 +3403,7 @@ mod tests {
         let gutter_width = 3usize;
         for &sign in &[false, true] {
             let sign_cells = if sign { 2 } else { 0 };
-            let reserved = sign_cells + gutter_width + 2;
+            let reserved = sign_cells + gutter_width + 3;
             assert_eq!(
                 format_gutter_text(&doc, gutter_width, sign, true).chars().count(),
                 reserved,
@@ -3557,13 +3586,14 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 0,
             display_line: 0,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
         };
-        // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true, true), "     1 ");
+        // {sev}{diff}{num:>3} {fold} = "  " + "  1" + " " + " " + " "
+        // = "    1   " (8 chars): fold marker now trails the number.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "    1   ");
     }
 
     #[test]
@@ -3571,13 +3601,14 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: true,
+            fold_marker: Some((FOLD_GLYPH_CLOSED, 0x9399b2)),
             severity: None,
             diff_sign: None,
             is_virtual: false,
         };
-        // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true, true), "►   42 ");
+        // {sev}{diff}{num:>3} {fold} = "  " + " 42" + " " + "▸" + " "
+        // = "   42 ▸ " (8 chars): the glyph sits AFTER the number now.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "   42 ▸ ");
     }
 
     #[test]
@@ -3585,13 +3616,13 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
             is_virtual: false,
         };
-        // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true, true), " E 10 ");
+        // 'E' + ' ' (diff) + "10" + ' ' + ' ' (fold) + ' ' = "E 10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E 10   ");
     }
 
     #[test]
@@ -3599,36 +3630,65 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true, true), "  +10 ");
+        // D.3.d.2: ' ' (sev) + '+' (diff) + "10" + ' ' + ' ' (fold) + ' '
+        // = " +10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), " +10   ");
     }
 
     #[test]
     fn gutter_text_signcolumn_no_drops_severity_and_diff_cells() {
         // PU.1b-1a: with `signcolumn=no` the severity + diff cells are
         // gone even when a diagnostic + hunk touch the line. Gutter is
-        // fold + line-number + trail only: ' ' + "10" + ' ' = " 10 ".
+        // line-number + separator + fold + trail: "10" + ' ' + ' ' + ' '
+        // = "10   ".
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        assert_eq!(format_gutter_text(&meta, 2, false, true), " 10 ");
+        assert_eq!(format_gutter_text(&meta, 2, false, true), "10   ");
         // The reserved (default) form keeps both sign cells.
-        assert_eq!(format_gutter_text(&meta, 2, true, true), " E+10 ");
-        // build_gutter_runs must not mis-slice the gated text: fold +
-        // (line-number + trail) = 2 runs, lengths summing to the text.
-        let runs = build_gutter_runs(" 10 ", &meta, gpui::font("monospace"), false);
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), " 10 ".len());
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E+10   ");
+        // build_gutter_runs must not mis-slice the gated text: with no
+        // sign cells the runs are (line-number+separator), (fold slot),
+        // (trailing gap) = 3 runs summing to the full text length.
+        let runs = build_gutter_runs("10   ", &meta, gpui::font("monospace"), false);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), "10   ".len());
+    }
+
+    #[test]
+    fn gutter_runs_colour_the_fold_glyph_separately() {
+        // The fold glyph rides its own run in its resolved colour, sliced
+        // out from between the line-number run and the trailing gap even
+        // though the glyph is multi-byte (`▸` = 3 bytes).
+        let meta = GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_marker: Some((FOLD_GLYPH_CLOSED, 0xabcdef)),
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+        };
+        let text = format_gutter_text(&meta, 3, true, true); // "   42 ▸ "
+        let runs = build_gutter_runs(&text, &meta, gpui::font("monospace"), true);
+        // Runs sum to the whole text (no bytes dropped / double-counted).
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        // Exactly one run carries the fold colour, and it is glyph-wide.
+        let fold_runs: Vec<_> = runs
+            .iter()
+            .filter(|r| r.color == rgb(0xabcdef).into())
+            .collect();
+        assert_eq!(fold_runs.len(), 1, "one run should carry the fold colour");
+        assert_eq!(fold_runs[0].len, FOLD_GLYPH_CLOSED.len_utf8());
     }
 
     #[test]

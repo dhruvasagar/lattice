@@ -763,6 +763,26 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Conflict-region background tint.",
     );
 
+    // ---- Fold markers ----
+    // Gutter glyphs on a foldable head row: `▾` when the fold is open,
+    // `▸` when collapsed. Muted by cross-editor convention — VS Code
+    // (`editorGutter.foldingControlForeground` → `icon.foreground`),
+    // Zed, JetBrains, Sublime, and Neovim's `FoldColumn` all render fold
+    // controls in a low-emphasis gray rather than an accent. Open uses
+    // the dim `overlay` tone so always-visible markers don't clutter;
+    // closed steps up to `subtext` (the line-number tone) for a touch
+    // more presence since it signals hidden content. Themes retune both.
+    reg_one(
+        "gutter.fold.open",
+        spec().fg("overlay"),
+        "`▾` fold marker on an open (expanded) foldable head row.",
+    );
+    reg_one(
+        "gutter.fold.closed",
+        spec().fg("subtext"),
+        "`▸` fold marker on a closed (collapsed) fold head row.",
+    );
+
     // ---- Search + selection + LSP overlays (T.6) ----
     // These hoist the scattered/drifted hardcoded overlay literals out
     // of the renderers so BOTH peers read the same registered styles
@@ -1063,6 +1083,15 @@ pub struct BuiltinElementIds {
     pub diff_remove_line: ElementId,
     pub diff_deletion_block: ElementId,
     pub diff_conflict_line: ElementId,
+    // Fold-marker gutter glyphs (`▾` open head, `▸` collapsed head).
+    // Muted by cross-editor convention (VS Code / Zed / JetBrains /
+    // Sublime / Neovim all render fold controls in a low-emphasis gray,
+    // never an accent). `closed` gets a touch more presence than `open`
+    // because it signals hidden content; the `⋯ N lines` summary carries
+    // the rest of that signal. Both renderers read these ids so the TUI
+    // and GPUI gutters stay in lockstep and themes can retune the tone.
+    pub gutter_fold_open: ElementId,
+    pub gutter_fold_closed: ElementId,
     // T.4.c — pane chrome + file tree (writer-free elements only;
     // `pane.status.*` / `pane.separator` carry live `:set ui.*`
     // overrides and migrate with the registry-override path in T.9).
@@ -1194,6 +1223,8 @@ impl Default for BuiltinElementIds {
             diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
+            gutter_fold_open: ElementId::INVALID,
+            gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
             pane_status_inactive: ElementId::INVALID,
             pane_separator: ElementId::INVALID,
@@ -1370,6 +1401,8 @@ impl BuiltinElementIds {
             diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),
             diff_conflict_line: id("diff.conflict.line"),
+            gutter_fold_open: id("gutter.fold.open"),
+            gutter_fold_closed: id("gutter.fold.closed"),
             pane_status_active: id("pane.status.active"),
             pane_status_inactive: id("pane.status.inactive"),
             pane_separator: id("pane.separator"),

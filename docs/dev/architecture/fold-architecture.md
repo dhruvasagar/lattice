@@ -226,6 +226,37 @@ document jumping the viewport for no reason. The walk stays
 `nofoldenable` / no closed folds degrade it to the historical
 per-line walk byte-for-byte.
 
+### 5.2 Gutter marker rendering
+
+Both renderers draw a fold marker on **every foldable head row**
+while `foldenable` is on — `▾` on an open (expanded) head, `▸` on a
+closed (collapsed) one — so the affordance is visible before you
+fold, not only after. The host answers the per-row question with
+`FoldIndex::fold_start_kind_at(line) -> Option<FoldMarker>`
+(`Open` / `Closed` / `None`); each renderer maps that to its glyph.
+The TUI's `fold_glyph_for` and the GPUI gutter-meta build call the
+same predicate, so the two peers never disagree on which rows carry
+a marker.
+
+**Placement.** The marker sits **between the line number and the
+code** (`… 99 ▸ code`), not in a leading fold column — a separator
+space before the glyph and a trailing gap after it. Both gutters
+reserve that three-cell trailing slot unconditionally (even with
+`nonumber`), so toggling line numbers or folding a region never
+shifts the body column.
+
+**Colour is themed, muted by convention.** The glyphs resolve
+through two theme elements — `gutter.fold.open` (default `overlay`,
+the dim gutter tone) and `gutter.fold.closed` (default `subtext`,
+the line-number tone, a step brighter so a collapsed fold reads as
+"content hidden here"). This follows the cross-editor convention:
+VS Code, Zed, JetBrains, Sublime, and Neovim all render fold
+controls as a low-emphasis gray, never an accent. A theme that
+leaves the elements unset falls back to the historical dim gutter
+colour, so the marker never vanishes. The `⋯ N lines` collapsed
+summary (TUI today; GPUI parity pending) carries the rest of the
+"hidden content" signal via text rather than a loud glyph colour.
+
 ## 6. Grammar surface impact
 
 **None — from the provider refactor.** That is the whole point. The

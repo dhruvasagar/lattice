@@ -3612,6 +3612,23 @@ pub(crate) fn compose_pane_lines(
     // array index, not a per-overlay name lookup (paramount #1).
     let overlay_resolved = &cells_rs.resolved_theme;
     let overlay_ids = &cells_rs.theme_ids;
+    // Fold-marker colours, resolved once per pane from the theme
+    // (`gutter.fold.open` / `gutter.fold.closed`). Muted by cross-editor
+    // convention; the GPUI peer resolves the same two elements. `DarkGray`
+    // (the historical gutter tone) is the fallback when a theme leaves the
+    // element unset, so the marker never vanishes.
+    let fold_colors = FoldColors {
+        open: overlay_resolved
+            .get(overlay_ids.gutter_fold_open)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(Color::DarkGray),
+        closed: overlay_resolved
+            .get(overlay_ids.gutter_fold_closed)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(Color::DarkGray),
+    };
     // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
     // pane's buffer once per frame; accumulate GutterDecoration
     // contributions into per-line maps. Replaces per-line RenderState
@@ -3720,6 +3737,7 @@ pub(crate) fn compose_pane_lines(
             gutter_w,
             active_cursor_line,
             active_display_line_numbers.as_deref(),
+            fold_colors,
         );
         // Highlight slot is keyed by buffer-line offset from
         // `scroll`, NOT by viewport row -- once closed folds skip
@@ -3869,7 +3887,7 @@ pub(crate) fn compose_pane_lines(
             }
         };
         // Whether this line begins a closed fold. Used to append the
-        // ` ┄ N lines folded` suffix AFTER overlay processing, so
+        // ` ⋯ N lines` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
         // Fold-bleed fix (2026-06-30): computed for every pane (matches
@@ -3877,7 +3895,7 @@ pub(crate) fn compose_pane_lines(
         // reads the pane's own per-buffer folds, so an inactive pane
         // shows its fold summary identically to when it was focused.
         let closed_fold_at_start = view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
-            // The "N lines folded" suffix should reflect the
+            // The "⋯ N lines" suffix should reflect the
             // user's perception of how much content collapsed
             // onto this single visible row -- including any
             // sibling / nested closed folds whose headings are
@@ -4231,12 +4249,13 @@ pub(crate) fn compose_pane_lines(
             }
         }
         // Heading-preserved fold render (`docs/user/folding.md`):
-        // append the ` ┄ N lines folded` suffix AFTER all overlays
-        // so the heading's syntax / visual / search styling is
-        // preserved, with the dim summary trailing off the right.
+        // append the ` ⋯ N lines` suffix AFTER all overlays so the
+        // heading's syntax / visual / search styling is preserved, with
+        // the dim summary trailing off the right. The GPUI peer paints
+        // the same text as an end-of-row overlay.
         if let Some(n) = closed_fold_at_start {
             body.push(Span::styled(
-                format!(" ┄ {n} lines folded"),
+                format!(" ⋯ {n} lines"),
                 TuiStyle::default().fg(Color::DarkGray),
             ));
         }
@@ -4381,12 +4400,15 @@ pub(crate) fn compose_pane_lines(
             if (out.len() as u32) >= height {
                 break;
             }
-            let cont_gutter = Span::styled(
+            // Continuation rows carry no fold marker (the blank glyph
+            // slot is part of `format_gutter_cell`'s layout), so the
+            // whole cell is one dim span.
+            let cont_gutter = vec![Span::styled(
                 format_gutter_cell(WRAP_CONT_MARKER, gutter_w, None),
                 TuiStyle::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
-            );
+            )];
             // PU.1b-1a: continuation rows mirror seg0's sign-column
             // geometry — two blank cells when reserved, none when
             // `signcolumn=no`.
@@ -4805,28 +4827,75 @@ fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> 
 // inlay_hint_label_text` for any other callers.
 
 /// Trailing-side padding cells between the gutter's content and the
-/// buffer column. The fold glyph still occupies one of those cells
-/// (right next to the line number); the remaining cells are plain
-/// space so the digits don't run flush against code. Two cells
-/// total reads as visible breathing room without stealing more
-/// buffer width than necessary.
-const GUTTER_TRAILING_PAD: u32 = 2;
+/// buffer column. Layout of the three cells: one separator space, the
+/// fold-glyph slot, then one more space so the glyph doesn't run flush
+/// against the code (`_99_▸_code`). The extra gap makes the fold marker
+/// read as a distinct affordance rather than part of the text.
+const GUTTER_TRAILING_PAD: u32 = 3;
 
 fn gutter_width(line_count: u32) -> u32 {
     // Layout: 1 cell leading pad + N digits + GUTTER_TRAILING_PAD
-    // (which includes the fold-glyph slot). For line_count = 99 and
-    // pad = 2 that's "_99_ " => 5 cells.
+    // (separator space + fold-glyph slot + trailing gap). For
+    // line_count = 99 and pad = 3 that's "_99_▸_" => 6 cells.
     let digits = line_count.max(1).ilog10() + 1;
     digits + 1 + GUTTER_TRAILING_PAD
 }
 
-/// Pick the gutter fold glyph for a buffer line: ▸ when the line
-/// begins a closed fold, ▾ when it begins an open fold, or `None`
-/// when the line is unaffiliated with any fold start.
-/// (`docs/user/folding.md`).
-fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
+/// Resolved fold-marker colours for a pane, one per marker state.
+/// Themed via `gutter.fold.open` / `gutter.fold.closed`; the GPUI peer
+/// resolves the same two elements. `Copy` so it threads cheaply through
+/// the per-line gutter path.
+#[derive(Debug, Clone, Copy)]
+struct FoldColors {
+    open: Color,
+    closed: Color,
+}
+
+/// Pick the gutter fold marker for a buffer line: `▸` + the closed
+/// colour when the line begins a closed fold, `▾` + the open colour when
+/// it begins an open fold, or `None` when the line is unaffiliated with
+/// any fold start (`docs/user/folding.md`). Shows a marker on every
+/// foldable head — open or closed — matching the GPUI peer. Even on a
+/// gutterless / centred buffer (help, the dashboard) the marker renders
+/// just before the text: the centring pad is folded into `gutter_w`, so
+/// `format_gutter_cell` right-aligns the glyph against the content.
+fn fold_glyph_for(
+    view: &FrameView<'_>,
+    line_idx: u32,
+    colors: FoldColors,
+) -> Option<(char, Color)> {
     let f = view.fold_start_at_any(line_idx)?;
-    Some(if f.closed { '▸' } else { '▾' })
+    Some(if f.closed {
+        ('▸', colors.closed)
+    } else {
+        ('▾', colors.open)
+    })
+}
+
+/// Build the gutter cell as styled spans. With no fold marker the whole
+/// cell is one dim-gutter span; with a marker the glyph is split into its
+/// own themed span (the `… 99 ▸ ` layout puts the glyph second-from-last,
+/// with a separator space before and a trailing gap after), so the fold
+/// colour applies to the glyph alone and the line number keeps the
+/// gutter tone.
+fn gutter_spans(label: &str, width: u32, marker: Option<(char, Color)>) -> Vec<Span<'static>> {
+    let num_style = TuiStyle::default().fg(Color::DarkGray);
+    let cell = format_gutter_cell(label, width, marker.map(|(g, _)| g));
+    let Some((_, color)) = marker else {
+        return vec![Span::styled(cell, num_style)];
+    };
+    // `cell` ends `…{sep}{glyph}{trailing}` — split on chars so the
+    // multi-byte glyph (`▸`/`▾`, 3 bytes) is handled cleanly.
+    let chars: Vec<char> = cell.chars().collect();
+    let n = chars.len();
+    let prefix: String = chars[..n - 2].iter().collect();
+    let glyph: String = chars[n - 2..n - 1].iter().collect();
+    let trailing: String = chars[n - 1..].iter().collect();
+    vec![
+        Span::styled(prefix, num_style),
+        Span::styled(glyph, TuiStyle::default().fg(color)),
+        Span::styled(trailing, num_style),
+    ]
 }
 
 /// Format the gutter cell text for a numbered line.
@@ -4853,17 +4922,15 @@ fn format_gutter_cell(label: &str, width: u32, glyph: Option<char>) -> String {
     // the glyph on every wrapped line. For ASCII numeric labels
     // display-width == byte-len, so the numbered gutter is unchanged.
     let label_cols = UnicodeWidthStr::width(label);
-    let leading = (width as usize).saturating_sub(label_cols + 2);
+    // 3 trailing cells: separator space + glyph + trailing gap.
+    let leading = (width as usize).saturating_sub(label_cols + 3);
     let g = glyph.unwrap_or(' ');
-    format!("{:lead$}{label} {g}", "", lead = leading)
+    format!("{:lead$}{label} {g} ", "", lead = leading)
 }
 
-fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static> {
+fn render_gutter(line_idx: u32, width: u32, marker: Option<(char, Color)>) -> Vec<Span<'static>> {
     let n = (line_idx + 1).to_string();
-    Span::styled(
-        format_gutter_cell(&n, width, glyph),
-        TuiStyle::default().fg(Color::DarkGray),
-    )
+    gutter_spans(&n, width, marker)
 }
 
 fn render_gutter_for(
@@ -4872,18 +4939,15 @@ fn render_gutter_for(
     width: u32,
     cursor_line: u32,
     display_line_numbers: Option<&[u32]>,
-) -> Span<'static> {
-    let glyph = fold_glyph_for(view, line_idx);
+    fold_colors: FoldColors,
+) -> Vec<Span<'static>> {
+    let marker = fold_glyph_for(view, line_idx, fold_colors);
     if !view.show_line_numbers {
         // No-numbers gutter: glyph (or empty) at the inner edge,
         // GUTTER_TRAILING_PAD - 1 trailing spaces, the rest leading
         // padding. The layout still aligns with the numbered case
         // so toggling `:set number` doesn't shift content.
-        let label = "";
-        return Span::styled(
-            format_gutter_cell(label, width, glyph),
-            TuiStyle::default().fg(Color::DarkGray),
-        );
+        return gutter_spans("", width, marker);
     }
     // K.4.6 follow-up (2026-06-02): consult the substrate's
     // composed→source row map (`display_line_numbers`) when
@@ -4913,14 +4977,11 @@ fn render_gutter_for(
     // contiguous source rows is meaningless. Matches Zed.
     let multibuffer_mode = display_line_numbers.is_some();
     if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
-        return render_gutter(display_line_idx, width, glyph);
+        return render_gutter(display_line_idx, width, marker);
     }
     let dist = line_idx.abs_diff(cursor_line);
     let n = dist.to_string();
-    Span::styled(
-        format_gutter_cell(&n, width, glyph),
-        TuiStyle::default().fg(Color::DarkGray),
-    )
+    gutter_spans(&n, width, marker)
 }
 
 /// Width of the diagnostic-severity column prepended to the
@@ -4972,9 +5033,10 @@ fn virtual_rows_at<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
-        // Sticky rows are rendered at the pane top in the pre-pass;
-        // skip them here so they don't double-paint in the content loop.
-        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
+        // Pinned rows (sticky headerlines + the branding masthead) are
+        // rendered at the pane top in the pre-pass; skip them here so they
+        // don't double-paint in the content loop.
+        .filter(|r| !r.kind.is_pinned())
 }
 
 /// D.3.b.1: render a virtual row as a ratatui `Line`.
@@ -5544,12 +5606,12 @@ fn empty_marker_line(gutter_w: u32) -> Line<'static> {
 /// the line-number gutter (which is always dim-darkgray).
 fn combine_prefixed(
     prefix: Vec<Span<'static>>,
-    gutter: Span<'static>,
+    gutter: Vec<Span<'static>>,
     mut body: Vec<Span<'static>>,
 ) -> Line<'static> {
-    let mut all = Vec::with_capacity(prefix.len() + 1 + body.len());
+    let mut all = Vec::with_capacity(prefix.len() + gutter.len() + body.len());
     all.extend(prefix);
-    all.push(gutter);
+    all.extend(gutter);
     all.append(&mut body);
     Line::from(all)
 }
@@ -5611,47 +5673,21 @@ pub(crate) fn apply_underline_overlay(
     out
 }
 
-/// Number of buffer lines actually collapsed onto the visible row
-/// where `fold` is rendered. Walks forward from `fold.end_line + 1`
-/// through any chained closed folds whose *heading is itself hidden*
-/// by the cumulative collapsed region, so the "N lines folded"
-/// summary matches what the user just collapsed when sibling folds
-/// OVERLAP (e.g. `(1, 3)` + `(3, 5)` from `foldmethod=indent`, where
-/// the second fold's heading at line 3 is hidden inside the first).
-///
-/// Folds that merely ABUT (the next fold starts at `end + 1`, the
-/// first *visible* line after this one) are NOT chained: that fold's
-/// heading is on screen, so the user sees it as a separate fold with
-/// its own summary. Counting its lines here double-counted them and
-/// reported e.g. 6 for two adjacent 3-line folds.
+/// Number of buffer lines collapsed onto the visible head row of
+/// `fold`. Thin wrapper over the shared [`lattice_host::folds::
+/// folded_line_span`] so the TUI and GPUI renderers report identical
+/// counts (see that function for the abut-vs-overlap chaining rule).
 fn closed_fold_display_span(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     fold: &crate::app::Fold,
 ) -> u32 {
-    let total_lines = snap.buffer.line_count();
-    let mut end = fold.end_line;
-    let mut probe = end.saturating_add(1);
-    while probe < total_lines {
-        // Chain only when `probe` lands strictly INSIDE another closed
-        // fold's hidden body (`start_line < probe <= end_line`) -- that
-        // fold's heading is itself hidden by the region we've already
-        // collapsed, so its lines are part of the same visual collapse.
-        // A fold whose heading sits AT `probe` (== end + 1) is a
-        // separate, visible fold and must not be counted here.
-        let next_closed = view
-            .folds
-            .iter()
-            .find(|f| f.closed && probe > f.start_line && probe <= f.end_line);
-        match next_closed {
-            Some(f) => {
-                end = end.max(f.end_line);
-                probe = end.saturating_add(1);
-            }
-            None => break,
-        }
-    }
-    end.saturating_sub(fold.start_line).saturating_add(1)
+    lattice_host::folds::folded_line_span(
+        view.folds.as_ref(),
+        fold.start_line,
+        fold.end_line,
+        snap.buffer.line_count(),
+    )
 }
 
 /// Translate a buffer line into the corresponding visible row index
@@ -6723,14 +6759,19 @@ mod tests {
 
     #[test]
     fn gutter_width_for_small_buffers() {
-        // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (2)
-        // = N + 3 cells. 1-digit numbers => 4 cells (" 1  "),
-        // 2-digit => 5 (" 99  "), 3-digit => 6 ("100  ").
-        assert_eq!(gutter_width(1), 4);
-        assert_eq!(gutter_width(9), 4);
-        assert_eq!(gutter_width(10), 5);
-        assert_eq!(gutter_width(99), 5);
-        assert_eq!(gutter_width(100), 6);
+        // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (3)
+        // = N + 4 cells. 1-digit numbers => 5 cells (" 1   "),
+        // 2-digit => 6 (" 99   "), 3-digit => 7 ("100   ").
+        assert_eq!(gutter_width(1), 5);
+        assert_eq!(gutter_width(9), 5);
+        assert_eq!(gutter_width(10), 6);
+        assert_eq!(gutter_width(99), 6);
+        assert_eq!(gutter_width(100), 7);
+    }
+
+    /// Concatenate a gutter's span contents back into one string.
+    fn gutter_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
@@ -6738,23 +6779,32 @@ mod tests {
         // Layout: `[lead][digits][space][glyph_or_space]`. With no
         // fold the rightmost cell is a plain space, so output ends
         // in two spaces -- one separator between digits and glyph
-        // slot, one empty glyph slot.
-        let span = render_gutter(0, gutter_width(1), None);
-        let s = span.content.as_ref();
+        // slot, one empty glyph slot. No fold ⇒ a single span.
+        let spans = render_gutter(0, gutter_width(1), None);
+        assert_eq!(spans.len(), 1, "no-fold gutter is one span: {spans:?}");
+        let s = gutter_text(&spans);
         assert!(s.ends_with("  "), "expected two trailing spaces, got {s:?}");
         assert!(s.contains('1'), "line number missing: {s:?}");
     }
 
     #[test]
-    fn render_gutter_places_glyph_at_rightmost_cell() {
-        // Closed fold ▸ sits at the inner edge of the gutter (next
-        // to the buffer column) with a separator space between the
-        // line number and the glyph -- the `[ 1 ▸]` layout.
-        let span = render_gutter(0, gutter_width(1), Some('▸'));
-        let s = span.content.as_ref();
-        assert!(s.contains(" 1 ▸"), "expected ' 1 ▸' shape, got {s:?}");
-        // Glyph is the last grapheme.
-        assert!(s.ends_with('▸'), "glyph must be the rightmost cell: {s:?}");
+    fn render_gutter_places_glyph_near_buffer_with_a_gap() {
+        // Closed fold ▸ sits near the buffer column, with a separator
+        // space before it and a one-cell gap after it so the glyph
+        // doesn't run flush against code -- the `[ 1 ▸ ]` layout. The
+        // glyph rides its own themed span so its colour is independent
+        // of the dim line-number tone.
+        let spans = render_gutter(0, gutter_width(1), Some(('▸', Color::Yellow)));
+        let s = gutter_text(&spans);
+        assert!(s.contains(" 1 ▸ "), "expected ' 1 ▸ ' shape, got {s:?}");
+        assert!(s.ends_with("▸ "), "glyph must have a trailing gap: {s:?}");
+        // Exactly one span carries the glyph, in the themed colour.
+        let glyph_spans: Vec<_> = spans
+            .iter()
+            .filter(|sp| sp.content.as_ref() == "▸")
+            .collect();
+        assert_eq!(glyph_spans.len(), 1, "glyph is its own span: {spans:?}");
+        assert_eq!(glyph_spans[0].style.fg, Some(Color::Yellow));
     }
 
     #[test]
@@ -6824,16 +6874,17 @@ mod tests {
              {default_indent} in {default0:?}"
         );
 
-        // `signcolumn=no` + `nonu`: only the 2-cell margin remains, so
-        // the body starts at column 2.
+        // `signcolumn=no` + `nonu`: only the fold-marker gutter remains
+        // (separator + fold slot + trailing gap = 3 cells, so a fold `▸`
+        // still shows with numbers off), and the body starts at column 3.
         app.editor.option_cache.sign_column = false;
         app.editor.option_cache.show_line_numbers = false;
         app.editor.publish_render_state();
         let lean0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
         assert_eq!(
             lean0.find("hello"),
-            Some(2),
-            "signcolumn=no + nonu ⇒ content at the 2-cell margin, got {lean0:?}"
+            Some(3),
+            "signcolumn=no + nonu ⇒ content at the 3-cell fold gutter, got {lean0:?}"
         );
     }
 
@@ -6891,8 +6942,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=4 + 3 = 9.
-        assert_eq!(pos.0, 9);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=5 + 3 = 10.
+        assert_eq!(pos.0, 10);
         assert_eq!(pos.1, 0);
     }
 
@@ -7020,8 +7071,9 @@ mod tests {
         // the glyph on every wrapped continuation segment.
         //
         // 56-char ASCII line, viewport 40, line numbers on (default):
-        // segment 0 body is 34 chars, segment 1 starts at source char 34
-        // (the digit '8').
+        // the gutter is 7 cells (2 sign + 5 = ` 1   ` under the 3-cell
+        // trailing pad), so the body is 33 columns; segment 0 body is 33
+        // chars and segment 1 starts at source char 33 (the digit '7').
         let long = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRST";
         assert_eq!(long.len(), 56);
         let text = format!("{long}\n");
@@ -7048,11 +7100,11 @@ mod tests {
             },
         );
 
-        // Segment 0 body ('a') and segment 1 body ('8') must start at the
+        // Segment 0 body ('a') and segment 1 body ('7') must start at the
         // SAME screen column — the continuation gutter is the same width
         // as the numbered gutter, so wrapped text aligns vertically.
         let seg0_col = body_start_col(&composed[0], 'a');
-        let seg1_col = body_start_col(&composed[1], '8');
+        let seg1_col = body_start_col(&composed[1], '7');
         assert_eq!(
             seg0_col, seg1_col,
             "wrapped continuation body must align with segment 0 body \
@@ -7061,8 +7113,8 @@ mod tests {
 
         // And the cursor on a continuation-segment byte must land on the
         // exact screen column where that glyph is painted. Byte 37 is
-        // 'B' — the 4th char of segment 1 (source chars 34='8', 35='9',
-        // 36='A', 37='B'), so painted at `seg1_col + 3`.
+        // 'B' — the 5th char of segment 1 (source chars 33='7', 34='8',
+        // 35='9', 36='A', 37='B'), so painted at `seg1_col + 4`.
         let pos = cursor_screen_position_at(
             &view,
             &snap,
@@ -7074,7 +7126,7 @@ mod tests {
         assert_eq!(pos.1, 1, "byte 37 sits on the first wrap continuation row");
         assert_eq!(
             pos.0 as usize,
-            seg1_col + 3,
+            seg1_col + 4,
             "cursor column must match the painted glyph column on the \
              continuation segment"
         );
@@ -7110,8 +7162,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
-        assert_eq!(pos.0, 11);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
+        assert_eq!(pos.0, 12);
     }
 
     #[test]
@@ -7128,8 +7180,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
-        assert_eq!(pos.0, 11);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
+        assert_eq!(pos.0, 12);
     }
 
     #[test]
@@ -7677,7 +7729,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 
@@ -7760,7 +7812,7 @@ mod tests {
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
         // Summary suffix appended.
-        assert!(row0.contains("lines folded"), "row0 = {row0:?}");
+        assert!(row0.contains("⋯"), "row0 = {row0:?}");
     }
 
     #[test]
@@ -7818,7 +7870,7 @@ mod tests {
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "inactive interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "inactive interior leaked: {blob}");
-        assert!(blob.contains("lines folded"), "inactive summary missing: {blob}");
+        assert!(blob.contains("⋯"), "inactive summary missing: {blob}");
     }
 
     #[test]
@@ -7850,8 +7902,8 @@ mod tests {
         // heading row).
         let row1_text = line_text(&lines[1]);
         assert!(
-            row1_text.contains("5 lines folded"),
-            "expected '5 lines folded' for chained folds, got: {row1_text:?}"
+            row1_text.contains("⋯ 5 lines"),
+            "expected '⋯ 5 lines' for chained folds, got: {row1_text:?}"
         );
     }
 
@@ -7882,11 +7934,11 @@ mod tests {
         let row0_text = line_text(&lines[0]);
         let row1_text = line_text(&lines[1]);
         assert!(
-            row0_text.contains("3 lines folded"),
+            row0_text.contains("⋯ 3 lines"),
             "first fold should count only its own 3 lines, got: {row0_text:?}"
         );
         assert!(
-            row1_text.contains("3 lines folded"),
+            row1_text.contains("⋯ 3 lines"),
             "second fold should count only its own 3 lines, got: {row1_text:?}"
         );
     }
@@ -7901,7 +7953,7 @@ mod tests {
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
-            !row0.contains("lines folded"),
+            !row0.contains("⋯"),
             "summary should only appear on closed folds: {row0:?}"
         );
     }
@@ -7952,6 +8004,34 @@ mod tests {
     }
 
     #[test]
+    fn gutterless_buffer_still_shows_fold_marker_before_text() {
+        // Folding is useful on gutterless buffers too (help / the
+        // dashboard have many markdown sections), so a foldable head must
+        // STILL paint its `▾`/`▸` — positioned immediately before the row
+        // text, not stranded at the pane's left edge. The centring pad is
+        // folded into `gutter_w`, so `format_gutter_cell` right-aligns the
+        // glyph against the content.
+        let mut app = app_with("# H\nbody\n", 5);
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
+        app.recompute_folds();
+        app.editor.option_cache.sign_column = false;
+        app.editor.option_cache.show_line_numbers = false;
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('▾'), "gutterless head still shows ▾: {row0:?}");
+        // The glyph sits just before the heading text (a single trailing
+        // gap), not at column 0 with the text far to the right.
+        let chars: Vec<char> = row0.chars().collect();
+        let glyph_ci = chars.iter().position(|&c| c == '▾').expect("glyph");
+        let text_ci = chars.iter().position(|&c| c == '#').expect("heading");
+        assert!(
+            text_ci > glyph_ci && text_ci - glyph_ci <= 2,
+            "▾ should sit just before the text (glyph@{glyph_ci}, text@{text_ci}): {row0:?}"
+        );
+    }
+
+    #[test]
     fn line_after_closed_fold_keeps_correct_syntax_highlighting() {
         // Reproduces a user-reported regression: with a closed fold
         // hiding interior lines, the next visible line was being
@@ -7976,7 +8056,7 @@ mod tests {
         app.editor.folds[idx].closed = true;
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
-        // Row 0: heading + " ┄ N lines folded".
+        // Row 0: heading + " ⋯ N lines".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
         let row1 = line_text(&lines[1]);
@@ -7997,7 +8077,7 @@ mod tests {
         // indent isn't > start. We extend that with closer-line
         // inclusion: a `}` / `]` / `)` line at the same indent as
         // the fold start gets pulled in, so the user doesn't see an
-        // orphan brace below `... ┄ N lines folded`.
+        // orphan brace below `... ⋯ N lines`.
         let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
         let mut app = app_with(src, 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
@@ -8053,7 +8133,7 @@ mod tests {
         // Summary suffix is still present.
         let row0_text = line_text(row0);
         assert!(
-            row0_text.contains("lines folded"),
+            row0_text.contains("⋯"),
             "summary suffix lost: {row0_text:?}"
         );
     }

@@ -1826,10 +1826,37 @@ impl EditorView {
         let glyph_hint = diagnostic_glyph_option::<
             lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
         >(&config, '·');
+        // Fold-marker colours, resolved once per pane from the theme.
+        // Muted by cross-editor convention (open dimmer than closed);
+        // the defaults mirror the `overlay` / `subtext` palette tones so
+        // a theme with an unset element still reads sensibly.
+        let fold_open_color = resolved_theme
+            .get(theme_ids.gutter_fold_open)
+            .fg
+            .map(|c| c.to_rgb_u32(0x6c7086))
+            .unwrap_or(0x6c7086);
+        let fold_closed_color = resolved_theme
+            .get(theme_ids.gutter_fold_closed)
+            .fg
+            .map(|c| c.to_rgb_u32(0x9399b2))
+            .unwrap_or(0x9399b2);
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
+                // Show a marker on every foldable head (open or closed)
+                // when foldenable is on, matching the TUI peer — `▾`
+                // expanded, `▸` collapsed — each in its themed colour.
+                let fold_marker = fold_index.fold_start_kind_at(line_idx as u32).map(|kind| {
+                    use lattice_host::folds::FoldMarker;
+                    match kind {
+                        FoldMarker::Open => {
+                            (crate::editor_element::FOLD_GLYPH_OPEN, fold_open_color)
+                        }
+                        FoldMarker::Closed => {
+                            (crate::editor_element::FOLD_GLYPH_CLOSED, fold_closed_color)
+                        }
+                    }
+                });
                 // MO.4.a: read from pre-built mode-walk map.
                 let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
                     use lattice_mode::GutterSeverityLevel;
@@ -1884,7 +1911,7 @@ impl EditorView {
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     display_line,
-                    fold_start,
+                    fold_marker,
                     severity,
                     diff_sign,
                     is_virtual: false,

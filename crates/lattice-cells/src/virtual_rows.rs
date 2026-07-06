@@ -95,6 +95,21 @@ pub enum VirtualRowKind {
 	BrandingBlock,
 }
 
+impl VirtualRowKind {
+	/// Whether rows of this kind are *pinned* to the top of the pane
+	/// (rendered in the sticky pre-pass, excluded from the scrolling
+	/// per-line pass, and reserved out of the visible window) rather than
+	/// scrolling with the document.
+	///
+	/// `Sticky` is the general headerline (multibuffer excerpt headers,
+	/// async-status HUD). `BrandingBlock` — the dashboard logo — is pinned
+	/// too: it is a masthead that should stay put while the sections
+	/// beneath it scroll, and it keeps its 2-D paint treatment either way.
+	pub fn is_pinned(self) -> bool {
+		matches!(self, VirtualRowKind::Sticky | VirtualRowKind::BrandingBlock)
+	}
+}
+
 /// One virtual row's anchor + content.
 ///
 /// `anchor_line` is the 0-based source line this row attaches
@@ -363,16 +378,17 @@ impl VirtualRowMatrix {
 		let total = end.saturating_sub(start);
 		let sticky = self.rows[start as usize..end as usize]
 			.iter()
-			.filter(|r| r.kind == VirtualRowKind::Sticky)
+			.filter(|r| r.kind.is_pinned())
 			.count() as u32;
 		total.saturating_sub(sticky)
 	}
 
-	/// Iterator over all sticky rows in the matrix (kind ==
-	/// [`VirtualRowKind::Sticky`]). Used by renderers to paint the
-	/// fixed top strip before the scrollable content window.
+	/// Iterator over all pinned rows in the matrix (see
+	/// [`VirtualRowKind::is_pinned`] — `Sticky` headerlines + the
+	/// `BrandingBlock` masthead). Used by renderers to paint the fixed top
+	/// strip before the scrollable content window.
 	pub fn sticky_rows(&self) -> impl Iterator<Item = &VirtualRow> {
-		self.rows.iter().filter(|r| r.kind == VirtualRowKind::Sticky)
+		self.rows.iter().filter(|r| r.kind.is_pinned())
 	}
 }
 

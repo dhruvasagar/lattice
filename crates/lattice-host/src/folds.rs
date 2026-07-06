@@ -589,6 +589,64 @@ impl FoldIndex {
         }
         self.all_starts.binary_search(&line).is_ok()
     }
+
+    /// Whether a fold *starts* at `line`, and if so whether it is
+    /// collapsed. `Some(true)` = closed fold head, `Some(false)` = open
+    /// (expanded) fold head, `None` = no fold starts here. Gates on
+    /// `foldenable`. This is what a gutter renderer consults to pick the
+    /// collapsed vs expanded marker glyph — the shared peer of the TUI's
+    /// `fold_glyph_for`, so both renderers show a marker on every
+    /// foldable head (not just collapsed ones) and agree on which glyph.
+    pub fn fold_start_kind_at(&self, line: u32) -> Option<FoldMarker> {
+        if !self.foldenable || self.all_starts.binary_search(&line).is_err() {
+            return None;
+        }
+        if self.closed.binary_search_by_key(&line, |(s, _)| *s).is_ok() {
+            Some(FoldMarker::Closed)
+        } else {
+            Some(FoldMarker::Open)
+        }
+    }
+}
+
+/// A gutter fold marker's state: the head row of an open (expanded) fold
+/// versus a closed (collapsed) one. Renderers map this to their glyph +
+/// themed colour (`gutter.fold.open` / `gutter.fold.closed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldMarker {
+    /// Expanded fold — body visible below the head. Rendered `▾`.
+    Open,
+    /// Collapsed fold — body hidden onto the head. Rendered `▸`.
+    Closed,
+}
+
+/// Number of buffer lines collapsed onto the visible head row of the
+/// closed fold `(start_line, end_line)` — the count both renderers show
+/// in the `⋯ N lines` fold summary. Walks forward from `end_line + 1`
+/// through any sibling closed folds whose *heading is itself hidden* by
+/// the region already collapsed (`start < probe <= end`), so overlapping
+/// folds (e.g. `(1,3)+(3,5)` from `foldmethod=indent`) report their
+/// combined span. Folds that merely ABUT — the next fold starts at
+/// `end + 1`, the first *visible* line after this one — are NOT chained:
+/// that fold has an on-screen heading and is a separate fold with its
+/// own summary. Shared by the TUI and GPUI renderers so the count stays
+/// identical.
+pub fn folded_line_span(folds: &[Fold], start_line: u32, end_line: u32, total_lines: u32) -> u32 {
+    let mut end = end_line;
+    let mut probe = end.saturating_add(1);
+    while probe < total_lines {
+        let next = folds
+            .iter()
+            .find(|f| f.closed && probe > f.start_line && probe <= f.end_line);
+        match next {
+            Some(f) => {
+                end = end.max(f.end_line);
+                probe = end.saturating_add(1);
+            }
+            None => break,
+        }
+    }
+    end.saturating_sub(start_line).saturating_add(1)
 }
 
 // =========================================================
@@ -1207,6 +1265,25 @@ impl Buffer {
         assert!(!idx.line_inside_closed_fold(7));
         assert!(!idx.closed_fold_start_at(5));
         assert!(!idx.fold_start_at_any(5));
+        assert_eq!(idx.fold_start_kind_at(5), None);
+    }
+
+    #[test]
+    fn fold_start_kind_distinguishes_open_closed_and_none() {
+        // A gutter renderer shows `▾` on open heads and `▸` on closed
+        // ones; every non-head line reports `None`. foldenable gates it.
+        let folds = vec![closed(2, 5), open(8, 12)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.fold_start_kind_at(2), Some(FoldMarker::Closed));
+        assert_eq!(idx.fold_start_kind_at(8), Some(FoldMarker::Open));
+        // Interior + unrelated lines: no marker.
+        assert_eq!(idx.fold_start_kind_at(3), None);
+        assert_eq!(idx.fold_start_kind_at(0), None);
+        assert_eq!(idx.fold_start_kind_at(12), None);
+        // foldenable off suppresses the marker on the same heads.
+        let off = FoldIndex::from_folds(&folds, false);
+        assert_eq!(off.fold_start_kind_at(2), None);
+        assert_eq!(off.fold_start_kind_at(8), None);
     }
 
     #[test]

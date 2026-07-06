@@ -29977,14 +29977,15 @@ impl Editor {
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             return true;
         }
-        if inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0
-        {
+        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0;
+        if is_vertical_jump {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         self.pending_count = 0;
         self.op_count = 0;
+        let prev_cursor_line = self.cursor.line;
         let buffer = self.active_text();
         let cancel = lattice_protocol::CancellationToken::never();
         match lattice_grammar::execute_motion_only(
@@ -29999,6 +30000,19 @@ impl Editor {
                 self.cursor = target;
             }
             Err(_) => {}
+        }
+        // Fold-aware landing (bug fix): read-only buffers — help, the
+        // dashboard — fold markdown sections too, so a vertical motion must
+        // not settle inside a closed fold's hidden body. Mirror
+        // `run_document_invocation`: a vertical jump (`gg` / `G`) auto-opens
+        // the fold at the target; an ordinary motion (`j` / `k`) snaps past
+        // it to the next visible line. Previously this runner skipped the
+        // snap, so `j` on the dashboard walked line-by-line through the
+        // hidden fold body instead of stepping over the closed section.
+        if is_vertical_jump {
+            self.auto_open_folds_at_cursor();
+        } else {
+            self.snap_cursor_past_closed_folds(prev_cursor_line);
         }
         self.clamp_cursor_to_active_buffer();
         true

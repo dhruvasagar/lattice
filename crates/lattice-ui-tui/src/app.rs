@@ -2374,6 +2374,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn read_only_j_snaps_past_closed_fold() {
+        // Regression (dashboard / help): read-only buffers fold markdown
+        // sections too, but their motion runner (`run_read_only_motion`)
+        // ignored folds — so `j` walked line-by-line through the hidden
+        // body instead of stepping over the closed section to the next
+        // visible line. The document path (`run_document_invocation`)
+        // already snapped; this pins the read-only path to match.
+        let mut a = app_with("# H1\nbody\nbody2\n# H2\nafter\n", 10);
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
+        a.recompute_folds();
+        let idx = a
+            .editor
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        let end = a.editor.folds[idx].end_line;
+        a.editor.folds[idx].closed = true;
+        a.editor.cursor = Position::new(0, 0);
+        // Drive the read-only motion path directly (help-mode's runner).
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
+        a.editor.run_read_only_motion(inv);
+        assert_eq!(
+            a.editor.cursor.line,
+            end + 1,
+            "read-only `j` must land on the first visible line past the closed fold"
+        );
+    }
+
     // ---- Bracketed-paste burst (Action::PasteText) ----
 
     // ---- Blockwise visual operators (DESIGN.md §15:18) ----

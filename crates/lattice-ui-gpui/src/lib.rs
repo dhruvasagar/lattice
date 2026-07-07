@@ -84,6 +84,13 @@ pub mod gpui_chord;
 #[cfg(feature = "window")]
 pub mod window;
 
+/// Slice W.3: pure `decorations` → GPUI window-chrome map
+/// (`window_chrome`/`full_titlebar`). Gated identically to `window` since
+/// it names `gpui::{SharedString, TitlebarOptions, WindowDecorations}` and
+/// is only reachable from `window.rs`'s `WindowOptions` construction.
+#[cfg(feature = "window")]
+pub mod window_chrome;
+
 /// Phase 5.8.AF.5 / Slice X3.full.1: custom GPUI `Element` rendering
 /// pane text via `ShapedLine::paint` -- replaces the per-char-Div
 /// element tree that dominated `paint_us`.

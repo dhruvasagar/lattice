@@ -1,9 +1,10 @@
 # Preview isolation (PI)
 
-**Status:** 📝 design only — not started (2026-07-03). Captures the contract and
-data model for making in-pane picker preview *isolated*: previewing buffer B in a
-pane must never mutate the pane's committed buffer A, the global active-buffer hot
-state, or A's resolved options. Slice plan:
+**Status:** ✅ landed (PI.0–PI.5, 2026-07-07). In-pane picker preview is now
+*isolated*: previewing buffer B in a pane never mutates the pane's committed buffer
+A, the global active-buffer hot state, or A's resolved options / mode stack. Preview
+is a read-only **projection** baked into the published pane-tree leaves; exit clears
+an `Option`, not a re-activation. Slice plan:
 `docs/dev/operations/slice-plans/preview-isolation.md` (PI series).
 
 Distinct from `picker-preview-highlight.md`, which colors source code *inside picker
@@ -71,7 +72,7 @@ entry and drive **B's** render only. A is never touched, so nothing bleeds.
 
 | Goal | This feature |
 |---|---|
-| #1 perf | **Improved.** Preview stops running mode-activation + a full global `option_cache` rebuild on every selection move; it points the pane's render at another buffer's already-resolved options. Exit is O(1) (clear an `Option`), not a re-activation. |
+| #1 perf | **Mixed, net positive (see `benchmarks.md` PI).** A same-buffer move (the `gr`/grep hot case, and any move that stays on one buffer) is now ~31 ns — it just re-seats the pane override, running NO mode work and NO global `option_cache` rebuild (~40× cheaper than a raw activate). Exit is O(1) (clear an `Option`), never a re-activation. A cross-buffer move (find-file candidate→candidate) pays the `preview-mode` minor's activate+deactivate cascade (§10.2 option (a)) at ~16.9 µs — higher than a warm activate, but ≈0.2 % of a 120 Hz frame and user-paced. The global `option_cache` is never rebuilt for a preview either way (B ≠ `document_buffer_id`). If cross-buffer latency matters, skip the completion-source recompute in `preview-mode`'s activate, or move to a render-only read-only flag (option (b)). |
 | #2 extensibility / everything-is-a-buffer | Preview becomes a **read-only projection** of a registry buffer through the *existing* per-buffer render path (`RenderView::for_buffer`, `PaneCellsInputs`). No parallel rendering path, no kind-branch. |
 | #3 grammar | Neutral. Preview is not an editing surface; B is read-only while previewed. |
 | #4 async | The cells/display workers already build a `DisplayMatrix` per pane keyed on `PaneCellsInputs.buffer_id` off the UI thread; preview reuses that, no new UI-thread work. |
@@ -160,14 +161,32 @@ Either way the invariant holds: B's overrides never write into A.
 
 ## 8. Cross-renderer parity
 
-TUI and GPUI move in lockstep (per the cross-renderer rule). Both already read
-per-pane matrices and per-buffer options:
+TUI and GPUI move in lockstep (per the cross-renderer rule). Because the override
+is baked into the **published** pane-tree leaves (§5: a previewing leaf's
+`buffer_id` / kind / cursor / scroll hold the *displayed* buffer, with the pane's
+committed buffer preserved in `committed_buffer_id`), the substitution reaches both
+peers through the ONE published tree they already read. Each peer needs only:
 
-- TUI: `RenderView::for_buffer` + the `content_left_pad` per-buffer fix (§4).
-- GPUI: the mirror pane-render path in `window.rs` (per-pane cursor/scroll/options
-  reads at `window.rs:1604`, `2439`, `2530`) resolves the displayed buffer the same
-  way. End-of-slice audit: `grep -rn "preview_buffer_id" crates/lattice-ui-gpui/`
-  must be non-empty once PI.4 lands.
+- Route the focused preview pane off its *active* path (which reads the active
+  document A) onto its isolated-projection path (which reads the leaf's displayed
+  buffer + preview cursor/scroll): TUI `draw_panes` gates `is_active` on
+  `!pane.is_previewing()`; GPUI gates `render_active` the same way.
+- Keep the previewed buffer's cursorline (so an LSP-reference / grep target line
+  stays highlighted). Cursorline is a per-pane decision resolved through the
+  **renderer-agnostic** seam `RenderState::current_line_highlight_for(buffer_id)`
+  (below) — NOT the active document's `option_cache`.
+- Per-pane status line / modeline report the pane's `committed_id()` (§5).
+
+**Renderer-agnostic option resolution.** Per-buffer resolved options (Number, Wrap,
+CursorLine, …) are published once as `RenderState::resolved_opts` (mirror of the
+host's `Editor::resolved_options`, cached on `resolved_options_version`) and read
+through `RenderState::resolved_option_for::<D>(buffer_id)` — the single seam BOTH
+peers call, replacing the TUI reading the live editor and GPUI reading the active
+document's `option_cache`. Mirrors the existing `folds_for_buffer` /
+`content_left_pad_for` / `inlay_hints_for_buffer` pattern.
+
+End-of-slice audit: `grep -rn "is_previewing\|current_line_highlight_for"
+crates/lattice-ui-gpui/` must be non-empty once PI.4 lands.
 
 ## 9. Rejected alternatives
 
@@ -182,12 +201,32 @@ per-pane matrices and per-buffer options:
   as PI.0 (the render fix is a real bug and a prerequisite either way); not the
   endpoint.
 
-## 10. Open questions (resolve during slicing)
+## 10. Open questions
 
-1. **§5 storage:** `preview_buffer_id` on `PaneState` (currently `Copy`,
-   geometry-only) vs. a host-side `HashMap<PaneId, BufferId>` sidecar. Leaning
-   sidecar to keep `PaneState` `Copy` and free of buffer lifecycle.
-2. **§6 marking:** `preview-mode` minor (a) vs. read-only render flag (b).
+1. **§5 storage — RESOLVED (PI.1): host-side sidecar.**
+   `Editor::preview_overrides: HashMap<PaneId, PreviewOverride>` (+ a
+   monotonic `preview_overrides_version` folded into the panes-substate
+   cache key). The live `Editor::pane_tree` stays committed +
+   geometry-only; the override is baked into the *published* pane-tree
+   leaves at `build_render_state` time. `PaneState` gains one Copy field,
+   `committed_buffer_id: Option<BufferId>` — set only on a published
+   preview projection (the leaf's `buffer_id` then holds the displayed
+   buffer, this holds the committed one for the per-pane status line).
+   `PreviewOverride` carries the preview `cursor` / `scroll` so the
+   preview viewport never rides on `Editor::cursor` / `Editor::scroll`.
+2. **§6 marking — RESOLVED (PI.2): `preview-mode` minor (a).** A real
+   minor (`crate::preview::PreviewMode`) contributing `ReadOnly = true`;
+   its presence on B's own mode stack is the ephemeral marker
+   (introspectable via `:describe-mode`). Activated only on B via
+   `mount_preview`, removed on unmount — B's `resolved_options` reflect
+   read-only while the committed buffer A is untouched.
+   **Cursorline is preserved:** `preview-mode` deliberately does NOT
+   touch `CursorLine`, and the renderer draws the focused preview pane's
+   cursorline at the preview cursor (not gated on active-document
+   identity). Rationale: cursorline is a core buffer feature — previewing
+   an LSP reference must keep the target line highlighted while the user
+   reads the surrounding code and `<Esc>`s back. (Everything-is-a-buffer:
+   a projected buffer keeps its features.)
 3. **Preview buffer creation:** file/grep previews resolve a routing payload to a
    buffer id today. Confirm every preview source yields (or can cheaply materialize) a
    registry buffer whose `resolved_options` can be computed read-only without I/O on

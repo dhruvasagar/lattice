@@ -398,10 +398,20 @@ mod tests {
         // Sanity: starting state.
         assert_eq!(app.active_pane_buffer_id(), doc_id);
         app.open_buffer_picker();
-        // Picker open + preview switched the pane to the help
-        // buffer (the alternate -- "(current)" is the doc).
-        assert_eq!(app.active_pane_buffer_id(), help_id);
-        assert!(matches!(app.editor.active_buffer, BufferKind::Help));
+        // PI.3: preview is an isolated projection — the pane's COMMITTED
+        // buffer stays the doc; the preview rides the pane override.
+        assert_eq!(
+            app.active_pane_buffer_id(),
+            doc_id,
+            "committed buffer unchanged by preview"
+        );
+        assert!(matches!(app.editor.active_buffer, BufferKind::Document));
+        let pane = app.editor.pane_tree.active().id;
+        assert_eq!(
+            app.editor.preview_override_for(pane).map(|o| o.buffer_id),
+            Some(help_id),
+            "active pane previews the alternate (help) buffer via the override"
+        );
     }
 
     #[test]
@@ -418,11 +428,20 @@ mod tests {
             .unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
-        // Preview moved us off the doc.
-        assert_ne!(app.active_pane_buffer_id(), doc_id);
+        // PI.3: preview rides the override; the committed buffer stays doc.
+        let pane = app.editor.pane_tree.active().id;
+        assert!(
+            app.editor.preview_override_for(pane).is_some(),
+            "an alternate is being previewed"
+        );
+        assert_eq!(app.active_pane_buffer_id(), doc_id, "committed stays doc");
         app.apply(Action::PickerDismiss);
-        // Esc restored the original.
+        // Esc cleared the preview; the pane was never off the doc.
         assert!(app.editor.picker.is_none());
+        assert!(
+            app.editor.preview_override_for(pane).is_none(),
+            "dismiss clears the preview override"
+        );
         assert_eq!(app.active_pane_buffer_id(), doc_id);
         assert!(matches!(app.editor.active_buffer, BufferKind::Document));
     }
@@ -441,19 +460,29 @@ mod tests {
             .unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
-        let first_preview = app.active_pane_buffer_id();
+        let pane = app.editor.pane_tree.active().id;
+        let first_preview = app.editor.preview_override_for(pane).map(|o| o.buffer_id);
         // Move down -- previews the next candidate.
         app.apply(Action::PickerSelectNext);
-        let second_preview = app.active_pane_buffer_id();
+        let second_preview = app.editor.preview_override_for(pane).map(|o| o.buffer_id);
         assert_ne!(
             first_preview, second_preview,
-            "selection moved -> different preview"
+            "selection moved -> different preview override"
         );
         // Both previews land on one of the help buffers we set up.
-        assert!(first_preview == help_a || first_preview == help_b || first_preview == doc_id);
-        assert!(second_preview == help_a || second_preview == help_b || second_preview == doc_id);
-        // Dismiss restores the original document.
+        assert!(
+            first_preview == Some(help_a)
+                || first_preview == Some(help_b)
+                || first_preview == Some(doc_id)
+        );
+        assert!(
+            second_preview == Some(help_a)
+                || second_preview == Some(help_b)
+                || second_preview == Some(doc_id)
+        );
+        // Dismiss clears the preview; the committed buffer was always doc.
         app.apply(Action::PickerDismiss);
+        assert!(app.editor.preview_override_for(pane).is_none());
         assert_eq!(app.active_pane_buffer_id(), doc_id);
     }
 
@@ -474,22 +503,24 @@ mod tests {
             .unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
+        let pane = app.editor.pane_tree.active().id;
         // Move off the origin so a non-origin candidate is being previewed.
         app.apply(Action::PickerSelectNext);
-        assert_ne!(
-            app.active_pane_buffer_id(),
-            doc_id,
+        assert!(
+            app.editor.preview_override_for(pane).is_some(),
             "a non-origin candidate is being previewed"
         );
         // Type a query that matches no buffer.
         for c in "zzzz".chars() {
             app.apply(Action::PickerAppend(c));
         }
-        assert_eq!(
-            app.active_pane_buffer_id(),
-            doc_id,
-            "no-match preview must restore the origin buffer (not keep the stale candidate)"
+        // No-match clears the preview projection (not leave a stale
+        // candidate); the pane snaps back to its committed origin.
+        assert!(
+            app.editor.preview_override_for(pane).is_none(),
+            "no-match must clear the preview override"
         );
+        assert_eq!(app.active_pane_buffer_id(), doc_id);
         app.apply(Action::PickerDismiss);
     }
 
@@ -617,12 +648,19 @@ mod tests {
 
         let _signals = app.editor.preview_picker_selection();
 
-        // After preview, cursor sits on line 2 (the 3rd line,
+        // PI.3: the preview cursor rides the pane override — the committed
+        // cursor is untouched. The override seats line 2 (the 3rd line,
         // 0-indexed) — the JumpInBuffer action's line.
+        let pane = app.editor.pane_tree.active().id;
+        let ov = app
+            .editor
+            .preview_override_for(pane)
+            .expect("previewing a line in the current buffer");
         assert_eq!(
-            app.editor.cursor.line, 2,
-            "preview should move cursor to selected line via typed accept_action"
+            ov.cursor.line, 2,
+            "preview seats the cursor on the selected line via the override"
         );
+        assert_eq!(app.editor.cursor.line, 0, "committed cursor untouched");
     }
 
     /// The preview centres the selected line (vim `zz`) so its context
@@ -639,12 +677,19 @@ mod tests {
             picker.selected = 15;
         }
         let _ = app.editor.preview_picker_selection();
-        assert_eq!(app.editor.cursor.line, 15);
+        // PI.3: cursor + centred scroll ride the override, not the
+        // committed viewport.
+        let pane = app.editor.pane_tree.active().id;
+        let ov = app
+            .editor
+            .preview_override_for(pane)
+            .expect("previewing a line in the current buffer");
+        assert_eq!(ov.cursor.line, 15);
         // viewport 5 → centred scroll = 15 - 5/2 = 13 (line 15 sits at
         // the middle row), not 11 (bottom-anchored).
         assert_eq!(
-            app.editor.scroll, 13,
-            "preview should centre the selected line, not bottom-anchor it"
+            ov.scroll, 13,
+            "preview centres the selected line via the override, not bottom-anchor it"
         );
     }
 

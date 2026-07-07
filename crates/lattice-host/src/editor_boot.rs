@@ -470,6 +470,13 @@ impl Editor {
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
+        // PI.2 (preview isolation): `preview-mode` — the read-only minor
+        // `mount_preview` activates on a previewed buffer's own stack.
+        // Host-owned (no feature crate), registered alongside the other
+        // host modes.
+        boot.modes_mut()
+            .register(crate::preview::PreviewMode)
+            .expect("preview-mode must register without conflict");
         // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
         // cleanup subscriber), `narrow-minor-mode`, and the project-search
         // provider mode moved into `lattice_multibuffer::install(boot)`
@@ -946,6 +953,7 @@ impl Editor {
             // any motion / ensure-visible reads.
             viewport_height: 0,
             viewport_width: 0,
+            committed_buffer_id: None,
         };
         let pane_tree = PaneTree::single(initial_pane);
 

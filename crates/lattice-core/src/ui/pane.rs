@@ -137,6 +137,38 @@ pub struct PaneState {
     /// the same per-frame layout pass that populates
     /// `viewport_height`.
     pub viewport_width: u32,
+    /// PI.1 (preview isolation): when this leaf is a **published render
+    /// projection** of a pane that is currently *previewing* another
+    /// buffer, the `buffer_id` / `buffer` / `cursor` / `scroll` fields
+    /// above hold the DISPLAYED (previewed) buffer + its preview
+    /// viewport, and this holds the pane's COMMITTED buffer — what
+    /// `:ls`, the modeline / per-pane status line, dispatch, and an
+    /// accept all resolve. `None` means "not previewing" (`buffer_id`
+    /// is both committed and displayed).
+    ///
+    /// Always `None` in the live `Editor::pane_tree`; the authoritative
+    /// override lives host-side in `Editor::preview_overrides` and is
+    /// baked into the leaves only when the render state is published
+    /// (`build_render_state`). Ephemeral: never persisted, never
+    /// snapshotted. See `docs/dev/architecture/preview-isolation.md` §5.
+    pub committed_buffer_id: Option<BufferId>,
+}
+
+impl PaneState {
+    /// PI.1: is this published leaf a preview projection (displaying a
+    /// buffer other than the one it is committed to)?
+    pub fn is_previewing(&self) -> bool {
+        self.committed_buffer_id.is_some()
+    }
+
+    /// PI.1: the buffer a real switch / accept commits and that `:ls`,
+    /// the modeline, and the per-pane status line report. Equals
+    /// [`Self::buffer_id`] except on a published preview projection,
+    /// where `buffer_id` is the *displayed* buffer and this is the
+    /// committed one.
+    pub fn committed_id(&self) -> BufferId {
+        self.committed_buffer_id.unwrap_or(self.buffer_id)
+    }
 }
 
 /// Internal node of the pane tree. Leaves reference a `PaneState`
@@ -751,6 +783,7 @@ mod tests {
             leftcol: 0,
             viewport_height: 0,
             viewport_width: 0,
+            committed_buffer_id: None,
         }
     }
 

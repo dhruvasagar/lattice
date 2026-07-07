@@ -705,30 +705,12 @@ pub struct Editor {
     /// / JumpToLocation). `Default` for `<CR>`.
     pub picker_open_target: lattice_picker::OpenTarget,
 
-    /// Issue #37 (2026-05-22): preview-restore handoff during
-    /// picker accept. When the picker live-previews the
-    /// selected candidate, the candidate's buffer is activated
-    /// in the active pane — replacing the buffer that was
-    /// there before the picker opened. If the accept then
-    /// SPLITS or creates a new TAB, both halves inherit the
-    /// preview and the original buffer is lost from the
-    /// source pane.
-    ///
-    /// `do_picker_accept` writes the picker's `preview_origin`
-    /// here at entry. `prepare_open_target_pane` consumes it
-    /// via `mem::take` and, for non-Default targets,
-    /// re-activates the origin buffer in the active pane
-    /// BEFORE splitting / tab-creating so the source pane
-    /// shows the original buffer afterwards.
-    pub pending_picker_preview_origin: Option<lattice_core::BufferId>,
-
     /// T.12a: the theme to restore if the colorscheme picker is
     /// dismissed (`<Esc>`). Captured on the FIRST live preview as a
     /// `(palette, overrides)` snapshot of the theme active when the
     /// picker opened. `<Esc>` calls `ThemeRegistry::set_theme` with
     /// these to undo the preview; `<CR>` clears it (keeps the
-    /// previewed theme). Mirrors `pending_picker_preview_origin` —
-    /// `None` when no colorscheme preview is in flight.
+    /// previewed theme). `None` when no colorscheme preview is in flight.
     pub pending_theme_preview_restore:
         Option<(lattice_theme::Palette, Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>)>,
 
@@ -840,10 +822,23 @@ pub struct Editor {
     /// Live-picker query state -- present only when the
     /// active picker source has `spec().live == true`.
     pub live_picker_query: Option<LivePickerQueryState>,
-    /// One-tick preview gate: set when the picker should
-    /// render its candidate row preview into the auxiliary
-    /// region. Cleared after the renderer reads it.
-    pub previewing: bool,
+    /// PI.1 (preview isolation): per-pane preview projection. A pane
+    /// keeps its committed `PaneState.buffer_id`; the entry here (keyed
+    /// by `PaneId`) records the buffer it currently *displays* plus the
+    /// preview cursor / scroll. Baked into the published pane-tree
+    /// leaves at `build_render_state` time so the renderers show the
+    /// displayed buffer while `:ls` / modeline / dispatch read the
+    /// committed one. Ephemeral: never persisted / snapshotted; cleared
+    /// on accept / dismiss / selection-cleared. See
+    /// `docs/dev/architecture/preview-isolation.md` §5 and
+    /// [`crate::preview::PreviewOverride`].
+    pub preview_overrides:
+        std::collections::HashMap<lattice_core::ui::pane::PaneId, crate::preview::PreviewOverride>,
+    /// PI.1: monotonic version bumped on every `preview_overrides`
+    /// mutation. Folded into the panes-substate cache key (`panes_v`)
+    /// so the published projection rebuilds when an override changes —
+    /// the override lives outside `pane_tree.version()`.
+    pub preview_overrides_version: u64,
     /// Shared typed-options registry (DESIGN.md §5.12).
     /// Every option's *current value* lives in here behind
     /// an `ArcSwap<T>`; `:set` parses against it; the
@@ -906,6 +901,12 @@ pub struct Editor {
     /// Per-buffer mode-resolved options cache. Refreshed
     /// eagerly on mode toggle and option write.
     pub resolved_options: HashMap<BufferId, ResolvedOptions>,
+    /// PI.4: monotonic version bumped whenever [`Self::resolved_options`]
+    /// changes. Keys the published `ResolvedOptionsRenderState` cache so
+    /// both renderer peers read per-buffer resolved options through ONE
+    /// renderer-agnostic seam (`RenderState::resolved_option_for`) instead
+    /// of each peer resolving options its own way.
+    pub resolved_options_version: u64,
     /// Buffer-local explicit overrides (`:setlocal foo=bar`)
     /// per buffer. Inputs to resolution; the resolver chains
     /// these with mode contributions before writing

@@ -193,6 +193,20 @@ registered + interactive elements) is specified in
 sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
 (ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
 
+Picker preview isolation (in-pane live preview renders the previewed
+buffer B as a **read-only projection** — baked into the published
+pane-tree leaves — never mutating the pane's committed buffer, the global
+active-buffer hot state, or the origin's resolved options / mode stack) is
+specified in
+[`../architecture/preview-isolation.md`](../architecture/preview-isolation.md),
+with sequencing in
+[`slice-plans/preview-isolation.md`](slice-plans/preview-isolation.md)
+(PI.0–PI.5; **complete 2026-07-07** — landed on both renderer peers,
+`preview-mode` read-only minor, cursorline preserved for the previewed
+buffer, per-buffer option resolution lifted to a renderer-agnostic
+`RenderState::resolved_option_for` seam, and the pre-PI swap/restore
+machinery deleted).
+
 Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
 4.2 navigation + completion → 4.3 edits (rename / format / code
 action / will-save) → 4.4 polish (semantic tokens delta, inlay

@@ -95,6 +95,9 @@ pub struct RenderState {
     /// `picker_display_is_minibuffer` (and any future per-frame
     /// typed-option read) doesn't take an actor round-trip.
     pub options: Arc<OptionsRenderState>,
+    /// PI.4: per-buffer mode-resolved options (renderer-agnostic option
+    /// resolution). Read via [`Self::resolved_option_for`].
+    pub resolved_opts: Arc<ResolvedOptionsRenderState>,
     /// Slice 3c.final.B.11: active modes per buffer, published as
     /// `Arc<HashMap<BufferId, Arc<ActiveModes>>>` so per-buffer
     /// reads in the modeline + future hot paths are wait-free.
@@ -196,6 +199,7 @@ impl Default for RenderState {
             modeline: Arc::new(ModelineRenderState::default()),
             modeline_elements: lattice_mode::ModelineSnapshot::default(),
             options: Arc::new(OptionsRenderState::default()),
+            resolved_opts: Arc::new(ResolvedOptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),
             buffer_locals: Arc::new(BufferLocalsRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
@@ -264,6 +268,39 @@ impl RenderState {
             .map(|p| p.viewport_width)
             .unwrap_or_else(|| tree.active().viewport_width);
         viewport_width.saturating_sub(block_width) / 2
+    }
+
+    /// PI.4: resolve option `D` for `buffer_id` from the published
+    /// per-buffer resolved-options snapshot — the renderer-agnostic seam
+    /// both peers use (mirror of `Editor::resolved_option`). Falls back to
+    /// the global typed-option default when the buffer has no cached entry
+    /// (transient publish gap / a buffer resolved lazily). O(1) `TypeId`
+    /// lookup on the `Arc`-shared `ResolvedOptions`.
+    pub fn resolved_option_for<D: lattice_config::OptionDecl>(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Arc<D::Value>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        if let Some(resolved) = self.resolved_opts.map.get(&buffer_id)
+            && let Some(v) = resolved.get::<D>()
+        {
+            return v;
+        }
+        self.options
+            .config
+            .get_typed::<D>()
+            .expect("option not registered")
+    }
+
+    /// PI.4: whether a pane showing `buffer_id` paints its cursorline
+    /// (`:set cursorline` / `current-line-highlight-mode`), resolved
+    /// per-buffer. Both peers read this for the focused preview pane so the
+    /// previewed buffer keeps its own cursorline (e.g. an LSP-reference /
+    /// grep location preview keeps the target line highlighted).
+    pub fn current_line_highlight_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        *self.resolved_option_for::<lattice_config::CursorLine>(buffer_id)
     }
 
     pub fn folds_for_buffer(
@@ -1679,6 +1716,8 @@ pub struct PublishCache {
     pub panes: Option<(u64, std::sync::Arc<PanesRenderState>)>,
     pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
     pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
+    /// PI.4: keyed on `Editor::resolved_options_version`.
+    pub resolved_opts: Option<(u64, std::sync::Arc<ResolvedOptionsRenderState>)>,
     // DR.2 (decoration-retention): `pane_highlights_map` cache slot
     // retired with the `pane_highlights` producer. ML.3c: `lsp_progress`
     // cache slot retired with `RenderState.lsp.progress`.
@@ -1923,6 +1962,20 @@ pub struct ModesRenderState {
 #[derive(Debug, Default, Clone)]
 pub struct OptionsRenderState {
     pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
+}
+
+/// PI.4: per-buffer mode-resolved options, published so BOTH renderer
+/// peers resolve a buffer's options (Number, Wrap, CursorLine, …) through
+/// ONE renderer-agnostic seam — [`RenderState::resolved_option_for`] —
+/// instead of the TUI reading the live editor and GPUI reading the active
+/// document's `option_cache`. Mirror of the host's
+/// `Editor::resolved_options`; a buffer absent from the map falls back to
+/// the global typed-option default via [`OptionsRenderState::config`].
+#[derive(Debug, Default, Clone)]
+pub struct ResolvedOptionsRenderState {
+    pub map: std::sync::Arc<
+        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<lattice_config::ResolvedOptions>>,
+    >,
 }
 
 /// `*messages*` buffer + echo line state.

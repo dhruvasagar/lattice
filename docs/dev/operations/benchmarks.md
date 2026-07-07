@@ -290,6 +290,38 @@ spans (the tree query) never runs on the render thread at all. Confirms
 the §3 O(visible chars) claim: the per-char resolution is a `match` +
 theme-table index, no allocation, no parsing.
 
+### PI — picker preview isolation, per-selection-move cost (2026-07-07)
+
+Bench: `cargo bench -p lattice-host --bench preview`. Design:
+`docs/dev/architecture/preview-isolation.md`. Measures a picker preview
+*selection move* under the isolated-projection model (PI.3) against the
+pre-PI activate-swap baseline. Debug-ish criterion build, already-open
+buffer B (no syntax parse in the loop).
+
+| Bench / shape | Median time | Notes |
+|---|---|---|
+| `preview_reseat_same_buffer` | ~31 ns | The `gr` / grep hot case (several hits in one file): moving the selection just re-seats the pane override — no mode work, no option recompute. |
+| `preview_enter_exit` | ~16.9 µs | Mount a preview of a *different* buffer, then unmount. Dominated by the `preview-mode` minor's activate/deactivate cascade (`recompute_options_for_buffer` + `recompute_active_completion_sources_for` + `drain_option_changes`), run twice. |
+| `activate_swap_baseline` | ~1.3 µs | Pre-PI cost: `activate_buffer(B)` then `activate_buffer(A)`, warm (the bench re-activates the same two buffers, so major-mode + option_cache are already built — an under-estimate of a cold cross-buffer activate). |
+
+**Honest read.** The *reseat* path — the same-buffer `gr`/grep case, and
+every move that stays on one buffer — is ~40× cheaper than a raw activate
+(~31 ns), delivering the design's O(1) exit/move promise. The
+*enter/exit* path (a move to a **different** buffer, e.g. find-file
+candidate → candidate) is **not** cheaper than the warm activate baseline
+in this microbench: the `preview-mode` minor chosen in §10.2 (option (a))
+pays the full mode-activation cascade on both mount and unmount, ~16.9 µs
+total. That is still ≈0.2 % of a 120 Hz frame and preview moves are
+user-paced (not held-key bursts), so it is comfortably within budget — but
+it corrects the design's original blanket "preview is cheaper than
+activate" claim: it holds decisively for same-buffer moves and is a modest
+regression for cross-buffer moves. If cross-buffer preview latency ever
+matters, the cascade is the lever: `preview-mode` does not need completion
+sources recomputed, and a lighter activate that skips
+`recompute_active_completion_sources_for` + the non-option cascade arms
+would close most of the gap (or option (b), a read-only render flag with
+no mode lifecycle, would eliminate it).
+
 **Regression envelope:** `styled_marginalia_columns_1000` past ~300 µs,
 or `styled_perm_10seg` past 150 ns, signals an unintended allocation in
 the column-layout or concat path — review against §8.7.

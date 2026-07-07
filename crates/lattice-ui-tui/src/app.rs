@@ -766,13 +766,9 @@ pub struct App {
     // batch when the future resolves.
     // Phase 5.B.13: `live_picker_query` moved to
     // `editor.editor.live_picker_query`.
-    // True while a buffer activation is in *preview* mode --
-    // driven by the picker's `select_next` / `select_prev`
-    // hooks. Activate paths gate position-history pushes on
-    // this flag so a hover-preview doesn't pollute the jump
-    // list. Cleared at the end of every preview tick.
-    // Phase 5.B.13: `previewing` moved to
-    // `editor.editor.previewing`.
+    // PI.5: the `previewing` flag is gone — picker preview is now an
+    // isolated projection (`editor.editor.preview_overrides`) that never
+    // activates a buffer, so no activate-path gating flag is needed.
     // Receiver for [`lattice_lsp::LspLogPushed`] events (Phase
     // 4; M.5.3.b moved the event type from `lattice-protocol`'s
     // central enum to `lattice-lsp::events`). Drained once per

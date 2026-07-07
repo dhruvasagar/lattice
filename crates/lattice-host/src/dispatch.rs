@@ -622,7 +622,17 @@ impl Editor {
         // re-borrow `self` for the small number of fields each one
         // touches (different fields than `publish_cache`, so no
         // borrow conflict).
-        let panes_v = self.pane_tree.version();
+        let panes_v = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.pane_tree.version().hash(&mut h);
+            // PI.1: preview overrides are a host-side sidecar, outside
+            // `pane_tree.version()`. Fold the override version in so the
+            // published projection (baked into the leaves below) rebuilds
+            // whenever an override is set / replaced / cleared.
+            self.preview_overrides_version.hash(&mut h);
+            h.finish()
+        };
         let modes_v = self.active_modes.version();
         let buffer_locals_v = self.buffer_locals.version();
         // Perf plan B.4.b: `buffers` keyed on `buffer_uris.version()`
@@ -652,18 +662,45 @@ impl Editor {
             self.buffers.version().hash(&mut h);
             h.finish()
         };
-        let (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc) = {
+        let (
+            panes_arc,
+            modes_arc,
+            buffer_locals_arc,
+            buffers_arc,
+            tabs_arc,
+            resolved_opts_arc,
+        ) = {
             let mut cache = self
                 .publish_cache
                 .lock()
                 .expect("publish_cache mutex poisoned");
             let panes_arc = crate::render_state::cached_or_build(&mut cache.panes, panes_v, || {
-                // Same shape as the legacy unconditional path —
-                // clone the inner `PaneTree` (not the wrapper)
-                // through `Deref` so the sub-state holds
-                // `Arc<PaneTree>`.
+                // Clone the inner `PaneTree` (not the wrapper) through
+                // `Deref` so the sub-state holds `Arc<PaneTree>`.
+                let mut tree = (*self.pane_tree).clone();
+                // PI.1: bake per-pane preview projections into the
+                // *published* leaves. The renderers read only this
+                // published tree, so a leaf whose `buffer_id` / `buffer`
+                // / `cursor` / `scroll` now hold the DISPLAYED (previewed)
+                // buffer renders it isolated — exactly like an inactive
+                // split — while `committed_buffer_id` preserves the pane's
+                // committed buffer for the per-pane status line. The live
+                // `self.pane_tree` stays committed (dispatch / `:ls` /
+                // modeline read it), so exiting preview is dropping the
+                // override, not reconstructing anything.
+                if !self.preview_overrides.is_empty() {
+                    for leaf in tree.leaves_mut() {
+                        if let Some(ov) = self.preview_overrides.get(&leaf.id) {
+                            leaf.committed_buffer_id = Some(leaf.buffer_id);
+                            leaf.buffer_id = ov.buffer_id;
+                            leaf.buffer = ov.buffer;
+                            leaf.cursor = ov.cursor;
+                            leaf.scroll = ov.scroll;
+                        }
+                    }
+                }
                 std::sync::Arc::new(PanesRenderState {
-                    tree: std::sync::Arc::new((*self.pane_tree).clone()),
+                    tree: std::sync::Arc::new(tree),
                 })
             });
             let modes_arc = crate::render_state::cached_or_build(&mut cache.modes, modes_v, || {
@@ -677,6 +714,22 @@ impl Editor {
                     mode_registry: self.mode_registry.clone(),
                 })
             });
+            // PI.4: publish per-buffer resolved options so both peers
+            // resolve options through the same renderer-agnostic seam.
+            let resolved_opts_arc = crate::render_state::cached_or_build(
+                &mut cache.resolved_opts,
+                self.resolved_options_version,
+                || {
+                    std::sync::Arc::new(crate::render_state::ResolvedOptionsRenderState {
+                        map: std::sync::Arc::new(
+                            self.resolved_options
+                                .iter()
+                                .map(|(id, opts)| (*id, std::sync::Arc::new(opts.clone())))
+                                .collect(),
+                        ),
+                    })
+                },
+            );
             let buffer_locals_arc = crate::render_state::cached_or_build(
                 &mut cache.buffer_locals,
                 buffer_locals_v,
@@ -712,7 +765,14 @@ impl Editor {
                 crate::render_state::cached_or_build(&mut cache.tabs, tabs_input_v, || {
                     std::sync::Arc::new(self.build_tabs_render_state())
                 });
-            (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc)
+            (
+                panes_arc,
+                modes_arc,
+                buffer_locals_arc,
+                buffers_arc,
+                tabs_arc,
+                resolved_opts_arc,
+            )
         };
         // D.4.d.1.a (2026-05-29): take the single-edit slot once
         // here so both the top-level `cells.last_edit` (active-doc
@@ -1013,6 +1073,9 @@ impl Editor {
             options: std::sync::Arc::new(crate::render_state::OptionsRenderState {
                 config: self.config.clone(),
             }),
+            // PI.4: per-buffer resolved options, cached on
+            // `resolved_options_version`.
+            resolved_opts: resolved_opts_arc,
             // Perf plan B.4: cached `Arc<ModesRenderState>` reused
             // across publishes when `active_modes.version()` hasn't
             // moved. Build closure (above) preserves the legacy
@@ -5780,23 +5843,11 @@ impl Editor {
         self.pane_tree.active().buffer_id
     }
 
-    /// Issue #37 followup (2026-05-22): central picker-attach
-    /// helper. Sets `preview_origin` to the active buffer id
-    /// at picker-open time (when unset) so the accept-time
-    /// restore knows what buffer was there BEFORE any
-    /// preview activated a candidate.
-    ///
-    /// Previously only the buffer picker (`:b`) populated
-    /// preview_origin. Files / recent / grep / etc. left it
-    /// as None — so picker live-preview opened the candidate
-    /// file in the active pane, and on `<C-s>` accept both
-    /// halves of the split inherited the candidate (origin
-    /// pane lost ORIG). Centralizing here fixes every picker
-    /// at once.
-    pub fn set_active_picker(&mut self, mut p: lattice_picker::Picker) {
-        if p.preview_origin.is_none() {
-            p.preview_origin = Some(self.active_pane_buffer_id().0);
-        }
+    /// Central picker-attach helper. PI.5: the `preview_origin` stash it
+    /// used to seed is gone — preview no longer swaps the active buffer, so
+    /// there is no origin to remember (the pane stays committed to its own
+    /// buffer throughout preview; accept clears the projection).
+    pub fn set_active_picker(&mut self, p: lattice_picker::Picker) {
         self.picker = Some(p);
     }
 
@@ -9263,15 +9314,9 @@ impl Editor {
         }
         picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
-        // Carry the pre-preview origin across re-seats. A LIVE picker (files /
-        // grep) re-seats here on EVERY query change, and by then the active
-        // buffer is the previewed one — so capture the origin ONCE (from the
-        // outgoing picker, else the current active on the first seat) and
-        // thread it onto the fresh picker. Without this, "restore origin" (on
-        // dismiss / no-match) would target a stale preview buffer.
-        let carried_origin = self.picker.as_ref().and_then(|p| p.preview_origin);
-        picker.preview_origin =
-            Some(carried_origin.unwrap_or_else(|| self.active_pane_buffer_id().0));
+        // PI.5: no origin to carry across re-seats — preview is a projection
+        // over the committed buffer, so the pane's committed identity is
+        // always the "origin" and never needs remembering.
         self.set_active_picker(picker);
         // Preview the seated selection — or restore the origin when the query
         // matched NOTHING — for every source, not just buffers. The live file
@@ -11392,8 +11437,17 @@ impl Editor {
             // generic compose path (no bespoke help painter). The
             // floating help popup is NOT a pane leaf — it gets its own
             // synthetic-pane coverage in PU.1b-3.
+            // PI.1: a previewing pane displays its override's buffer, not
+            // the committed leaf buffer. Resolve the displayed identity +
+            // preview viewport up front so the pane's matrix is built for
+            // the buffer the renderers will show (the published leaf
+            // above carries the same displayed buffer_id, so the
+            // pane.id → matrix lookup stays consistent).
+            let preview = self.preview_overrides.get(&leaf.id).copied();
+            let disp_buffer = preview.map(|o| o.buffer).unwrap_or(leaf.buffer);
+            let disp_buffer_id = preview.map(|o| o.buffer_id).unwrap_or(leaf.buffer_id);
             if !matches!(
-                leaf.buffer,
+                disp_buffer,
                 lattice_core::BufferKind::Document
                     | lattice_core::BufferKind::Messages
                     | lattice_core::BufferKind::Multibuffer
@@ -11407,7 +11461,7 @@ impl Editor {
             ) {
                 continue;
             }
-            let buffer_id = leaf.buffer_id;
+            let buffer_id = disp_buffer_id;
             // `is_active_pane` selects the leaf that is currently the
             // user's focus (distinct from "shows the active buffer" —
             // two panes can render the same Document, but only the
@@ -11417,9 +11471,22 @@ impl Editor {
             // `build_one_pane_cells_input`; PU.1b-3 reuses that same helper
             // for the synthetic floating-popup pane after the loop, so the
             // real-pane and popup paths cannot drift.
-            let is_active_pane = leaf.id == active_pane_id && active_doc_active;
-            let is_active_buffer = buffer_id == active_buffer_id && active_doc_active;
-            let scroll = if is_active_pane { self.scroll } else { leaf.scroll };
+            // PI.1: a previewing pane is never treated as the active-buffer
+            // pane — the committed document stays the live `self.document`,
+            // so B's snapshot / folds resolve through the registry and its
+            // viewport is the preview scroll, never `self.scroll` / the
+            // single-edit slot.
+            let is_active_pane =
+                leaf.id == active_pane_id && active_doc_active && preview.is_none();
+            let is_active_buffer =
+                buffer_id == active_buffer_id && active_doc_active && preview.is_none();
+            let scroll = if is_active_pane {
+                self.scroll
+            } else if let Some(ov) = preview {
+                ov.scroll
+            } else {
+                leaf.scroll
+            };
             let last_edit = if is_active_pane { last_edit_active } else { None };
             entries.push(self.build_one_pane_cells_input(
                 leaf.id,
@@ -17220,6 +17287,222 @@ impl Editor {
         });
     }
 
+    /// PI.1: set (or replace) the preview projection for `pane`. The
+    /// pane's committed `PaneState.buffer_id` is untouched; the renderers
+    /// show `override_`'s buffer with its preview cursor / scroll until the
+    /// override is cleared. Bumps the override version so the next
+    /// `build_render_state` republishes the pane-tree projection.
+    pub fn set_preview_override(
+        &mut self,
+        pane: lattice_core::ui::pane::PaneId,
+        override_: crate::preview::PreviewOverride,
+    ) {
+        if self.preview_overrides.get(&pane) != Some(&override_) {
+            self.preview_overrides.insert(pane, override_);
+            self.preview_overrides_version = self.preview_overrides_version.wrapping_add(1);
+        }
+    }
+
+    /// PI.1: clear the preview projection for `pane` (if any) and return
+    /// it. The pane snaps back to its committed buffer with zero
+    /// reconstruction — it was never disturbed.
+    pub fn clear_preview_override(
+        &mut self,
+        pane: lattice_core::ui::pane::PaneId,
+    ) -> Option<crate::preview::PreviewOverride> {
+        let removed = self.preview_overrides.remove(&pane);
+        if removed.is_some() {
+            self.preview_overrides_version = self.preview_overrides_version.wrapping_add(1);
+        }
+        removed
+    }
+
+    /// PI.1: clear every pane's preview projection (picker dismissed /
+    /// accepted). Returns whether anything was cleared.
+    pub fn clear_all_preview_overrides(&mut self) -> bool {
+        if self.preview_overrides.is_empty() {
+            return false;
+        }
+        self.preview_overrides.clear();
+        self.preview_overrides_version = self.preview_overrides_version.wrapping_add(1);
+        true
+    }
+
+    /// PI.1: the preview override seated on `pane`, if it is previewing.
+    pub fn preview_override_for(
+        &self,
+        pane: lattice_core::ui::pane::PaneId,
+    ) -> Option<crate::preview::PreviewOverride> {
+        self.preview_overrides.get(&pane).copied()
+    }
+
+    /// PI.2: mount buffer `buffer` as an isolated read-only preview
+    /// projection in `pane`, displayed at (`cursor`, `scroll`).
+    ///
+    /// Two steps, both isolated from the committed buffer A:
+    ///
+    /// 1. **Read-only options.** Activate `preview-mode` on B's OWN mode
+    ///    stack — it contributes `ReadOnly = true` and, by its presence,
+    ///    the ephemeral "previewing" marker. `activate_mode_by_id` runs
+    ///    `recompute_options_for_buffer(B)`, which writes ONLY
+    ///    `resolved_options[B]`; it rebuilds the global `option_cache`
+    ///    only when `B == document_buffer_id`, which is never true during
+    ///    preview. So `document_buffer_id`, the global `option_cache`, and
+    ///    A's `active_modes` / `resolved_options` are untouched.
+    /// 2. **Display.** Seat the pane's preview override (PI.1) so the
+    ///    renderers show B at the preview viewport while the pane stays
+    ///    committed to A.
+    ///
+    /// Idempotent: `activate_mode_by_id` no-ops if `preview-mode` is
+    /// already on B, and re-seating just replaces the override (moving the
+    /// selection to B' is `mount_preview(pane, B', …)`).
+    ///
+    /// `preview-mode` deliberately does NOT contribute `CursorLine`, so B
+    /// keeps its own cursorline — the renderer draws it at `cursor` (the
+    /// target line of an `gr` / grep location preview stays highlighted).
+    pub fn mount_preview(
+        &mut self,
+        pane: lattice_core::ui::pane::PaneId,
+        buffer: BufferId,
+        cursor: lattice_protocol::Position,
+        scroll: u32,
+    ) -> Vec<RendererSignal> {
+        let signals = self.activate_mode_by_id(buffer, crate::preview::PreviewMode::mode_id());
+        let buffer_kind = self
+            .buffers
+            .kind_of(buffer)
+            .unwrap_or(lattice_core::BufferKind::Document);
+        self.set_preview_override(
+            pane,
+            crate::preview::PreviewOverride {
+                buffer_id: buffer,
+                buffer: buffer_kind,
+                cursor,
+                scroll,
+            },
+        );
+        signals
+    }
+
+    /// PI.2: unmount the preview seated on `pane`. Clears the pane's
+    /// override (it snaps back to committed A with zero reconstruction)
+    /// and — if no OTHER pane is still previewing the same buffer —
+    /// removes `preview-mode` from that buffer's stack, restoring its
+    /// resolved options. GC of an ephemeral preview buffer is the caller's
+    /// concern (the dismiss path). No-op if `pane` isn't previewing.
+    #[must_use]
+    pub fn unmount_preview(
+        &mut self,
+        pane: lattice_core::ui::pane::PaneId,
+    ) -> Vec<RendererSignal> {
+        let Some(ov) = self.clear_preview_override(pane) else {
+            return Vec::new();
+        };
+        // Another pane may still be previewing the same buffer (splits);
+        // only strip `preview-mode` when the last preview of B unmounts.
+        let still_previewed = self
+            .preview_overrides
+            .values()
+            .any(|o| o.buffer_id == ov.buffer_id);
+        if still_previewed {
+            return Vec::new();
+        }
+        self.deactivate_mode_by_id(ov.buffer_id, crate::preview::PreviewMode::mode_id())
+    }
+
+    /// PI.3: the preview cursor + centred scroll for `buffer` at an
+    /// optional `target_line`, computed against the active pane's height
+    /// WITHOUT touching `Editor::cursor` / `Editor::scroll`. `None` starts
+    /// at the top; `Some(line)` centres the line (vim `zz`) so a `gr` /
+    /// grep location shows context above and below.
+    fn preview_viewport_for(
+        &self,
+        buffer: BufferId,
+        target_line: Option<u32>,
+    ) -> (lattice_protocol::Position, u32) {
+        let last = self
+            .buffers
+            .document_handle(buffer)
+            .map(|h| last_addressable_line(&h.snapshot().buffer))
+            .unwrap_or(0);
+        let line = target_line.unwrap_or(0).min(last);
+        // `self.viewport_height` mirrors the ACTIVE pane's content height
+        // (kept in lockstep by the renderer's layout pass); it is the same
+        // source the committed-buffer centring (`do_scroll_cursor_to`) reads,
+        // so a preview centres identically. The per-frame `pane.viewport_height`
+        // isn't populated until the renderer runs, so it can't be used here.
+        let vh = self.viewport_height;
+        let scroll = if target_line.is_some() {
+            line.saturating_sub(vh / 2)
+        } else {
+            0
+        };
+        (lattice_protocol::Position::new(line, 0), scroll)
+    }
+
+    /// PI.3: preview `buffer` in the active pane as an isolated read-only
+    /// projection, optionally centred on `target_line`. This is the single
+    /// funnel every preview *source* (buffer switcher, find-file, grep,
+    /// `gr`, LSP location pickers) routes through — it NEVER calls
+    /// `activate_buffer`, so the pane's committed buffer, `document_buffer_id`,
+    /// the global `option_cache`, and the origin's modes are all untouched.
+    ///
+    /// Moving the selection to a *different* buffer unmounts the previous
+    /// preview first (stripping its `preview-mode` and GC'ing the previous
+    /// ephemeral preview buffer if there was one). Moving to the *same*
+    /// buffer at a new line just re-seats the override (the common `gr` /
+    /// grep case: several hits in one file).
+    pub fn preview_in_active_pane(
+        &mut self,
+        buffer: BufferId,
+        target_line: Option<u32>,
+    ) -> Vec<RendererSignal> {
+        let pane = self.pane_tree.active().id;
+        if let Some(prev) = self.preview_override_for(pane) {
+            if prev.buffer_id == buffer {
+                // Same buffer, new position: re-seat the override, keep
+                // `preview-mode` (no unmount/remount churn).
+                let (cursor, scroll) = self.preview_viewport_for(buffer, target_line);
+                let kind = self
+                    .buffers
+                    .kind_of(buffer)
+                    .unwrap_or(lattice_core::BufferKind::Document);
+                self.set_preview_override(
+                    pane,
+                    crate::preview::PreviewOverride {
+                        buffer_id: buffer,
+                        buffer: kind,
+                        cursor,
+                        scroll,
+                    },
+                );
+                return Vec::new();
+            }
+            let _ = self.unmount_preview(pane);
+            if self.preview_buffer == Some(prev.buffer_id) {
+                if let Some(b) = self.preview_buffer.take() {
+                    self.gc_ephemeral_buffer(b);
+                }
+            }
+        }
+        let (cursor, scroll) = self.preview_viewport_for(buffer, target_line);
+        self.mount_preview(pane, buffer, cursor, scroll)
+    }
+
+    /// PI.3: tear down the active pane's preview — unmount (clears the
+    /// override + strips `preview-mode`, restoring the previewed buffer)
+    /// and GC the ephemeral preview buffer if one is live. Used on `<Esc>`
+    /// / picker-closed / no-candidate. The pane snaps back to its committed
+    /// buffer with zero reconstruction; A was never disturbed.
+    pub fn clear_active_preview(&mut self) -> Vec<RendererSignal> {
+        let pane = self.pane_tree.active().id;
+        let signals = self.unmount_preview(pane);
+        if let Some(prev) = self.preview_buffer.take() {
+            self.gc_ephemeral_buffer(prev);
+        }
+        signals
+    }
+
     /// If the picker is open and its action is
     /// `PickerAction::SwitchToBuffer`, preview-activate the
     /// selected candidate's buffer in the active pane. No
@@ -17248,29 +17531,16 @@ impl Editor {
     /// only path keyed on `RoutingPayload::Buffer`.
     pub fn preview_picker_selection(&mut self) -> Vec<RendererSignal> {
         // No matches (e.g. the query filtered everything out) → there is no
-        // candidate to preview. Restore the ORIGINAL buffer the picker opened
-        // over (`preview_origin`) instead of leaving the previous match's
-        // preview on screen, which renders as stale "garbage". Extract the
-        // (has-candidate, origin) pair first so the `self.picker` borrow drops
-        // before the restore mutates `self`.
-        let (has_candidate, preview_origin) = match self.picker.as_ref() {
-            Some(p) => (p.selected_candidate().is_some(), p.preview_origin),
+        // candidate to preview. PI.3: clear the active pane's preview
+        // projection so the last match's preview doesn't linger as stale
+        // "garbage"; the pane snaps back to its committed buffer with no
+        // reconstruction (it was never swapped out).
+        let has_candidate = match self.picker.as_ref() {
+            Some(p) => p.selected_candidate().is_some(),
             None => return Vec::new(),
         };
         if !has_candidate {
-            if let Some(origin) = preview_origin.map(BufferId)
-                && origin != self.active_pane_buffer_id()
-            {
-                self.previewing = true;
-                let needs = self.activate_buffer(origin);
-                self.previewing = false;
-                return if needs {
-                    self.activate_buffer_state()
-                } else {
-                    Vec::new()
-                };
-            }
-            return Vec::new();
+            return self.clear_active_preview();
         }
         let Some(picker) = self.picker.as_ref() else {
             return Vec::new();
@@ -17329,14 +17599,8 @@ impl Editor {
         if id == self.active_pane_buffer_id() {
             return Vec::new();
         }
-        self.previewing = true;
-        let needs_state = self.activate_buffer(id);
-        self.previewing = false;
-        if needs_state {
-            self.activate_buffer_state()
-        } else {
-            Vec::new()
-        }
+        // PI.3: preview B as an isolated projection instead of activating it.
+        self.preview_in_active_pane(id, None)
     }
 
     /// T.12a helper: apply a `PickerAcceptOutcome` returned by a
@@ -17363,8 +17627,10 @@ impl Editor {
                 else {
                     return Vec::new();
                 };
-                // Capture the pre-open theme on the first preview so
-                // Esc can restore it (mirrors `preview_origin`).
+                // Capture the pre-open theme on the first preview so Esc can
+                // restore it. Colorscheme live-preview swaps the GLOBAL theme
+                // (not a buffer), so it is orthogonal to buffer preview
+                // isolation and keeps its own snapshot-and-restore.
                 if self.pending_theme_preview_restore.is_none() {
                     self.pending_theme_preview_restore = Some(reg.active_theme());
                 }
@@ -17440,75 +17706,30 @@ impl Editor {
         target_line: Option<u32>,
     ) -> Vec<RendererSignal> {
         let path = normalize_user_path(&path);
-        // Already-open file: activate the real (parsed + attached) buffer.
+        // Already-open file: preview the REAL (parsed + attached) buffer as
+        // an isolated projection — PI.3, no activation, no cursor/scroll
+        // disturbance of the committed buffer.
         if let Some(existing) = self.find_document_by_path(&path) {
-            self.previewing = true;
-            let changed = if existing != self.document_buffer_id {
-                self.activate_document(existing)
-            } else {
-                false
-            };
-            self.previewing = false;
-            self.position_preview_cursor(target_line);
-            return if changed {
-                self.activate_buffer_state()
-            } else {
-                self.snapshot_active_document();
-                Vec::new()
-            };
+            return self.preview_in_active_pane(existing, target_line);
         }
-        // Not open: install a BOUNDED slice into a FRESH ephemeral buffer the
-        // SAME way `do_edit` (`open_fresh_into_active_slot`) does — fresh
-        // `ActiveDocument` + `self.syntax` + `self.snapshot_cache` set
-        // together. That is the proven path that highlights; the prior
-        // reuse-buffer + `replace` + `activate` approach left the syntax
-        // disconnected from the rendered matrix (no colours). The ONLY
-        // differences from a real open: the read is BOUNDED (no freeze) and
-        // we do NOT publish `DocumentOpened` (no LSP attach). The real open +
-        // LSP happen on the final accept via `do_edit`.
+        // Not open: materialise a BOUNDED ephemeral buffer and preview it.
+        // The read is capped (no UI-thread freeze) and we do NOT publish
+        // `DocumentOpened` (no LSP attach) — the real open + LSP happen on
+        // the final accept via `do_edit`. Syntax is stashed into the
+        // buffer's OWN `DocumentSyntax` local (`install_inmemory_syntax`) so
+        // the isolated (non-active) preview pane highlights via
+        // `document_syntax_for` — no reliance on the active `self.syntax`
+        // slot, which stays pointed at the committed buffer A.
         let Some(text) = Self::read_preview_text(&path) else {
             // Unreadable (binary / permissions / vanished) — leave the pane
             // as-is; the candidate stays selectable.
             return Vec::new();
         };
-        // Detect the language from the PREVIEW PATH (the in-memory
-        // `Document::from_text` below has no path of its own).
-        let lang = lattice_syntax::Lang::detect_from_path(Some(&path));
         let new_doc = lattice_core::Document::from_text(&text);
-        let initial_text = new_doc.text();
-        let initial_text_version = new_doc.text_version();
-        // SYNC parse of the BOUNDED content (fast) so spans are available on
-        // the first publish, exactly like a real open. Safe because the read
-        // is capped (unlike `do_edit`'s unbounded read that froze).
-        let syntax: Option<lattice_syntax::SyntaxHandle> =
-            match lattice_syntax::Syntax::for_language_with_registry(
-                lang,
-                self.lang_registry.clone(),
-            ) {
-                Ok(Some(mut s)) => {
-                    s.parse_at(&initial_text, initial_text_version);
-                    let al = self.async_landed.clone();
-                    let eb = self.event_bus.clone();
-                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                        s,
-                        lattice_runtime::runtime::lsp_runtime().handle(),
-                        Some(std::sync::Arc::new(move || {
-                            al.notify_one();
-                            eb.publish_typed(crate::events::SyntaxReparsed);
-                        })),
-                    ))
-                }
-                _ => None,
-            };
-        // One preview buffer alive at a time: GC the previous before
-        // installing a fresh one (no per-candidate leak).
-        if let Some(prev) = self.preview_buffer.take() {
-            self.gc_ephemeral_buffer(prev);
-        }
         let new_id = lattice_core::BufferId::next();
         let new_handle = lattice_runtime::spawn_document(new_id, new_doc, self.registry.clone());
         let new_handle_arc: std::sync::Arc<dyn lattice_runtime::Document> =
-            std::sync::Arc::new(new_handle.clone());
+            std::sync::Arc::new(new_handle);
         self.buffers.insert(crate::buffer_registry::BufferEntry {
             id: new_id,
             flags: lattice_core::BufferFlags {
@@ -17525,34 +17746,16 @@ impl Editor {
             name: Some("*preview*".to_string()),
         });
         self.seed_empty_document_locals(new_id);
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.active_buffer = lattice_core::BufferKind::Document;
-        self.document_buffer_id = new_id;
-        self.document = lattice_runtime::ActiveDocument::new(new_handle);
-        self.snapshot_cache = self.document.snapshot_cache();
-        self.syntax = syntax;
-        self.last_parsed_text_version = self.document.text_version();
+        // Detect the language from the PREVIEW PATH + stash the parsed
+        // handle into `buffer_locals[new_id].DocumentSyntax`.
+        self.install_inmemory_syntax(new_id, &text, &path);
+        // Preview the fresh buffer. `preview_in_active_pane` unmounts the
+        // previous override first and GC's the previous ephemeral preview
+        // buffer if there was one (it reads `self.preview_buffer` BEFORE we
+        // repoint it below — so the OLD one is collected, not this one).
+        let signals = self.preview_in_active_pane(new_id, target_line);
         self.preview_buffer = Some(new_id);
-        self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
-        self.pane_tree.active_mut().buffer_id = new_id;
-        self.position_preview_cursor(target_line);
-        // No `publish_document_opened_for_active()` → no LSP attach.
-        self.activate_buffer_state()
-    }
-
-    /// Land the preview cursor: `Some(line)` centres on that line (location
-    /// previews), `None` starts at the top. Clamped to the active buffer.
-    fn position_preview_cursor(&mut self, target_line: Option<u32>) {
-        let snap = self.document.snapshot();
-        let line = target_line.unwrap_or(0).min(last_addressable_line(&snap.buffer));
-        self.cursor = lattice_protocol::Position::new(line, 0);
-        if target_line.is_some() {
-            self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
-        } else {
-            self.scroll = 0;
-            self.ensure_cursor_visible();
-        }
+        signals
     }
 
     fn preview_accept_action(
@@ -17566,47 +17769,20 @@ impl Editor {
                 if buf_id == self.active_pane_buffer_id() {
                     return Vec::new();
                 }
-                self.previewing = true;
-                let needs_state = self.activate_buffer(buf_id);
-                self.previewing = false;
-                if needs_state {
-                    self.activate_buffer_state()
-                } else {
-                    Vec::new()
-                }
+                // PI.3: isolated projection, not activation.
+                self.preview_in_active_pane(buf_id, None)
             }
             AcceptAction::JumpInBuffer {
                 buffer_id,
                 line,
-                col,
+                col: _,
             } => {
+                // PI.3: preview B centred on `line` as an isolated
+                // projection (col precision is an accept-time concern).
+                // The preview cursor / centred scroll ride on the pane
+                // override, never `self.cursor` / `self.scroll`.
                 let id = BufferId(buffer_id.0);
-                self.previewing = true;
-                let needs_state = if id != self.active_pane_buffer_id() {
-                    self.activate_buffer(id)
-                } else {
-                    false
-                };
-                // Clamp + move cursor — same shape as the
-                // accept-time JumpInBuffer arm but without
-                // push_position_history.
-                let snap = self.document.snapshot();
-                let target_line = line.min(last_addressable_line(&snap.buffer));
-                let line_len = snap.buffer.line_byte_len(target_line);
-                let target_col = col.min(line_len);
-                self.cursor = lattice_protocol::Position::new(target_line, target_col);
-                // `gr` / location preview: centre the previewed line
-                // (vim `zz`) so its usage context is visible above AND
-                // below, instead of the line landing at the viewport
-                // bottom. ensure_cursor_visible leaves a centred cursor
-                // untouched (it only clamps off-screen cursors).
-                self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
-                self.previewing = false;
-                if needs_state {
-                    self.activate_buffer_state()
-                } else {
-                    Vec::new()
-                }
+                self.preview_in_active_pane(id, Some(line))
             }
             AcceptAction::JumpToFileLocation { path, line, col: _ } => {
                 // PU-fix: preview via the lightweight `do_preview` path
@@ -19563,6 +19739,7 @@ impl Editor {
             leftcol: self.leftcol,
             viewport_height: self.viewport_height,
             viewport_width: 0,
+            committed_buffer_id: None,
         };
         let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
         std::mem::swap(&mut *self.pane_tree, &mut new_panes);
@@ -19618,6 +19795,7 @@ impl Editor {
             leftcol: 0,
             viewport_height: captured_height,
             viewport_width: 0,
+            committed_buffer_id: None,
         };
         let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
         std::mem::swap(&mut *self.pane_tree, &mut new_panes);
@@ -21103,49 +21281,29 @@ impl Editor {
     ) -> Vec<RendererSignal> {
         use lattice_core::ui::pane::SplitOrientation;
         use lattice_picker::OpenTarget;
-        // Issue #37 (2026-05-22): consume the preview-origin
-        // handoff. Non-Default targets restore the origin
-        // buffer to the active pane BEFORE splitting / tabbing
-        // so the source pane retains its pre-preview state.
-        let preview_origin = std::mem::take(&mut self.pending_picker_preview_origin);
-        let mut signals = Vec::new();
-        let restore_preview_origin = |this: &mut Editor, sigs: &mut Vec<RendererSignal>| {
-            if let Some(origin) = preview_origin
-                && origin != this.active_pane_buffer_id()
-            {
-                this.previewing = true;
-                let needs_state = this.activate_buffer(origin);
-                this.previewing = false;
-                if needs_state {
-                    sigs.extend(this.activate_buffer_state());
-                }
-            }
-        };
+        // PI.5: the preview-origin restore machinery is gone. Under preview
+        // isolation the active pane never left its committed buffer (preview
+        // is a projection cleared at accept via `clear_active_preview`), so a
+        // split/tab already inherits the committed buffer — there is nothing
+        // to re-activate. `signals` stays for API/back-compat (always empty).
+        let signals = Vec::new();
         match target {
             OpenTarget::Default => {
-                // Default routes through the preference
-                // machinery; preview restoration for the Split
-                // preference is handled inside
-                // prepare_pane_for_picker_result so the
-                // restore happens uniformly there.
                 self.prepare_pane_for_picker_result();
             }
             OpenTarget::Split => {
-                restore_preview_origin(self, &mut signals);
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(SplitOrientation::Horizontal);
                 self.pane_tree.set_active(new_idx);
                 self.load_active_pane();
             }
             OpenTarget::VSplit => {
-                restore_preview_origin(self, &mut signals);
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
                 self.pane_tree.set_active(new_idx);
                 self.load_active_pane();
             }
             OpenTarget::Tab => {
-                restore_preview_origin(self, &mut signals);
                 // do_new_tab snapshots / mem::swaps the active
                 // pane tree and inserts a new tab whose single
                 // pane points at the current buffer. The caller
@@ -21165,21 +21323,10 @@ impl Editor {
         let display = self.resolve_display(BufferDisplayCategory::PickerResult);
         match display {
             BufferDisplay::Split(orientation) => {
-                // Issue #37 (2026-05-22): the active pane is
-                // currently showing the picker's PREVIEW
-                // buffer (the candidate). Without restoring,
-                // the split inherits the preview into both
-                // halves — origin pane loses ORIG. Restore
-                // ORIG to the active pane before splitting so
-                // the post-split layout shows ORIG | candidate.
-                let preview_origin = std::mem::take(&mut self.pending_picker_preview_origin);
-                if let Some(origin) = preview_origin
-                    && origin != self.active_pane_buffer_id()
-                {
-                    self.previewing = true;
-                    let _needs_state = self.activate_buffer(origin);
-                    self.previewing = false;
-                }
+                // PI.5: no preview-origin restore — the active pane is
+                // committed to its own buffer (preview was a projection,
+                // cleared at accept), so the split already shows
+                // committed | candidate.
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(orientation);
                 self.pane_tree.set_active(new_idx);
@@ -21187,12 +21334,7 @@ impl Editor {
             }
             BufferDisplay::ActivePane
             | BufferDisplay::Popup(_)
-            | BufferDisplay::FloatingPopup(_) => {
-                // No split = preview becomes the accept. The
-                // origin handoff is consumed here so the field
-                // doesn't leak into a later accept.
-                self.pending_picker_preview_origin = None;
-            }
+            | BufferDisplay::FloatingPopup(_) => {}
         }
     }
 
@@ -24025,20 +24167,14 @@ impl Editor {
                     ts: std::time::SystemTime::now(),
                 });
         }
-        if let Some(origin_raw) = picker.preview_origin {
-            let origin = BufferId(origin_raw);
-            if origin != self.active_pane_buffer_id() {
-                self.previewing = true;
-                let needs_state = self.activate_buffer(origin);
-                self.previewing = false;
-                if needs_state {
-                    let mut signals = theme_restore_signals;
-                    signals.extend(self.activate_buffer_state());
-                    return signals;
-                }
-            }
-        }
-        theme_restore_signals
+        // PI.3: tear down any live preview projection — unmount (clears the
+        // override + strips `preview-mode`, restoring the previewed buffer)
+        // and GC the ephemeral preview buffer. The pane snaps back to its
+        // committed buffer with zero reconstruction; it was never swapped
+        // out, so there is no origin to re-activate.
+        let mut signals = theme_restore_signals;
+        signals.extend(self.clear_active_preview());
+        signals
     }
 
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body
@@ -24060,26 +24196,18 @@ impl Editor {
         let Some(picker) = self.picker.take() else {
             return DispatchOutcome::default();
         };
-        // Issue #37 (2026-05-22): stash picker's preview_origin
-        // so `prepare_open_target_pane` /
-        // `prepare_pane_for_picker_result` can restore the
-        // origin buffer to the active pane BEFORE
-        // splitting/tabbing. Otherwise the preview leaks:
-        // both halves of a `<C-s>` split show the candidate,
-        // the origin pane loses ORIG.
-        self.pending_picker_preview_origin = picker.preview_origin.map(BufferId);
+        // PI.3: tear down the preview projection BEFORE committing. The
+        // commit path below activates the target buffer for real; stripping
+        // `preview-mode` here means the accepted buffer isn't left
+        // read-only, and clearing the override means the pane isn't still
+        // projecting. The teardown's option-cascade signals are subsumed by
+        // the real activation that follows, so they're discarded.
+        let _ = self.clear_active_preview();
+        // PI.5: no preview-origin stash / restore. `clear_active_preview`
+        // above already returned the active pane to its committed buffer, so
+        // a no-candidate / no-routing accept simply falls through with the
+        // pane intact — there is no origin to re-activate.
         let Some(c) = picker.selected_candidate() else {
-            if let Some(origin) = picker.preview_origin {
-                self.previewing = true;
-                let needs_state = self.activate_buffer(BufferId(origin));
-                self.previewing = false;
-                if needs_state {
-                    return DispatchOutcome {
-                        renderer_signals: self.activate_buffer_state(),
-                        ..Default::default()
-                    };
-                }
-            }
             return DispatchOutcome::default();
         };
         let routing = match picker.routing_for(c).cloned() {
@@ -24089,17 +24217,6 @@ impl Editor {
                     EchoLevel::Error,
                     "picker: candidate carries no routing payload".to_string(),
                 );
-                if let Some(origin) = picker.preview_origin {
-                    self.previewing = true;
-                    let needs_state = self.activate_buffer(BufferId(origin));
-                    self.previewing = false;
-                    if needs_state {
-                        return DispatchOutcome {
-                            renderer_signals: self.activate_buffer_state(),
-                            ..Default::default()
-                        };
-                    }
-                }
                 return DispatchOutcome::default();
             }
         };
@@ -24393,7 +24510,6 @@ impl Editor {
         );
         let pairs = raw_buffer_candidates(&self.buffers, &self.buffer_locals, active);
         p.set_raw_candidates_with_routing(pairs);
-        p.preview_origin = Some(active.0);
         self.set_active_picker(p);
         // Preview-activate the initial (alternate-buffer)
         // selection so opening the picker immediately shows what
@@ -25289,6 +25405,9 @@ impl Editor {
         resolver.resolve_into_with_origins(layered, &mut resolved);
 
         self.resolved_options.insert(buffer, resolved);
+        // PI.4: any resolution change bumps the version so the published
+        // per-buffer resolved-options snapshot rebuilds.
+        self.resolved_options_version = self.resolved_options_version.wrapping_add(1);
         // M.4: keep `option_cache` in lockstep with the active
         // buffer's resolved options.
         if buffer == self.document_buffer_id {
@@ -26886,7 +27005,7 @@ impl Editor {
             self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
             return false;
         };
-        if !self.previewing && id != self.active_pane_buffer_id() {
+        if id != self.active_pane_buffer_id() {
             let cur = self.active_cursor();
             self.push_position_history(cur, PositionSource::AutoJump);
         }
@@ -27052,25 +27171,21 @@ impl Editor {
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.load_active_pane();
-        // Echo the switch — but NEVER during a preview. Picker live-preview
-        // (and the no-match origin-restore) flips through buffers under
-        // `previewing = true`; echoing "switched to buffer #N" on each would
-        // spam the echo area + *messages* (and, if stderr logging is on,
-        // write to the terminal). Only a real, committed switch echoes —
-        // matching vim's `:e` filename echo. `set_message` runs host-side (F.1).
-        if !self.previewing {
-            self.set_message(
-                EchoLevel::Info,
-                format!(
-                    "switched to buffer #{} {}",
-                    id.0,
-                    self.document
-                        .path()
-                        .map(|p| format!("\"{}\"", p.display()))
-                        .unwrap_or_else(|| "(no file)".into())
-                ),
-            );
-        }
+        // Echo the switch. PI.5: `activate_buffer` is only reached on a real,
+        // committed switch now (preview is an isolated projection that never
+        // activates), so this always echoes — matching vim's `:e` filename
+        // echo. `set_message` runs host-side (F.1).
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "switched to buffer #{} {}",
+                id.0,
+                self.document
+                    .path()
+                    .map(|p| format!("\"{}\"", p.display()))
+                    .unwrap_or_else(|| "(no file)".into())
+            ),
+        );
         // Full-activation path: caller must run activate_buffer_state.
         true
     }
@@ -27290,9 +27405,9 @@ impl Editor {
             );
             return;
         }
-        // Skip the auto-jump push during picker-preview hovers —
-        // the user hasn't committed to this buffer yet.
-        if !self.previewing && matches!(self.active_buffer, BufferKind::Document) {
+        // PI.5: preview no longer routes here (it's an isolated projection),
+        // so this auto-jump push always fires for a real Document activation.
+        if matches!(self.active_buffer, BufferKind::Document) {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
@@ -36062,7 +36177,7 @@ mod tests {
     }
 
     #[test]
-    fn do_preview_uses_reusable_ephemeral_slot_not_do_edit() {
+    fn do_preview_shows_content_as_isolated_projection_not_activation() {
         let dir = std::env::temp_dir().join(format!("lattice-preview-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let f1 = dir.join("a.md");
@@ -36070,14 +36185,35 @@ mod tests {
         std::fs::write(&f1, "# alpha\nbeta\n").unwrap();
         std::fs::write(&f2, "# gamma\ndelta\n").unwrap();
         let mut e = Editor::boot(lattice_core::Document::empty());
+        let committed = e.document_buffer_id;
+        let active_pane = e.pane_tree.active().id;
         let listed_before = e.buffers.listed_ids_sorted().len();
 
         let _ = e.do_preview(f1.clone(), None);
         let pid = e.preview_buffer.expect("preview slot created");
-        // Content is shown…
-        assert!(e.document.snapshot().buffer.as_string().contains("alpha"));
-        // …with an ASYNC syntax handle attached (highlighting wired — parses
-        // off-thread, no synchronous parse on the actor thread).
+        // PI.3: preview is an ISOLATED PROJECTION — the committed active
+        // document is untouched (no `activate_buffer`).
+        assert_eq!(
+            e.document_buffer_id, committed,
+            "preview must not move document_buffer_id"
+        );
+        // The preview content lives in the ephemeral preview buffer, shown
+        // via the active pane's override — reachable through the registry,
+        // NOT `self.document` (which is still the committed buffer).
+        let snap = e
+            .buffers
+            .document_handle(pid)
+            .expect("preview buffer live")
+            .snapshot();
+        assert!(snap.buffer.as_string().contains("alpha"));
+        assert_eq!(
+            e.preview_override_for(active_pane).map(|o| o.buffer_id),
+            Some(pid),
+            "active pane projects the preview buffer"
+        );
+        // …with a syntax handle attached to the preview buffer's OWN
+        // `DocumentSyntax` local (highlighting via `document_syntax_for`,
+        // no reliance on the active `self.syntax` slot).
         assert!(
             e.document_syntax_for(pid).is_some(),
             "preview attaches a syntax handle for highlighting"
@@ -36107,7 +36243,16 @@ mod tests {
             e.buffers.document_handle(pid).is_none(),
             "previous preview buffer is GC'd (no per-candidate leak)"
         );
-        assert!(e.document.snapshot().buffer.as_string().contains("gamma"));
+        let snap2 = e
+            .buffers
+            .document_handle(pid2)
+            .expect("preview buffer live")
+            .snapshot();
+        assert!(snap2.buffer.as_string().contains("gamma"));
+        assert_eq!(
+            e.document_buffer_id, committed,
+            "still no activation after the second preview"
+        );
         assert!(e.find_document_by_path(&f2).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);

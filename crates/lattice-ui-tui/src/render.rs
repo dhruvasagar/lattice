@@ -954,6 +954,7 @@ fn draw_insert_completion_docs_popup(
             pane_id: lattice_core::ui::pane::PaneId::COMPLETION_DOCS,
             buffer_id: docs_id,
             cursor_line: 0,
+            cursor_line_highlight: false,
             scroll: doc_scroll,
             leftcol: 0,
             display_line_numbers: handle.display_line_numbers(),
@@ -1918,6 +1919,9 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         pane_id: lattice_core::ui::pane::PaneId::POPUP,
         buffer_id: popup_id,
         cursor_line,
+        // Preserve prior behaviour: State B (focused popup) paints the
+        // cursor line iff cursorline is on; State A suppresses it.
+        cursor_line_highlight: popup_focused && app.ad().option_cache.current_line_highlight,
         scroll,
         leftcol,
         display_line_numbers: handle.display_line_numbers(),
@@ -2245,7 +2249,19 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // must paint with its own (frozen) `pane.cursor`, not
         // `app.editor.cursor` (which is help's). draw_inactive_document
         // already reads pane state, so we route there.
-        let is_active = idx == active && pane_buffer_matches_active(app, idx);
+        // PI.3: a pane that is *previewing* another buffer must render
+        // through the isolated projection path (`draw_inactive_document`
+        // reads the displayed buffer), NOT the active path (`draw_buffer`
+        // reads `app.ad()` = the committed buffer A). So the focused pane
+        // is "active for input" only when it is showing its committed
+        // buffer, not while a preview override is seated on it.
+        let previewing = panes_state
+            .tree
+            .leaves()
+            .get(idx)
+            .map(|p| p.is_previewing())
+            .unwrap_or(false);
+        let is_active = idx == active && pane_buffer_matches_active(app, idx) && !previewing;
         // Every pane reserves its bottom row for the per-pane status
         // line (Option A: global modeline removed).
         let (content_rect, status_rect) = if rect.height >= 2 {
@@ -2856,8 +2872,13 @@ fn modeline_spans(
     // the one renderer-resolved content input; it overrides `core.path`.
     // Resolved once and threaded into the shared host resolver so the
     // assembly stays common across peers.
+    // PI.3: the per-pane status line reports the pane's COMMITTED buffer,
+    // not the previewed one (design §5) — the modeline shows what you'd
+    // save / switch back to. `core.path` already comes from the active
+    // document's `modeline_elements`; the provider label resolves against
+    // the committed buffer too.
     let provider_label = app
-        .pane_render_provider(pane.buffer_id)
+        .pane_render_provider(pane.committed_id())
         .map(|p| (p.status)(app, pane));
     let provider_ref = provider_label.as_deref();
 
@@ -3059,6 +3080,13 @@ fn draw_inactive_document(
     // M.4: resolve options for THIS pane's buffer (its own mode stack
     // drives gutter / LSP gates), not the active one.
     let view = FrameView::for_buffer(app, pane.buffer_id);
+    // PI.3: the focused pane while *previewing* renders here (routed off the
+    // active path in `draw_panes`), showing the displayed buffer. It keeps
+    // its cursorline — the target line of an LSP-reference / grep preview
+    // stays highlighted — resolved from the displayed buffer's `CursorLine`.
+    // Ordinary (unfocused) inactive panes never paint a cursorline.
+    let focused_preview =
+        pane.is_previewing() && app.panes().tree.active().id == pane.id;
     let ctx = PaneComposeCtx {
         is_active: false,
         pane_id: pane.id,
@@ -3066,6 +3094,11 @@ fn draw_inactive_document(
         // Inactive panes read their stashed cursor / scroll; the
         // active pane reads `app.ad()`.
         cursor_line: pane.cursor.line,
+        cursor_line_highlight: focused_preview
+            && app
+                .render_state
+                .load()
+                .current_line_highlight_for(pane.buffer_id),
         scroll: pane.scroll,
         leftcol: pane.leftcol,
         // Per-pane composed→source row map: a multibuffer pane shows
@@ -3369,6 +3402,14 @@ pub(crate) struct PaneComposeCtx {
     pub pane_id: crate::pane::PaneId,
     pub buffer_id: crate::buffers::BufferId,
     pub cursor_line: u32,
+    /// PI.3: whether to paint the cursor-line background on
+    /// [`Self::cursor_line`] for THIS pane. Decouples cursorline from
+    /// "is this the active document": the active pane sets it from
+    /// `option_cache.current_line_highlight`; a focused *preview* pane sets
+    /// it from the displayed buffer's `CursorLine` (so an LSP-reference /
+    /// grep preview keeps its target line highlighted); every other
+    /// inactive pane leaves it `false`.
+    pub cursor_line_highlight: bool,
     pub scroll: u32,
     /// Horizontal scroll: first visible display column. Drives the
     /// body's left clip when `wrap` is off; ignored under wrap.
@@ -3394,6 +3435,7 @@ pub fn compose_visible_lines(
         pane_id: app.panes().tree.active().id,
         buffer_id: app.ad().document_buffer_id,
         cursor_line: app.ad().cursor.line,
+        cursor_line_highlight: app.ad().option_cache.current_line_highlight,
         scroll: app.ad().scroll,
         leftcol: app.ad().leftcol,
         display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -4296,10 +4338,13 @@ pub(crate) fn compose_pane_lines(
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if ctx.is_active
-            && line_idx == app.ad().cursor.line
-            && app.ad().option_cache.current_line_highlight
-        {
+        // PI.3: cursorline is now a per-pane decision on `ctx`, not gated on
+        // "is this the active document". For the active pane this resolves
+        // identically (`cursor_line` = `app.ad().cursor.line`,
+        // `cursor_line_highlight` = the active option_cache value); a focused
+        // preview pane paints its displayed buffer's cursorline at the
+        // preview cursor.
+        if ctx.cursor_line_highlight && line_idx == ctx.cursor_line {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -6084,6 +6129,7 @@ mod tests {
             pane_id: PaneId::POPUP,
             buffer_id: popup_id,
             cursor_line: a.ad().cursor.line,
+            cursor_line_highlight: a.ad().option_cache.current_line_highlight,
             scroll: a.ad().scroll,
             leftcol: a.ad().leftcol,
             display_line_numbers: handle.display_line_numbers(),
@@ -7093,6 +7139,7 @@ mod tests {
                 is_active: true,
                 scroll: 0,
                 cursor_line: app.ad().cursor.line,
+                cursor_line_highlight: app.ad().option_cache.current_line_highlight,
                 leftcol: 0,
                 display_line_numbers: app.ad().display_line_numbers.clone(),
             },
@@ -7760,6 +7807,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: app.ad().document_buffer_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -7860,6 +7908,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: app.ad().document_buffer_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -8495,6 +8544,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: doc_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),

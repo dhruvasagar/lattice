@@ -13,11 +13,11 @@ All slices land green (build + touched suites) and keep TUI/GPUI in lockstep.
 | Slice | Status | Summary |
 |---|---|---|
 | PI.0 | 🚧 | Per-buffer `content_left_pad` (render fix) landed both peers + green regression test; the RED-until-PI.3 isolation acid test lands with PI.3 |
-| PI.1 | 📝 | Pane preview-override plumbing (state + render_state + worker key) |
-| PI.2 | 📝 | Preview buffer resolved-options isolation (read-only marking) |
-| PI.3 | 📝 | Cut picker preview dispatch over to the override |
-| PI.4 | 📝 | GPUI parity |
-| PI.5 | 📝 | Delete the swap/restore preview machinery; docs + bench |
+| PI.1 | ✅ | Pane preview-override plumbing (host sidecar + published-leaf projection + cells worker key); green `preview_isolation` test |
+| PI.2 | ✅ | Preview buffer resolved-options isolation (`preview-mode` minor per §10.2 (a); `mount_preview` / `unmount_preview`); green option-isolation test |
+| PI.3 | ✅ | Cut picker preview dispatch over to the override (`preview_in_active_pane` funnel + `mount`/`unmount`; dismiss/accept clear it); PI.0 acid + dashboard tests GREEN; TUI render routing + cursorline |
+| PI.4 | ✅ | GPUI parity (published-leaf substitution + `render_active` excludes preview + renderer-agnostic cursorline). Per-buffer option resolution lifted to `RenderState::resolved_option_for` (both peers) |
+| PI.5 | ✅ | Deleted `self.previewing` / `preview_origin` / `pending_picker_preview_origin` / `restore_preview_origin` + inert branches; grep-guard clean (no `activate_buffer` from a preview path); `benches/preview.rs`; design ✅ |
 
 ---
 

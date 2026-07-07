@@ -1597,7 +1597,13 @@ impl EditorView {
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has
         // focus.
-        let render_active = is_active && !popup_owns_active;
+        // PI.3/PI.4: a pane that is *previewing* another buffer renders as an
+        // isolated projection — it reads the DISPLAYED buffer's snapshot
+        // (via `pane.buffer_id`, already substituted in the published leaf)
+        // plus the preview cursor / scroll baked into the leaf, NOT the
+        // active document's (`ad.*`). So the focused pane is "render active"
+        // only when showing its committed buffer.
+        let render_active = is_active && !popup_owns_active && !pane.is_previewing();
         let cursor = if render_active {
             ad.cursor
         } else {
@@ -2089,11 +2095,20 @@ impl EditorView {
         // option-cache seam the TUI reads (`render.rs` cursorline path)
         // and the same seam used for `foldenable` above. Without this the
         // GPUI peer painted the cursorline unconditionally.
-        let cursorline_enabled = rs_guard
-            .active_document
-            .load()
-            .option_cache
-            .current_line_highlight;
+        // PI.4: a focused preview pane resolves cursorline from the
+        // DISPLAYED buffer through the renderer-agnostic seam (the same
+        // `RenderState` method the TUI peer calls), so the previewed
+        // buffer keeps its own cursorline; otherwise the active document's
+        // resolved value.
+        let cursorline_enabled = if pane.is_previewing() {
+            rs_guard.current_line_highlight_for(pane.buffer_id)
+        } else {
+            rs_guard
+                .active_document
+                .load()
+                .option_cache
+                .current_line_highlight
+        };
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive

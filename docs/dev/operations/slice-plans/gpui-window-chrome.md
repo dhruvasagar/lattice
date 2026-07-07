@@ -52,12 +52,12 @@ per-platform mapping, rejected alternatives). This plan owns sequencing only.
 ## Slice W.0 — design fragment ✅
 
 Committed as `18c7bc10` (`docs(gpui-window-chrome): design fragment … (slice 0)`).
-Contains an uncommitted refinement (synchronous boot-seam maximize push instead
-of an async `Startup` subscriber) to fold into W.6's commit.
+The Feature-2 refinement (synchronous boot-seam maximize push instead of an async
+`Startup` subscriber) landed with the slice plan in `dc791736`.
 
 ---
 
-## Slice W.1 — `Decorations` value type 📝
+## Slice W.1 — `Decorations` value type ✅
 
 **Files:**
 - Create: `crates/lattice-config/src/decorations.rs`
@@ -206,7 +206,7 @@ git commit -m "feat(config): Decorations value type for ui.window.decorations (W
 
 ---
 
-## Slice W.2 — `Window` group + `ui.window.*` options 📝
+## Slice W.2 — `Window` group + `ui.window.*` options ✅
 
 **Files:**
 - Modify: `crates/lattice-config/src/group.rs` (add `Window` group + re-export via lib.rs)
@@ -326,7 +326,7 @@ git commit -m "feat(config): Window group + ui.window.decorations/start-maximize
 
 ---
 
-## Slice W.3 — pure `window_chrome()` platform map 📝
+## Slice W.3 — pure `window_chrome()` platform map ✅
 
 **Files:**
 - Create: `crates/lattice-ui-gpui/src/window_chrome.rs`
@@ -417,7 +417,7 @@ git commit -m "feat(gpui): pure window_chrome() decorations→WindowOptions map 
 
 ---
 
-## Slice W.4 — wire `decorations` into `run()` 📝
+## Slice W.4 — wire `decorations` into `run()` ✅
 
 **Files:**
 - Modify: `crates/lattice-ui-gpui/src/window.rs` (`run()`, ~4668–4685)
@@ -498,7 +498,7 @@ git commit -m "feat(gpui): apply ui.window.decorations to WindowOptions at open 
 
 ---
 
-## Slice W.5 — `WindowCommand` queue + render drain 📝
+## Slice W.5 — `WindowCommand` queue + render drain ✅
 
 **Files:**
 - Modify: `crates/lattice-ui-gpui/src/window_chrome.rs` (add `WindowCommand` + queue type alias + tests)
@@ -592,7 +592,7 @@ git commit -m "feat(gpui): WindowCommand queue + render-drain via zoom_window (W
 
 ---
 
-## Slice W.6 — boot-seam maximize push 📝
+## Slice W.6 — boot-seam maximize push ✅
 
 **Files:**
 - Modify: `crates/lattice-ui-gpui/src/lib.rs` (`GpuiApp::new`, after `load_persistent_config` ~415)
@@ -653,7 +653,7 @@ git commit -m "feat(gpui): maximize on launch via ui.window.start-maximized (W.6
 
 ---
 
-## Slice W.7 — user docs 📝
+## Slice W.7 — user docs ✅
 
 **Files:**
 - Modify: `docs/user/display.md` (new "Window chrome" section)

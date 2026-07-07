@@ -310,6 +310,12 @@ debug = "line-tables-only"
 # default for new code remains "no unsafe".
 unsafe_code = "deny"
 unused_must_use = "deny"
+# objc 0.2's `msg_send!` / `sel_impl!` macros expand to a legacy
+# `#[cfg(feature = "cargo-clippy")]`; declare that value as expected so the
+# check-cfg lint doesn't warn on the expansion (used by lattice-ui-gpui's
+# macOS `window_chrome::hide_traffic_lights`). Not a real feature; a fn-level
+# `#[allow(unexpected_cfgs)]` cannot reach a macro-expansion cfg.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

@@ -58,9 +58,10 @@ pub fn window_chrome(
 /// other platforms and a best-effort no-op if the handle can't be resolved.
 #[cfg(target_os = "macos")]
 pub fn hide_traffic_lights(window: &gpui::Window) {
-    // objc message sends (see SAFETY below). Note: objc 0.2's `msg_send!` macro
-    // emits a few benign `unexpected_cfg(cargo-clippy)` warnings from its own
-    // expansion — third-party noise, not this code.
+    // objc message sends (see SAFETY below). (objc 0.2's `msg_send!` macro also
+    // expands to a legacy `#[cfg(feature = "cargo-clippy")]`; that check-cfg
+    // warning is silenced at the workspace level, since a fn-level `allow` can't
+    // reach a macro-expansion cfg.)
     #![allow(unsafe_code)]
     use objc::{msg_send, sel, sel_impl};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};

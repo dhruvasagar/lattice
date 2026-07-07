@@ -164,6 +164,14 @@ fn map_cell(a: &alacritty_terminal::term::cell::Cell) -> Cell {
         fg: map_color(a.fg),
         bg: map_color(a.bg),
         attrs: map_flags(a.flags),
+        // A width-2 glyph occupies two grid cells: the glyph
+        // (WIDE_CHAR) and this trailing placeholder. `LEADING_`
+        // is alacritty's variant for a wide glyph deferred off a
+        // line's last column. Surface it so renderers skip the
+        // spacer instead of emitting it as a stray space — see
+        // `docs/dev/audit/terminal-wide-char-ghosting.md`.
+        wide_spacer: a.flags.contains(AlacrittyFlags::WIDE_CHAR_SPACER)
+            || a.flags.contains(AlacrittyFlags::LEADING_WIDE_CHAR_SPACER),
     }
 }
 
@@ -940,6 +948,32 @@ mod tests {
         for c in 0..4 {
             assert!(s.cell_at(0, c).attrs.bold, "col {c} should be bold");
         }
+    }
+
+    #[test]
+    fn wide_glyph_marks_trailing_spacer_cell() {
+        // A width-2 glyph (emoji) occupies TWO alacritty grid cells:
+        // the WIDE_CHAR cell holding the glyph and a WIDE_CHAR_SPACER
+        // placeholder after it. The snapshot must surface the spacer
+        // flag so renderers skip it — otherwise the row emits one
+        // display column too many per wide glyph (the ghosting bug in
+        // docs/dev/audit/terminal-wide-char-ghosting.md).
+        let s = run("🚀x".as_bytes(), 2, 10);
+        assert_eq!(s.cell_at(0, 0).ch, '🚀');
+        assert!(
+            !s.cell_at(0, 0).wide_spacer,
+            "the glyph cell itself is not a spacer",
+        );
+        assert!(
+            s.cell_at(0, 1).wide_spacer,
+            "the cell after a wide glyph must be flagged as a spacer",
+        );
+        assert_eq!(
+            s.cell_at(0, 2).ch,
+            'x',
+            "content resumes in the third column, past the spacer",
+        );
+        assert!(!s.cell_at(0, 2).wide_spacer);
     }
 
     #[test]

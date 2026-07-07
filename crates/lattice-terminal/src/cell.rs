@@ -18,6 +18,16 @@ pub struct Cell {
     pub fg: TerminalColor,
     pub bg: TerminalColor,
     pub attrs: CellAttrs,
+    /// True when this cell is the trailing placeholder of a
+    /// width-2 glyph — alacritty's `WIDE_CHAR_SPACER` (or
+    /// `LEADING_WIDE_CHAR_SPACER` for a wide glyph deferred off a
+    /// line's last column). Renderers MUST skip spacer cells: the
+    /// preceding wide glyph already occupies two display columns
+    /// via the renderer's own shaping, so emitting the spacer as a
+    /// character would make one grid pair span three display
+    /// columns and desync the column model (the auto-scroll
+    /// ghosting bug). See `docs/dev/audit/terminal-wide-char-ghosting.md`.
+    pub wide_spacer: bool,
 }
 
 impl Default for Cell {
@@ -27,6 +37,7 @@ impl Default for Cell {
             fg: TerminalColor::Default,
             bg: TerminalColor::Default,
             attrs: CellAttrs::default(),
+            wide_spacer: false,
         }
     }
 }

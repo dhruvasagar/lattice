@@ -2931,6 +2931,14 @@ impl EditorView {
                 };
             for c in 0..snap.cols {
                 let cell = snap.cell_at(r, c);
+                // Width contract: a wide glyph owns its two display columns via
+                // GPUI's own shaping; its trailing `wide_spacer` cell must NOT
+                // be emitted as a stray space (that pushes the row one column
+                // wide per glyph). Skip it so grid col stays 1:1 with display
+                // col. See docs/dev/audit/terminal-wide-char-ghosting.md.
+                if cell.wide_spacer {
+                    continue;
+                }
                 let is_cursor = cursor_visible && r == cursor_row && c == cursor_col;
                 let mut fg_color = term_to_rgb(cell.fg, true);
                 let mut bg_color = term_to_rgb(cell.bg, false);

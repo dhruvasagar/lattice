@@ -2350,6 +2350,190 @@ fn draw_pane_content(
     }
 }
 
+/// Map a terminal-substrate colour to ratatui's `Color`. `Default`
+/// stays `Reset` so the cell renders with the terminal's own fg/bg
+/// defaults (honouring the user's terminal theme).
+fn term_to_tui(c: lattice_terminal::TerminalColor) -> ratatui::style::Color {
+    use lattice_terminal::{NamedColor as TermNamed, TerminalColor};
+    use ratatui::style::Color as TuiColor;
+    match c {
+        TerminalColor::Default => TuiColor::Reset,
+        TerminalColor::Named(n) => match n {
+            TermNamed::Black => TuiColor::Black,
+            TermNamed::Red => TuiColor::Red,
+            TermNamed::Green => TuiColor::Green,
+            TermNamed::Yellow => TuiColor::Yellow,
+            TermNamed::Blue => TuiColor::Blue,
+            TermNamed::Magenta => TuiColor::Magenta,
+            TermNamed::Cyan => TuiColor::Cyan,
+            TermNamed::White => TuiColor::Gray,
+            TermNamed::BrightBlack => TuiColor::DarkGray,
+            TermNamed::BrightRed => TuiColor::LightRed,
+            TermNamed::BrightGreen => TuiColor::LightGreen,
+            TermNamed::BrightYellow => TuiColor::LightYellow,
+            TermNamed::BrightBlue => TuiColor::LightBlue,
+            TermNamed::BrightMagenta => TuiColor::LightMagenta,
+            TermNamed::BrightCyan => TuiColor::LightCyan,
+            TermNamed::BrightWhite => TuiColor::White,
+        },
+        TerminalColor::Indexed(i) => TuiColor::Indexed(i),
+        TerminalColor::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
+    }
+}
+
+/// Build the ratatui `Style` for a terminal cell's SGR fg/bg/attrs.
+fn terminal_cell_style(
+    fg: lattice_terminal::TerminalColor,
+    bg: lattice_terminal::TerminalColor,
+    attrs: lattice_terminal::CellAttrs,
+) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style};
+    let mut s = Style::default().fg(term_to_tui(fg)).bg(term_to_tui(bg));
+    let mut m = Modifier::empty();
+    if attrs.bold {
+        m |= Modifier::BOLD;
+    }
+    if attrs.italic {
+        m |= Modifier::ITALIC;
+    }
+    if attrs.underline {
+        m |= Modifier::UNDERLINED;
+    }
+    if attrs.reverse {
+        m |= Modifier::REVERSED;
+    }
+    if attrs.dim {
+        m |= Modifier::DIM;
+    }
+    if attrs.strikethrough {
+        m |= Modifier::CROSSED_OUT;
+    }
+    if !m.is_empty() {
+        s = s.add_modifier(m);
+    }
+    s
+}
+
+/// Build the styled spans for one terminal grid row. Adjacent cells
+/// with identical resolved style coalesce into one `Span`.
+///
+/// **Width contract** (see `docs/dev/audit/terminal-wide-char-ghosting.md`):
+/// a width-2 glyph occupies two grid cells — the glyph plus a
+/// `wide_spacer` placeholder. Spacer cells are SKIPPED so the row's
+/// total display width equals `cols_to_paint`; the wide glyph owns
+/// its second display column via ratatui's own shaping. Emitting the
+/// spacer as a space would make the row one column wide per glyph and
+/// corrupt ratatui's width-based cell diff (the auto-scroll ghosting
+/// bug).
+#[allow(clippy::too_many_arguments)]
+fn terminal_row_spans(
+    snap: &lattice_terminal::TerminalSnapshot,
+    row: u16,
+    cols_to_paint: u16,
+    paint_cursor_cell: bool,
+    cursor_row: u16,
+    cursor_col: u16,
+    match_overlay: Option<(u16, u16, u16)>,
+    all_matches: &[lattice_terminal::GridSearchHit],
+    visual: Option<lattice_terminal::TerminalVisualState>,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut run_text = String::with_capacity(cols_to_paint as usize);
+    let mut run_style: Option<Style> = None;
+    for col in 0..cols_to_paint {
+        let cell = snap.cell_at(row, col);
+        // Width contract: a wide glyph owns its two display columns via
+        // ratatui's own shaping; its trailing `wide_spacer` cell must NOT
+        // be emitted as a stray space (that pushes the row one column wide
+        // per glyph and corrupts ratatui's width-based cell diff — the
+        // auto-scroll ghosting bug). Skip it so grid col stays 1:1 with
+        // display col. See docs/dev/audit/terminal-wide-char-ghosting.md.
+        if cell.wide_spacer {
+            continue;
+        }
+        let mut style = terminal_cell_style(cell.fg, cell.bg, cell.attrs);
+        // Splice the cursor cell on inactive panes (the active pane
+        // uses the hardware cursor).
+        if paint_cursor_cell && row == cursor_row && col == cursor_col {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        // Hlsearch-style soft underline for every all_matches hit.
+        if !all_matches.is_empty() {
+            let off = snap.scroll_offset as i32;
+            let cell_line = row as i32 - off;
+            for h in all_matches {
+                if h.line == cell_line {
+                    let c_start = h.column;
+                    let c_end = h.column.saturating_add(h.len.min(u16::MAX as u32) as u16);
+                    if col >= c_start && col < c_end {
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                        break;
+                    }
+                }
+            }
+        }
+        // Current match wins style precedence on its row.
+        if let Some((m_row, c_start, c_end)) = match_overlay {
+            if row == m_row && col >= c_start && col < c_end {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        // Visual selection cells paint REVERSED (per-kind predicate).
+        if let Some(v) = visual {
+            use lattice_terminal::VisualKind as Vk;
+            let off = snap.scroll_offset as i32;
+            let cell_line = row as i32 - off;
+            let in_sel = match v.kind {
+                Vk::Line => {
+                    let (lo, hi) = v.line_range();
+                    cell_line >= lo && cell_line <= hi
+                }
+                Vk::Block => {
+                    let (lo, hi) = v.line_range();
+                    let (lo_c, hi_c) = v.block_col_range();
+                    cell_line >= lo && cell_line <= hi && col >= lo_c && col <= hi_c
+                }
+                Vk::Char => {
+                    let ((sl, sc), (el, ec)) = v.char_endpoints();
+                    if sl == el {
+                        cell_line == sl && col >= sc && col <= ec
+                    } else if cell_line == sl {
+                        col >= sc
+                    } else if cell_line == el {
+                        col <= ec
+                    } else {
+                        cell_line > sl && cell_line < el
+                    }
+                }
+            };
+            if in_sel {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        match run_style {
+            Some(prev) if prev == style => {
+                run_text.push(cell.ch);
+            }
+            _ => {
+                if !run_text.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut run_text),
+                        run_style.unwrap_or_default(),
+                    ));
+                }
+                run_text.push(cell.ch);
+                run_style = Some(style);
+            }
+        }
+    }
+    if !run_text.is_empty() {
+        spans.push(Span::styled(run_text, run_style.unwrap_or_default()));
+    }
+    spans
+}
+
 /// Issue #40 / Terminal-mode T1: paint the terminal cell grid
 /// from the published `TerminalSnapshot`. T1 ignores the
 /// per-cell fg/bg/attrs and renders monochrome — T2 wires
@@ -2361,10 +2545,8 @@ fn draw_terminal_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    use ratatui::style::{Color as TuiColor, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
-    use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
     let rs = app.render_state.load();
     let (snap_arc, current_match, mut visual, all_matches, mut nav_cursor) = match rs
         .buffers
@@ -2445,64 +2627,10 @@ fn draw_terminal_pane(
         let v = snap_arc.cursor_visible && r < rows_to_paint && c < cols_to_paint;
         (r, c, v)
     };
-    // T2 substrate swap (2026-05-25): per-cell SGR colors from
-    // alacritty's grid. Map `TerminalColor` → ratatui's `Color`;
-    // `Default` stays as `Color::Reset` so the terminal renders
-    // the cell with its own fg/bg defaults (which honor the
-    // user's terminal theme). Adjacent identical-style cells
-    // get coalesced into one Span so we don't pay the per-cell
-    // diff cost.
-    fn term_to_tui(c: TerminalColor) -> TuiColor {
-        match c {
-            TerminalColor::Default => TuiColor::Reset,
-            TerminalColor::Named(n) => match n {
-                TermNamed::Black => TuiColor::Black,
-                TermNamed::Red => TuiColor::Red,
-                TermNamed::Green => TuiColor::Green,
-                TermNamed::Yellow => TuiColor::Yellow,
-                TermNamed::Blue => TuiColor::Blue,
-                TermNamed::Magenta => TuiColor::Magenta,
-                TermNamed::Cyan => TuiColor::Cyan,
-                TermNamed::White => TuiColor::Gray,
-                TermNamed::BrightBlack => TuiColor::DarkGray,
-                TermNamed::BrightRed => TuiColor::LightRed,
-                TermNamed::BrightGreen => TuiColor::LightGreen,
-                TermNamed::BrightYellow => TuiColor::LightYellow,
-                TermNamed::BrightBlue => TuiColor::LightBlue,
-                TermNamed::BrightMagenta => TuiColor::LightMagenta,
-                TermNamed::BrightCyan => TuiColor::LightCyan,
-                TermNamed::BrightWhite => TuiColor::White,
-            },
-            TerminalColor::Indexed(i) => TuiColor::Indexed(i),
-            TerminalColor::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
-        }
-    }
-    let style_for_cell = |fg: TerminalColor, bg: TerminalColor, attrs: CellAttrs| -> Style {
-        let mut s = Style::default().fg(term_to_tui(fg)).bg(term_to_tui(bg));
-        let mut m = Modifier::empty();
-        if attrs.bold {
-            m |= Modifier::BOLD;
-        }
-        if attrs.italic {
-            m |= Modifier::ITALIC;
-        }
-        if attrs.underline {
-            m |= Modifier::UNDERLINED;
-        }
-        if attrs.reverse {
-            m |= Modifier::REVERSED;
-        }
-        if attrs.dim {
-            m |= Modifier::DIM;
-        }
-        if attrs.strikethrough {
-            m |= Modifier::CROSSED_OUT;
-        }
-        if !m.is_empty() {
-            s = s.add_modifier(m);
-        }
-        s
-    };
+    // Per-cell SGR colour + style mapping and the row-span builder
+    // live as module-level fns (`term_to_tui`, `terminal_cell_style`,
+    // `terminal_row_spans`) so the wide-char width contract is unit-
+    // testable. See `docs/dev/audit/terminal-wide-char-ghosting.md`.
     // Terminal-mode T2.b (2026-05-25): the active pane drives the
     // ratatui hardware cursor at the terminal's grid position, so
     // the user sees a real terminal cursor with the right shape
@@ -2535,109 +2663,23 @@ fn draw_terminal_pane(
     // kind. Char + block need col-precision so the row-range
     // shortcut isn't enough.
     let visual_state = visual;
-    let mut lines: Vec<Line> = Vec::with_capacity(rows_to_paint as usize);
-    for row in 0..rows_to_paint {
-        // Coalesce consecutive cells with identical Style into
-        // single Spans. Saves the renderer from constructing N
-        // styled spans per row; for un-coloured shells (default
-        // fg/bg everywhere) it collapses back to one span per
-        // line.
-        let mut spans: Vec<Span> = Vec::new();
-        let mut run_text = String::with_capacity(cols_to_paint as usize);
-        let mut run_style: Option<Style> = None;
-        for col in 0..cols_to_paint {
-            let cell = snap_arc.cell_at(row, col);
-            let mut style = style_for_cell(cell.fg, cell.bg, cell.attrs);
-            // Splice the cursor cell on inactive panes (active
-            // pane uses the hardware cursor).
-            if paint_cursor_cell && row == cursor_row && col == cursor_col {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
-            // T3.b.3: paint the current match cell range with
-            // a reverse-video overlay. Hlsearch-style softer
-            // overlay for all_matches lands below; we apply
-            // current_match last so it wins style precedence
-            // on the row it occupies.
-            if !all_matches.is_empty() {
-                let off = snap_arc.scroll_offset as i32;
-                let cell_line = row as i32 - off;
-                for h in &all_matches {
-                    if h.line == cell_line {
-                        let c_start = h.column;
-                        let c_end = h
-                            .column
-                            .saturating_add(h.len.min(u16::MAX as u32) as u16);
-                        if col >= c_start && col < c_end {
-                            style = style.add_modifier(Modifier::UNDERLINED);
-                            break;
-                        }
-                    }
-                }
-            }
-            if let Some((m_row, c_start, c_end)) = match_overlay {
-                if row == m_row && col >= c_start && col < c_end {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-            }
-            // T3.b.2 / T3.b.2.b: paint Visual selection
-            // cells with REVERSED. Per-kind predicate so
-            // charwise / blockwise paint the right cell shape;
-            // linewise covers full rows.
-            if let Some(v) = visual_state {
-                use lattice_terminal::VisualKind as Vk;
-                let off = snap_arc.scroll_offset as i32;
-                let cell_line = row as i32 - off;
-                let in_sel = match v.kind {
-                    Vk::Line => {
-                        let (lo, hi) = v.line_range();
-                        cell_line >= lo && cell_line <= hi
-                    }
-                    Vk::Block => {
-                        let (lo, hi) = v.line_range();
-                        let (lo_c, hi_c) = v.block_col_range();
-                        cell_line >= lo
-                            && cell_line <= hi
-                            && col >= lo_c
-                            && col <= hi_c
-                    }
-                    Vk::Char => {
-                        let ((sl, sc), (el, ec)) = v.char_endpoints();
-                        if sl == el {
-                            cell_line == sl && col >= sc && col <= ec
-                        } else if cell_line == sl {
-                            col >= sc
-                        } else if cell_line == el {
-                            col <= ec
-                        } else {
-                            cell_line > sl && cell_line < el
-                        }
-                    }
-                };
-                if in_sel {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-            }
-            match run_style {
-                Some(prev) if prev == style => {
-                    run_text.push(cell.ch);
-                }
-                _ => {
-                    if !run_text.is_empty() {
-                        spans.push(Span::styled(
-                            std::mem::take(&mut run_text),
-                            run_style.unwrap_or_default(),
-                        ));
-                    }
-                    run_text.push(cell.ch);
-                    run_style = Some(style);
-                }
-            }
-        }
-        if !run_text.is_empty() {
-            spans.push(Span::styled(run_text, run_style.unwrap_or_default()));
-        }
-        lines.push(Line::from(spans));
-    }
+    // Row spans (with cursor / match / visual overlays and the
+    // wide-char width contract) are built by `terminal_row_spans`.
+    let lines: Vec<Line> = (0..rows_to_paint)
+        .map(|row| {
+            Line::from(terminal_row_spans(
+                &snap_arc,
+                row,
+                cols_to_paint,
+                paint_cursor_cell,
+                cursor_row,
+                cursor_col,
+                match_overlay,
+                &all_matches,
+                visual_state,
+            ))
+        })
+        .collect();
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);
     // Place the hardware cursor on the active pane only —
@@ -6412,6 +6454,65 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Regression for the auto-scroll ghosting bug
+    /// (`docs/dev/audit/terminal-wide-char-ghosting.md`): a width-2
+    /// glyph occupies two grid cells (the glyph + a `wide_spacer`
+    /// placeholder). The emitted row must have the SAME total display
+    /// width as the grid column count — the wide glyph owns its two
+    /// columns and the spacer must NOT be emitted as a stray space.
+    /// Emitting the spacer pushed the row one column wide per glyph,
+    /// desyncing ratatui's width-based cell diff and stranding stale
+    /// glyphs on scroll.
+    #[test]
+    fn terminal_row_with_wide_glyph_keeps_grid_column_count() {
+        use lattice_terminal::{Cell, TerminalSnapshot};
+
+        // Grid row: 🚀 (wide) + its spacer + "abc" → 5 grid columns.
+        let cells = vec![
+            Cell {
+                ch: '🚀',
+                wide_spacer: false,
+                ..Cell::default()
+            },
+            Cell {
+                ch: ' ',
+                wide_spacer: true,
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'a',
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'b',
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'c',
+                ..Cell::default()
+            },
+        ];
+        let cols = cells.len() as u16;
+        let snap = TerminalSnapshot {
+            cells: cells.into(),
+            ..TerminalSnapshot::empty_sized(1, cols)
+        };
+
+        let spans = super::terminal_row_spans(&snap, 0, cols, false, 0, 0, None, &[], None);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let display_width: usize = spans.iter().map(|s| s.width()).sum();
+        assert_eq!(
+            display_width, cols as usize,
+            "emitted row display width ({display_width}) must equal the grid column \
+             count ({cols}); the wide glyph owns 2 columns and the spacer must be \
+             skipped — got text {text:?}",
+        );
+        assert_eq!(
+            text, "🚀abc",
+            "the wide-char spacer cell must be skipped, not emitted as a space",
+        );
     }
 
     /// Evidence test for the preview-switch "bleeding" report: render a LONG

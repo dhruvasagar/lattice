@@ -22,3 +22,7 @@ that's the signal to re-read the audit before "just patching it."
 - [`effect-dispatch.md`](effect-dispatch.md) — how an `Effect` reaches its host
   and renderer appliers; the "everything in `out.effects` was already
   host-applied" invariant.
+- [`terminal-wide-char-ghosting.md`](terminal-wide-char-ghosting.md) — why
+  terminal panes ghosted under auto-scroll; the "one grid column in → one
+  display column out; never emit a `WIDE_CHAR_SPACER` cell as a character"
+  invariant.

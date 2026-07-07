@@ -293,6 +293,7 @@ pub struct Cell {
     pub fg: TerminalColor,
     pub bg: TerminalColor,
     pub attrs: CellAttrs,
+    pub wide_spacer: bool,  // alacritty WIDE_CHAR_SPACER / LEADING_WIDE_CHAR_SPACER
 }
 
 pub enum TerminalColor {
@@ -318,6 +319,15 @@ The render hot path:
 1. Renderer reads `terminal_entry.state.load()` → `Arc<TerminalSnapshot>`.
 2. Translates each `Cell` to renderer-native styling.
 3. Paints into the pane area as a fixed-pitch grid.
+
+**Width contract (load-bearing).** A width-2 glyph occupies two grid cells: the
+`WIDE_CHAR` cell holds the glyph, the next cell is a `wide_spacer` placeholder.
+Renderers MUST **skip** `wide_spacer` cells — the wide glyph supplies its own
+second display column through the renderer's shaping. Emitting the spacer as a
+character makes one grid pair span three display columns, desyncing the
+renderer's column model (and, in the TUI, ratatui's width-based cell diff → the
+auto-scroll ghosting bug). See
+[`../audit/terminal-wide-char-ghosting.md`](../audit/terminal-wide-char-ghosting.md).
 
 `Cell`'s `TerminalColor` variants follow Lattice's existing
 host `Color` enum — TUI adapter degrades `Rgb` to nearest

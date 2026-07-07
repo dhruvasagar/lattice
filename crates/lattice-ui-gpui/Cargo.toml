@@ -95,6 +95,18 @@ arc-swap = { workspace = true }
 # `EditorView::new` avoids a `read_editor` round-trip.
 tokio = { workspace = true, features = ["sync"] }
 
+# macOS-only: `ui.window.decorations = transparent` hides the traffic-light
+# buttons via `setHidden:` on the NSWindow reached through gpui's raw window
+# handle. This keeps the buttons' Accessibility geometry intact so window
+# managers (Raycast/yabai) can still drive the window — unlike parking them
+# off-screen, which breaks AX. Only used under the `window` feature +
+# `cfg(target_os = "macos")`; see `window_chrome::hide_traffic_lights`.
+# `raw-window-handle` is pinned to gpui's own version so `RawWindowHandle` is
+# the same type gpui returns.
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6"
+objc = "0.2"
+
 [features]
 default = []
 # 5.7.B: enables real GPUI linkage so the unified `lattice` binary

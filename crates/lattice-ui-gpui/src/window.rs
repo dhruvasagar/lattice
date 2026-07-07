@@ -4745,6 +4745,13 @@ pub fn run(document: Document) -> Result<()> {
         let focus_result = window.update(cx, |view, window, cx| {
             window.focus(&view.focus_handle.clone());
             cx.activate(true);
+            // ui.window.decorations = transparent: hide the traffic-light buttons
+            // now that the window exists. `setHidden:` (inside hide_traffic_lights)
+            // keeps their Accessibility geometry intact, so Raycast/yabai can still
+            // drive the window — unlike moving them off-screen. No-op off macOS.
+            if matches!(decorations, lattice_config::Decorations::Transparent) {
+                crate::window_chrome::hide_traffic_lights(window);
+            }
         });
         if let Err(e) = focus_result {
             tracing::error!(error = ?e, "lattice-gpui: failed to focus editor window");

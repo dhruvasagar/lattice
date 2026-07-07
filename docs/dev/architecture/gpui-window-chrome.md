@@ -106,11 +106,16 @@ Enum name is `Decorations` (not `WindowDecorations`) to avoid colliding with
 - `full` → `(Some(full_titlebar()), None)` — system chrome (default).
 - `none` → `(None, Some(WindowDecorations::Client))` — borderless. Per the
   per-platform table above; **non-resizable on macOS** (no `NSResizableWindowMask`).
-- `transparent` → `Some(TitlebarOptions { appears_transparent: true,
-  traffic_light_position: far off-screen, .. })` — the titlebar is `Some`, so GPUI
-  keeps `NSResizableWindowMask`: the window stays **resizable** (edge-drag + AX
-  tools like Raycast/yabai work) while the transparent titlebar + parked buttons
-  make it look frameless. Rounded corners + shadow remain (not truly borderless).
+- `transparent` → `Some(TitlebarOptions { appears_transparent: true, .. })` (buttons
+  left at their default position) + a post-open `hide_traffic_lights(window)` call
+  that sends `setHidden:` to the three standard buttons via gpui's raw window
+  handle. The titlebar is `Some`, so GPUI keeps `NSResizableWindowMask`: the window
+  stays **resizable** (edge-drag + AX tools like Raycast/yabai work) while the
+  transparent titlebar + hidden buttons make it look frameless. Critically, the
+  buttons are *hidden* (`setHidden:`), NOT *moved* — parking them off-screen breaks
+  the window's Accessibility geometry so Raycast can no longer set its frame (this
+  cost a real debugging round). Rounded corners + shadow remain (not truly
+  borderless); truly-frameless-and-resizable still needs the fork.
   This is the macOS-friendly frameless option — the no-fork answer to "borderless
   *and* Raycast-controllable" (the fork in Rejected alternatives is the only path
   to truly-frameless *and* resizable). `is_borderless()` is `true` only for

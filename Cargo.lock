@@ -4132,6 +4132,8 @@ dependencies = [
  "lattice-mode",
  "lattice-syntax",
  "lattice-terminal",
+ "objc",
+ "raw-window-handle",
  "tokio",
  "tracing",
 ]

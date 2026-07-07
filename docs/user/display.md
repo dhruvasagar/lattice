@@ -194,11 +194,13 @@ looks frameless but keeps the window **resizable** (see below).
   may still show.
 
 `transparent` is the macOS-friendly frameless option: a transparent,
-full-size-content titlebar with the traffic-light buttons hidden
-off-screen. Because it keeps a titlebar under the hood, the window stays
-**resizable** — edge-resize works, and Raycast/yabai can move and resize
-it. The trade-off vs `none`: the rounded corners and shadow remain (it is
-not truly borderless). On Linux/Windows `none` is already resizable, so
+full-size-content titlebar with the traffic-light buttons hidden (on
+macOS they're hidden with `setHidden:`, which — unlike moving them
+off-screen — keeps the window controllable by Raycast/yabai). Because it
+keeps a titlebar under the hood, the window stays **resizable** —
+edge-resize works, and Raycast/yabai can move and resize it. The trade-off
+vs `none`: the rounded corners and shadow remain (it is not truly
+borderless). On Linux/Windows `none` is already resizable, so
 `transparent` is mainly useful on macOS.
 
 `ui.window.decorations` is applied when the window is created, so

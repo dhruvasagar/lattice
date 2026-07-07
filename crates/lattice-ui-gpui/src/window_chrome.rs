@@ -23,12 +23,28 @@ pub fn full_titlebar() -> TitlebarOptions {
 ///   the WM to strip server-side decorations (`_MOTIF_WM_HINTS` decorations=0
 ///   on X11 → true borderless). `window_decorations` is ignored on macOS /
 ///   Windows, so requesting `Client` there is harmless.
+/// - `transparent` → a `Some(TitlebarOptions)` with `appears_transparent` and
+///   the traffic-light buttons parked far off-screen. Because the titlebar is
+///   `Some`, GPUI keeps the window resizable (`NSResizableWindowMask` on macOS),
+///   so edge-resize and AX window managers (Raycast/yabai) work — unlike `none`.
+///   The transparent titlebar + hidden buttons make it look frameless.
 pub fn window_chrome(
     dec: Decorations,
 ) -> (Option<TitlebarOptions>, Option<gpui::WindowDecorations>) {
     match dec {
         Decorations::Full => (Some(full_titlebar()), None),
         Decorations::None_ => (None, Some(gpui::WindowDecorations::Client)),
+        Decorations::Transparent => (
+            Some(TitlebarOptions {
+                title: Some(SharedString::from("Lattice")),
+                appears_transparent: true,
+                // Park the standard window buttons far off-screen so the window
+                // looks buttonless while staying resizable. GPUI re-applies this
+                // position on resize/activate, so it persists.
+                traffic_light_position: Some(gpui::point(gpui::px(-1000.0), gpui::px(-1000.0))),
+            }),
+            None,
+        ),
     }
 }
 
@@ -48,5 +64,16 @@ mod tests {
         let (tb, dec) = window_chrome(Decorations::None_);
         assert!(tb.is_none());
         assert_eq!(dec, Some(gpui::WindowDecorations::Client));
+    }
+
+    #[test]
+    fn transparent_keeps_resizable_titlebar_with_hidden_lights() {
+        let (tb, dec) = window_chrome(Decorations::Transparent);
+        // A `Some` titlebar keeps the window resizable (NSResizableWindowMask).
+        let tb = tb.expect("transparent keeps a titlebar so the window stays resizable");
+        assert!(tb.appears_transparent);
+        // Buttons parked off-screen (negative coords) → looks buttonless.
+        assert!(tb.traffic_light_position.is_some());
+        assert!(dec.is_none());
     }
 }

@@ -440,6 +440,28 @@ impl GpuiApp {
         #[cfg(feature = "window")]
         let window_commands = crate::window_chrome::new_window_command_queue();
 
+        // W.6: ui.window.start-maximized — enqueue a one-shot maximize now that
+        // config is loaded (load_persistent_config ran above). Drained on the UI
+        // thread by EditorView::render (W.5). Must read editor.config before the
+        // actor consumes `editor` below. Whole block is window-gated because it
+        // touches the window-only command queue.
+        #[cfg(feature = "window")]
+        {
+            let start_maximized = editor
+                .config
+                .get_typed::<lattice_config::StartMaximized>()
+                .map(|v| *v)
+                .unwrap_or(false);
+            if start_maximized {
+                window_commands
+                    .lock()
+                    .expect("window command queue poisoned")
+                    .push_back(crate::window_chrome::WindowCommand::Maximize);
+                // Wake a paint so the drain runs even if no input is in flight.
+                paint_request.notify_one();
+            }
+        }
+
         // Slice 3c.final.E.swap: hand Editor to the actor (prod)
         // or keep inline (test).
         #[cfg(not(test))]

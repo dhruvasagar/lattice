@@ -63,8 +63,7 @@ use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
     FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, Styled, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    font, px, rgb, size,
+    SharedString, Styled, TextRun, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -4667,18 +4666,30 @@ impl Render for EditorView {
 /// `lattice-gpui` binary keeps a thin shim that calls this.
 pub fn run(document: Document) -> Result<()> {
     Application::new().run(move |cx| {
+        // W.4: resolve `ui.window.decorations` before open_window. The editor boots
+        // inside the builder closure below (too late for WindowOptions), so parse the
+        // default config paths into a throwaway registry now. `ui.window.decorations`
+        // is a registered scalar option, so no structural prefixes are needed.
+        let decorations = {
+            let reg = lattice_config::ConfigRegistry::new();
+            reg.init_from_linkme();
+            let root = lattice_host::editor::Editor::workspace_root_from_cwd();
+            let _ = lattice_config::load_default_paths(&reg, root.as_deref(), &[]);
+            reg.get_typed::<lattice_config::WindowDecorationsOption>()
+                .map(|v| *v)
+                .unwrap_or_default()
+        };
+        let (titlebar, window_decorations) = crate::window_chrome::window_chrome(decorations);
         let bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Lattice")),
-                    ..Default::default()
-                }),
+                titlebar,
                 // XDG app-id for Linux desktop environments (Wayland /
                 // X11) so the window groups correctly with any .desktop
                 // launcher that references "com.lattice-editor.lattice".
                 app_id: Some("com.lattice-editor.lattice".to_string()),
+                window_decorations,
                 ..Default::default()
             },
             move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),

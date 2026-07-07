@@ -319,10 +319,6 @@ pub struct GpuiApp {
     /// The `Arc<Notify>` is shared with the highlights worker; wakes
     /// propagate to GPUI's foreground executor via `cx.notify()`.
     pub paint_request: std::sync::Arc<tokio::sync::Notify>,
-    /// W.5: UI-thread window-command queue (maximize, …). Producers push
-    /// (boot seam / future :maximize); `EditorView::render` drains it.
-    #[cfg(feature = "window")]
-    pub window_commands: crate::window_chrome::WindowCommandQueue,
     // Phase 5.8.AE: `popup_content` retired. Popup state is
     // unified in `editor.popup_buffer` (+ buffer-locals for
     // links/anchors/highlights). The binary's render reads
@@ -435,32 +431,6 @@ impl GpuiApp {
         // Clone before the actor consumes the editor so EditorView::new
         // can subscribe without a read_editor round-trip.
         let paint_request = editor.paint_request.clone();
-        // W.5: window-command queue, created before the actor hand-off so
-        // it's available for the struct literal below regardless of cfg.
-        #[cfg(feature = "window")]
-        let window_commands = crate::window_chrome::new_window_command_queue();
-
-        // W.6: ui.window.start-maximized — enqueue a one-shot maximize now that
-        // config is loaded (load_persistent_config ran above). Drained on the UI
-        // thread by EditorView::render (W.5). Must read editor.config before the
-        // actor consumes `editor` below. Whole block is window-gated because it
-        // touches the window-only command queue.
-        #[cfg(feature = "window")]
-        {
-            let start_maximized = editor
-                .config
-                .get_typed::<lattice_config::StartMaximized>()
-                .map(|v| *v)
-                .unwrap_or(false);
-            if start_maximized {
-                window_commands
-                    .lock()
-                    .expect("window command queue poisoned")
-                    .push_back(crate::window_chrome::WindowCommand::Maximize);
-                // Wake a paint so the drain runs even if no input is in flight.
-                paint_request.notify_one();
-            }
-        }
 
         // Slice 3c.final.E.swap: hand Editor to the actor (prod)
         // or keep inline (test).
@@ -478,8 +448,6 @@ impl GpuiApp {
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
             paint_request,
-            #[cfg(feature = "window")]
-            window_commands,
         };
         // App-side post-actor: rebuild the cached GPUI theme from
         // the freshly-published `render_state.theme`.

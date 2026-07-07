@@ -3040,14 +3040,6 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // W.5: apply pending window commands on the UI thread (we hold
-        // &mut Window here). Empty on all but the first post-launch frame when
-        // maximize is set.
-        for cmd in crate::window_chrome::drain_window_commands(&self.app.window_commands) {
-            match cmd {
-                crate::window_chrome::WindowCommand::Maximize => window.zoom_window(),
-            }
-        }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
         // breakdown on the `lattice_gpui::perf` tracing target.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits
@@ -4674,24 +4666,57 @@ impl Render for EditorView {
 /// `lattice-gpui` binary keeps a thin shim that calls this.
 pub fn run(document: Document) -> Result<()> {
     Application::new().run(move |cx| {
-        // W.4: resolve `ui.window.decorations` before open_window. The editor boots
-        // inside the builder closure below (too late for WindowOptions), so parse the
-        // default config paths into a throwaway registry now. `ui.window.decorations`
-        // is a registered scalar option, so no structural prefixes are needed.
-        let decorations = {
+        // Resolve `ui.window.*` before open_window. The editor boots inside the
+        // builder closure below (too late for WindowOptions), so parse the default
+        // config paths into a throwaway registry now. Both are registered scalar
+        // options, so no structural prefixes are needed.
+        let (decorations, start_maximized) = {
             let reg = lattice_config::ConfigRegistry::new();
             reg.init_from_linkme();
             let root = lattice_host::editor::Editor::workspace_root_from_cwd();
             let _ = lattice_config::load_default_paths(&reg, root.as_deref(), &[]);
-            reg.get_typed::<lattice_config::WindowDecorationsOption>()
+            let decorations = reg
+                .get_typed::<lattice_config::WindowDecorationsOption>()
                 .map(|v| *v)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let start_maximized = reg
+                .get_typed::<lattice_config::StartMaximized>()
+                .map(|v| *v)
+                .unwrap_or(false);
+            (decorations, start_maximized)
         };
         let (titlebar, window_decorations) = crate::window_chrome::window_chrome(decorations);
-        let bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
+        let default_bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
+        // ui.window.start-maximized: the maximize strategy depends on whether the
+        // window is resizable, which depends on `decorations`.
+        //
+        // - Decorated (`full`) windows ARE resizable, so GPUI's
+        //   `WindowBounds::Maximized` (macOS zoom / X11 maximized state / Windows
+        //   SW_MAXIMIZE) works — GPUI applies it during window construction.
+        // - Borderless (`none`) windows are NON-resizable on macOS: `titlebar:
+        //   None` drops `NSResizableWindowMask`, so `zoom()` is a no-op AND even
+        //   AX tools (Raycast/yabai) get their `setFrame` rejected. We therefore
+        //   cannot rely on a maximize/zoom action; instead we open the window
+        //   already sized to the full display, since the creation-time frame is
+        //   honored regardless of later resizability. (On Linux/Windows borderless
+        //   windows stay resizable, but opening at display size fills the screen
+        //   there too, so this branch is correct cross-platform.)
+        let window_bounds = if start_maximized {
+            if decorations.is_borderless() {
+                let full = cx
+                    .primary_display()
+                    .map(|d| d.bounds())
+                    .unwrap_or(default_bounds);
+                WindowBounds::Windowed(full)
+            } else {
+                WindowBounds::Maximized(default_bounds)
+            }
+        } else {
+            WindowBounds::Windowed(default_bounds)
+        };
         let window = cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(window_bounds),
                 titlebar,
                 // XDG app-id for Linux desktop environments (Wayland /
                 // X11) so the window groups correctly with any .desktop

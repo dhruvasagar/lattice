@@ -65,4 +65,37 @@ mod tests {
         let r = reg();
         assert!(r.parse_and_set_command("ui.window.decorations=wat").is_err());
     }
+
+    // Regression: the `ui.window.*` options must resolve through the real TOML
+    // FILE path (load_file -> walk_table -> apply_scalar), not just the `:set`
+    // path — a `[ui.window]` table with hyphenated leaf keys must apply. This is
+    // the boundary a maximize-on-launch bug report pointed at (the read was fine;
+    // the bug was the apply mechanism).
+    #[test]
+    fn toml_file_path_applies_ui_window_table() {
+        let r = reg();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("lattice_probe_{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[ui.window]\ndecorations = \"none\"\nstart-maximized = true\n",
+        )
+        .unwrap();
+        let out = crate::load_file(&r, &path, &[]);
+        std::fs::remove_file(&path).ok();
+        assert!(
+            out.messages.is_empty(),
+            "load messages: {:?}",
+            out.messages
+        );
+        assert_eq!(
+            *r.get_typed::<WindowDecorationsOption>().unwrap(),
+            Decorations::None_,
+            "decorations from file"
+        );
+        assert!(
+            *r.get_typed::<StartMaximized>().unwrap(),
+            "start-maximized from file"
+        );
+    }
 }

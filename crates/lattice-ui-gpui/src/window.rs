@@ -3040,6 +3040,14 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // W.5: apply pending window commands on the UI thread (we hold
+        // &mut Window here). Empty on all but the first post-launch frame when
+        // maximize is set.
+        for cmd in crate::window_chrome::drain_window_commands(&self.app.window_commands) {
+            match cmd {
+                crate::window_chrome::WindowCommand::Maximize => window.zoom_window(),
+            }
+        }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
         // breakdown on the `lattice_gpui::perf` tracing target.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits

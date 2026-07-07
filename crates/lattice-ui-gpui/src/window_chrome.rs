@@ -4,6 +4,9 @@
 //! per-platform rationale (Linux X11 true borderless via Client CSD-off;
 //! Windows borderless+resizable; macOS borderless via titlebar:None).
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
 use gpui::{SharedString, TitlebarOptions};
 use lattice_config::Decorations;
 
@@ -32,6 +35,29 @@ pub fn window_chrome(
     }
 }
 
+/// A window-management action applied on the UI thread by the render drain.
+/// Extensible (Fullscreen/Minimize/Restore) — only `Maximize` is wired now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCommand {
+    Maximize,
+}
+
+/// FIFO hand-off from producers (the boot seam today; a future `:maximize`) to
+/// the UI-thread render drain. `Arc<Mutex<…>>` so a future off-thread producer
+/// is safe; today both ends run on the UI thread.
+pub type WindowCommandQueue = Arc<Mutex<VecDeque<WindowCommand>>>;
+
+pub fn new_window_command_queue() -> WindowCommandQueue {
+    Arc::new(Mutex::new(VecDeque::new()))
+}
+
+/// Drain every queued command in FIFO order, returning them for application.
+/// Separated from the `zoom_window` call so it is testable without a `Window`.
+pub fn drain_window_commands(queue: &WindowCommandQueue) -> Vec<WindowCommand> {
+    let mut q = queue.lock().expect("window command queue poisoned");
+    q.drain(..).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +74,15 @@ mod tests {
         let (tb, dec) = window_chrome(Decorations::None_);
         assert!(tb.is_none());
         assert_eq!(dec, Some(gpui::WindowDecorations::Client));
+    }
+
+    #[test]
+    fn queue_drains_fifo_and_empties() {
+        let q = new_window_command_queue();
+        q.lock().unwrap().push_back(WindowCommand::Maximize);
+        q.lock().unwrap().push_back(WindowCommand::Maximize);
+        let drained = drain_window_commands(&q);
+        assert_eq!(drained, vec![WindowCommand::Maximize, WindowCommand::Maximize]);
+        assert!(drain_window_commands(&q).is_empty());
     }
 }

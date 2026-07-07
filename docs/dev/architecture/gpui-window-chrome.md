@@ -154,24 +154,32 @@ enum WindowCommand { Maximize }
 window_commands: Arc<Mutex<VecDeque<WindowCommand>>>
 ```
 
-**Trigger (off the UI thread).** During the GPUI boot seam the peer subscribes
-to `lattice_mode::Startup` via `event_bus().subscribe_typed(tx)` — the exact
-pattern `lattice-dashboard::install` uses. On receipt, if
-`config.get::<StartMaximized>()` is true, it pushes `WindowCommand::Maximize`
-onto the queue and fires the existing `paint_request` wake.
+**Trigger (in the GPUI boot seam).** The queue lives on `GpuiApp` (renderer
+side), so — unlike `lattice-dashboard`, which installs its `Startup` subscriber
+inside `install(&mut boot)` during `Editor::boot` — there is no boot subsystem
+seam that can see the queue, and no `boot.runtime_handle()` at that point. Two
+ordering facts settle the mechanism: `Startup` is published at `lib.rs:399`
+*before* `load_persistent_config` runs (~`lib.rs:415`), so the user's
+`ui.window.start-maximized` value is not resolved at publish time; and the boot
+seam runs synchronously on the construction thread before the editor actor
+spawns. So the peer does a **synchronous check-and-push in the boot seam right
+after `load_persistent_config`**: read `editor.config.get_typed::<StartMaximized>()`
+and, if `true`, push `WindowCommand::Maximize` onto the queue. No event
+subscription and no spawned task — a fire-once launch maximize does not warrant
+either (YAGNI). The `Startup` event remains the semantic boot signal; the
+maximize is simply sequenced into the same post-boot seam that publishes it.
 
 **Application (on the UI thread).** `EditorView::render` — which is handed
-`&mut Window` — drains the queue at the top of the frame and calls
-`window.zoom_window()` per command. The queue is FIFO, drained-to-empty, so a
-command posted from an async task lands on the very next paint. `zoom_window`
-failures are impossible to observe (infallible GPUI call), but the drain path
-logs at `debug!` if a command is dropped for any future fallible variant.
+`&mut Window` (`window.rs:3043`) — drains the queue at the top of the frame and
+calls `window.zoom_window()` per command. The queue is FIFO, drained-to-empty,
+so a command enqueued from the boot seam (or later from a `:maximize` handler)
+lands on the next paint. The drain never panics on an empty queue and logs at
+`debug!` if a future fallible variant is dropped.
 
-**This queue is the reusable "window-control API."** A future `:maximize`
-ex-command or a WASM-init call would push `WindowCommand::Maximize` onto the
-same queue — the Startup subscriber is just the first producer. No new seam is
-needed for those; they are out of scope for this change (YAGNI) but the shape
-does not preclude them.
+**Reusable API.** A future `:maximize` ex-command (or WASM-init call) pushes
+`WindowCommand::Maximize` onto the same queue from wherever it runs and fires
+`paint_request` to schedule the paint that drains it. That path is out of scope
+here (YAGNI) but the queue is the seam it would reuse — no new plumbing.
 
 ## Cross-renderer stance
 
@@ -191,9 +199,9 @@ window-control *mechanism*.
 - **Paramount #1 (performance):** `render`'s per-frame drain is an
   `Option`-cheap `VecDeque::pop_front` on an almost-always-empty queue —
   O(1), no allocation, no I/O. Not proportional to document content.
-- **Paramount #4 (async):** the Startup subscriber runs on a tokio task (never
-  the UI thread); the queue marshals the command back to the UI thread at the
-  render seam. No blocking, no UI-thread I/O.
+- **Paramount #4 (async):** the maximize is enqueued synchronously in the boot
+  seam (no task, no I/O) and applied on the UI thread at the render-drain seam.
+  The queue is the thread-safe hand-off; no blocking, no UI-thread I/O.
 - **Heuristic #1 (long-term fit on merit):** uses GPUI's public API to its
   fullest per platform rather than forking for cosmetic macOS parity; the
   `WindowCommand` enum is the genuinely-right primitive for future window ops,

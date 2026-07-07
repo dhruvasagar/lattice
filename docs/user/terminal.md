@@ -151,6 +151,15 @@ To exit:
 In Terminal-Insert mode:
 
 - All characters go to the shell.
+- **`<Enter>` submits; `<C-j>` inserts a newline.** `<Enter>`
+  sends a carriage return (`\r`) — what a shell prompt, REPL, or
+  `:claude` reads as "submit this line". `<C-j>` sends a line
+  feed (`\n`), so use it to compose **multi-line input** without
+  submitting: a multi-line shell command, or a multi-line prompt
+  to `:claude` / another REPL. This is the standard terminal
+  convention (`<Enter>` = `CR`, `<C-j>` = `LF`) — nothing
+  Lattice-specific, so it works the same in every program the
+  terminal runs.
 - `<C-c>` sends SIGINT (cancels the running program), as in
   any other terminal.
 - `<C-d>` sends EOF (logs out of the shell if at a prompt).

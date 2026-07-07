@@ -32,7 +32,7 @@ executes in lattice's address space.
 |---|---|
 | `:claude` | Start the IDE server (if needed) and launch the `claude` CLI in a terminal buffer wired to this editor |
 | `:claude-send` | Send the current file + selection to the attached agent as an `@`-mention (adds it to the agent's context) |
-| `:claude-interrupt` | Interrupt the agent mid-turn (send the equivalent of `Ctrl-C` to the running `claude` CLI) |
+| `:claude-interrupt` (or `<C-c>` in Normal-in-terminal) | Interrupt the agent mid-turn — forwards `<Esc>` to the running `claude` CLI |
 | `:claude-code-start` | Start the IDE server explicitly (no terminal) |
 | `:claude-code-stop` | Stop the IDE server and disconnect the agent |
 
@@ -59,6 +59,10 @@ The agent runs inside a normal terminal buffer, so everything from
 [Terminal Mode](terminal.md) applies: type your prompt to the agent
 in Terminal-Insert (`i` / `a`), scroll its output with vim motions in
 Normal-in-terminal, exit Insert with `<C-\><C-n>` or `<Esc>`.
+
+For a **multi-line prompt**, press `<C-j>` to insert a newline without
+submitting — `<Enter>` submits the turn, `<C-j>` (line feed) breaks the
+line. See [Terminal Mode](terminal.md) for the full input model.
 
 If you only want the server running (for example, to attach a `claude`
 process you started yourself), use `:claude-code-start` and
@@ -149,21 +153,27 @@ persist. The review *is* the save: there's no separate write step.
 ## Interrupting the agent
 
 To stop the agent mid-turn — it's heading down the wrong path, or
-you've seen enough — use:
+you've seen enough — you have two ways:
 
-```
-:claude-interrupt
-```
+- **`<C-c>` in Normal-in-terminal.** Press `<Esc>` to leave
+  Terminal-Insert (dropping into Normal-in-terminal), then `<C-c>`
+  interrupts the running turn. The binding is contributed by
+  `claude-code-mode`, so it only fires on the `:claude` buffer.
+- **`:claude-interrupt`** — the explicit ex-command, usable from
+  anywhere.
 
-It sends the interrupt (the equivalent of `Ctrl-C`) to the running
-`claude` CLI, the same as pressing `Ctrl-C` in a normal terminal.
+Both forward an interrupt (`<Esc>`, `0x1b`) to the running `claude`
+CLI — the signal Claude Code uses to cancel the current turn.
 
-Why a command instead of a key? The agent runs in a [terminal
-buffer](terminal.md), and in that buffer `<Esc>` is **modal** — it
-leaves Terminal-Insert and drops you into Normal mode (so you can
-scroll the agent's output with vim motions). That `<Esc>` never reaches
-the agent, so it can't interrupt. `:claude-interrupt` is the explicit,
-unambiguous way to signal the running turn.
+Why not just press `<Esc>`? The agent runs in a [terminal
+buffer](terminal.md), and there `<Esc>` is **modal** — it leaves
+Terminal-Insert and drops you into Normal-in-terminal (so you can
+scroll the agent's output with vim motions). That first `<Esc>` never
+reaches the agent, so it can't interrupt on its own. `<C-c>` (in
+Normal-in-terminal) and `:claude-interrupt` are the explicit ways to
+forward the signal. Note the scope: `<C-c>` interrupts only in
+Normal-in-terminal — while you're typing in Terminal-Insert, `<C-c>`
+stays the shell's own SIGINT, as in any terminal.
 
 ---
 

@@ -3,8 +3,8 @@
 //!
 //! ## Inspiration
 //!
-//! This module is a direct port of `lattice-lsp`'s
-//! [`crate::ai_log`]-analogue, `lattice_lsp::logging`. LSP puts
+//! A direct port of `lattice-lsp`'s logging facade
+//! (`lattice_lsp::logging`), adapted per-process for AI agent sessions. LSP puts
 //! per-server stderr / protocol events in `*lsp:<server-id>*`
 //! buffers keyed by `(server_id, workspace)`; AI agents are the
 //! same shape one level simpler -- a `SessionKey { provider,

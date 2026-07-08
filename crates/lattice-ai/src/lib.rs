@@ -11,6 +11,9 @@ pub mod error;
 pub mod providers;
 pub mod session;
 
-pub use ai_log::{AiLogLevel, AiLogPushed, AiLogSource, AiLogger, SessionKey};
+pub use ai_log::{
+    AiLogEventPublisher, AiLogLevel, AiLogPushed, AiLogRecord, AiLogSource, AiLogger, LogRing,
+    SessionKey, format_ai_log_line, level_tag,
+};
 pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};

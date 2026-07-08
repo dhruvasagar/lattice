@@ -30171,6 +30171,7 @@ impl Editor {
                     self.cursor,
                     motion_inv,
                     &cancel,
+                    lattice_grammar::TextObjectEnv::default(),
                 ) {
                     self.cursor = new_pos;
                     self.pane_tree.active_mut().cursor = new_pos;
@@ -30335,6 +30336,7 @@ impl Editor {
                 self.cursor,
                 motion_inv,
                 &cancel,
+                lattice_grammar::TextObjectEnv::default(),
             ) {
                 Ok(new_pos) => {
                     self.cursor = new_pos;
@@ -30518,6 +30520,7 @@ impl Editor {
             self.cursor,
             inv,
             &cancel,
+            lattice_grammar::TextObjectEnv::default(),
         ) {
             Ok(target) => {
                 self.cursor = target;

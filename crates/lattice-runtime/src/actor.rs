@@ -456,6 +456,19 @@ mod tests {
                     Position::new(9, 5),
                 ))
             }
+
+            // TSM.1: stub -- see SyntaxSnapshot's scope_toward for rationale.
+            fn scope_toward(
+                &self,
+                _line: u32,
+                _col_byte: u32,
+                _suffix: &str,
+                _dir: lattice_grammar::NavDir,
+                _boundary: lattice_grammar::NavBoundary,
+                _count: u32,
+            ) -> Option<lattice_protocol::Position> {
+                None
+            }
         }
 
         // Outer Option = "apply ran at all"; inner Option = the

@@ -500,6 +500,20 @@ impl lattice_grammar::ScopeResolver for SyntaxSnapshot {
     ) -> Option<lattice_protocol::position::Range> {
         self.scope_at_cursor(line, col_byte, suffix)
     }
+
+    // TSM.1: stub -- the real tree walk (structural motions `]f`/`[c`/…)
+    // lands in TSM.2. Graceful no-op until then (heuristic #5).
+    fn scope_toward(
+        &self,
+        _line: u32,
+        _col_byte: u32,
+        _suffix: &str,
+        _dir: lattice_grammar::NavDir,
+        _boundary: lattice_grammar::NavBoundary,
+        _count: u32,
+    ) -> Option<lattice_protocol::Position> {
+        None
+    }
 }
 
 impl SyntaxSnapshot {

@@ -49,6 +49,11 @@ async fn supervisor_loop(
     let mut conn: Option<Arc<Connection>> = None;
     let mut sess: Option<SessionId> = None;
     let mut active_key: Option<SessionKey> = None;
+    // The provider subprocess the supervisor currently owns the lifecycle
+    // of. Killed on `Stop` and on `Start` replacing an existing session --
+    // otherwise it's an orphaned, potentially billed process left running
+    // after the editor moves on.
+    let mut child: Option<tokio::process::Child> = None;
     // Per-provider process index: first `opencode` session is index 1,
     // second is index 2, etc. -- the `*ai:opencode:1*` / `*ai:opencode:2*`
     // exit criterion.
@@ -57,6 +62,17 @@ async fn supervisor_loop(
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             AiCmd::Start(provider) => {
+                // Tear down any existing session/process before starting a
+                // new one -- the supervisor owns lifecycle end-to-end, so an
+                // old child must never keep running (or keep its drain task
+                // writing into the old session's ring) once a new one takes
+                // its place.
+                if let Some(mut c) = child.take() {
+                    let _ = c.start_kill();
+                }
+                conn = None;
+                sess = None;
+
                 let idx = indices.entry(provider.display_name).or_insert(0);
                 *idx += 1;
                 let key = SessionKey::new(provider.display_name, *idx);
@@ -69,9 +85,10 @@ async fn supervisor_loop(
                 );
 
                 match start_provider(&provider, key.clone(), logger.clone()).await {
-                    Ok((new_conn, new_sess)) => {
+                    Ok((new_conn, new_sess, new_child)) => {
                         conn = Some(new_conn);
                         sess = Some(new_sess);
+                        child = Some(new_child);
                         active_key = Some(key.clone());
                         state.store(Arc::new(AiState {
                             running: true,
@@ -109,6 +126,13 @@ async fn supervisor_loop(
                             );
                         }
                     });
+                } else {
+                    logger.log(
+                        None,
+                        AiLogLevel::Warn,
+                        AiLogSource::Lifecycle,
+                        "prompt dropped: no active session",
+                    );
                 }
             }
             AiCmd::Stop => {
@@ -118,6 +142,9 @@ async fn supervisor_loop(
                     AiLogSource::Lifecycle,
                     "stopped",
                 );
+                if let Some(mut c) = child.take() {
+                    let _ = c.start_kill();
+                }
                 conn = None;
                 sess = None;
                 active_key = None;
@@ -169,7 +196,7 @@ async fn start_provider(
     provider: &ProviderConfig,
     session: SessionKey,
     logger: AiLogger,
-) -> Result<(Arc<Connection>, SessionId)> {
+) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
         .envs(provider.env.iter().cloned())
@@ -196,7 +223,7 @@ async fn start_provider(
         .unwrap_or_default();
     let session_id = crate::session::handshake(&conn, &cwd).await?;
 
-    Ok((conn, session_id))
+    Ok((conn, session_id, child))
 }
 
 #[cfg(test)]
@@ -258,6 +285,53 @@ mod tests {
                 .any(|r: &AiLogRecord| r.source == AiLogSource::AgentText && r.message == "pong"),
             "expected an AgentText \"pong\" record, got {records:?}"
         );
+    }
+
+    /// Drives two consecutive `Start`s with a bogus provider command
+    /// through the real supervisor loop (no real agent binary needed --
+    /// `spawn()` itself fails). Each `Start` must still increment the
+    /// per-provider index and log the start failure under the assigned
+    /// `SessionKey`, making the `*ai:opencode:1*` / `*ai:opencode:2*`
+    /// index-progression exit criterion self-verifying without a live
+    /// process.
+    #[tokio::test]
+    async fn start_failure_still_increments_index_and_logs_per_session() {
+        let logger = AiLogger::with_defaults();
+        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let cfg = ProviderConfig {
+            command: "/nonexistent/definitely-not-a-real-binary".into(),
+            args: vec![],
+            env: vec![],
+            display_name: "fakeprov",
+        };
+
+        handle.start(cfg.clone());
+        handle.start(cfg.clone());
+
+        let key1 = SessionKey::new("fakeprov", 1);
+        let key2 = SessionKey::new("fakeprov", 2);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let s1 = logger.snapshot_session(&key1);
+            let s2 = logger.snapshot_session(&key2);
+            if !s1.is_empty() && !s2.is_empty() {
+                assert!(
+                    s1.iter().any(|r| r.message.contains("start failed")),
+                    "expected a start-failure record for fakeprov:1, got {s1:?}"
+                );
+                assert!(
+                    s2.iter().any(|r| r.message.contains("start failed")),
+                    "expected a start-failure record for fakeprov:2, got {s2:?}"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected both fakeprov:1 and fakeprov:2 start-failure records before the timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// Live end-to-end check against a real `opencode acp` subprocess,

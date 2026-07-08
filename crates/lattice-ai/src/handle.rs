@@ -53,7 +53,9 @@ impl AiClientHandle {
     }
 
     /// Ask the supervisor to send `text` as a prompt on the active session.
-    /// Non-blocking; a no-op (logged) if no session is open.
+    /// Non-blocking; if no session is open the supervisor drops the prompt
+    /// and logs a `Warn`-level "prompt dropped: no active session" record
+    /// to the subsystem-wide `AiLogger` ring instead of sending it.
     pub fn prompt(&self, text: String) {
         let _ = self.cmd_tx.send(AiCmd::Prompt(text));
     }

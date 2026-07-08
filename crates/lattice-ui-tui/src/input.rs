@@ -65,6 +65,7 @@ mod tests {
         Builtins,
         crate::actions::ActionIds,
         lattice_syntax::SyntaxTextObjectIds,
+        lattice_syntax::SyntaxMotionIds,
     ) {
         use std::sync::OnceLock;
         static INIT: OnceLock<(
@@ -72,6 +73,7 @@ mod tests {
             Builtins,
             crate::actions::ActionIds,
             lattice_syntax::SyntaxTextObjectIds,
+            lattice_syntax::SyntaxMotionIds,
         )> = OnceLock::new();
         INIT.get_or_init(|| {
             let mut r = CommandRegistry::new();
@@ -79,10 +81,11 @@ mod tests {
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
             let a = crate::actions::populate(&mut r, &b);
             let so = lattice_syntax::register_syntax_text_objects(&mut r);
+            let sm = lattice_syntax::register_syntax_motions(&mut r);
             // Keep `r`: the snippet mode-keymap layer must translate
             // against the SAME registry that minted these ids
             // (`CommandId`s are stable only within one registry).
-            (r, b, a, so)
+            (r, b, a, so, sm)
         })
     }
 
@@ -102,6 +105,10 @@ mod tests {
         &shared_init().3
     }
 
+    fn shared_syntax_motions() -> &'static lattice_syntax::SyntaxMotionIds {
+        &shared_init().4
+    }
+
     /// Build a fresh `KeymapHandle` populated with every catalog
     /// the per-mode dispatchers consult: Replace, Visual, Insert,
     /// Normal. Each scenario-specific helper below starts from
@@ -111,10 +118,11 @@ mod tests {
         let b = shared_builtins();
         let a = shared_actions();
         let so = shared_syntax_textobjects();
+        let sm = shared_syntax_motions();
         crate::keymap_replace::register_replace_bindings(&h, a);
-        crate::keymap_visual::register_visual_bindings(&h, b, a, so);
+        crate::keymap_visual::register_visual_bindings(&h, b, a, so, sm);
         crate::keymap_insert::register_insert_bindings(&h, a);
-        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
         h
     }
 

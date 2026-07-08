@@ -530,11 +530,15 @@ mod tests {
         // in Visual and Select.
         let mut ts_checked = 0usize;
         for (seq, _motion) in crate::keymap_normal::syntax_motion_rows(&syntax_motions) {
+            // `syntax_motion_rows` is all literals today; filter_map keeps
+            // the full sequence and skips any hypothetical non-literal
+            // (mirrors the `_ => continue` the motion_rows walk above uses,
+            // and avoids a `clippy::panic` warning in this shared module).
             let path: Vec<KeyChord> = seq
                 .iter()
-                .map(|p| match p {
-                    ChordPattern::Literal(c) => *c,
-                    _ => panic!("syntax_motion_rows must be all literals"),
+                .filter_map(|p| match p {
+                    ChordPattern::Literal(c) => Some(*c),
+                    _ => None,
                 })
                 .collect();
             let v = bound_command_id(&h, BindingMode::Visual, &path);

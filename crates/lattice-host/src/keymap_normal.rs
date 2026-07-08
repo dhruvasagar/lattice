@@ -1947,6 +1947,12 @@ fn source() -> SourceLocation {
 // prove `scope_toward` itself walks correctly (already covered elsewhere).
 #[cfg(test)]
 mod syntax_motion_tests {
+    // `panic!` in a test match arm is the idiomatic failure path here (a
+    // `LookupResult` that isn't `Bound` means the wiring is broken); the
+    // workspace `clippy::panic = warn` restriction lint targets production
+    // code, so allow it in this test module (same convention as the
+    // lattice-ui-tui keymap test modules).
+    #![allow(clippy::panic)]
     use super::*;
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::builtins::populate as grammar_builtins_populate;

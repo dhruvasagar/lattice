@@ -52,6 +52,74 @@ crate, serde/serde_json, tracing, the lattice `SubsystemBoot` / `InboundBus` /
 
 ---
 
+## Post-spike revision (Option A) — GOVERNS Tasks 1, 3, 4, 5
+
+Task 0's spike (report: `.superpowers/sdd/task-0-report.md`) confirmed the plan
+but found the `agent-client-protocol` crate **frames JSON-RPC itself** via a
+`Builder` / `Stdio` / `ActiveSession` API (v1.2.0) — there is **no**
+`ClientSideConnection`. User decision: **adopt the crate's connection** (not the
+hand-rolled JSONL codec/actor the original Task 3/4 code shows). Where this
+section conflicts with the Task 3/4/5 code blocks below, **this section wins**;
+those blocks remain only as the interface contract + test shape to preserve.
+
+**Confirmed values (bake in verbatim):**
+- Dep: `agent-client-protocol = "1.2.0"` (Task 1 Cargo.toml — replace `"X.Y.Z"`).
+- opencode ACP entry: `command = "opencode"`, `args = ["acp"]` (Task 2 — already correct).
+- Framing: newline-delimited JSON (the crate handles it; do not hand-roll).
+- `session/update` assistant text: `params.update.content.text`, gated on
+  `params.update.sessionUpdate == "agent_message_chunk"` (Task 6 — already correct).
+
+**Mandatory first step for the Task 3 implementer (de-risks the unpinned API):**
+run `cargo add agent-client-protocol@1.2.0 -p lattice-ai` then
+`cargo doc -p agent-client-protocol --no-deps --open` (or read the vendored
+source under `~/.cargo/registry/src/`) and record the exact signatures of
+`Builder`, `Stdio`, `ActiveSession`, `connect_with`, `InitializeRequest`,
+`NewSessionRequest`, `PromptRequest`, `SessionNotification`, `SessionUpdate`,
+`ContentBlock`, `TextContent`. Then do a live smoke capture: spawn
+`opencode acp`, write an `initialize` + `session/new` + `session/prompt` sequence
+to its stdin, read stdout — confirm the real frames match the schema before
+locking code.
+
+**Revised Task 3 (was: JSONL codec).** Build `connection.rs` as a thin adapter
+over the crate. It **must expose this interface** so Tasks 4/5/7 are unchanged:
+- `Connection::spawn(reader, writer) -> (Arc<Connection>, mpsc::Receiver<SessionNotification>)`
+  where reader/writer are `AsyncRead`/`AsyncWrite` (real child stdio in prod,
+  `tokio::io::duplex` in tests). Internally: build the crate's client connection
+  over a `Stdio` wrapping the pair; forward inbound `session/update`
+  notifications to the mpsc receiver.
+- `async fn Connection::initialize(&self) -> Result<()>`
+- `async fn Connection::new_session(&self, cwd: &str) -> Result<SessionId>`
+- `async fn Connection::prompt(&self, session: &SessionId, text: &str) -> Result<()>`
+  (These three replace the generic `request(method, Value)` — call the crate's
+  typed request methods.) Keep `struct SessionId(pub String)`.
+- Test over `tokio::io::duplex` with a scripted peer that emits real
+  newline-JSON responses/notifications (the crate is on our side; the mock only
+  needs to speak the wire format). Assert: `new_session` returns the peer's
+  `sessionId`; a `session/update` notification reaches the receiver.
+
+**Revised Task 4 (was: connection actor).** Now "handshake + live smoke": a free
+`async fn handshake(conn: &Connection, cwd: &str) -> Result<SessionId>` =
+`initialize` then `new_session`; plus the `#[ignore]` live integration test that
+spawns real `opencode acp`, handshakes, prompts "reply with pong", and asserts a
+`SessionNotification` arrives. (The supervisor in Task 7 consumes `handshake` +
+`Connection::prompt`.)
+
+**Revised Task 5 (was: session handshake).** Folded into Tasks 3–4 above. Task 5
+becomes a no-op slot: mark it complete referencing Tasks 3–4 (do not create a
+separate `session.rs`; `handshake` lives in `connection.rs` or a small
+`session.rs` re-exporting from it — implementer's choice, keep the
+`session::handshake`/`SessionId` paths the downstream tasks import).
+
+**Task 6 unchanged in contract:** `assistant_text_from_update` stays
+`serde_json::Value`-based (independent of the crate's enum shape) — the
+supervisor serializes the `SessionNotification` to a `Value` before calling it,
+OR reads the typed fields directly; either satisfies the Task 6 tests as written.
+
+Model note: Tasks 3–4 are now integration/judgment work (unpinned API) → dispatch
+their implementers on a standard model, not the cheap tier.
+
+---
+
 ## File Structure (AI‑1)
 
 - Create `crates/lattice-ai/Cargo.toml` — crate manifest.

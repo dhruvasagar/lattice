@@ -1856,6 +1856,35 @@ const MAX: i32 = 10;\n\
     }
 
     #[test]
+    fn scope_toward_backward_end_skips_enclosing() {
+        let s = three_fns();
+        // Cursor inside fn b (row 2, col 5) -> prev END is fn a's END, NOT fn b's
+        // own end. The enclosing rule for (Backward, End) keeps candidates
+        // strictly before the cursor (`b < cursor_byte`), so fn b's own closing
+        // brace (past the cursor) is skipped. "fn a() {}" -> end_position row 0,
+        // col 9 (one past the `}`).
+        let p = s.scope_toward(2, 5, "function.outer", NavDir::Backward, NavBoundary::End, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(0, 9)));
+    }
+
+    #[test]
+    fn scope_toward_count_zero_is_none() {
+        let s = three_fns();
+        // count == 0 has no "0th" candidate -> None (guard, never panics).
+        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 0);
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn scope_toward_empty_candidate_set_is_none() {
+        // Tree present + textobjects query present, but the source has no loops,
+        // so `loop.outer` captures nothing -> empty candidate set -> None.
+        let s = three_fns();
+        let p = s.scope_toward(0, 3, "loop.outer", NavDir::Forward, NavBoundary::Start, 1);
+        assert_eq!(p, None);
+    }
+
+    #[test]
     fn reparse_against_evolving_source_keeps_tree_in_sync() {
         // Step 1 is a full reparse on every `parse()` call (we
         // don't yet thread `Tree::edit` deltas). Verify the tree

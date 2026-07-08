@@ -1285,6 +1285,12 @@ pub struct Editor {
     /// applied when it next becomes active (vim's checktime-on-`BufEnter`).
     pub autoread_pending:
         std::collections::HashMap<BufferId, crate::autoread::AutoreadChange>,
+    /// AR.5: buffers with an open autoread **conflict diff** (on-disk change +
+    /// unsaved edits). While a buffer is in this set autoread stays hands-off
+    /// for it — no re-opened resolver, no reload — so a resolve-then-save
+    /// can't loop. Cleared when the buffer is reloaded (`:e!` → new id) or
+    /// closed.
+    pub autoread_conflict_open: std::collections::HashSet<BufferId>,
     /// Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read
     /// contract. Published by `Editor::publish_render_state` at
     /// the end of every `dispatch()` tick. Renderers load via

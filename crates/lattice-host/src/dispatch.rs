@@ -6277,6 +6277,17 @@ impl Editor {
         if !self.autoread_enabled_for(id) {
             return Vec::new();
         }
+        // A conflict resolver is already open for this buffer — stay hands-off
+        // until it's reloaded (`:e!`) or closed, so resolve-then-save can't loop.
+        if self.autoread_conflict_open.contains(&id) {
+            return Vec::new();
+        }
+        // Autoread only manages buffers it has a fingerprint for (loaded from or
+        // saved to disk). Excludes in-memory buffers — notably the diff
+        // resolver's own panes.
+        if !self.on_disk_fingerprints.contains_key(&id) {
+            return Vec::new();
+        }
         if matches!(change.kind, crate::autoread::AutoreadChangeKind::Deleted)
             && !change.path.exists()
         {
@@ -6322,15 +6333,8 @@ impl Editor {
         }
         if self.buffers.document_dirty(id) {
             // Conflict: on-disk changed AND the buffer has unsaved edits. Never
-            // clobber. AR.5 replaces this warning with a diff resolver.
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "\"{}\" changed on disk and the buffer has unsaved changes",
-                    change.path.display()
-                ),
-            );
-            return Vec::new();
+            // clobber — open a diff resolver (disk vs ours) instead (AR.5).
+            return self.open_autoread_conflict_diff(id, &change.path);
         }
         // Clean reload — reuse the tested force-reload path (preserves
         // cursor + scroll, re-stamps the fingerprint, echoes "reloaded").
@@ -6340,6 +6344,46 @@ impl Editor {
             | DoEditOutcome::Activated(s) => s,
             _ => Vec::new(),
         }
+    }
+
+    /// AR.5: open a diff conflict resolver for buffer `id` — the on-disk file
+    /// changed while the buffer had unsaved edits. Left (read-only) = the
+    /// external on-disk content; right (editable) = our buffer's content;
+    /// Accept writes the reconciled right side back to `path`. Reuses the
+    /// `ProgrammaticDiffRequest` machinery (the same "open a diff, await a
+    /// verdict" primitive the IDE peer's openDiff uses); the verdict is
+    /// fire-and-forget for v1 — after resolving, the user reloads with `:e!`.
+    /// The buffer is flagged `autoread_conflict_open` so the drain won't
+    /// re-open or reload it until it's reloaded/closed.
+    fn open_autoread_conflict_diff(
+        &mut self,
+        id: BufferId,
+        path: &std::path::Path,
+    ) -> Vec<RendererSignal> {
+        let ours = self.document.text();
+        // v1: the user resolves + saves in the diff; the outcome isn't awaited,
+        // so drop the receiver (teardown's send then no-ops).
+        let (response, _rx) = tokio::sync::oneshot::channel();
+        let req = lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.to_path_buf(),
+            new_file_path: path.to_path_buf(),
+            new_contents: ours,
+            tab_name: format!("autoread conflict: {}", path.display()),
+            origin_session: 0,
+            response,
+        };
+        self.autoread_conflict_open.insert(id);
+        // Open first, then set the message — `open_programmatic_diff` echoes
+        // its own, and the conflict explanation is what the user should see.
+        let signals = self.open_programmatic_diff(req);
+        self.set_message(
+            EchoLevel::Warn,
+            format!(
+                "\"{}\" changed on disk with unsaved edits — resolve in the diff (:e! to discard local)",
+                path.display()
+            ),
+        );
+        signals
     }
 
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
@@ -10570,6 +10614,8 @@ impl Editor {
                     self.buffer_locals.remove(&old_id);
                     self.resolved_options.remove(&old_id);
                     self.on_disk_fingerprints.remove(&old_id);
+                    self.autoread_pending.remove(&old_id);
+                    self.autoread_conflict_open.remove(&old_id);
                 }
                 return outcome;
             }
@@ -27690,6 +27736,7 @@ impl Editor {
         // map tracks only live file-backed buffers.
         self.on_disk_fingerprints.remove(&to_remove);
         self.autoread_pending.remove(&to_remove);
+        self.autoread_conflict_open.remove(&to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.active_buffer;
@@ -34289,9 +34336,11 @@ mod tests {
     }
 
     #[test]
-    fn autoread_conflict_keeps_dirty_buffer_and_warns() {
-        // AR.4: on-disk change + unsaved local edits ⇒ never clobber; warn.
+    fn autoread_conflict_opens_resolver_and_guards_buffer() {
+        // AR.5: on-disk change + unsaved local edits ⇒ open a diff resolver,
+        // never clobber, and guard the buffer so it can't loop.
         let (mut e, dir, path) = ar4_editor_with_file("conflict", "v1\n");
+        let id = e.document_buffer_id;
         e.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
             lattice_protocol::position::Position::new(0, 0),
             "local-".to_string(),
@@ -34300,16 +34349,42 @@ mod tests {
         assert!(e.document.dirty());
         std::fs::write(&path, "v2-external\n").unwrap();
         inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        // open_programmatic_diff needs ambient runtime context (the actor
+        // thread has one in production).
+        let guard = lattice_runtime::runtime::lsp_runtime().enter();
         let _ = e.drain_autoread_changes();
-        assert_eq!(
-            e.document.text(),
-            "local-v1\n",
-            "dirty buffer keeps local edits (no clobber)"
+        drop(guard);
+        assert!(
+            e.autoread_conflict_open.contains(&id),
+            "conflict opens a resolver and guards the buffer"
         );
         assert_eq!(
             e.last_message.as_ref().map(|m| m.level),
             Some(EchoLevel::Warn),
             "conflict warns"
+        );
+        // The original buffer was never reloaded — its local edits are intact.
+        assert!(
+            e.buffers.document_path(id).is_some(),
+            "original buffer still present (not clobbered)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_guarded_buffer_is_hands_off() {
+        // AR.5: while a conflict resolver is open for a buffer, the drain does
+        // not reload or re-open it (resolve-then-save can't loop).
+        let (mut e, dir, path) = ar4_editor_with_file("guard", "v1\n");
+        let id = e.document_buffer_id;
+        e.autoread_conflict_open.insert(id);
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(
+            e.document.text(),
+            "v1\n",
+            "guarded buffer is not reloaded"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

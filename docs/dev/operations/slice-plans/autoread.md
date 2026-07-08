@@ -22,7 +22,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 | AR.2 | ✅ | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
 | AR.3 | ✅ | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
 | AR.4 | ✅ | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
-| AR.5 | 📝 | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
+| AR.5 | ✅ | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
 | AR.6 | 📝 | **Bench + docs + hardening**: event→reload latency bench, watch-set setup-cost bench, scale test (watch count tracks open-buffer dirs not project size), runtime-responsiveness test, graceful-degradation sweep; flip design fragment to ✅. |
 
 ## AR.0 — Fingerprint + self-write suppression ✅
@@ -147,12 +147,30 @@ Tests: clean reload; unchanged-file suppression (no spurious echo); dirty-confli
 keeps local edits + warns; delete keeps buffer + warns; background change deferred
 until active. 650 host + full ui-tui suites green.
 
-## AR.5 — Diff conflict resolver 📝
+## AR.5 — Diff conflict resolver ✅
 
-`dirty` + external change ⇒ emit `ProgrammaticDiffRequest` (ours ∣ disk, 2-way).
-Wire the verdict: take-disk ⇒ reload; keep-local ⇒ ignore (buffer wins until next
-`:w`); merged ⇒ apply resolved rope. Integration test: modify buffer + write disk
-⇒ diff resolver opens; verdict reload vs keep produces the right buffer content.
+**Landed:** the AR.4 dirty-conflict warning is replaced by
+`open_autoread_conflict_diff(id, path)` — it builds a `ProgrammaticDiffRequest`
+(left/read-only = on-disk external content via `old_file_path`; right/editable =
+our buffer's content via `new_contents`; Accept writes back to `path`) and reuses
+the host's existing `open_programmatic_diff` (the same "open a diff, await a verdict"
+primitive the IDE peer's openDiff uses). No new mechanism — a new *producer* of an
+existing one, exactly as the design fragment argued.
+
+**Loop guard:** a buffer with an open resolver is added to
+`Editor.autoread_conflict_open`; while present, the drain stays hands-off (no
+re-open, no reload) so a resolve-then-save can't loop. Cleared when the buffer is
+reloaded (`:e!` → new id) or closed. A second safety rule — the drain only acts on
+buffers with a fingerprint — excludes the resolver's own in-memory panes.
+
+**v1 simplification:** the verdict oneshot is fire-and-forget (receiver dropped);
+the user resolves + saves in the diff, then reloads their buffer with `:e!`. Awaiting
+the verdict to auto-reload post-resolution is a documented enhancement (needs the
+oneshot round-trip back to the actor). 3-way auto-merge remains the other deferred
+enhancement (design §6).
+
+Tests: conflict opens the resolver + guards the buffer + warns (no clobber); a
+guarded buffer is hands-off (no loop). 651 host tests green.
 
 ## AR.6 — Bench + docs + hardening 📝
 

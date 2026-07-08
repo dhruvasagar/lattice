@@ -501,18 +501,19 @@ impl lattice_grammar::ScopeResolver for SyntaxSnapshot {
         self.scope_at_cursor(line, col_byte, suffix)
     }
 
-    // TSM.1: stub -- the real tree walk (structural motions `]f`/`[c`/…)
-    // lands in TSM.2. Graceful no-op until then (heuristic #5).
+    // TSM.2: real tree walk -- forwards to the inherent
+    // `SyntaxSnapshot::scope_toward` below, mirroring `scope_at`'s
+    // forward to `scope_at_cursor`.
     fn scope_toward(
         &self,
-        _line: u32,
-        _col_byte: u32,
-        _suffix: &str,
-        _dir: lattice_grammar::NavDir,
-        _boundary: lattice_grammar::NavBoundary,
-        _count: u32,
+        line: u32,
+        col_byte: u32,
+        suffix: &str,
+        dir: lattice_grammar::NavDir,
+        boundary: lattice_grammar::NavBoundary,
+        count: u32,
     ) -> Option<lattice_protocol::Position> {
-        None
+        self.scope_toward(line, col_byte, suffix, dir, boundary, count)
     }
 }
 
@@ -802,6 +803,98 @@ impl SyntaxSnapshot {
             }
         }
         best.map(|(_, s, e)| lattice_protocol::position::Range::new(s, e))
+    }
+
+    /// The `count`-th node whose `textobjects.scm` capture name *ends
+    /// with* `suffix`, scanning in `dir`, targeting the node's
+    /// `boundary`. Backs the structural motions (`]f`/`[c`/…, TSM.4)
+    /// via [`lattice_grammar::ScopeResolver::scope_toward`].
+    ///
+    /// Respects the enclosing-object rule (treesitter-motions.md
+    /// §4.1): `(Forward, Start)` and `(Backward, End)` skip the object
+    /// the cursor is currently inside (candidates strictly past the
+    /// cursor byte); `(Backward, Start)` and `(Forward, End)` may land
+    /// on the current object's own boundary (candidates at-or-past the
+    /// cursor byte), so e.g. jumping backward to a function start from
+    /// inside its body lands on that function's own `fn` keyword
+    /// rather than skipping past it.
+    ///
+    /// `NavBoundary::End` returns `end_position` (one past the last
+    /// byte), matching [`Self::scope_at_cursor`]'s half-open
+    /// convention -- the operator's inclusive-end handling adds the
+    /// final byte back for `d]F`-style deletes.
+    ///
+    /// Returns `None` gracefully (heuristic #5, no-op) when: there is
+    /// no cached tree, the language ships no `textobjects.scm`, the
+    /// cursor line is out of range, or there are fewer than `count`
+    /// matching candidates in `dir` -- never panics.
+    ///
+    /// `line` / `col_byte` are 0-based, `col_byte` a utf-8 byte offset
+    /// within the line (the snapshot's position convention, same as
+    /// [`Self::scope_at_cursor`]).
+    pub fn scope_toward(
+        &self,
+        line: u32,
+        col_byte: u32,
+        suffix: &str,
+        dir: lattice_grammar::NavDir,
+        boundary: lattice_grammar::NavBoundary,
+        count: u32,
+    ) -> Option<lattice_protocol::Position> {
+        use lattice_grammar::{NavBoundary, NavDir};
+        if count == 0 {
+            return None;
+        }
+        let tree = self.tree.as_ref()?;
+        let query = self.registry.textobjects_query(self.lang.name())?;
+        let line_start = self.line_starts.get(line as usize).copied()?;
+        let cursor_byte = (line_start + col_byte as usize).min(self.source.len());
+
+        // Restrict the query to the half of the file we scan (perf:
+        // bounds the match set on large files -- paramount #1).
+        let mut cursor = QueryCursor::new();
+        match dir {
+            NavDir::Forward => cursor.set_byte_range(cursor_byte..self.source.len()),
+            NavDir::Backward => cursor.set_byte_range(0..cursor_byte.saturating_add(1)),
+        };
+
+        let names = query.capture_names();
+        // Collect candidate boundary bytes + their (row, col) positions.
+        let mut cands: Vec<(usize, lattice_protocol::Position)> = Vec::new();
+        let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if !names[cap.index as usize].ends_with(suffix) {
+                    continue;
+                }
+                let n = cap.node;
+                let (b, pt) = match boundary {
+                    NavBoundary::Start => (n.start_byte(), n.start_position()),
+                    NavBoundary::End => (n.end_byte(), n.end_position()),
+                };
+                // Enclosing-object rule (treesitter-motions.md §4.1):
+                let keep = match (dir, boundary) {
+                    // Skip the object the cursor is inside -- strictly past cursor.
+                    (NavDir::Forward, NavBoundary::Start) => b > cursor_byte,
+                    (NavDir::Backward, NavBoundary::End) => b < cursor_byte,
+                    // May land on the current object's own boundary.
+                    (NavDir::Backward, NavBoundary::Start) => b <= cursor_byte,
+                    (NavDir::Forward, NavBoundary::End) => b >= cursor_byte,
+                };
+                if keep {
+                    cands.push((b, lattice_protocol::Position::new(pt.row as u32, pt.column as u32)));
+                }
+            }
+        }
+        // Sort in the direction of travel; dedup by byte (a node can be
+        // captured by multiple patterns).
+        cands.sort_by_key(|(b, _)| *b);
+        cands.dedup_by_key(|(b, _)| *b);
+        let ordered: Vec<_> = match dir {
+            NavDir::Forward => cands,
+            NavDir::Backward => cands.into_iter().rev().collect(),
+        };
+        ordered.get((count as usize).saturating_sub(1)).map(|(_, p)| *p)
     }
 
     /// Compute styled spans for each line in `[start_line, end_line)`.
@@ -1665,6 +1758,101 @@ const MAX: i32 = 10;\n\
             after.contains("keep") && after.contains("also_keep"),
             "neighbouring functions stay intact: {after:?}"
         );
+    }
+
+    // ---- TSM.2: scope_toward (structural motions tree walk) ----
+
+    use lattice_grammar::{NavBoundary, NavDir};
+
+    fn snapshot_rust(src: &str) -> SyntaxSnapshot {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(src);
+        s.snapshot_owned()
+    }
+
+    fn snapshot_python(src: &str) -> SyntaxSnapshot {
+        let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
+        s.parse(src);
+        s.snapshot_owned()
+    }
+
+    /// A snapshot with source set but no parse ever run, so `tree` stays
+    /// `None` -- mirrors a document whose first parse hasn't landed yet.
+    fn snapshot_plain(src: &str) -> SyntaxSnapshot {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.inner.set_source_bytes(src.as_bytes());
+        s.snapshot_owned()
+    }
+
+    // Source: 3 top-level fns at rows 0, 2, 4.
+    //   row 0: fn a() {}
+    //   row 2: fn b() {}
+    //   row 4: fn c() {}
+    fn three_fns() -> SyntaxSnapshot {
+        snapshot_rust("fn a() {}\n\nfn b() {}\n\nfn c() {}\n")
+    }
+
+    #[test]
+    fn scope_toward_forward_start_skips_enclosing() {
+        let s = three_fns();
+        // Cursor inside fn a (row 0) -> next function START is fn b (row 2).
+        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(2, 0)));
+    }
+
+    #[test]
+    fn scope_toward_forward_start_count_two() {
+        let s = three_fns();
+        // From row 0, 2nd next function start is fn c (row 4).
+        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 2);
+        assert_eq!(p, Some(lattice_protocol::Position::new(4, 0)));
+    }
+
+    #[test]
+    fn scope_toward_backward_start_lands_on_current() {
+        let s = three_fns();
+        // Cursor inside fn b past its start (row 2, col 5) -> prev START is fn b's
+        // OWN start (row 2, col 0), per the enclosing rule.
+        let p = s.scope_toward(2, 5, "function.outer", NavDir::Backward, NavBoundary::Start, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(2, 0)));
+    }
+
+    #[test]
+    fn scope_toward_forward_end_lands_on_current_end() {
+        let s = three_fns();
+        // Cursor inside fn b (row 2, col 5) -> next END is fn b's own closing
+        // brace. "fn b() {}" -- end_position is row 2, col 9 (one past `}`).
+        let p = s.scope_toward(2, 5, "function.outer", NavDir::Forward, NavBoundary::End, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(2, 9)));
+    }
+
+    #[test]
+    fn scope_toward_stops_at_boundary() {
+        let s = three_fns();
+        // From inside the LAST fn, forward-start has no next -> None (no wrap).
+        let p = s.scope_toward(4, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn scope_toward_none_without_tree() {
+        let s = snapshot_plain("plain text no tree\n");
+        let p = s.scope_toward(0, 0, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn scope_toward_python_forward_start_skips_enclosing() {
+        // row 0: def a(): pass
+        // row 1: def b(): pass
+        // row 2: def c(): pass
+        let s = snapshot_python("def a(): pass\ndef b(): pass\ndef c(): pass\n");
+        // Cursor inside def a (row 0) -> next function START is def b (row 1).
+        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(1, 0)));
+        // Count 2 -> def c (row 2).
+        let p2 = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 2);
+        assert_eq!(p2, Some(lattice_protocol::Position::new(2, 0)));
     }
 
     #[test]

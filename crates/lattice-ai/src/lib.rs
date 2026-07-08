@@ -6,5 +6,6 @@
 //! `docs/dev/architecture/ai-agent-protocol.md`.
 
 pub mod error;
+pub mod providers;
 
 pub use error::{AiError, Result};

@@ -8,8 +8,10 @@
 pub mod ai_log;
 pub mod connection;
 pub mod error;
+pub mod handle;
 pub mod providers;
 pub mod session;
+pub mod supervisor;
 
 pub use ai_log::{
     AiLogEventPublisher, AiLogLevel, AiLogPushed, AiLogRecord, AiLogSource, AiLogger, LogRing,
@@ -17,3 +19,4 @@ pub use ai_log::{
 };
 pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};
+pub use handle::{AiClientHandle, AiState};

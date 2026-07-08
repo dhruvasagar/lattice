@@ -15,10 +15,17 @@ use crate::Decorations;
 crate::options! {
     group = crate::Window;
 
-    /// OS window chrome. `full` (default) keeps the system titlebar and
-    /// controls. `none` removes them for a borderless window (as in
-    /// alacritty `decorations = none` / kitty / emacs `undecorated`).
-    /// Applied at window creation; a change takes effect on next launch.
+    /// OS window chrome (GPUI only; ignored by the terminal UI). One of:
+    ///   `full` (default) — system titlebar + window controls.
+    ///   `none` — borderless: no titlebar or controls, like alacritty
+    ///     `decorations = none` / kitty / emacs `undecorated`. On macOS a
+    ///     `none` window is non-resizable by any means — even Raycast/yabai
+    ///     can't move or resize it; it opens at a fixed size.
+    ///   `transparent` — frameless-looking but still resizable: a transparent
+    ///     titlebar with the traffic-light buttons hidden. Edge-resize works and
+    ///     window managers (Raycast/yabai) can drive it; rounded corners + shadow
+    ///     remain. The macOS-friendly frameless option.
+    /// Applied at window creation; a change takes effect on the next launch.
     #[name("ui.window.decorations")]
     pub WindowDecorationsOption: Decorations = Decorations::Full;
 

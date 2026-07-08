@@ -2,7 +2,8 @@
 //!
 //! Controls OS window chrome on the GPUI peer: `full` (default) keeps the
 //! system titlebar + controls; `none` requests a borderless window (as in
-//! alacritty `decorations = none` / kitty / emacs `undecorated`). Pure
+//! alacritty `decorations = none` / kitty / emacs `undecorated`); `transparent`
+//! is frameless-looking but stays resizable. Pure
 //! presentation policy read only by the GPUI renderer — like [`crate::SignColumn`]
 //! the value type lives here and impls [`OptionType`] locally. The TUI never
 //! reads it. See `docs/dev/architecture/gpui-window-chrome.md`.
@@ -21,10 +22,12 @@ pub enum Decorations {
     /// the window to stay resizable / controllable by Raycast/yabai.
     None_,
     /// Frameless-looking but still resizable: a transparent, full-size-content
-    /// titlebar with the traffic-light buttons hidden off-screen. Unlike `none`
-    /// the window keeps `NSResizableWindowMask` on macOS, so edge-resize and
-    /// external window managers (Raycast/yabai) work. Keeps rounded corners +
-    /// shadow. The on-disk / `:set` label is `transparent`.
+    /// titlebar with the traffic-light buttons hidden (on macOS, via `setHidden:`
+    /// after the window opens — NOT moved off-screen, which would break the
+    /// window's Accessibility geometry). Unlike `none` the window keeps
+    /// `NSResizableWindowMask` on macOS, so edge-resize and external window
+    /// managers (Raycast/yabai) work. Keeps rounded corners + shadow. The
+    /// on-disk / `:set` label is `transparent`.
     Transparent,
 }
 

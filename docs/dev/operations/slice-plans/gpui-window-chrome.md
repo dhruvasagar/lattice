@@ -9,16 +9,31 @@
 (`ui.window.start-maximized`).
 
 **Architecture:** Two new UI-presentation options in `lattice-config`; the GPUI
-peer (`lattice-ui-gpui`) reads `decorations` before `open_window` (early
-standalone config read) and maps it per-platform to `WindowOptions`, and
-enqueues a `WindowCommand::Maximize` in the boot seam after config load, drained
-on the UI thread in `render()` via `Window::zoom_window()`. TUI stays inert.
+peer (`lattice-ui-gpui`) reads them before `open_window` (early standalone config
+read) and maps `decorations` per-platform to `WindowOptions`. TUI stays inert.
+(The maximize mechanism changed post-ship — see the note below.)
 
 **Tech Stack:** Rust, `gpui = "0.2.2"` (external, no fork), `lattice-config`
 `options!` macro + `linkme` self-registration.
 
 **Design fragment:** `docs/dev/architecture/gpui-window-chrome.md` (contracts,
-per-platform mapping, rejected alternatives). This plan owns sequencing only.
+per-platform mapping, rejected alternatives — kept current). This plan owns
+sequencing only.
+
+> **Post-ship follow-ups (2026-07-08).** Slices W.1–W.7 shipped, then three
+> fixes landed after real-hardware testing (all documented in the design
+> fragment; commits `ab656adf`, `6619aaff`, `c857e7f7`, `15523949`):
+> 1. **Maximize mechanism replaced.** The W.5/W.6 `WindowCommand` queue +
+>    render-drain `zoom_window()` never maximized (macOS `zoom()` no-ops on a
+>    non-resizable borderless window). Removed; `start-maximized` now sets the
+>    state at window creation via `WindowBounds` (`Maximized` for resizable
+>    windows; `Windowed(display.bounds())` for borderless).
+> 2. **`decorations = transparent` added** — a resizable frameless option
+>    (transparent titlebar + `setHidden:` on the traffic-light buttons via the
+>    raw window handle), because `none` on macOS is non-resizable by ANY means
+>    (including Raycast/yabai — the earlier "AX tools can resize it" claim was
+>    wrong).
+> 3. `:describe-option` / user docs updated to cover all three values.
 
 ## Global Constraints
 
@@ -662,11 +677,13 @@ git commit -m "feat(gpui): maximize on launch via ui.window.start-maximized (W.6
 - [ ] **Step 1: Add a "Window chrome (GPUI)" section to `docs/user/display.md`**
   covering both options, values, defaults, and the caveats — matching the file's
   existing prose style:
-  - `ui.window.decorations` = `full` (default) | `none`. `none` = borderless
-    (alacritty/kitty/emacs style). Per-platform note: Linux X11 = true borderless
-    + WM-resizable; Windows = borderless + resizable; macOS = no titlebar/traffic
-    lights, rounded corners remain, and **resize via an external tool** (Raycast /
-    yabai / Rectangle) since there is no internal edge-resize. GPUI peer only
+  - `ui.window.decorations` = `full` (default) | `none` | `transparent`
+    (`transparent` added post-ship — see the note at the top of this plan).
+    `none` = borderless (alacritty/kitty/emacs style); `transparent` =
+    frameless-looking but resizable. Per-platform note: Linux X11 = true
+    borderless + WM-resizable; Windows = borderless + resizable; macOS `none` is
+    **non-resizable by any means** (Raycast/yabai can't move it either), so
+    `transparent` is the macOS resizable-frameless option. GPUI peer only
     (ignored in the terminal). **Applies on next launch** (no live re-toggle).
   - `ui.window.start-maximized` = `true` | `false` (default). Maximizes on
     launch (fills the work area, keeps the menu bar — not native fullscreen).

@@ -5380,6 +5380,45 @@ recorded numbers.
 
 ---
 
+## Tree-sitter structural motions (TSM.0–TSM.5 ✅ complete, 2026-07-08)
+
+Design: [`../architecture/treesitter-motions.md`](../architecture/treesitter-motions.md).
+Slice plan: [`slice-plans/treesitter-motions.md`](slice-plans/treesitter-motions.md).
+
+Sixteen tree-sitter-backed next/previous structural motions (`]f [f ]F [F`,
+`]c [c ]C [C`, `]a [a ]A [A`, `]l [l ]L [L`) jumping between functions /
+classes / parameters / loops, composing with every operator, count, and
+Visual selection like any other motion. `lattice_grammar::ScopeResolver`
+grew a `scope_toward(...)` navigation query alongside its existing
+text-object resolution, threaded into `MotionContext` exactly as the text
+objects already were — `lattice-grammar` stays tree-sitter-free (the trait
+lives there), `lattice-syntax` owns the tree walk (`SyntaxSnapshot::
+scope_toward`) and the 16 `MotionSpec`s (`register_syntax_motions`,
+`SyntaxMotionIds`). No new `.scm` files: reuses the existing `@function.outer`
+/ `@class.outer` / `@parameter.outer` / `@loop.outer` captures. Motions
+register at `KeymapLayer::Builtin` (universal vim grammar, like the
+tree-sitter text objects), not a MinorMode; the host only wires chord → id.
+
+| Slice | Title | Status |
+|---|---|---|
+| **TSM.0** | design fragment + slice plan | ✅ |
+| **TSM.1** | grammar seam — `scope_toward` + `MotionContext.scope_resolver` | ✅ |
+| **TSM.2** | `SyntaxSnapshot::scope_toward` real tree walk | ✅ |
+| **TSM.3** | `register_syntax_motions` (16 `MotionSpec`s) | ✅ |
+| **TSM.4** | host wiring — boot registration + 16 chord bindings | ✅ |
+| **TSM.5** | bench + docs/ledger finalization (this entry) | ✅ |
+
+**TSM.5 bench coverage (paramount #1).** `scope_toward` runs on the
+core/actor thread on a deliberate keypress, never in `Render::render`, never
+per-frame — bounded by `QueryCursor::set_byte_range` to the relevant half of
+the file (`Forward` scans `[cursor, EOF)`, `Backward` scans `[0, cursor)`).
+`crates/lattice-syntax/benches/scope_toward.rs` isolates that tree-walk cost
+on a 2000-function synthetic Rust file, querying `@function.outer` from the
+file midpoint in both directions. See `BENCHMARKS.md` (TSM.5 entry) for
+recorded numbers and the byte-range-restriction rationale.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

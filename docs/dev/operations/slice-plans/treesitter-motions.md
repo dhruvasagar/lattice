@@ -42,7 +42,7 @@
 
 ---
 
-## TSM.0 — Land the design docs 📝
+## TSM.0 — Land the design docs ✅
 
 **Files:**
 - Commit: `docs/dev/architecture/treesitter-motions.md` (design fragment, already written)
@@ -62,7 +62,7 @@ git commit -m "docs(ts-motions): TSM.0 — design fragment + slice plan for tree
 
 ---
 
-## TSM.1 — Grammar seam: `scope_toward` + `MotionContext.scope_resolver` 📝
+## TSM.1 — Grammar seam: `scope_toward` + `MotionContext.scope_resolver` ✅
 
 Adds the navigation query to the trait and the resolver field to the motion
 context, threading `env.scope_resolver` through the dispatcher. Ships GREEN with
@@ -257,7 +257,7 @@ git commit -m "feat(ts-motions): TSM.1 — scope_toward seam + MotionContext.sco
 
 ---
 
-## TSM.2 — `SyntaxSnapshot::scope_toward` real tree walk 📝
+## TSM.2 — `SyntaxSnapshot::scope_toward` real tree walk ✅
 
 Replaces the stub with the actual navigation, modeled on `scope_at_cursor`
 (`crates/lattice-syntax/src/syntax.rs:727`).
@@ -438,7 +438,7 @@ git commit -m "feat(ts-motions): TSM.2 — SyntaxSnapshot::scope_toward tree wal
 
 ---
 
-## TSM.3 — `register_syntax_motions` (16 MotionSpecs) 📝
+## TSM.3 — `register_syntax_motions` (16 MotionSpecs) ✅
 
 New `motions.rs` mirroring `text_objects.rs`.
 
@@ -612,7 +612,7 @@ git commit -m "feat(ts-motions): TSM.3 — register_syntax_motions (16 structura
 
 ---
 
-## TSM.4 — Host wiring: boot registration + 16 chord bindings 📝
+## TSM.4 — Host wiring: boot registration + 16 chord bindings ✅
 
 Registers the motions at boot and binds `]x`/`[x` in Normal, operator-pending,
 and Visual — the three surfaces sourced from one table so they never drift.
@@ -752,7 +752,7 @@ git commit -m "feat(ts-motions): TSM.4 — bind ]f/[f/…/[L in Normal, op-pendi
 
 ---
 
-## TSM.5 — Bench + docs finalization 📝
+## TSM.5 — Bench + docs finalization ✅
 
 **Files:**
 - Create: `crates/lattice-syntax/benches/scope_toward.rs` (or extend an existing syntax bench)

@@ -1611,3 +1611,85 @@ git commit -m "feat(ai): AI-1 boot install + host wiring (:opencode end to end)"
   `ProviderConfig`, `Connection::{spawn,request}`, `session::{handshake,prompt,
   SessionId}`, `Frame`, `make_handler`, `register_ai_ex_commands`, `install` —
   names + signatures match across Tasks 1–9.
+
+---
+
+## AI‑1 re-slice (2026-07-08) — split into AI‑1a (transport) + AI‑1b (per-process log buffers)
+
+User direction after Tasks 1–5 landed: **do not render agent output into
+`*messages*`**. Instead build **dedicated, per-process, config-gated log buffers
+mirroring the LSP logging subsystem** (`lattice-lsp/src/logging.rs` +
+`lattice-ui-tui`'s `*lsp:…*` views). See design §6 (rewritten). This supersedes
+original Tasks 6–9's `*messages*`/`tracing::info!` approach and the "coalesce per
+turn" decision (moot — a dedicated per-process buffer is the right home for
+streamed chunks).
+
+### AI‑1a — transport + session (Tasks 1–5) — ✅ COMPLETE
+Crate skeleton, error, provider config, ACP connection adapter over
+`agent-client-protocol` 1.2.0, session handshake/prompt. Live opencode
+end-to-end test passing. Commits `4f8ddf2a..2943e926`.
+
+### AI‑1b — per-process log buffers (mirror LSP logging) — 🚧 tasks below
+The producer/consumer split from LSP. Interfaces named so tasks compose.
+
+**Task 6 — `AiLogger` producer** (`lattice-ai/src/ai_log.rs`, mirror
+`lattice-lsp/src/logging.rs`). `AiLogLevel {Trace,Debug,Info,Warn,Error}` (Ord
+low→high, `parse(&str)`, `short()`); `SessionKey { provider: Arc<str>, index:
+u32 }`; `LogRing` (bounded, cap 0 = disabled, evict-oldest); `AiLogRecord
+{ timestamp, session: Option<SessionKey>, level, source: AiLogSource, message }`;
+`AiLogSource {Client,AgentText,Reasoning,ToolCall,Lifecycle}`; `AiLogger`
+(per-session rings + subsystem-wide ring, `default_min_level`, per-session level
+overrides, `event_publisher: Arc<dyn Fn(AiLogPushed)+Send+Sync>` fired on append,
+`log()`, `snapshot_session()`, `snapshot_global()`, `known_sessions()`,
+`clear_*`, `set_*_level`, `set_default_capacity`). `AiLogPushed { session:
+Option<SessionKey>, level: String, source: String, message: String }` typed event.
+`format_ai_log_line(session, level, source, message) -> String`. Port the LSP
+logging.rs unit tests (routing, ring evict, level gate, per-session override,
+cheap-clone). Self-contained; no host deps. Standard model.
+
+**Task 7 — `ai.log` / `ai.log_level` config options.** Register two typed options
+via the config-macros system (inspect `lattice-config` + how `lsp.log_*` options
+are registered): `ai.log: bool` (enable capture) and `ai.log_level: <level>`
+(default `info`). Wire them to `AiLogger` defaults at boot + on `:set`. Confirm
+the exact registration shape against an existing option before writing. Standard
+model.
+
+**Task 8 — supervisor feeds `AiLogger`** (revise the AI‑1a supervisor, Task-7-old).
+Supervisor holds an `AiLogger` clone; on `start`, assign the session a
+`SessionKey` (provider display_name + next index); drain the `Connection`
+notification receiver, extract chunk text (`assistant_text_from_update`, ported
+from old Task 6) and `log()` it as `AiLogSource::AgentText`; log lifecycle
+(start/session-open/stop/error) as `Lifecycle`. No `*messages*`, no coalescing.
+`AiState` gains the active `SessionKey`. Unit-test the drain→log path over
+`duplex`; keep the `#[ignore]` live opencode test (now asserting a record lands
+in the session ring). Standard model.
+
+**Task 9 — per-process buffer views** (`lattice-ui-tui/src/app/ai_log_buffers.rs`
++ `lattice-ai/src/buffer_names.rs`, mirror LSP's `buffer_names.rs` +
+`lsp_log_buffers.rs`). `*ai:<provider>:<index>*` synthetic Document buffers
+(`ReadOnly`+`NoFile`); name build/parse helpers; a drain hook on `AiLogPushed`
+that snapshots the session ring and refreshes the buffer (tail-follow). An
+`AiLogMode` (mirror `LspServerLogMode`) deriving identity from the buffer name.
+Standard model.
+
+**Task 10 — GPUI parity** (`lattice-ui-gpui`). Mirror Task 9's view wiring in the
+GPUI peer per the cross-renderer-parity standing rule (effect classifier / buffer
+creation / refresh hook). End-of-task audit: `grep -rn "ai:.*log\|AiLogPushed"
+crates/lattice-ui-gpui/`. Standard model.
+
+**Task 11 — ex-commands** (`lattice-ai/src/commands.rs`). `:opencode`,
+`:ai-prompt <text>`, `:ai-stop` (from old Task 8) + `:ai-log [session]` (open the
+per-process buffer; no arg = the active/most-recent session). Bare dashed names,
+`apply` captures `AiClientHandle`. Cheap model (mostly transcription of old Task 8
++ one command).
+
+**Task 12 — boot install + host wiring** (`lattice-ai/src/install.rs` + Editor +
+host boot). Add `ai_logger: AiLogger` to the Editor (mirror `lsp_logger`); wire
+the `AiLogPushed` event publisher → runtime bus; register the drain hook,
+ex-commands, `ai-mode`, `AiClientHandle` + `AiLogger` services; one Phase-B
+`lattice_ai::install(&mut boot)` line. Run renderer suites (lattice-ui-tui +
+gpui) per the boot-change standing rule. Standard model.
+
+Exit (AI‑1b): `:opencode` → `:ai-prompt hi` → `:ai-log` shows the reply streaming
+in a dedicated `*ai:opencode:1*` buffer; a second `:opencode` gets
+`*ai:opencode:2*`; `ai.log=false` disables capture; `ai.log_level` filters.

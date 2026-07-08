@@ -175,15 +175,40 @@ the spawned adapter just works; (b) lattice's ACP client handles ACP's
 `authenticate` method / login prompt. AI‑1 assumes (a) (pre-authed) to de-risk;
 handling the in-protocol `authenticate` flow is explicit scope for **AI‑4**.
 
-## 6. The conversation UI (native buffer)
+## 6. Rendering — per-process log buffers (mirrors LSP logging)
 
-`BufferKind::AiChat` follows the `Messages`/`Dashboard` precedent: rope-backed,
-`ReadOnly = true` + `NoFile = true`, its major mode (`ai-mode`) gating keystrokes
-and contributing the link/`<CR>`-follow machinery. `session/update` chunks append
-to the transcript rope; tool calls render as collapsible, status-badged blocks. A
-prompt affordance (a footer input line, or an Insert-mode capture) feeds
-`session/prompt`. Diffs open as normal diff sessions (§4) — *not* inline in the
-transcript — so the full diff-system UX (folds, `do`/`dp`, n-way) applies.
+Agent output is **not** routed into the shared `*messages*` buffer (that buries
+genuine one-shot info events under streamed agent text — the same concern behind
+the `debug!`-not-`info!` standing rule). Instead lattice-ai mirrors the **LSP
+logging subsystem** (`lattice-lsp/src/logging.rs` + `lattice-ui-tui`'s
+`*lsp:<server>:<workspace>*` views): a producer/consumer split with **one
+dedicated buffer per agent process**, gated by user config.
+
+- **Producer — `AiLogger`** (in `lattice-ai`, mirroring `LspLogger`): per-session
+  bounded `LogRing`s keyed by a `SessionKey { provider, index }` (a second
+  `opencode` session is a distinct ring/buffer, exactly as two `rust-analyzer`
+  instances are). An `AiLogLevel` (Trace..Error, parseable from config) gates
+  records; capacity `0` = disabled. An event publisher fires `AiLogPushed` on each
+  append so views tail-follow live. Cheap clone (`Arc<Mutex<…>>`); logging is not
+  a hot path.
+- **Consumer — per-process buffer views** (in `lattice-ui-tui`, GPUI peer in
+  lockstep): `*ai:<provider>:<index>*` synthetic Document buffers (`ReadOnly` +
+  `NoFile`, like the LSP log buffers). Each snapshots its ring and refreshes on
+  `AiLogPushed`. `:ai-log [session]` opens one. `session/update` chunks stream in
+  as they arrive — a dedicated per-process log buffer is exactly the right home
+  for streaming text, so **no per-turn coalescing is needed** (the earlier
+  `*messages*` coalescing question is moot).
+- **Config gate:** `ai.log` (bool, default off/on TBD-at-impl) enables capture;
+  `ai.log_level` (level, default `info`) sets the default min level. Both are typed
+  registered options (`:set ai.log_level=debug`), with per-session runtime
+  overrides on the `AiLogger` (the LSP `set_instance_level` shape).
+
+This front-loads the dedicated-buffer half of what §would-be AI‑3's `AiChat` buffer
+becomes. AI‑3 later layers the *interactive* conversation UI (prompt affordance,
+tool-call blocks, diffs-as-sessions per §4) on top; the log buffers remain the
+raw per-process record view (the LSP model, where `*lsp:…*` coexists with richer
+surfaces). `BufferKind::AiChat` and the interactive transcript are deferred to
+AI‑3; AI‑1b ships only the log-buffer views.
 
 ## 7. Slices (each its own slice-plan → plan → build)
 

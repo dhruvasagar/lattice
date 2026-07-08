@@ -6151,6 +6151,83 @@ impl Editor {
         *self.resolved_option::<lattice_config::core_options::Autoread>(buffer_id)
     }
 
+    /// AR.3: the parent-dir → basenames set the autoread watcher should
+    /// hold, built from open file-backed buffers with `autoread` on, deduped
+    /// by directory. Cost scales with OPEN BUFFERS, never project size — the
+    /// property that makes autoread scale-invariant (`autoread.md` §3). The
+    /// dir count is bounded by [`AUTOREAD_WATCH_DIR_CAP`]; excess dirs drop
+    /// to the on-activate `stat` fallback (AR.4). Dirs are left un-canonical
+    /// here — the watcher task canonicalizes its keys.
+    fn desired_autoread_watches(
+        &self,
+    ) -> std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>> {
+        let mut watches: std::collections::HashMap<
+            std::path::PathBuf,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for id in self.buffers.document_ids_sorted() {
+            if !self.autoread_enabled_for(id) {
+                continue;
+            }
+            let Some(path) = self.buffers.document_path(id) else {
+                continue;
+            };
+            let (Some(parent), Some(name)) =
+                (path.parent(), path.file_name().and_then(|n| n.to_str()))
+            else {
+                continue;
+            };
+            watches
+                .entry(parent.to_path_buf())
+                .or_default()
+                .insert(name.to_string());
+        }
+        let active_dir = self
+            .document
+            .path()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        bound_watch_set(watches, active_dir.as_deref(), AUTOREAD_WATCH_DIR_CAP)
+    }
+
+    /// AR.3: recompute the desired autoread watch set and, if it changed,
+    /// push it to the watcher task (spawning the task lazily on the first
+    /// file-backed `autoread` buffer, tearing it down when the last one
+    /// closes). A cheap order-independent fingerprint gate skips the
+    /// cmd-send when a buffer switch didn't change the set. Non-blocking:
+    /// no notify calls run on the renderer thread. Call on buffer
+    /// open / close / activate.
+    pub fn refresh_autoread_watcher(&mut self) {
+        let desired = self.desired_autoread_watches();
+        let fp = autoread_watch_fingerprint(&desired);
+        if self.autoread_watcher.is_some() && fp == self.autoread_watch_fingerprint {
+            return;
+        }
+        if desired.is_empty() {
+            if let Some(handle) = self.autoread_watcher.take() {
+                handle.shutdown();
+            }
+            self.autoread_changes = None;
+            self.autoread_watch_fingerprint = 0;
+            return;
+        }
+        if self.autoread_watcher.is_none() {
+            match crate::autoread::spawn_autoread_watcher_task() {
+                Ok((handle, rx)) => {
+                    self.autoread_watcher = Some(handle);
+                    self.autoread_changes = Some(rx);
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "autoread: watcher spawn failed");
+                    return;
+                }
+            }
+        }
+        if let Some(handle) = self.autoread_watcher.as_ref() {
+            handle.sync(desired);
+        }
+        self.autoread_watch_fingerprint = fp;
+    }
+
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
     /// read used by the mode-lifecycle auto-activation hook
     /// ([`Self::maybe_auto_activate_lsp_mode`], F.5.2) and by
@@ -10576,6 +10653,9 @@ impl Editor {
         };
         self.set_message(EchoLevel::Info, msg);
         self.push_recent_file(&target);
+        // AR.3: a new file-backed buffer joined the registry — resync the
+        // autoread watch set (spawns the watcher on the first such buffer).
+        self.refresh_autoread_watcher();
         outcome
     }
 
@@ -18525,6 +18605,64 @@ fn step_byte(
 }
 
 /// 5.5.G.10: word-byte predicate used by `*` / `#`.
+/// AR.3: max distinct parent directories the autoread watcher holds live
+/// OS watches for. Beyond this the coldest dirs drop to the on-activate
+/// `stat` fallback (AR.4). Generous — well under any `inotify` descriptor
+/// limit; the common case (a handful of open buffers) never approaches it.
+const AUTOREAD_WATCH_DIR_CAP: usize = 128;
+
+/// AR.3: bound a desired watch set to at most `cap` directories. The active
+/// buffer's directory is always kept (the file you're looking at must be
+/// watched); the remainder fill deterministically (sorted) up to `cap`.
+/// Excess dirs are dropped — their buffers rely on the on-activate `stat`
+/// fallback. Pure, so the cap logic is unit-testable without a filesystem.
+fn bound_watch_set(
+    watches: std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+    active_dir: Option<&std::path::Path>,
+    cap: usize,
+) -> std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>> {
+    if watches.len() <= cap {
+        return watches;
+    }
+    let mut ordered: Vec<std::path::PathBuf> = watches.keys().cloned().collect();
+    ordered.sort();
+    // Active dir first so the cap can never evict the buffer in view.
+    if let Some(active) = active_dir {
+        if let Some(pos) = ordered.iter().position(|d| d.as_path() == active) {
+            ordered.remove(pos);
+            ordered.insert(0, active.to_path_buf());
+        }
+    }
+    let mut watches = watches;
+    ordered
+        .into_iter()
+        .take(cap)
+        .filter_map(|d| watches.remove(&d).map(|names| (d, names)))
+        .collect()
+}
+
+/// AR.3: order-independent fingerprint of a desired watch set, used as the
+/// cheap "did the set change since the last sync?" gate. Sorting the dirs
+/// and each dir's basenames makes the hash independent of `HashMap`
+/// iteration order.
+fn autoread_watch_fingerprint(
+    watches: &std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut items: Vec<(&std::path::PathBuf, Vec<&String>)> = watches
+        .iter()
+        .map(|(dir, names)| {
+            let mut ns: Vec<&String> = names.iter().collect();
+            ns.sort();
+            (dir, ns)
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(b.0));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    h.finish()
+}
+
 fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -27446,6 +27584,9 @@ impl Editor {
             }
         }
         self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
+        // AR.3: a file-backed buffer left the registry — resync the
+        // autoread watch set (tears the watcher down if it was the last).
+        self.refresh_autoread_watcher();
         ran_full
     }
 
@@ -33903,6 +34044,76 @@ mod tests {
         // override is present.
         let editor = crate::editor::Editor::boot(lattice_core::Document::from_text("hi\n"));
         assert!(editor.autoread_enabled_for(editor.document_buffer_id));
+    }
+
+    #[test]
+    fn bound_watch_set_caps_and_always_keeps_active_dir() {
+        use std::collections::{HashMap, HashSet};
+        use std::path::{Path, PathBuf};
+        let mut w: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for i in 0..5 {
+            w.insert(
+                PathBuf::from(format!("/d{i}")),
+                HashSet::from(["f.txt".to_string()]),
+            );
+        }
+        let bounded = bound_watch_set(w, Some(Path::new("/d3")), 2);
+        assert_eq!(bounded.len(), 2, "capped to 2 dirs");
+        assert!(
+            bounded.contains_key(Path::new("/d3")),
+            "active dir is never evicted by the cap"
+        );
+    }
+
+    #[test]
+    fn autoread_watch_fingerprint_is_order_independent() {
+        use std::collections::{HashMap, HashSet};
+        use std::path::PathBuf;
+        let mut a: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        a.insert(PathBuf::from("/x"), HashSet::from(["a".to_string(), "b".to_string()]));
+        a.insert(PathBuf::from("/y"), HashSet::from(["c".to_string()]));
+        let mut b: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        b.insert(PathBuf::from("/y"), HashSet::from(["c".to_string()]));
+        b.insert(PathBuf::from("/x"), HashSet::from(["b".to_string(), "a".to_string()]));
+        assert_eq!(
+            autoread_watch_fingerprint(&a),
+            autoread_watch_fingerprint(&b),
+            "same set, different insertion order ⇒ same fingerprint"
+        );
+    }
+
+    #[test]
+    fn autoread_desired_watches_dedupe_by_dir_and_spawn_on_open() {
+        // AR.3 scale invariant: the watch set tracks distinct parent dirs of
+        // OPEN buffers, not the file count. Three files across two dirs ⇒ two
+        // watch entries; the watcher spawns on the first file open.
+        let base = std::env::temp_dir().join(format!("lattice-ar3-{}", std::process::id()));
+        let sub = base.join("sub");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(base.join("a.txt"), "a").unwrap();
+        std::fs::write(base.join("b.txt"), "b").unwrap();
+        std::fs::write(sub.join("c.txt"), "c").unwrap();
+
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(base.join("a.txt")), false);
+        e.do_edit(Some(base.join("b.txt")), false);
+        e.do_edit(Some(sub.join("c.txt")), false);
+
+        let w = e.desired_autoread_watches();
+        assert_eq!(w.len(), 2, "two distinct dirs, not three files");
+        let total: usize = w.values().map(|s| s.len()).sum();
+        assert_eq!(total, 3, "three files across the two dirs");
+        assert!(
+            w.values().any(|s| s.len() == 2),
+            "the base dir holds two files"
+        );
+        assert!(
+            e.autoread_watcher.is_some(),
+            "watcher spawned on the first file-backed buffer"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// HS.2: `zl`/`zh` (count columns) + `zL`/`zH` (half body) move

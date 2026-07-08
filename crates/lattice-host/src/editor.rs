@@ -1265,6 +1265,20 @@ pub struct Editor {
     /// task's set so we can skip sending `SyncSubscriptions` when
     /// nothing changed.
     pub lsp_watcher_watched_roots: std::collections::HashSet<std::path::PathBuf>,
+    /// AR.3: handle to the autoread watcher task (spawned lazily on the
+    /// first file-backed buffer with `autoread` on; dropped → task exits
+    /// when the last such buffer closes). `Editor` only sends `Sync`
+    /// commands through it — no notify calls on the renderer thread. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub autoread_watcher: Option<crate::autoread::AutoreadWatcherHandle>,
+    /// AR.3: the change stream from the watcher task, drained host-side by
+    /// AR.4's reload policy. `None` until the watcher is spawned.
+    pub autoread_changes:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::autoread::AutoreadChange>>,
+    /// AR.3: order-independent hash of the last-synced desired watch set.
+    /// The cheap "did the watch set change?" gate on `refresh_autoread_watcher`
+    /// so buffer-switches that don't change the set skip the cmd-send.
+    pub autoread_watch_fingerprint: u64,
     /// Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read
     /// contract. Published by `Editor::publish_render_state` at
     /// the end of every `dispatch()` tick. Renderers load via

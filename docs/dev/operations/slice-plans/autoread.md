@@ -20,7 +20,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 | AR.0 | ✅ | On-disk **fingerprint** `(mtime, size)` per file buffer + content-hash; stamped on load and on `:w`. Self-write suppression seam. Pure host, no watcher yet. |
 | AR.1 | ✅ | **`autoread`** `bool` option (default `true`), per-buffer resolved-options wiring. |
 | AR.2 | ✅ | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
-| AR.3 | 📝 | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
+| AR.3 | ✅ | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
 | AR.4 | 📝 | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
 | AR.5 | 📝 | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
 | AR.6 | 📝 | **Bench + docs + hardening**: event→reload latency bench, watch-set setup-cost bench, scale test (watch count tracks open-buffer dirs not project size), runtime-responsiveness test, graceful-degradation sweep; flip design fragment to ✅. |
@@ -86,15 +86,38 @@ Tests: `classify_autoread` (create/modify/remove/access), `path_is_watched`
 write → assert `AutoreadChange` within timeout). Editor field storage + spawn
 wiring is AR.3.
 
-## AR.3 — Lifecycle + LRU bound 📝
+## AR.3 — Lifecycle + LRU bound ✅
 
-`Watch` on buffer open/activate (deduped by dir), `Unwatch` on close, re-sync on
-option flip — all fingerprint/registration-gated non-blocking sends (mirror
-`refresh_lsp_file_watcher`). Live-watch set LRU-bounded by focus recency; on
-eviction the buffer falls back to an off-thread `stat` at `activate_document`.
-Tests: watch registered on open; unwatched on close; `autoread=false` buffer never
-watched; **scale test** — N buffers across K dirs ⇒ ≤ min(K, cap) watches,
-independent of project file count.
+**Landed:** `Editor` gains `autoread_watcher: Option<AutoreadWatcherHandle>`,
+`autoread_changes: Option<Receiver<AutoreadChange>>`, and `autoread_watch_fingerprint:
+u64`. `desired_autoread_watches()` builds the dir→basenames set from
+`document_ids_sorted()` filtered by `autoread_enabled_for`, deduped by parent dir —
+**cost scales with open buffers, never project size**. `refresh_autoread_watcher()`
+lazy-spawns the watcher on the first file-backed `autoread` buffer, fingerprint-gates
+the `Sync` cmd-send (order-independent hash so buffer switches that don't change the
+set skip work), and tears the watcher down when the last such buffer closes. Wired at
+the two triggers that change the *set* of open buffers: `open_fresh_into_active_slot`
+and `do_buffer_delete`.
+
+**LRU bound:** `bound_watch_set(watches, active_dir, AUTOREAD_WATCH_DIR_CAP=128)` —
+the active buffer's dir is never evicted; excess dirs (pathological >128 distinct
+open dirs) drop to the on-activate `stat` fallback.
+
+Tests: `bound_watch_set` cap + active-dir-kept; fingerprint order-independence;
+**scale test** — 3 files across 2 dirs ⇒ 2 watch entries (not 3), watcher spawns on
+first open.
+
+**Scope adjustments (from the original plan):**
+- **`activate_document` is NOT a trigger** — a pure switch between already-open
+  buffers doesn't change the *set*, so the fingerprint gate would no-op. The active
+  buffer is always watched (it was watched at open); the only gap is the capped tail
+  after >128 dirs, which AR.4's on-activate `stat` fallback covers. This avoids
+  threading a refresh through `activate_document`'s many return points.
+- **On-activate `stat` fallback moved to AR.4** — it *produces a change to act on*,
+  so it belongs with the change-drain + reload policy, not the watch-set wiring.
+- **Option-flip re-sync deferred** — `:set noautoread` mid-session takes effect on
+  the next open/close rather than immediately. Minor; noted for a follow-up hook on
+  the option-apply path.
 
 ## AR.4 — Clean reload policy 📝
 

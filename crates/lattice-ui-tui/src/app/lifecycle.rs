@@ -623,6 +623,93 @@ mod tests {
     }
 
     #[test]
+    fn autoread_stamps_fingerprint_on_load() {
+        // AR.0: loading a file-backed buffer stamps its on-disk
+        // fingerprint, and that fingerprint matches the file content.
+        use lattice_host::autoread::OnDiskFingerprint;
+        let dir = unique_tempdir();
+        let path = dir.join("hello.txt");
+        std::fs::write(&path, "loaded contents\n").unwrap();
+        let mut a = app_with("original", 10);
+        submit_ex(&mut a, &format!("e {}", path.display()));
+
+        let id = a.editor.document_buffer_id;
+        let fp = a
+            .editor
+            .on_disk_fingerprints
+            .get(&id)
+            .expect("fingerprint stamped on load");
+        let expected = OnDiskFingerprint::from_path_and_text(&path, "loaded contents\n");
+        assert!(
+            fp.same_content(&expected),
+            "load fingerprint matches file content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_restamps_fingerprint_on_save_to_match_disk() {
+        // AR.0 self-write suppression: after editing the buffer and
+        // saving, the stored fingerprint reflects the NEW content — i.e.
+        // it equals what a re-read of disk would produce, so the watcher
+        // (AR.2) will recognise this write as its own.
+        use lattice_host::autoread::OnDiskFingerprint;
+        let dir = unique_tempdir();
+        let path = dir.join("edit.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let mut a = app_with("original", 10);
+        submit_ex(&mut a, &format!("e {}", path.display()));
+        let id = a.editor.document_buffer_id;
+        let before = a.editor.on_disk_fingerprints.get(&id).cloned().unwrap();
+
+        // Dirty the buffer, then save.
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "new-")).unwrap();
+        assert!(a.editor.document.dirty());
+        a.save_blocking().unwrap();
+
+        let after = a.editor.on_disk_fingerprints.get(&id).cloned().unwrap();
+        assert!(
+            !before.same_content(&after),
+            "content changed ⇒ fingerprint changed"
+        );
+        // The stored fingerprint equals a fresh read of disk: self-write
+        // is suppressible.
+        let disk = std::fs::read_to_string(&path).unwrap();
+        let disk_fp = OnDiskFingerprint::from_path_and_text(&path, &disk);
+        assert!(
+            after.same_content(&disk_fp),
+            "post-save fingerprint matches on-disk content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_removes_fingerprint_on_buffer_delete() {
+        // AR.0: closing a file-backed buffer drops its fingerprint so the
+        // map tracks only live buffers.
+        let dir = unique_tempdir();
+        let a_path = dir.join("a.txt");
+        let b_path = dir.join("b.txt");
+        std::fs::write(&a_path, "aaa\n").unwrap();
+        std::fs::write(&b_path, "bbb\n").unwrap();
+        let mut app = app_with("original", 10);
+        submit_ex(&mut app, &format!("e {}", a_path.display()));
+        let a_id = app.editor.document_buffer_id;
+        submit_ex(&mut app, &format!("e {}", b_path.display()));
+        assert!(app.editor.on_disk_fingerprints.contains_key(&a_id));
+
+        // Switch back to A and delete it.
+        submit_ex(&mut app, &format!("e {}", a_path.display()));
+        assert_eq!(app.editor.document_buffer_id, a_id);
+        submit_ex(&mut app, "bd");
+        assert!(
+            !app.editor.on_disk_fingerprints.contains_key(&a_id),
+            "fingerprint dropped on :bd"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn edit_refuses_when_dirty() {
         let mut a = app_with("modified", 10);
         a.apply(Action::EnterMode(ModalState::Insert));

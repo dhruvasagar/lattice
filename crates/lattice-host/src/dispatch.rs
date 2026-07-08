@@ -6103,6 +6103,7 @@ impl Editor {
         self.active_modes.remove(&prev);
         self.buffer_locals.remove(&prev);
         self.resolved_options.remove(&prev);
+        self.on_disk_fingerprints.remove(&prev);
     }
 
     /// Mode-owned syntax handle for `id`. For the active document
@@ -10367,6 +10368,7 @@ impl Editor {
                     self.active_modes.remove(&old_id);
                     self.buffer_locals.remove(&old_id);
                     self.resolved_options.remove(&old_id);
+                    self.on_disk_fingerprints.remove(&old_id);
                 }
                 return outcome;
             }
@@ -10495,6 +10497,10 @@ impl Editor {
             name: None,
         });
         self.seed_empty_document_locals(new_id);
+        // AR.0: stamp the on-disk fingerprint at load, against the freshly
+        // read text. This is the baseline the autoread watcher (AR.2)
+        // compares later filesystem events to.
+        self.stamp_on_disk_fingerprint(new_id, &target, &initial_text);
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.active_buffer = lattice_core::BufferKind::Document;
@@ -11361,6 +11367,7 @@ impl Editor {
         self.active_modes.remove(&id);
         self.buffer_locals.remove(&id);
         self.resolved_options.remove(&id);
+        self.on_disk_fingerprints.remove(&id);
     }
 
     fn build_cells_panes(
@@ -20115,12 +20122,34 @@ impl Editor {
                 id: snap.id,
                 path: path.clone(),
             });
+            // AR.0: re-stamp the on-disk fingerprint after our own write so
+            // the autoread watcher (AR.2) recognises this save as ours and
+            // does not treat the resulting filesystem event as an external
+            // change. `save_blocking` writes to the buffer's OWN path, so
+            // the stamp is valid; `:w <other-path>` (save-as, a copy) goes
+            // through `save_as_blocking` and deliberately does NOT re-stamp
+            // (the buffer's backing file is unchanged). See the slice plan.
+            let text = self.document.text();
+            self.stamp_on_disk_fingerprint(self.document_buffer_id, path, &text);
             self.fire_did_save_notifications();
             if !pre_save_existed {
                 self.fire_did_create_files_notifications(path);
             }
         }
         result
+    }
+
+    /// AR.0: record `id`'s on-disk fingerprint `(mtime, size, content-hash)`
+    /// from `path` + the buffer's current `text`. The single seam both the
+    /// load path (`open_fresh_into_active_slot`) and the save path
+    /// (`save_blocking`) write through, and the baseline the autoread
+    /// watcher (AR.2) gates filesystem events against. See
+    /// `docs/dev/architecture/autoread.md`.
+    fn stamp_on_disk_fingerprint(&mut self, id: BufferId, path: &std::path::Path, text: &str) {
+        self.on_disk_fingerprints.insert(
+            id,
+            crate::autoread::OnDiskFingerprint::from_path_and_text(path, text),
+        );
     }
 
     /// `:w <path>` -- save the active document under a new path.
@@ -27394,6 +27423,9 @@ impl Editor {
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
+        // AR.0: drop the autoread fingerprint for the closed buffer so the
+        // map tracks only live file-backed buffers.
+        self.on_disk_fingerprints.remove(&to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.active_buffer;

@@ -901,6 +901,14 @@ pub struct Editor {
     /// Per-buffer mode-resolved options cache. Refreshed
     /// eagerly on mode toggle and option write.
     pub resolved_options: HashMap<BufferId, ResolvedOptions>,
+    /// AR.0: on-disk fingerprint per file-backed Document buffer, stamped
+    /// on load and after the buffer's own `:w`. The autoread watcher (AR.2)
+    /// compares an incoming filesystem event against this to suppress
+    /// self-writes and skip no-op touches. Non-file buffers (oil, help,
+    /// synthetic) never get an entry — the map is keyed by the property
+    /// "has an on-disk backing", not by `BufferKind`. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub on_disk_fingerprints: HashMap<BufferId, crate::autoread::OnDiskFingerprint>,
     /// PI.4: monotonic version bumped whenever [`Self::resolved_options`]
     /// changes. Keys the published `ResolvedOptionsRenderState` cache so
     /// both renderer peers read per-buffer resolved options through ONE

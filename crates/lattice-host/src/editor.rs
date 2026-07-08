@@ -1279,6 +1279,12 @@ pub struct Editor {
     /// The cheap "did the watch set change?" gate on `refresh_autoread_watcher`
     /// so buffer-switches that don't change the set skip the cmd-send.
     pub autoread_watch_fingerprint: u64,
+    /// AR.4: the latest un-applied external change per buffer. The tick drain
+    /// records watcher changes here (keyed by `BufferId`) and applies the
+    /// *active* buffer's entry immediately; a background buffer's entry is
+    /// applied when it next becomes active (vim's checktime-on-`BufEnter`).
+    pub autoread_pending:
+        std::collections::HashMap<BufferId, crate::autoread::AutoreadChange>,
     /// Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read
     /// contract. Published by `Editor::publish_render_state` at
     /// the end of every `dispatch()` tick. Renderers load via

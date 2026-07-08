@@ -6228,6 +6228,120 @@ impl Editor {
         self.autoread_watch_fingerprint = fp;
     }
 
+    /// AR.4: per-tick drain of the autoread change stream. Pulls every
+    /// pending `AutoreadChange` from the watcher task, records it against its
+    /// buffer, then applies the *active* buffer's change now (a background
+    /// buffer's change waits until it becomes active — vim's
+    /// checktime-on-`BufEnter`). Runs on the actor thread, so the reload's
+    /// file read is off the renderer thread (same as `:e`). Called from
+    /// [`Self::run_tick_pending`].
+    pub fn drain_autoread_changes(&mut self) -> Vec<RendererSignal> {
+        if let Some(mut rx) = self.autoread_changes.take() {
+            let mut changes = Vec::new();
+            while let Ok(change) = rx.try_recv() {
+                changes.push(change);
+            }
+            self.autoread_changes = Some(rx);
+            for change in changes {
+                if let Some(id) = self.find_document_by_canonical_path(&change.path) {
+                    self.autoread_pending.insert(id, change);
+                }
+            }
+        }
+        self.apply_pending_autoread_for_active()
+    }
+
+    /// Resolve a (canonical, watcher-emitted) path to an open document buffer.
+    /// Compares raw paths first, then canonical forms — stored buffer paths may
+    /// not be canonical, while the watcher always emits canonical paths.
+    fn find_document_by_canonical_path(&self, path: &std::path::Path) -> Option<BufferId> {
+        let canon = std::fs::canonicalize(path).ok();
+        self.buffers.document_ids_sorted().into_iter().find(|&id| {
+            self.buffers.document_path(id).is_some_and(|bp| {
+                bp == path
+                    || (canon.is_some() && std::fs::canonicalize(&bp).ok() == canon)
+            })
+        })
+    }
+
+    /// AR.4: apply the active buffer's pending external change (if any) per the
+    /// autoread policy: clean buffer ⇒ silent reload (cursor/scroll preserved);
+    /// dirty buffer ⇒ warn without clobbering (AR.5 replaces this with a diff
+    /// resolver); deleted-on-disk ⇒ keep the buffer, warn. Self-writes and
+    /// no-op touches are suppressed by the fingerprint gate before any reload.
+    fn apply_pending_autoread_for_active(&mut self) -> Vec<RendererSignal> {
+        let id = self.document_buffer_id;
+        let Some(change) = self.autoread_pending.remove(&id) else {
+            return Vec::new();
+        };
+        if !self.autoread_enabled_for(id) {
+            return Vec::new();
+        }
+        if matches!(change.kind, crate::autoread::AutoreadChangeKind::Deleted)
+            && !change.path.exists()
+        {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "\"{}\" no longer available on disk (buffer kept)",
+                    change.path.display()
+                ),
+            );
+            return Vec::new();
+        }
+        // Cheap `(mtime, size)` pre-gate: an unchanged file (our own write, or
+        // a bare touch) short-circuits before any read.
+        if self
+            .on_disk_fingerprints
+            .get(&id)
+            .is_some_and(|fp| fp.stat_unchanged(&change.path))
+        {
+            return Vec::new();
+        }
+        let Ok(disk_text) = std::fs::read_to_string(&change.path) else {
+            // Vanished between event and read — treat as a delete.
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "\"{}\" no longer available on disk (buffer kept)",
+                    change.path.display()
+                ),
+            );
+            return Vec::new();
+        };
+        // Precise gate: content identical to what we last synced ⇒ self-write /
+        // no-op, nothing to reload.
+        let disk_fp =
+            crate::autoread::OnDiskFingerprint::from_path_and_text(&change.path, &disk_text);
+        if self
+            .on_disk_fingerprints
+            .get(&id)
+            .is_some_and(|fp| fp.same_content(&disk_fp))
+        {
+            return Vec::new();
+        }
+        if self.buffers.document_dirty(id) {
+            // Conflict: on-disk changed AND the buffer has unsaved edits. Never
+            // clobber. AR.5 replaces this warning with a diff resolver.
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "\"{}\" changed on disk and the buffer has unsaved changes",
+                    change.path.display()
+                ),
+            );
+            return Vec::new();
+        }
+        // Clean reload — reuse the tested force-reload path (preserves
+        // cursor + scroll, re-stamps the fingerprint, echoes "reloaded").
+        match self.do_edit(Some(change.path.clone()), true) {
+            DoEditOutcome::Reloaded(s)
+            | DoEditOutcome::Opened(s)
+            | DoEditOutcome::Activated(s) => s,
+            _ => Vec::new(),
+        }
+    }
+
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
     /// read used by the mode-lifecycle auto-activation hook
     /// ([`Self::maybe_auto_activate_lsp_mode`], F.5.2) and by
@@ -12821,6 +12935,7 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
+        signals.extend(self.drain_autoread_changes());
         signals.extend(self.drain_option_changes());
         signals.extend(self.drain_pending_hover());
         signals.extend(self.drain_pending_signature_help());
@@ -27574,6 +27689,7 @@ impl Editor {
         // AR.0: drop the autoread fingerprint for the closed buffer so the
         // map tracks only live file-backed buffers.
         self.on_disk_fingerprints.remove(&to_remove);
+        self.autoread_pending.remove(&to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.active_buffer;
@@ -34114,6 +34230,136 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Open a file into a fresh Editor and return (editor, dir, path).
+    #[cfg(test)]
+    fn ar4_editor_with_file(tag: &str, contents: &str) -> (Editor, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("lattice-ar4-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.txt");
+        std::fs::write(&path, contents).unwrap();
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(path.clone()), false);
+        (e, dir, path)
+    }
+
+    fn inject_pending(e: &mut Editor, path: &std::path::Path, kind: crate::autoread::AutoreadChangeKind) {
+        let id = e.document_buffer_id;
+        e.autoread_pending.insert(
+            id,
+            crate::autoread::AutoreadChange {
+                path: path.to_path_buf(),
+                kind,
+            },
+        );
+    }
+
+    #[test]
+    fn autoread_clean_reload_updates_active_buffer() {
+        // AR.4: an external change to a clean active buffer reloads it.
+        let (mut e, dir, path) = ar4_editor_with_file("clean", "v1\n");
+        assert_eq!(e.document.text(), "v1\n");
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(
+            e.document.text(),
+            "v2-external\n",
+            "clean buffer reloaded to on-disk content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_suppresses_unchanged_file_no_reload() {
+        // AR.4: a change event for a file whose content matches the stored
+        // fingerprint (self-write / no-op touch) does not reload or echo.
+        let (mut e, dir, path) = ar4_editor_with_file("noop", "same\n");
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        e.last_message = None;
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "same\n", "buffer untouched");
+        assert!(
+            e.last_message.is_none(),
+            "no spurious reload message on an unchanged file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_conflict_keeps_dirty_buffer_and_warns() {
+        // AR.4: on-disk change + unsaved local edits ⇒ never clobber; warn.
+        let (mut e, dir, path) = ar4_editor_with_file("conflict", "v1\n");
+        e.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(0, 0),
+            "local-".to_string(),
+        ))
+        .unwrap();
+        assert!(e.document.dirty());
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(
+            e.document.text(),
+            "local-v1\n",
+            "dirty buffer keeps local edits (no clobber)"
+        );
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "conflict warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_delete_keeps_buffer_and_warns() {
+        // AR.4: file removed on disk ⇒ keep the buffer, warn, never wipe.
+        let (mut e, dir, path) = ar4_editor_with_file("delete", "v1\n");
+        std::fs::remove_file(&path).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Deleted);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "v1\n", "buffer content kept on delete");
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "delete warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_background_change_deferred_until_active() {
+        // AR.4: a change recorded for a NON-active buffer isn't applied until
+        // that buffer becomes active.
+        let (mut e, dir, path) = ar4_editor_with_file("bg", "v1\n");
+        let bg_id = e.document_buffer_id;
+        // Open a second file so `bg` is now backgrounded.
+        let other = dir.join("other.txt");
+        std::fs::write(&other, "other\n").unwrap();
+        e.do_edit(Some(other.clone()), false);
+        assert_ne!(e.document_buffer_id, bg_id);
+
+        // External change to the backgrounded file + a pending entry for it.
+        std::fs::write(&path, "v2-external\n").unwrap();
+        e.autoread_pending.insert(
+            bg_id,
+            crate::autoread::AutoreadChange {
+                path: path.clone(),
+                kind: crate::autoread::AutoreadChangeKind::Modified,
+            },
+        );
+        // Draining while `other` is active must NOT touch it, and the pending
+        // entry survives for `bg`.
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "other\n", "active buffer untouched");
+        assert!(
+            e.autoread_pending.contains_key(&bg_id),
+            "background change still pending"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// HS.2: `zl`/`zh` (count columns) + `zL`/`zH` (half body) move

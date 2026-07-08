@@ -21,7 +21,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 | AR.1 | ✅ | **`autoread`** `bool` option (default `true`), per-buffer resolved-options wiring. |
 | AR.2 | ✅ | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
 | AR.3 | ✅ | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
-| AR.4 | 📝 | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
+| AR.4 | ✅ | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
 | AR.5 | 📝 | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
 | AR.6 | 📝 | **Bench + docs + hardening**: event→reload latency bench, watch-set setup-cost bench, scale test (watch count tracks open-buffer dirs not project size), runtime-responsiveness test, graceful-degradation sweep; flip design fragment to ✅. |
 
@@ -119,13 +119,33 @@ first open.
   the next open/close rather than immediately. Minor; noted for a follow-up hook on
   the option-apply path.
 
-## AR.4 — Clean reload policy 📝
+## AR.4 — Clean reload policy ✅
 
-Host drains validated change events (new `Action`/event, like `drain_lsp_fs_events`).
-`!dirty` ⇒ `open_fresh_into_active_slot(_, Reload)` (cursor+scroll preserved) +
-`info!`/echo `"<file>" reloaded`. Deleted-on-disk ⇒ keep buffer, warn, no wipe.
-Integration test: external write → active buffer reloads to new content, cursor
-preserved.
+**Landed:** `drain_autoread_changes()` wired into `run_tick_pending` (actor thread,
+so the reload's file read is off the renderer — same as `:e`). It pulls every
+`AutoreadChange` from the watcher receiver, maps each to a buffer via
+`find_document_by_canonical_path` (canonical-aware, since the watcher emits canonical
+paths), and records it in `Editor.autoread_pending` (keyed by `BufferId`). Then
+`apply_pending_autoread_for_active()` acts on the *active* buffer's entry:
+
+- **Self-write / no-op gate** — `stat_unchanged` (cheap) then `same_content`
+  (precise) short-circuit before any reload, so `:w` never triggers a spurious
+  reload.
+- **Clean** ⇒ `do_edit(path, force=true)` — the tested reload (cursor + scroll
+  preserved, fingerprint re-stamped, echoes "reloaded").
+- **Dirty (conflict)** ⇒ warn, never clobber. **AR.5 replaces this warning with a
+  diff resolver.**
+- **Deleted** ⇒ keep the buffer, warn.
+
+**Background buffers:** a change for a non-active buffer stays in `autoread_pending`
+and is applied when it next becomes active — vim's checktime-on-`BufEnter`, and it
+sidesteps background-buffer reload machinery. This also subsumes the "on-activate
+`stat` fallback" deferred from AR.3: any recorded change (incl. capped-tail buffers)
+applies on activation.
+
+Tests: clean reload; unchanged-file suppression (no spurious echo); dirty-conflict
+keeps local edits + warns; delete keeps buffer + warns; background change deferred
+until active. 650 host + full ui-tui suites green.
 
 ## AR.5 — Diff conflict resolver 📝
 

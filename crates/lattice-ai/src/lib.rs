@@ -5,7 +5,9 @@
 //! peer like `lattice-lsp`; runs no agent in-process. See
 //! `docs/dev/architecture/ai-agent-protocol.md`.
 
+pub mod connection;
 pub mod error;
 pub mod providers;
 
+pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};

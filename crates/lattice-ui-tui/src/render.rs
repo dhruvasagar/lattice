@@ -2831,25 +2831,55 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
 fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRect)], app: &App) {
     let glyph = app.theme.pane_separator_vertical;
     let style = app.theme.pane_separator;
+    for (col, y_start, y_end) in separator_segments(rects) {
+        for row in y_start..y_end {
+            let r = Rect {
+                x: col,
+                y: row,
+                width: 1,
+                height: 1,
+            };
+            let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
+            frame.render_widget(para, r);
+        }
+    }
+}
+
+/// Compute the vertical separator segments between horizontally
+/// adjacent panes. Each segment is `(col, y_start, y_end)` (half-open
+/// row range) painted on the boundary column shared by a left pane's
+/// right edge and a right pane's left edge.
+///
+/// The separator is drawn over the *vertical overlap* of the two
+/// panes, NOT the full height of either. This is what lets a column
+/// that has itself been sub-split (e.g. `:vsplit` then `:split` the
+/// left pane) still get a continuous divider against the neighbour:
+/// each stacked sub-pane contributes the segment covering its own
+/// rows. The earlier "same band" gate (`a.y == b.y && a.height ==
+/// b.height`) required identical rects and silently dropped the
+/// divider whenever one side was sub-split.
+fn separator_segments(rects: &[(usize, crate::pane::PaneRect)]) -> Vec<(u16, u16, u16)> {
+    let mut segments = Vec::new();
     for (i, (_, a)) in rects.iter().enumerate() {
         for (_, b) in rects.iter().skip(i + 1) {
-            let same_band = a.y == b.y && a.height == b.height;
-            let adjacent = a.x + a.width == b.x;
-            if same_band && adjacent {
-                let col = a.x + a.width - 1;
-                for row in a.y..a.y + a.height {
-                    let r = Rect {
-                        x: col,
-                        y: row,
-                        width: 1,
-                        height: 1,
-                    };
-                    let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
-                    frame.render_widget(para, r);
-                }
+            // Identify which pane sits directly to the left of the
+            // other (order in `rects` is tree-walk order, not sorted
+            // by x), so both `a|b` and `b|a` adjacencies are caught.
+            let (left, right) = if a.x + a.width == b.x {
+                (a, b)
+            } else if b.x + b.width == a.x {
+                (b, a)
+            } else {
+                continue;
+            };
+            let y_start = left.y.max(right.y);
+            let y_end = (left.y + left.height).min(right.y + right.height);
+            if y_start < y_end {
+                segments.push((left.x + left.width - 1, y_start, y_end));
             }
         }
     }
+    segments
 }
 
 /// One-row status line at the bottom of a pane (vim's "statusline"
@@ -9647,5 +9677,80 @@ mod tests {
             let row = render_status_row(&app, &pane, true, w);
             assert_eq!(row.chars().count(), w as usize, "row fills width {w}");
         }
+    }
+
+    // --- pane separator geometry (draw_pane_separators) ---
+
+    use crate::pane::PaneRect;
+
+    /// Collect the individual `(col, row)` separator cells that
+    /// `separator_segments` would paint, sorted for stable asserts.
+    fn separator_cells(rects: &[(usize, PaneRect)]) -> Vec<(u16, u16)> {
+        let mut cells: Vec<(u16, u16)> = separator_segments(rects)
+            .into_iter()
+            .flat_map(|(col, y0, y1)| (y0..y1).map(move |row| (col, row)))
+            .collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    /// A plain `:vsplit` (two equal side-by-side panes) draws a
+    /// full-height divider on the left pane's right edge.
+    #[test]
+    fn separator_simple_vsplit_full_height() {
+        // Left: (0,0,5,4)   Right: (5,0,5,4)
+        let rects = vec![
+            (0, PaneRect { x: 0, y: 0, width: 5, height: 4 }),
+            (1, PaneRect { x: 5, y: 0, width: 5, height: 4 }),
+        ];
+        let cells = separator_cells(&rects);
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// Regression: `:vsplit` then `:split` the LEFT pane. The left
+    /// column now holds two half-height stacked panes while the right
+    /// pane is full height. The divider must still be continuous over
+    /// the full height — the earlier "same band" gate dropped it
+    /// entirely because no pair shared identical (y, height).
+    #[test]
+    fn separator_subsplit_left_column_stays_continuous() {
+        // Left-top:    (0,0,5,2)
+        // Left-bottom: (0,2,5,2)
+        // Right:       (5,0,5,4)
+        let rects = vec![
+            (0, PaneRect { x: 0, y: 0, width: 5, height: 2 }),
+            (2, PaneRect { x: 0, y: 2, width: 5, height: 2 }),
+            (1, PaneRect { x: 5, y: 0, width: 5, height: 4 }),
+        ];
+        let cells = separator_cells(&rects);
+        // Continuous column at x=4 over every row 0..4.
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// Symmetric case: sub-split the RIGHT column instead. Still one
+    /// continuous divider on the boundary column.
+    #[test]
+    fn separator_subsplit_right_column_stays_continuous() {
+        // Left:         (0,0,5,4)
+        // Right-top:    (5,0,5,2)
+        // Right-bottom: (5,2,5,2)
+        let rects = vec![
+            (0, PaneRect { x: 0, y: 0, width: 5, height: 4 }),
+            (1, PaneRect { x: 5, y: 0, width: 5, height: 2 }),
+            (2, PaneRect { x: 5, y: 2, width: 5, height: 2 }),
+        ];
+        let cells = separator_cells(&rects);
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// A pure horizontal split (stacked panes, same column) has no
+    /// vertical separator — the per-pane status line divides them.
+    #[test]
+    fn separator_horizontal_split_has_no_vertical_divider() {
+        let rects = vec![
+            (0, PaneRect { x: 0, y: 0, width: 10, height: 2 }),
+            (1, PaneRect { x: 0, y: 2, width: 10, height: 2 }),
+        ];
+        assert!(separator_cells(&rects).is_empty());
     }
 }

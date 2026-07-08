@@ -403,6 +403,8 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         | RoutingPayload::LspCodeLens { .. }
         | RoutingPayload::ColorPresentation { .. }
         | RoutingPayload::LspInstance { .. }
+        // AI sessions are ephemeral (start/stop), like LSP instances.
+        | RoutingPayload::AiSession { .. }
         // Pending diffs are ephemeral (resolved + gone), so no MRU identity.
         | RoutingPayload::ResolveDiff { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,

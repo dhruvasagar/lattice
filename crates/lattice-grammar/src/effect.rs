@@ -521,6 +521,18 @@ pub enum Effect {
     OpenLspLog {
         server_id: Option<String>,
     },
+    /// `:ai-log [provider]` (AI-1b) -- open the per-session AI log
+    /// buffer (`*ai:<provider>:<index>*`). With no known session,
+    /// echoes an error; with exactly one, opens it directly; with
+    /// more (optionally narrowed by the `session` provider
+    /// prefilter), raises a picker. Peer-applied via the host's
+    /// `do_open_ai_log`, exactly like [`Effect::OpenLspLog`]. The
+    /// `lattice-ai` crate owns the `:ai-log` binding + this
+    /// emission; the host owns only the generic
+    /// `ensure_named_synthetic_document` + `AiLogMode` open.
+    OpenAiLog {
+        session: Option<String>,
+    },
     /// `:messages` -- open the `*messages*` buffer (the emacs
     /// `*Messages*` analogue). Renders a chronological view
     /// of every echo / minibuffer notification; live-tails as

@@ -116,6 +116,15 @@ pub enum RoutingPayload {
         server_id: String,
         workspace: PathBuf,
     },
+    /// `PickerAction::OpenAiLog` -- the AI session key (provider +
+    /// per-provider index) the host reconstructs into a
+    /// `SessionKey` to open `*ai:<provider>:<index>*`. Ephemeral
+    /// (sessions come and go), so `routing_identity` returns
+    /// `None` — no MRU recency.
+    AiSession {
+        provider: String,
+        index: u32,
+    },
     /// `PickerAction::JumpToLspLocation` -- canonical `(path,
     /// line, col)` the host's `jump_to_file_line_col` consumes.
     /// LSP 0-based line + utf-8 byte column; the host already
@@ -246,6 +255,14 @@ pub enum PickerSource {
     /// locate the inbound oneshot and reply. `server_id` rides
     /// for display + log breadcrumbs.
     LspShowMessageRequest { request_id: u32, server_id: String },
+    /// Walk the AI subsystem's known agent sessions, one
+    /// candidate per `SessionKey` (provider + per-provider
+    /// index). Used by `:ai-log`. Mirrors [`Self::LspInstances`]
+    /// one level simpler — the `prefilter` carries an optional
+    /// provider name so `:ai-log opencode` shows only opencode
+    /// rows; the picker still appears so the user can
+    /// disambiguate when multiple indices exist for a provider.
+    AiSessions { prefilter: Option<String> },
 }
 
 /// What `<CR>` does to the selected candidate. Variants stay
@@ -265,6 +282,12 @@ pub enum PickerAction {
     /// without flipping the trace toggle. Pair with `:lsp-trace
     /// <server>` to actually start tracing.
     OpenLspTraceLog,
+    /// Selected candidate carries [`RoutingPayload::AiSession`];
+    /// open `*ai:<provider>:<index>*` (the per-session AI log) in
+    /// the current pane via the host's
+    /// `ensure_named_synthetic_document` + `AiLogMode`. Emitted by
+    /// the `:ai-log` picker.
+    OpenAiLog,
     /// Selected candidate's `text` is
     /// `"<path>\t<line>\t<col>"` (LSP 0-based line + utf-8
     /// byte column); jump to that location via the same
@@ -613,6 +636,29 @@ impl Picker {
         self.set_raw_candidates_with_routing(items);
     }
 
+    /// Replace the raw candidate list with externally-built AI
+    /// session rows. Caller (`App::do_open_ai_log`) snapshots the
+    /// `AiLogger` service's `known_sessions()` and hands the rows
+    /// here. Honors the source's optional `provider` prefilter.
+    /// Mirrors [`Self::set_lsp_instances`], minus the
+    /// `accept_action` stamping (the AI picker rides the legacy
+    /// `RoutingPayload::AiSession` accept dispatch).
+    pub fn set_ai_sessions(&mut self, rows: Vec<AiSessionRow>) {
+        let prefilter = match &self.source {
+            PickerSource::AiSessions { prefilter } => prefilter.clone(),
+            _ => None,
+        };
+        let items: Vec<(RawCandidate, RoutingPayload)> = rows
+            .into_iter()
+            .filter(|r| match &prefilter {
+                Some(want) => r.provider == *want,
+                None => true,
+            })
+            .map(|r| r.into_candidate_with_routing())
+            .collect();
+        self.set_raw_candidates_with_routing(items);
+    }
+
     /// Filter `raw` against the current `query` and write the
     /// matches into `candidates`. Routes through
     /// [`lattice_completion::fuzzy_match`] -- the same 5-tier
@@ -793,6 +839,38 @@ impl LspInstanceRow {
         let routing = RoutingPayload::LspInstance {
             server_id: self.server_id,
             workspace: self.workspace,
+        };
+        (raw, routing)
+    }
+}
+
+/// One row of the AI-session source. The picker host (App)
+/// snapshots this from the `AiLogger` service's `known_sessions()`
+/// (no async lock — the logger's ring map is a sync `Mutex`), then
+/// hands the vec to the picker. Mirrors [`LspInstanceRow`], one
+/// level simpler: a session has no workspace / buffer-count /
+/// capability marginalia, only its `(provider, index)` key.
+#[derive(Debug, Clone)]
+pub struct AiSessionRow {
+    pub provider: String,
+    pub index: u32,
+}
+
+impl AiSessionRow {
+    /// Render this row as a `(RawCandidate, RoutingPayload)` pair.
+    /// The candidate's `display` is the user-facing
+    /// `<provider>:<index>` (matching the `*ai:<provider>:<index>*`
+    /// buffer name body); the typed [`RoutingPayload::AiSession`]
+    /// carries the `(provider, index)` key the accept dispatch
+    /// reconstructs into a `SessionKey`.
+    pub fn into_candidate_with_routing(self) -> (RawCandidate, RoutingPayload) {
+        let label = format!("{}:{}", self.provider, self.index);
+        let mut raw =
+            RawCandidate::plain(label.clone(), lattice_completion::CandidateKind::Plain);
+        raw.display = label;
+        let routing = RoutingPayload::AiSession {
+            provider: self.provider,
+            index: self.index,
         };
         (raw, routing)
     }
@@ -1224,6 +1302,58 @@ mod tests {
             }
             other => panic!("expected LspInstance routing, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn routing_for_ai_session_returns_typed_payload() {
+        let rows = vec![
+            AiSessionRow {
+                provider: "opencode".into(),
+                index: 1,
+            },
+            AiSessionRow {
+                provider: "opencode".into(),
+                index: 2,
+            },
+        ];
+        let mut p = Picker::new(
+            "ai-log",
+            PickerSource::AiSessions { prefilter: None },
+            PickerAction::OpenAiLog,
+        );
+        p.set_ai_sessions(rows);
+        assert_eq!(p.candidates.len(), 2);
+        let c = p.selected_candidate().expect("first candidate");
+        match p.routing_for(c) {
+            Some(RoutingPayload::AiSession { provider, index }) => {
+                assert_eq!(provider, "opencode");
+                assert_eq!(*index, 1);
+            }
+            other => panic!("expected AiSession routing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ai_session_prefilter_narrows_by_provider() {
+        let rows = vec![
+            AiSessionRow {
+                provider: "opencode".into(),
+                index: 1,
+            },
+            AiSessionRow {
+                provider: "claude".into(),
+                index: 1,
+            },
+        ];
+        let mut p = Picker::new(
+            "ai-log",
+            PickerSource::AiSessions {
+                prefilter: Some("opencode".to_string()),
+            },
+            PickerAction::OpenAiLog,
+        );
+        p.set_ai_sessions(rows);
+        assert_eq!(p.candidates.len(), 1);
     }
 
     #[test]

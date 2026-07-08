@@ -88,6 +88,32 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
         },
     );
 
+    // `:ai-log [provider]` -- open the per-session AI log buffer.
+    // Unlike the three above it captures NO handle: the host reads
+    // the `AiLogger` service to enumerate sessions and open the
+    // `*ai:<provider>:<index>*` buffer. The crate still owns the
+    // BINDING + the emission here (mode-ownership); the host owns
+    // only the generic buffer open. Mirrors `:lsp-server-log`.
+    registry.register_ex_command(
+        "ai-log",
+        "Open the AI agent log buffer (picker when several sessions exist).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_rest_as_text),
+            apply: Box::new(move |ctx| {
+                let session = match &ctx.args {
+                    Args::String(t) if !t.is_empty() => Some(t.clone()),
+                    _ => None,
+                };
+                Ok(Effect::OpenAiLog { session })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let stop = handle;
     registry.register_ex_command(
         "ai-stop",
@@ -223,6 +249,43 @@ mod tests {
         match rx.try_recv().expect("AiCmd sent") {
             AiCmd::Stop => {}
             _ => panic!("expected AiCmd::Stop"),
+        }
+    }
+
+    #[test]
+    fn ai_log_no_arg_opens_without_prefilter() {
+        let (handle, _rx) = test_handle();
+        let mut registry = CommandRegistry::new();
+        register_ai_ex_commands(&mut registry, handle);
+
+        let id = registry
+            .id_by_name("ai-log")
+            .expect("`:ai-log` is registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        let effect = (spec.apply)(&ctx_with(Args::None)).expect("apply ok");
+
+        match effect {
+            Effect::OpenAiLog { session } => assert_eq!(session, None),
+            other => panic!("expected OpenAiLog, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ai_log_with_arg_carries_provider_prefilter() {
+        let (handle, _rx) = test_handle();
+        let mut registry = CommandRegistry::new();
+        register_ai_ex_commands(&mut registry, handle);
+
+        let id = registry
+            .id_by_name("ai-log")
+            .expect("`:ai-log` is registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        let effect =
+            (spec.apply)(&ctx_with(Args::String("opencode".to_string()))).expect("apply ok");
+
+        match effect {
+            Effect::OpenAiLog { session } => assert_eq!(session.as_deref(), Some("opencode")),
+            other => panic!("expected OpenAiLog, got {other:?}"),
         }
     }
 }

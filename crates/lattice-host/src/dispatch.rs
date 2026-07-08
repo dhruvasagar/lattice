@@ -23798,6 +23798,81 @@ impl Editor {
         self.activate_buffer(id);
     }
 
+    /// Snapshot the AI subsystem's known sessions into pure-data
+    /// picker rows. Reads the boot-registered [`AiLogger`] service
+    /// (no `Editor` field — the AI crate stays zero-field);
+    /// returns empty when the subsystem is absent. AI-1b (T12b).
+    pub fn snapshot_ai_sessions(&self) -> Vec<lattice_picker::AiSessionRow> {
+        let Some(logger) = self.services.get::<lattice_ai::AiLogger>() else {
+            return Vec::new();
+        };
+        logger
+            .known_sessions()
+            .into_iter()
+            .map(|key| lattice_picker::AiSessionRow {
+                provider: key.provider.to_string(),
+                index: key.index,
+            })
+            .collect()
+    }
+
+    /// Activate the per-session `*ai:<provider>:<index>*` Document
+    /// buffer in the active pane. The buffer is created lazily
+    /// (like the LSP logs) — `AiLogMode::on_activate` seeds it from
+    /// the `AiLogger` ring and live-tails via `AiLogPushed`.
+    /// AI-1b (T12b).
+    pub fn open_ai_log_in_pane(&mut self, key: &lattice_ai::SessionKey) {
+        let name = lattice_ai::ai_log_name(key);
+        let id = self.ensure_named_synthetic_document(
+            &name,
+            lattice_ai::modes::AiLogMode::mode_id(),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
+    /// `:ai-log [provider]` -- open the AI log buffer. 0 known
+    /// sessions echoes a hint; exactly 1 (after the optional
+    /// `provider` prefilter) opens directly; >1 raises a picker so
+    /// the user disambiguates. Mirrors `:lsp-server-log`'s
+    /// [`open_lsp_picker`](Self::open_lsp_picker) count logic.
+    /// AI-1b (T12b).
+    pub fn do_open_ai_log(&mut self, provider: Option<&str>) {
+        let rows: Vec<lattice_picker::AiSessionRow> = self
+            .snapshot_ai_sessions()
+            .into_iter()
+            .filter(|r| provider.is_none_or(|want| r.provider == want))
+            .collect();
+        match rows.len() {
+            0 => {
+                let hint = match provider {
+                    Some(p) => format!("no AI session for provider `{p}` (run `:opencode`)"),
+                    None => "no AI session running (run `:opencode`)".to_string(),
+                };
+                self.set_message(EchoLevel::Info, hint);
+            }
+            1 => {
+                let row = &rows[0];
+                let key = lattice_ai::SessionKey::new(
+                    std::sync::Arc::<str>::from(row.provider.as_str()),
+                    row.index,
+                );
+                self.open_ai_log_in_pane(&key);
+            }
+            _ => {
+                let mut p = lattice_picker::Picker::new(
+                    "ai-log",
+                    lattice_picker::PickerSource::AiSessions {
+                        prefilter: provider.map(|s| s.to_string()),
+                    },
+                    lattice_picker::PickerAction::OpenAiLog,
+                );
+                p.set_ai_sessions(rows);
+                self.set_active_picker(p);
+            }
+        }
+    }
+
     /// Activate the per-instance trace-log Document buffer.
     /// Phase 5.8.AD.2.
     pub fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
@@ -24750,6 +24825,23 @@ impl Editor {
                         self.set_message(
                             EchoLevel::Error,
                             "picker: lsp-instance routing on non-lsp-log action".to_string(),
+                        );
+                    }
+                }
+            }
+            lattice_picker::RoutingPayload::AiSession { provider, index } => {
+                match picker.on_accept {
+                    lattice_picker::PickerAction::OpenAiLog => {
+                        let key = lattice_ai::SessionKey::new(
+                            std::sync::Arc::<str>::from(provider.as_str()),
+                            index,
+                        );
+                        self.open_ai_log_in_pane(&key);
+                    }
+                    _ => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            "picker: ai-session routing on non-ai-log action".to_string(),
                         );
                     }
                 }
@@ -28799,6 +28891,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -28920,6 +29013,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }

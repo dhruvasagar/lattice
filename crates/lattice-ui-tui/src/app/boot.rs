@@ -334,4 +334,27 @@ mod tests {
             .get::<lattice_ai::AiClientHandle>()
             .expect("App::new must leave an AiClientHandle registered");
     }
+
+    /// AI-1b T12b: `:ai-log` is registered at boot, and the host
+    /// `do_open_ai_log` empty-session path (no `:opencode` run yet →
+    /// `AiLogger::known_sessions()` empty) echoes a hint instead of
+    /// panicking or opening a stray buffer. Exercises the
+    /// `AiLogger`-service lookup + count branch host-side.
+    #[test]
+    fn ai_log_registered_and_empty_session_path_is_safe() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        assert!(
+            app.editor.registry.id_by_name("ai-log").is_some(),
+            "App::new must register the `:ai-log` ex-command"
+        );
+        let before = app.editor.active_pane_buffer_id();
+        // No session started, so known_sessions() is empty → the
+        // 0-session arm echoes a hint and opens nothing.
+        app.do_open_ai_log(None);
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            before,
+            "empty-session `:ai-log` must not switch buffers"
+        );
+    }
 }

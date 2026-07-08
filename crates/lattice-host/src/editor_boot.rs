@@ -595,6 +595,15 @@ impl Editor {
         let syntax_textobject_ids =
             lattice_syntax::register_syntax_text_objects(boot.commands_mut());
 
+        // TSM.4: register the sixteen structural (tree-sitter) MOTIONS
+        // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
+        // `]l`/`[l`/`]L`/`[L`) -- the motion counterpart to the structural
+        // text objects registered just above. Same discipline: owned by
+        // lattice-syntax, threaded to the keymap binders so the host only
+        // wires chord -> id. Must run while the command registry is still
+        // mutable (before `freeze_command_registry` below).
+        let syntax_motion_ids = lattice_syntax::register_syntax_motions(boot.commands_mut());
+
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind
@@ -1539,6 +1548,7 @@ impl Editor {
                     &builtins,
                     &action_ids,
                     &syntax_textobject_ids,
+                    &syntax_motion_ids,
                 );
                 // SN.3d.2: Select mode's motion/text-object table —
                 // duplicated from Visual, kept honest by the parity test
@@ -1555,6 +1565,7 @@ impl Editor {
                     &builtins,
                     &action_ids,
                     &syntax_textobject_ids,
+                    &syntax_motion_ids,
                 );
                 // N.1.3 (2026-06-10): wire the narrow `zn` operator
                 // chord into the universal operator-pending layer.
@@ -1591,6 +1602,7 @@ impl Editor {
                     ),
                     &builtins,
                     &syntax_textobject_ids,
+                    &syntax_motion_ids,
                 );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
                 // KeymapLayer::Builtin (Normal-mode only) —

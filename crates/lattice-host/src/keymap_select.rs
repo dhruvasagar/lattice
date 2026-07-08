@@ -125,7 +125,10 @@ pub fn register_select_bindings(
                 handle.bind(
                     layer,
                     mode,
-                    &[ChordPattern::Literal(KeyChord::char(prefix_char)), chord.clone()],
+                    &[
+                        ChordPattern::Literal(KeyChord::char(prefix_char)),
+                        chord.clone(),
+                    ],
                     CommandInvocation::of(tobj.0),
                     select_source(),
                 );
@@ -307,6 +310,14 @@ fn normalize_for_select_lookup(chord: KeyChord) -> KeyChord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // TSM.4: `register_normal_bindings` / `register_visual_bindings` now
+    // take a `&SyntaxMotionIds` alongside `&SyntaxTextObjectIds` -- thread
+    // it through `populated_handle` below so this module still compiles.
+    // Select mode itself does NOT bind the tree-sitter structural
+    // motions (out of TSM.4's scope: only Normal / operator-pending /
+    // Visual do; the parity test below only walks `motion_rows`, so this
+    // is a compile-time thread, not a new Select behavior).
+    use lattice_syntax::SyntaxMotionIds;
 
     fn empty_handle() -> KeymapHandle {
         // The dispatch tests below run against an EMPTY Select table, so
@@ -326,12 +337,15 @@ mod tests {
         let builtins = grammar_builtins_populate(&mut registry);
         let action_ids = crate::actions::populate(&mut registry, &builtins);
         let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
+        let syntax_motions: SyntaxMotionIds =
+            lattice_syntax::register_syntax_motions(&mut registry);
         let h = KeymapHandle::new();
         crate::keymap_visual::register_visual_bindings(
             &h,
             &builtins,
             &action_ids,
             &syntax_textobjects,
+            &syntax_motions,
         );
         // Operators bind into Visual via `register_operator_bindings` (called by
         // `register_normal_bindings`), not `register_visual_bindings` --
@@ -344,6 +358,7 @@ mod tests {
             &builtins,
             &action_ids,
             &syntax_textobjects,
+            &syntax_motions,
         );
         register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
         h
@@ -474,7 +489,10 @@ mod tests {
             assert_eq!(v, s, "Visual and Select disagree on motion {:?}", path[0]);
             checked += 1;
         }
-        assert!(checked >= 20, "expected the full motion table, got {checked}");
+        assert!(
+            checked >= 20,
+            "expected the full motion table, got {checked}"
+        );
     }
 
     /// `o` (swap ends) is present in both modes.

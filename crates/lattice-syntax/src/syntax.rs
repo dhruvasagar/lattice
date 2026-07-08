@@ -872,14 +872,19 @@ impl SyntaxSnapshot {
                     NavBoundary::Start => (n.start_byte(), n.start_position()),
                     NavBoundary::End => (n.end_byte(), n.end_position()),
                 };
-                // Enclosing-object rule (treesitter-motions.md §4.1):
+                // Enclosing-object rule (treesitter-motions.md §4.1): all four
+                // arms compare STRICTLY against the cursor byte. When the cursor
+                // sits inside an object's body the enclosing object is still
+                // reached (its start < cursor / end > cursor). The strictness
+                // matters only when the cursor sits exactly ON a boundary byte
+                // (e.g. right after `]f` landed on a function start): there the
+                // current object is NOT re-selected, so the `]f`->`[f` round-trip
+                // moves to the previous object instead of no-oping.
                 let keep = match (dir, boundary) {
-                    // Skip the object the cursor is inside -- strictly past cursor.
                     (NavDir::Forward, NavBoundary::Start) => b > cursor_byte,
                     (NavDir::Backward, NavBoundary::End) => b < cursor_byte,
-                    // May land on the current object's own boundary.
-                    (NavDir::Backward, NavBoundary::Start) => b <= cursor_byte,
-                    (NavDir::Forward, NavBoundary::End) => b >= cursor_byte,
+                    (NavDir::Backward, NavBoundary::Start) => b < cursor_byte,
+                    (NavDir::Forward, NavBoundary::End) => b > cursor_byte,
                 };
                 if keep {
                     cands.push((b, lattice_protocol::Position::new(pt.row as u32, pt.column as u32)));
@@ -1815,6 +1820,27 @@ const MAX: i32 = 10;\n\
         // OWN start (row 2, col 0), per the enclosing rule.
         let p = s.scope_toward(2, 5, "function.outer", NavDir::Backward, NavBoundary::Start, 1);
         assert_eq!(p, Some(lattice_protocol::Position::new(2, 0)));
+    }
+
+    #[test]
+    fn scope_toward_backward_start_on_boundary_moves_to_previous() {
+        // Regression: the `]f` -> `[f` round-trip. After `]f` the cursor sits
+        // EXACTLY on fn b's start (row 2, col 0). `[f` from there must move to
+        // the PREVIOUS function (fn a, row 0), not no-op on fn b's own start.
+        // A non-strict `<=` comparison would re-select fn b here.
+        let s = three_fns();
+        let p = s.scope_toward(2, 0, "function.outer", NavDir::Backward, NavBoundary::Start, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(0, 0)));
+    }
+
+    #[test]
+    fn scope_toward_forward_end_on_boundary_moves_to_next() {
+        // Symmetric regression for `]F`. Cursor EXACTLY on fn a's end
+        // (row 0, col 9 -- one past `}`). `]F` must move to the NEXT function's
+        // end (fn b, row 2, col 9), not no-op on fn a's own end.
+        let s = three_fns();
+        let p = s.scope_toward(0, 9, "function.outer", NavDir::Forward, NavBoundary::End, 1);
+        assert_eq!(p, Some(lattice_protocol::Position::new(2, 9)));
     }
 
     #[test]

@@ -153,6 +153,28 @@ Provider specifics live in `providers/`: opencode is native ACP; Claude Code run
 through `npx @zed-industries/claude-code-acp`; Gemini/Codex via their ACP entry
 points.
 
+### 5b. Authentication — agent-owned, subscription-preserving
+
+**Auth belongs to the spawned agent process, never to lattice.** lattice launches
+the ACP adapter as a stdio subprocess; the adapter uses whatever credentials the
+underlying CLI already holds. lattice sees no API key and manages no token.
+
+- **Claude:** the current `@zed-industries/claude-code-acp` adapter is built on the
+  Claude Agent SDK and **supports Claude Pro/Max subscription login** — it reuses
+  the existing `claude login` OAuth credential (subscription quota, *not*
+  pay-per-token API billing). Users are **not** forced onto an API key by adopting
+  ACP. (An older adapter, `claude-agent-acp`, did require `ANTHROPIC_API_KEY`; that
+  is the source of "ACP needs a key" claims and is *not* the path we take.)
+- **opencode / Gemini / Codex:** each owns its own auth & model selection; lattice
+  is uninvolved.
+
+**Client requirement (rough edge):** Claude-via-ACP is beta, with known OAuth-loop
+issues when the adapter must (re)authenticate *through* the protocol (zed#59767,
+zed#50660). Two paths: (a) pre-authenticate out of band (`claude login` once) and
+the spawned adapter just works; (b) lattice's ACP client handles ACP's
+`authenticate` method / login prompt. AI‑1 assumes (a) (pre-authed) to de-risk;
+handling the in-protocol `authenticate` flow is explicit scope for **AI‑4**.
+
 ## 6. The conversation UI (native buffer)
 
 `BufferKind::AiChat` follows the `Messages`/`Dashboard` precedent: rope-backed,
@@ -207,9 +229,10 @@ breadth.
   opencode's ACP entry at implementation time.
 - **Prompt input UX in a modal editor:** how the user composes a prompt (footer
   line vs. Insert capture vs. a scratch buffer) needs a focused decision in AI‑3.
-- **Auth / model selection:** each agent owns its own auth & model choice
-  (opencode, Claude). Surfacing/switching models via ACP is out of scope until
-  AI‑4+.
+- **Auth / model selection:** resolved for auth — agent-owned, subscription
+  preserved (§5b); the only work is handling ACP's in-protocol `authenticate`
+  flow (scheduled AI‑4; AI‑1 assumes pre-auth). Surfacing/switching *models* via
+  ACP remains out of scope until AI‑4+.
 - **fs/write vs. diff-review ordering:** confirm whether agents gate *every*
   write behind `request_permission` or only some; `fsbridge/` must handle
   ungated writes safely (respecting lattice's dirty-buffer state + autoread).

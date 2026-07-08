@@ -1,3 +1,9 @@
+// `linkme`'s distributed-slice expansion (behind
+// `register_event!`) uses `#[link_section]` declarations, which
+// the workspace's `unsafe_code = "deny"` lint flags. Same shape
+// `lattice-lsp::events` / `lattice-config::core_options` use.
+#![allow(unsafe_code)]
+
 //! AI agent logging facade -- the producer side of the
 //! `*ai:<provider>:<index>*` buffer views (AI-1b).
 //!
@@ -310,6 +316,14 @@ pub struct AiLogPushed {
     /// The record's message text.
     pub message: String,
 }
+
+lattice_protocol::register_event!(
+    AiLogPushed,
+    "ai.log-pushed",
+    "Fired after an AI agent log record is appended to its ring; \
+     drives live refresh of the per-process *ai:<provider>:<index>* buffers.",
+    "lattice-ai",
+);
 
 /// Producer-side log facade. One per AI subsystem; each agent
 /// connection gets a clone (cheap -- internal state is

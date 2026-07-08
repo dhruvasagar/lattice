@@ -13,6 +13,11 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
+lattice-config = { path = "../lattice-config" }
+# `ai_log.rs`'s `register_event!(AiLogPushed, ...)` expands to a
+# `#[linkme::distributed_slice(...)]` static -- same mechanism
+# `lattice-lsp` / `lattice-config` use for their registries.
+linkme = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
 # Adapts tokio's AsyncRead/AsyncWrite to the futures-io traits agent-client-protocol's
 # `ByteStreams` transport expects (see src/connection.rs "Threading" doc comment).

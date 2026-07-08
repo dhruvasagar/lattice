@@ -519,6 +519,10 @@ impl Editor {
         // write bus (`boot.inbound`, whose drain token rides `into_registrations`
         // into the Editor below).
         lattice_claude_code::install(&mut boot);
+        // AI (AI-1b): AiLogger + supervisor + AiLogMode + :opencode/:ai-prompt/
+        // :ai-stop + AiClientHandle/AiLogger services. Agent output streams into
+        // per-session *ai:<provider>:<index>* rings (the :ai-log picker view is 12b).
+        lattice_ai::install(&mut boot);
         // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
         // `TerminalStoreHandle` service is a host-published primitive (in the
         // service block below) and its invocation runner stays host-side (the

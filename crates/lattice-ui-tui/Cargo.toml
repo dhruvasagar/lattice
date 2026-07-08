@@ -75,6 +75,11 @@ base64 = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "test-util", "time"] }
 criterion = { workspace = true }
+# AI-1b boot-presence test: asserts `lattice_ai::install` (wired into
+# `Editor::boot`'s Phase-B list) registered `:opencode` + the
+# `AiClientHandle` service. Test-only -- this crate has no other AI-aware
+# code (mode ownership stays entirely inside `lattice-ai`).
+lattice-ai = { path = "../lattice-ai" }
 
 [features]
 default = []

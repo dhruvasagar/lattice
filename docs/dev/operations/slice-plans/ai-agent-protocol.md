@@ -45,7 +45,7 @@ crate, serde/serde_json, tracing, the lattice `SubsystemBoot` / `InboundBus` /
 
 | Slice | Deliverable | Status |
 |-------|-------------|--------|
-| **AI‑1** | ACP transport + session skeleton (opencode), reply text → `*messages*` | 🚧 this plan |
+| **AI‑1** | ACP transport + session skeleton (opencode); reply text → per-session `*ai:<provider>:<index>*` log buffers (re-sliced from `*messages*`); `:opencode` / `:ai-prompt` / `:ai-stop` / `:ai-log` | ✅ complete |
 | AI‑2 | Shared diff review — `request_permission` + diff ↔ `ProgrammaticDiffBus` | ⬜ not started |
 | AI‑3 | Native `AiChat` conversation buffer + streaming render + prompt UX | ⬜ not started |
 | AI‑4 | `:ai-send` context push · claude-code-acp + gemini · in-protocol auth | ⬜ not started |

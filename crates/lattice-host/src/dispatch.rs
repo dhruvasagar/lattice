@@ -16693,6 +16693,12 @@ impl Editor {
                 let Some(parent) = current_dir.parent().map(std::path::Path::to_path_buf) else {
                     return Vec::new();
                 };
+                // The directory we're stepping out of. oil.nvim
+                // places the cursor back on this entry in the parent
+                // listing so `-` round-trips to the row you left.
+                let came_from = current_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
                 let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
@@ -16702,6 +16708,9 @@ impl Editor {
                         self.set_oil_dir(id, parent);
                         self.cursor = lattice_protocol::Position::ZERO;
                         self.scroll = 0;
+                        if let Some(name) = came_from {
+                            self.focus_oil_entry(&name);
+                        }
                     }
                     None => {}
                 }
@@ -16710,28 +16719,81 @@ impl Editor {
             BufferKind::FileTree => {
                 let id = self.active_pane_buffer_id();
                 let line = self.cursor.line;
-                let dir = self.file_tree_entries_for(id).and_then(|entries| {
-                    lattice_file_tree::entry_at_line(&entries, line).map(|e| {
-                        if matches!(
-                            e.kind,
-                            lattice_file_tree::FileTreeEntryKind::Directory { .. }
-                        ) {
-                            e.path.clone()
-                        } else {
-                            e.path.parent().unwrap_or(&e.path).to_path_buf()
-                        }
+                // A file row opens oil at its parent, focused on the
+                // file. A directory row opens oil *inside* itself, so
+                // there's no came-from entry to land on.
+                let (dir, came_from) = self
+                    .file_tree_entries_for(id)
+                    .and_then(|entries| {
+                        lattice_file_tree::entry_at_line(&entries, line).map(|e| {
+                            if matches!(
+                                e.kind,
+                                lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                            ) {
+                                (e.path.clone(), None)
+                            } else {
+                                let name =
+                                    e.path.file_name().map(|n| n.to_string_lossy().into_owned());
+                                (e.path.parent().unwrap_or(&e.path).to_path_buf(), name)
+                            }
+                        })
                     })
-                });
-                self.do_open_oil(dir)
+                    .map(|(d, n)| (Some(d), n))
+                    .unwrap_or((None, None));
+                let signals = self.do_open_oil(dir);
+                if matches!(self.active_buffer, BufferKind::Oil) {
+                    if let Some(name) = came_from {
+                        self.focus_oil_entry(&name);
+                    }
+                }
+                signals
             }
             _ => {
-                let dir = self
-                    .document
-                    .path()
-                    .and_then(|p| p.parent().map(Into::into));
-                self.do_open_oil(dir)
+                // From a file buffer, `-` opens oil for the file's
+                // parent with the cursor on the file you were editing.
+                let path = self.document.path();
+                let dir = path.as_ref().and_then(|p| p.parent().map(Into::into));
+                let came_from = path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned());
+                let signals = self.do_open_oil(dir);
+                if matches!(self.active_buffer, BufferKind::Oil) {
+                    if let Some(name) = came_from {
+                        self.focus_oil_entry(&name);
+                    }
+                }
+                signals
             }
         }
+    }
+
+    /// After a `-` navigation lands in an oil listing, place the
+    /// cursor on the entry the user came *from* -- the file they
+    /// were editing, or the child directory they stepped out of --
+    /// so `-` round-trips to that row (oil.nvim's behaviour). No-op
+    /// (cursor stays at the origin row) when `name` isn't in the
+    /// current listing. Assumes the active pane holds the oil buffer
+    /// being focused; scroll is reconciled so the row is visible.
+    fn focus_oil_entry(&mut self, name: &str) {
+        let id = self.active_pane_buffer_id();
+        let Some(line) = self
+            .buffers
+            .with_oil(id, |o| {
+                o.snapshot_entries()
+                    .iter()
+                    .position(|e| e.name == name)
+                    .map(|i| i as u32)
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let pos = lattice_protocol::Position::new(line, 0);
+        self.cursor = pos;
+        self.pane_tree.active_mut().cursor = pos;
+        self.ensure_cursor_visible();
+        self.pane_tree.active_mut().scroll = self.scroll;
     }
 
     /// Write `FileTreeRoot`. Single chokepoint (M.3.2.c.5).

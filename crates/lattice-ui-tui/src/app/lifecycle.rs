@@ -1816,6 +1816,60 @@ mod tests {
     }
 
     #[test]
+    fn oil_navigate_up_from_document_lands_on_the_edited_file() {
+        // `-` from a file buffer opens oil for the file's parent
+        // with the cursor on the file you were editing (oil.nvim
+        // behaviour), not at the origin row.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-focus-doc-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("adir")).expect("adir");
+        std::fs::write(tmp.join("target.txt"), "x").expect("target");
+
+        let mut a = app_with("hi", 5);
+        // Open the file as a document buffer so its path is set.
+        a.do_edit(Some(tmp.join("target.txt")), false);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+
+        a.apply(crate::app::Action::OilNavigateUp);
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        // Listing is dirs-first alpha: ["adir", "target.txt"], so
+        // the edited file is row 1 -- the cursor must land there.
+        assert_eq!(a.editor.cursor.line, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_navigate_up_lands_on_the_directory_left() {
+        // `-` inside an oil buffer steps up to the parent listing
+        // with the cursor on the child directory you stepped out
+        // of, so `-` then `<CR>` round-trips to the same place.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-focus-up-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Two dirs so "nested" is not row 0 after sorting
+        // (dirs-first alpha: ["adir", "nested"]).
+        std::fs::create_dir_all(tmp.join("adir")).expect("adir");
+        std::fs::create_dir_all(tmp.join("nested")).expect("nested");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.join("nested")));
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+
+        a.apply(crate::app::Action::OilNavigateUp);
+        assert_eq!(a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(), tmp);
+        // "nested" is row 1 in the parent listing.
+        assert_eq!(a.editor.cursor.line, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn oil_normal_mode_o_then_insert_then_write_creates_file() {
         // Full keystroke pipeline test: in an oil buffer,
         // press `o` (Normal: open line below + Insert), type

@@ -85,6 +85,12 @@ catalog):
 Oil presents the directory as a single flat list — one entry per line,
 no nesting. Subdirectories carry a trailing `/`.
 
+When `-` opens a listing, the cursor lands on the entry you came *from* —
+the file you were editing (opening oil from a file buffer) or the child
+directory you stepped out of (`-` inside oil). Pressing `<CR>` on that
+row round-trips you straight back. When the source entry isn't in the
+listing, the cursor stays on the first row.
+
 ### Editing the filesystem
 
 Oil is a real buffer. Edit it as text:
@@ -107,7 +113,7 @@ echo-area errors and leave the buffer dirty so you can retry.
 |-----|--------|
 | `<CR>` on a file | Open it in the previous active pane |
 | `<CR>` on a directory | Replace the oil buffer's content with that directory |
-| `-` | Navigate to the parent directory |
+| `-` | Navigate to the parent directory (cursor lands on the child dir you left) |
 | All standard vim motions | Apply — oil is a real text buffer |
 
 ### Per-buffer options

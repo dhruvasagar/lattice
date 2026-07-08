@@ -66,12 +66,21 @@ async fn supervisor_loop(
                 // new one -- the supervisor owns lifecycle end-to-end, so an
                 // old child must never keep running (or keep its drain task
                 // writing into the old session's ring) once a new one takes
-                // its place.
+                // its place. The internal handles AND the published
+                // AiState/active_key are reset together here, exactly once,
+                // regardless of the new attempt's outcome: if it fails below,
+                // this teardown already left everything idle, so the `Err`
+                // arm needs no extra reset. If it succeeds, the `Ok` arm
+                // republishes the new running state. This is a no-op on the
+                // very first `Start` (no existing child, state already
+                // default).
                 if let Some(mut c) = child.take() {
                     let _ = c.start_kill();
                 }
                 conn = None;
                 sess = None;
+                active_key = None;
+                state.store(Arc::new(AiState::default()));
 
                 let idx = indices.entry(provider.display_name).or_insert(0);
                 *idx += 1;
@@ -332,6 +341,44 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// A `Start` whose provider fails to spawn must leave the published
+    /// `AiState` idle -- not the phantom-running state that results from
+    /// resetting state only in the `Ok` arm of `start_provider`. Uses the
+    /// same bogus-binary trick as the test above (no live agent needed).
+    #[tokio::test]
+    async fn start_failure_leaves_idle_state() {
+        let logger = AiLogger::with_defaults();
+        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let cfg = ProviderConfig {
+            command: "/nonexistent/definitely-not-a-real-binary".into(),
+            args: vec![],
+            env: vec![],
+            display_name: "fakeprov",
+        };
+
+        handle.start(cfg);
+
+        let key = SessionKey::new("fakeprov", 1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let records = logger.snapshot_session(&key);
+            if records.iter().any(|r| r.message.contains("start failed")) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected a start-failure record for fakeprov:1 before the timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(
+            handle.snapshot(),
+            AiState::default(),
+            "state must be idle after a failed Start"
+        );
     }
 
     /// Live end-to-end check against a real `opencode acp` subprocess,

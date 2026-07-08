@@ -8,6 +8,7 @@
 pub mod connection;
 pub mod error;
 pub mod providers;
+pub mod session;
 
 pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};

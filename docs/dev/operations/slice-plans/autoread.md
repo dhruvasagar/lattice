@@ -19,7 +19,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 |---|---|---|
 | AR.0 | ✅ | On-disk **fingerprint** `(mtime, size)` per file buffer + content-hash; stamped on load and on `:w`. Self-write suppression seam. Pure host, no watcher yet. |
 | AR.1 | ✅ | **`autoread`** `bool` option (default `true`), per-buffer resolved-options wiring. |
-| AR.2 | 📝 | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
+| AR.2 | ✅ | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
 | AR.3 | 📝 | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
 | AR.4 | 📝 | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
 | AR.5 | 📝 | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
@@ -59,16 +59,32 @@ existing `resolved_option::<Autoread>` path (default `true`). 2 host tests
 (registered + default true); per-buffer-off-suppresses-watching is asserted in
 AR.3 where the watcher reads this flag.
 
-## AR.2 — Watcher runtime task 📝
+## AR.2 — Watcher runtime task ✅
 
-New `AutoreadWatcherHandle { cmd_tx }` on `Editor`; a tokio task on the LSP runtime
-owns `notify::RecommendedWatcher`, the event rx, and the dir→basenames map.
-Commands: `Watch(dir, basename)`, `Unwatch(dir, basename)`, `EvictDir(dir)`.
-Coalesce/debounce a burst into one `stat` per basename; `stat`-gate before read;
-content-hash before emitting a host-drainable change event. `notify` API calls in
-`tokio::task::block_in_place` so a watch add never stalls sibling runtime tasks.
-**Non-recursive watches only.** Tests: throughput + `current_thread`
-runtime-responsiveness (standing rule).
+**Landed:** `AutoreadWatcherHandle { cmd_tx }` + `spawn_autoread_watcher_task()`
+→ `(handle, mpsc::Receiver<AutoreadChange>)`, mirroring `lsp_watcher.rs`. A task on
+the LSP runtime owns `notify::RecommendedWatcher`, the event rx, and the
+dir→basenames map. One command — `Sync { watches: HashMap<PathBuf, HashSet<String>> }`
+(atomic replace, host computes the desired set) — plus `Shutdown`. `sync()` diffs
+against live watches, installs **non-recursive** watches per new dir and drops
+stale ones, both `notify` calls in `block_in_place`. Events are classified
+(`classify_autoread`: Create/Modify → Modified, Remove → Deleted) and filtered by
+`path_is_watched` (O(1) parent-dir + basename), emitting `AutoreadChange { path,
+kind }`.
+
+**Design refinements made during the slice:**
+- **No task-side debounce.** The host's fingerprint gate (AR.0 `stat_unchanged` +
+  `same_content`) already coalesces: a save burst costs a few cheap host `stat`s,
+  the first reloads, the rest are no-ops once the stored fingerprint matches disk.
+  Simpler and correct — never loses a final change (each event re-reads disk).
+- **Dir keys canonicalized** in `sync` (macOS FSEvents reports resolved symlinks;
+  inotify echoes the watched path). See the design fragment §3. Downstream: AR.4
+  must canonicalize when mapping a change path → `BufferId`.
+
+Tests: `classify_autoread` (create/modify/remove/access), `path_is_watched`
+(dir+basename match/miss), and a real-fs integration test (spawn → sync → external
+write → assert `AutoreadChange` within timeout). Editor field storage + spawn
+wiring is AR.3.
 
 ## AR.3 — Lifecycle + LRU bound 📝
 

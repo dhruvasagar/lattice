@@ -77,6 +77,15 @@ Watching a parent dir **non-recursively** (not per-file inode) is deliberate:
 atomic saves (write-temp + `rename` — how `:w` and many external tools save) break
 per-file inode watches; parent-dir watches survive them and see the new file.
 
+**Path canonicalization (cross-platform correctness).** The watcher canonicalizes
+every watched dir key. macOS FSEvents resolves symlinks in the paths it reports
+(`/var` → `/private/var`, and the temp dir lives under one), while Linux inotify
+echoes the path passed to `watch()`. Watching the *canonical* dir — and keying the
+dir→basenames map by it — makes the event-parent lookup match on both. Downstream:
+AR.3 may pass raw parent dirs (the watcher canonicalizes), but AR.4 must
+canonicalize when mapping a change's (canonical) path back to a `BufferId`, since
+stored buffer paths may not be canonical.
+
 ## 4. Self-write suppression — the correctness keystone
 
 Each file-backed buffer carries an on-disk **fingerprint** `(mtime, size)`,

@@ -28,9 +28,12 @@
 //! `session/update` notifications are handled once, connection-wide, via a single
 //! `on_receive_notification` handler registered on the builder (the crate does not scope
 //! notification handlers per-session at this layer). Every notification the agent sends for
-//! the life of the connection is forwarded to the `mpsc::Receiver<SessionNotification>`
+//! the life of the connection is forwarded to the `mpsc::UnboundedReceiver<SessionNotification>`
 //! returned by [`Connection::spawn`]; callers that run multiple sessions on one connection
-//! must filter by `SessionNotification::session_id` themselves.
+//! must filter by `SessionNotification::session_id` themselves. The channel is unbounded (not
+//! bounded) because `on_receive_notification` runs inside the crate's single dispatch loop —
+//! see the comment at the channel construction site in [`Connection::spawn`] for why a bounded
+//! channel would risk deadlocking every in-flight request.
 
 use std::sync::Arc;
 
@@ -77,6 +80,16 @@ enum DriverCommand {
 ///
 /// Constructed with [`Connection::spawn`], which owns the transport and runs the crate's
 /// JSON-RPC dispatch loop on a background task for the connection's whole lifetime.
+///
+/// ## Single-flight, single-session limitation
+///
+/// The driver's command loop (spawned by [`Connection::spawn`]) processes one
+/// `DriverCommand` end-to-end at a time: it awaits the reply to `initialize` / `new_session`
+/// / `prompt` before pulling the next command off the channel. Notifications are
+/// connection-wide, not scoped to a session (see the module-level docs). A future
+/// multi-session `Connection` needs to (a) filter delivered notifications by
+/// `SessionNotification::session_id` and (b) revisit this single-flight loop so one
+/// session's in-flight request doesn't block another session's commands.
 pub struct Connection {
     commands: mpsc::Sender<DriverCommand>,
 }
@@ -90,13 +103,24 @@ impl Connection {
     pub fn spawn<R, W>(
         reader: R,
         writer: W,
-    ) -> (Arc<Connection>, mpsc::Receiver<SessionNotification>)
+    ) -> (
+        Arc<Connection>,
+        mpsc::UnboundedReceiver<SessionNotification>,
+    )
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<DriverCommand>(32);
-        let (notif_tx, notif_rx) = mpsc::channel::<SessionNotification>(64);
+        // Unbounded, not bounded: `on_receive_notification` below runs *inside* the crate's
+        // single dispatch loop, which also routes responses to in-flight `initialize` /
+        // `new_session` / `prompt` calls. A bounded channel's `.send().await` would block that
+        // loop (and therefore every pending/future request) if the notification consumer ever
+        // falls behind by a full channel's worth of messages — very plausible during
+        // token-by-token `session/update` streaming. Spawning a task per notification instead
+        // would avoid blocking but let streaming chunks complete out of order, corrupting
+        // assistant message text; unbounded `send` is both non-blocking and order-preserving.
+        let (notif_tx, notif_rx) = mpsc::unbounded_channel::<SessionNotification>();
 
         tokio::spawn(async move {
             let transport = ByteStreams::new(writer.compat_write(), reader.compat());
@@ -105,9 +129,12 @@ impl Connection {
                 .builder()
                 .on_receive_notification(
                     async move |notification: SessionNotification, _cx| {
+                        // Synchronous, non-blocking send on the unbounded channel: this
+                        // handler runs inside the crate's single dispatch loop, so it must
+                        // never await here (see the channel-construction comment above).
                         // Ignore send errors: if the caller dropped the receiver they've
                         // opted out of notifications, not out of the connection.
-                        let _ = notif_tx.send(notification).await;
+                        let _ = notif_tx.send(notification);
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -286,7 +313,10 @@ mod tests {
         let _ = writer.write_all(line.as_bytes()).await;
     }
 
-    fn spawn_connection_with_mock_peer() -> (Arc<Connection>, mpsc::Receiver<SessionNotification>) {
+    fn spawn_connection_with_mock_peer() -> (
+        Arc<Connection>,
+        mpsc::UnboundedReceiver<SessionNotification>,
+    ) {
         let (ours, mock) = tokio::io::duplex(8192);
         let (reader, writer) = tokio::io::split(ours);
         let (connection, notif_rx) = Connection::spawn(reader, writer);

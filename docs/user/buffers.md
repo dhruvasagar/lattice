@@ -130,10 +130,36 @@ Hex colors arrive post-1.0.
 `:describe-option ui.dim_inactive` opens the spec inline. `:options`
 lists every registered option and its current value.
 
+### External file changes (`autoread`)
+
+When a file changes on disk out from under the editor (a `git
+checkout`, a code formatter, another editor), Lattice refreshes the
+buffer — vim's `autoread`, **on by default**:
+
+- **No unsaved edits** → the buffer silently reloads to the new
+  on-disk content, cursor and scroll preserved, with a `"file"
+  reloaded` message.
+- **Unsaved edits that conflict** → Lattice never clobbers your work.
+  It opens a **diff resolver** (the external on-disk version on the
+  read-only left, your buffer on the editable right); reconcile there
+  and save. Afterwards, `:e!` reloads your buffer from the resolved
+  file. While the resolver is open the buffer is left alone.
+- **File deleted on disk** → the buffer is kept (never wiped); you get
+  a warning.
+
+Turn it off globally with `:set noautoread`, or per buffer with
+`:setlocal noautoread`. Detection is a lightweight filesystem watch on
+the directories of your **open** files only — a huge project with a few
+files open costs a few watches and no idle work, so project size never
+affects performance. Your own `:w` never triggers a spurious reload.
+
 ## Edge cases
 
 - **Closing the last buffer.** `:bd` rejects when the registry has
   one entry; the App always has at least one buffer.
+- **External change during unsaved edits.** See
+  [External file changes](#external-file-changes-autoread) — the diff
+  resolver opens; local edits are never overwritten.
 - **Closing the last pane.** `<C-w>c` rejects when only one pane
   is open; vim's behaviour is the same.
 - **Following a tree entry while the tree is the active pane.** The

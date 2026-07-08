@@ -251,6 +251,13 @@ harness = false
 name = "clipboard_yank"
 harness = false
 
+# AR.6 (autoread.md): autoread watch-set cost. `fingerprint` + `bound`
+# steps of a refresh at 10/100/1000 open-buffer dirs — must stay cheap and
+# scale with open buffers, not project size. See `benches/autoread_watch_set.rs`.
+[[bench]]
+name = "autoread_watch_set"
+harness = false
+
 [features]
 # M.6 (2026-06-01): toggle the project-search provider on /
 # off. Forwards to `lattice-multibuffer`'s `search` feature so

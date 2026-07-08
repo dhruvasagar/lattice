@@ -1,12 +1,15 @@
 # Autoread — design fragment (external-change detection + refresh)
 
-> Addresses `design.md` §15:21 ("File watcher / auto-revert", deferred) for the
-> Document-buffer case. Vim's `autoread`: when a file changes on disk, refresh
-> the buffer. Detection is a live `notify` watcher (not vim's trigger-based
-> mtime poll); the *reload policy* is kept vim-faithful. Conflict resolution
-> reuses the diff subsystem.
+> **Status: implemented (AR.0–AR.6).** Addresses `design.md` §15:21 ("File
+> watcher / auto-revert", deferred) for the Document-buffer case. Vim's
+> `autoread`: when a file changes on disk, refresh the buffer. Detection is a
+> live `notify` watcher (not vim's trigger-based mtime poll); the *reload
+> policy* is kept vim-faithful. Conflict resolution reuses the diff subsystem.
 >
-> Slice sequencing: [`../operations/slice-plans/autoread.md`](../operations/slice-plans/autoread.md).
+> Slice sequencing + per-slice landing notes:
+> [`../operations/slice-plans/autoread.md`](../operations/slice-plans/autoread.md).
+> Deferred enhancements: auto-reload on conflict-verdict, 3-way auto-merge,
+> network-FS mtime-poll fallback (§6), option-flip immediate re-sync.
 
 ## 1. Goal
 

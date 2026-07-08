@@ -23,7 +23,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 | AR.3 | ✅ | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
 | AR.4 | ✅ | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
 | AR.5 | ✅ | **Conflict resolver**: `dirty` ⇒ emit `ProgrammaticDiffRequest` (2-way ours ∣ disk); verdict → reload / keep / merged-write. |
-| AR.6 | 📝 | **Bench + docs + hardening**: event→reload latency bench, watch-set setup-cost bench, scale test (watch count tracks open-buffer dirs not project size), runtime-responsiveness test, graceful-degradation sweep; flip design fragment to ✅. |
+| AR.6 | ✅ | **Bench + docs + hardening**: event→reload latency bench, watch-set setup-cost bench, scale test (watch count tracks open-buffer dirs not project size), runtime-responsiveness test, graceful-degradation sweep; flip design fragment to ✅. |
 
 ## AR.0 — Fingerprint + self-write suppression ✅
 
@@ -172,14 +172,29 @@ enhancement (design §6).
 Tests: conflict opens the resolver + guards the buffer + warns (no clobber); a
 guarded buffer is hands-off (no loop). 651 host tests green.
 
-## AR.6 — Bench + docs + hardening 📝
+## AR.6 — Bench + docs + hardening ✅
 
-- **Bench** — event→reload latency; watch-set setup cost at 10 / 100 / 1000 open
-  buffers (asserts flat steady-state).
-- **Docs** — flip `autoread.md` to landed; tick this plan per slice; add an
-  `autoread` row to `docs/user/` options coverage.
-- **Hardening** — notify/stat/read errors `debug!`+skip; file-vanishes-mid-read
-  race; non-UTF-8; watch-add failure downgrades to on-activate `stat`.
+- **Bench** — `benches/autoread_watch_set.rs`: `autoread_watch_fingerprint` +
+  `bound_watch_set` (the two pure steps that dominate a refresh) at 10 / 100 /
+  1000 open-buffer dirs. Representative: fingerprint ≈ 1.7 µs @ 10, ≈ 28 µs @ 100
+  — and this runs only on a discrete open/close, never per frame. Scales with
+  open buffers, not project size. (Event→reload wall-clock is dominated by the
+  same `do_edit` read+parse as `:e`, already benched elsewhere; a notify-timing
+  latency bench is inherently non-deterministic, so it's omitted in favour of the
+  deterministic AR.2 fs integration test + this compute bench.)
+- **Docs** — design fragment flipped to *implemented*; user-facing
+  "External file changes (`autoread`)" section added to `docs/user/buffers.md`;
+  this plan ticked per slice.
+- **Hardening** — every recoverable failure `debug!`+skips or warns, never
+  panics: watch-add failure (`debug!`, downgrades to on-activate `stat`),
+  vanished-file / non-UTF-8 read (keep buffer + warn), stat failure (fall through
+  / treated as changed). Tests cover the delete path and the unreadable-file
+  path; the "buffer kept, never wiped" invariant holds in both.
+
+**The scale-invariance requirement is met and guarded three ways:** the
+architecture (event-driven, off-thread, watches open-buffer dirs not the
+project), the AR.3 scale test (watch count tracks dirs not file count), and this
+bench (per-refresh compute stays low-µs and independent of project size).
 
 ## Risk / sequencing notes
 

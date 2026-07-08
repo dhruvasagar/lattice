@@ -18777,7 +18777,7 @@ const AUTOREAD_WATCH_DIR_CAP: usize = 128;
 /// watched); the remainder fill deterministically (sorted) up to `cap`.
 /// Excess dirs are dropped — their buffers rely on the on-activate `stat`
 /// fallback. Pure, so the cap logic is unit-testable without a filesystem.
-fn bound_watch_set(
+pub fn bound_watch_set(
     watches: std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
     active_dir: Option<&std::path::Path>,
     cap: usize,
@@ -18806,7 +18806,7 @@ fn bound_watch_set(
 /// cheap "did the set change since the last sync?" gate. Sorting the dirs
 /// and each dir's basenames makes the hash independent of `HashMap`
 /// iteration order.
-fn autoread_watch_fingerprint(
+pub fn autoread_watch_fingerprint(
     watches: &std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -34401,6 +34401,24 @@ mod tests {
             e.last_message.as_ref().map(|m| m.level),
             Some(EchoLevel::Warn),
             "delete warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_unreadable_file_keeps_buffer_and_warns() {
+        // AR.6 hardening: a "modified" event for a file that can't be read as
+        // text (non-UTF-8, or vanished between event and read) must keep the
+        // buffer and warn — never panic, never wipe.
+        let (mut e, dir, path) = ar4_editor_with_file("unreadable", "v1\n");
+        // Overwrite with invalid UTF-8 so read_to_string fails.
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "v1\n", "buffer kept when disk isn't readable text");
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn)
         );
         std::fs::remove_dir_all(&dir).ok();
     }

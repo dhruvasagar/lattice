@@ -140,10 +140,12 @@ buffer — vim's `autoread`, **on by default**:
   on-disk content, cursor and scroll preserved, with a `"file"
   reloaded` message.
 - **Unsaved edits that conflict** → Lattice never clobbers your work.
-  It opens a **diff resolver** (the external on-disk version on the
-  read-only left, your buffer on the editable right); reconcile there
-  and save. Afterwards, `:e!` reloads your buffer from the resolved
-  file. While the resolver is open the buffer is left alone.
+  It opens a **diff resolver** and you reconcile hunk by hunk — see
+  [Autoread conflicts](diff.md#autoread-conflicts) in the diff guide for
+  the full walkthrough. In short: transfer the hunks you want with `do`
+  (`:diffget`), finalize with `:diff-accept`, then `:e!` your buffer to
+  load the resolved file. While the resolver is open the buffer is left
+  alone.
 - **File deleted on disk** → the buffer is kept (never wiped); you get
   a warning.
 

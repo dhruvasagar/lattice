@@ -155,6 +155,59 @@ with the merged content (or `:diff-reject` abandons it).
 
 ---
 
+## Autoread conflicts
+
+When [`autoread`](buffers.md#external-file-changes-autoread) finds that a
+file changed on disk **while you had unsaved edits**, it won't silently
+reload (that would lose your work) and it won't overwrite the disk. It
+opens a **two-way diff resolver** so you reconcile the two versions hunk
+by hunk. This is the same diff machinery as everything above — only the
+trigger differs.
+
+### What you see
+
+Three panes open, equal width:
+
+| Pane | Content | Editable? |
+| --- | --- | --- |
+| left (origin) | your buffer, untouched | — (bystander) |
+| middle (baseline) | the **on-disk / external** version | read-only |
+| right (proposed) | a copy of **your** version | **editable, active** |
+
+The cursor starts in the right (proposed) pane on the first hunk. The
+diff is between the **middle** (disk) and **right** (yours) panes.
+
+### Reconcile per hunk, then finalize
+
+Per-hunk transfer is the main tool; `:diff-accept` / `:diff-reject` are
+only the finish line for the whole session:
+
+1. `]c` / `[c` — walk between the hunks.
+2. On a hunk you want to take **from disk**, press `do` (or
+   `:diffget`) — it pulls that hunk from the baseline into the proposed
+   pane. Hunks you leave untouched keep **your** version. You can also
+   edit the proposed pane freely.
+3. When the proposed pane holds the result you want, `:diff-accept` —
+   this **writes the proposed content to the file** and closes the two
+   diff panes. (`:diff-reject` abandons it and leaves the file with its
+   external content.)
+4. Back in your original buffer, run `:e!` to load the resolved file.
+   This reloads from disk and re-enables autoread for the buffer.
+
+> **Why the extra `:e!`?** The resolver edits a *copy* of your buffer,
+> so after `:diff-accept` writes the file your original buffer still
+> shows your old unsaved edits. `:e!` brings it in sync. Until you
+> reload (or close) the buffer, autoread stays hands-off for it — so a
+> resolve-and-save can't bounce you back into another diff. If instead
+> you want to **keep your version and overwrite the disk change**, just
+> `:w` your buffer (skip the diff entirely, or `:diff-reject` first).
+
+> Autoread conflicts are 2-way today. A future release will diff the
+> resolver's editable side against your live buffer (dropping the `:e!`
+> step) and add 3-way auto-merge for non-overlapping changes.
+
+---
+
 ## Relationship to multibuffer views
 
 A **project-wide** diff — every changed hunk across many files in one

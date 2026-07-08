@@ -164,10 +164,14 @@ reloaded (`:e!` → new id) or closed. A second safety rule — the drain only a
 buffers with a fingerprint — excludes the resolver's own in-memory panes.
 
 **v1 simplification:** the verdict oneshot is fire-and-forget (receiver dropped);
-the user resolves + saves in the diff, then reloads their buffer with `:e!`. Awaiting
-the verdict to auto-reload post-resolution is a documented enhancement (needs the
-oneshot round-trip back to the actor). 3-way auto-merge remains the other deferred
-enhancement (design §6).
+the user reconciles per hunk (`do`/`dp` / `:diffget`/`:diffput`), finalizes with
+`:diff-accept` (the **host** writes the proposed pane to disk — the save is
+host-side, so the dropped receiver is irrelevant), then `:e!` reconciles their
+buffer. The full step-by-step UX (3-pane layout, per-hunk transfer, `:e!` +
+guard rationale, honest friction list) lives in **design fragment §5 "Conflict
+resolution flow"** and user-facing **`docs/user/diff.md` → "Autoread conflicts"**.
+Awaiting the verdict to auto-reload (drop the `:e!` step) and 3-way auto-merge are
+deferred enhancements (design §6).
 
 Tests: conflict opens the resolver + guards the buffer + warns (no clobber); a
 guarded buffer is hands-off (no loop). 651 host tests green.

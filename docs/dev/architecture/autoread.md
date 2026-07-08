@@ -107,7 +107,7 @@ Applied host-side after the runtime drains a validated change event:
 | Buffer state | Action |
 |---|---|
 | **Not dirty** | Silent reload via `open_fresh_into_active_slot(_, Reload)` (cursor + scroll preserved, already clamps to new content). One-line echo `"<file>" reloaded`. |
-| **Dirty (conflict)** | Open a **diff resolver**: emit a `ProgrammaticDiffRequest` (ours ∣ disk). The user resolves per-hunk in diff-mode; the verdict drives reload / keep-local / merged-write. Never clobber local edits. |
+| **Dirty (conflict)** | Open a **diff resolver** (`ProgrammaticDiffRequest`, ours ∣ disk). User reconciles per hunk (`do`/`dp` / `:diffget`/`:diffput`), then `:diff-accept` writes the merge to disk and `:e!` reconciles the buffer. Never clobbers local edits. Full flow below. |
 | **Deleted on disk** | Keep the buffer as-is, warn. Reload only on modify; never wipe on delete. |
 
 ### Conflict resolution reuses the diff subsystem — DECIDED
@@ -130,6 +130,78 @@ primitive, not a new mechanism.
 v1 is **2-way** (ours ∣ disk); the engine's N=3 support enables 3-way auto-merge
 later (§6).
 
+### Conflict resolution flow — the exact UX
+
+When `apply_pending_autoread_for_active` finds a dirty buffer whose file changed,
+`open_autoread_conflict_diff` reuses `open_programmatic_diff`, which lays out
+**three panes** (the origin pane is kept, two diff panes open to its right, all
+equal-width):
+
+```
+┌─────────────────┬──────────────────────┬───────────────────────┐
+│ your buffer     │ <file> (baseline)    │ <file> (proposed)     │
+│ (origin pane,   │ on-disk / EXTERNAL   │ YOUR content, a copy  │
+│  untouched,     │ version, READ-ONLY   │ — EDITABLE, active,   │
+│  still dirty)   │ (left, "theirs")     │ cursor at 1st hunk    │
+└─────────────────┴──────────────────────┴───────────────────────┘
+                   └────── 2-way diff pane group ──────┘
+```
+
+The diff *group* is `[baseline, proposed]`; the origin pane is a bystander. The
+cursor lands in the **proposed** (editable, right) pane at the first change.
+
+**Per-hunk reconciliation is the operative workflow** — the whole-session
+`:diff-accept` / `:diff-reject` only finalize. From the proposed pane the user
+walks and transfers hunks with the standard 2-way diff primitives (see
+`diff-system.md`; these already exist):
+
+- `]c` / `[c` — jump between hunks.
+- `do` (`:diffget`) — **obtain** this hunk from the baseline (pull the external
+  change in). Leaving a hunk untouched keeps your version.
+- `dp` (`:diffput`) — push your hunk to the baseline; rarely useful here since the
+  baseline is discarded, but available.
+- Free-text edits in the proposed pane are also fine — it's a real buffer.
+
+**Finalize:**
+
+- `:diff-accept` → the **host** writes the proposed pane's *live* content (with the
+  user's per-hunk transfers + edits) to the file (`tear_down_single_diff_session`
+  → the `programmatic_diff_accept_paths` save, host-side — NOT via the oneshot),
+  closes the two diff panes, drops their buffers, refocuses the origin pane.
+- `:diff-reject` → no write (the file keeps its external content), panes close,
+  refocus origin.
+
+The completion oneshot is **fire-and-forget** for autoread (the receiver is
+dropped at open); the save-on-accept is host-side, so a dropped receiver changes
+nothing. This is why the flow works without the producer round-trip the IDE peer
+uses.
+
+**The `:e!` reconciliation step (and why the guard needs it).** After
+accept/reject the user is back in their *original* buffer, which is **still dirty
+with the pre-conflict edits and still out of sync with the now-resolved file**.
+`autoread_conflict_open` keeps autoread hands-off for that buffer so a
+resolve-then-save can't loop (accept writes disk → watcher fires → the still-dirty
+original would re-open a resolver forever). The user reconciles their buffer with
+`:e!`, which reloads from disk, mints a **new** buffer id (clearing the guard), and
+re-stamps the fingerprint — autoread re-engages. The warning message points at
+this: *"…resolve in the diff (`:e!` to discard local)"*.
+
+**Known v1 friction (honest list; all deferred, none data-losing):**
+
+1. The origin pane is redundant for autoread (it duplicates the proposed side's
+   initial content). The IDE peer wants it (the `:claude` terminal); autoread does
+   not. A future `open_programmatic_diff` variant could suppress it.
+2. The user edits a *copy*, then must `:e!` their real buffer. The deeper fix is a
+   2-way diff whose editable side **is** the live document buffer, so resolution
+   lands directly and no `:e!` is needed.
+3. `:diff-accept` doesn't auto-reload the original buffer. The deferred
+   verdict-await enhancement (hold the oneshot, reload on `Accept`) removes the
+   `:e!` step and clears the guard automatically.
+4. Resolving by `:w` (keep-mine, overwrite disk) instead of `:e!` leaves the guard
+   set (same buffer id), so autoread stays off for that buffer until it's reloaded
+   or closed. `:w` here also overwrites the accepted merge, so the guiding message
+   steers to `:e!`; `:w` is the deliberate "keep my version" escape hatch.
+
 ## 6. Options + lifecycle
 
 - **`autoread`** — typed `bool`, **default `true`** (Neovim's default; matches the
@@ -142,10 +214,20 @@ later (§6).
 
 ### Deferred enhancements
 
+- **Auto-reload on the `Accept` verdict** — hold the completion oneshot (instead of
+  dropping it), spawn a tiny actor-side await that reloads the original buffer on
+  `Accept`. Removes the manual `:e!` step and clears the conflict guard
+  automatically (the reload mints a new id). The single biggest conflict-flow UX
+  win; see §5's friction list #3.
+- **Resolve against the live buffer** — a 2-way variant whose editable (right) side
+  *is* the user's document buffer, not an in-memory copy, so per-hunk transfers land
+  directly and no `:e!` is needed (friction #2). Also lets the origin pane be
+  dropped (friction #1).
 - **3-way conflict auto-merge.** Retain a load/save-time **base** snapshot per
   buffer so the resolver diffs `base / ours / theirs`, auto-merging non-overlapping
-  changes and surfacing only true conflicts. Costs one retained rope per dirty
-  file-backed buffer; the engine already supports N=3.
+  changes and surfacing only true conflicts (marker-free 3-way chords `d3o` / `dB`
+  already exist). Costs one retained rope per dirty file-backed buffer; the engine
+  already supports N=3.
 - **Network-FS mtime-poll fallback** (§15:21's "mtime poll fallback") for mounts
   where `notify` doesn't fire.
 

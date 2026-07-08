@@ -281,6 +281,17 @@ impl OptionGroup for Window {
         "GPUI window options (borderless chrome, maximize on launch). GPUI peer only.";
 }
 
+/// AI-agent (ACP client) options. AI-1b: `ai.log` / `ai.log_level`
+/// gate/seed the per-process `AiLogger` log rings (mirroring the LSP
+/// log group above). Boot-time wiring into an `AiLogger` lands in a
+/// later task; this group only makes the options resolvable and
+/// `:set`-able.
+pub struct Ai;
+impl OptionGroup for Ai {
+    const NAME: &'static str = "ai";
+    const DOC: &'static str = "AI-agent (ACP client) options: per-process log capture + level.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -347,6 +358,9 @@ static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =
 #[linkme::distributed_slice(GROUP_DECLS)]
 static WINDOW_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Window>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static AI_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Ai>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -370,6 +384,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Modeline::NAME));
     assert!(!ends_with_mode_suffix(Diagnostics::NAME));
     assert!(!ends_with_mode_suffix(Window::NAME));
+    assert!(!ends_with_mode_suffix(Ai::NAME));
 };
 
 #[cfg(test)]

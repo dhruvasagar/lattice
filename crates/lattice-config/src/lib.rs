@@ -135,8 +135,8 @@ pub use core_options::{
 };
 pub use erased::ErasedOption;
 pub use group::{
-    Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
-    Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
+    Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
+    Lsp, Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
     Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{

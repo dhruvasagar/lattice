@@ -45,6 +45,20 @@ fn validate_log_level(s: &String) -> Result<(), String> {
     }
 }
 
+/// AI-1b: dedicated validator for `ai.log_level`, mirroring
+/// `validate_log_level` above but naming `ai.log_level` (not
+/// `lsp.log_level`) in the error so `:set ai.log_level=bogus`
+/// points at the right option.
+#[allow(clippy::ptr_arg)]
+fn validate_ai_log_level(s: &String) -> Result<(), String> {
+    match s.as_str() {
+        "error" | "warn" | "info" | "debug" | "trace" => Ok(()),
+        other => Err(format!(
+            "ai.log_level must be one of `error`/`warn`/`info`/`debug`/`trace`, got `{other}`"
+        )),
+    }
+}
+
 fn validate_log_capacity(i: &i64) -> Result<(), String> {
     if *i < 0 {
         Err(format!("lsp.log_capacity must be >= 0, got {i}"))
@@ -643,6 +657,27 @@ crate::options! {
     pub LspLogCapacity: i64 = 10_000;
 }
 
+// AI-1b: AI group -- log knobs for the per-process `AiLogger` log
+// rings (mirrors the LSP group above; `lattice-ai`'s `AiLogger`
+// producer already exists (Task 6), boot-time wiring of these
+// options into it is a later task).
+
+crate::options! {
+    group = crate::Ai;
+
+    /// Enables capture of AI-agent output into the per-process log
+    /// rings. `:set ai.log=false` disables capture.
+    #[name("ai.log")]
+    pub AiLog: bool = true;
+
+    /// Default minimum log level for AI-agent log records.
+    /// Accepted values: `error` / `warn` / `info` / `debug` /
+    /// `trace`.
+    #[name("ai.log_level")]
+    #[validate(validate_ai_log_level)]
+    pub AiLogLevel: String = String::from("info");
+}
+
 // msg-mode.2: messages group — `messages.filter` directives
 // the `*messages*` buffer's tracing bridge layer.
 crate::options! {
@@ -928,5 +963,38 @@ mod tests {
         let err = r.parse_and_set_command("foldmethod=xyz").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`"));
+    }
+
+    // AI-1b: `ai.log` / `ai.log_level` config options. Registration
+    // only -- the boot-time `AiLogger` wiring is Task 12.
+
+    #[test]
+    fn ai_log_default_is_true() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(*r.get_typed::<AiLog>().unwrap());
+    }
+
+    #[test]
+    fn ai_log_level_default_is_info() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert_eq!(r.get_typed::<AiLogLevel>().unwrap().as_str(), "info");
+    }
+
+    #[test]
+    fn ai_log_level_rejects_invalid() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(r.set_typed::<AiLogLevel>(String::from("bogus")).is_err());
+        assert!(r.set_typed::<AiLogLevel>(String::from("debug")).is_ok());
+    }
+
+    #[test]
+    fn ai_options_lookable_by_name() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert_eq!(r.lookup("ai.log").unwrap().name(), "ai.log");
+        assert_eq!(r.lookup("ai.log_level").unwrap().name(), "ai.log_level");
     }
 }

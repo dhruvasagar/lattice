@@ -234,6 +234,16 @@ crate::options! {
     #[name("no-file")]
     pub NoFile: bool = false;
 
+    /// When `true` (the default), a file-backed buffer refreshes when its
+    /// on-disk content changes out from under the editor (vim's
+    /// `autoread`): an unmodified buffer reloads silently; a buffer with
+    /// unsaved edits opens a diff resolver rather than clobbering either
+    /// side. `false` disables external-change watching for the buffer.
+    /// Non-file buffers (oil, help, synthetic) are never watched
+    /// regardless. See `docs/dev/architecture/autoread.md`.
+    #[name("autoread")]
+    pub Autoread: bool = true;
+
     /// When false (`:set nofoldenable`, `zi`), every fold renders
     /// as open regardless of its closed flag. Closed-state is
     /// preserved -- toggling back restores the previous

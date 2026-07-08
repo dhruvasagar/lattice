@@ -6141,6 +6141,16 @@ impl Editor {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFoldingMode::mode_id())
     }
 
+    /// AR.1: whether external-change autoread is enabled for `buffer_id`,
+    /// resolving the per-buffer `autoread` option (default `true`). The
+    /// autoread watcher (AR.3) reads this to decide whether to watch the
+    /// buffer's file. Non-file buffers are excluded upstream by having no
+    /// on-disk path, not by this flag. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub fn autoread_enabled_for(&self, buffer_id: BufferId) -> bool {
+        *self.resolved_option::<lattice_config::core_options::Autoread>(buffer_id)
+    }
+
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
     /// read used by the mode-lifecycle auto-activation hook
     /// ([`Self::maybe_auto_activate_lsp_mode`], F.5.2) and by
@@ -33874,6 +33884,25 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 200);
         editor.ensure_cursor_horizontally_visible();
         assert_eq!(editor.leftcol, 0, "wrap reflows ⇒ no horizontal scroll");
+    }
+
+    #[test]
+    fn autoread_option_registered_and_default_true() {
+        // AR.1: `autoread` is registered and defaults to `true`.
+        let editor = crate::editor::Editor::boot(lattice_core::Document::from_text("hi\n"));
+        let v = editor
+            .config
+            .get_typed::<lattice_config::core_options::Autoread>()
+            .expect("autoread option registered");
+        assert!(*v, "global default is true");
+    }
+
+    #[test]
+    fn autoread_enabled_for_defaults_true() {
+        // AR.1: the per-buffer reader resolves to the default when no
+        // override is present.
+        let editor = crate::editor::Editor::boot(lattice_core::Document::from_text("hi\n"));
+        assert!(editor.autoread_enabled_for(editor.document_buffer_id));
     }
 
     /// HS.2: `zl`/`zh` (count columns) + `zL`/`zH` (half body) move

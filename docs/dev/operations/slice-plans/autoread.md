@@ -18,7 +18,7 @@ that scales with open buffers, not project size, and does zero UI-thread work.
 | Slice | Status | Summary |
 |---|---|---|
 | AR.0 | ✅ | On-disk **fingerprint** `(mtime, size)` per file buffer + content-hash; stamped on load and on `:w`. Self-write suppression seam. Pure host, no watcher yet. |
-| AR.1 | 📝 | **`autoread`** `bool` option (default `true`), per-buffer resolved-options wiring. |
+| AR.1 | ✅ | **`autoread`** `bool` option (default `true`), per-buffer resolved-options wiring. |
 | AR.2 | 📝 | **Watcher runtime task** (`AutoreadWatcherHandle { cmd_tx }`), `notify` over deduped **parent dirs**, basename filter, debounce/coalesce. `notify` calls in `block_in_place`. Non-blocking `Watch`/`Unwatch`/evict sends. Mirrors `LspFileWatcherHandle`. |
 | AR.3 | 📝 | **Lifecycle wiring**: register `Watch` on buffer open/activate, `Unwatch` on close, re-sync on option flip. LRU-bounded live set + on-`activate_document` `stat` fallback for the cold tail. |
 | AR.4 | 📝 | **Drain + clean-reload policy**: host drains validated change events; `!dirty` ⇒ silent `open_fresh_into_active_slot(_, Reload)` + echo; deleted ⇒ keep + warn. |
@@ -49,12 +49,15 @@ copy) goes through `save_as_blocking` and deliberately does **not** re-stamp —
 buffer's backing file is unchanged. If a future `:saveas` re-points the buffer's
 path, stamping there against the new path is the correct follow-up.
 
-## AR.1 — `autoread` option 📝
+## AR.1 — `autoread` option ✅
 
-`Option::<bool>::new("autoread", true, …)` per the existing registration pattern.
-Per-buffer override through resolved-options. `:set autoread` / `:setlocal`
-parse-front-end works for free. Tests: default on; per-buffer off suppresses
-watching (asserted in AR.3).
+**Landed:** `Autoread: bool = true` declared in `lattice-config::core_options`
+(auto-registered via the `options!` linkme slice; `:set autoread` /
+`:set noautoread` parse-front-end works for free). Host reader
+`Editor::autoread_enabled_for(buffer_id)` resolves the per-buffer value via the
+existing `resolved_option::<Autoread>` path (default `true`). 2 host tests
+(registered + default true); per-buffer-off-suppresses-watching is asserted in
+AR.3 where the watcher reads this flag.
 
 ## AR.2 — Watcher runtime task 📝
 

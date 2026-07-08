@@ -1558,6 +1558,7 @@ impl Editor {
                     &builtins,
                     &action_ids,
                     &syntax_textobject_ids,
+                    &syntax_motion_ids,
                 );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(

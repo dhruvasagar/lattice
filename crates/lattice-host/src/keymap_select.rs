@@ -45,6 +45,7 @@ use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
+use lattice_syntax::SyntaxMotionIds;
 use lattice_syntax::SyntaxTextObjectIds;
 
 use lattice_mode::mode::ModeId;
@@ -71,6 +72,9 @@ use crate::keymap_trie::{ChordPattern, KeymapLayer, LookupResult};
 /// - **Motions** (`motion_rows`) — extend the selection, **identical** to
 ///   Visual. The shared `motion_rows` table means a motion added there
 ///   lights up in both; the parity test pins it.
+/// - **Tree-sitter structural motions** (`syntax_motion_rows`, TSM.4) —
+///   `]f`/`[f`/… extend the selection, **identical** to Visual, from the
+///   same shared table; the parity test walks these too.
 /// - **`o`** — swap selection ends (same as Visual).
 /// - **Text objects** (`text_object_rows`) — set the selection span,
 ///   identical to Visual.
@@ -86,6 +90,7 @@ pub fn register_select_bindings(
     builtins: &Builtins,
     actions: &ActionIds,
     syntax_textobjects: &SyntaxTextObjectIds,
+    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Select;
@@ -108,6 +113,23 @@ pub fn register_select_bindings(
             layer,
             mode,
             std::slice::from_ref(&chord),
+            CommandInvocation::of(motion.0),
+            select_source(),
+        );
+    }
+
+    // TSM.4: the sixteen tree-sitter structural motions
+    // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
+    // `]l`/`[l`/`]L`/`[L`). Bound identically to Visual from the SHARED
+    // `keymap_normal::syntax_motion_rows` table — Select≡Visual motion
+    // parity (select-mode.md §4) requires every Visual motion extend the
+    // Select selection too. The parity test below
+    // (`visual_and_select_share_every_motion`) walks this table as well.
+    for (seq, motion) in crate::keymap_normal::syntax_motion_rows(syntax_motions) {
+        handle.bind(
+            layer,
+            mode,
+            &seq,
             CommandInvocation::of(motion.0),
             select_source(),
         );
@@ -310,14 +332,11 @@ fn normalize_for_select_lookup(chord: KeyChord) -> KeyChord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // TSM.4: `register_normal_bindings` / `register_visual_bindings` now
-    // take a `&SyntaxMotionIds` alongside `&SyntaxTextObjectIds` -- thread
-    // it through `populated_handle` below so this module still compiles.
-    // Select mode itself does NOT bind the tree-sitter structural
-    // motions (out of TSM.4's scope: only Normal / operator-pending /
-    // Visual do; the parity test below only walks `motion_rows`, so this
-    // is a compile-time thread, not a new Select behavior).
-    use lattice_syntax::SyntaxMotionIds;
+    // TSM.4: Select binds the sixteen tree-sitter structural motions
+    // (`syntax_motion_rows`) identically to Visual — the Select≡Visual
+    // motion-parity contract (select-mode.md §4) requires it, and the
+    // `visual_and_select_share_every_motion` parity test below now walks
+    // `syntax_motion_rows` in addition to `motion_rows` to pin it.
 
     fn empty_handle() -> KeymapHandle {
         // The dispatch tests below run against an EMPTY Select table, so
@@ -360,7 +379,13 @@ mod tests {
             &syntax_textobjects,
             &syntax_motions,
         );
-        register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
+        register_select_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+            &syntax_motions,
+        );
         h
     }
 
@@ -459,12 +484,15 @@ mod tests {
     /// the LOCKED drift guard for the duplicated registration: if a
     /// motion is added to `register_visual_bindings` but not
     /// `register_select_bindings` (or they bind different commands), this
-    /// fails loudly.
+    /// fails loudly. Covers BOTH the builtin `motion_rows` (single-key)
+    /// AND the TSM.4 tree-sitter `syntax_motion_rows` (two-key `]f`/`[f`
+    /// structural motions) — the latter closes the drift vector that let
+    /// `]f` overtype the selection in Select while extending it in Visual.
     #[test]
     fn visual_and_select_share_every_motion() {
         use lattice_grammar::CommandRegistry;
         use lattice_grammar::builtins::populate as grammar_builtins_populate;
-        // A throwaway builtins yields the motion CHORD list (the chords
+        // A throwaway registry yields the motion CHORD lists (the chords
         // are literal keys, registry-independent). The command identity
         // is compared WITHIN `populated_handle` (Visual vs Select), so
         // the two registries' differing CommandIds don't matter — the
@@ -472,7 +500,10 @@ mod tests {
         // id match.
         let mut throwaway = CommandRegistry::new();
         let builtins = grammar_builtins_populate(&mut throwaway);
+        let syntax_motions = lattice_syntax::register_syntax_motions(&mut throwaway);
         let h = populated_handle();
+
+        // (a) builtin single-key motions.
         let mut checked = 0usize;
         for (chord, _motion) in crate::keymap_normal::motion_rows(&builtins) {
             let path = match chord {
@@ -492,6 +523,32 @@ mod tests {
         assert!(
             checked >= 20,
             "expected the full motion table, got {checked}"
+        );
+
+        // (b) TSM.4 tree-sitter structural motions (`]f`/`[f`/… two-key
+        // sequences). Same drift guard: every one must resolve identically
+        // in Visual and Select.
+        let mut ts_checked = 0usize;
+        for (seq, _motion) in crate::keymap_normal::syntax_motion_rows(&syntax_motions) {
+            let path: Vec<KeyChord> = seq
+                .iter()
+                .map(|p| match p {
+                    ChordPattern::Literal(c) => *c,
+                    _ => panic!("syntax_motion_rows must be all literals"),
+                })
+                .collect();
+            let v = bound_command_id(&h, BindingMode::Visual, &path);
+            let s = bound_command_id(&h, BindingMode::Select, &path);
+            assert!(
+                v.is_some(),
+                "Visual must bind syntax motion {path:?} (test premise)"
+            );
+            assert_eq!(v, s, "Visual and Select disagree on syntax motion {path:?}");
+            ts_checked += 1;
+        }
+        assert_eq!(
+            ts_checked, 16,
+            "expected all 16 tree-sitter structural motions, got {ts_checked}"
         );
     }
 

@@ -7,6 +7,7 @@
 
 pub mod ai_log;
 pub mod buffer_names;
+pub mod commands;
 pub mod connection;
 pub mod error;
 pub mod handle;
@@ -20,6 +21,7 @@ pub use ai_log::{
     SessionKey, format_ai_log_line, level_tag,
 };
 pub use buffer_names::{ai_log_name, parse_ai_log_name};
+pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

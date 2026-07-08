@@ -1,0 +1,215 @@
+# AI agent protocol — lattice as an ACP client for Claude Code, opencode & friends
+
+Lattice hosts AI coding agents through **one generalized integration** rather than
+a bespoke per-agent crate. The substrate is the **Agent Client Protocol (ACP)** —
+the Zed-originated, LSP-shaped standard (`agentclientprotocol.com`) that both
+Claude Code (via the `claude-code-acp` adapter) and opencode (native) already
+speak, alongside Gemini CLI, Codex CLI, and Copilot CLI.
+
+The payoff: adding a new agent is *launch configuration*, not a new subsystem.
+Sessions, streaming, tool-call rendering, and — crucially — **interactive diff
+review with accept/reject** are implemented once, in `lattice-ai`, and every ACP
+agent lights up.
+
+This is the sibling of `docs/dev/architecture/ide-protocol.md` (lattice as a
+Claude Code *IDE peer*) but with the **topology inverted** — see §2. It relates
+to `comparison-zed.md`: this is lattice adopting the same external-agent
+architecture Zed has standardized on.
+
+> **Status:** umbrella design (2026-07-08). Sequenced into four slices (§7),
+> each landing under its own slice-plan. No code yet.
+
+## 1. Why ACP (and why not extend the existing claude-code peer)
+
+The existing `lattice-claude-code` crate makes lattice an **MCP server**: the
+external `claude` CLI runs in a lattice terminal buffer and connects *back* over
+loopback WebSocket, driving the editor. Its interactive diff (`openDiff`) works
+precisely *because* the agent calls back into lattice.
+
+opencode's terminal TUI has **no such callback** — its permission/diff prompts
+render inside *its own* TUI. So running opencode's TUI in a lattice terminal
+gives the user opencode's diff review, **not lattice's**. To get lattice-native
+accept/reject for opencode — the stated requirement — opencode must run
+*headless*, driven by lattice. That is either opencode's REST + permission API,
+or, cleanly and portably, **ACP**.
+
+Generalizing across agents, the honest conclusion is: **"a shared terminal-AI UX
+with shared `openDiff`" is, at its core, an ACP client.** The terminal becomes an
+incidental rendering choice; the real shared substrate is the protocol. The whole
+field agrees — Zed has moved its entire external-agent story (including Claude
+Code) onto ACP with a native panel.
+
+### Topology comparison
+
+| | `lattice-claude-code` (existing) | `lattice-ai` (this doc) |
+|---|---|---|
+| Role | lattice is the **server** | lattice is the **client** |
+| Who connects | agent → lattice (WS) | lattice spawns agent (stdio) |
+| Wire | MCP over WebSocket | JSON-RPC (ACP) over stdio |
+| Agent UI | agent's own terminal TUI | lattice-native conversation buffer |
+| Diff review | agent calls `openDiff` back | ACP `request_permission` + diff content |
+| Agents | Claude Code only | any ACP agent |
+
+`lattice-claude-code` is **kept as-is** — a working, legacy MCP-server path. The
+two topologies are not merged into one crate (that would muddy both). Genuinely
+shared low-level bits (the read cache, selection→context formatting) may be
+lifted into a shared module *later, if duplication proves real* — not upfront.
+
+## 2. Mode-owned, minimum host touch
+
+`lattice-ai` follows the same discipline as `lattice-claude-code`
+(`feedback_mode_owns_its_surface`, `boot-composition.md`): a mode that owns its
+full surface, with the App staying a thin host of generic primitives. The acid
+test — *a new provider adds zero `Editor::` methods and zero new `Action`
+variants* — must hold, and is stronger here: **a new agent adds zero code**, only
+a `providers/` entry.
+
+- **Boot:** one Phase-B line — `lattice_ai::install(&mut boot)` — spawns the ACP
+  supervisor (idle until `:ai`/`:opencode`), registers the crate-owned
+  ex-commands, the `ai-mode`, and the `AiClientHandle` service. Mirrors
+  `lattice_claude_code::install`.
+- **Commands:** bare dashed ex-command names (`:ai`, `:opencode`, `:ai-send`,
+  `:ai-stop`) whose `apply` closures capture the `AiClientHandle` and drive it
+  directly — the same mode-ownership-compliant route used by `:claude`.
+- **Diff review:** reuses the **existing** `lattice_diff::ProgrammaticDiffBus`
+  (§4). No new host write path; `origin_session` already anticipates non-Claude
+  producers.
+
+## 3. Architecture — the `lattice-ai` crate
+
+```
+lattice-ai/
+  acp/        JSON-RPC-over-stdio transport; ACP message types; subprocess
+              lifecycle (spawn agent, initialize handshake, shutdown).
+  session/    session/new · session/prompt · session/update stream state
+              machine (assistant text, reasoning, tool-call lifecycle).
+  review/     maps ACP diff-content + session/request_permission
+              → ProgrammaticDiffBus → DiffOutcome → allow_once/reject_once.
+              ← the shared openDiff, reused wholesale.
+  fsbridge/   fs/read_text_file · fs/write_text_file client handlers
+              (the agent reads/writes through the editor's buffers/disk).
+  ui/         native conversation buffer (BufferKind::AiChat) — follows the
+              Messages/Dashboard rope-backed, read-only, mode-owned pattern;
+              streaming transcript + tool-call render + input affordance.
+  providers/  launch configs: opencode | claude-code-acp | gemini | codex.
+              Each = command + args + env + display name. The extension point.
+  commands.rs :ai / :opencode / :ai-send / :ai-stop …
+  modes.rs    ai-mode (+ per-provider marker modes) on the AiChat buffer.
+  status.rs   modeline segment (provider · session · running).
+  install.rs  the single crate-owned boot entry point.
+```
+
+### Dependencies (mirroring `lattice-claude-code`)
+
+`lattice-protocol` (ids, event bus types), `lattice-mode` (`SubsystemBoot`,
+registries), `lattice-grammar` (ex-commands, `Effect`), `lattice-runtime` (async
+runtime + event bus), `lattice-core` (`BufferStore`, `BufferId`, new
+`BufferKind::AiChat`), `lattice-diff` (`ProgrammaticDiffBus`, `DiffOutcome`),
+`lattice-lsp` (diagnostics for context, optional). tokio (process, io-util,
+sync), serde/serde_json, thiserror, tracing.
+
+## 4. The shared `openDiff` seam (already provider-agnostic)
+
+`lattice-diff` already exposes exactly what ACP needs:
+
+- `ProgrammaticDiffRequest { old_file_path, new_file_path, new_contents,
+  tab_name, origin_session, response: oneshot::Sender<DiffOutcome> }`
+- `ProgrammaticDiffBus = InboundBus<ProgrammaticDiffRequest>` (host-drained)
+- `DiffOutcome::{ Accept, Reject }`
+
+The `origin_session: u64` doc already anticipates non-Claude producers ("a
+plugin", "an LSP `WorkspaceEdit` preview"). `review/` becomes a second consumer:
+
+1. Agent streams a `tool_call` with `content: [{ type: "diff", path, oldText,
+   newText }]` and status `pending`.
+2. Agent invokes `session/request_permission` with options `allow_once` /
+   `reject_once`.
+3. `review/` builds a `ProgrammaticDiffRequest` (oldText → `old_file_path`
+   baseline, newText → `new_contents`) and `send`s it on the bus; awaits the
+   `DiffOutcome`.
+4. `DiffOutcome::Accept` → respond `{ outcome: "selected", optionId:
+   "allow_once" }`; `Reject` → `reject_once`. The agent then applies (or skips)
+   the edit via `fs/write_text_file`, which `fsbridge/` services against the
+   editor.
+
+This is the headline reuse: the Keep/Reject UX users already know from Claude
+Code, now driven by ACP, shared across every agent, with **no new diff code**.
+
+## 5. Wire contract (ACP, summary)
+
+JSON-RPC 2.0 over the spawned agent's stdio. Editor (client) ⇄ agent:
+
+- **Lifecycle:** `initialize` (capabilities), `session/new`, `session/load`.
+- **Prompting:** `session/prompt` (user text + resource blocks for
+  file/selection context — the `:ai-send` payload).
+- **Streaming (agent→client):** `session/update` notifications carrying
+  `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`
+  (statuses `pending`→`in_progress`→`completed`/`failed`).
+- **Permission (agent→client req):** `session/request_permission` → client
+  responds `selected`/`cancelled`.
+- **Filesystem (agent→client req):** `fs/read_text_file`, `fs/write_text_file`.
+
+Provider specifics live in `providers/`: opencode is native ACP; Claude Code runs
+through `npx @zed-industries/claude-code-acp`; Gemini/Codex via their ACP entry
+points.
+
+## 6. The conversation UI (native buffer)
+
+`BufferKind::AiChat` follows the `Messages`/`Dashboard` precedent: rope-backed,
+`ReadOnly = true` + `NoFile = true`, its major mode (`ai-mode`) gating keystrokes
+and contributing the link/`<CR>`-follow machinery. `session/update` chunks append
+to the transcript rope; tool calls render as collapsible, status-badged blocks. A
+prompt affordance (a footer input line, or an Insert-mode capture) feeds
+`session/prompt`. Diffs open as normal diff sessions (§4) — *not* inline in the
+transcript — so the full diff-system UX (folds, `do`/`dp`, n-way) applies.
+
+## 7. Slices (each its own slice-plan → plan → build)
+
+- **AI‑1 — ACP transport + session skeleton.** Spawn agent subprocess,
+  JSON-RPC/stdio, `initialize` → `session/new` → `session/prompt`; consume
+  `session/update` into a Messages-style buffer. Proves the wire against
+  **opencode** (native ACP). Introduces the minimal `providers/` abstraction.
+  *Exit:* type a prompt, see streamed response text in a buffer.
+- **AI‑2 — Shared diff review (openDiff via ACP).** `session/request_permission`
+  + diff content → `ProgrammaticDiffBus` → `DiffOutcome` → `allow_once`/
+  `reject_once`; `fs/read_text_file` / `fs/write_text_file`. *Exit:* agent
+  proposes an edit, user Keeps/Rejects in lattice's diff UI, disk reflects the
+  verdict.
+- **AI‑3 — Native conversation UI.** `BufferKind::AiChat`, streaming assistant +
+  tool-call rendering, prompt affordance, `ai-mode` keymap, status segment.
+  *Exit:* a pleasant native panel, not a raw log.
+- **AI‑4 — Context push + breadth.** `:ai-send` (selection/file → resource
+  blocks), wire `claude-code-acp` + `gemini`, a provider picker. *Exit:* multiple
+  agents, context-aware prompting.
+
+AI‑1 → a talking agent; AI‑2 → the diff-review payoff; AI‑3 → polish; AI‑4 →
+breadth.
+
+## 8. Rejected alternatives
+
+- **Extend `lattice-claude-code` to opencode (MCP-server topology).** opencode's
+  TUI can't call `openDiff` back, so lattice-native accept/reject is
+  unreachable that way. Rejected (§1).
+- **Per-agent REST/SSE clients (opencode's own server API).** Works, but is
+  opencode-specific; ACP gets Claude/Gemini/Codex/Copilot for the same effort.
+  Rejected in favor of the standard.
+- **Terminal-hosted agent TUIs with a shared wrapper.** Keeps the agent's UI in
+  a terminal buffer but then diff review lives in *that* UI, defeating the shared
+  `openDiff` goal. Rejected (§1); a terminal-host mode may return later as an
+  alternate, not the core.
+- **Fold `lattice-claude-code` into `lattice-ai`.** Mixes two topologies in one
+  crate. Rejected; kept separate (§1).
+
+## 9. Open questions / risks
+
+- **ACP maturity & churn:** ACP is young and moving; pin the schema version and
+  isolate wire types in `acp/`. Verify the exact `claude-code-acp` invocation and
+  opencode's ACP entry at implementation time.
+- **Prompt input UX in a modal editor:** how the user composes a prompt (footer
+  line vs. Insert capture vs. a scratch buffer) needs a focused decision in AI‑3.
+- **Auth / model selection:** each agent owns its own auth & model choice
+  (opencode, Claude). Surfacing/switching models via ACP is out of scope until
+  AI‑4+.
+- **fs/write vs. diff-review ordering:** confirm whether agents gate *every*
+  write behind `request_permission` or only some; `fsbridge/` must handle
+  ungated writes safely (respecting lattice's dirty-buffer state + autoread).

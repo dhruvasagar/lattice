@@ -28,6 +28,7 @@ members = [
 	"crates/lattice-ui-gpui",
 	"crates/lattice-cli",
 	"crates/lattice-diff",
+	"crates/lattice-agent",
 	"crates/lattice-claude-code",
 	"crates/lattice-plugin-host",
 ]

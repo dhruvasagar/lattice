@@ -13,7 +13,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-mode = { path = "../lattice-mode" }
-tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt"] }

@@ -29,10 +29,9 @@ use lattice_diff::ProgrammaticDiffBus;
 use lattice_mode::inbound::InboundBus;
 use lattice_runtime::EventBus;
 
-use lattice_agent::{EditorAccess, EditorStateHandle};
+use lattice_agent::{EditorAccess, EditorStateHandle, EditorWriteRequest};
 
 use crate::dispatch::{self, DispatchContext, Outgoing};
-use crate::inbound::ClaudeCodeInboundRequest;
 use crate::error::Result;
 use crate::lockfile::{Lockfile, LockfileContents};
 use crate::reads::ReadContext;
@@ -232,7 +231,7 @@ impl ClaudeCodeServerHandle {
     }
 
     /// BC.3b: the crate-owned read cache. `install()` clones it to build the
-    /// inbound handler ([`crate::inbound::make_handler`]) — the per-item closure
+    /// inbound handler ([`lattice_agent::make_handler`]) — the per-item closure
     /// the generic `boot.inbound` bus drains, which maps write requests against
     /// the same cache the read tools snapshot.
     pub fn read_cache(&self) -> EditorStateHandle {
@@ -244,13 +243,15 @@ impl ClaudeCodeServerHandle {
     /// the generic [`InboundBus`] built by `install()` via `boot.inbound` (which
     /// owns the channel, the per-tick drain, and the off-keystroke wake — the
     /// drain's registration token rides `boot.into_registrations()` into the
-    /// Editor). The server handle is spawned before boot wires these handles, so
-    /// this upgrade runs once, from the subsystem's `install(boot)`.
+    /// Editor). AG-2b: the bus now rides inside the `EditorAccess` the write
+    /// tools call through, not a separate `DispatchContext` field. The server
+    /// handle is spawned before boot wires these handles, so this upgrade runs
+    /// once, from the subsystem's `install(boot)`.
     pub fn install_services(
         &self,
         buffer_store: Option<lattice_mode::BufferStoreHandle>,
         diagnostics: Option<lattice_lsp::modes::DiagnosticsQueryHandle>,
-        writes: InboundBus<ClaudeCodeInboundRequest>,
+        writes: InboundBus<EditorWriteRequest>,
         diff: Option<ProgrammaticDiffBus>,
     ) {
         self.dispatch_ctx.store(Arc::new(DispatchContext {
@@ -262,10 +263,10 @@ impl ClaudeCodeServerHandle {
                     self.cache.clone(),
                     buffer_store,
                     self.workspace_folders.clone(),
+                    Some(writes),
                 ),
                 diagnostics,
             },
-            writes: Some(writes),
             diff,
             // D-fix.6 follow-up: re-seat the SAME review tracker so the badge
             // count is shared across the boot rebuild.
@@ -302,12 +303,12 @@ pub fn spawn(
         // `serve_connection` (D-fix.6).
         conn_id: 0,
         reads: ReadContext {
-            editor: EditorAccess::new(cache.clone(), None, config.workspace_folders.clone()),
+            // I3.2 wires the real inbound bus (via `EditorAccess`'s `writes`
+            // field) here; until then write tools report a graceful "not
+            // initialized".
+            editor: EditorAccess::new(cache.clone(), None, config.workspace_folders.clone(), None),
             diagnostics: None,
         },
-        // I3.2 wires the real inbound bus here; until then write tools report
-        // a graceful "not initialized".
-        writes: None,
         // I4: the openDiff bus is wired by `install_services`; until then
         // `openDiff` reports a graceful "not initialized".
         diff: None,
@@ -680,9 +681,14 @@ async fn serve_connection(
     // Then abort any in-flight `openDiff` handlers (their reply can't reach a
     // dead socket anyway) so they release their `out_tx` clones, and drain the
     // writer.
-    if let Some(bus) = ctx.writes.clone() {
+    {
+        // AG-2b: the write bus rides inside `reads.editor`; a `None` bus
+        // (test harness, or a server never fully installed) degrades to a
+        // graceful no-op inside `close_all_diff_tabs`, so this is safe to
+        // always spawn.
+        let editor = ctx.reads.editor.clone();
         tokio::spawn(async move {
-            let _ = crate::writes::close_all_diff_tabs(Some(&bus), conn_id).await;
+            let _ = crate::writes::close_all_diff_tabs(&editor, conn_id).await;
         });
     }
     blocking.abort_all();
@@ -709,7 +715,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_services_seats_read_handles_and_bus() {
-        use crate::inbound::make_handler;
+        use lattice_agent::make_handler;
         use lattice_mode::inbound::make_inbound;
         use tokio::sync::Notify;
 
@@ -723,14 +729,39 @@ mod tests {
             &tokio::runtime::Handle::current(),
         );
         // The generic inbound bus, as `install()` builds it via `boot.inbound`.
-        let (bus, _drain) = make_inbound::<ClaudeCodeInboundRequest, _>(
+        let (bus, mut drain) = make_inbound::<EditorWriteRequest, _>(
             Arc::new(Notify::new()),
             make_handler(handle.read_cache()),
         );
         handle.install_services(None, None, bus, None);
+
+        // AG-2b: the write bus now rides inside the seated `EditorAccess`
+        // (no separate `DispatchContext::writes` field). Prove it's wired by
+        // sending a write through the live context and observing it reach
+        // the drain, rather than the graceful "not initialized" error a
+        // `None` bus would produce.
+        let editor = handle.dispatch_ctx.load().reads.editor.clone();
+        let call = tokio::spawn(async move {
+            editor
+                .open_file(std::path::PathBuf::from("/a.rs"), None)
+                .await
+        });
+        let mut effects = Vec::new();
+        for _ in 0..50 {
+            effects = drain();
+            if !effects.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            effects.len(),
+            1,
+            "the write bus is installed and reaches the drain"
+        );
         assert!(
-            handle.dispatch_ctx.load().writes.is_some(),
-            "the write bus is installed"
+            call.await.unwrap().is_ok(),
+            "the write completes successfully"
         );
     }
 

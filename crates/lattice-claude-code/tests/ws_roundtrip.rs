@@ -305,7 +305,7 @@ async fn wrong_token_is_rejected() {
 /// serving other frames; teardown fires `closeAllDiffTabs` for the connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn open_diff_does_not_block_loop_and_drop_rejects_pending_diff() {
-    use lattice_claude_code::inbound::{ClaudeCodeInboundRequest, InboundKind};
+    use lattice_agent::{EditorWriteRequest, InboundKind};
     use lattice_diff::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
     use lattice_mode::inbound::make_inbound_raw;
     use tokio::sync::Notify;
@@ -322,7 +322,7 @@ async fn open_diff_does_not_block_loop_and_drop_rejects_pending_diff() {
     // Wire a writes bus + diff bus so `openDiff` reaches a (test-played) host
     // and the teardown's `closeAllDiffTabs` is observable.
     let (writes_bus, mut writes_rx) =
-        make_inbound_raw::<ClaudeCodeInboundRequest>(Arc::new(Notify::new()));
+        make_inbound_raw::<EditorWriteRequest>(Arc::new(Notify::new()));
     let (diff_bus, mut diff_rx): (ProgrammaticDiffBus, _) =
         make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
     handle.install_services(None, None, writes_bus, Some(diff_bus));

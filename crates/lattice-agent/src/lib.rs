@@ -21,8 +21,11 @@ pub mod state_cache;
 
 pub mod editor_access;
 
+pub mod write_bus;
+
 pub use commands::{parse_no_args, parse_rest_as_text};
 pub use diff_review::{DiffReviewRequest, review_diff};
 pub use editor_access::{EditorAccess, OpenEditor, SelectionInfo};
 pub use error::{AgentError, Result};
 pub use state_cache::{EditorStateCache, EditorStateHandle};
+pub use write_bus::{EditorWriteRequest, InboundKind, InboundReply, make_handler};

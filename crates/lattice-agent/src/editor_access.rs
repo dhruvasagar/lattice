@@ -12,12 +12,23 @@
 //! in-memory seams (an `EditorStateCache` built directly from events),
 //! mirroring the pre-port `ctx_with` test helper.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use lattice_grammar::Utf16Pos;
+use lattice_mode::inbound::InboundBus;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::{Position, Selection};
+use tokio::sync::oneshot;
 
+use crate::error::{AgentError, Result};
 use crate::state_cache::EditorStateHandle;
+use crate::write_bus::{EditorWriteRequest, InboundKind};
+
+/// Backstop so a write can never hang the caller even if the editor never
+/// resolves the oneshot (it always should — the drain resolves synchronously
+/// once the actor wakes).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The active selection plus the text it covers.
 #[derive(Debug, Clone)]
@@ -40,6 +51,7 @@ pub struct EditorAccess {
     cache: EditorStateHandle,
     buffer_store: Option<lattice_mode::BufferStoreHandle>,
     workspace_folders: Vec<String>,
+    writes: Option<InboundBus<EditorWriteRequest>>,
 }
 
 impl EditorAccess {
@@ -47,11 +59,13 @@ impl EditorAccess {
         cache: EditorStateHandle,
         buffer_store: Option<lattice_mode::BufferStoreHandle>,
         workspace_folders: Vec<String>,
+        writes: Option<InboundBus<EditorWriteRequest>>,
     ) -> Self {
         Self {
             cache,
             buffer_store,
             workspace_folders,
+            writes,
         }
     }
 
@@ -119,6 +133,65 @@ impl EditorAccess {
         .map(|doc| doc.dirty())
         .unwrap_or(false)
     }
+
+    /// Open `path`, optionally forcing the cursor to `column` (a UTF-16
+    /// position; `None` opens without moving the cursor — re-opening an
+    /// already-open file keeps its position).
+    pub async fn open_file(&self, path: PathBuf, column: Option<Utf16Pos>) -> Result<()> {
+        self.run_write(InboundKind::OpenFile { path, column }).await
+    }
+
+    /// Save the document for `path` (only when it is the active buffer —
+    /// option C, the I3 limitation).
+    pub async fn save_document(&self, path: PathBuf) -> Result<()> {
+        self.run_write(InboundKind::SaveDocument { path }).await
+    }
+
+    /// Close the tab named `tab_name`, scoped to connection
+    /// `origin_session` — the host rejects that connection's diff
+    /// session(s), falling back to the active-buffer file-close.
+    pub async fn close_tab(&self, origin_session: u64, tab_name: String) -> Result<()> {
+        self.run_write(InboundKind::CloseTab {
+            origin_session,
+            tab_name,
+        })
+        .await
+    }
+
+    /// Reject every programmatic diff connection `origin_session` opened.
+    pub async fn close_session_diffs(&self, origin_session: u64) -> Result<()> {
+        self.run_write(InboundKind::CloseAllDiffTabs { origin_session })
+            .await
+    }
+
+    /// Send `kind` on the write bus, await the reply, and map it onto
+    /// [`AgentError`]. The single graceful path for all four write methods —
+    /// a missing bus, a dropped receiver, a timeout, and an `ok: false` reply
+    /// all map to a distinct `AgentError` carrying the ORIGINAL message text
+    /// (never re-wrapped through `Display`, so adapters that emit
+    /// `e.to_string()` don't double-prefix).
+    async fn run_write(&self, kind: InboundKind) -> Result<()> {
+        let Some(bus) = &self.writes else {
+            return Err(AgentError::Bus(
+                "write unavailable: IDE server not fully initialized".to_string(),
+            ));
+        };
+        let (tx, rx) = oneshot::channel();
+        if bus.send(EditorWriteRequest { kind, response: tx }).is_err() {
+            // Receiver dropped — the editor/server is gone.
+            return Err(AgentError::Bus(
+                "write failed: editor not reachable".to_string(),
+            ));
+        }
+        match tokio::time::timeout(WRITE_TIMEOUT, rx).await {
+            Ok(Ok(reply)) if reply.ok => Ok(()),
+            Ok(Ok(reply)) => Err(AgentError::Io(reply.message.unwrap_or_default())),
+            // Sender dropped without replying, or timed out.
+            _ => Err(AgentError::Io(
+                "write failed: editor did not respond".to_string(),
+            )),
+        }
+    }
 }
 
 /// `DocumentId` → the `BufferStore`'s core `BufferId` (same underlying id,
@@ -177,7 +250,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn access(state: EditorStateCache, workspace: Vec<String>) -> EditorAccess {
-        EditorAccess::new(Arc::new(Mutex::new(state)), None, workspace)
+        EditorAccess::new(Arc::new(Mutex::new(state)), None, workspace, None)
     }
 
     #[test]
@@ -241,5 +314,56 @@ mod tests {
         assert_eq!(slice_selection(text, &sel), "hello");
         let cur = Selection::cursor(Position::new(1, 2));
         assert_eq!(slice_selection(text, &cur), "");
+    }
+
+    // --- write half: the two failure paths with no direct coverage before
+    // the port move (AG-2b). ---
+
+    fn access_with_writes(writes: InboundBus<EditorWriteRequest>) -> EditorAccess {
+        EditorAccess::new(
+            Arc::new(Mutex::new(EditorStateCache::default())),
+            None,
+            vec![],
+            Some(writes),
+        )
+    }
+
+    #[tokio::test]
+    async fn open_file_with_dropped_receiver_is_bus_error() {
+        // Build a raw bus and immediately drop the receiver — mirrors the
+        // "server stopped" case: nothing is draining the channel.
+        let (bus, rx) = lattice_mode::inbound::make_inbound_raw::<EditorWriteRequest>(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+        drop(rx);
+        let ea = access_with_writes(bus);
+        let err = ea
+            .open_file(PathBuf::from("/a.rs"), None)
+            .await
+            .expect_err("dropped receiver must fail the write");
+        assert!(
+            matches!(err, AgentError::Bus(ref m) if m == "write failed: editor not reachable"),
+            "expected Bus(\"write failed: editor not reachable\"), got {err:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_file_times_out_when_nothing_replies() {
+        // A live receiver that never replies — the request sits in the
+        // channel forever, so `run_write`'s 5s backstop must fire.
+        let (bus, _rx) = lattice_mode::inbound::make_inbound_raw::<EditorWriteRequest>(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+        let ea = access_with_writes(bus);
+        let call = tokio::spawn(async move { ea.open_file(PathBuf::from("/a.rs"), None).await });
+        tokio::time::advance(Duration::from_secs(6)).await;
+        let err = call
+            .await
+            .expect("task join")
+            .expect_err("no reply within WRITE_TIMEOUT must fail the write");
+        assert!(
+            matches!(err, AgentError::Io(ref m) if m == "write failed: editor did not respond"),
+            "expected Io(\"write failed: editor did not respond\"), got {err:?}"
+        );
     }
 }

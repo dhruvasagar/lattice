@@ -16,13 +16,11 @@ use lattice_protocol::jsonrpc::{
     Message, Notification, Request, RequestId, Response, ResponseError, error_codes,
 };
 
-use crate::inbound::ClaudeCodeInboundRequest;
-use crate::protocol;
-use lattice_diff::ProgrammaticDiffBus;
-use lattice_mode::inbound::InboundBus;
 use crate::diff;
+use crate::protocol;
 use crate::reads;
 use crate::writes;
+use lattice_diff::ProgrammaticDiffBus;
 
 /// The state the dispatcher needs to answer `tools/call`: the read tools'
 /// [`ReadContext`](crate::reads::ReadContext) + the write bus. Built once at
@@ -38,12 +36,10 @@ pub struct DispatchContext {
     /// boot context + dispatch tests (no real connection).
     pub conn_id: u64,
     /// Read-tool services (cache + generic buffer-store / diagnostics +
-    /// workspace config).
+    /// workspace config). BC.3b / AG-2b: the write bus now rides inside
+    /// `reads.editor` (a `lattice_agent::EditorAccess`) — write tools call
+    /// `ctx.reads.editor.open_file(...)` etc. directly, no separate bus field.
     pub reads: reads::ReadContext,
-    /// Write-tool inbound bus (the generic `InboundBus`, BC.3b). `None` until
-    /// the server is fully wired (and in dispatch tests) — write tools then
-    /// return a graceful `success: false`.
-    pub writes: Option<InboundBus<ClaudeCodeInboundRequest>>,
     /// I4 `openDiff` host-drained bus ([`ProgrammaticDiffBus`]). `None` until
     /// boot wires it (and in dispatch tests) — `openDiff` then returns a
     /// graceful `isError: true`. Separate from `writes` because `openDiff` is
@@ -140,7 +136,7 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
         .unwrap_or("");
     let empty = json!({});
     let arguments = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
-    let bus = ctx.writes.as_ref();
+    let editor = &ctx.reads.editor;
 
     // I4: `openDiff` is blocking and returns its OWN `CallToolResult` envelope
     // (the FILE_SAVED / DIFF_REJECTED markers are the contract), so it bypasses
@@ -164,13 +160,13 @@ async fn handle_tools_call(req: &Request, ctx: &DispatchContext) -> Response {
         "checkDocumentDirty" => Some(reads::check_document_dirty(&ctx.reads, arguments)),
         // Writes (I3, async: send on the bus → wake the actor → await the
         // oneshot the per-tick drain resolves).
-        "openFile" => Some(writes::open_file(bus, arguments).await),
-        "saveDocument" => Some(writes::save_document(bus, arguments).await),
+        "openFile" => Some(writes::open_file(editor, arguments).await),
+        "saveDocument" => Some(writes::save_document(editor, arguments).await),
         // D-fix.6: both close paths are scoped to THIS connection (`ctx.conn_id`)
         // — they tear down the diff session(s) this agent session opened,
         // regardless of how/where the diff is displayed, never another session's.
-        "close_tab" => Some(writes::close_tab(bus, arguments, ctx.conn_id).await),
-        "closeAllDiffTabs" => Some(writes::close_all_diff_tabs(bus, ctx.conn_id).await),
+        "close_tab" => Some(writes::close_tab(editor, arguments, ctx.conn_id).await),
+        "closeAllDiffTabs" => Some(writes::close_all_diff_tabs(editor, ctx.conn_id).await),
         _ => None,
     };
 
@@ -231,10 +227,10 @@ mod tests {
                     )),
                     None,
                     vec!["/work".to_string()],
+                    None,
                 ),
                 diagnostics: None,
             },
-            writes: None,
             diff: None,
             review: crate::status::ReviewState::new(std::sync::Arc::new(tokio::sync::Notify::new())),
         }

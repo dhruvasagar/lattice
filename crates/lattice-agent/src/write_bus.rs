@@ -1,17 +1,17 @@
 //! IDE-protocol I3: the write-request payload + per-item handler.
 //!
 //! Writes mutate the editor, which must happen on the editor (actor) thread.
-//! The WS task hands a [`ClaudeCodeInboundRequest`] to the editor thread over
+//! The WS task hands an [`EditorWriteRequest`] to the editor thread over
 //! the generic inbound bus ([`lattice_mode::inbound`], via
 //! [`SubsystemBoot::inbound`](lattice_mode::SubsystemBoot::inbound)) and awaits
 //! a oneshot reply.
 //!
 //! BC.3b: the bespoke `ClaudeCodeInboundBus` + per-tick `make_drain` were
-//! replaced by the generic `InboundBus<ClaudeCodeInboundRequest>` primitive,
+//! replaced by the generic `InboundBus<EditorWriteRequest>` primitive,
 //! whose `send` wakes the actor off-keystroke (the wake is baked into the
 //! sender — structurally impossible to forget, paramount #4) and whose per-tick
 //! drain runs each request through [`make_handler`]. This module now owns only
-//! the claude-specific payload + mapping logic; the channel + drain + wake are
+//! the write payload + mapping logic; the channel + drain + wake are
 //! the shared primitive.
 //!
 //! [`make_handler`] validates + maps each request to an EXISTING `Effect` and
@@ -21,10 +21,11 @@
 
 use std::path::PathBuf;
 
-use lattice_agent::EditorStateHandle;
-use lattice_grammar::effect::Effect;
 use lattice_grammar::Utf16Pos;
+use lattice_grammar::effect::Effect;
 use tokio::sync::oneshot;
+
+use crate::state_cache::EditorStateHandle;
 
 /// A write request's payload.
 #[derive(Debug)]
@@ -83,7 +84,7 @@ impl InboundReply {
 /// One write request: payload + the oneshot the drain resolves. Mirrors LSP's
 /// `InboundShowDocument`.
 #[derive(Debug)]
-pub struct ClaudeCodeInboundRequest {
+pub struct EditorWriteRequest {
     pub kind: InboundKind,
     pub response: oneshot::Sender<InboundReply>,
 }
@@ -95,7 +96,7 @@ pub struct ClaudeCodeInboundRequest {
 /// channel, the per-tick `try_recv` loop, and the off-keystroke wake.
 pub fn make_handler(
     cache: EditorStateHandle,
-) -> impl FnMut(ClaudeCodeInboundRequest) -> Vec<Effect> + Send + 'static {
+) -> impl FnMut(EditorWriteRequest) -> Vec<Effect> + Send + 'static {
     move |req| {
         let (effect, reply) = map_request(&req.kind, &cache);
         // A dropped response receiver (agent gone) is fine — log-and-skip.
@@ -108,7 +109,9 @@ pub fn make_handler(
 fn active_path(cache: &EditorStateHandle) -> Option<PathBuf> {
     let g = cache.lock().unwrap_or_else(|e| e.into_inner());
     let active = g.active.as_ref()?;
-    g.open_buffers.get(&active.buffer).and_then(|b| b.path.clone())
+    g.open_buffers
+        .get(&active.buffer)
+        .and_then(|b| b.path.clone())
 }
 
 /// Map a write request to an existing Effect + an optimistic reply.
@@ -167,8 +170,7 @@ fn map_request(kind: &InboundKind, cache: &EditorStateHandle) -> (Option<Effect>
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use lattice_agent::EditorStateCache;
-    use lattice_mode::inbound::make_inbound;
+    use crate::state_cache::EditorStateCache;
     use lattice_protocol::ids::DocumentId;
     use lattice_protocol::{Event, SelectionSet};
     use std::sync::{Arc, Mutex};
@@ -298,10 +300,13 @@ mod tests {
         // per-tick drain + the wake (those are pinned by lattice-mode's inbound
         // tests); this pins claude's per-item handler — it maps the request to
         // an Effect and resolves the oneshot.
-        let (bus, mut drain) = make_inbound(Arc::new(Notify::new()), make_handler(empty_cache()));
+        let (bus, mut drain) = lattice_mode::inbound::make_inbound(
+            Arc::new(Notify::new()),
+            make_handler(empty_cache()),
+        );
 
         let (resp_tx, mut resp_rx) = oneshot::channel();
-        bus.send(ClaudeCodeInboundRequest {
+        bus.send(EditorWriteRequest {
             kind: InboundKind::OpenFile {
                 path: PathBuf::from("/a.rs"),
                 column: None,

@@ -26,7 +26,6 @@ pub mod commands;
 pub mod diff;
 pub mod dispatch;
 pub mod error;
-pub mod inbound;
 // BC.3b: the crate-owned `install(boot)` entry point — one Phase-B line in
 // `editor_boot`, all wiring here.
 pub mod install;

@@ -192,7 +192,7 @@ mod tests {
 
     fn ctx_with(state: EditorStateCache, workspace: Vec<String>) -> ReadContext {
         ReadContext {
-            editor: EditorAccess::new(Arc::new(Mutex::new(state)), None, workspace),
+            editor: EditorAccess::new(Arc::new(Mutex::new(state)), None, workspace, None),
             diagnostics: None,
         }
     }

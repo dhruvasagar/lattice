@@ -1,112 +1,78 @@
 //! IDE-protocol I3: the three write tools.
 //!
-//! Thin async plumbing: build a [`ClaudeCodeInboundRequest`], `send` it on the
-//! bus (which wakes the actor — see [`crate::inbound`]), `await` the oneshot
-//! reply (bounded by a timeout backstop), and shape an MCP result. All the
-//! validation + Effect mapping lives in `inbound::map_request` (tested there);
-//! these functions only marshal arguments and the reply.
+//! Thin MCP envelope builders over [`lattice_agent::EditorAccess`]'s write
+//! half (`open_file` / `save_document` / `close_tab` / `close_session_diffs`):
+//! marshal arguments, call the port, and shape the result. All the
+//! validation + Effect mapping + the bus send/await/timeout lives in the
+//! port (`lattice_agent::write_bus` + `EditorAccess::run_write`); these
+//! functions only parse arguments and translate the port's [`AgentError`]
+//! back into the MCP reply strings the agent has always seen.
 //!
 //! Every failure path is graceful: missing/absent bus, a dropped receiver
-//! (server stopped) → `send` errors, or a timeout all return `success: false`
-//! with a message — never a hang, never a panic.
+//! (server stopped), or a timeout all return `success: false` with a
+//! message — never a hang, never a panic.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
 
-use crate::inbound::{ClaudeCodeInboundRequest, InboundKind};
+use lattice_agent::{AgentError, EditorAccess};
 use lattice_grammar::Utf16Pos;
-use lattice_mode::inbound::InboundBus;
-
-/// Backstop so a write tool can never hang the agent connection even if the
-/// editor never resolves the oneshot (it always should — the drain resolves
-/// synchronously once the actor wakes).
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `openFile`: open `filePath`, optionally at a `selection` start position.
-pub async fn open_file(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
+pub async fn open_file(editor: &EditorAccess, args: &Value) -> Value {
     let Some(path) = args.get("filePath").and_then(|v| v.as_str()) else {
         return result(false, "openFile: missing filePath");
     };
-    run_write(
-        bus,
-        InboundKind::OpenFile {
-            path: PathBuf::from(path),
-            column: parse_position(args),
-        },
-    )
-    .await
+    let column = parse_position(args);
+    match editor.open_file(PathBuf::from(path), column).await {
+        Ok(()) => result(true, "ok"),
+        Err(e) => result(false, &write_error_message(e)),
+    }
 }
 
 /// `saveDocument`: save the document for `filePath`.
-pub async fn save_document(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, args: &Value) -> Value {
+pub async fn save_document(editor: &EditorAccess, args: &Value) -> Value {
     let Some(path) = args.get("filePath").and_then(|v| v.as_str()) else {
         return result(false, "saveDocument: missing filePath");
     };
-    run_write(
-        bus,
-        InboundKind::SaveDocument {
-            path: PathBuf::from(path),
-        },
-    )
-    .await
+    match editor.save_document(PathBuf::from(path)).await {
+        Ok(()) => result(true, "ok"),
+        Err(e) => result(false, &write_error_message(e)),
+    }
 }
 
 /// `close_tab`: close the tab named `tab_name`, scoped to connection
 /// `conn_id` (D-fix.6) — the host rejects THAT connection's diff session(s).
-pub async fn close_tab(
-    bus: Option<&InboundBus<ClaudeCodeInboundRequest>>,
-    args: &Value,
-    conn_id: u64,
-) -> Value {
+pub async fn close_tab(editor: &EditorAccess, args: &Value, conn_id: u64) -> Value {
     let Some(tab) = args.get("tab_name").and_then(|v| v.as_str()) else {
         return result(false, "close_tab: missing tab_name");
     };
-    run_write(
-        bus,
-        InboundKind::CloseTab {
-            origin_session: conn_id,
-            tab_name: tab.to_string(),
-        },
-    )
-    .await
+    match editor.close_tab(conn_id, tab.to_string()).await {
+        Ok(()) => result(true, "ok"),
+        Err(e) => result(false, &write_error_message(e)),
+    }
 }
 
 /// D-fix.6 `closeAllDiffTabs`: reject every programmatic diff connection
 /// `conn_id` opened. Takes no args (the connection id IS the scope).
-pub async fn close_all_diff_tabs(
-    bus: Option<&InboundBus<ClaudeCodeInboundRequest>>,
-    conn_id: u64,
-) -> Value {
-    run_write(
-        bus,
-        InboundKind::CloseAllDiffTabs {
-            origin_session: conn_id,
-        },
-    )
-    .await
+pub async fn close_all_diff_tabs(editor: &EditorAccess, conn_id: u64) -> Value {
+    match editor.close_session_diffs(conn_id).await {
+        Ok(()) => result(true, "ok"),
+        Err(e) => result(false, &write_error_message(e)),
+    }
 }
 
-/// Send the request, await the reply, shape the result. The single graceful
-/// path for all three tools.
-async fn run_write(bus: Option<&InboundBus<ClaudeCodeInboundRequest>>, kind: InboundKind) -> Value {
-    let Some(bus) = bus else {
-        return result(false, "write unavailable: IDE server not fully initialized");
-    };
-    let (tx, rx) = oneshot::channel();
-    if bus
-        .send(ClaudeCodeInboundRequest { kind, response: tx })
-        .is_err()
-    {
-        // Receiver dropped — the editor/server is gone.
-        return result(false, "write failed: editor not reachable");
-    }
-    match tokio::time::timeout(WRITE_TIMEOUT, rx).await {
-        Ok(Ok(reply)) => result(reply.ok, reply.message.as_deref().unwrap_or("ok")),
-        // Sender dropped without replying, or timed out.
-        _ => result(false, "write failed: editor did not respond"),
+/// Unwrap an [`AgentError`] back to the ORIGINAL message text, discarding
+/// `Display`'s variant prefix (`"editor not reachable: "` / `"editor io
+/// error: "`). Using `e.to_string()` here would double-prefix the reply the
+/// agent sees (e.g. `"editor not reachable: write failed: editor not
+/// reachable"`) — a silent wire-format regression. This is the one place
+/// that translation happens, so every write tool stays byte-identical to
+/// the pre-port replies.
+fn write_error_message(e: AgentError) -> String {
+    match e {
+        AgentError::Bus(m) | AgentError::Cancelled(m) | AgentError::Io(m) => m,
     }
 }
 
@@ -133,20 +99,35 @@ fn result(success: bool, message: &str) -> Value {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn editor_without_bus() -> EditorAccess {
+        EditorAccess::new(
+            Arc::new(Mutex::new(lattice_agent::EditorStateCache::default())),
+            None,
+            vec![],
+            None,
+        )
+    }
 
     #[tokio::test]
     async fn write_with_no_bus_is_graceful_failure() {
-        let v = open_file(None, &json!({ "filePath": "/a.rs" })).await;
+        let v = open_file(&editor_without_bus(), &json!({ "filePath": "/a.rs" })).await;
         assert_eq!(v["success"], false);
-        assert!(v["message"].as_str().unwrap().contains("not fully initialized"));
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap()
+                .contains("not fully initialized")
+        );
     }
 
     #[tokio::test]
     async fn missing_argument_is_graceful_failure() {
-        let v = open_file(None, &json!({})).await;
+        let v = open_file(&editor_without_bus(), &json!({})).await;
         assert_eq!(v["success"], false);
         assert!(v["message"].as_str().unwrap().contains("missing filePath"));
-        let v = close_tab(None, &json!({}), 0).await;
+        let v = close_tab(&editor_without_bus(), &json!({}), 0).await;
         assert!(v["message"].as_str().unwrap().contains("missing tab_name"));
     }
 
@@ -161,22 +142,23 @@ mod tests {
 
     #[tokio::test]
     async fn open_file_round_trips_through_a_live_bus() {
-        use crate::inbound::make_handler;
         use lattice_agent::EditorStateCache;
         use lattice_mode::inbound::make_inbound;
-        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
         use tokio::sync::Notify;
 
         let cache = Arc::new(Mutex::new(EditorStateCache::default()));
-        let (bus, mut drain) = make_inbound(Arc::new(Notify::new()), make_handler(cache));
+        let (bus, mut drain) = make_inbound(
+            Arc::new(Notify::new()),
+            lattice_agent::make_handler(cache.clone()),
+        );
+        let editor = EditorAccess::new(cache, None, vec![], Some(bus));
 
         // The write awaits the reply; here we drive the drain (the "tick") that
         // resolves it. Poll the drain until the queued request produces its
         // Effect, then collect the tool's result.
-        let call = tokio::spawn({
-            let bus = bus.clone();
-            async move { open_file(Some(&bus), &json!({ "filePath": "/a.rs" })).await }
-        });
+        let call =
+            tokio::spawn(async move { open_file(&editor, &json!({ "filePath": "/a.rs" })).await });
         let mut effects = Vec::new();
         for _ in 0..50 {
             effects = drain();

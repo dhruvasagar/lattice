@@ -11,7 +11,8 @@
 
 use lattice_mode::SubsystemBoot;
 
-use crate::inbound::{ClaudeCodeInboundRequest, make_handler};
+use lattice_agent::{EditorWriteRequest, make_handler};
+
 use crate::server::{self, ClaudeCodeServerHandle, ServerConfig};
 use crate::{commands, lockfile, modes};
 
@@ -46,7 +47,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // to an `Effect` + resolves its oneshot). The drain's registration token
     // rides `boot.into_registrations()` into the Editor for the program
     // lifetime.
-    let writes = boot.inbound::<ClaudeCodeInboundRequest, _>(make_handler(handle.read_cache()));
+    let writes = boot.inbound::<EditorWriteRequest, _>(make_handler(handle.read_cache()));
 
     // I4 openDiff: the host registered the programmatic-diff bus (the openDiff
     // producer side) as a Phase-A service so this crate names no host internals.

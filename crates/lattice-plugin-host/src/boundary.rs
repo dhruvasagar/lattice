@@ -301,6 +301,13 @@ impl WitBoundary for NativeRawCandidate {
             source: self.source.as_ref().map(|s| s.0.clone()),
             kind: self.kind.to_wit()?,
             data: self.data.to_wit()?,
+            // PH7.4a: marginalia crosses so plugin sources contribute themed
+            // columns (`Annotation` boundary in `boundary_picker`).
+            annotations: self
+                .annotations
+                .iter()
+                .map(WitBoundary::to_wit)
+                .collect::<Result<Vec<_>, String>>()?,
         })
     }
 
@@ -311,10 +318,14 @@ impl WitBoundary for NativeRawCandidate {
             source: wit.source.map(SourceId),
             kind: NativeCandidateKind::from_wit(wit.kind)?,
             data: NativeCandidateData::from_wit(wit.data)?,
-            // The render-time / host-only fields do not cross (§4.4); they are
+            annotations: wit
+                .annotations
+                .into_iter()
+                .map(lattice_completion::candidate::Annotation::from_wit)
+                .collect::<Result<Vec<_>, String>>()?,
+            // The remaining render-time / host-only fields do not cross (§4.4);
             // reconstructed empty and re-derived host-side when needed.
             accept_action: None,
-            annotations: Vec::new(),
             display_spans: Vec::new(),
         })
     }

@@ -54,6 +54,7 @@
 pub mod boundary;
 pub mod boundary_app_effect;
 pub mod boundary_effect;
+pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
 pub mod manifest;

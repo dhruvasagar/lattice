@@ -1912,6 +1912,8 @@ baseline. Order-of-magnitude only until re-run on the canonical box.
 | `boundary_effect_round_trip` (PH7.3b1b) | ~92 ns | A composite `Effect::Many` of 4 arms (RecordJump + OpenBufferAt + QuitEditor + Echo) — exercises the `list<effect>` flatten/rebuild + a spread of payload records. The cost an operator/ex-command guest export pays to return an effect. |
 | `boundary_app_effect_round_trip` (PH7.3b2) | ~13 ns | A single `AppEffect` (`EnterVisual(Linewise)`) — the payload of the `Effect::AppAction` arm. Exercises the reused `ModalState`/`VisualKind` mirrors + the `app-effect` variant a chord-bound plugin action marshals. |
 | `document_get_text_range_one_line` (PH7.3c) | ~400 ns | The `document` resource slicing one line out of a **10k-line** buffer. Demonstrates "zero-copy at the slice level" (§9.6): the cost is O(log n) locate + O(slice) copy, NOT O(document) — the whole rope is never materialised across the boundary. |
+| `boundary_picker_candidate_with_marginalia_round_trip` (PH7.4a) | ~290 ns | A picker `RawCandidate` carrying a `Styled` permission cell (2 slot-keyed segments) + a `Custom` size cell — the shape a plugin file source emits per row. Marshals the whole marginalia surface the picker seam adds (the `Annotation` enum crosses so plugin sources define columns). |
+| `boundary_routing_payload_round_trip` (PH7.4a) | ~5–10 ns | The per-candidate `RoutingPayload::OpenFile` a file source emits + consumes in `accept`. |
 
 ## Plugin host — end-to-end typed call (`crates/lattice-plugin-host/benches/trampoline.rs`)
 

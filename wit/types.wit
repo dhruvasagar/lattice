@@ -106,16 +106,74 @@ interface types {
         payload: list<u8>,
     }
 
-    /// Mirrors the crossable core of `lattice_completion::candidate::RawCandidate`.
-    /// The render-time / host-only fields (`accept_action`, `annotations`,
-    /// `display_spans`) are `#[serde(skip)]` and do NOT cross — they are
-    /// reconstructed host-side (§4.4). `source` is the optional source id.
+    // ---- Marginalia annotations (PH7.4a, marginalia.md §8 / MARG.1) ----
+    // The whole closed `Annotation` enum crosses so a plugin picker source can
+    // define + populate marginalia columns (the user's PH7.4 requirement). The
+    // host lays out `AnnotationColumns` from the visible set (a render-consumed
+    // projection), so only the per-candidate annotations cross, never the column
+    // layout. `slot` / `category` are theme element KEYS resolved at paint, never
+    // baked colors, so a `:colorscheme` swap recolors plugin marginalia live.
+
+    /// Mirrors `lattice_protocol::chord::SpecialKey`. `f` carries the function-key
+    /// number (`1..=24`; `0` is invalid and rejected at the boundary).
+    variant special-key {
+        esc, enter, tab, backspace, space,
+        up, down, left, right,
+        home, end, page-up, page-down, insert, delete,
+        f(u8),
+    }
+    /// Mirrors `lattice_protocol::chord::KeyKind`.
+    variant key-kind {
+        %char(char),
+        special(special-key),
+    }
+    /// Mirrors `lattice_protocol::chord::KeyChord`. `mods` is the raw `KeyMods`
+    /// bitfield (Ctrl=1, Shift=2, Alt=4, Super=8) — structural, not lossy.
+    record key-chord {
+        key: key-kind,
+        mods: u8,
+    }
+
+    /// Mirrors `lattice_completion::candidate::AnnotationSegment` — one run of
+    /// marginalia text sharing a theme `slot` key.
+    record annotation-segment {
+        text: string,
+        slot: string,
+    }
+    /// Payload of `annotation::custom` (the plugin escape hatch): pre-formatted
+    /// `text` + a theme `slot` key.
+    record annotation-custom {
+        text: string,
+        slot: string,
+    }
+    /// Payload of `annotation::styled` (§8: a multi-slot column cell) — a `category`
+    /// key plus per-segment slot-keyed runs (file-permission strings, size+unit, …).
+    record annotation-styled {
+        category: string,
+        segments: list<annotation-segment>,
+    }
+    /// Mirrors `lattice_completion::candidate::Annotation` (whole closed enum).
+    variant annotation {
+        kind(string),
+        doc-snippet(string),
+        keybinding(list<key-chord>),
+        source(string),
+        custom(annotation-custom),
+        styled(annotation-styled),
+    }
+
+    /// Mirrors the crossable core of `lattice_completion::candidate::RawCandidate`
+    /// **plus marginalia** (PH7.4a). `accept_action` and `display_spans` remain
+    /// host-only (`#[serde(skip)]`, reconstructed host-side, §4.4); `annotations`
+    /// now crosses so plugin sources contribute themed columns. `source` is the
+    /// optional source id.
     record raw-candidate {
         text: string,
         display: string,
         source: option<string>,
         kind: candidate-kind,
         data: candidate-data,
+        annotations: list<annotation>,
     }
 
     /// Mirrors `lattice_picker::outcome::PickerAcceptOutcome`. All flat pure
@@ -620,5 +678,150 @@ interface types {
         search-trigger(string),
         search-jump-to-source,
         search-refresh,
+    }
+
+    // ---- The picker-source seam (PH7.4a, §4.2 / §5 `picker-source`) ----
+    // Mirrors the data types a plugin picker source authors against:
+    // `PickerSourceSpec` (+`ArgSpec`), `RoutingPayload`, `OpenTarget`, and the
+    // owned `PickerContext` projection the host hands `init`. This is the
+    // plugin-facing API (the user's "expose the api, not sources"): native
+    // sources stay native Rust; a plugin implements a source against these types
+    // and registers through the same `PickerRegistry::register_generator` seam.
+    //
+    // The active buffer's bulk rope text and syntax-highlight overlay do NOT ride
+    // `active-buffer-snapshot`; they cross via the `buffer` `document` resource
+    // handle, wired with the `init(ctx)` guest export at PH7.4c.
+
+    /// Mirrors `lattice_grammar::args::ArgKind`.
+    variant arg-kind {
+        %string, %char, %bool, int, pattern, chord, body, raw,
+    }
+    /// Mirrors `lattice_grammar::args::ArgDefault`. `literal` reuses `arg-value`.
+    variant arg-default {
+        required,
+        none,
+        literal(arg-value),
+        use-selection,
+        use-cursor-word,
+        use-last-response,
+    }
+    /// Mirrors `lattice_grammar::args::ArgSpec`. Native `name`/`doc`/`prompt`/
+    /// `completion` are `&'static str`; the host adapter interns the plugin's
+    /// owned strings at registration (`Box::leak`, bounded by loaded-source count
+    /// — see the slice plan note on hot-reload).
+    record arg-spec {
+        name: string,
+        kind: arg-kind,
+        doc: string,
+        prompt: string,
+        default: arg-default,
+        completion: option<string>,
+    }
+    /// Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source
+    /// out of the picker's fuzzy refilter (the source owns filtering).
+    record picker-source-spec {
+        id: string,
+        doc: string,
+        args-schema: list<arg-spec>,
+        args-hint: string,
+        live: bool,
+    }
+
+    /// Mirrors `lattice_picker::outcome::OpenTarget` (`<CR>`/`<C-s>`/`<C-v>`/`<C-t>`).
+    variant open-target { default, split, vsplit, tab }
+
+    // Payload records for the multi-field `routing-payload` arms. `lsp-location`
+    // and `jump-in-buffer` reuse the shared `location` / `jump-target` records;
+    // `invoke-command` reuses `command-ref`.
+    record resolve-diff-payload {
+        primary: u32,
+        accept: bool,
+    }
+    record lsp-instance-payload {
+        server-id: string,
+        workspace: string,
+    }
+    record show-message-action-payload {
+        request-id: u32,
+        action-index: u32,
+    }
+    /// Mirrors `lattice_picker::RoutingPayload` — the opaque token a source emits
+    /// per candidate and consumes in `accept`. All flat pure data; paths cross as
+    /// strings (a non-UTF-8 path is a typed error, §4.4).
+    variant routing-payload {
+        buffer(u32),
+        resolve-diff(resolve-diff-payload),
+        lsp-instance(lsp-instance-payload),
+        lsp-location(location),
+        lsp-completion(u32),
+        lsp-code-action(u32),
+        open-file(string),
+        jump-in-buffer(jump-target),
+        invoke-command(command-ref),
+        paste-register(char),
+        jump-to-mark(char),
+        expand-snippet(string),
+        accept-show-message-action(show-message-action-payload),
+        lsp-code-lens(u32),
+        color-presentation(u32),
+        colorscheme(string),
+    }
+
+    // ---- The owned `PickerContext` projection (§4.2) ----
+    // Host→guest only: the host projects live borrows into these owned records at
+    // `init` time; the guest never sends a context back. So these mirror one-way
+    // (a `project_picker_context` fn, the `project_buffer_snapshot` precedent),
+    // no `from_wit`.
+
+    /// Mirrors `lattice_picker::context::BufferEntry`. `kind-label` is a display
+    /// string — the picker seam stays oblivious to `BufferKind` (CLAUDE.md rule).
+    record buffer-entry {
+        id: u32,
+        kind-label: string,
+        path: option<string>,
+        title: string,
+        dirty: bool,
+    }
+    /// Mirrors `lattice_picker::context::PositionSource`.
+    variant position-source {
+        auto-jump,
+        explicit-mark,
+        plugin-push,
+        named-mark(char),
+    }
+    /// Mirrors `lattice_picker::context::PositionEntry`.
+    record position-entry {
+        buffer-id: u32,
+        line: u32,
+        col: u32,
+        source: position-source,
+    }
+    /// One tree-sitter symbol location `(name, line, byte-col)` — the owned form
+    /// of `ActiveBufferSnapshot::syntax_symbols`.
+    record symbol-location {
+        name: string,
+        line: u32,
+        col: u32,
+    }
+    /// Mirrors `lattice_picker::context::ActiveBufferSnapshot` (metadata only).
+    /// `buffer` (the rope) + `syntax_highlights` are deferred to the `document`
+    /// resource wiring (PH7.4c); a fuzzy-finder needs neither.
+    record active-buffer-snapshot {
+        buffer-id: u32,
+        path: option<string>,
+        language: option<string>,
+        cursor: position,
+        selection: option<tuple<position, position>>,
+        syntax-symbols: list<symbol-location>,
+    }
+    /// Mirrors `lattice_picker::context::PickerContext` (the owned projection).
+    record picker-context {
+        active-buffer: active-buffer-snapshot,
+        workspace-root: string,
+        recent-files: list<string>,
+        position-history: list<position-entry>,
+        buffers: list<buffer-entry>,
+        marks: list<tuple<char, position>>,
+        registers: list<tuple<string, string>>,
     }
 }

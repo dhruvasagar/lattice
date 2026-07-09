@@ -1,6 +1,8 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-02) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅** (a + b(b1a+b1b+b2) + c + d); PH7.4 (⭐ exit) next. Design fragment:
+**Status:** 🚧 in progress (2026-07-03) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅**
+(a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
+mirrors + marginalia + context projection); 4b (host-services fs) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -293,7 +295,7 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
     handle, which first appears in the picker-source `init(ctx)` seam (PH7.4). `DocumentResource` is the
     ready backing.
 
-### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 📝
+### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 🚧
 The `picker-source` WIT interface mirroring `PickerSourceGenerator`; host adapter wrapping a
 WASM component as `Arc<dyn PickerSourceGenerator>` and registering via the `SubsystemBoot`
 `install(boot)` seam → `PickerRegistry::register_generator`; the `fuzzy-finder` plugin
@@ -305,6 +307,73 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 - **Artefacts:** doc = fragment §9; bench = picker filter per item (< 2μs p99) with the WASM
   source; test = fuzzy-finder end-to-end through `Editor::boot`, parity with native picker
   tests, MRU-for-free; error = source init trap → picker stays closed + echo.
+
+- **Decomposed (2026-07-03)** into five independently-landable sub-slices. The carve
+  incorporates the picker-API scope Dhruva locked at the start of PH7.4: **(1)** expose *the
+  API, not sources* — one generator contract (`spec`/`init`/`accept`) any source (native or
+  plugin) satisfies, never per-source WIT; **(2)** plugins both *create* new sources AND
+  *utilize* existing ones (guest→host open-picker); **(3)** plugins *define + populate
+  marginalia columns* (the whole `Annotation` enum crosses — un-defers the PH7.3a exclusion).
+  Marginalia decision (locked): whole enum crosses, host lays out `AnnotationColumns` (a
+  render-consumed projection stays host-side per the substrate-vs-consumer rule).
+
+  #### PH7.4a — Picker boundary type mirrors + projection ✅ (2026-07-03)
+  The plugin-facing API's data types + round-trips (the PH7.3a "conventions + small
+  round-trips" character, extended to the picker seam). Host-layer only — no guest, no
+  host-services, no adapter, no cutover.
+  - **Landed:** `wit/types.wit` — the marginalia mirrors (`annotation` variant + `key-chord`/
+    `key-kind`/`special-key` + `annotation-segment`/`-custom`/`-styled`), `annotations` added
+    to `raw-candidate`; the source-API records (`arg-kind`/`arg-default`/`arg-spec`,
+    `picker-source-spec`); `routing-payload` (+ `resolve-diff`/`lsp-instance`/`show-message-action`
+    payloads; reuses `location`/`jump-target`/`command-ref`) + `open-target`; the owned
+    `picker-context` projection (`active-buffer-snapshot`/`buffer-entry`/`position-entry`/
+    `position-source`/`symbol-location`). `wit/plugin.wit` — world-level `use` of the new types.
+    New `boundary_picker.rs` — `WitBoundary` for `KeyChord`/`SpecialKey`/`Annotation`/`ArgKind`/
+    `ArgDefault`/`ArgSpec`/`PickerSourceSpec`/`OpenTarget`/`RoutingPayload` (all compiler-
+    exhaustive both ways) + `project_picker_context` (one-way borrows→owned, the
+    `project_buffer_snapshot` precedent). `boundary.rs` — `RawCandidate` now round-trips
+    `annotations`. `benches/boundary.rs` — a marginalia-carrying candidate + a `RoutingPayload`
+    round-trip.
+  - **The `&'static str` seam (finding):** native `PickerSourceSpec`/`ArgSpec` hold `&'static str`
+    (compile-time source ids); a WASM plugin supplies owned runtime strings, so the adapter
+    **interns** them (`Box::leak`, no `unsafe`) in `from_wit`. Bounded by loaded-source count —
+    each spec leaked once at registration; **unbounded re-registration (hot reload) is a PH7.12
+    concern.**
+  - **Deferred to PH7.4c (with the guest world):** the `document` resource wiring (the PH7.3c
+    `HostDocument` impl + `with`-map + `add_to_linker`) — it needs a *world function signature*
+    referencing `document`, which first appears in the `init(ctx)` guest export (4c). The
+    active buffer's rope text + `syntax_highlights` ride that resource, not the context
+    projection; a fuzzy-finder needs neither. `DocumentResource` (PH7.3c) is the ready backing.
+  - **Utilize-an-existing-picker (finding):** the `effect` mirror already carries
+    `open-picker-payload` (`Effect::OpenPicker { source, args }`), so a plugin command handler
+    emitting that effect *already* opens an existing picker — the "utilize" path is largely free
+    via the effect vocabulary. PH7.4e only needs to formalise/validate it.
+  - **Tests (8, 60 lib green):** key-chord char/special/mods round-trip + `f(0)` typed error;
+    every `Annotation` variant (incl. `Styled` perms cell + `Keybinding`); arg-spec +
+    picker-source-spec through intern; open-target; representative routing-payload arms;
+    non-UTF-8 path typed error.
+
+  #### PH7.4b — `host-services` fs-walk seam 📝
+  First guest→host call: a capability-gated fs walk against the plugin's `CapabilityGrant`
+  (PH7.2). The `fuzzy-finder` walks the workspace through this. **Depends:** PH7.4a.
+
+  #### PH7.4c — Host adapter (create path) 📝
+  Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` (init/accept
+  via guest exports, `Stream` via `collect_batches`); wire the `document` resource
+  (`init(ctx)` is the first document-referencing signature — retires the PH7.3c deferral);
+  register via `install(boot)` → `register_generator` with a host-stamped
+  `SourceLayer::Plugin(id)`. **Depends:** PH7.4a, PH7.4b. **Acid test:** ZERO `Editor::`
+  methods, ZERO new `Action` variants.
+
+  #### PH7.4d — `fuzzy-finder` plugin + cutover ⭐ 📝
+  The real `wasm32-wasip2` guest replicating `files`; unregister the native source, register
+  the WASM one; parity with the native picker tests + MRU-for-free; overhead benches.
+  **← Phase-7 exit gate.** **Depends:** PH7.4c.
+
+  #### PH7.4e — "Utilize an existing picker" seam 📝
+  Formalise/validate the guest→host open-picker path (a plugin opens/reuses an existing
+  source). Largely expressible today via `Effect::OpenPicker`; this slice proves it end-to-end
+  and adds any missing surface. Post-exit (the exit gate doesn't require it). **Depends:** PH7.4c.
 
 ### PH7.5 — Perf gates + CI ratchet 📝
 Land every §7 budget row as a CI-gated criterion bench with a ratchet (bar only moves down);

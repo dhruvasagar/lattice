@@ -46,6 +46,18 @@ world plugin {
 	/// is transitively referenced, so it surfaces without a world-level `use`.
 	use types.{app-effect, viewport-pos, scroll-pos, pane-direction, hscroll};
 
+	/// The picker-source seam types (PH7.4a, §4.2 / §5 `picker-source`): the
+	/// plugin-facing API a WASM picker source authors against. Marginalia
+	/// (`annotation` + `key-chord`) crosses so plugin candidates carry themed
+	/// columns; the owned `picker-context` projection is host→guest only.
+	/// Transitively-referenced payload records (`annotation-segment`,
+	/// `arg-spec`, `resolve-diff-payload`, `symbol-location`, …) surface under
+	/// `crate::lattice::plugin_host::types::*` without a world-level `use`.
+	use types.{annotation, key-chord, special-key, key-kind};
+	use types.{arg-kind, arg-default, arg-spec, picker-source-spec};
+	use types.{routing-payload, open-target};
+	use types.{picker-context, active-buffer-snapshot, buffer-entry, position-entry, position-source};
+
 	/// The owned `buffer-snapshot` projection record (PH7.3c, §4.2). `use`d (not
 	/// `import`ed) so `bindgen!` emits the Rust mirror the host projects into
 	/// (`buffer.rs::project_buffer_snapshot`). The `document` **resource** is

@@ -18,11 +18,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
+use lattice_completion::candidate::{
+    Annotation, AnnotationSegment, CandidateData, CandidateKind, RawCandidate,
+};
 use lattice_core::buffer::Buffer;
 use lattice_grammar::app_effect::AppEffect;
 use lattice_grammar::args::{ArgValue, Args};
 use lattice_grammar::effect::{Effect, QuitScope};
+use lattice_picker::RoutingPayload;
 use lattice_picker::outcome::PickerAcceptOutcome;
 use lattice_plugin_host::WitBoundary;
 use lattice_plugin_host::buffer::DocumentResource;
@@ -148,6 +151,52 @@ fn boundary_round_trip(c: &mut Criterion) {
                 .get_text_range(black_box(one_line))
                 .expect("slice");
             black_box(text);
+        })
+    });
+
+    // PH7.4a: a plugin picker candidate with a marginalia column — the shape a
+    // WASM file source emits per row. A `RawCandidate` carrying a `Styled`
+    // permission cell (per-bit-class segments) round-trips through the boundary;
+    // this measures the marshalling cost of the marginalia the picker seam adds
+    // (the whole `Annotation` enum crosses so plugin sources define columns).
+    let mut cand = RawCandidate::plain("src/main.rs".to_string(), CandidateKind::File);
+    cand.annotations = vec![
+        Annotation::Styled {
+            category: Arc::from("perms"),
+            segments: vec![
+                AnnotationSegment {
+                    text: Arc::from("-"),
+                    slot: Arc::from("perm_type"),
+                },
+                AnnotationSegment {
+                    text: Arc::from("rw-r--r--"),
+                    slot: Arc::from("perm_bits"),
+                },
+            ],
+        },
+        Annotation::Custom {
+            text: Arc::from("42K"),
+            slot: Arc::from("annotation_size"),
+        },
+    ];
+    c.bench_function("boundary_picker_candidate_with_marginalia_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&cand).to_wit().expect("to_wit");
+            let back = RawCandidate::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+
+    // PH7.4a: the per-candidate `RoutingPayload` a file source emits (the token
+    // it consumes in `accept`). `OpenFile` is the fuzzy-finder's arm.
+    let routing = RoutingPayload::OpenFile {
+        path: PathBuf::from("/home/user/project/src/main.rs"),
+    };
+    c.bench_function("boundary_routing_payload_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&routing).to_wit().expect("to_wit");
+            let back = RoutingPayload::from_wit(wit).expect("from_wit");
+            black_box(back);
         })
     });
 }

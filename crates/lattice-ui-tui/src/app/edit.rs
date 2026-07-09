@@ -416,6 +416,151 @@ mod tests {
     }
 
     #[test]
+    fn per_character_insert_session_is_one_undo_unit() {
+        // The reported bug: each keystroke arrives as its own
+        // `Action::Insert`, but the whole insert session must undo as a
+        // single batch, not one character at a time.
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        for ch in ["h", "e", "l", "l", "o"] {
+            a.apply(Action::Insert(ch.into()));
+        }
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "hello");
+        a.apply(Action::Undo);
+        assert_eq!(a.editor.document.text(), "", "one undo reverts the session");
+        // Redo replays the whole session too.
+        a.apply(Action::Redo);
+        assert_eq!(a.editor.document.text(), "hello");
+    }
+
+    #[test]
+    fn two_insert_sessions_are_two_undo_units() {
+        // Separate `i` .. `<Esc>` sessions must not merge, even with no
+        // edit in between -- proves the group closes on `<Esc>` and
+        // re-opens on the next Insert.
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("a".into()));
+        a.apply(Action::Insert("b".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        // Park the cursor at end-of-line so the second session appends.
+        a.editor.cursor = Position::new(0, 2);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("c".into()));
+        a.apply(Action::Insert("d".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "abcd");
+        a.apply(Action::Undo);
+        assert_eq!(a.editor.document.text(), "ab", "second session reverts alone");
+        a.apply(Action::Undo);
+        assert_eq!(a.editor.document.text(), "", "first session reverts alone");
+    }
+
+    #[test]
+    fn backspace_within_insert_is_part_of_the_same_undo_unit() {
+        // Typing then backspacing inside one session is one undo unit.
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        for ch in ["a", "b", "c"] {
+            a.apply(Action::Insert(ch.into()));
+        }
+        a.apply(Action::DeleteCharBackward); // drop the 'c'
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "ab");
+        a.apply(Action::Undo);
+        assert_eq!(a.editor.document.text(), "");
+    }
+
+    /// The insert-entry commands that bypass `enter_mode`
+    /// (`a` / `A` / `I` / `o` / `O`) must open the undo group too, so a
+    /// whole session collapses to one `u` -- not just `i`. Each case types
+    /// several characters, leaves Insert, and asserts a single undo reverts
+    /// the entire session.
+    fn assert_entry_is_one_undo_unit(
+        start: &str,
+        cursor: Position,
+        entry: Action,
+        typed: &[&str],
+        after_typing: &str,
+    ) {
+        let mut a = app_with(start, 10);
+        a.editor.cursor = cursor;
+        a.apply(entry);
+        for ch in typed {
+            a.apply(Action::Insert((*ch).into()));
+        }
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), after_typing);
+        a.apply(Action::Undo);
+        assert_eq!(
+            a.editor.document.text(),
+            start,
+            "one undo should revert the whole insert session"
+        );
+    }
+
+    #[test]
+    fn append_session_is_one_undo_unit() {
+        // `a`: append after the cursor.
+        assert_entry_is_one_undo_unit(
+            "x",
+            Position::new(0, 0),
+            Action::EnterAppend,
+            &["a", "b", "c"],
+            "xabc",
+        );
+    }
+
+    #[test]
+    fn append_eol_session_is_one_undo_unit() {
+        // `A`: append at end of line.
+        assert_entry_is_one_undo_unit(
+            "hi",
+            Position::new(0, 0),
+            Action::EnterAppendEndOfLine,
+            &["!", "?"],
+            "hi!?",
+        );
+    }
+
+    #[test]
+    fn insert_first_non_blank_session_is_one_undo_unit() {
+        // `I`: insert at first non-blank column.
+        assert_entry_is_one_undo_unit(
+            "  x",
+            Position::new(0, 3),
+            Action::EnterInsertFirstNonBlank,
+            &["a", "b"],
+            "  abx",
+        );
+    }
+
+    #[test]
+    fn open_line_below_session_is_one_undo_unit() {
+        // `o`: open a new line below.
+        assert_entry_is_one_undo_unit(
+            "top",
+            Position::new(0, 0),
+            Action::OpenLineBelow,
+            &["n", "e", "w"],
+            "top\nnew",
+        );
+    }
+
+    #[test]
+    fn open_line_above_session_is_one_undo_unit() {
+        // `O`: open a new line above.
+        assert_entry_is_one_undo_unit(
+            "bot",
+            Position::new(0, 0),
+            Action::OpenLineAbove,
+            &["n", "e", "w"],
+            "new\nbot",
+        );
+    }
+
+    #[test]
     fn cw_deletes_word_and_enters_insert_mode() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(

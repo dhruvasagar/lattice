@@ -1012,6 +1012,9 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::OpenMessages => self.do_open_messages(),
+            // DB.2: host-applied via handle_effect (like DiffOpen); the
+            // peer has nothing to do.
+            Effect::OpenDashboard => {}
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::OpenLspTraceLog { server_id } => {
                 self.do_open_lsp_trace_log(server_id.as_deref())
@@ -1287,7 +1290,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
         | Effect::AppAction(_)
-        | Effect::RecordJump => false,
+        | Effect::RecordJump
+        | Effect::OpenDashboard => false,
     }
 }
 
@@ -1405,7 +1409,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
         | Effect::AppAction(_)
-        | Effect::RecordJump => false,
+        | Effect::RecordJump
+        | Effect::OpenDashboard => false,
     }
 }
 
@@ -1680,10 +1685,12 @@ mod tests {
     }
 
     #[test]
-    fn key_harness_df_delim_deletes_up_to_match() {
+    fn key_harness_df_delim_deletes_through_match() {
+        // `f` is inclusive: `df,` deletes through the first comma, leaving
+        // " beta, gamma" (vim parity).
         let mut a = app_with("alpha, beta, gamma", 10);
         press_chars(&mut a, "df,");
-        assert_eq!(a.editor.document.text(), ", beta, gamma");
+        assert_eq!(a.editor.document.text(), " beta, gamma");
     }
 
     #[test]

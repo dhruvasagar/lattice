@@ -134,6 +134,11 @@ pub struct FrameView<'a> {
     /// `signcolumn=no` (help-mode, synthetic buffers) renders
     /// gutterless without the renderer knowing it's help.
     pub sign_column: bool,
+    /// DB.4: extra leading gutter cells to horizontally centre the buffer's
+    /// content (dashboard). Added to the computed gutter width for both
+    /// document lines and virtual rows, so content + cursor shift right. `0`
+    /// for every non-centred buffer.
+    pub content_left_pad: u32,
 }
 
 impl<'a> FrameView<'a> {
@@ -185,6 +190,7 @@ impl<'a> FrameView<'a> {
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: app.ad().option_cache.wrap_lines,
             sign_column: app.ad().option_cache.sign_column,
+            content_left_pad: app.ad().option_cache.content_left_pad,
         }
     }
 
@@ -207,10 +213,17 @@ impl<'a> FrameView<'a> {
         let (folds, foldenable) = rs.folds_for_buffer(buffer_id);
         let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
         let inlay_hints = rs.inlay_hints_for_buffer(buffer_id);
+        // PI.0: content-centring pad follows the *rendered* buffer's
+        // `CenterContentWidth` local + its pane's width, not the
+        // active-buffer identity — so a pane keeps its centring even when
+        // `document_buffer_id` points elsewhere (e.g. during a picker
+        // preview that swapped the active buffer to the previewed file).
+        let content_left_pad = rs.content_left_pad_for(buffer_id);
         Self {
             app,
             folds,
             inlay_hints,
+            content_left_pad,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -327,39 +340,17 @@ pub fn draw_frame(
     // and does NOT allocate an extra band -- the centered
     // overlay is drawn on top of the buffer area instead.
     let picker_is_minibuffer = picker_display_is_minibuffer(app);
-    // Slice 3c.final.E.5j: picker / completion popup row counts
-    // read from the published `picker_state()` / `completion()`
-    // sub-states (already populated by slice B.3).
-    let picker_rows = if picker_is_minibuffer {
-        app.picker_state()
-            .state
-            .as_deref()
-            .map(|p| popup_height(p.candidates.len().max(1)))
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    // Slice 3c.gpui-cmdline-completion: cmdline-completion honors
-    // the same `picker.display` setting as the picker. In minibuffer
-    // mode it claims strip rows below the buffer area; in popup
-    // mode it floats centered over the buffer like the picker
-    // overlay, so the strip count is zero.
-    let completion_rows = if picker_is_minibuffer {
-        app.completion()
-            .state
-            .as_deref()
-            .map(|s| popup_height(s.candidates.len()))
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let extra_rows = picker_rows.max(completion_rows);
+    // `chrome_rows` is the single source of truth for tabline + candidate-
+    // band rows, shared with the runtime loop's viewport/pane-rect push
+    // (see its doc comment) — this and that push can no longer diverge.
+    let chrome = chrome_rows(app);
+    let extra_rows = chrome.extra();
 
     // Issue #29 (2026-05-22): tabline row at the top. Visibility
     // is resolved by the publisher (`build_tabs_render_state`)
     // based on `tabline.show` × tabs.len().
-    let tabline_visible = app.render_state.load().tabs.visible;
-    let tabline_rows: u16 = if tabline_visible { 1 } else { 0 };
+    let tabline_rows: u16 = chrome.tabline;
+    let tabline_visible = tabline_rows > 0;
 
     // MO.4.b / Option-A: global modeline removed. Each pane owns its
     // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
@@ -420,9 +411,9 @@ pub fn draw_frame(
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
-    if picker_rows > 0 {
+    if chrome.picker > 0 {
         draw_picker_candidates(frame, chunks[3], app);
-    } else if completion_rows > 0 {
+    } else if chrome.completion > 0 {
         draw_completion_popup(frame, chunks[3], app);
     }
     // Picker popup overlay -- only drawn when `picker.display`
@@ -504,6 +495,63 @@ fn draw_tabline(frame: &mut Frame, area: Rect, app: &App) {
 fn popup_height(candidate_count: usize) -> usize {
     const MAX_ROWS: usize = 10;
     candidate_count.min(MAX_ROWS).max(1)
+}
+
+/// Rows outside the buffer area: the tabline (0/1) and the picker/
+/// completion candidate band (0 when neither is open, or when
+/// `picker.display = "popup"` floats it over the buffer instead of
+/// claiming a strip).
+pub(crate) struct ChromeRows {
+    pub tabline: u16,
+    pub picker: u16,
+    pub completion: u16,
+}
+
+impl ChromeRows {
+    /// The candidate-band height: picker takes precedence when both are
+    /// open (only one is interactively reachable at a time).
+    pub fn extra(&self) -> u16 {
+        self.picker.max(self.completion)
+    }
+}
+
+/// SINGLE source of truth for [`ChromeRows`]. Before this existed,
+/// `draw_frame`'s paint layout and the runtime loop's viewport / pane-rect
+/// push each computed these rows independently (the runtime loop even had
+/// its own hand-synced copy of `popup_height`, `popup_height_for`,
+/// explicitly commented "kept in sync by hand for now"). The tabline term
+/// was missing from the runtime's copy entirely: the scroll/viewport logic
+/// believed it had one more row than `draw_frame` actually painted, so the
+/// last visible line (by the viewport's reckoning) was never drawn once the
+/// tabline showed. `popup_feedback_inner_dims` no longer needs its own
+/// local tabline recomputation either — callers pass a `buffer_height`
+/// that already excludes it via this function.
+pub(crate) fn chrome_rows(app: &App) -> ChromeRows {
+    let tabline = if app.render_state.load().tabs.visible { 1 } else { 0 };
+    let picker_is_minibuffer = picker_display_is_minibuffer(app);
+    let picker_rows = if picker_is_minibuffer {
+        app.picker_state()
+            .state
+            .as_deref()
+            .map(|p| popup_height(p.candidates.len().max(1)))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let completion_rows = if picker_is_minibuffer {
+        app.completion()
+            .state
+            .as_deref()
+            .map(|s| popup_height(s.candidates.len()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    ChromeRows {
+        tabline,
+        picker: picker_rows as u16,
+        completion: completion_rows as u16,
+    }
 }
 
 /// Vertico-style cmdline completion popup (DESIGN.md §5.11.3,
@@ -906,6 +954,7 @@ fn draw_insert_completion_docs_popup(
             pane_id: lattice_core::ui::pane::PaneId::COMPLETION_DOCS,
             buffer_id: docs_id,
             cursor_line: 0,
+            cursor_line_highlight: false,
             scroll: doc_scroll,
             leftcol: 0,
             display_line_numbers: handle.display_line_numbers(),
@@ -1762,11 +1811,12 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
 /// Returns `None` when no FLOATING popup is open (no popup, or help is
 /// shown as an in-pane leaf — that case is a real pane). The buffer
 /// area is reconstructed from the terminal width + the runtime's
-/// already-resolved `buffer_height` (terminal minus cmdline/candidate
-/// rows) minus the tabline row, so the `popup_outer_size` inputs match
-/// exactly what `draw_help_overlay` paints into — the synthetic
-/// popup-pane matrix and the painted box agree on width. Inner =
-/// outer − 2 (the `Borders::ALL` block).
+/// already-resolved `buffer_height`, so the `popup_outer_size` inputs
+/// match exactly what `draw_help_overlay` paints into — the synthetic
+/// popup-pane matrix and the painted box agree on width. `buffer_height`
+/// already excludes the tabline row (the caller computes it via
+/// `chrome_rows`, the single source of truth — no local recomputation
+/// here). Inner = outer − 2 (the `Borders::ALL` block).
 pub(crate) fn popup_feedback_inner_dims(
     app: &App,
     terminal_width: u16,
@@ -1781,19 +1831,10 @@ pub(crate) fn popup_feedback_inner_dims(
         return None;
     }
     let help = app.popup_help()?;
-    // `draw_frame`'s `chunks[1]` (the buffer area the overlay sizes
-    // against) is the terminal minus the tabline (0/1) and the
-    // cmdline/candidate band the runtime folded into `buffer_height`.
-    let tabline_rows: u32 = if app.render_state.load().tabs.visible {
-        1
-    } else {
-        0
-    };
-    let buffer_h = buffer_height.saturating_sub(tabline_rows);
     let line_count = u16::try_from(help.line_count().max(1)).unwrap_or(u16::MAX);
     let (outer_w, outer_h) = lattice_core::ui::popup::popup_outer_size(
         terminal_width,
-        u16::try_from(buffer_h).unwrap_or(u16::MAX),
+        u16::try_from(buffer_height).unwrap_or(u16::MAX),
         line_count,
         app.popup().placement,
     );
@@ -1878,6 +1919,9 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         pane_id: lattice_core::ui::pane::PaneId::POPUP,
         buffer_id: popup_id,
         cursor_line,
+        // Preserve prior behaviour: State B (focused popup) paints the
+        // cursor line iff cursorline is on; State A suppresses it.
+        cursor_line_highlight: popup_focused && app.ad().option_cache.current_line_highlight,
         scroll,
         leftcol,
         display_line_numbers: handle.display_line_numbers(),
@@ -2205,7 +2249,19 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // must paint with its own (frozen) `pane.cursor`, not
         // `app.editor.cursor` (which is help's). draw_inactive_document
         // already reads pane state, so we route there.
-        let is_active = idx == active && pane_buffer_matches_active(app, idx);
+        // PI.3: a pane that is *previewing* another buffer must render
+        // through the isolated projection path (`draw_inactive_document`
+        // reads the displayed buffer), NOT the active path (`draw_buffer`
+        // reads `app.ad()` = the committed buffer A). So the focused pane
+        // is "active for input" only when it is showing its committed
+        // buffer, not while a preview override is seated on it.
+        let previewing = panes_state
+            .tree
+            .leaves()
+            .get(idx)
+            .map(|p| p.is_previewing())
+            .unwrap_or(false);
+        let is_active = idx == active && pane_buffer_matches_active(app, idx) && !previewing;
         // Every pane reserves its bottom row for the per-pane status
         // line (Option A: global modeline removed).
         let (content_rect, status_rect) = if rect.height >= 2 {
@@ -2294,6 +2350,190 @@ fn draw_pane_content(
     }
 }
 
+/// Map a terminal-substrate colour to ratatui's `Color`. `Default`
+/// stays `Reset` so the cell renders with the terminal's own fg/bg
+/// defaults (honouring the user's terminal theme).
+fn term_to_tui(c: lattice_terminal::TerminalColor) -> ratatui::style::Color {
+    use lattice_terminal::{NamedColor as TermNamed, TerminalColor};
+    use ratatui::style::Color as TuiColor;
+    match c {
+        TerminalColor::Default => TuiColor::Reset,
+        TerminalColor::Named(n) => match n {
+            TermNamed::Black => TuiColor::Black,
+            TermNamed::Red => TuiColor::Red,
+            TermNamed::Green => TuiColor::Green,
+            TermNamed::Yellow => TuiColor::Yellow,
+            TermNamed::Blue => TuiColor::Blue,
+            TermNamed::Magenta => TuiColor::Magenta,
+            TermNamed::Cyan => TuiColor::Cyan,
+            TermNamed::White => TuiColor::Gray,
+            TermNamed::BrightBlack => TuiColor::DarkGray,
+            TermNamed::BrightRed => TuiColor::LightRed,
+            TermNamed::BrightGreen => TuiColor::LightGreen,
+            TermNamed::BrightYellow => TuiColor::LightYellow,
+            TermNamed::BrightBlue => TuiColor::LightBlue,
+            TermNamed::BrightMagenta => TuiColor::LightMagenta,
+            TermNamed::BrightCyan => TuiColor::LightCyan,
+            TermNamed::BrightWhite => TuiColor::White,
+        },
+        TerminalColor::Indexed(i) => TuiColor::Indexed(i),
+        TerminalColor::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
+    }
+}
+
+/// Build the ratatui `Style` for a terminal cell's SGR fg/bg/attrs.
+fn terminal_cell_style(
+    fg: lattice_terminal::TerminalColor,
+    bg: lattice_terminal::TerminalColor,
+    attrs: lattice_terminal::CellAttrs,
+) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style};
+    let mut s = Style::default().fg(term_to_tui(fg)).bg(term_to_tui(bg));
+    let mut m = Modifier::empty();
+    if attrs.bold {
+        m |= Modifier::BOLD;
+    }
+    if attrs.italic {
+        m |= Modifier::ITALIC;
+    }
+    if attrs.underline {
+        m |= Modifier::UNDERLINED;
+    }
+    if attrs.reverse {
+        m |= Modifier::REVERSED;
+    }
+    if attrs.dim {
+        m |= Modifier::DIM;
+    }
+    if attrs.strikethrough {
+        m |= Modifier::CROSSED_OUT;
+    }
+    if !m.is_empty() {
+        s = s.add_modifier(m);
+    }
+    s
+}
+
+/// Build the styled spans for one terminal grid row. Adjacent cells
+/// with identical resolved style coalesce into one `Span`.
+///
+/// **Width contract** (see `docs/dev/audit/terminal-wide-char-ghosting.md`):
+/// a width-2 glyph occupies two grid cells — the glyph plus a
+/// `wide_spacer` placeholder. Spacer cells are SKIPPED so the row's
+/// total display width equals `cols_to_paint`; the wide glyph owns
+/// its second display column via ratatui's own shaping. Emitting the
+/// spacer as a space would make the row one column wide per glyph and
+/// corrupt ratatui's width-based cell diff (the auto-scroll ghosting
+/// bug).
+#[allow(clippy::too_many_arguments)]
+fn terminal_row_spans(
+    snap: &lattice_terminal::TerminalSnapshot,
+    row: u16,
+    cols_to_paint: u16,
+    paint_cursor_cell: bool,
+    cursor_row: u16,
+    cursor_col: u16,
+    match_overlay: Option<(u16, u16, u16)>,
+    all_matches: &[lattice_terminal::GridSearchHit],
+    visual: Option<lattice_terminal::TerminalVisualState>,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut run_text = String::with_capacity(cols_to_paint as usize);
+    let mut run_style: Option<Style> = None;
+    for col in 0..cols_to_paint {
+        let cell = snap.cell_at(row, col);
+        // Width contract: a wide glyph owns its two display columns via
+        // ratatui's own shaping; its trailing `wide_spacer` cell must NOT
+        // be emitted as a stray space (that pushes the row one column wide
+        // per glyph and corrupts ratatui's width-based cell diff — the
+        // auto-scroll ghosting bug). Skip it so grid col stays 1:1 with
+        // display col. See docs/dev/audit/terminal-wide-char-ghosting.md.
+        if cell.wide_spacer {
+            continue;
+        }
+        let mut style = terminal_cell_style(cell.fg, cell.bg, cell.attrs);
+        // Splice the cursor cell on inactive panes (the active pane
+        // uses the hardware cursor).
+        if paint_cursor_cell && row == cursor_row && col == cursor_col {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        // Hlsearch-style soft underline for every all_matches hit.
+        if !all_matches.is_empty() {
+            let off = snap.scroll_offset as i32;
+            let cell_line = row as i32 - off;
+            for h in all_matches {
+                if h.line == cell_line {
+                    let c_start = h.column;
+                    let c_end = h.column.saturating_add(h.len.min(u16::MAX as u32) as u16);
+                    if col >= c_start && col < c_end {
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                        break;
+                    }
+                }
+            }
+        }
+        // Current match wins style precedence on its row.
+        if let Some((m_row, c_start, c_end)) = match_overlay {
+            if row == m_row && col >= c_start && col < c_end {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        // Visual selection cells paint REVERSED (per-kind predicate).
+        if let Some(v) = visual {
+            use lattice_terminal::VisualKind as Vk;
+            let off = snap.scroll_offset as i32;
+            let cell_line = row as i32 - off;
+            let in_sel = match v.kind {
+                Vk::Line => {
+                    let (lo, hi) = v.line_range();
+                    cell_line >= lo && cell_line <= hi
+                }
+                Vk::Block => {
+                    let (lo, hi) = v.line_range();
+                    let (lo_c, hi_c) = v.block_col_range();
+                    cell_line >= lo && cell_line <= hi && col >= lo_c && col <= hi_c
+                }
+                Vk::Char => {
+                    let ((sl, sc), (el, ec)) = v.char_endpoints();
+                    if sl == el {
+                        cell_line == sl && col >= sc && col <= ec
+                    } else if cell_line == sl {
+                        col >= sc
+                    } else if cell_line == el {
+                        col <= ec
+                    } else {
+                        cell_line > sl && cell_line < el
+                    }
+                }
+            };
+            if in_sel {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        match run_style {
+            Some(prev) if prev == style => {
+                run_text.push(cell.ch);
+            }
+            _ => {
+                if !run_text.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut run_text),
+                        run_style.unwrap_or_default(),
+                    ));
+                }
+                run_text.push(cell.ch);
+                run_style = Some(style);
+            }
+        }
+    }
+    if !run_text.is_empty() {
+        spans.push(Span::styled(run_text, run_style.unwrap_or_default()));
+    }
+    spans
+}
+
 /// Issue #40 / Terminal-mode T1: paint the terminal cell grid
 /// from the published `TerminalSnapshot`. T1 ignores the
 /// per-cell fg/bg/attrs and renders monochrome — T2 wires
@@ -2305,10 +2545,8 @@ fn draw_terminal_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    use ratatui::style::{Color as TuiColor, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
-    use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
     let rs = app.render_state.load();
     let (snap_arc, current_match, mut visual, all_matches, mut nav_cursor) = match rs
         .buffers
@@ -2348,6 +2586,28 @@ fn draw_terminal_pane(
     }
     let rows_to_paint = area.height.min(snap_arc.rows);
     let cols_to_paint = area.width.min(snap_arc.cols);
+    // Diagnostic probe (opt-in via RUST_LOG=lattice_ui_tui::terminal_clip=debug):
+    // fires whenever the PTY's own row/col count (what alacritty and the
+    // child process believe their screen size is) exceeds this frame's real
+    // paint area. That gap is exactly what makes `rows_to_paint` cut the
+    // BOTTOM of the terminal's content (the last N rows of the PTY grid —
+    // often where a full-screen program like `claude` puts its prompt /
+    // status — are never painted). If the "last line clipped" bug persists
+    // after the `empty_sized` placeholder fix (spawner.rs), enable this to
+    // capture the exact PTY-vs-pane numbers at the moment it happens.
+    if snap_arc.rows > area.height || snap_arc.cols > area.width {
+        tracing::debug!(
+            target: "lattice_ui_tui::terminal_clip",
+            pty_rows = snap_arc.rows,
+            pty_cols = snap_arc.cols,
+            pane_area_rows = area.height,
+            pane_area_cols = area.width,
+            rows_to_paint,
+            cols_to_paint,
+            "draw_terminal_pane: PTY believes it is larger than the paint area — \
+             the bottom/right of its content is not being painted",
+        );
+    }
     // 2026-05-25: nav_cursor overrides the PTY cursor in
     // Normal-in-terminal so the user sees a "you are here"
     // marker that j / k / etc. moves. When nav_cursor is None
@@ -2367,64 +2627,10 @@ fn draw_terminal_pane(
         let v = snap_arc.cursor_visible && r < rows_to_paint && c < cols_to_paint;
         (r, c, v)
     };
-    // T2 substrate swap (2026-05-25): per-cell SGR colors from
-    // alacritty's grid. Map `TerminalColor` → ratatui's `Color`;
-    // `Default` stays as `Color::Reset` so the terminal renders
-    // the cell with its own fg/bg defaults (which honor the
-    // user's terminal theme). Adjacent identical-style cells
-    // get coalesced into one Span so we don't pay the per-cell
-    // diff cost.
-    fn term_to_tui(c: TerminalColor) -> TuiColor {
-        match c {
-            TerminalColor::Default => TuiColor::Reset,
-            TerminalColor::Named(n) => match n {
-                TermNamed::Black => TuiColor::Black,
-                TermNamed::Red => TuiColor::Red,
-                TermNamed::Green => TuiColor::Green,
-                TermNamed::Yellow => TuiColor::Yellow,
-                TermNamed::Blue => TuiColor::Blue,
-                TermNamed::Magenta => TuiColor::Magenta,
-                TermNamed::Cyan => TuiColor::Cyan,
-                TermNamed::White => TuiColor::Gray,
-                TermNamed::BrightBlack => TuiColor::DarkGray,
-                TermNamed::BrightRed => TuiColor::LightRed,
-                TermNamed::BrightGreen => TuiColor::LightGreen,
-                TermNamed::BrightYellow => TuiColor::LightYellow,
-                TermNamed::BrightBlue => TuiColor::LightBlue,
-                TermNamed::BrightMagenta => TuiColor::LightMagenta,
-                TermNamed::BrightCyan => TuiColor::LightCyan,
-                TermNamed::BrightWhite => TuiColor::White,
-            },
-            TerminalColor::Indexed(i) => TuiColor::Indexed(i),
-            TerminalColor::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
-        }
-    }
-    let style_for_cell = |fg: TerminalColor, bg: TerminalColor, attrs: CellAttrs| -> Style {
-        let mut s = Style::default().fg(term_to_tui(fg)).bg(term_to_tui(bg));
-        let mut m = Modifier::empty();
-        if attrs.bold {
-            m |= Modifier::BOLD;
-        }
-        if attrs.italic {
-            m |= Modifier::ITALIC;
-        }
-        if attrs.underline {
-            m |= Modifier::UNDERLINED;
-        }
-        if attrs.reverse {
-            m |= Modifier::REVERSED;
-        }
-        if attrs.dim {
-            m |= Modifier::DIM;
-        }
-        if attrs.strikethrough {
-            m |= Modifier::CROSSED_OUT;
-        }
-        if !m.is_empty() {
-            s = s.add_modifier(m);
-        }
-        s
-    };
+    // Per-cell SGR colour + style mapping and the row-span builder
+    // live as module-level fns (`term_to_tui`, `terminal_cell_style`,
+    // `terminal_row_spans`) so the wide-char width contract is unit-
+    // testable. See `docs/dev/audit/terminal-wide-char-ghosting.md`.
     // Terminal-mode T2.b (2026-05-25): the active pane drives the
     // ratatui hardware cursor at the terminal's grid position, so
     // the user sees a real terminal cursor with the right shape
@@ -2457,109 +2663,23 @@ fn draw_terminal_pane(
     // kind. Char + block need col-precision so the row-range
     // shortcut isn't enough.
     let visual_state = visual;
-    let mut lines: Vec<Line> = Vec::with_capacity(rows_to_paint as usize);
-    for row in 0..rows_to_paint {
-        // Coalesce consecutive cells with identical Style into
-        // single Spans. Saves the renderer from constructing N
-        // styled spans per row; for un-coloured shells (default
-        // fg/bg everywhere) it collapses back to one span per
-        // line.
-        let mut spans: Vec<Span> = Vec::new();
-        let mut run_text = String::with_capacity(cols_to_paint as usize);
-        let mut run_style: Option<Style> = None;
-        for col in 0..cols_to_paint {
-            let cell = snap_arc.cell_at(row, col);
-            let mut style = style_for_cell(cell.fg, cell.bg, cell.attrs);
-            // Splice the cursor cell on inactive panes (active
-            // pane uses the hardware cursor).
-            if paint_cursor_cell && row == cursor_row && col == cursor_col {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
-            // T3.b.3: paint the current match cell range with
-            // a reverse-video overlay. Hlsearch-style softer
-            // overlay for all_matches lands below; we apply
-            // current_match last so it wins style precedence
-            // on the row it occupies.
-            if !all_matches.is_empty() {
-                let off = snap_arc.scroll_offset as i32;
-                let cell_line = row as i32 - off;
-                for h in &all_matches {
-                    if h.line == cell_line {
-                        let c_start = h.column;
-                        let c_end = h
-                            .column
-                            .saturating_add(h.len.min(u16::MAX as u32) as u16);
-                        if col >= c_start && col < c_end {
-                            style = style.add_modifier(Modifier::UNDERLINED);
-                            break;
-                        }
-                    }
-                }
-            }
-            if let Some((m_row, c_start, c_end)) = match_overlay {
-                if row == m_row && col >= c_start && col < c_end {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-            }
-            // T3.b.2 / T3.b.2.b: paint Visual selection
-            // cells with REVERSED. Per-kind predicate so
-            // charwise / blockwise paint the right cell shape;
-            // linewise covers full rows.
-            if let Some(v) = visual_state {
-                use lattice_terminal::VisualKind as Vk;
-                let off = snap_arc.scroll_offset as i32;
-                let cell_line = row as i32 - off;
-                let in_sel = match v.kind {
-                    Vk::Line => {
-                        let (lo, hi) = v.line_range();
-                        cell_line >= lo && cell_line <= hi
-                    }
-                    Vk::Block => {
-                        let (lo, hi) = v.line_range();
-                        let (lo_c, hi_c) = v.block_col_range();
-                        cell_line >= lo
-                            && cell_line <= hi
-                            && col >= lo_c
-                            && col <= hi_c
-                    }
-                    Vk::Char => {
-                        let ((sl, sc), (el, ec)) = v.char_endpoints();
-                        if sl == el {
-                            cell_line == sl && col >= sc && col <= ec
-                        } else if cell_line == sl {
-                            col >= sc
-                        } else if cell_line == el {
-                            col <= ec
-                        } else {
-                            cell_line > sl && cell_line < el
-                        }
-                    }
-                };
-                if in_sel {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-            }
-            match run_style {
-                Some(prev) if prev == style => {
-                    run_text.push(cell.ch);
-                }
-                _ => {
-                    if !run_text.is_empty() {
-                        spans.push(Span::styled(
-                            std::mem::take(&mut run_text),
-                            run_style.unwrap_or_default(),
-                        ));
-                    }
-                    run_text.push(cell.ch);
-                    run_style = Some(style);
-                }
-            }
-        }
-        if !run_text.is_empty() {
-            spans.push(Span::styled(run_text, run_style.unwrap_or_default()));
-        }
-        lines.push(Line::from(spans));
-    }
+    // Row spans (with cursor / match / visual overlays and the
+    // wide-char width contract) are built by `terminal_row_spans`.
+    let lines: Vec<Line> = (0..rows_to_paint)
+        .map(|row| {
+            Line::from(terminal_row_spans(
+                &snap_arc,
+                row,
+                cols_to_paint,
+                paint_cursor_cell,
+                cursor_row,
+                cursor_col,
+                match_overlay,
+                &all_matches,
+                visual_state,
+            ))
+        })
+        .collect();
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);
     // Place the hardware cursor on the active pane only —
@@ -2794,8 +2914,13 @@ fn modeline_spans(
     // the one renderer-resolved content input; it overrides `core.path`.
     // Resolved once and threaded into the shared host resolver so the
     // assembly stays common across peers.
+    // PI.3: the per-pane status line reports the pane's COMMITTED buffer,
+    // not the previewed one (design §5) — the modeline shows what you'd
+    // save / switch back to. `core.path` already comes from the active
+    // document's `modeline_elements`; the provider label resolves against
+    // the committed buffer too.
     let provider_label = app
-        .pane_render_provider(pane.buffer_id)
+        .pane_render_provider(pane.committed_id())
         .map(|p| (p.status)(app, pane));
     let provider_ref = provider_label.as_deref();
 
@@ -2997,6 +3122,13 @@ fn draw_inactive_document(
     // M.4: resolve options for THIS pane's buffer (its own mode stack
     // drives gutter / LSP gates), not the active one.
     let view = FrameView::for_buffer(app, pane.buffer_id);
+    // PI.3: the focused pane while *previewing* renders here (routed off the
+    // active path in `draw_panes`), showing the displayed buffer. It keeps
+    // its cursorline — the target line of an LSP-reference / grep preview
+    // stays highlighted — resolved from the displayed buffer's `CursorLine`.
+    // Ordinary (unfocused) inactive panes never paint a cursorline.
+    let focused_preview =
+        pane.is_previewing() && app.panes().tree.active().id == pane.id;
     let ctx = PaneComposeCtx {
         is_active: false,
         pane_id: pane.id,
@@ -3004,6 +3136,11 @@ fn draw_inactive_document(
         // Inactive panes read their stashed cursor / scroll; the
         // active pane reads `app.ad()`.
         cursor_line: pane.cursor.line,
+        cursor_line_highlight: focused_preview
+            && app
+                .render_state
+                .load()
+                .current_line_highlight_for(pane.buffer_id),
         scroll: pane.scroll,
         leftcol: pane.leftcol,
         // Per-pane composed→source row map: a multibuffer pane shows
@@ -3307,6 +3444,14 @@ pub(crate) struct PaneComposeCtx {
     pub pane_id: crate::pane::PaneId,
     pub buffer_id: crate::buffers::BufferId,
     pub cursor_line: u32,
+    /// PI.3: whether to paint the cursor-line background on
+    /// [`Self::cursor_line`] for THIS pane. Decouples cursorline from
+    /// "is this the active document": the active pane sets it from
+    /// `option_cache.current_line_highlight`; a focused *preview* pane sets
+    /// it from the displayed buffer's `CursorLine` (so an LSP-reference /
+    /// grep preview keeps its target line highlighted); every other
+    /// inactive pane leaves it `false`.
+    pub cursor_line_highlight: bool,
     pub scroll: u32,
     /// Horizontal scroll: first visible display column. Drives the
     /// body's left clip when `wrap` is off; ignored under wrap.
@@ -3332,6 +3477,7 @@ pub fn compose_visible_lines(
         pane_id: app.panes().tree.active().id,
         buffer_id: app.ad().document_buffer_id,
         cursor_line: app.ad().cursor.line,
+        cursor_line_highlight: app.ad().option_cache.current_line_highlight,
         scroll: app.ad().scroll,
         leftcol: app.ad().leftcol,
         display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -3382,14 +3528,17 @@ pub(crate) fn compose_pane_lines(
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if view.show_line_numbers {
+    let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         // Keep one cell of left padding for the empty-marker `~` line
         // and to mirror vim's `:set nonumber` (no gutter, but content
         // still has a one-cell margin from the edge).
         2
-    };
+    })
+    // DB.4: horizontal centring widens the gutter (content + cursor shift
+    // right); 0 for non-centred buffers.
+    + view.content_left_pad;
     // Severity column is prepended (Phase 4.1.d.iii); reserve
     // one cell so buffer width stays correct. D.3.d.1: diff
     // sign column sits between severity and gutter, costs one
@@ -3545,6 +3694,23 @@ pub(crate) fn compose_pane_lines(
     // array index, not a per-overlay name lookup (paramount #1).
     let overlay_resolved = &cells_rs.resolved_theme;
     let overlay_ids = &cells_rs.theme_ids;
+    // Fold-marker colours, resolved once per pane from the theme
+    // (`gutter.fold.open` / `gutter.fold.closed`). Muted by cross-editor
+    // convention; the GPUI peer resolves the same two elements. `DarkGray`
+    // (the historical gutter tone) is the fallback when a theme leaves the
+    // element unset, so the marker never vanishes.
+    let fold_colors = FoldColors {
+        open: overlay_resolved
+            .get(overlay_ids.gutter_fold_open)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(Color::DarkGray),
+        closed: overlay_resolved
+            .get(overlay_ids.gutter_fold_closed)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(Color::DarkGray),
+    };
     // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
     // pane's buffer once per frame; accumulate GutterDecoration
     // contributions into per-line maps. Replaces per-line RenderState
@@ -3653,6 +3819,7 @@ pub(crate) fn compose_pane_lines(
             gutter_w,
             active_cursor_line,
             active_display_line_numbers.as_deref(),
+            fold_colors,
         );
         // Highlight slot is keyed by buffer-line offset from
         // `scroll`, NOT by viewport row -- once closed folds skip
@@ -3802,7 +3969,7 @@ pub(crate) fn compose_pane_lines(
             }
         };
         // Whether this line begins a closed fold. Used to append the
-        // ` ┄ N lines folded` suffix AFTER overlay processing, so
+        // ` ⋯ N lines` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
         // Fold-bleed fix (2026-06-30): computed for every pane (matches
@@ -3810,7 +3977,7 @@ pub(crate) fn compose_pane_lines(
         // reads the pane's own per-buffer folds, so an inactive pane
         // shows its fold summary identically to when it was focused.
         let closed_fold_at_start = view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
-            // The "N lines folded" suffix should reflect the
+            // The "⋯ N lines" suffix should reflect the
             // user's perception of how much content collapsed
             // onto this single visible row -- including any
             // sibling / nested closed folds whose headings are
@@ -4164,12 +4331,13 @@ pub(crate) fn compose_pane_lines(
             }
         }
         // Heading-preserved fold render (`docs/user/folding.md`):
-        // append the ` ┄ N lines folded` suffix AFTER all overlays
-        // so the heading's syntax / visual / search styling is
-        // preserved, with the dim summary trailing off the right.
+        // append the ` ⋯ N lines` suffix AFTER all overlays so the
+        // heading's syntax / visual / search styling is preserved, with
+        // the dim summary trailing off the right. The GPUI peer paints
+        // the same text as an end-of-row overlay.
         if let Some(n) = closed_fold_at_start {
             body.push(Span::styled(
-                format!(" ┄ {n} lines folded"),
+                format!(" ⋯ {n} lines"),
                 TuiStyle::default().fg(Color::DarkGray),
             ));
         }
@@ -4212,10 +4380,13 @@ pub(crate) fn compose_pane_lines(
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if ctx.is_active
-            && line_idx == app.ad().cursor.line
-            && app.ad().option_cache.current_line_highlight
-        {
+        // PI.3: cursorline is now a per-pane decision on `ctx`, not gated on
+        // "is this the active document". For the active pane this resolves
+        // identically (`cursor_line` = `app.ad().cursor.line`,
+        // `cursor_line_highlight` = the active option_cache value); a focused
+        // preview pane paints its displayed buffer's cursorline at the
+        // preview cursor.
+        if ctx.cursor_line_highlight && line_idx == ctx.cursor_line {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -4314,12 +4485,15 @@ pub(crate) fn compose_pane_lines(
             if (out.len() as u32) >= height {
                 break;
             }
-            let cont_gutter = Span::styled(
+            // Continuation rows carry no fold marker (the blank glyph
+            // slot is part of `format_gutter_cell`'s layout), so the
+            // whole cell is one dim span.
+            let cont_gutter = vec![Span::styled(
                 format_gutter_cell(WRAP_CONT_MARKER, gutter_w, None),
                 TuiStyle::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
-            );
+            )];
             // PU.1b-1a: continuation rows mirror seg0's sign-column
             // geometry — two blank cells when reserved, none when
             // `signcolumn=no`.
@@ -4738,28 +4912,75 @@ fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> 
 // inlay_hint_label_text` for any other callers.
 
 /// Trailing-side padding cells between the gutter's content and the
-/// buffer column. The fold glyph still occupies one of those cells
-/// (right next to the line number); the remaining cells are plain
-/// space so the digits don't run flush against code. Two cells
-/// total reads as visible breathing room without stealing more
-/// buffer width than necessary.
-const GUTTER_TRAILING_PAD: u32 = 2;
+/// buffer column. Layout of the three cells: one separator space, the
+/// fold-glyph slot, then one more space so the glyph doesn't run flush
+/// against the code (`_99_▸_code`). The extra gap makes the fold marker
+/// read as a distinct affordance rather than part of the text.
+const GUTTER_TRAILING_PAD: u32 = 3;
 
 fn gutter_width(line_count: u32) -> u32 {
     // Layout: 1 cell leading pad + N digits + GUTTER_TRAILING_PAD
-    // (which includes the fold-glyph slot). For line_count = 99 and
-    // pad = 2 that's "_99_ " => 5 cells.
+    // (separator space + fold-glyph slot + trailing gap). For
+    // line_count = 99 and pad = 3 that's "_99_▸_" => 6 cells.
     let digits = line_count.max(1).ilog10() + 1;
     digits + 1 + GUTTER_TRAILING_PAD
 }
 
-/// Pick the gutter fold glyph for a buffer line: ▸ when the line
-/// begins a closed fold, ▾ when it begins an open fold, or `None`
-/// when the line is unaffiliated with any fold start.
-/// (`docs/user/folding.md`).
-fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
+/// Resolved fold-marker colours for a pane, one per marker state.
+/// Themed via `gutter.fold.open` / `gutter.fold.closed`; the GPUI peer
+/// resolves the same two elements. `Copy` so it threads cheaply through
+/// the per-line gutter path.
+#[derive(Debug, Clone, Copy)]
+struct FoldColors {
+    open: Color,
+    closed: Color,
+}
+
+/// Pick the gutter fold marker for a buffer line: `▸` + the closed
+/// colour when the line begins a closed fold, `▾` + the open colour when
+/// it begins an open fold, or `None` when the line is unaffiliated with
+/// any fold start (`docs/user/folding.md`). Shows a marker on every
+/// foldable head — open or closed — matching the GPUI peer. Even on a
+/// gutterless / centred buffer (help, the dashboard) the marker renders
+/// just before the text: the centring pad is folded into `gutter_w`, so
+/// `format_gutter_cell` right-aligns the glyph against the content.
+fn fold_glyph_for(
+    view: &FrameView<'_>,
+    line_idx: u32,
+    colors: FoldColors,
+) -> Option<(char, Color)> {
     let f = view.fold_start_at_any(line_idx)?;
-    Some(if f.closed { '▸' } else { '▾' })
+    Some(if f.closed {
+        ('▸', colors.closed)
+    } else {
+        ('▾', colors.open)
+    })
+}
+
+/// Build the gutter cell as styled spans. With no fold marker the whole
+/// cell is one dim-gutter span; with a marker the glyph is split into its
+/// own themed span (the `… 99 ▸ ` layout puts the glyph second-from-last,
+/// with a separator space before and a trailing gap after), so the fold
+/// colour applies to the glyph alone and the line number keeps the
+/// gutter tone.
+fn gutter_spans(label: &str, width: u32, marker: Option<(char, Color)>) -> Vec<Span<'static>> {
+    let num_style = TuiStyle::default().fg(Color::DarkGray);
+    let cell = format_gutter_cell(label, width, marker.map(|(g, _)| g));
+    let Some((_, color)) = marker else {
+        return vec![Span::styled(cell, num_style)];
+    };
+    // `cell` ends `…{sep}{glyph}{trailing}` — split on chars so the
+    // multi-byte glyph (`▸`/`▾`, 3 bytes) is handled cleanly.
+    let chars: Vec<char> = cell.chars().collect();
+    let n = chars.len();
+    let prefix: String = chars[..n - 2].iter().collect();
+    let glyph: String = chars[n - 2..n - 1].iter().collect();
+    let trailing: String = chars[n - 1..].iter().collect();
+    vec![
+        Span::styled(prefix, num_style),
+        Span::styled(glyph, TuiStyle::default().fg(color)),
+        Span::styled(trailing, num_style),
+    ]
 }
 
 /// Format the gutter cell text for a numbered line.
@@ -4772,19 +4993,29 @@ fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
 /// `signcolumn`-on-the-right convention -- e.g. ` 99 ▸` for a
 /// closed fold's heading.
 fn format_gutter_cell(label: &str, width: u32, glyph: Option<char>) -> String {
+    use unicode_width::UnicodeWidthStr;
     // Rightmost cell is the glyph; one separator space sits before
     // the label. Leading pad fills the rest.
-    let leading = (width as usize).saturating_sub(label.len() + 2);
+    //
+    // Pad by the label's DISPLAY WIDTH, not its byte length: the wrap
+    // continuation marker `↪` (U+21AA) is 3 bytes but occupies a single
+    // terminal cell, so `label.len()` under-counts it by 2 and the
+    // gutter comes out one cell short (the extra byte-vs-cell gap gets
+    // clamped by `saturating_sub`). That made wrapped continuation rows
+    // paint one column left of segment 0's body and, because the cursor
+    // math uses segment 0's `gutter_w`, put the cursor one cell right of
+    // the glyph on every wrapped line. For ASCII numeric labels
+    // display-width == byte-len, so the numbered gutter is unchanged.
+    let label_cols = UnicodeWidthStr::width(label);
+    // 3 trailing cells: separator space + glyph + trailing gap.
+    let leading = (width as usize).saturating_sub(label_cols + 3);
     let g = glyph.unwrap_or(' ');
-    format!("{:lead$}{label} {g}", "", lead = leading)
+    format!("{:lead$}{label} {g} ", "", lead = leading)
 }
 
-fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static> {
+fn render_gutter(line_idx: u32, width: u32, marker: Option<(char, Color)>) -> Vec<Span<'static>> {
     let n = (line_idx + 1).to_string();
-    Span::styled(
-        format_gutter_cell(&n, width, glyph),
-        TuiStyle::default().fg(Color::DarkGray),
-    )
+    gutter_spans(&n, width, marker)
 }
 
 fn render_gutter_for(
@@ -4793,18 +5024,15 @@ fn render_gutter_for(
     width: u32,
     cursor_line: u32,
     display_line_numbers: Option<&[u32]>,
-) -> Span<'static> {
-    let glyph = fold_glyph_for(view, line_idx);
+    fold_colors: FoldColors,
+) -> Vec<Span<'static>> {
+    let marker = fold_glyph_for(view, line_idx, fold_colors);
     if !view.show_line_numbers {
         // No-numbers gutter: glyph (or empty) at the inner edge,
         // GUTTER_TRAILING_PAD - 1 trailing spaces, the rest leading
         // padding. The layout still aligns with the numbered case
         // so toggling `:set number` doesn't shift content.
-        let label = "";
-        return Span::styled(
-            format_gutter_cell(label, width, glyph),
-            TuiStyle::default().fg(Color::DarkGray),
-        );
+        return gutter_spans("", width, marker);
     }
     // K.4.6 follow-up (2026-06-02): consult the substrate's
     // composed→source row map (`display_line_numbers`) when
@@ -4834,14 +5062,11 @@ fn render_gutter_for(
     // contiguous source rows is meaningless. Matches Zed.
     let multibuffer_mode = display_line_numbers.is_some();
     if !view.relative_line_numbers || line_idx == cursor_line || multibuffer_mode {
-        return render_gutter(display_line_idx, width, glyph);
+        return render_gutter(display_line_idx, width, marker);
     }
     let dist = line_idx.abs_diff(cursor_line);
     let n = dist.to_string();
-    Span::styled(
-        format_gutter_cell(&n, width, glyph),
-        TuiStyle::default().fg(Color::DarkGray),
-    )
+    gutter_spans(&n, width, marker)
 }
 
 /// Width of the diagnostic-severity column prepended to the
@@ -4893,9 +5118,10 @@ fn virtual_rows_at<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
-        // Sticky rows are rendered at the pane top in the pre-pass;
-        // skip them here so they don't double-paint in the content loop.
-        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
+        // Pinned rows (sticky headerlines + the branding masthead) are
+        // rendered at the pane top in the pre-pass; skip them here so they
+        // don't double-paint in the content loop.
+        .filter(|r| !r.kind.is_pinned())
 }
 
 /// D.3.b.1: render a virtual row as a ratatui `Line`.
@@ -4948,8 +5174,12 @@ fn render_virtual_row(
             | lattice_cells::VirtualRowKind::Generic => {
                 Some(view.app.theme.diff_deletion_block_bg)
             }
+            // Filler/Sticky/BrandingBlock: no kind backdrop. The TUI paints
+            // the branding cells as its terminal-art treatment (half-block
+            // mark); no full-row backdrop behind them.
             lattice_cells::VirtualRowKind::Filler
-            | lattice_cells::VirtualRowKind::Sticky => None,
+            | lattice_cells::VirtualRowKind::Sticky
+            | lattice_cells::VirtualRowKind::BrandingBlock => None,
         });
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();
@@ -4987,17 +5217,16 @@ fn render_virtual_row(
         run_text.push(ch);
     }
     flush(&mut run_text, run_fg, &mut spans);
-    // Pad the row out to body_width so the backdrop (when
-    // present — deletion blocks; not filler rows) covers
-    // the full body column even for short baseline lines.
+    // Pad the row out to body_width so the backdrop (when present — deletion
+    // blocks; not filler rows) covers the full body column. Horizontal
+    // centring is handled upstream by the gutter (content_left_pad), not here.
     let used: u32 = spans.iter().map(|s| s.content.chars().count() as u32).sum();
     if used < body_width {
-        let pad: String = " ".repeat((body_width - used) as usize);
         let mut pad_style = TuiStyle::default();
         if let Some(c) = bg {
             pad_style = pad_style.bg(c);
         }
-        spans.push(Span::styled(pad, pad_style));
+        spans.push(Span::styled(" ".repeat((body_width - used) as usize), pad_style));
     }
     let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
     out.push(severity_blank);
@@ -5462,12 +5691,12 @@ fn empty_marker_line(gutter_w: u32) -> Line<'static> {
 /// the line-number gutter (which is always dim-darkgray).
 fn combine_prefixed(
     prefix: Vec<Span<'static>>,
-    gutter: Span<'static>,
+    gutter: Vec<Span<'static>>,
     mut body: Vec<Span<'static>>,
 ) -> Line<'static> {
-    let mut all = Vec::with_capacity(prefix.len() + 1 + body.len());
+    let mut all = Vec::with_capacity(prefix.len() + gutter.len() + body.len());
     all.extend(prefix);
-    all.push(gutter);
+    all.extend(gutter);
     all.append(&mut body);
     Line::from(all)
 }
@@ -5529,38 +5758,21 @@ pub(crate) fn apply_underline_overlay(
     out
 }
 
-/// Number of buffer lines actually collapsed onto the visible row
-/// where `fold` is rendered. Walks forward from `fold.end_line + 1`
-/// through any chained closed folds whose ranges abut or sit
-/// inside the cumulative hidden region, so the "N lines folded"
-/// summary matches what the user just collapsed even when several
-/// sibling folds touch (e.g. `(1, 3)` + `(3, 5)` from
-/// `foldmethod=indent` on a top-level if/else).
+/// Number of buffer lines collapsed onto the visible head row of
+/// `fold`. Thin wrapper over the shared [`lattice_host::folds::
+/// folded_line_span`] so the TUI and GPUI renderers report identical
+/// counts (see that function for the abut-vs-overlap chaining rule).
 fn closed_fold_display_span(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     fold: &crate::app::Fold,
 ) -> u32 {
-    let total_lines = snap.buffer.line_count();
-    let mut end = fold.end_line;
-    let mut probe = end.saturating_add(1);
-    while probe < total_lines {
-        // Probe land inside another closed fold's hidden body?
-        // (Includes the case where the next fold *starts* at the
-        // probe -- start_line is its heading, which would be
-        // hidden by *us* extending across it.)
-        let next_closed = view.folds.iter().find(|f| {
-            f.closed && (probe == f.start_line || (probe > f.start_line && probe <= f.end_line))
-        });
-        match next_closed {
-            Some(f) => {
-                end = end.max(f.end_line);
-                probe = end.saturating_add(1);
-            }
-            None => break,
-        }
-    }
-    end.saturating_sub(fold.start_line).saturating_add(1)
+    lattice_host::folds::folded_line_span(
+        view.folds.as_ref(),
+        fold.start_line,
+        fold.end_line,
+        snap.buffer.line_count(),
+    )
 }
 
 /// Translate a buffer line into the corresponding visible row index
@@ -5737,11 +5949,11 @@ fn cursor_screen_position_at(
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
-    let gutter_w = if view.show_line_numbers {
+    let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
-    };
+    }) + view.content_left_pad; // DB.4: keep cursor col aligned with centring.
     // W.4.t: body content width = the columns a wrapped line is
     // broken at. Must match `compose_visible_lines_inner`'s
     // `buffer_w` exactly so the cursor row/col agree with what is
@@ -5959,6 +6171,7 @@ mod tests {
             pane_id: PaneId::POPUP,
             buffer_id: popup_id,
             cursor_line: a.ad().cursor.line,
+            cursor_line_highlight: a.ad().option_cache.current_line_highlight,
             scroll: a.ad().scroll,
             leftcol: a.ad().leftcol,
             display_line_numbers: handle.display_line_numbers(),
@@ -5992,8 +6205,314 @@ mod tests {
         a
     }
 
+    /// `chrome_rows` is the single source of truth the runtime loop and
+    /// `draw_frame` both read; verify it actually reflects tabline
+    /// visibility (Auto mode: visible iff more than one tab is open).
+    #[test]
+    fn chrome_rows_reflects_tabline_visibility() {
+        let mut a = app_with("one\ntwo\nthree\n", 10);
+        assert_eq!(chrome_rows(&a).tabline, 0, "single tab: no tabline row");
+        a.editor.do_new_tab();
+        a.editor.publish_render_state();
+        assert_eq!(chrome_rows(&a).tabline, 1, "two tabs: tabline claims one row");
+    }
+
+    /// Regression guard for the "last line off-screen once the tabline is
+    /// visible" bug: the runtime loop's `buffer_height` formula (terminal
+    /// height minus cmdline, tabline, and candidate-band rows) must always
+    /// equal the pane area `draw_frame` actually lays out via the ratatui
+    /// `Layout`. Before this fix the runtime's copy never subtracted the
+    /// tabline row at all, so the viewport/scroll logic believed it had one
+    /// more row to show than `draw_frame` ever painted — the "last" line by
+    /// its reckoning was never physically drawn. Both sides now read
+    /// `chrome_rows`, so this test also guards against a future edit
+    /// reintroducing a hand-duplicated, divergent copy of either formula.
+    #[test]
+    fn runtime_buffer_height_matches_draw_frame_pane_area_with_tabline() {
+        let mut a = app_with("one\ntwo\nthree\n", 10);
+        a.editor.do_new_tab();
+        a.editor.publish_render_state();
+        let chrome = chrome_rows(&a);
+        assert_eq!(chrome.tabline, 1, "precondition: tabline visible");
+
+        let terminal_width: u16 = 80;
+        let terminal_height: u16 = 40;
+        // Mirrors `runtime.rs`'s `buffer_height` formula exactly.
+        let runtime_buffer_height = terminal_height
+            .saturating_sub(1)
+            .saturating_sub(chrome.tabline)
+            .saturating_sub(chrome.extra());
+
+        // Mirrors `draw_frame`'s own Layout constraints (no candidate band
+        // open in this scenario).
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chrome.tabline),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(Rect::new(0, 0, terminal_width, terminal_height));
+
+        assert_eq!(
+            runtime_buffer_height, chunks[1].height,
+            "runtime's buffer_height must equal draw_frame's actual pane-area \
+             height — a mismatch means the viewport/scroll logic and the paint \
+             layout disagree on how many rows are visible"
+        );
+    }
+
+    /// Same invariant as above, tabline hidden (single tab) — the two
+    /// computations must still agree when there's nothing extra to reserve.
+    #[test]
+    fn runtime_buffer_height_matches_draw_frame_pane_area_without_tabline() {
+        let a = app_with("one\ntwo\nthree\n", 10);
+        let chrome = chrome_rows(&a);
+        assert_eq!(chrome.tabline, 0, "precondition: tabline hidden");
+
+        let terminal_width: u16 = 80;
+        let terminal_height: u16 = 40;
+        let runtime_buffer_height = terminal_height
+            .saturating_sub(1)
+            .saturating_sub(chrome.tabline)
+            .saturating_sub(chrome.extra());
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chrome.tabline),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(Rect::new(0, 0, terminal_width, terminal_height));
+
+        assert_eq!(runtime_buffer_height, chunks[1].height);
+    }
+
+    /// Generalises the two invariant tests above from "one pane" to
+    /// ARBITRARY split trees and ARBITRARY window sizes — Dhruva's
+    /// concern that the fix must hold "regardless of these constraints"
+    /// (2-way, 3-way, 4-way splits; any terminal size, i.e. any resize),
+    /// not just the shapes happened to be spot-checked.
+    ///
+    /// Both `compute_rects` (lattice-core) and the split-geometry loops in
+    /// `runtime.rs` / `draw_panes` are PURE recursive functions of
+    /// `(pane tree, total area)` — the tabline/cmdline/candidate-band
+    /// reservation happens exactly once, one layer ABOVE the split tree,
+    /// via `chrome_rows`. So proving the invariant composes with splits
+    /// and resizes reduces to: for every split depth and every terminal
+    /// size, does `compute_rects` over the runtime's `area_for_panes`
+    /// (built from `chrome_rows`-corrected `buffer_height`) produce THE
+    /// SAME per-leaf rects as `compute_rects` over `draw_frame`'s actual
+    /// `chunks[1]`? If a future edit ever special-cased tabline handling
+    /// PER-PANE instead of once at the top, this test would catch the
+    /// divergence immediately at any split count.
+    #[test]
+    fn chrome_rows_composes_with_arbitrary_splits_and_terminal_sizes() {
+        use crate::pane::{PaneRect, SplitOrientation};
+
+        // 0, 1, 2, 3 splits => 1, 2, 3, 4-way pane trees. Mix of
+        // orientations so both HorizontalSplit and VerticalSplit recursion
+        // arms are exercised, not just one.
+        let split_plans: &[&[SplitOrientation]] = &[
+            &[],
+            &[SplitOrientation::Horizontal],
+            &[SplitOrientation::Vertical],
+            &[SplitOrientation::Horizontal, SplitOrientation::Vertical],
+            &[
+                SplitOrientation::Horizontal,
+                SplitOrientation::Vertical,
+                SplitOrientation::Horizontal,
+            ],
+        ];
+
+        // A spread of terminal sizes standing in for "the user resized the
+        // window" — including sizes too small to hold every split cleanly,
+        // where `saturating_sub`/`.max(1)` clamping must still agree
+        // between both sides.
+        let terminal_sizes: &[(u16, u16)] = &[
+            (80, 24),
+            (80, 40),
+            (200, 60),
+            (40, 10),
+            (120, 8),
+            (30, 6),
+        ];
+
+        for splits in split_plans {
+            for tabline_visible in [false, true] {
+                for &(terminal_width, terminal_height) in terminal_sizes {
+                    let mut a = app_with("one\ntwo\nthree\n", 10);
+                    for orientation in *splits {
+                        a.editor.pane_tree.split_active(*orientation);
+                    }
+                    if tabline_visible {
+                        a.editor.pane_tree.split_active(SplitOrientation::Horizontal);
+                        // Second tab makes `tabs.visible` true in Auto mode
+                        // (`self.tabs.len() > 1`) without depending on any
+                        // particular `tabline.show` config default.
+                        a.editor.do_new_tab();
+                    }
+                    a.editor.publish_render_state();
+
+                    let chrome = chrome_rows(&a);
+                    assert_eq!(
+                        chrome.tabline > 0,
+                        tabline_visible,
+                        "tabline visibility precondition failed for splits={splits:?} \
+                         size=({terminal_width}x{terminal_height})"
+                    );
+
+                    // Mirrors runtime.rs: buffer_height, then compute_rects
+                    // over the FULL terminal area (tabline/cmdline/candidate
+                    // rows already excluded by buffer_height).
+                    let runtime_buffer_height = terminal_height
+                        .saturating_sub(1)
+                        .saturating_sub(chrome.tabline)
+                        .saturating_sub(chrome.extra());
+                    let panes_arc = a.panes();
+                    let runtime_area = PaneRect {
+                        x: 0,
+                        y: 0,
+                        width: terminal_width,
+                        height: runtime_buffer_height,
+                    };
+                    let mut runtime_rects = panes_arc.tree.compute_rects(runtime_area);
+                    runtime_rects.sort_by_key(|(idx, _)| *idx);
+
+                    // Mirrors draw_frame: the real ratatui Layout split,
+                    // then draw_panes's own compute_rects over chunks[1].
+                    let constraints: Vec<Constraint> = if chrome.extra() > 0 {
+                        vec![
+                            Constraint::Length(chrome.tabline),
+                            Constraint::Min(1),
+                            Constraint::Length(1),
+                            Constraint::Length(chrome.extra()),
+                        ]
+                    } else {
+                        vec![
+                            Constraint::Length(chrome.tabline),
+                            Constraint::Min(1),
+                            Constraint::Length(1),
+                        ]
+                    };
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints(constraints)
+                        .split(Rect::new(0, 0, terminal_width, terminal_height));
+                    let draw_area = PaneRect {
+                        x: chunks[1].x,
+                        y: chunks[1].y,
+                        width: chunks[1].width,
+                        height: chunks[1].height,
+                    };
+                    let mut draw_rects = panes_arc.tree.compute_rects(draw_area);
+                    draw_rects.sort_by_key(|(idx, _)| *idx);
+
+                    // Compare (width, height) per leaf, NOT the full rect:
+                    // `runtime.rs`'s `area_for_panes` is deliberately
+                    // anchored at `y:0` (it only sizes the PTY / viewport
+                    // row-col COUNTS, never paints), while `draw_frame`'s
+                    // real `chunks[1]` starts at `y:1` once the tabline
+                    // claims the first screen row. Different absolute
+                    // position, same size — that's expected, not a bug.
+                    // The invariant that actually matters (does the
+                    // runtime compute the SAME row/col count per pane that
+                    // gets painted?) is the size, which this checks.
+                    let runtime_sizes: Vec<(usize, u16, u16)> = runtime_rects
+                        .iter()
+                        .map(|(idx, r)| (*idx, r.width, r.height))
+                        .collect();
+                    let draw_sizes: Vec<(usize, u16, u16)> = draw_rects
+                        .iter()
+                        .map(|(idx, r)| (*idx, r.width, r.height))
+                        .collect();
+                    assert_eq!(
+                        runtime_sizes, draw_sizes,
+                        "runtime-pushed vs. actually-painted per-pane sizes diverged \
+                         for splits={splits:?}, tabline_visible={tabline_visible}, \
+                         terminal_size=({terminal_width}x{terminal_height})"
+                    );
+
+                    // Every leaf's content height (status row reserved) must
+                    // also agree — the same `rect.height - 1` formula both
+                    // `runtime.rs`'s per-leaf loop and `draw_panes` apply,
+                    // checked here across the SAME split/size matrix rather
+                    // than just the whole-buffer area.
+                    for (idx, rect) in &draw_rects {
+                        let content_h = if rect.height >= 2 { rect.height - 1 } else { rect.height };
+                        assert!(
+                            content_h <= rect.height,
+                            "leaf {idx} content height must not exceed its pane rect \
+                             for splits={splits:?} size=({terminal_width}x{terminal_height})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Regression for the auto-scroll ghosting bug
+    /// (`docs/dev/audit/terminal-wide-char-ghosting.md`): a width-2
+    /// glyph occupies two grid cells (the glyph + a `wide_spacer`
+    /// placeholder). The emitted row must have the SAME total display
+    /// width as the grid column count — the wide glyph owns its two
+    /// columns and the spacer must NOT be emitted as a stray space.
+    /// Emitting the spacer pushed the row one column wide per glyph,
+    /// desyncing ratatui's width-based cell diff and stranding stale
+    /// glyphs on scroll.
+    #[test]
+    fn terminal_row_with_wide_glyph_keeps_grid_column_count() {
+        use lattice_terminal::{Cell, TerminalSnapshot};
+
+        // Grid row: 🚀 (wide) + its spacer + "abc" → 5 grid columns.
+        let cells = vec![
+            Cell {
+                ch: '🚀',
+                wide_spacer: false,
+                ..Cell::default()
+            },
+            Cell {
+                ch: ' ',
+                wide_spacer: true,
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'a',
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'b',
+                ..Cell::default()
+            },
+            Cell {
+                ch: 'c',
+                ..Cell::default()
+            },
+        ];
+        let cols = cells.len() as u16;
+        let snap = TerminalSnapshot {
+            cells: cells.into(),
+            ..TerminalSnapshot::empty_sized(1, cols)
+        };
+
+        let spans = super::terminal_row_spans(&snap, 0, cols, false, 0, 0, None, &[], None);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let display_width: usize = spans.iter().map(|s| s.width()).sum();
+        assert_eq!(
+            display_width, cols as usize,
+            "emitted row display width ({display_width}) must equal the grid column \
+             count ({cols}); the wide glyph owns 2 columns and the spacer must be \
+             skipped — got text {text:?}",
+        );
+        assert_eq!(
+            text, "🚀abc",
+            "the wide-char spacer cell must be skipped, not emitted as a space",
+        );
     }
 
     /// Evidence test for the preview-switch "bleeding" report: render a LONG
@@ -6385,14 +6904,19 @@ mod tests {
 
     #[test]
     fn gutter_width_for_small_buffers() {
-        // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (2)
-        // = N + 3 cells. 1-digit numbers => 4 cells (" 1  "),
-        // 2-digit => 5 (" 99  "), 3-digit => 6 ("100  ").
-        assert_eq!(gutter_width(1), 4);
-        assert_eq!(gutter_width(9), 4);
-        assert_eq!(gutter_width(10), 5);
-        assert_eq!(gutter_width(99), 5);
-        assert_eq!(gutter_width(100), 6);
+        // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (3)
+        // = N + 4 cells. 1-digit numbers => 5 cells (" 1   "),
+        // 2-digit => 6 (" 99   "), 3-digit => 7 ("100   ").
+        assert_eq!(gutter_width(1), 5);
+        assert_eq!(gutter_width(9), 5);
+        assert_eq!(gutter_width(10), 6);
+        assert_eq!(gutter_width(99), 6);
+        assert_eq!(gutter_width(100), 7);
+    }
+
+    /// Concatenate a gutter's span contents back into one string.
+    fn gutter_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
@@ -6400,23 +6924,32 @@ mod tests {
         // Layout: `[lead][digits][space][glyph_or_space]`. With no
         // fold the rightmost cell is a plain space, so output ends
         // in two spaces -- one separator between digits and glyph
-        // slot, one empty glyph slot.
-        let span = render_gutter(0, gutter_width(1), None);
-        let s = span.content.as_ref();
+        // slot, one empty glyph slot. No fold ⇒ a single span.
+        let spans = render_gutter(0, gutter_width(1), None);
+        assert_eq!(spans.len(), 1, "no-fold gutter is one span: {spans:?}");
+        let s = gutter_text(&spans);
         assert!(s.ends_with("  "), "expected two trailing spaces, got {s:?}");
         assert!(s.contains('1'), "line number missing: {s:?}");
     }
 
     #[test]
-    fn render_gutter_places_glyph_at_rightmost_cell() {
-        // Closed fold ▸ sits at the inner edge of the gutter (next
-        // to the buffer column) with a separator space between the
-        // line number and the glyph -- the `[ 1 ▸]` layout.
-        let span = render_gutter(0, gutter_width(1), Some('▸'));
-        let s = span.content.as_ref();
-        assert!(s.contains(" 1 ▸"), "expected ' 1 ▸' shape, got {s:?}");
-        // Glyph is the last grapheme.
-        assert!(s.ends_with('▸'), "glyph must be the rightmost cell: {s:?}");
+    fn render_gutter_places_glyph_near_buffer_with_a_gap() {
+        // Closed fold ▸ sits near the buffer column, with a separator
+        // space before it and a one-cell gap after it so the glyph
+        // doesn't run flush against code -- the `[ 1 ▸ ]` layout. The
+        // glyph rides its own themed span so its colour is independent
+        // of the dim line-number tone.
+        let spans = render_gutter(0, gutter_width(1), Some(('▸', Color::Yellow)));
+        let s = gutter_text(&spans);
+        assert!(s.contains(" 1 ▸ "), "expected ' 1 ▸ ' shape, got {s:?}");
+        assert!(s.ends_with("▸ "), "glyph must have a trailing gap: {s:?}");
+        // Exactly one span carries the glyph, in the themed colour.
+        let glyph_spans: Vec<_> = spans
+            .iter()
+            .filter(|sp| sp.content.as_ref() == "▸")
+            .collect();
+        assert_eq!(glyph_spans.len(), 1, "glyph is its own span: {spans:?}");
+        assert_eq!(glyph_spans[0].style.fg, Some(Color::Yellow));
     }
 
     #[test]
@@ -6486,16 +7019,17 @@ mod tests {
              {default_indent} in {default0:?}"
         );
 
-        // `signcolumn=no` + `nonu`: only the 2-cell margin remains, so
-        // the body starts at column 2.
+        // `signcolumn=no` + `nonu`: only the fold-marker gutter remains
+        // (separator + fold slot + trailing gap = 3 cells, so a fold `▸`
+        // still shows with numbers off), and the body starts at column 3.
         app.editor.option_cache.sign_column = false;
         app.editor.option_cache.show_line_numbers = false;
         app.editor.publish_render_state();
         let lean0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
         assert_eq!(
             lean0.find("hello"),
-            Some(2),
-            "signcolumn=no + nonu ⇒ content at the 2-cell margin, got {lean0:?}"
+            Some(3),
+            "signcolumn=no + nonu ⇒ content at the 3-cell fold gutter, got {lean0:?}"
         );
     }
 
@@ -6553,8 +7087,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=4 + 3 = 9.
-        assert_eq!(pos.0, 9);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=5 + 3 = 10.
+        assert_eq!(pos.0, 10);
         assert_eq!(pos.1, 0);
     }
 
@@ -6659,6 +7193,91 @@ mod tests {
         assert_eq!(within.1, 3, "cursor in the 3rd wrap segment sits at display row 3");
     }
 
+    /// Screen column (char index) where the first non-gutter body char
+    /// appears on `composed[row]`. The gutter/marker prefix is all
+    /// spaces + at most one glyph; the body starts at the first char
+    /// that isn't part of that prefix. We find it by counting the
+    /// leading run of prefix cells the compose loop emits, which equals
+    /// the display width of the gutter.
+    fn body_start_col(line: &Line<'static>, body_first_char: char) -> usize {
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        s.chars().position(|c| c == body_first_char).unwrap()
+    }
+
+    #[test]
+    fn wrapped_continuation_gutter_aligns_body_and_cursor() {
+        // Regression (2026-07-03): the wrap continuation marker `↪`
+        // (U+21AA, 3 bytes / 1 display column) made `format_gutter_cell`
+        // under-pad the continuation gutter, because it computed the
+        // leading pad from `label.len()` (BYTES) instead of display
+        // width. The wrapped body then painted one column LEFT of
+        // segment 0's body, while `cursor_screen_position_at` kept using
+        // the segment-0 `gutter_w` — so the cursor sat one cell RIGHT of
+        // the glyph on every wrapped continuation segment.
+        //
+        // 56-char ASCII line, viewport 40, line numbers on (default):
+        // the gutter is 7 cells (2 sign + 5 = ` 1   ` under the 3-cell
+        // trailing pad), so the body is 33 columns; segment 0 body is 33
+        // chars and segment 1 starts at source char 33 (the digit '7').
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRST";
+        assert_eq!(long.len(), 56);
+        let text = format!("{long}\n");
+        let mut app = app_with(&text, 20);
+        app.editor.option_cache.wrap_lines = true;
+        app.editor.publish_render_state();
+        let area = Rect::new(0, 0, 40, 20);
+        let snap = app.ad().snapshot.clone();
+        let view = FrameView::from_app(&app);
+
+        let composed = compose_pane_lines(
+            &view,
+            &snap,
+            area.height as u32,
+            area.width as u32,
+            &PaneComposeCtx {
+                buffer_id: app.ad().document_buffer_id,
+                pane_id: app.panes().tree.active().id,
+                is_active: true,
+                scroll: 0,
+                cursor_line: app.ad().cursor.line,
+                cursor_line_highlight: app.ad().option_cache.current_line_highlight,
+                leftcol: 0,
+                display_line_numbers: app.ad().display_line_numbers.clone(),
+            },
+        );
+
+        // Segment 0 body ('a') and segment 1 body ('7') must start at the
+        // SAME screen column — the continuation gutter is the same width
+        // as the numbered gutter, so wrapped text aligns vertically.
+        let seg0_col = body_start_col(&composed[0], 'a');
+        let seg1_col = body_start_col(&composed[1], '7');
+        assert_eq!(
+            seg0_col, seg1_col,
+            "wrapped continuation body must align with segment 0 body \
+             (seg0 at {seg0_col}, continuation at {seg1_col})"
+        );
+
+        // And the cursor on a continuation-segment byte must land on the
+        // exact screen column where that glyph is painted. Byte 37 is
+        // 'B' — the 5th char of segment 1 (source chars 33='7', 34='8',
+        // 35='9', 36='A', 37='B'), so painted at `seg1_col + 4`.
+        let pos = cursor_screen_position_at(
+            &view,
+            &snap,
+            area,
+            lattice_protocol::Position::new(0, 37),
+            0,
+        )
+        .unwrap();
+        assert_eq!(pos.1, 1, "byte 37 sits on the first wrap continuation row");
+        assert_eq!(
+            pos.0 as usize,
+            seg1_col + 4,
+            "cursor column must match the painted glyph column on the \
+             continuation segment"
+        );
+    }
+
     #[test]
     fn display_col_for_byte_expands_tabs_to_tabstop() {
         // W.4.t: a leading tab advances the cursor to the next
@@ -6689,8 +7308,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
-        assert_eq!(pos.0, 11);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
+        assert_eq!(pos.0, 12);
     }
 
     #[test]
@@ -6707,8 +7326,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
-        assert_eq!(pos.0, 11);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
+        assert_eq!(pos.0, 12);
     }
 
     #[test]
@@ -7256,7 +7875,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1  \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                       \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3  \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4  \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5  \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~  \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 
@@ -7289,6 +7908,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: app.ad().document_buffer_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -7339,7 +7959,7 @@ mod tests {
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
         // Summary suffix appended.
-        assert!(row0.contains("lines folded"), "row0 = {row0:?}");
+        assert!(row0.contains("⋯"), "row0 = {row0:?}");
     }
 
     #[test]
@@ -7389,6 +8009,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: app.ad().document_buffer_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),
@@ -7397,7 +8018,7 @@ mod tests {
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "inactive interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "inactive interior leaked: {blob}");
-        assert!(blob.contains("lines folded"), "inactive summary missing: {blob}");
+        assert!(blob.contains("⋯"), "inactive summary missing: {blob}");
     }
 
     #[test]
@@ -7429,8 +8050,44 @@ mod tests {
         // heading row).
         let row1_text = line_text(&lines[1]);
         assert!(
-            row1_text.contains("5 lines folded"),
-            "expected '5 lines folded' for chained folds, got: {row1_text:?}"
+            row1_text.contains("⋯ 5 lines"),
+            "expected '⋯ 5 lines' for chained folds, got: {row1_text:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_folds_count_only_their_own_lines() {
+        // Two back-to-back but NON-overlapping closed folds (foldmethod=
+        // indent on two sibling blocks): (0, 2) then (3, 5). The second
+        // fold's heading at line 3 is the first VISIBLE row after fold
+        // one, so each fold summarises only its own 3 lines. Regression:
+        // the display-span walk used to chain a fold starting at `end+1`,
+        // making the first fold report all 6 lines.
+        let mut app = app_with("a\nb\nc\nd\ne\nf\n", 7);
+        app.editor.folds.push(crate::app::Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+            identity: None,
+        });
+        app.editor.folds.push(crate::app::Fold {
+            start_line: 3,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        });
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 7, 80);
+        // Row 0 = fold one's heading; row 1 = fold two's heading (visible).
+        let row0_text = line_text(&lines[0]);
+        let row1_text = line_text(&lines[1]);
+        assert!(
+            row0_text.contains("⋯ 3 lines"),
+            "first fold should count only its own 3 lines, got: {row0_text:?}"
+        );
+        assert!(
+            row1_text.contains("⋯ 3 lines"),
+            "second fold should count only its own 3 lines, got: {row1_text:?}"
         );
     }
 
@@ -7444,7 +8101,7 @@ mod tests {
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
-            !row0.contains("lines folded"),
+            !row0.contains("⋯"),
             "summary should only appear on closed folds: {row0:?}"
         );
     }
@@ -7495,6 +8152,34 @@ mod tests {
     }
 
     #[test]
+    fn gutterless_buffer_still_shows_fold_marker_before_text() {
+        // Folding is useful on gutterless buffers too (help / the
+        // dashboard have many markdown sections), so a foldable head must
+        // STILL paint its `▾`/`▸` — positioned immediately before the row
+        // text, not stranded at the pane's left edge. The centring pad is
+        // folded into `gutter_w`, so `format_gutter_cell` right-aligns the
+        // glyph against the content.
+        let mut app = app_with("# H\nbody\n", 5);
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
+        app.recompute_folds();
+        app.editor.option_cache.sign_column = false;
+        app.editor.option_cache.show_line_numbers = false;
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('▾'), "gutterless head still shows ▾: {row0:?}");
+        // The glyph sits just before the heading text (a single trailing
+        // gap), not at column 0 with the text far to the right.
+        let chars: Vec<char> = row0.chars().collect();
+        let glyph_ci = chars.iter().position(|&c| c == '▾').expect("glyph");
+        let text_ci = chars.iter().position(|&c| c == '#').expect("heading");
+        assert!(
+            text_ci > glyph_ci && text_ci - glyph_ci <= 2,
+            "▾ should sit just before the text (glyph@{glyph_ci}, text@{text_ci}): {row0:?}"
+        );
+    }
+
+    #[test]
     fn line_after_closed_fold_keeps_correct_syntax_highlighting() {
         // Reproduces a user-reported regression: with a closed fold
         // hiding interior lines, the next visible line was being
@@ -7519,7 +8204,7 @@ mod tests {
         app.editor.folds[idx].closed = true;
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
-        // Row 0: heading + " ┄ N lines folded".
+        // Row 0: heading + " ⋯ N lines".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
         let row1 = line_text(&lines[1]);
@@ -7540,7 +8225,7 @@ mod tests {
         // indent isn't > start. We extend that with closer-line
         // inclusion: a `}` / `]` / `)` line at the same indent as
         // the fold start gets pulled in, so the user doesn't see an
-        // orphan brace below `... ┄ N lines folded`.
+        // orphan brace below `... ⋯ N lines`.
         let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
         let mut app = app_with(src, 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
@@ -7596,7 +8281,7 @@ mod tests {
         // Summary suffix is still present.
         let row0_text = line_text(row0);
         assert!(
-            row0_text.contains("lines folded"),
+            row0_text.contains("⋯"),
             "summary suffix lost: {row0_text:?}"
         );
     }
@@ -7960,6 +8645,7 @@ mod tests {
             pane_id: app.panes().tree.active().id,
             buffer_id: doc_id,
             cursor_line: app.ad().cursor.line,
+            cursor_line_highlight: false,
             scroll: app.ad().scroll,
             leftcol: app.ad().leftcol,
             display_line_numbers: app.ad().display_line_numbers.clone(),

@@ -29,6 +29,10 @@ license.workspace = true
 # from here for backward compat.
 lattice-core = { path = "../lattice-core" }
 lattice-help = { path = "../lattice-help" }
+# DB.2: host links lattice-dashboard for the mode id + registry service +
+# install (Phase-B). The host owns fragment -> HelpContent conversion +
+# BufferData::Dashboard creation (it owns the help machinery).
+lattice-dashboard = { path = "../lattice-dashboard" }
 lattice-file-tree = { path = "../lattice-file-tree" }
 lattice-oil = { path = "../lattice-oil" }
 # Phase 5.2 second wave: actions + excommand. Pure renderer-
@@ -100,6 +104,13 @@ lattice-multibuffer = { path = "../lattice-multibuffer" }
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+# CB.4 (docs/dev/architecture/clipboard.md): the native `arboard`
+# clipboard backend shared by BOTH renderer peers lives here (host has
+# tokio for the bounded read + is depended on by both peers). Optional /
+# feature-gated behind `system-clipboard` so host's default build stays
+# free of the X11/Wayland link libs; a peer opts in via
+# `lattice-host/system-clipboard`.
+arboard = { workspace = true, optional = true }
 # Phase 5.B.18 / refactor #70: LSP request channels carry
 # `lsp_types::*` values (CodeLens, ColorPresentation, Range,
 # Location, MessageActionItem). These are reached through
@@ -163,6 +174,13 @@ smallvec = { workspace = true }
 name = "overlay_worker"
 harness = false
 
+# PI (preview isolation): per-selection-move preview cost — the
+# isolated-projection reseat / mount-exit paths vs the pre-PI
+# activate-swap baseline. See `benches/preview.rs`.
+[[bench]]
+name = "preview"
+harness = false
+
 # Perf plan B.4: measures the dispatch publish path. Captures the
 # steady-state (no-op) publish cost where the sub-state cache
 # should reuse every cached `Arc` and the build cost where it
@@ -219,12 +237,31 @@ harness = false
 name = "modeline"
 harness = false
 
+# DB.7 (design.md §13): dashboard creation-time compose+seed +
+# idle-frame tick cost. The dashboard has no keystroke path, so these
+# two assertions (not a keystroke bench) are the coverage. See
+# `benches/dashboard.rs`.
+[[bench]]
+name = "dashboard"
+harness = false
+
+# CB.5: yank-path cost — the clipboard mirror must add only constant
+# overhead to `store_yank` on the keystroke path (paramount #1).
+[[bench]]
+name = "clipboard_yank"
+harness = false
+
 [features]
 # M.6 (2026-06-01): toggle the project-search provider on /
 # off. Forwards to `lattice-multibuffer`'s `search` feature so
 # the `ignore` dep lights up only when this is enabled.
 default = ["search"]
 search = ["lattice-multibuffer/search"]
+# CB.4: compile the native `arboard` clipboard backend
+# (`crate::clipboard::ArboardClipboard`). Off by default; the TUI peer
+# (`lattice-ui-tui/system-clipboard`) and GPUI peer (via its `window`
+# feature) forward to this. Pulls X11/Wayland link libs on Linux.
+system-clipboard = ["dep:arboard"]
 
 [lints]
 workspace = true

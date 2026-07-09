@@ -36,6 +36,13 @@ default = []
 # which in turn links real gpui (needs display libs at link time
 # on Linux: `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`).
 gui = ["dep:lattice-ui-gpui", "lattice-ui-gpui/window"]
+# CB.2 (docs/dev/architecture/clipboard.md): opt-in native OS clipboard
+# support via `cargo build --features clipboard`. Off by default for the
+# same headless-CI reason as `gui`. Without it, yank still reaches the
+# real system clipboard via the OSC52 write fallback -- this feature only
+# adds clipboard *read* (paste-from-another-app) + native Wayland/X11
+# write. CB.4 wires the equivalent for the `--gui` (GPUI) peer.
+clipboard = ["lattice-ui-tui/system-clipboard"]
 
 [lints]
 workspace = true

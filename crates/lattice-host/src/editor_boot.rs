@@ -297,6 +297,43 @@ impl Editor {
         // claude-code's read tools; registered once here, not in the late block.
         boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
 
+        // Typed-options registry (DESIGN.md §5.12). Single source of truth
+        // for every option's *current value*: each `Option<T>` owns a
+        // wait-free `ArcSwap<T>` cell that `:set` parses into, hot-path
+        // readers load from, and the (future) customize buffer view edits
+        // through.
+        //
+        // DB.5 hoist (2026-07-03): built + registered here in Phase A —
+        // moved up from ~line 700 (right after `event_bus`, its only
+        // dependency), the same class of hoist BC.3a already did for
+        // `async_landed` / `tick_callbacks` / `buffers`. `ServiceRegistry`
+        // only reflects what's registered by the time a reader calls
+        // `boot.service::<T>()`; a subsystem's `install(&mut boot)` runs in
+        // the Phase-B list further down, so `lattice_dashboard::install`
+        // (DB.5's startup-trigger subscription, which reads
+        // `dashboard.enabled` via `boot.service::<Arc<ConfigRegistry>>()`)
+        // could never observe a registration added later in the same boot
+        // call under the old ordering. Mechanical reorder; every later
+        // reader still clones this exact `Arc` — never re-`Arc::new`.
+        let config = Arc::new(ConfigRegistry::new());
+        let bus_for_publisher = event_bus.clone();
+        config.set_event_publisher(Arc::new(move |event| {
+            bus_for_publisher.publish(event);
+        }));
+        // M.2.0c: every option (core + renderer-specific) self-
+        // registers via the proc-macro-emitted `register_fn`
+        // thunks aggregated in `OPTION_DECLS`. One
+        // `init_from_linkme()` call boots them all; idempotent
+        // if called again.
+        config.init_from_linkme();
+        // MH.A3 (2026-06-19): expose the ConfigRegistry so extension-crate
+        // code (`create_multibuffer_view`) can read global option defaults
+        // — e.g. `ui.nerd_fonts` for the rich excerpt-header icon palette —
+        // without depending on `lattice-host`'s typed option decls. Read by
+        // name (`get_bool_by_name`). Same `Arc<X>` register/lookup pair per
+        // the ServiceRegistry Arc/TypeId rule.
+        boot.register_service::<Arc<ConfigRegistry>>(config.clone());
+
         // BC.8b: the merged `lsp.*` config tree is shared (`Arc<ArcSwap>`) so the
         // mode-owned configuration inbound handler reads the *current* tree (the
         // host re-`store`s it on reload). Built empty here; populated by the
@@ -433,6 +470,13 @@ impl Editor {
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
+        // PI.2 (preview isolation): `preview-mode` — the read-only minor
+        // `mount_preview` activates on a previewed buffer's own stack.
+        // Host-owned (no feature crate), registered alongside the other
+        // host modes.
+        boot.modes_mut()
+            .register(crate::preview::PreviewMode)
+            .expect("preview-mode must register without conflict");
         // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
         // cleanup subscriber), `narrow-minor-mode`, and the project-search
         // provider mode moved into `lattice_multibuffer::install(boot)`
@@ -501,6 +545,11 @@ impl Editor {
         // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
         // `lattice_multibuffer::install` for the full rationale.
         lattice_multibuffer::install(&mut boot);
+        // DB.2: dashboard subsystem — registers `dashboard-mode` (major), the
+        // `:dashboard` ex-command (returns `Effect::OpenDashboard`, applied by
+        // `Editor::do_open_dashboard`), and the built-in `DashboardRegistry`
+        // service. See `lattice_dashboard::install` + dashboard.md §9.
+        lattice_dashboard::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
         // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the
@@ -687,23 +736,6 @@ impl Editor {
         lsp_logger.set_event_publisher(Arc::new(move |event| {
             bus_for_log.publish_typed(event);
         }));
-
-        // Typed-options registry (DESIGN.md §5.12). Single source
-        // of truth for every option's *current value*: each
-        // `Option<T>` owns a wait-free `ArcSwap<T>` cell that
-        // `:set` parses into, hot-path readers load from, and
-        // the (future) customize buffer view edits through.
-        let config = Arc::new(ConfigRegistry::new());
-        let bus_for_publisher = event_bus.clone();
-        config.set_event_publisher(Arc::new(move |event| {
-            bus_for_publisher.publish(event);
-        }));
-        // M.2.0c: every option (core + renderer-specific) self-
-        // registers via the proc-macro-emitted `register_fn`
-        // thunks aggregated in `OPTION_DECLS`. One
-        // `init_from_linkme()` call boots them all; idempotent
-        // if called again.
-        config.init_from_linkme();
 
         // 4.4.o: seed the LSP logger from typed-options defaults.
         // Invalid values were filtered by the option validators
@@ -921,6 +953,7 @@ impl Editor {
             // any motion / ensure-visible reads.
             viewport_height: 0,
             viewport_width: 0,
+            committed_buffer_id: None,
         };
         let pane_tree = PaneTree::single(initial_pane);
 
@@ -1350,6 +1383,16 @@ impl Editor {
         // holds a clone via `BootContext::new`); register the clone for mode
         // lookups via `services().get::<BufferStoreHandle>()`.
         boot.register_service(buffer_store_handle.clone());
+        // CB.0 (clipboard.md): default clipboard backing. `FakeClipboard` is
+        // the safe default (no OS resource, no display dependency); the TUI
+        // peer (CB.2 — `arboard` + OSC52 fallback) and the GPUI peer (CB.4 —
+        // gpui-native) override this with a real backend at renderer boot.
+        // Registered under `ClipboardHandle` per the ServiceRegistry Arc/TypeId
+        // rule so the host register layer (CB.1) AND `terminal-mode` (CB.3)
+        // look it up by that exact type.
+        let clipboard: lattice_core::ClipboardHandle =
+            Arc::new(lattice_core::FakeClipboard::new());
+        boot.register_service(clipboard);
         boot.register_service(lsp_logger.clone());
         // L4b (lsp-architecture.md §15): the diagnostics-query service
         // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read
@@ -1414,12 +1457,11 @@ impl Editor {
         // `ElementId`s from `on_activate` (T.7). Moves `theme_registry` (its
         // last use — captured into `builtin_element_ids` above).
         boot.register_service::<lattice_theme::ThemeRegistryHandle>(theme_registry);
-        // MH.A3 (2026-06-19): expose the ConfigRegistry so extension-crate code
-        // (`create_multibuffer_view`) can read global option defaults — e.g.
-        // `ui.nerd_fonts` for the rich excerpt-header icon palette — without
-        // depending on `lattice-host`'s typed option decls. Read by name
-        // (`get_bool_by_name`). Same `Arc<X>` register/lookup pair per the rule.
-        boot.register_service::<Arc<ConfigRegistry>>(config.clone());
+        // MH.A3 / DB.5: `Arc<ConfigRegistry>` is registered as a Phase-A
+        // service near `config`'s construction (above, next to `event_bus`)
+        // rather than here — see the DB.5 hoist note there for why a
+        // Phase-B `install(&mut boot)` (e.g. `lattice_dashboard::install`)
+        // needs it to already be registered.
         // BC.3a: freeze the service registry into its shared `Arc` (last, after
         // the full services block). The `Editor` literal seats it below.
         let services = boot.freeze_service_registry();

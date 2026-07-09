@@ -145,6 +145,24 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()>;
 
+    /// Open an undo-coalescing group so a run of edits (a vim insert
+    /// session: `i`/`a`/`o`/`cw` .. `<Esc>`) collapses into a single
+    /// undo unit until [`Self::end_undo_group`]. Fire-and-forget:
+    /// ordering against the following edits is the impl's responsibility
+    /// (the actor mailbox is FIFO), so there is nothing to await.
+    ///
+    /// Default no-op. Buffer kinds without a first-class undo stack --
+    /// the `MultibufferDocumentHandle` and the default placeholder
+    /// handle -- ignore grouping; `RopeDocumentHandle` overrides both to
+    /// signal its actor. A no-op default keeps grouping non-regressive
+    /// for those kinds (their edits remain individually undoable, as
+    /// today) without every impl having to opt in.
+    fn begin_undo_group(&self) {}
+
+    /// Close the group opened by [`Self::begin_undo_group`]. Default
+    /// no-op; see that method.
+    fn end_undo_group(&self) {}
+
     // ---- Grammar dispatch ----
 
     /// Dispatch a [`CommandInvocation`] through the impl's

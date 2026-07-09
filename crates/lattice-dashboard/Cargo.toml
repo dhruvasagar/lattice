@@ -1,0 +1,49 @@
+[package]
+name = "lattice-dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# DB.1 (see docs/dev/architecture/dashboard.md + slice-plans/dashboard.md):
+# the launch *dashboard* buffer. This slice is the pure library core —
+# a DashboardSection trait + DashboardRegistry (the extensibility seam),
+# the DashboardFragment content contract, the eight built-in sections,
+# and the dashboard.* config options. Editor wiring (buffer, mode,
+# :dashboard, theme elements, branding art, startup) lands in DB.2+.
+#
+# Dep points DOWN the graph: only lattice-config (for the options! /
+# groups! macros). No crate depends on lattice-dashboard yet; the host
+# links it in the Phase-B install list (DB.2).
+
+[dependencies]
+lattice-config = { path = "../lattice-config" }
+# DB.2 editor wiring: the major mode + install (registers the mode,
+# the :dashboard ex-command returning Effect::OpenDashboard, and the
+# DashboardRegistry service). Deps point DOWN the graph; the host links
+# this crate in the Phase-B install list. The host owns the fragment ->
+# HelpContent conversion + buffer creation (it owns the help machinery),
+# so lattice-dashboard stays free of lattice-help.
+lattice-core = { path = "../lattice-core" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-grammar = { path = "../lattice-grammar" }
+# DB.3: the mode owns its `dashboard.*` theme element vocabulary; register
+# them against the ThemeRegistry (a leaf crate) in on_activate.
+lattice-theme = { path = "../lattice-theme" }
+# DB.4: the branding block is a VirtualRowProvider building colored Cells.
+lattice-cells = { path = "../lattice-cells" }
+tracing = { workspace = true }
+# DB.5: the startup-trigger subscription (`install.rs`) spawns a one-shot
+# task on the shared runtime that waits for `lattice_mode::Startup`, so it
+# needs `tokio::sync::mpsc` for the channel and `rt` to call
+# `Handle::spawn`. This crate's own dependency subtree doesn't otherwise
+# pull in a full-featured `tokio` (unlike `lattice-host`), so both features
+# are declared explicitly rather than relying on workspace-build
+# unification.
+tokio = { workspace = true, features = ["sync", "rt"] }
+# DB.6: the recompose-trigger subscription (`install.rs`) listens on the
+# legacy `Event::OptionChanged` bus for `dashboard.sections` /
+# `dashboard.source` / `ui.nerd_fonts` — the same `EventFilter` +
+# `SubscriptionTarget::Channel` shape `lattice-diff`'s `DiffSubsystem::bind`
+# and `lattice-multibuffer` use for their own event-bus subscriptions.
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-runtime = { path = "../lattice-runtime" }

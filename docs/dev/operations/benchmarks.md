@@ -71,6 +71,46 @@ target rather than just a slower number.
 
 ---
 
+## DB.7 — dashboard creation-time + idle-frame benches (2026-07-03)
+
+Dashboard feature, slice DB.7 (design: `../architecture/dashboard.md` §13;
+slice plan: `slice-plans/dashboard.md`). The dashboard is **not on the
+keystroke path** — it composes once at creation (`:dashboard`, startup, or a
+`dashboard.sections`/`dashboard.source`/`ui.nerd_fonts` recompose), never
+per keystroke — so there is no keystroke→glyph bench here, per design §13.
+Coverage is the two assertions §13 calls for instead.
+
+Bench file: `crates/lattice-host/benches/dashboard.rs`. Run: `cargo bench -p
+lattice-host --bench dashboard`.
+
+| Bench | Median time | Notes |
+|---|---|---|
+| `dashboard_creation` | ~571 µs | Cold `Editor::do_open_dashboard` from a freshly booted, not-yet-opened editor — buffer creation + default-section compose + `HelpContent` seed + branding provider registration. Fires once per launch (or `:dashboard`), never per keystroke. |
+| `dashboard_idle_tick` | ~906 ns | `run_tick_pending` on an editor with the dashboard already open and nothing new published — the idle-frame cost. |
+
+> ⚠️ **Hardware note for this row only.** Captured on the local macOS
+> (Apple Silicon) dev machine, NOT the WSL2/Ryzen 7 9700X box the rest of
+> this document's numbers are pinned to (see the hardware caveat above).
+> These are first-recorded floors with no same-hardware predecessor to
+> compare against, so the absolute numbers aren't cross-comparable with the
+> rest of this document — re-baseline on the primary dev box before relying
+> on them for cross-feature comparison. The regression-detection principle
+> (compare future runs against these, on the same machine) still holds.
+
+**Envelope for future regressions:** `dashboard_creation` past ~1.5 ms
+(≈2.6× the recorded floor) or `dashboard_idle_tick` past ~2 µs suggests
+composition work leaked onto a path it shouldn't be on (e.g. a section
+doing I/O, or the recompose-in-place path running when nothing changed).
+`dashboard_idle_tick`'s near-zero cost is the numeric half of the "idle
+frames do zero dashboard work" guarantee (paramount #1); the correctness
+half — that it's not just fast but literally does no recompose — is pinned
+directly as a regression test (`dashboard_idle_ticks_do_not_recompose` in
+`crates/lattice-host/tests/dashboard.rs`), which asserts the dashboard
+document's version does not advance across idle ticks. A bench alone can
+show "fast"; it can't prove "zero work happened," which is why the test
+exists alongside it — the same "enforced, not asserted" bar the B2.3 bug
+story (below) argues for.
+
 ## B2.3 — synchronous edit-path display rebuild (2026-06-04)
 
 Display-line migration, slice B2.3 (design:
@@ -249,6 +289,38 @@ A full picker page worth of syntax resolution (~4000 chars) costs ~6.8 µs
 spans (the tree query) never runs on the render thread at all. Confirms
 the §3 O(visible chars) claim: the per-char resolution is a `match` +
 theme-table index, no allocation, no parsing.
+
+### PI — picker preview isolation, per-selection-move cost (2026-07-07)
+
+Bench: `cargo bench -p lattice-host --bench preview`. Design:
+`docs/dev/architecture/preview-isolation.md`. Measures a picker preview
+*selection move* under the isolated-projection model (PI.3) against the
+pre-PI activate-swap baseline. Debug-ish criterion build, already-open
+buffer B (no syntax parse in the loop).
+
+| Bench / shape | Median time | Notes |
+|---|---|---|
+| `preview_reseat_same_buffer` | ~31 ns | The `gr` / grep hot case (several hits in one file): moving the selection just re-seats the pane override — no mode work, no option recompute. |
+| `preview_enter_exit` | ~16.9 µs | Mount a preview of a *different* buffer, then unmount. Dominated by the `preview-mode` minor's activate/deactivate cascade (`recompute_options_for_buffer` + `recompute_active_completion_sources_for` + `drain_option_changes`), run twice. |
+| `activate_swap_baseline` | ~1.3 µs | Pre-PI cost: `activate_buffer(B)` then `activate_buffer(A)`, warm (the bench re-activates the same two buffers, so major-mode + option_cache are already built — an under-estimate of a cold cross-buffer activate). |
+
+**Honest read.** The *reseat* path — the same-buffer `gr`/grep case, and
+every move that stays on one buffer — is ~40× cheaper than a raw activate
+(~31 ns), delivering the design's O(1) exit/move promise. The
+*enter/exit* path (a move to a **different** buffer, e.g. find-file
+candidate → candidate) is **not** cheaper than the warm activate baseline
+in this microbench: the `preview-mode` minor chosen in §10.2 (option (a))
+pays the full mode-activation cascade on both mount and unmount, ~16.9 µs
+total. That is still ≈0.2 % of a 120 Hz frame and preview moves are
+user-paced (not held-key bursts), so it is comfortably within budget — but
+it corrects the design's original blanket "preview is cheaper than
+activate" claim: it holds decisively for same-buffer moves and is a modest
+regression for cross-buffer moves. If cross-buffer preview latency ever
+matters, the cascade is the lever: `preview-mode` does not need completion
+sources recomputed, and a lighter activate that skips
+`recompute_active_completion_sources_for` + the non-option cascade arms
+would close most of the gap (or option (b), a read-only render flag with
+no mode lifecycle, would eliminate it).
 
 **Regression envelope:** `styled_marginalia_columns_1000` past ~300 µs,
 or `styled_perm_10seg` past 150 ns, signals an unintended allocation in

@@ -256,6 +256,38 @@ impl Editor {
         id
     }
 
+    /// DB.2: create the `*dashboard*` buffer. Identical to
+    /// [`Self::register_help_document`] except the buffer data is
+    /// [`BufferData::Dashboard`] (so `:ls` / introspection tell it apart and
+    /// the follow gates group it with help), and `dashboard-mode` is the
+    /// major (assigned by the caller). Reuses the help metadata seed for the
+    /// markdown `SyntaxHandle` + link `ExtraHighlights`, so `<CR>`-follow
+    /// works through the shared help mechanism.
+    pub fn register_dashboard_document(
+        &mut self,
+        content: lattice_help::HelpContent,
+        flags: BufferFlags,
+    ) -> BufferId {
+        let lattice_help::HelpContent { buffer, metadata } = content;
+        let id = BufferId::next();
+        let document = Document::empty();
+        let handle = spawn_document(id, document, self.registry.clone());
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        self.buffers.insert(BufferEntry {
+            id,
+            flags,
+            data: BufferData::Dashboard(DocumentEntry { id, handle }),
+            name: Some(buffer.title),
+        });
+        self.seed_empty_document_locals(id);
+        let text = buffer.content.as_string();
+        if !text.is_empty() {
+            self.append_to_owned_buffer(id, &text);
+        }
+        self.seed_help_metadata_locals(id, metadata);
+        id
+    }
+
     /// PU.1a: replace the entire content of an owned synthetic
     /// Document at `id` with `text` (bypasses the read-only
     /// dispatcher, like [`Self::append_to_owned_buffer`]). Used by

@@ -223,6 +223,37 @@ fn operator_di_paren(c: &mut Criterion) {
     g.finish();
 }
 
+fn operator_replace_char(c: &mut Criterion) {
+    let mut g = c.benchmark_group("operator::replace_char");
+    let mut registry = CommandRegistry::new();
+    let b = populate(&mut registry);
+
+    // Normal `r{char}` over `char_right` -- the single-char reflex path.
+    for size in [10usize, 1_000, 50_000] {
+        let text = build_buffer(size);
+        g.bench_with_input(BenchmarkId::new("normal", size), &text, |bencher, t| {
+            bencher.iter_with_setup(
+                || Document::from_text(t),
+                |mut doc| {
+                    let inv = CommandInvocation::of(b.replace_char.0)
+                        .with_target(Target::Motion(b.char_right, Args::Char('\0')))
+                        .with_args(Args::Char('z'));
+                    let _ = execute(
+                        &registry,
+                        &mut doc,
+                        lattice_core::BufferId(0),
+                        black_box(Position::ZERO),
+                        inv,
+                        &CancellationToken::never(),
+                    )
+                    .unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     operator_dw,
@@ -232,5 +263,6 @@ criterion_group!(
     operator_cw,
     operator_diw,
     operator_di_paren,
+    operator_replace_char,
 );
 criterion_main!(benches);

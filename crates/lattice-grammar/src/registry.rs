@@ -412,6 +412,14 @@ impl CommandRegistration {
 pub struct CommandRegistry {
     by_id: HashMap<CommandId, CommandEntry>,
     by_name: HashMap<String, CommandId>,
+    /// Motions in the vim "word-forward" class (`w` / `W`). Under an
+    /// operator these get the word-motion special case: `dw` / `cw` /
+    /// `yw` on the last word of a line stop at the line end rather than
+    /// reaching over the newline into the next line's first word
+    /// (`:help word-motions`). Populated by `builtins::populate` via
+    /// [`Self::tag_word_forward_motion`]; read by the operator range
+    /// resolver.
+    word_forward_motions: std::collections::HashSet<CommandId>,
 }
 
 pub(crate) struct CommandEntry {
@@ -431,6 +439,20 @@ impl std::fmt::Debug for CommandEntry {
 impl CommandRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Tag a motion as "word-forward class" (vim `w` / `W`) so the
+    /// operator range resolver applies the word-motion line-stop special
+    /// case to it. Called by `builtins::populate` right after the two
+    /// word-forward motions are registered. Idempotent.
+    pub fn tag_word_forward_motion(&mut self, id: MotionId) {
+        self.word_forward_motions.insert(id.0);
+    }
+
+    /// Whether `id` is a word-forward-class motion (see
+    /// [`Self::tag_word_forward_motion`]).
+    pub fn is_word_forward_motion(&self, id: CommandId) -> bool {
+        self.word_forward_motions.contains(&id)
     }
 
     /// Register a motion. The caller's source location is captured

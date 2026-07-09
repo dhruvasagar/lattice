@@ -99,6 +99,12 @@ pub struct OptionCache {
     /// `rebuild_scrollbind_group` via `apply_option_cascade`
     /// when toggled.
     pub scrollbind: bool,
+    /// DB.4: extra leading gutter cells to horizontally centre the active
+    /// buffer's content (dashboard). `(viewport_width - content_block_width)/2`,
+    /// recomputed on activation + resize. `0` = not centred (the default for
+    /// every buffer). The renderer adds this to the gutter width so content +
+    /// cursor shift right with no text mutation.
+    pub content_left_pad: u32,
 }
 
 impl Default for OptionCache {
@@ -125,6 +131,7 @@ impl Default for OptionCache {
             whitespace_eol: None,
             terminal_esc_exits: true,
             scrollbind: false,
+            content_left_pad: 0,
         }
     }
 }

@@ -19,6 +19,7 @@ members = [
 	"crates/lattice-lsp",
 	"crates/lattice-terminal",
 	"crates/lattice-theme",
+	"crates/lattice-dashboard",
 	"crates/lattice-cells",
 	"crates/lattice-multibuffer",
 	"crates/lattice-host",
@@ -197,6 +198,20 @@ clap = { version = "4", features = ["derive"] }
 # Terminal UI
 ratatui = "0.29"
 crossterm = "0.28"
+
+# CB.2 (docs/dev/architecture/clipboard.md): native OS clipboard
+# (macOS / X11 / Wayland / Windows). Optional, feature-gated behind
+# `lattice-ui-tui`'s `system-clipboard` feature -- mirrors the
+# `lattice-ui-gpui`/`window` optional-dep pattern -- because arboard
+# pulls X11/Wayland link libs on Linux that the default
+# `cargo test --workspace` CI job doesn't install. The OSC52 fallback
+# (write-only, no link deps) stays unconditional.
+arboard = "3.6"
+# CB.2: OSC52 clipboard-write escape sequences are base64-encoded
+# payloads. No system-lib dependency, always compiled in (unlike
+# arboard) so the fallback path never needs the `system-clipboard`
+# feature.
+base64 = "0.22"
 
 # Syntax (tree-sitter)
 tree-sitter = "0.24"

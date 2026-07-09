@@ -233,6 +233,54 @@ mod tests {
     }
 
     #[test]
+    fn visual_r_x_resolves_to_replace_char_on_selection() {
+        // `v_r{char}`: `r` absorbs as a partial, the next key resolves
+        // the pair to the replace-char operator carrying
+        // `Range::Selection`, with the captured char folded into
+        // `Args::Char`.
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let prefix = [ev(KeyCode::Char('r'), KeyModifiers::NONE)];
+        let r = dispatch_visual(
+            &h,
+            &ev(KeyCode::Char('X'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+            &prefix,
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.replace_char.0);
+                assert!(
+                    matches!(inv.range, Some(lattice_grammar::Range::Selection)),
+                    "Visual r must carry Range::Selection, got {:?}",
+                    inv.range
+                );
+                assert!(
+                    matches!(inv.args, lattice_grammar::args::Args::Char('X')),
+                    "captured char rides on the operator args, got {:?}",
+                    inv.args
+                );
+            }
+            other => panic!("expected Invoke(replace_char, Selection, Char('X')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn visual_r_alone_absorbs_partial_chord() {
+        let (_, b, a, so) = fixture();
+        let h = populated_handle(&b, &a, &so);
+        let r = dv(
+            &h,
+            &ev(KeyCode::Char('r'), KeyModifiers::NONE),
+            VisualKind::Charwise,
+        );
+        assert!(
+            matches!(r, Action::AbsorbPartialChord(c) if c == KeyChord::char('r')),
+            "expected AbsorbPartialChord(r), got {r:?}"
+        );
+    }
+
+    #[test]
     fn capital_i_only_in_blockwise() {
         let (_, b, a, so) = fixture();
         let h = populated_handle(&b, &a, &so);

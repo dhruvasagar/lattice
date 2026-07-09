@@ -84,6 +84,13 @@ pub mod gpui_chord;
 #[cfg(feature = "window")]
 pub mod window;
 
+/// Slice W.3: pure `decorations` → GPUI window-chrome map
+/// (`window_chrome`/`full_titlebar`). Gated identically to `window` since
+/// it names `gpui::{SharedString, TitlebarOptions, WindowDecorations}` and
+/// is only reachable from `window.rs`'s `WindowOptions` construction.
+#[cfg(feature = "window")]
+pub mod window_chrome;
+
 /// Phase 5.8.AF.5 / Slice X3.full.1: custom GPUI `Element` rendering
 /// pane text via `ShapedLine::paint` -- replaces the per-char-Div
 /// element tree that dominated `paint_us`.
@@ -312,6 +319,10 @@ pub struct GpuiApp {
     /// The `Arc<Notify>` is shared with the highlights worker; wakes
     /// propagate to GPUI's foreground executor via `cx.notify()`.
     pub paint_request: std::sync::Arc<tokio::sync::Notify>,
+    /// W.5: UI-thread window-command queue (maximize, …). Producers push
+    /// (boot seam / future :maximize); `EditorView::render` drains it.
+    #[cfg(feature = "window")]
+    pub window_commands: crate::window_chrome::WindowCommandQueue,
     // Phase 5.8.AE: `popup_content` retired. Popup state is
     // unified in `editor.popup_buffer` (+ buffer-locals for
     // links/anchors/highlights). The binary's render reads
@@ -341,7 +352,62 @@ impl GpuiApp {
     /// this peer will call the same methods via its own renderer-
     /// signal handler.
     pub fn new(document: Document) -> Self {
+        // DB.5 (design.md §9.1): capture the opened-file path BEFORE
+        // `document` moves into `Editor::boot` (which consumes it) —
+        // mirrors the TUI seam in `lattice-ui-tui/src/app/boot.rs`.
+        let opened_file = document.path().map(|p| p.to_path_buf());
         let mut editor = Editor::boot(document);
+        // CB.4 (docs/dev/architecture/clipboard.md §4/§7): override CB.0's
+        // default `FakeClipboard` with the shared native `arboard` backend
+        // (the same `lattice_host::clipboard::ArboardClipboard` the TUI
+        // peer uses — one impl, honoring the synchronous-read contract).
+        // The GPUI peer always links display libs (the `window` feature),
+        // so `arboard` is always available in a real GUI build and needs
+        // no OSC52 fallback (a GUI is never a headless terminal). Fork-1
+        // named "gpui-native" here, but gpui's own clipboard is reachable
+        // only via `&App` on the main thread, which can't satisfy the
+        // `Send + Sync` trait's synchronous read from the editor actor
+        // thread; arboard is the sound resolution (see the slice plan
+        // CB.4 note). Gated on `system-clipboard` (pulled by `window`) so
+        // the non-window scaffold build stays dep-light. `Arc::get_mut`
+        // succeeds here for the same reason as the TUI seam: the registry
+        // is a freshly-frozen, uniquely-owned Arc immediately after
+        // `Editor::boot`.
+        #[cfg(feature = "system-clipboard")]
+        match lattice_host::clipboard::ArboardClipboard::new() {
+            Some(native) => {
+                if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
+                    let clipboard: lattice_core::ClipboardHandle = std::sync::Arc::new(native);
+                    services.register(clipboard);
+                }
+            }
+            None => {
+                // No reachable display clipboard — leave CB.0's
+                // FakeClipboard (in-memory register behavior). Unusual for
+                // a GUI (which owns a window), so note it once for
+                // diagnosis; never fatal.
+                tracing::debug!(
+                    "clipboard: native (arboard) init failed at GPUI boot; \
+                     paste-from-another-app unavailable this session"
+                );
+            }
+        }
+        // DB.5 (test isolation): disable the dashboard auto-open BEFORE
+        // the `Startup` publish so unit tests (which build pathless
+        // documents that look like a no-file launch) don't get the
+        // dashboard buffer instead of their own text. Race-free — the
+        // trigger's task reads `dashboard.enabled` only after receiving
+        // `Startup`, which can't arrive before this publish. Mirrors the
+        // TUI seam in `lattice-ui-tui/src/app/boot.rs`.
+        #[cfg(test)]
+        {
+            let _ = editor
+                .config
+                .parse_and_set_command("dashboard.enabled=false");
+        }
+        // DB.5: publish `Startup` once `editor` exists, right after `boot`
+        // returns — see the TUI seam for the full rationale.
+        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
         let render_state = editor.render_state.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. The
@@ -369,6 +435,32 @@ impl GpuiApp {
         // Clone before the actor consumes the editor so EditorView::new
         // can subscribe without a read_editor round-trip.
         let paint_request = editor.paint_request.clone();
+        // W.5: window-command queue, created before the actor hand-off so
+        // it's available for the struct literal below regardless of cfg.
+        #[cfg(feature = "window")]
+        let window_commands = crate::window_chrome::new_window_command_queue();
+
+        // W.6: ui.window.start-maximized — enqueue a one-shot maximize now that
+        // config is loaded (load_persistent_config ran above). Drained on the UI
+        // thread by EditorView::render (W.5). Must read editor.config before the
+        // actor consumes `editor` below. Whole block is window-gated because it
+        // touches the window-only command queue.
+        #[cfg(feature = "window")]
+        {
+            let start_maximized = editor
+                .config
+                .get_typed::<lattice_config::StartMaximized>()
+                .map(|v| *v)
+                .unwrap_or(false);
+            if start_maximized {
+                window_commands
+                    .lock()
+                    .expect("window command queue poisoned")
+                    .push_back(crate::window_chrome::WindowCommand::Maximize);
+                // Wake a paint so the drain runs even if no input is in flight.
+                paint_request.notify_one();
+            }
+        }
 
         // Slice 3c.final.E.swap: hand Editor to the actor (prod)
         // or keep inline (test).
@@ -386,6 +478,8 @@ impl GpuiApp {
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
             paint_request,
+            #[cfg(feature = "window")]
+            window_commands,
         };
         // App-side post-actor: rebuild the cached GPUI theme from
         // the freshly-published `render_state.theme`.
@@ -1085,6 +1179,8 @@ impl GpuiApp {
             | Effect::DescribeEvent { .. }
             | Effect::DescribeDiff
             | Effect::DiffOpen
+            // DB.2: host-applied via handle_effect; peer no-op.
+            | Effect::OpenDashboard
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
@@ -1388,6 +1484,27 @@ mod tests {
         let probe: &dyn ProviderLookup = &app.pane_render_registry;
         let dummy = lattice_mode::ModeId::new("__scaffold_probe__");
         assert!(!probe.has_provider(dummy));
+    }
+
+    /// CB.4 regression guard: `GpuiApp::new` must always leave a working
+    /// `ClipboardHandle` registered and never panic through its
+    /// clipboard-override path. In a default (`system-clipboard`-off) test
+    /// run this is CB.0's `FakeClipboard`, preserved through GPUI boot; the
+    /// arboard override (feature-on, real display) is exercised on the dev
+    /// machine + via the `--features window` build. The point pinned here
+    /// is the invariant that survives regardless of feature/display: boot
+    /// completes and a handle resolves.
+    #[test]
+    fn new_leaves_a_working_clipboard_handle() {
+        let app = GpuiApp::new(Document::empty());
+        let clipboard = app
+            .editor
+            .services
+            .get::<lattice_core::ClipboardHandle>()
+            .expect("GpuiApp::new must leave a ClipboardHandle registered");
+        // Whatever backend is bound, write+read must not panic.
+        clipboard.write("cb4-gpui-probe".to_string());
+        let _ = clipboard.read();
     }
 
     /// End-to-end pipeline assertion: a key string flows through

@@ -272,6 +272,15 @@ impl OptionGroup for Diagnostics {
         "Diagnostics presentation: inline end-of-line summary scope + min-severity.";
 }
 
+/// GPUI window options: OS chrome (`ui.window.decorations`) and
+/// maximize-on-launch (`ui.window.start-maximized`). GPUI peer only.
+pub struct Window;
+impl OptionGroup for Window {
+    const NAME: &'static str = "window";
+    const DOC: &'static str =
+        "GPUI window options (borderless chrome, maximize on launch). GPUI peer only.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -335,6 +344,9 @@ static MODELINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_gro
 static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =
     &OptionGroupMetadata::for_group::<Diagnostics>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static WINDOW_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Window>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -357,6 +369,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Snippet::NAME));
     assert!(!ends_with_mode_suffix(Modeline::NAME));
     assert!(!ends_with_mode_suffix(Diagnostics::NAME));
+    assert!(!ends_with_mode_suffix(Window::NAME));
 };
 
 #[cfg(test)]

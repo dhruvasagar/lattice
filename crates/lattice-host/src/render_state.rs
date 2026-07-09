@@ -95,6 +95,9 @@ pub struct RenderState {
     /// `picker_display_is_minibuffer` (and any future per-frame
     /// typed-option read) doesn't take an actor round-trip.
     pub options: Arc<OptionsRenderState>,
+    /// PI.4: per-buffer mode-resolved options (renderer-agnostic option
+    /// resolution). Read via [`Self::resolved_option_for`].
+    pub resolved_opts: Arc<ResolvedOptionsRenderState>,
     /// Slice 3c.final.B.11: active modes per buffer, published as
     /// `Arc<HashMap<BufferId, Arc<ActiveModes>>>` so per-buffer
     /// reads in the modeline + future hot paths are wait-free.
@@ -196,6 +199,7 @@ impl Default for RenderState {
             modeline: Arc::new(ModelineRenderState::default()),
             modeline_elements: lattice_mode::ModelineSnapshot::default(),
             options: Arc::new(OptionsRenderState::default()),
+            resolved_opts: Arc::new(ResolvedOptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),
             buffer_locals: Arc::new(BufferLocalsRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
@@ -235,6 +239,70 @@ impl RenderState {
     /// `cells.panes` (sourced from its `DocumentFolds` buffer-local).
     /// A buffer in no pane (no `cells.panes` entry) yields an empty
     /// list — nothing to elide.
+    /// PI.0: the horizontal-centring pad for a pane rendering `buffer_id`.
+    /// Resolved from THAT buffer's `CenterContentWidth` local + the width
+    /// of the pane showing it — never the active-buffer identity.
+    ///
+    /// Previously the renderers gated centring on `buffer_id ==
+    /// document_buffer_id`, so a picker preview that swapped
+    /// `document_buffer_id` to the previewed file collapsed the dashboard's
+    /// centring to 0 while the pane still showed the dashboard. Reading the
+    /// rendered buffer's own local keeps centring attached to the buffer
+    /// that carries it. Shared by the TUI and GPUI peers.
+    pub fn content_left_pad_for(&self, buffer_id: lattice_core::BufferId) -> u32 {
+        let block_width = self
+            .buffer_locals
+            .map
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::CenterContentWidth>())
+            .map(|c| c.0)
+            .unwrap_or(0);
+        if block_width == 0 {
+            return 0;
+        }
+        let tree = &self.panes.tree;
+        let viewport_width = tree
+            .leaves()
+            .iter()
+            .find(|p| p.buffer_id == buffer_id)
+            .map(|p| p.viewport_width)
+            .unwrap_or_else(|| tree.active().viewport_width);
+        viewport_width.saturating_sub(block_width) / 2
+    }
+
+    /// PI.4: resolve option `D` for `buffer_id` from the published
+    /// per-buffer resolved-options snapshot — the renderer-agnostic seam
+    /// both peers use (mirror of `Editor::resolved_option`). Falls back to
+    /// the global typed-option default when the buffer has no cached entry
+    /// (transient publish gap / a buffer resolved lazily). O(1) `TypeId`
+    /// lookup on the `Arc`-shared `ResolvedOptions`.
+    pub fn resolved_option_for<D: lattice_config::OptionDecl>(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Arc<D::Value>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        if let Some(resolved) = self.resolved_opts.map.get(&buffer_id)
+            && let Some(v) = resolved.get::<D>()
+        {
+            return v;
+        }
+        self.options
+            .config
+            .get_typed::<D>()
+            .expect("option not registered")
+    }
+
+    /// PI.4: whether a pane showing `buffer_id` paints its cursorline
+    /// (`:set cursorline` / `current-line-highlight-mode`), resolved
+    /// per-buffer. Both peers read this for the focused preview pane so the
+    /// previewed buffer keeps its own cursorline (e.g. an LSP-reference /
+    /// grep location preview keeps the target line highlighted).
+    pub fn current_line_highlight_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        *self.resolved_option_for::<lattice_config::CursorLine>(buffer_id)
+    }
+
     pub fn folds_for_buffer(
         &self,
         buffer_id: lattice_core::BufferId,
@@ -1271,6 +1339,19 @@ pub struct PaneCellsInputs {
     /// display rows. `false` ⇒ `wrap_width` stays `0` (one
     /// display row per source line — the historical default).
     pub wrap: bool,
+    /// Columns reserved for this pane's gutter (line-number column
+    /// + diagnostic + diff-sign cells). The cells worker subtracts
+    /// this from `viewport_width` to get the soft-wrap width, so
+    /// the stamped `wrap_width` — read by `segment_count` (the
+    /// vertical scroll clamp) and both renderers' paint paths —
+    /// matches the width the renderer actually wraps body text at.
+    /// Without this the clamp under-counts wrapped display rows and
+    /// `G` clips the document tail. `0` for gutterless panes (the
+    /// floating popups). Computed via
+    /// [`crate::cells_worker::gutter_cols`], shared with
+    /// [`crate::editor::Editor::body_text_width`] to keep the
+    /// vertical and horizontal clamps in lockstep.
+    pub wrap_reserved_cols: u32,
     /// Per-pane foldenable. Global today (no per-buffer
     /// setting); kept here so a future per-buffer
     /// `foldenable` doesn't require a substate reshape.
@@ -1635,6 +1716,8 @@ pub struct PublishCache {
     pub panes: Option<(u64, std::sync::Arc<PanesRenderState>)>,
     pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
     pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
+    /// PI.4: keyed on `Editor::resolved_options_version`.
+    pub resolved_opts: Option<(u64, std::sync::Arc<ResolvedOptionsRenderState>)>,
     // DR.2 (decoration-retention): `pane_highlights_map` cache slot
     // retired with the `pane_highlights` producer. ML.3c: `lsp_progress`
     // cache slot retired with `RenderState.lsp.progress`.
@@ -1879,6 +1962,20 @@ pub struct ModesRenderState {
 #[derive(Debug, Default, Clone)]
 pub struct OptionsRenderState {
     pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
+}
+
+/// PI.4: per-buffer mode-resolved options, published so BOTH renderer
+/// peers resolve a buffer's options (Number, Wrap, CursorLine, …) through
+/// ONE renderer-agnostic seam — [`RenderState::resolved_option_for`] —
+/// instead of the TUI reading the live editor and GPUI reading the active
+/// document's `option_cache`. Mirror of the host's
+/// `Editor::resolved_options`; a buffer absent from the map falls back to
+/// the global typed-option default via [`OptionsRenderState::config`].
+#[derive(Debug, Default, Clone)]
+pub struct ResolvedOptionsRenderState {
+    pub map: std::sync::Arc<
+        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<lattice_config::ResolvedOptions>>,
+    >,
 }
 
 /// `*messages*` buffer + echo line state.
@@ -2824,6 +2921,56 @@ mod tests {
             b_folds.is_empty(),
             "active buffer B resolves to its own (empty) folds, got {b_folds:?}"
         );
+    }
+
+    /// PI.0: content-centring follows the buffer that carries
+    /// `CenterContentWidth`, not the active-buffer identity. A centred
+    /// buffer keeps its pad even when a DIFFERENT buffer is the active
+    /// document — the picker-preview scenario that used to collapse the
+    /// dashboard's centring to 0 the instant `document_buffer_id` pointed
+    /// at the previewed file.
+    #[test]
+    fn content_left_pad_follows_rendered_buffer_not_active_identity() {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let document = lattice_core::Document::from_text("centered\n");
+        let mut editor = Editor::boot(document);
+        let a_id = editor.document_buffer_id;
+
+        // Open B in a split and focus it, so A is no longer the active doc.
+        let path = write_temp_rs("b0\nb1\n");
+        let new_idx = editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(new_idx);
+        let _ = editor.do_edit(Some(path.0.clone()), false);
+        let b_id = editor.pane_tree.active().buffer_id;
+        assert_ne!(a_id, b_id, "B must be distinct from A");
+        assert_ne!(editor.document_buffer_id, a_id, "A is no longer active");
+
+        // Mark A for centring within a 20-col block; give A's (now
+        // inactive) pane an 80-col viewport.
+        editor
+            .buffer_locals
+            .entry(a_id)
+            .or_default()
+            .insert(crate::modes::CenterContentWidth(20));
+        for leaf in editor.pane_tree.leaves_mut() {
+            if leaf.buffer_id == a_id {
+                leaf.viewport_width = 80;
+            }
+        }
+
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        // A keeps its centring pad = (80 - 20) / 2 = 30 despite being
+        // inactive; the fix reads A's own local, not `== document_buffer_id`.
+        assert_eq!(
+            rs.content_left_pad_for(a_id),
+            30,
+            "centred buffer A keeps its pad when a different buffer is active"
+        );
+        // B carries no CenterContentWidth → no pad.
+        assert_eq!(rs.content_left_pad_for(b_id), 0);
     }
 
     /// Exact user repro (2026-06-30): A in pane1, B (folded) active in

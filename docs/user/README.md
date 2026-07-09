@@ -37,6 +37,7 @@ same surface).
 
 | Topic                                                                                                       | File                                | Status |
 |-------------------------------------------------------------------------------------------------------------|-------------------------------------|--------|
+| Getting started (the ten-minute orientation: the modal loop, open/save, the command line, splits, next steps) | [getting-started.md](getting-started.md) | ✅ |
 | Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace + the vim grammar)        | [modal-editing.md](modal-editing.md)| ✅     |
 | Modes (major + minor; `:<mode-name>` toggle; LSP umbrella + sub-modes; display modes; convergence with `:set`) | [modes.md](modes.md)             | ✅     |
 | Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, arg schemas, completion, ranges, aliases)                        | [ex-commands.md](ex-commands.md)    | ✅     |

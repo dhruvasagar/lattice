@@ -45,10 +45,10 @@ shows full metadata.
 | `:bp` / `:bprev`       | Cycle to previous buffer                                     |
 | `:b N`                 | Switch to buffer #N                                          |
 | `:b PATTERN`           | Switch to buffer matching PATTERN                            |
-| `:b` (no arg)          | Open buffer picker                                           |
+| `:buffers` / `:b`      | Open the fuzzy buffer switcher (picker)                     |
 | `:bd` / `:bdelete`     | Close active buffer                                          |
 | `:bd!`                 | Close even if dirty                                          |
-| `:ls` / `:buffers`     | List every open buffer                                       |
+| `:ls`                  | List every open buffer as static text                       |
 
 ### Splits / panes
 
@@ -326,7 +326,7 @@ command's known aliases. Examples:
 | `:buffer-next`       | `:bn`, `:bnext`                        |
 | `:nohlsearch`        | `:noh`                                 |
 | `:diagnostics-next`  | `:diag-next`, `:dnext`, `:cnext`, `:cn`|
-| `:buffers`           | `:ls`                                  |
+| `:buffer-picker`     | `:buffers`, `:b`                       |
 
 ---
 

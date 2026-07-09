@@ -164,6 +164,14 @@ fn map_cell(a: &alacritty_terminal::term::cell::Cell) -> Cell {
         fg: map_color(a.fg),
         bg: map_color(a.bg),
         attrs: map_flags(a.flags),
+        // A width-2 glyph occupies two grid cells: the glyph
+        // (WIDE_CHAR) and this trailing placeholder. `LEADING_`
+        // is alacritty's variant for a wide glyph deferred off a
+        // line's last column. Surface it so renderers skip the
+        // spacer instead of emitting it as a stray space — see
+        // `docs/dev/audit/terminal-wide-char-ghosting.md`.
+        wide_spacer: a.flags.contains(AlacrittyFlags::WIDE_CHAR_SPACER)
+            || a.flags.contains(AlacrittyFlags::LEADING_WIDE_CHAR_SPACER),
     }
 }
 
@@ -372,6 +380,19 @@ impl SharedTerm {
         if let Some(n) = &self.paint_request {
             n.notify_one();
         }
+    }
+
+    /// CB.3 (`docs/dev/architecture/clipboard.md` §6): whether the running
+    /// program has enabled DEC private mode 2004 (bracketed paste). Read
+    /// by the host's terminal-paste handler to decide whether to wrap
+    /// pasted text in `\x1b[200~` / `\x1b[201~` before writing it to the
+    /// PTY -- programs that understand bracketed paste (shells with
+    /// readline/zle, vim, etc.) use the markers to treat the whole paste
+    /// as literal text instead of interpreting it as typed keystrokes.
+    /// `inner` is crate-private, so this accessor is the published
+    /// primitive; the host never reaches into the `Term` directly.
+    pub fn bracketed_paste(&self) -> bool {
+        self.inner.lock().mode().contains(TermMode::BRACKETED_PASTE)
     }
 
     /// T3.b (2026-05-25): walk the grid (history + live screen)
@@ -834,6 +855,27 @@ mod tests {
         term_to_snapshot(&term, 1)
     }
 
+    // CB.3 (docs/dev/architecture/clipboard.md §6): the host's
+    // terminal-paste handler reads `SharedTerm::bracketed_paste` to decide
+    // whether to wrap pasted text in DEC-2004 markers.
+
+    #[test]
+    fn bracketed_paste_defaults_to_disabled() {
+        let term = SharedTerm::fixture(3, 10, 0);
+        assert!(!term.bracketed_paste());
+    }
+
+    #[test]
+    fn bracketed_paste_tracks_dec_private_mode_2004() {
+        let term = SharedTerm::fixture(3, 10, 0);
+        // CSI ? 2004 h -- enable bracketed paste.
+        term.feed_for_fixture(b"\x1b[?2004h");
+        assert!(term.bracketed_paste());
+        // CSI ? 2004 l -- disable it again.
+        term.feed_for_fixture(b"\x1b[?2004l");
+        assert!(!term.bracketed_paste());
+    }
+
     #[test]
     fn plain_ascii_lands_in_cells() {
         let s = run(b"hi", 3, 10);
@@ -906,6 +948,32 @@ mod tests {
         for c in 0..4 {
             assert!(s.cell_at(0, c).attrs.bold, "col {c} should be bold");
         }
+    }
+
+    #[test]
+    fn wide_glyph_marks_trailing_spacer_cell() {
+        // A width-2 glyph (emoji) occupies TWO alacritty grid cells:
+        // the WIDE_CHAR cell holding the glyph and a WIDE_CHAR_SPACER
+        // placeholder after it. The snapshot must surface the spacer
+        // flag so renderers skip it — otherwise the row emits one
+        // display column too many per wide glyph (the ghosting bug in
+        // docs/dev/audit/terminal-wide-char-ghosting.md).
+        let s = run("🚀x".as_bytes(), 2, 10);
+        assert_eq!(s.cell_at(0, 0).ch, '🚀');
+        assert!(
+            !s.cell_at(0, 0).wide_spacer,
+            "the glyph cell itself is not a spacer",
+        );
+        assert!(
+            s.cell_at(0, 1).wide_spacer,
+            "the cell after a wide glyph must be flagged as a spacer",
+        );
+        assert_eq!(
+            s.cell_at(0, 2).ch,
+            'x',
+            "content resumes in the third column, past the spacer",
+        );
+        assert!(!s.cell_at(0, 2).wide_spacer);
     }
 
     #[test]

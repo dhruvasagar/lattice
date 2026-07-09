@@ -121,8 +121,14 @@ pub(crate) struct GutterLineMeta {
     /// click handling stay on `line_idx` (composed coords) while
     /// the user sees the meaningful source-file numbers.
     pub(crate) display_line: u32,
-    /// `true` => render the fold-start marker (►) in column 0.
-    pub(crate) fold_start: bool,
+    /// Fold-start marker for this head row: `Some((glyph, colour))`
+    /// where `glyph` is `▾` (open/expanded fold) or `▸` (closed/collapsed
+    /// fold) and `colour` is the resolved `gutter.fold.open` /
+    /// `gutter.fold.closed` theme colour. `None` when no fold starts on
+    /// this row — a blank cell keeps the column aligned. Painted AFTER
+    /// the line number (a separator space, the glyph, then a trailing
+    /// gap: `… 99 ▸ code`), mirroring the TUI gutter, not at column 0.
+    pub(crate) fold_marker: Option<(char, u32)>,
     /// Pre-resolved diagnostic severity (glyph, colour). `None`
     /// renders a blank space in the severity column so alignment
     /// stays stable.
@@ -240,12 +246,21 @@ pub(crate) struct EditorElement {
     /// Line-number column width in chars (max digits in
     /// `total_lines`).
     pub(crate) gutter_width: usize,
+    /// DB.4: extra leading gutter cells to horizontally centre the buffer's
+    /// content (dashboard). Added to `gutter_chars` (document lines + cursor)
+    /// and to the virtual-row gutter (branding), so the whole buffer shifts
+    /// right — centred with no text mutation. `0` for non-centred buffers.
+    pub(crate) content_left_pad: u32,
     /// PU.1b-1a (`signcolumn`): whether to reserve the gutter sign
     /// columns (diagnostics severity + diff sign). `true` (default)
     /// keeps both cells — byte-identical to the prior render; `false`
     /// (`signcolumn=no`) drops them so content abuts the line-number
     /// column. TUI peer: `FrameView::sign_column` / `sign_columns_width`.
     pub(crate) sign_column: bool,
+    /// PU.1b-1a (`number`): whether the gutter shows line numbers. `false`
+    /// (help / dashboard / `:set nonumber`) omits the digits so the gutter is
+    /// fold + trail only. TUI peer: `FrameView::show_line_numbers`.
+    pub(crate) show_line_numbers: bool,
     /// Active-pane cursor state. `None` => inactive pane (no
     /// cursor marker painted).
     pub(crate) cursor: Option<CursorState>,
@@ -407,23 +422,75 @@ pub(crate) struct EditorElement {
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
 pub(crate) struct EditorElementLayoutState;
 
-/// F.2 (Thread F): a heading row split into a base-size leading marker
-/// prefix (`# `/`## `) + a scaled title, so only the title scales
-/// (emacs `markdown-header-delimiter-face` keeps the markers base-size).
-/// Both paint paths read this for a scaled row: the active cell path
-/// paints the two column ranges at base / scaled advance sharing one
-/// baseline; the fallback (inactive / folded) path paints
-/// `prefix_shaped` + `title_shaped` side by side. `None` for ordinary
-/// rows (the untouched fast path).
-struct HeadingSplit {
-    /// Leading display columns rendered at base size (the markers).
-    prefix_cols: u32,
-    /// The title's scale (`> 1.0`).
-    title_scale: f32,
-    /// Prefix shaped at base size — fallback path.
-    prefix_shaped: ShapedLine,
-    /// Title shaped at `font_size * title_scale` — fallback path.
-    title_shaped: ShapedLine,
+/// F.2/F.3 (Thread F): a display row whose columns are NOT uniformly the
+/// base font size — one or more contiguous column runs render at a larger
+/// scale, all sharing ONE baseline (the emacs markdown-heading model: the
+/// `#`/`##` markers stay base-size, the title scales). F.2 introduced this
+/// for headings as a fixed 2-piece split; F.3 generalizes it to N pieces
+/// so **virtual rows** (the dashboard branding wordmark) get the same
+/// per-token scaling.
+///
+/// A heading is the 2-piece case `[base markers][scaled title]`; a
+/// branding row is `[base mark blocks][base gap][scaled wordmark]`; any
+/// `VirtualRow::scales` pattern maps to its coalesced runs. `None` for
+/// ordinary uniform rows (the untouched fast path).
+///
+/// Both paint paths read this: the active cell path paints each piece's
+/// column range at its scaled advance sharing one baseline; the fallback
+/// (inactive / folded / virtual-row) path paints each piece's pre-shaped
+/// line side by side. A `ScaledLine` always holds ≥ 1 piece and at least
+/// one piece with `scale > 1.0` (a fully-base row is the `None` fast path).
+struct ScaledLine {
+    /// Pieces in column order, contiguous, covering the whole row.
+    pieces: Vec<ScaledPiece>,
+    /// The tallest piece scale — the row's height multiplier
+    /// (`row_scale`) and the shared-baseline ascent factor.
+    max_scale: f32,
+}
+
+/// One contiguous run of display columns at a single scale within a
+/// [`ScaledLine`].
+struct ScaledPiece {
+    /// First display column of this piece.
+    start_col: u32,
+    /// Number of display columns the piece spans.
+    cols: u32,
+    /// Font scale (`1.0` = base). Shaped at `font_size * scale`.
+    scale: f32,
+    /// The piece's text shaped at `font_size * scale` — fallback path.
+    shaped: ShapedLine,
+}
+
+impl ScaledLine {
+    /// The piece containing display column `col`, if any.
+    fn piece_at(&self, col: u32) -> Option<&ScaledPiece> {
+        self.pieces
+            .iter()
+            .find(|p| col >= p.start_col && col < p.start_col + p.cols)
+    }
+
+    /// The font scale at display column `col` (`1.0` past the last piece).
+    fn scale_at(&self, col: u32) -> f32 {
+        self.piece_at(col).map(|p| p.scale).unwrap_or(1.0)
+    }
+
+    /// The x offset (in `advance` units, from the row's text origin) of
+    /// display column `col`, summing each preceding piece's scaled
+    /// advance plus the partial advance within the piece holding `col`.
+    /// `col` at/after the row end returns the full scaled width.
+    fn x_offset(&self, col: u32, advance: Pixels) -> Pixels {
+        let mut x = Pixels::ZERO;
+        for p in &self.pieces {
+            let end = p.start_col + p.cols;
+            if col >= end {
+                x += advance * p.scale * (p.cols as f32);
+            } else {
+                x += advance * p.scale * (col.saturating_sub(p.start_col) as f32);
+                return x;
+            }
+        }
+        x
+    }
 }
 
 /// State produced in `prepaint`, consumed by `paint`.
@@ -537,7 +604,7 @@ pub(crate) struct EditorElementPrepaintState {
     /// title). `Some` only for scaled heading rows; `None` for ordinary
     /// rows (1:1 with `shaped_text`). Drives the title-only scaling in
     /// both paint paths so the leading `#` markers stay base-size.
-    row_split: Vec<Option<HeadingSplit>>,
+    row_split: Vec<Option<ScaledLine>>,
     /// L4a.3 (lsp-architecture.md §15): the inline cursor-line
     /// diagnostic summary, pre-shaped, as `(viewport_row, shaped)`.
     /// `Some` only when `self.inline_diag_summary` is set and its line
@@ -550,6 +617,100 @@ pub(crate) struct EditorElementPrepaintState {
     /// width). Using the cell column count avoids landing mid-line when
     /// the cell + combined column models differ (inlay edge cases).
     inline_diag_overlay: Option<(usize, Option<u32>, ShapedLine)>,
+    /// DB.4-gpui: the parsed dashboard branding composition, if the
+    /// viewport holds a `BrandingBlock` virtual-row group. `paint` draws
+    /// it as a 2-D composition (quad mark + shaped wordmark) over the
+    /// blanked branding rows. `None` for every non-dashboard buffer.
+    branding: Option<BrandingPaint>,
+}
+
+/// DB.4-gpui: the dashboard branding composition, parsed from a
+/// `VirtualRowKind::BrandingBlock` row group's cells and laid out by the
+/// GPUI peer as a 2-D image the flat cell grid can't express — the mark
+/// as crisp square quads (corner cuts preserved), the "Lattice" wordmark
+/// shaped large and vertically centred beside it. The TUI peer paints the
+/// same rows as cells (its terminal-art treatment); this struct is
+/// GPUI-only. Tunable geometry lives in `paint` (tile size, gap, wordmark
+/// scale) so the look can be dialled in-app.
+struct BrandingPaint {
+    /// Display-row index of the first branding row (its `y` = `row_top`).
+    first_row: usize,
+    /// Number of branding rows in the group (defines the vertical box).
+    row_count: usize,
+    /// Mark grid extent (rows × cols), for square-tile layout.
+    mark_rows: u32,
+    mark_cols: u32,
+    /// Each mark block as `(local_row, col, rgb)` — logo blue or cursor
+    /// amber, straight from the cell fg. Absent grid cells (the cut
+    /// corners) simply have no tile, so the negative space is preserved.
+    tiles: Vec<(u32, u32, u32)>,
+    /// The wordmark + tagline as `(text, rgb)`, parsed from the row group.
+    wordmark: (String, u32),
+    tagline: (String, u32),
+}
+
+/// The full-block glyph the branding provider uses for a mark cell (both
+/// the logo bracket and the amber cursor bar). GPUI turns each such cell
+/// into a square quad.
+const BRANDING_MARK_GLYPH: u32 = 0x2588; // █
+
+/// DB.4-gpui: parse a `BrandingBlock` row group (each entry is
+/// `(display_row_index, cells)`) into a [`BrandingPaint`]. Block-glyph
+/// cells become mark tiles (keyed by their fg colour); the remaining
+/// printable cells accumulate per row into the wordmark (first text row)
+/// and tagline (second). Returns `None` if there are no mark tiles.
+fn build_branding_paint(
+    rows: &[(usize, std::sync::Arc<[lattice_cells::Cell]>)],
+) -> Option<BrandingPaint> {
+    let first_row = rows.first()?.0;
+    let mut tiles: Vec<(u32, u32, u32)> = Vec::new();
+    let mut texts: Vec<(usize, String, u32)> = Vec::new();
+    for (gi, (_, cells)) in rows.iter().enumerate() {
+        let mut text = String::new();
+        let mut text_color = 0u32;
+        for (col, cell) in cells.iter().enumerate() {
+            if cell.codepoint == BRANDING_MARK_GLYPH {
+                tiles.push((gi as u32, col as u32, cell.fg));
+            } else if let Some(ch) = char::from_u32(cell.codepoint) {
+                if ch == ' ' {
+                    // Interior spaces only (skip the leading mark/gap run).
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                } else if !ch.is_control() {
+                    text.push(ch);
+                    if text_color == 0 && cell.fg != 0 {
+                        text_color = cell.fg;
+                    }
+                }
+            }
+        }
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            texts.push((gi, trimmed.to_string(), text_color));
+        }
+    }
+    if tiles.is_empty() {
+        return None;
+    }
+    let min_row = tiles.iter().map(|t| t.0).min().unwrap_or(0);
+    let max_row = tiles.iter().map(|t| t.0).max().unwrap_or(0);
+    let max_col = tiles.iter().map(|t| t.1).max().unwrap_or(0);
+    for t in tiles.iter_mut() {
+        t.0 -= min_row;
+    }
+    texts.sort_by_key(|t| t.0);
+    let wordmark = texts.first().map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    let tagline = texts.get(1).map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    Some(BrandingPaint {
+        first_row,
+        row_count: rows.len(),
+        mark_rows: max_row - min_row + 1,
+        mark_cols: max_col + 1,
+        tiles,
+        wordmark,
+        tagline,
+    })
 }
 
 impl IntoElement for EditorElement {
@@ -638,24 +799,24 @@ impl Element for EditorElement {
                 .shape_line(SharedString::from("M"), font_size, &[ref_run], None)
                 .width
         };
-        let gutter_chars: usize = if self.gutter.is_empty() {
+        let gutter_chars: usize = self.content_left_pad as usize
+            + if self.gutter.is_empty() {
             0
         } else {
             // PU.1b-1a: the leading `2` is the severity + diff sign
             // cells — dropped when `signcolumn=no` so the px width
             // tracks `format_gutter_text`'s gated output.
             //
-            // The trailing `2` is the fold-marker cell (1, always
-            // present) PLUS the separator space after the digits (1).
-            // This MUST match `format_gutter_text`'s full width
-            // (`{fold}{sev}{diff}{num:>width$} ` = sign + digits + 2)
-            // and the virtual-row reservation (`gutter_width + 2 +
-            // sign_cells`). It was `+ 1` — omitting the fold cell — so
-            // `gutter_width_px` was one glyph too narrow and the code's
-            // first column landed on the gutter's trailing space (no gap
-            // between the line number and the code).
+            // The trailing `3` is the separator space after the digits
+            // (1) + the fold-marker cell (1) + the trailing gap after the
+            // glyph (1) — the `… 99 ▸ code` layout. This MUST match
+            // `format_gutter_text`'s full width (`{sev}{diff}{num:>width$}
+            // {fold} ` = sign + digits + 3) and the virtual-row
+            // reservation (`gutter_width + 3 + sign_cells`). If it
+            // undercounts, the code's first column lands inside the
+            // gutter and the line number runs flush against the code.
             let sign_cells = if self.sign_column { 2 } else { 0 };
-            sign_cells + self.gutter_width + 2
+            sign_cells + self.gutter_width + 3
         };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -674,13 +835,17 @@ impl Element for EditorElement {
         // glyph advance / font metrics. The TUI peer has no analogue.
         let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
         // F.2: per-row heading split (None for ordinary rows).
-        let mut row_split: Vec<Option<HeadingSplit>> = Vec::with_capacity(row_capacity);
+        let mut row_split: Vec<Option<ScaledLine>> = Vec::with_capacity(row_capacity);
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
+        // DB.4-gpui: `(display_row, cells)` for each BrandingBlock virtual
+        // row emitted this frame; parsed into a `BrandingPaint` below.
+        let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> =
+            Vec::new();
         // D.3.b.1.gpui (2026-05-29): for each entry in
         // `self.gutter`, the shaped_text row index of the
         // corresponding doc row after virtual-row interleaving.
@@ -1209,6 +1374,7 @@ impl Element for EditorElement {
                     &mut inlay_offsets_per_row,
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
+                    &mut branding_rows,
                 );
             }
             'rows: for meta in &self.gutter {
@@ -1247,6 +1413,7 @@ impl Element for EditorElement {
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
+                        &mut branding_rows,
                     );
                 }
                 // The doc row itself must also respect the budget:
@@ -1286,7 +1453,7 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column);
+                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column, self.show_line_numbers);
                 let gutter_runs =
                     build_gutter_runs(&gutter_text, meta, font.clone(), self.sign_column);
                 let shaped_g = window.text_system().shape_line(
@@ -1367,6 +1534,7 @@ impl Element for EditorElement {
                         &mut inlay_offsets_per_row,
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
+                        &mut branding_rows,
                     );
                 }
             }
@@ -1467,15 +1635,13 @@ impl Element for EditorElement {
                                     underline: None,
                                     strikethrough: None,
                                 }];
-                                // F.2: a block cursor on a heading row
+                                // F.2/F.3: a block cursor on a scaled row
                                 // shapes its covered char at that column's
                                 // scale — base over the markers, scaled
                                 // over the title — so the re-stamped glyph
                                 // matches the underlying text.
                                 let cur_scale = match row_split.get(cursor_row as usize) {
-                                    Some(Some(split)) if body_col >= split.prefix_cols => {
-                                        split.title_scale
-                                    }
+                                    Some(Some(sl)) => sl.scale_at(body_col),
                                     _ => 1.0,
                                 };
                                 Some(window.text_system().shape_line(
@@ -1555,6 +1721,7 @@ impl Element for EditorElement {
             row_scale,
             row_split,
             inline_diag_overlay,
+            branding: build_branding_paint(&branding_rows),
         }
     }
 
@@ -1616,26 +1783,23 @@ impl Element for EditorElement {
                 .unwrap_or(bounds.origin.y + line_height * (i as f32))
         };
         let row_h = |i: usize| -> Pixels { row_heights.get(i).copied().unwrap_or(line_height) };
-        // F.2: title-only scaling makes the glyph advance NON-uniform
-        // within a heading row — base over the leading markers, scaled
-        // over the title. `col_x` maps a display column to its x pixel;
+        // F.2/F.3: per-token scaling makes the glyph advance NON-uniform
+        // within a scaled row — base over the base pieces, scaled over the
+        // scaled ones. `col_x` maps a display column to its x pixel;
         // `col_scale` gives that column's font scale. Ordinary rows (no
         // split) reduce to the uniform `text_origin_x + advance * col`.
         let row_split = &prepaint.row_split;
         let col_scale = |i: usize, col: u32| -> f32 {
             match row_split.get(i) {
-                Some(Some(split)) if col >= split.prefix_cols => split.title_scale,
+                Some(Some(sl)) => sl.scale_at(col),
                 _ => 1.0,
             }
         };
         let col_x = |i: usize, col: u32| -> Pixels {
             match row_split.get(i) {
-                Some(Some(split)) if col > split.prefix_cols => {
-                    // Heading title: no h-scroll offset yet (follow-up).
-                    text_origin_x
-                        + advance * (split.prefix_cols as f32)
-                        + advance * split.title_scale * ((col - split.prefix_cols) as f32)
-                }
+                // Scaled rows: sum each preceding piece's scaled advance.
+                // No h-scroll offset on scaled content yet (follow-up).
+                Some(Some(sl)) => text_origin_x + sl.x_offset(col, advance),
                 // Ordinary rows pan left by `leftcol` (wrap off).
                 _ => text_origin_x + advance * (col.saturating_sub(leftcol) as f32),
             }
@@ -1710,7 +1874,18 @@ impl Element for EditorElement {
             if line_y >= pane_bottom {
                 break;
             }
-            let origin = point(bounds.origin.x, line_y);
+            // DB.4: the shaped gutter text is `gutter_chars − content_left_pad`
+            // cells wide (`format_gutter_text` omits the centring pad), while
+            // the body starts at the full `gutter_width_px`. Paint the gutter
+            // shifted right by the pad so its RIGHT edge meets the body —
+            // otherwise the gutter (and its fold marker) strands at the pane's
+            // left edge while the centred content sits far to the right. The
+            // TUI peer gets this for free by folding the pad into `gutter_w`
+            // and right-aligning the glyph. `content_left_pad` is 0 for
+            // non-centred buffers, so this is a no-op off the dashboard.
+            let gutter_x =
+                bounds.origin.x + prepaint.glyph_advance * self.content_left_pad as f32;
+            let origin = point(gutter_x, line_y);
             if let Err(err) = shaped_g.paint(origin, row_h(i), window, cx) {
                 tracing::warn!(
                     target: "lattice_gpui::editor_element",
@@ -1800,69 +1975,62 @@ impl Element for EditorElement {
                                 {
                                     false
                                 } else {
-                                    // F.2 (Thread F): a heading row paints
-                                    // in two pieces sharing ONE baseline —
-                                    // the markers at base size, the title at
-                                    // `title_scale` — so only the title
-                                    // scales (emacs markdown convention).
-                                    // Ordinary rows paint once at base
-                                    // (byte-identical to pre-F.2). LG.1
-                                    // ligatures-on emits bg-only here +
-                                    // glyphs via the ShapedLine fallback.
+                                    // F.2/F.3 (Thread F): a scaled row paints
+                                    // in N pieces sharing ONE baseline — each
+                                    // piece's column run at its own scale
+                                    // (base markers, scaled title; base mark
+                                    // blocks, scaled wordmark). Ordinary rows
+                                    // paint once at base (byte-identical to
+                                    // pre-F.2). LG.1 ligatures-on emits bg-only
+                                    // here + glyphs via the ShapedLine
+                                    // fallback.
                                     match row_split.get(i) {
-                                        Some(Some(sp)) => {
-                                            // Shared baseline = the title's
-                                            // (taller) ascent, so the base
-                                            // markers sit on the title's
-                                            // baseline.
+                                        Some(Some(sl)) => {
+                                            // Shared baseline = the tallest
+                                            // piece's ascent, so base pieces
+                                            // sit on the scaled baseline.
                                             let shared_ascent =
-                                                prepaint.text_ascent * sp.title_scale;
-                                            let pn = (sp.prefix_cols as usize)
-                                                .min(seg_cells.len());
-                                            let (pre, title) = seg_cells.split_at(pn);
-                                            let title_origin = point(
-                                                origin.x + advance * (pn as f32),
-                                                line_y,
-                                            );
-                                            if ligatures {
-                                                crate::paint_cells::paint_cells_row_bg_only(
-                                                    pre, origin, advance, row_h(i), window,
+                                                prepaint.text_ascent * sl.max_scale;
+                                            for p in &sl.pieces {
+                                                let start = (p.start_col as usize)
+                                                    .min(seg_cells.len());
+                                                let end = ((p.start_col + p.cols)
+                                                    as usize)
+                                                    .min(seg_cells.len());
+                                                let piece_cells = &seg_cells[start..end];
+                                                let piece_origin = point(
+                                                    origin.x + sl.x_offset(
+                                                        p.start_col,
+                                                        advance,
+                                                    ),
+                                                    line_y,
                                                 );
-                                                crate::paint_cells::paint_cells_row_bg_only(
-                                                    title,
-                                                    title_origin,
-                                                    advance * sp.title_scale,
-                                                    row_h(i),
-                                                    window,
-                                                );
-                                                false
-                                            } else {
-                                                crate::paint_cells::paint_cells_row(
-                                                    pre,
-                                                    origin,
-                                                    advance,
-                                                    row_h(i),
-                                                    shared_ascent,
-                                                    &prepaint.font,
-                                                    prepaint.font_size,
-                                                    self.theme.foreground,
-                                                    &self.glyph_resolver,
-                                                    window,
-                                                );
-                                                crate::paint_cells::paint_cells_row(
-                                                    title,
-                                                    title_origin,
-                                                    advance * sp.title_scale,
-                                                    row_h(i),
-                                                    shared_ascent,
-                                                    &prepaint.font,
-                                                    prepaint.font_size * sp.title_scale,
-                                                    self.theme.foreground,
-                                                    &self.glyph_resolver,
-                                                    window,
-                                                );
-                                                true
+                                                if ligatures {
+                                                    crate::paint_cells::paint_cells_row_bg_only(
+                                                        piece_cells,
+                                                        piece_origin,
+                                                        advance * p.scale,
+                                                        row_h(i),
+                                                        window,
+                                                    );
+                                                } else {
+                                                    crate::paint_cells::paint_cells_row(
+                                                        piece_cells,
+                                                        piece_origin,
+                                                        advance * p.scale,
+                                                        row_h(i),
+                                                        shared_ascent,
+                                                        &prepaint.font,
+                                                        prepaint.font_size * p.scale,
+                                                        self.theme.foreground,
+                                                        &self.glyph_resolver,
+                                                        window,
+                                                    );
+                                                }
                                             }
+                                            // ligatures: glyphs still come
+                                            // from the ShapedLine fallback.
+                                            !ligatures
                                         }
                                         _ => {
                                             if ligatures {
@@ -1902,32 +2070,37 @@ impl Element for EditorElement {
                 false
             };
             if !painted_via_cells {
-                // F.2: fallback (inactive / folded / ligatures-glyph) path.
-                // A heading row paints its pre-shaped marker prefix (base)
-                // + title (scaled) side by side, sharing one baseline so
-                // the markers stay base-size — kept consistent with the
-                // active cell path above so a focus change never resizes
-                // anything ([[feedback_decorations_update_in_place]]).
+                // F.2/F.3: fallback (inactive / folded / ligatures-glyph /
+                // virtual-row) path. A scaled row paints its N pre-shaped
+                // pieces side by side, all sharing one baseline so base
+                // pieces stay base-size — kept consistent with the active
+                // cell path above so a focus change never resizes anything
+                // ([[feedback_decorations_update_in_place]]).
                 match row_split.get(i) {
-                    Some(Some(sp)) => {
+                    Some(Some(sl)) => {
                         // Align baselines: gpui paints a line's baseline at
                         // `origin.y + (line_height + ascent - descent)/2`
-                        // (text_system/line.rs). Shift the base prefix down
-                        // so its baseline matches the taller title's.
+                        // (text_system/line.rs). The tallest piece defines
+                        // the baseline (painted at `line_y`); every shorter
+                        // piece shifts DOWN so its baseline matches.
                         let h = row_h(i);
-                        let prefix_y = line_y
-                            + ((sp.title_shaped.ascent - sp.title_shaped.descent)
-                                - (sp.prefix_shaped.ascent - sp.prefix_shaped.descent))
-                                * 0.5;
-                        let title_x =
-                            text_origin_x + advance * (sp.prefix_cols as f32);
-                        let _ = sp.prefix_shaped.paint(
-                            point(text_origin_x, prefix_y),
-                            h,
-                            window,
-                            cx,
-                        );
-                        let _ = sp.title_shaped.paint(point(title_x, line_y), h, window, cx);
+                        let max_ad = sl
+                            .pieces
+                            .iter()
+                            .map(|p| p.shaped.ascent - p.shaped.descent)
+                            .fold(Pixels::ZERO, |a, b| if b > a { b } else { a });
+                        for p in &sl.pieces {
+                            let piece_ad = p.shaped.ascent - p.shaped.descent;
+                            let piece_y = line_y + (max_ad - piece_ad) * 0.5;
+                            let piece_x =
+                                text_origin_x + sl.x_offset(p.start_col, advance);
+                            let _ = p.shaped.paint(
+                                point(piece_x, piece_y),
+                                h,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                     _ => {
                         if let Err(err) = shaped_line.paint(origin, row_h(i), window, cx) {
@@ -2041,6 +2214,151 @@ impl Element for EditorElement {
                     window.paint_quad(fill(underline, rgb(self.theme.cursor_background)));
                 }
             }
+        }
+
+        // DB.4-gpui: the dashboard branding, painted as a 2-D composition
+        // over the (blanked) BrandingBlock rows — the mark as crisp square
+        // quads (absent grid cells = cut corners preserved), TOP-ALIGNED
+        // with the "Lattice" wordmark so the mark's top edge lines up
+        // precisely with the wordmark's cap-height top (not vertically
+        // centred against the whole title+subtitle block — that visibly
+        // sinks the mark below the title). The subtitle sits on its own
+        // line below, slightly larger than body text so it stands out,
+        // starting at the SAME pen origin as the wordmark. The knobs below
+        // (mark↔text gap, title↔subtitle gap, subtitle scale) are
+        // deliberately in one place so the look can be dialled in-app.
+        if let Some(b) = &prepaint.branding {
+            let clamp0 = |p: Pixels| if p < Pixels::ZERO { Pixels::ZERO } else { p };
+            let word_scale = 3.7_f32; // "Lattice" font scale vs base
+
+            // Shape the wordmark (scaled) + tagline (slightly-larger-than-
+            // body). Empty strings degrade to a single space so
+            // `shape_line` never sees a zero-length input.
+            let word_fs = prepaint.font_size * word_scale;
+            let word_color = if b.wordmark.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.wordmark.1
+            };
+            let word_text = if b.wordmark.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.wordmark.0.clone()
+            };
+            let word_run = TextRun {
+                len: word_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(word_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let word_shaped = window.text_system().shape_line(
+                SharedString::from(word_text),
+                word_fs,
+                &[word_run],
+                None,
+            );
+            let tag_scale = 1.15_f32; // subtitle: slightly bigger than body, to stand out
+            let tag_fs = prepaint.font_size * tag_scale;
+            let tag_color = if b.tagline.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.tagline.1
+            };
+            let tag_text = if b.tagline.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.tagline.0.clone()
+            };
+            let tag_run = TextRun {
+                len: tag_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(tag_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let tag_shaped = window.text_system().shape_line(
+                SharedString::from(tag_text),
+                tag_fs,
+                &[tag_run],
+                None,
+            );
+
+            // Tight (no built-in leading padding) glyph extents: painting
+            // at `line_height == ascent - descent` makes `ShapedLine::paint`
+            // put the glyph top EXACTLY at the given origin (zero padding),
+            // so "mark top == wordmark top" is exact, not approximate.
+            // "Lattice" has no descenders, so its VISIBLE height (top of
+            // "L" to baseline) is `ascent` alone — `ascent - descent` is the
+            // full glyph BOX (including the empty space reserved below the
+            // baseline for descenders like g/y), which is why deriving the
+            // mark from it made the mark overshoot past "Lattice"'s
+            // baseline. `ascent` is the anatomically precise reference.
+            let word_h = word_shaped.ascent;
+            let tag_h = tag_shaped.ascent - tag_shaped.descent;
+            let title_subtitle_gap = word_h * 0.4; // push the subtitle clearly onto its own line
+
+            // The mark matches the wordmark's cap-height EXACTLY (derived,
+            // not independently tuned): same number of rows, so `tile_h`
+            // falls out of `word_h`. Square cells; no gap between them (the
+            // SVG mark is solid bars, not dashed).
+            let mark_h = word_h;
+            let tile_h = mark_h * (1.0 / b.mark_rows.max(1) as f32);
+            let tile_w = tile_h;
+            let mark_w = tile_w * (b.mark_cols as f32);
+            let mark_text_gap = tile_w * 1.4;
+
+            let block_h = mark_h.max(word_h + title_subtitle_gap + tag_h);
+
+            // The blanked branding rows reserve this vertical box; centre
+            // the composition's bounding box within it (vertical only).
+            let box_top = row_top(b.first_row);
+            let box_h = line_height * (b.row_count as f32);
+            let block_top = box_top + clamp0((box_h - block_h) * 0.5);
+
+            // Horizontal placement: start at `text_origin_x`, the SAME
+            // left edge every other dashboard row uses. The host already
+            // centres the whole dashboard's content column in the pane via
+            // `content_left_pad` (baked into `gutter_width_px` — see
+            // `crates/lattice-host/src/dispatch.rs` `rebuild_option_cache`
+            // and `dashboard.md` §5.3 "rows are left-aligned within the
+            // gutter, so the mark's columns line up"). Re-centring here
+            // against the raw pane width — what an earlier version of this
+            // code did — computes a DIFFERENT reference than the rest of
+            // the page, which is exactly what made the branding look
+            // off-centre relative to the body text below it.
+            let mark_x = text_origin_x;
+            let mark_y = block_top;
+            for (r, c, color) in &b.tiles {
+                let tx = mark_x + tile_w * (*c as f32);
+                let ty = mark_y + tile_h * (*r as f32);
+                window.paint_quad(fill(
+                    Bounds::new(point(tx, ty), size(tile_w, tile_h)),
+                    rgb(*color),
+                ));
+            }
+
+            // Wordmark — glyph top exactly at `block_top` (tight line
+            // height `word_h` means zero built-in padding, so this is
+            // exact, not approximate).
+            let text_x = mark_x + mark_w + mark_text_gap;
+            let _ = word_shaped.paint(point(text_x, block_top), word_h, window, cx);
+
+            // Subtitle — same pen origin `text_x` is not quite enough: a
+            // larger font's left side-bearing (the gap between the pen
+            // origin and the glyph's visible ink) is proportionally larger
+            // in absolute pixels than a smaller font's, so pinning both to
+            // the same pen origin leaves the subtitle's ink start slightly
+            // LEFT of the wordmark's ink start. `bearing_frac` is an
+            // approximation of that side-bearing as a fraction of font
+            // size (gpui doesn't expose per-glyph ink bounds here); nudge
+            // it if the "A" and "L" ink still don't line up exactly.
+            let bearing_frac = 0.055_f32;
+            let tag_indent = (word_fs - tag_fs) * bearing_frac;
+            let tag_top = block_top + word_h + title_subtitle_gap;
+            let _ = tag_shaped.paint(point(text_x + tag_indent, tag_top), tag_h, window, cx);
         }
     }
 }
@@ -2265,10 +2583,14 @@ pub(crate) fn make_run_with_color(color: u32, len: usize, font: &gpui::Font) -> 
 /// Catppuccin Mocha overlay2 -- gutter line-number colour for
 /// non-cursor lines.
 const GUTTER_NORMAL_COLOR: u32 = 0x9399b2;
-/// Catppuccin Mocha peach -- fold-start marker colour.
-const FOLD_MARKER_COLOR: u32 = 0xfab387;
-/// Fold-start glyph (right-pointing triangle).
-const FOLD_MARKER_GLYPH: char = '►';
+/// Fold-marker glyphs, shared with the TUI peer (`fold_glyph_for`):
+/// `▾` on an open (expanded) foldable head, `▸` on a closed (collapsed)
+/// one. Small triangles that render in any monospace font — no Nerd-Font
+/// dependency. The colour is resolved per-marker from the theme
+/// (`gutter.fold.open` / `gutter.fold.closed`) and carried in
+/// `GutterLineMeta::fold_marker`, so these consts are glyph-only.
+pub(crate) const FOLD_GLYPH_OPEN: char = '▾';
+pub(crate) const FOLD_GLYPH_CLOSED: char = '▸';
 
 /// W.5 (soft-wrap): continuation-row gutter marker. U+21AA
 /// (rightwards arrow with hook); no Nerd-Font dependency, so it
@@ -2358,9 +2680,9 @@ fn quads_for_segment(full: &[(u32, u32, u32)], lo: u32, hi: u32) -> Vec<(u32, u3
 
 /// W.5 (soft-wrap): shape the gutter for a wrapped continuation row —
 /// a dim `↪` right-aligned in the line-number column, with the
-/// fold / severity / diff columns blank. Same total width as
-/// `format_gutter_text` (`gutter_width + 4`) so continuation rows
-/// align with their source line's gutter.
+/// severity / diff / fold columns blank. Same total width as
+/// `format_gutter_text` (`sign_cells + gutter_width + 3`) so
+/// continuation rows align with their source line's gutter.
 fn shaped_continuation_gutter(
     gutter_width: usize,
     font: &gpui::Font,
@@ -2368,12 +2690,14 @@ fn shaped_continuation_gutter(
     sign_column: bool,
     window: &mut Window,
 ) -> ShapedLine {
-    // Leading blanks: fold [+ severity + diff when signcolumn=yes] +
-    // right-aligned marker in the number column + 1 trailing space.
+    // Leading blanks: [severity + diff when signcolumn=yes] +
+    // right-aligned marker in the number column + 3 trailing blanks
+    // (separator space + blank fold slot + trailing gap) — the fold
+    // marker now sits AFTER the digits, so it is a trailing blank here.
     // PU.1b-1a: drop the two sign blanks when `signcolumn=no` so the
     // continuation gutter matches `format_gutter_text`'s gated width.
-    let lead = if sign_column { "   " } else { " " };
-    let text = format!("{lead}{WRAP_CONT_MARKER:>gutter_width$} ");
+    let lead = if sign_column { "  " } else { "" };
+    let text = format!("{lead}{WRAP_CONT_MARKER:>gutter_width$}   ");
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -2426,7 +2750,7 @@ fn push_wrapped_doc_row(
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
-    row_split: &mut Vec<Option<HeadingSplit>>,
+    row_split: &mut Vec<Option<ScaledLine>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
@@ -2482,35 +2806,50 @@ fn push_wrapped_doc_row(
         }
         row_meta.push((line_idx, line_text.to_string()));
         row_segment.push(seg);
-        // F.2: build the heading split for an eligible (single-segment)
-        // scaled row — the markers shaped at base, the title at
-        // `font_size * title_scale`, both for the fallback paint path. The
-        // row's height multiplier (`row_scale`) is `title_scale`. Ordinary
+        // F.2/F.3: build the scaled line for an eligible (single-segment)
+        // heading row — the markers shaped at base, the title at
+        // `font_size * title_scale`, both for the fallback paint path. This
+        // is the 2-piece case of the general N-piece `ScaledLine` (virtual
+        // rows build N pieces from `VirtualRow::scales`). The row's height
+        // multiplier (`row_scale`) is the tallest piece scale. Ordinary
         // rows push `None` + `1.0` (fast path).
         match heading {
             Some((prefix_cols, title_scale)) => {
-                let (pre_text, pre_runs) =
-                    slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                let mut pieces: Vec<ScaledPiece> = Vec::with_capacity(2);
+                if prefix_cols > 0 {
+                    let (pre_text, pre_runs) =
+                        slice_runs_to_char_range(combined, runs, 0, prefix_cols as usize);
+                    let prefix_shaped = window.text_system().shape_line(
+                        SharedString::from(pre_text),
+                        font_size,
+                        &pre_runs,
+                        None,
+                    );
+                    pieces.push(ScaledPiece {
+                        start_col: 0,
+                        cols: prefix_cols,
+                        scale: 1.0,
+                        shaped: prefix_shaped,
+                    });
+                }
                 let (title_text, title_runs) =
                     slice_runs_to_char_range(combined, runs, prefix_cols as usize, total_chars);
-                let prefix_shaped = window.text_system().shape_line(
-                    SharedString::from(pre_text),
-                    font_size,
-                    &pre_runs,
-                    None,
-                );
                 let title_shaped = window.text_system().shape_line(
                     SharedString::from(title_text),
                     font_size * title_scale,
                     &title_runs,
                     None,
                 );
+                pieces.push(ScaledPiece {
+                    start_col: prefix_cols,
+                    cols: (total_chars as u32).saturating_sub(prefix_cols),
+                    scale: title_scale,
+                    shaped: title_shaped,
+                });
                 row_scale.push(title_scale);
-                row_split.push(Some(HeadingSplit {
-                    prefix_cols,
-                    title_scale,
-                    prefix_shaped,
-                    title_shaped,
+                row_split.push(Some(ScaledLine {
+                    pieces,
+                    max_scale: title_scale,
                 }));
             }
             None => {
@@ -2555,9 +2894,64 @@ fn virtual_rows_at_gpui<'a>(
         .iter()
         .take_while(move |r| r.anchor_line == line)
         .filter(move |r| r.position == position)
-        // Sticky rows are rendered at the pane top in the pre-pass;
-        // skip them here so they don't double-paint in the content loop.
-        .filter(|r| r.kind != lattice_cells::VirtualRowKind::Sticky)
+        // Pinned rows (sticky headerlines + the branding masthead) are
+        // rendered at the pane top in the pre-pass; skip them here so they
+        // don't double-paint in the content loop.
+        .filter(|r| !r.kind.is_pinned())
+}
+
+/// F.3 (Thread F): build the N-piece [`ScaledLine`] for a virtual row
+/// from its per-column [`lattice_cells::VirtualRow::scales`], or `None`
+/// when the row is uniformly base size (the fast path). Coalesces the
+/// scales into contiguous runs — exactly as the shaping loop coalesces
+/// per-cell `fg` — and shapes each run's text slice at `font_size *
+/// scale` for the fallback paint path. The dashboard branding wordmark
+/// is the first consumer: its "Lattice" run scales while the mark blocks
+/// stay base.
+fn build_virtual_row_scaled_line(
+    vrow: &lattice_cells::VirtualRow,
+    content: &str,
+    content_cols: u32,
+    runs: &[TextRun],
+    font_size: Pixels,
+    window: &mut Window,
+) -> Option<ScaledLine> {
+    let scales = vrow.scales.as_ref()?;
+    let scale_runs = lattice_cells::coalesce_scales(scales, content_cols);
+    // Fast path: every run is base size ⇒ no ScaledLine (uniform row).
+    if !scale_runs
+        .iter()
+        .any(|r| r.scale != lattice_cells::BASE_SCALE)
+    {
+        return None;
+    }
+    let mut pieces: Vec<ScaledPiece> = Vec::with_capacity(scale_runs.len());
+    let mut max_scale = 1.0f32;
+    for r in &scale_runs {
+        let scale = r.scale as f32 / lattice_cells::BASE_SCALE as f32;
+        if scale > max_scale {
+            max_scale = scale;
+        }
+        let (piece_text, piece_runs) = slice_runs_to_char_range(
+            content,
+            runs,
+            r.start_col as usize,
+            (r.start_col + r.cols) as usize,
+        );
+        let shaped = window.text_system().shape_line(
+            SharedString::from(piece_text),
+            font_size * scale,
+            &piece_runs,
+            None,
+        );
+        pieces.push(ScaledPiece {
+            start_col: r.start_col,
+            cols: r.cols,
+            scale,
+            shaped,
+        });
+    }
+    Some(ScaledLine { pieces, max_scale })
 }
 
 /// D.3.b.1.gpui (2026-05-29): shape a virtual row's content
@@ -2582,11 +2976,57 @@ fn push_virtual_row(
     row_meta: &mut Vec<(u32, String)>,
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
-    row_split: &mut Vec<Option<HeadingSplit>>,
+    row_split: &mut Vec<Option<ScaledLine>>,
     inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+    branding_rows: &mut Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)>,
 ) {
+    // DB.4-gpui: a BrandingBlock row is recorded (with its display index +
+    // cells) for the 2-D branding pass and then rendered BLANK here — the
+    // GPUI peer paints the quad mark + shaped wordmark over it, so the raw
+    // mark/wordmark cells must not double-paint. (The TUI peer paints the
+    // cells directly; it never reaches this function.)
+    if vrow.kind == lattice_cells::VirtualRowKind::BrandingBlock {
+        branding_rows.push((shaped_text.len(), vrow.cells.clone()));
+        let blank = window.text_system().shape_line(
+            SharedString::from(" "),
+            font_size,
+            &[TextRun {
+                len: 1,
+                font: font.clone(),
+                color: rgb(body_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let blank_gutter: String = " ".repeat(gutter_width + 5);
+        let shaped_g = window.text_system().shape_line(
+            SharedString::from(blank_gutter.clone()),
+            font_size,
+            &[TextRun {
+                len: blank_gutter.len(),
+                font: font.clone(),
+                color: rgb(GUTTER_NORMAL_COLOR).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        shaped_text.push(blank);
+        shaped_gutter.push(shaped_g);
+        row_meta.push((u32::MAX, String::new()));
+        row_segment.push(0);
+        row_scale.push(1.0);
+        row_split.push(None);
+        inlay_offsets_per_row.push(Vec::new());
+        diagnostic_segments_per_row.push(Vec::new());
+        overlay_quads_per_row.push(Vec::new());
+        return;
+    }
     // D.3.b.2 (2026-05-29): build the body text + a parallel
     // `Vec<TextRun>` keyed by per-cell `fg`. Adjacent cells
     // sharing the same fg coalesce into a single TextRun so
@@ -2646,6 +3086,17 @@ fn push_virtual_row(
         });
     }
     let content_cols = content.chars().count() as u32;
+    // F.3 (Thread F): per-token scaling for virtual rows. Coalesce the
+    // row's per-column `scales` into contiguous runs (mirroring the fg
+    // coalescing above) and, if any run is larger than base, build the
+    // N-piece `ScaledLine` the paint path reads — each piece shaped at
+    // `font_size * scale` on a shared baseline. A row with no scaled run
+    // stays on the fast path (`None` + `row_scale = 1.0`). Built from
+    // `&content` before it is moved into the base `shaped_body`.
+    let scaled_line = build_virtual_row_scaled_line(
+        vrow, &content, content_cols, &runs, font_size, window,
+    );
+    let row_scale_val = scaled_line.as_ref().map(|s| s.max_scale).unwrap_or(1.0);
     let shaped_body = window.text_system().shape_line(
         SharedString::from(content),
         font_size,
@@ -2654,7 +3105,7 @@ fn push_virtual_row(
     );
     // Gutter: fully blank-padded to match
     // `format_gutter_text`'s virtual-row width.
-    let blank_gutter: String = " ".repeat(gutter_width + 4);
+    let blank_gutter: String = " ".repeat(gutter_width + 5);
     let gutter_run = TextRun {
         len: blank_gutter.len(),
         font: font.clone(),
@@ -2702,22 +3153,41 @@ fn push_virtual_row(
                 Vec::new()
             }
         }
-        lattice_cells::VirtualRowKind::Filler => Vec::new(),
+        // Filler: no backdrop (blank padding). BrandingBlock: no cell
+        // backdrop either — the GPUI branding pass (DB.4-gpui) paints the
+        // 2-D composition over these rows itself.
+        lattice_cells::VirtualRowKind::Filler
+        | lattice_cells::VirtualRowKind::BrandingBlock => Vec::new(),
     };
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
     row_meta.push((u32::MAX, String::new()));
     // W.5: virtual rows are a single display row each (segment 0).
     row_segment.push(0);
-    // F.2: virtual rows render at the base font size (no scaling / split).
-    row_scale.push(1.0);
-    row_split.push(None);
+    // F.3: virtual rows honor per-token scaling — `row_scale_val` grows
+    // the row height to the tallest piece; `scaled_line` carries the
+    // pieces (or `None` for an all-base row, the fast path).
+    row_scale.push(row_scale_val);
+    row_split.push(scaled_line);
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);
 }
 
-fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: bool) -> String {
+fn format_gutter_text(
+    meta: &GutterLineMeta,
+    gutter_width: usize,
+    sign_column: bool,
+    show_line_numbers: bool,
+) -> String {
+    // The line-number digits are shown only when `number` is set; otherwise the
+    // digit slot is blank (gutter_width is 0 in that case anyway). Matches the
+    // TUI `show_line_numbers` gate.
+    let num: String = if show_line_numbers {
+        (meta.display_line as usize + 1).to_string()
+    } else {
+        String::new()
+    };
     // PU.1b-1a: the two sign cells (severity + diff) are present only
     // when `signcolumn=yes` (default). `signcolumn=no` drops them so
     // the gutter is fold + line-number + trail only — content abuts
@@ -2725,22 +3195,22 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: b
     if meta.is_virtual {
         // D.3.b.1.gpui: virtual rows render a fully-blank gutter so
         // the column stays the same width as document rows. Width =
-        // 1 (fold) [+ 1 (sev) + 1 (diff) when reserved] + gutter_width
-        // + 1 (trail).
+        // [1 (sev) + 1 (diff) when reserved] + gutter_width + 3 (the
+        // separator space + fold-marker slot + trailing gap).
         let sign_cells = if sign_column { 2 } else { 0 };
-        return " ".repeat(gutter_width + 2 + sign_cells);
+        return " ".repeat(gutter_width + 3 + sign_cells);
     }
-    let fold = if meta.fold_start {
-        FOLD_MARKER_GLYPH
-    } else {
-        ' '
-    };
+    // Fold marker now sits AFTER the line number (a separator space,
+    // the glyph, then a trailing gap: `… 99 ▸ code`), mirroring the
+    // TUI gutter — not at column 0. A blank glyph keeps non-fold rows
+    // the same width.
+    let fold = meta.fold_marker.map(|(g, _)| g).unwrap_or(' ');
     if !sign_column {
         return format!(
-            "{fold}{num:>width$} ",
-            fold = fold,
-            num = meta.display_line as usize + 1,
+            "{num:>width$} {fold} ",
+            num = num,
             width = gutter_width,
+            fold = fold,
         );
     }
     let sev = meta.severity.map(|(g, _)| g).unwrap_or(' ');
@@ -2754,80 +3224,86 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize, sign_column: b
     // :diffoff.
     let diff = meta.diff_sign.map(|(g, _)| g).unwrap_or(' ');
     format!(
-        "{fold}{sev}{diff}{num:>width$} ",
-        fold = fold,
+        "{sev}{diff}{num:>width$} {fold} ",
         sev = sev,
         diff = diff,
-        num = meta.display_line as usize + 1,
+        num = num,
         width = gutter_width,
+        fold = fold,
     )
 }
 
-/// Build the `TextRun`s for a gutter row. Three runs (fold, sev,
-/// linenum+trailing-space) with their respective colours.
+/// Build the `TextRun`s for a gutter row. The text is
+/// `{sev}{diff}{num} {fold} ` (severity + diff omitted when
+/// `signcolumn=no`): severity, diff sign, then the line-number column +
+/// separator space in the normal gutter colour, the fold glyph in its
+/// own resolved colour, and a trailing gap. Colouring the fold glyph
+/// separately is why it gets its own run rather than riding along with
+/// the digits.
 fn build_gutter_runs(
     text: &str,
     meta: &GutterLineMeta,
     font: gpui::Font,
     sign_column: bool,
 ) -> Vec<TextRun> {
-    let mut runs = Vec::with_capacity(3);
+    let mut runs = Vec::with_capacity(5);
     let mut bytes_consumed = 0usize;
-
-    // Run 1: fold marker.
-    let fold_color = if meta.fold_start {
-        FOLD_MARKER_COLOR
-    } else {
-        GUTTER_NORMAL_COLOR
+    let push = |runs: &mut Vec<TextRun>, len: usize, color: u32| {
+        if len == 0 {
+            return;
+        }
+        runs.push(TextRun {
+            len,
+            font: font.clone(),
+            color: rgb(color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
     };
-    let fold_char = text.chars().next().unwrap_or(' ');
-    let fold_len = fold_char.len_utf8();
-    runs.push(TextRun {
-        len: fold_len,
-        font: font.clone(),
-        color: rgb(fold_color).into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    });
-    bytes_consumed += fold_len;
 
     // PU.1b-1a: the severity + diff sign runs exist only when
     // `signcolumn=yes` — `format_gutter_text` omitted those two chars
     // for `no`, so consuming them here would mis-slice the digits.
     if sign_column {
-        // Run 2: severity sign.
+        // Run: severity sign.
         let sev_color = meta.severity.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let sev_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-        let sev_len = sev_char.len_utf8();
-        runs.push(TextRun {
-            len: sev_len,
-            font: font.clone(),
-            color: rgb(sev_color).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
+        let sev_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        push(&mut runs, sev_len, sev_color);
         bytes_consumed += sev_len;
 
-        // Run 3: D.3.d.2 diff sign (left of line number, between
+        // Run: D.3.d.2 diff sign (left of line number, between
         // severity and digits — Vim/Helix/Zed/VSCode convention).
         let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let diff_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
-        let diff_len = diff_char.len_utf8();
-        runs.push(TextRun {
-            len: diff_len,
-            font: font.clone(),
-            color: rgb(diff_color).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
+        let diff_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        push(&mut runs, diff_len, diff_color);
         bytes_consumed += diff_len;
     }
 
-    // Run 4: line number + trailing space.
-    let tail_len = text.len() - bytes_consumed;
+    // Tail layout: `{num:>width} {fold} ` — the fold glyph is the
+    // second-to-last char and the trailing gap is the last. Slice from
+    // the END so a multi-byte glyph (`▸`/`▾`, 3 bytes) or a blank space
+    // are handled uniformly.
+    let trailing_len = text
+        .chars()
+        .next_back()
+        .map(char::len_utf8)
+        .unwrap_or(0);
+    let before_trailing = &text[..text.len() - trailing_len];
+    let fold_len = before_trailing
+        .chars()
+        .next_back()
+        .map(char::len_utf8)
+        .unwrap_or(0);
+    // Line number + separator space (normal colour), up to the glyph.
+    let mid_len = before_trailing.len() - fold_len - bytes_consumed;
+    push(&mut runs, mid_len, GUTTER_NORMAL_COLOR);
+    // The fold glyph in its resolved colour (falls back to the normal
+    // gutter tone for a blank non-fold row).
+    let fold_color = meta.fold_marker.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
+    push(&mut runs, fold_len, fold_color);
+    // Trailing gap.
+    let tail_len = trailing_len;
     if tail_len > 0 {
         runs.push(TextRun {
             len: tail_len,
@@ -2845,19 +3321,73 @@ fn build_gutter_runs(
 mod tests {
     use super::*;
 
+    /// DB.4-gpui: the branding parser turns a `BrandingBlock` row group's
+    /// cells into mark tiles (by fg colour) + wordmark/tagline text, and —
+    /// critically — leaves absent grid cells (the cut corners) tile-less so
+    /// the interlocking negative space is preserved.
+    #[test]
+    fn build_branding_paint_parses_tiles_and_text_preserving_corners() {
+        use lattice_cells::Cell;
+        let block = BRANDING_MARK_GLYPH;
+        let blue = 0x1f6febu32;
+        let amber = 0xf59e0bu32;
+        let white = 0xffffffu32;
+        let cell = |cp: u32, fg: u32| Cell::new(cp, fg, 0, 0);
+        let sp = cell(' ' as u32, 0);
+        // Row at display index 3: blocks at cols 0 and 2 (col 1 is a CUT
+        // corner — a space), then the wordmark "Hi".
+        let row_a = vec![
+            cell(block, blue),
+            sp,
+            cell(block, blue),
+            sp,
+            cell('H' as u32, white),
+            cell('i' as u32, white),
+        ];
+        // Row at index 4: amber cursor tile at col 1, then tagline "yo".
+        let row_b = vec![
+            sp,
+            cell(block, amber),
+            sp,
+            sp,
+            cell('y' as u32, 0x999999),
+            cell('o' as u32, 0x999999),
+        ];
+        let rows = vec![
+            (3usize, std::sync::Arc::from(row_a.into_boxed_slice())),
+            (4usize, std::sync::Arc::from(row_b.into_boxed_slice())),
+        ];
+        let b = build_branding_paint(&rows).expect("branding parses");
+        assert_eq!(b.first_row, 3);
+        assert_eq!(b.row_count, 2);
+        assert_eq!(b.mark_cols, 3, "widest mark col is 2 → 3 cols");
+        assert_eq!(b.mark_rows, 2);
+        // Tiles present with their colours; the cut corner (row 0, col 1)
+        // has NO tile — negative space preserved.
+        assert!(b.tiles.contains(&(0, 0, blue)));
+        assert!(b.tiles.contains(&(0, 2, blue)));
+        assert!(b.tiles.contains(&(1, 1, amber)), "amber cursor tile");
+        assert!(
+            !b.tiles.iter().any(|t| t.0 == 0 && t.1 == 1),
+            "cut corner stays tile-less"
+        );
+        assert_eq!(b.wordmark, ("Hi".to_string(), white));
+        assert_eq!(b.tagline.0, "yo");
+    }
+
     /// The rendered gutter text MUST be exactly the width the element
-    /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 2`,
-    /// where the `+2` is the fold cell + the separator space). If the
-    /// reservation undercounts (it was `+ 1`, omitting the fold cell), the
-    /// code's first column lands on the gutter's trailing space → no gap
-    /// between the line number and the code. Pins both the document and the
-    /// virtual-row branch against the reservation formula.
+    /// reserves for `gutter_width_px` (`sign_cells + gutter_width + 3`,
+    /// where the `+3` is the separator space + fold-marker cell + the
+    /// trailing gap — the `… 99 ▸ code` layout). If the reservation
+    /// mismatches, the code's first column lands inside the gutter and the
+    /// line number runs flush against the code. Pins both the document and
+    /// the virtual-row branch against the reservation formula.
     #[test]
     fn gutter_text_width_matches_reserved_chars() {
         let doc = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
@@ -2865,7 +3395,7 @@ mod tests {
         let virt = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: true,
@@ -2873,14 +3403,14 @@ mod tests {
         let gutter_width = 3usize;
         for &sign in &[false, true] {
             let sign_cells = if sign { 2 } else { 0 };
-            let reserved = sign_cells + gutter_width + 2;
+            let reserved = sign_cells + gutter_width + 3;
             assert_eq!(
-                format_gutter_text(&doc, gutter_width, sign).chars().count(),
+                format_gutter_text(&doc, gutter_width, sign, true).chars().count(),
                 reserved,
                 "document gutter must fill the reserved width (sign={sign})"
             );
             assert_eq!(
-                format_gutter_text(&virt, gutter_width, sign).chars().count(),
+                format_gutter_text(&virt, gutter_width, sign, true).chars().count(),
                 reserved,
                 "virtual gutter must match the reserved width (sign={sign})"
             );
@@ -3056,13 +3586,14 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 0,
             display_line: 0,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
         };
-        // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true), "     1 ");
+        // {sev}{diff}{num:>3} {fold} = "  " + "  1" + " " + " " + " "
+        // = "    1   " (8 chars): fold marker now trails the number.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "    1   ");
     }
 
     #[test]
@@ -3070,13 +3601,14 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 41,
             display_line: 41,
-            fold_start: true,
+            fold_marker: Some((FOLD_GLYPH_CLOSED, 0x9399b2)),
             severity: None,
             diff_sign: None,
             is_virtual: false,
         };
-        // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3, true), "►   42 ");
+        // {sev}{diff}{num:>3} {fold} = "  " + " 42" + " " + "▸" + " "
+        // = "   42 ▸ " (8 chars): the glyph sits AFTER the number now.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "   42 ▸ ");
     }
 
     #[test]
@@ -3084,13 +3616,13 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
             is_virtual: false,
         };
-        // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true), " E 10 ");
+        // 'E' + ' ' (diff) + "10" + ' ' + ' ' (fold) + ' ' = "E 10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E 10   ");
     }
 
     #[test]
@@ -3098,36 +3630,65 @@ mod tests {
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
-        assert_eq!(format_gutter_text(&meta, 2, true), "  +10 ");
+        // D.3.d.2: ' ' (sev) + '+' (diff) + "10" + ' ' + ' ' (fold) + ' '
+        // = " +10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), " +10   ");
     }
 
     #[test]
     fn gutter_text_signcolumn_no_drops_severity_and_diff_cells() {
         // PU.1b-1a: with `signcolumn=no` the severity + diff cells are
         // gone even when a diagnostic + hunk touch the line. Gutter is
-        // fold + line-number + trail only: ' ' + "10" + ' ' = " 10 ".
+        // line-number + separator + fold + trail: "10" + ' ' + ' ' + ' '
+        // = "10   ".
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
-            fold_start: false,
+            fold_marker: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        assert_eq!(format_gutter_text(&meta, 2, false), " 10 ");
+        assert_eq!(format_gutter_text(&meta, 2, false, true), "10   ");
         // The reserved (default) form keeps both sign cells.
-        assert_eq!(format_gutter_text(&meta, 2, true), " E+10 ");
-        // build_gutter_runs must not mis-slice the gated text: fold +
-        // (line-number + trail) = 2 runs, lengths summing to the text.
-        let runs = build_gutter_runs(" 10 ", &meta, gpui::font("monospace"), false);
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), " 10 ".len());
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E+10   ");
+        // build_gutter_runs must not mis-slice the gated text: with no
+        // sign cells the runs are (line-number+separator), (fold slot),
+        // (trailing gap) = 3 runs summing to the full text length.
+        let runs = build_gutter_runs("10   ", &meta, gpui::font("monospace"), false);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), "10   ".len());
+    }
+
+    #[test]
+    fn gutter_runs_colour_the_fold_glyph_separately() {
+        // The fold glyph rides its own run in its resolved colour, sliced
+        // out from between the line-number run and the trailing gap even
+        // though the glyph is multi-byte (`▸` = 3 bytes).
+        let meta = GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_marker: Some((FOLD_GLYPH_CLOSED, 0xabcdef)),
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+        };
+        let text = format_gutter_text(&meta, 3, true, true); // "   42 ▸ "
+        let runs = build_gutter_runs(&text, &meta, gpui::font("monospace"), true);
+        // Runs sum to the whole text (no bytes dropped / double-counted).
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        // Exactly one run carries the fold colour, and it is glyph-wide.
+        let fold_runs: Vec<_> = runs
+            .iter()
+            .filter(|r| r.color == rgb(0xabcdef).into())
+            .collect();
+        assert_eq!(fold_runs.len(), 1, "one run should carry the fold colour");
+        assert_eq!(fold_runs[0].len, FOLD_GLYPH_CLOSED.len_utf8());
     }
 
     #[test]

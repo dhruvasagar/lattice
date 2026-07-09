@@ -193,6 +193,20 @@ registered + interactive elements) is specified in
 sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
 (ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
 
+Picker preview isolation (in-pane live preview renders the previewed
+buffer B as a **read-only projection** — baked into the published
+pane-tree leaves — never mutating the pane's committed buffer, the global
+active-buffer hot state, or the origin's resolved options / mode stack) is
+specified in
+[`../architecture/preview-isolation.md`](../architecture/preview-isolation.md),
+with sequencing in
+[`slice-plans/preview-isolation.md`](slice-plans/preview-isolation.md)
+(PI.0–PI.5; **complete 2026-07-07** — landed on both renderer peers,
+`preview-mode` read-only minor, cursorline preserved for the previewed
+buffer, per-buffer option resolution lifted to a renderer-agnostic
+`RenderState::resolved_option_for` seam, and the pre-PI swap/restore
+machinery deleted).
+
 Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
 4.2 navigation + completion → 4.3 edits (rename / format / code
 action / will-save) → 4.4 polish (semantic tokens delta, inlay
@@ -714,7 +728,7 @@ status here. Anchor: ../architecture/design.md §5.2 + the seven unifications in
 | Named registers `"a-z`, `"A-Z`                 | ✅ (uppercase replaces, append TBD)   | §5.2.2         |
 | Numbered registers `"0-"9`                     | ✅ (storage; `"0` auto-populate TBD)  | §5.2.2         |
 | Black hole register `"_`                       | ✅                                    |                |
-| System / clipboard `"+`, `"*`                  | ⚠️ storage only; no clipboard wire-up  | §15 (deferred) |
+| System / clipboard `"+`, `"*`                  | ✅ OS clipboard wired (CB series)      | [clipboard.md](../architecture/clipboard.md) |
 | Last-yank `"0`                                 | ⚠️ readable; auto-populate TBD         |                |
 | Ex-command ranges (1,5 / % / 'a,'b / patterns) | 🟡 % and CurrentLine work             | §5.2.2         |
 | Marks (m / ' / \`)                             | ✅                                    | §5.1.1         |
@@ -5315,6 +5329,54 @@ inventory is captured in the slice plan as the Phase-7 starting point.
 execution waits for Phase 7 where the `ActionContext`/plugin API has real
 requirements. The `comparison-zed.md` "fragile drift" claim was corrected to the
 accurate bounded-and-structurally-sealed picture.
+
+---
+
+## Dashboard (DB.1–DB.7 ✅ complete; DB.8 📝 deferred post-v1, 2026-07-03)
+
+Design: [`../architecture/dashboard.md`](../architecture/dashboard.md). Slice
+plan: [`slice-plans/dashboard.md`](slice-plans/dashboard.md).
+
+The `*dashboard*` launch page shown when the editor opens with no file
+argument (`dashboard.enabled`, default on) or on demand via `:dashboard`. A
+`BufferKind::Dashboard` synthetic buffer — read-only, help-mode-style
+link-follow reused via buffer-kind grouping (no help-mode dependency), no
+renderer kind-branch beyond the existing Help-grouped gates. Content is
+config-selected + ordered built-in sections (`dashboard.sections`) composed
+through an extensible `DashboardRegistry` (DB.8 adds plugin sections), or a
+user file that fully replaces composition (`dashboard.source`). Branding is a
+`VirtualRowProvider` terminal-art block + wordmark, colour-resolved from
+`dashboard.*` theme elements; GPUI additionally custom-paints a 2-D lockup
+(mark top-aligned to the wordmark's cap-height) rather than the TUI's
+block-art rows. Startup activation and recompose (on `dashboard.sections` /
+`dashboard.source` / `ui.nerd_fonts` change, gated on already being open) are
+both mode-owned subscriptions emitting the same `Effect::OpenDashboard`
+`:dashboard` uses — zero new host `Action`/`Effect` variants across the whole
+feature.
+
+| Slice | Title | Status |
+|---|---|---|
+| **DB.1** | crate + registry + fragment + config | ✅ |
+| **DB.2** | `*dashboard*` buffer + `dashboard-mode` + `:dashboard` | ✅ |
+| **DB.3** | `dashboard.*` theme elements | ✅ |
+| **DB.4** | branding block (art, colour, gutter-centring, help-mode, cursorline) | ✅ |
+| **DB.4-cleanup** | revert redundant `VirtualRowAlign` (gutter supersedes it) | ✅ |
+| **DB.4-gpui** | per-token virtual-row scaling (F.3) + scaled wordmark; side-by-side custom-paint lockup deferred (post-1.0 w/ image) | ✅ |
+| **DB.5** | startup gating + mode-owned trigger (`Startup` typed event, `ConfigRegistry` Phase-A hoist) | ✅ |
+| **DB.6** | full override + recompose triggers (`dashboard.source`, `Event::OptionChanged` subscription) | ✅ |
+| **DB.7** | benches + ledger (this entry) | ✅ |
+| **DB.8** | plugin sections + body custom roles | 📝 deferred — gated on the plugin host + theme-remap seam |
+
+**DB.7 bench coverage (design §13).** The dashboard composes once at
+creation, never per keystroke, so there is no keystroke→glyph bench.
+`crates/lattice-host/benches/dashboard.rs` covers the two design-mandated
+assertions instead: `dashboard_creation` (cold compose+seed threshold) and
+`dashboard_idle_tick` (idle-frame cost). The idle-frame *correctness* half —
+not just fast, but literally zero recompose — is pinned as a regression test
+(`dashboard_idle_ticks_do_not_recompose` in `tests/dashboard.rs`) asserting
+the document version doesn't advance across idle ticks, the same
+"enforced, not asserted" bar the B2.3 bug story set. See `BENCHMARKS.md` for
+recorded numbers.
 
 ---
 

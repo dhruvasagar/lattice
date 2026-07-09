@@ -37,7 +37,7 @@ code in the buffer's own syntax colours.
 | `:picker <source> [args]` | The named source (see the table below). `<Tab>` after `:picker ` lists sources. |
 | `:files [root]`           | File picker (alias for `:picker files [root]`) |
 | `:recent`                 | Recently-edited files (alias for `:picker recent`) |
-| `:b` / `:buffer-picker`   | Buffer switcher |
+| `:buffers` / `:b`         | Buffer switcher (fuzzy picker; `:ls` is the static text listing) |
 | `:colorscheme`            | Theme picker, with live preview (see [themes.md](themes.md)) |
 
 ### Inside an open picker

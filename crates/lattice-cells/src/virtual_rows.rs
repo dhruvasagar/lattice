@@ -84,6 +84,30 @@ pub enum VirtualRowKind {
 	/// anchor line is in the viewport. Use `VirtualRow::bg` to supply
 	/// a background colour; falls back to no backdrop if `bg` is `None`.
 	Sticky,
+	/// Dashboard branding block (DB.4-gpui). A contiguous group of
+	/// these rows carries the mark's block cells + the wordmark/tagline
+	/// text; the **GPUI peer** intercepts the group and paints a 2-D
+	/// composition instead of the flat cells — the mark as crisp square
+	/// quads (corner cuts preserved) and the "Lattice" wordmark shaped
+	/// large, vertically centred beside the mark. The **TUI peer** paints
+	/// the cells normally (its terminal-art treatment). A *paint*
+	/// discriminant only — never a motion/scroll/cursor branch.
+	BrandingBlock,
+}
+
+impl VirtualRowKind {
+	/// Whether rows of this kind are *pinned* to the top of the pane
+	/// (rendered in the sticky pre-pass, excluded from the scrolling
+	/// per-line pass, and reserved out of the visible window) rather than
+	/// scrolling with the document.
+	///
+	/// `Sticky` is the general headerline (multibuffer excerpt headers,
+	/// async-status HUD). `BrandingBlock` — the dashboard logo — is pinned
+	/// too: it is a masthead that should stay put while the sections
+	/// beneath it scroll, and it keeps its 2-D paint treatment either way.
+	pub fn is_pinned(self) -> bool {
+		matches!(self, VirtualRowKind::Sticky | VirtualRowKind::BrandingBlock)
+	}
 }
 
 /// One virtual row's anchor + content.
@@ -116,6 +140,87 @@ pub struct VirtualRow {
 	pub height: u16,
 	pub kind: VirtualRowKind,
 	pub bg: Option<u32>,
+	/// F.3 (Thread F): per-display-column font scale in
+	/// **hundredths** (`100` = 1.0×, the base size), parallel to
+	/// [`Self::cells`] by display column. `None` ⇒ the whole row
+	/// is base size (the common case — zero cost, no allocation).
+	///
+	/// This extends the variable-font commitment (per-token
+	/// scaling, the emacs markdown-heading model — only the title
+	/// scales, not the leading markers) from document rows to
+	/// virtual rows. A renderer coalesces contiguous equal scales
+	/// into runs (mirroring how it coalesces per-cell `fg`), shapes
+	/// each run at `font_size × scale/100` on a **shared baseline**,
+	/// and grows the row height to the tallest run. The dashboard
+	/// branding block (DB.4-gpui) is the first consumer: the
+	/// "Lattice" wordmark scales while the mark blocks stay base.
+	///
+	/// The GPUI peer honors it; the TUI peer ignores it (a terminal
+	/// cell grid cannot vary font size). When present, its length
+	/// matches `cells`; a shorter/absent entry defaults to `100`.
+	pub scales: Option<Arc<[u16]>>,
+}
+
+/// F.3 (Thread F): one contiguous run of display columns rendered
+/// at a single font scale, produced by [`coalesce_scales`]. The
+/// renderer shapes each run at `font_size × scale/100`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ScaleRun {
+	/// First display column of the run (0-based, into the row's
+	/// cells).
+	pub start_col: u32,
+	/// Number of display columns the run spans.
+	pub cols: u32,
+	/// Font scale in hundredths (`100` = 1.0×).
+	pub scale: u16,
+}
+
+/// Base font scale in hundredths (`100` = 1.0×). A column with this
+/// scale (or no scale entry) renders at the base font size.
+pub const BASE_SCALE: u16 = 100;
+
+/// F.3 (Thread F): coalesce a per-column `scales` slice into
+/// contiguous same-scale [`ScaleRun`]s across `total_cols` columns,
+/// exactly as a renderer coalesces per-cell `fg` into text runs.
+///
+/// Columns beyond `scales.len()` (or when `scales` is empty) default
+/// to [`BASE_SCALE`]. The returned runs cover `0..total_cols`
+/// contiguously, in column order, and never split two adjacent
+/// columns that share a scale. `total_cols == 0` ⇒ empty. Pure and
+/// allocation-light (O(total_cols)); unit-testable without a
+/// renderer.
+pub fn coalesce_scales(scales: &[u16], total_cols: u32) -> Vec<ScaleRun> {
+	let mut runs: Vec<ScaleRun> = Vec::new();
+	if total_cols == 0 {
+		return runs;
+	}
+	let scale_at = |col: u32| -> u16 {
+		scales
+			.get(col as usize)
+			.copied()
+			.filter(|s| *s != 0)
+			.unwrap_or(BASE_SCALE)
+	};
+	let mut start = 0u32;
+	let mut cur = scale_at(0);
+	for col in 1..total_cols {
+		let s = scale_at(col);
+		if s != cur {
+			runs.push(ScaleRun {
+				start_col: start,
+				cols: col - start,
+				scale: cur,
+			});
+			start = col;
+			cur = s;
+		}
+	}
+	runs.push(ScaleRun {
+		start_col: start,
+		cols: total_cols - start,
+		scale: cur,
+	});
+	runs
 }
 
 /// A monotonically-increasing counter; bumped by the
@@ -273,16 +378,17 @@ impl VirtualRowMatrix {
 		let total = end.saturating_sub(start);
 		let sticky = self.rows[start as usize..end as usize]
 			.iter()
-			.filter(|r| r.kind == VirtualRowKind::Sticky)
+			.filter(|r| r.kind.is_pinned())
 			.count() as u32;
 		total.saturating_sub(sticky)
 	}
 
-	/// Iterator over all sticky rows in the matrix (kind ==
-	/// [`VirtualRowKind::Sticky`]). Used by renderers to paint the
-	/// fixed top strip before the scrollable content window.
+	/// Iterator over all pinned rows in the matrix (see
+	/// [`VirtualRowKind::is_pinned`] — `Sticky` headerlines + the
+	/// `BrandingBlock` masthead). Used by renderers to paint the fixed top
+	/// strip before the scrollable content window.
 	pub fn sticky_rows(&self) -> impl Iterator<Item = &VirtualRow> {
-		self.rows.iter().filter(|r| r.kind == VirtualRowKind::Sticky)
+		self.rows.iter().filter(|r| r.kind.is_pinned())
 	}
 }
 
@@ -353,7 +459,56 @@ mod tests {
 			height: 1,
 			kind: VirtualRowKind::Generic,
 			bg: None,
+			scales: None,
 		}
+	}
+
+	#[test]
+	fn coalesce_scales_empty_is_empty() {
+		assert!(coalesce_scales(&[], 0).is_empty());
+		assert!(coalesce_scales(&[150, 150], 0).is_empty());
+	}
+
+	#[test]
+	fn coalesce_scales_no_scales_is_one_base_run() {
+		// No per-column scales ⇒ one base-size run spanning the row.
+		let runs = coalesce_scales(&[], 5);
+		assert_eq!(
+			runs,
+			vec![ScaleRun { start_col: 0, cols: 5, scale: BASE_SCALE }]
+		);
+	}
+
+	#[test]
+	fn coalesce_scales_splits_only_on_transition() {
+		// The markdown-heading shape: base markers, scaled title —
+		// "## " at base, the rest at 1.6×. Two runs, split at col 3.
+		let scales = [100, 100, 100, 160, 160, 160];
+		let runs = coalesce_scales(&scales, 6);
+		assert_eq!(
+			runs,
+			vec![
+				ScaleRun { start_col: 0, cols: 3, scale: 100 },
+				ScaleRun { start_col: 3, cols: 3, scale: 160 },
+			]
+		);
+	}
+
+	#[test]
+	fn coalesce_scales_handles_multiple_runs_and_zero_sentinel() {
+		// A general per-token row: base, scaled, base again — plus a
+		// `0` sentinel column that defaults to base, and a trailing
+		// column past `scales.len()` that also defaults to base.
+		let scales = [100, 250, 250, 0];
+		let runs = coalesce_scales(&scales, 6);
+		assert_eq!(
+			runs,
+			vec![
+				ScaleRun { start_col: 0, cols: 1, scale: 100 },
+				ScaleRun { start_col: 1, cols: 2, scale: 250 },
+				ScaleRun { start_col: 3, cols: 3, scale: 100 },
+			]
+		);
 	}
 
 	#[test]

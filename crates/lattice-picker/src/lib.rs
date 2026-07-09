@@ -343,13 +343,6 @@ pub struct Picker {
     /// pickers without typed routing fall back to the
     /// `Plain`-data path -- not used today).
     routing_meta: Vec<RoutingPayload>,
-    /// For [`PickerAction::SwitchToBuffer`]: the host's buffer
-    /// id encoded as `u32` so this module stays renderer-agnostic
-    /// (the TUI host newtype-wraps it). The host's preview path
-    /// (`activate_buffer_preview`) restores this on `<Esc>` so an
-    /// aborted pick doesn't leave the user on a random previewed
-    /// buffer. `None` for non-buffer pickers.
-    pub preview_origin: Option<u32>,
     /// Picker-registry source id that seated this picker. `Some`
     /// when the picker was seated via the trait-driven path
     /// (`:picker <source>`); `None` for legacy imperative
@@ -399,7 +392,6 @@ impl Picker {
             on_accept,
             raw: Vec::new(),
             routing_meta: Vec::new(),
-            preview_origin: None,
             source_id: None,
             mru_bonuses: Vec::new(),
             loading: false,

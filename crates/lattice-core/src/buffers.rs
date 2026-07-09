@@ -72,6 +72,18 @@ pub enum BufferKind {
     /// keymap. See `docs/dev/architecture/multibuffer-views.md`
     /// §3.6.
     Multibuffer,
+    /// `*dashboard*` launch page (DB.2, `docs/dev/architecture/dashboard.md`).
+    /// Rope-backed like [`Document`]; its major mode (`dashboard-mode`)
+    /// contributes `ReadOnly = true` + `NoFile = true` so the dispatcher
+    /// gates keystrokes and `:q` skips its dirty check. Behaviourally a
+    /// read-only, link-bearing, help-style buffer — it is grouped with
+    /// [`BufferKind::Help`] in the `<CR>`-follow / Esc-dismiss gates
+    /// (`input.rs`, `dispatch.rs`) and reuses the help link machinery, while
+    /// staying a distinct kind so `:ls` / introspection don't conflate it
+    /// with the transcript or user documents.
+    ///
+    /// [`Document`]: crate::Document
+    Dashboard,
 }
 
 impl BufferKind {
@@ -90,6 +102,7 @@ impl BufferKind {
                 | BufferKind::Terminal
                 | BufferKind::Messages
                 | BufferKind::Multibuffer
+                | BufferKind::Dashboard
         )
     }
 
@@ -103,6 +116,7 @@ impl BufferKind {
             BufferKind::Terminal => "terminal",
             BufferKind::Messages => "messages",
             BufferKind::Multibuffer => "multibuffer",
+            BufferKind::Dashboard => "dashboard",
         }
     }
 }

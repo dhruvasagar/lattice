@@ -241,7 +241,37 @@ this is a placeholder line for practice
 
 ---
 
-## 1.8 Undo/Redo — u, `<C-r>`
+## 1.8 Replacing Characters — r, R
+
+Sometimes you just want to overwrite a character without deleting and
+retyping. `r` replaces the character under the cursor with the *next* key
+you press — and leaves you in Normal mode. It's the fastest fix for a
+single-character typo.
+
+```
+r{char}    replace the character under the cursor with {char}
+3r{char}   replace the next 3 characters with {char}
+R          Replace mode: every key overwrites; <BS> restores; <Esc> exits
+```
+
+In **Visual mode**, `r{char}` replaces every selected character at once —
+handy for blanking out a selection with `-` or `*`.
+
+**Practice:**
+
+1. Move the cursor onto the `0` (zero) in the line below.
+2. Press `r` then `O` (capital letter O) to fix it.
+
+---> Fix the zero: put the cursor on the 0 and press r O
+
+HELL0 WORLD
+
+After that, try `R`: press `R`, type a few characters to overwrite in
+place, then press `<Esc>` to return to Normal.
+
+---
+
+## 1.9 Undo/Redo — u, `<C-r>`
 
 ```
 u       undo the last change
@@ -258,7 +288,7 @@ u       undo the last change
 
 ---
 
-## 1.9 Saving and Quitting
+## 1.10 Saving and Quitting
 
 ```
 :w     write (save) the buffer
@@ -281,7 +311,7 @@ a new copy.
 
 ---
 
-## 1.10 Help Is Always Available
+## 1.11 Help Is Always Available
 
 Lattice has built-in help for everything:
 
@@ -311,6 +341,7 @@ You've learned:
 - **Deleting:** `x` `dd` `D`.
 - **Copy/paste:** `yy` `p` `P`.
 - **Changing:** `cw` `cc` `C`.
+- **Replacing:** `r{char}`, `R` (Replace mode), Visual `r{char}`.
 - **Undo/redo:** `u` `<C-r>`; repeat with `.`.
 - **Saving:** `:w` `:q` `:wq` `:q!`.
 - **Help:** `:help [topic]`.

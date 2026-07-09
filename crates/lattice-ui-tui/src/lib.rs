@@ -35,6 +35,10 @@ pub mod app;
 // worker) into ratatui spans. Anchor:
 // `docs/dev/architecture/cell-grid-renderer.md`.
 pub mod cells_render;
+// CB.2 (docs/dev/architecture/clipboard.md): the TUI's Clipboard backend
+// (native arboard + OSC52 fallback), bound at boot over CB.0's default
+// FakeClipboard.
+pub mod clipboard;
 // Phase 5.2: HOST modules migrated to `lattice-host`. The
 // `pub use` here preserves every existing
 // `lattice_ui_tui::<module>::*` import in downstream crates +

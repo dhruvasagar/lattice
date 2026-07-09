@@ -168,17 +168,6 @@ fn cursor_style_for(modal: ModalState, terminal_insert_active: bool) -> SetCurso
     }
 }
 
-/// Mirror of the renderer's `popup_height` so the runtime can
-/// subtract the candidate-list rows from the buffer-area height
-/// before computing the active pane's viewport. Kept in sync by
-/// hand for now; if either drifts the cursor / scroll math
-/// goes off by `extra_rows` in pickers / completion. See
-/// `render::popup_height` for the canonical formula.
-fn popup_height_for(candidate_count: usize) -> usize {
-    const MAX_ROWS: usize = 10;
-    candidate_count.min(MAX_ROWS).max(1)
-}
-
 /// I.3 (event-driven wake): a reason the main loop woke. The loop blocks on a
 /// single channel of these instead of polling the terminal on a 100ms timer.
 /// `Input` carries a decoded terminal event from the dedicated reader thread;
@@ -461,27 +450,22 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // motions / scroll / cursor visibility agree with what the
         // renderer actually paints.
         let size = terminal.size().context("query terminal size")?;
-        // Slice 3c.final.E.5j: picker / completion popup rows via
-        // published `picker_state()` / `completion()` sub-states.
-        let extra_rows = app
-            .picker_state()
-            .state
-            .as_deref()
-            .map(|p| popup_height_for(p.candidates.len().max(1)))
-            .unwrap_or(0)
-            .max(
-                app.completion()
-                    .state
-                    .as_deref()
-                    .map(|s| popup_height_for(s.candidates.len()))
-                    .unwrap_or(0),
-            );
+        // `chrome_rows` is the single source of truth for tabline +
+        // picker/completion candidate-band rows, shared with
+        // `draw_frame`'s paint layout (see its doc comment for the
+        // regression this closes: this loop used to hand-duplicate the
+        // candidate-band formula and omit the tabline row entirely, so
+        // the viewport logic believed it had one more row than
+        // `draw_frame` actually painted once the tabline showed).
+        let chrome = crate::render::chrome_rows(&app);
         // Option A: global modeline removed; each pane has its own
-        // 1-row status footer. Subtract only cmdline (1), not 2.
+        // 1-row status footer. Subtract cmdline (1), the tabline (0/1),
+        // and any picker/completion candidate band.
         let buffer_height = size
             .height
             .saturating_sub(1)
-            .saturating_sub(extra_rows as u16) as u32;
+            .saturating_sub(chrome.tabline)
+            .saturating_sub(chrome.extra()) as u32;
         // Diff-then-push: only dispatch when the resolved viewport height
         // changed. Unconditional dispatch here was publishing (+ waking both
         // cells/virtual-rows workers) every loop iteration.

@@ -57,7 +57,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the first non-whitespace byte of the current line (vim's `^`).",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `^` is exclusive in vim. (Was mis-registered inclusive while
+            // the dispatcher ignored the flag; now honoured, so it must be
+            // correct.)
+            exclusive: true,
             apply: Box::new(motion_first_non_blank),
             args_schema: vec![],
         },
@@ -112,6 +115,13 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    // Vim word-motion special case (`:help word-motions`): under an
+    // operator, `dw` / `cw` / `yw` on the last word of a line stop at the
+    // line end instead of reaching into the next line's first word. Tag
+    // both word-forward motions so the operator range resolver applies it.
+    registry.tag_word_forward_motion(word_forward);
+    registry.tag_word_forward_motion(big_word_forward);
+
     let big_word_backward = registry.register_motion(
         "motion:big-word-backward",
         "Move to the start of the previous WORD (vim's `B`).",
@@ -137,7 +147,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the next paragraph boundary -- the next blank line at or after the cursor (vim's `}`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `}` is exclusive in vim (`d}` does not include the blank line).
+            exclusive: true,
             apply: Box::new(motion_paragraph_forward),
             args_schema: vec![],
         },
@@ -147,7 +158,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the previous paragraph boundary (vim's `{`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `{` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_paragraph_backward),
             args_schema: vec![],
         },
@@ -157,7 +169,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the start of the next sentence (vim's `)`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `)` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_sentence_forward),
             args_schema: vec![],
         },
@@ -167,7 +180,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the start of the previous sentence (vim's `(`).",
         MotionSpec {
             jump: true,
-            exclusive: false,
+            // `(` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_sentence_backward),
             args_schema: vec![],
         },
@@ -177,7 +191,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move one byte to the left within the current line.",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `h` is exclusive in vim. (Backward motion, so behaviour is
+            // unchanged either way, but the registration should be correct.)
+            exclusive: true,
             apply: Box::new(motion_char_left),
             args_schema: vec![],
         },
@@ -217,7 +233,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the first byte of the current line.",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `0` is exclusive in vim.
+            exclusive: true,
             apply: Box::new(motion_line_start),
             args_schema: vec![],
         },
@@ -333,6 +350,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(operator_toggle_case),
             args_schema: vec![],
             blockwise_per_row: false,
+        },
+    );
+    let replace_char = registry.register_operator(
+        "operator:replace-char",
+        "Overwrite each non-newline char in the range with the captured char (vim's `r{char}` and Visual `r`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_replace_char),
+            // Args::Char(replacement) is folded in by the keymap's
+            // wildcard capture (same shape as `f{char}`, which also
+            // leaves its schema empty).
+            args_schema: vec![],
+            // Blockwise visual `r` overwrites each row's column slice
+            // independently, exactly like `d` / `y` / `c`.
+            blockwise_per_row: true,
         },
     );
 
@@ -583,6 +615,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         upper,
         lower,
         toggle_case,
+        replace_char,
         inner_paragraph,
         around_paragraph,
         inner_sentence,
@@ -645,6 +678,7 @@ pub struct Builtins {
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
+    pub replace_char: OperatorId,
     pub inner_paragraph: TextObjectId,
     pub around_paragraph: TextObjectId,
     pub inner_sentence: TextObjectId,
@@ -2025,6 +2059,9 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: yanked,
             kind: yank_kind,
+            // Delete populates registers but is NOT an explicit yank —
+            // it must not mirror to the system clipboard (yank-only rule).
+            explicit_yank: false,
         },
     ]))
 }
@@ -2055,9 +2092,58 @@ fn operator_change(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: yanked,
             kind: yank_kind,
+            // Change deletes + yanks the range like delete — not an
+            // explicit yank, so no clipboard mirror (yank-only rule).
+            explicit_yank: false,
         },
         Effect::EnterMode(crate::modal::ModalState::Insert),
     ]))
+}
+
+// ---- Operator: replace-char (vim's `r{char}` and Visual `r`) ----
+//
+// Overwrite each non-newline char in the target range with the captured
+// replacement char, producing one `Effect::Edits` -- so both renderers
+// pick it up through the standard edit path with no per-renderer arm.
+//
+// One body serves both entry points:
+//
+// * Normal `Nr{char}`: the keymap binds the range to `char_right x count`
+//   (pre-clamped to the current line, exactly as `x` = delete+char_right).
+//   Vim's "no-op when fewer than N chars remain" falls out of the
+//   `n_chars < count` guard -- the clamped range simply holds fewer chars
+//   than the requested count. Stays in Normal.
+// * Visual `r{char}`: dispatched with `Range::Selection` (count defaults
+//   to 1), so the guard degenerates to "no-op on an empty span" and every
+//   selected char is overwritten. Blockwise routes per-row via
+//   `blockwise_per_row`. The host auto-exits Visual after any operator
+//   (like `d` / `c` / `y`), so no explicit mode transition is emitted.
+//
+// Newlines inside the range are preserved, so a charwise / linewise
+// multi-line selection keeps its line structure (vim replaces characters,
+// never line breaks).
+fn operator_replace_char(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    let replacement = match &ctx.args {
+        crate::args::Args::Char(c) => *c,
+        _ => return Err(CommandError::InvalidArgs("r requires Args::Char")),
+    };
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let text = ctx.document.buffer().slice(ctx.range)?;
+    let n_chars = text.chars().filter(|c| *c != '\n').count() as u32;
+    // Vim's `Nr{char}` requires N characters on the line; a too-large
+    // count is a no-op (vim bells). For Visual the count is 1, so any
+    // non-empty span replaces.
+    if n_chars < ctx.count.get().max(1) {
+        return Ok(Effect::None);
+    }
+    let replaced: String = text
+        .chars()
+        .map(|c| if c == '\n' { '\n' } else { replacement })
+        .collect();
+    let applied = ctx.document.apply_edit(Edit::replace(ctx.range, replaced))?;
+    Ok(Effect::Edits(vec![applied]))
 }
 
 // ---- Operator: yank ----
@@ -2097,11 +2183,17 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             register: ctx.register,
             content: content.clone(),
             kind,
+            // The one explicit-yank write: eligible for the clipboard
+            // mirror under the `clipboard` option.
+            explicit_yank: true,
         },
         Effect::Yank {
             register: crate::register::Register::Numbered(0),
             content,
             kind,
+            // The `"0` mirror is a register-only bookkeeping write; the
+            // primary write above already handled the clipboard.
+            explicit_yank: false,
         },
     ]))
 }
@@ -4192,6 +4284,224 @@ mod tests {
         assert_eq!(doc.text(), "hello");
     }
 
+    // ---- replace-char operator (r{char} / Visual r) ----
+
+    /// Helper: build a single visual selection on `doc`.
+    fn set_visual(
+        doc: &mut Document,
+        anchor: Position,
+        head: Position,
+        visual: lattice_protocol::selection::VisualMode,
+    ) {
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        doc.set_selections(SelectionSet::single(Selection {
+            anchor,
+            head,
+            visual: Some(visual),
+        }));
+    }
+
+    #[test]
+    fn replace_char_overwrites_single_char_under_cursor() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('a'));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::Edits(_)));
+        assert_eq!(doc.text(), "aello");
+    }
+
+    #[test]
+    fn replace_char_with_count_overwrites_count_chars() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('a'))
+            .with_count(Count(3));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "aaalo");
+    }
+
+    #[test]
+    fn replace_char_count_too_large_is_a_no_op() {
+        // Vim's `3r` on a 2-char line replaces nothing (bells).
+        let (registry, b, mut doc) = fixture("ab");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('x'))
+            .with_count(Count(3));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None));
+        assert_eq!(doc.text(), "ab");
+    }
+
+    #[test]
+    fn replace_char_on_empty_line_is_a_no_op() {
+        let (registry, b, mut doc) = fixture("");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None))
+            .with_args(crate::args::Args::Char('x'));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None));
+        assert_eq!(doc.text(), "");
+    }
+
+    #[test]
+    fn visual_replace_char_overwrites_selection() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("hello world");
+        // Charwise select "hello": anchor byte 0, head byte 4
+        // (inclusive-head extends to [0, 5)).
+        set_visual(
+            &mut doc,
+            Position::new(0, 0),
+            Position::new(0, 4),
+            VisualMode::Charwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('x'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "xxxxx world");
+    }
+
+    #[test]
+    fn visual_replace_char_preserves_newlines_across_lines() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("ab\ncd");
+        // Charwise from (0,1) through (1,0): covers "b\nc" (inclusive
+        // head extends the end to (1,1)).
+        set_visual(
+            &mut doc,
+            Position::new(0, 1),
+            Position::new(1, 0),
+            VisualMode::Charwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('X'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 1),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        // Line structure preserved; only the two chars overwritten.
+        assert_eq!(doc.text(), "aX\nXd");
+    }
+
+    #[test]
+    fn visual_linewise_replace_char_overwrites_whole_lines() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("aaa\nbbb\nccc");
+        set_visual(
+            &mut doc,
+            Position::new(0, 0),
+            Position::new(1, 0),
+            VisualMode::Linewise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('z'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "zzz\nzzz\nccc");
+    }
+
+    #[test]
+    fn visual_blockwise_replace_char_overwrites_each_row_slice() {
+        use lattice_protocol::selection::VisualMode;
+        let (registry, b, mut doc) = fixture("abcd\nefgh\nijkl");
+        // Block from (0,1) to (2,2): columns 1..=2 on each row.
+        set_visual(
+            &mut doc,
+            Position::new(0, 1),
+            Position::new(2, 2),
+            VisualMode::Blockwise,
+        );
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_range(crate::range::Range::Selection)
+            .with_args(crate::args::Args::Char('*'));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 1),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "a**d\ne**h\ni**l");
+    }
+
+    #[test]
+    fn replace_char_without_char_arg_errors() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.replace_char.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None));
+        let err = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .expect_err("replace-char requires Args::Char");
+        assert!(matches!(err, CommandError::InvalidArgs(_)));
+    }
+
     // ---- yank operator (y) ----
 
     #[test]
@@ -4219,10 +4529,15 @@ mod tests {
                         content,
                         kind,
                         register,
+                        explicit_yank,
                     } => {
                         assert_eq!(content, "hello ");
                         assert_eq!(*kind, YankKind::Charwise);
                         assert_eq!(*register, crate::register::Register::Unnamed);
+                        assert!(
+                            *explicit_yank,
+                            "the primary yank write is clipboard-eligible"
+                        );
                     }
                     other => panic!("expected Yank at [0], got {other:?}"),
                 }
@@ -4397,8 +4712,11 @@ mod tests {
 
     #[test]
     fn delete_with_word_end_target_de_semantics() {
-        // `de` from start of "hello world" deletes "hello" (word_end is
-        // inclusive, so range covers [0, 5)).
+        // `de` from start of "hello world": word_end (`e`) is INCLUSIVE, so
+        // it lands on the last char of "hello" ('o', byte 4) and the operator
+        // covers that char too -- range [0, 5) -> deletes "hello", leaving
+        // " world". Vim parity; previously the inclusive flag was ignored and
+        // this left the trailing 'o' ("o world").
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_end, crate::args::Args::None));
@@ -4410,12 +4728,68 @@ mod tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        // word_end lands at byte 4 ('o' of "hello"). Our dispatcher uses
-        // [start, end) ranges so the resulting deletion covers [0, 4) = "hell".
-        // (This documents current dispatcher behavior; vim's inclusive
-        // semantics for `de` would delete "hello", a refinement tracked in
-        // §15:N.)
-        assert_eq!(doc.text(), "o world");
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn change_with_word_end_target_ce_is_inclusive() {
+        // `ce` deletes through the end of the word (inclusive `e`), same as
+        // `de` but leaving the operator in change-mode. From byte 0 of
+        // "hello world" it removes "hello" -> " world".
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.change.0)
+            .with_target(Target::Motion(b.word_end, crate::args::Args::None));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn delete_with_find_char_target_df_is_inclusive() {
+        // `dfl` deletes up to AND including the found char (inclusive `f`).
+        // From byte 0 of "hello", `f` for 'l' lands on byte 2; deletion
+        // covers [0, 3) -> "lo".
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.delete.0).with_target(Target::Motion(
+            b.find_char_forward,
+            crate::args::Args::Char('l'),
+        ));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0), Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "lo");
+    }
+
+    #[test]
+    fn dw_on_last_word_of_line_stops_at_line_end() {
+        // Vim word-motion special case: `dw` on the last word of a line
+        // deletes to the line end and does NOT join the next line. Cursor on
+        // 'f' of "foo" (byte 6 of line 0); `w` would cross to "bar" on line 1,
+        // but under the operator the range is clamped to the end of line 0.
+        let (registry, b, mut doc) = fixture("hello foo\nbar");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "hello \nbar", "dw must not cross the newline");
     }
 
     #[test]

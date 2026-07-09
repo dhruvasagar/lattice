@@ -63,8 +63,7 @@ use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
     FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, Styled, TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    font, px, rgb, size,
+    SharedString, Styled, TextRun, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -180,6 +179,30 @@ pub(crate) fn popup_inner_cols(popup_w_px: f32, rem: f32, glyph_advance_px: f32)
 /// the content fills the popup; only the body div's lock loosens.
 pub(crate) fn popup_body_h_px(popup_h_px: f32, rem: f32, row_px: f32) -> f32 {
     (popup_h_px - popup_chrome_v_px(rem, row_px)).max(row_px)
+}
+
+/// The real line height GPUI resolves for plain UI text — the per-pane
+/// modeline/status row and the global cmdline row — at the `text_sm` font
+/// size (0.875rem). Those elements are `div().child(text)` and never call
+/// `.line_height(...)`, so they get GPUI's DEFAULT `TextStyle::line_height`
+/// (`phi()`, the golden ratio, ≈1.618× font_size) — NOT the `1.3×`
+/// multiplier `EditorElement` uses for its own content rows (an explicit,
+/// unrelated override at `editor_element.rs:618`). A prior version of this
+/// file reused the `1.3×` content-row estimate for these UI rows too,
+/// undercounting their real height by ~25%: the per-pane chrome budget came
+/// out too small, the computed row count one too many, and the extra row
+/// was silently clipped by `overflow_hidden` right where the modeline
+/// starts ("last line behind the modeline," independent of the tabline).
+/// Measured via GPUI's own `TextStyle::line_height_in_pixels` so this can't
+/// silently drift from GPUI's actual default again.
+pub(crate) fn default_ui_row_px(rem_size: gpui::Pixels) -> f32 {
+    f32::from(
+        gpui::TextStyle {
+            font_size: gpui::rems(0.875).into(),
+            ..Default::default()
+        }
+        .line_height_in_pixels(rem_size),
+    )
 }
 
 /// Reads the typed `picker.display` option and returns `true` iff
@@ -1573,7 +1596,13 @@ impl EditorView {
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has
         // focus.
-        let render_active = is_active && !popup_owns_active;
+        // PI.3/PI.4: a pane that is *previewing* another buffer renders as an
+        // isolated projection — it reads the DISPLAYED buffer's snapshot
+        // (via `pane.buffer_id`, already substituted in the published leaf)
+        // plus the preview cursor / scroll baked into the leaf, NOT the
+        // active document's (`ad.*`). So the focused pane is "render active"
+        // only when showing its committed buffer.
+        let render_active = is_active && !popup_owns_active && !pane.is_previewing();
         let cursor = if render_active {
             ad.cursor
         } else {
@@ -1660,7 +1689,14 @@ impl EditorView {
         // pre-existing slice 1 limitation; the per-pane span
         // cache resync into the element is a follow-up slice.
         let total_lines_for_gutter = total_lines.max(1);
-        let gutter_width = total_lines_for_gutter.to_string().len();
+        // PU.1b-1a: reserve line-number digits only when `number` is set;
+        // gutterless buffers (help / dashboard) get 0 (matches the TUI gate).
+        let show_line_numbers = rs_guard.active_document.load().option_cache.show_line_numbers;
+        let gutter_width = if show_line_numbers {
+            total_lines_for_gutter.to_string().len()
+        } else {
+            0
+        };
 
         // MO.4.a: URI + render_state used by the gutter-decoration
         // pre-loop below to inject LspDiagnosticsData service.
@@ -1795,10 +1831,37 @@ impl EditorView {
         let glyph_hint = diagnostic_glyph_option::<
             lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
         >(&config, '·');
+        // Fold-marker colours, resolved once per pane from the theme.
+        // Muted by cross-editor convention (open dimmer than closed);
+        // the defaults mirror the `overlay` / `subtext` palette tones so
+        // a theme with an unset element still reads sensibly.
+        let fold_open_color = resolved_theme
+            .get(theme_ids.gutter_fold_open)
+            .fg
+            .map(|c| c.to_rgb_u32(0x6c7086))
+            .unwrap_or(0x6c7086);
+        let fold_closed_color = resolved_theme
+            .get(theme_ids.gutter_fold_closed)
+            .fg
+            .map(|c| c.to_rgb_u32(0x9399b2))
+            .unwrap_or(0x9399b2);
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
+                // Show a marker on every foldable head (open or closed)
+                // when foldenable is on, matching the TUI peer — `▾`
+                // expanded, `▸` collapsed — each in its themed colour.
+                let fold_marker = fold_index.fold_start_kind_at(line_idx as u32).map(|kind| {
+                    use lattice_host::folds::FoldMarker;
+                    match kind {
+                        FoldMarker::Open => {
+                            (crate::editor_element::FOLD_GLYPH_OPEN, fold_open_color)
+                        }
+                        FoldMarker::Closed => {
+                            (crate::editor_element::FOLD_GLYPH_CLOSED, fold_closed_color)
+                        }
+                    }
+                });
                 // MO.4.a: read from pre-built mode-walk map.
                 let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
                     use lattice_mode::GutterSeverityLevel;
@@ -1853,7 +1916,7 @@ impl EditorView {
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     display_line,
-                    fold_start,
+                    fold_marker,
                     severity,
                     diff_sign,
                     is_virtual: false,
@@ -2031,11 +2094,20 @@ impl EditorView {
         // option-cache seam the TUI reads (`render.rs` cursorline path)
         // and the same seam used for `foldenable` above. Without this the
         // GPUI peer painted the cursorline unconditionally.
-        let cursorline_enabled = rs_guard
-            .active_document
-            .load()
-            .option_cache
-            .current_line_highlight;
+        // PI.4: a focused preview pane resolves cursorline from the
+        // DISPLAYED buffer through the renderer-agnostic seam (the same
+        // `RenderState` method the TUI peer calls), so the previewed
+        // buffer keeps its own cursorline; otherwise the active document's
+        // resolved value.
+        let cursorline_enabled = if pane.is_previewing() {
+            rs_guard.current_line_highlight_for(pane.buffer_id)
+        } else {
+            rs_guard
+                .active_document
+                .load()
+                .option_cache
+                .current_line_highlight
+        };
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive
@@ -2258,6 +2330,13 @@ impl EditorView {
             // pre-existing per-pane-option limitation as the rest of
             // this element. TUI peer: `FrameView::sign_column`.
             sign_column: rs_guard.active_document.load().option_cache.sign_column,
+            // PI.0: centring pad follows the *rendered* buffer's
+            // `CenterContentWidth` local + this pane's width, not the
+            // active-buffer identity — so the dashboard keeps its centring
+            // even when a picker preview swaps `document_buffer_id` to the
+            // previewed file. Shared resolver with the TUI peer.
+            content_left_pad: rs_guard.content_left_pad_for(pane.buffer_id),
+            show_line_numbers,
             cursor: cursor_state,
             is_active: render_active,
             visual_range,
@@ -2851,6 +2930,14 @@ impl EditorView {
                 };
             for c in 0..snap.cols {
                 let cell = snap.cell_at(r, c);
+                // Width contract: a wide glyph owns its two display columns via
+                // GPUI's own shaping; its trailing `wide_spacer` cell must NOT
+                // be emitted as a stray space (that pushes the row one column
+                // wide per glyph). Skip it so grid col stays 1:1 with display
+                // col. See docs/dev/audit/terminal-wide-char-ghosting.md.
+                if cell.wide_spacer {
+                    continue;
+                }
                 let is_cursor = cursor_visible && r == cursor_row && c == cursor_col;
                 let mut fg_color = term_to_rgb(cell.fg, true);
                 let mut bg_color = term_to_rgb(cell.bg, false);
@@ -2953,6 +3040,14 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // W.5: apply pending window commands on the UI thread (we hold
+        // &mut Window here). Empty on all but the first post-launch frame when
+        // maximize is set.
+        for cmd in crate::window_chrome::drain_window_commands(&self.app.window_commands) {
+            match cmd {
+                crate::window_chrome::WindowCommand::Maximize => window.zoom_window(),
+            }
+        }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
         // breakdown on the `lattice_gpui::perf` tracing target.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits
@@ -3045,9 +3140,14 @@ impl Render for EditorView {
         let pane_padding_v_px = rem * 0.75 * 2.0; // .p_3() top + bottom = 1.5rem
         let pane_padding_h_px = rem * 0.75 * 2.0; // .p_3() left + right = 1.5rem
         let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let pane_status_row_px = estimated_row_px; // status text line
+        // 2026-07-02 (regression #3 of the same class as Issue #17 and the
+        // popup fix, d7c5f450): see `default_ui_row_px`'s doc — the
+        // modeline/status row and the global cmdline row resolve to GPUI's
+        // default line height (phi), not `estimated_row_px`'s 1.3x.
+        let default_row_px: f32 = default_ui_row_px(window.rem_size());
+        let pane_status_row_px = default_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
-        let global_bottom_row_px = estimated_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
+        let global_bottom_row_px = default_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
         let per_leaf_v_chrome_px =
             pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
         let per_leaf_h_chrome_px = pane_padding_h_px;
@@ -3628,6 +3728,8 @@ impl Render for EditorView {
                         // signcolumn=no ⇒ empty gutter (text-only walk).
                         gutter: Vec::new(),
                         gutter_width: 0,
+                content_left_pad: 0,
+                show_line_numbers: false,
                         sign_column: false,
                         // Docs popup is never focused — no cursor / overlays.
                         cursor: None,
@@ -4161,6 +4263,8 @@ impl Render for EditorView {
                 // + `signcolumn=no`, so there is no gutter to paint.
                 gutter: Vec::new(),
                 gutter_width: 0,
+                content_left_pad: 0,
+                show_line_numbers: false,
                 sign_column: false,
                 cursor,
                 is_active: popup_focused,
@@ -4570,18 +4674,30 @@ impl Render for EditorView {
 /// `lattice-gpui` binary keeps a thin shim that calls this.
 pub fn run(document: Document) -> Result<()> {
     Application::new().run(move |cx| {
+        // W.4: resolve `ui.window.decorations` before open_window. The editor boots
+        // inside the builder closure below (too late for WindowOptions), so parse the
+        // default config paths into a throwaway registry now. `ui.window.decorations`
+        // is a registered scalar option, so no structural prefixes are needed.
+        let decorations = {
+            let reg = lattice_config::ConfigRegistry::new();
+            reg.init_from_linkme();
+            let root = lattice_host::editor::Editor::workspace_root_from_cwd();
+            let _ = lattice_config::load_default_paths(&reg, root.as_deref(), &[]);
+            reg.get_typed::<lattice_config::WindowDecorationsOption>()
+                .map(|v| *v)
+                .unwrap_or_default()
+        };
+        let (titlebar, window_decorations) = crate::window_chrome::window_chrome(decorations);
         let bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Lattice")),
-                    ..Default::default()
-                }),
+                titlebar,
                 // XDG app-id for Linux desktop environments (Wayland /
                 // X11) so the window groups correctly with any .desktop
                 // launcher that references "com.lattice-editor.lattice".
                 app_id: Some("com.lattice-editor.lattice".to_string()),
+                window_decorations,
                 ..Default::default()
             },
             move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),
@@ -4626,7 +4742,7 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 
 #[cfg(test)]
 mod popup_geometry_tests {
-    use super::{popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
+    use super::{default_ui_row_px, popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
 
     /// The popup body div must hold every inner row WITH slack, and never
     /// overflow the popup. Regression guard for the "last line partially
@@ -4661,6 +4777,252 @@ mod popup_geometry_tests {
         assert!(
             body > rows as f32 * 18.0,
             "expected rounding slack; re-flooring the body would regress the clip"
+        );
+    }
+
+    /// Regression guard for the "last line behind the modeline" bug
+    /// (independent of the tabline, GPUI-only): the modeline/status row
+    /// and the global cmdline row resolve to GPUI's DEFAULT `TextStyle`
+    /// line height (phi, the golden ratio ≈1.618×), not `EditorElement`'s
+    /// own 1.3× content-row multiplier. A prior version of this file
+    /// reused the 1.3× estimate for these UI rows, undercounting their
+    /// real height and reserving too little chrome — the pane geometry
+    /// computed one row too many, and the extra row was clipped by
+    /// `overflow_hidden` right under the modeline. This pins the
+    /// default-row measurement to the actual golden-ratio formula so a
+    /// future edit can't silently reintroduce the 1.3× estimate here.
+    #[test]
+    fn default_ui_row_px_uses_golden_ratio_not_content_row_multiplier() {
+        let rem = gpui::px(16.0);
+        let font_size_px = 16.0 * 0.875; // text_sm()
+        let content_row_px = font_size_px * 1.3; // EditorElement::line_height
+        let ui_row_px = default_ui_row_px(rem);
+
+        // GPUI's default TextStyle::line_height is phi() ≈ 1.618×, which
+        // is meaningfully taller than EditorElement's 1.3× — the two must
+        // NOT collapse to the same value, or this fix has regressed.
+        assert!(
+            ui_row_px > content_row_px * 1.1,
+            "default UI row height ({ui_row_px}) must exceed the content \
+             row estimate ({content_row_px}) by a wide margin — reusing \
+             the content-row multiplier here is exactly the bug this \
+             guards against"
+        );
+        // Sanity bound: phi × font_size, rounded to the nearest pixel.
+        let expected = (font_size_px * 1.618_034).round();
+        assert!(
+            (ui_row_px - expected).abs() < 1.0,
+            "expected ~{expected}px (phi × font_size), got {ui_row_px}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pane_geometry_split_tests {
+    use super::{collect_pane_geometries, default_ui_row_px};
+    use lattice_core::ui::pane::PaneNode;
+
+    fn leaf(idx: usize) -> PaneNode {
+        PaneNode::Leaf(idx)
+    }
+
+    fn hsplit(top: PaneNode, bottom: PaneNode) -> PaneNode {
+        PaneNode::HorizontalSplit {
+            top: Box::new(top),
+            bottom: Box::new(bottom),
+            ratio: 0.5,
+        }
+    }
+
+    fn vsplit(left: PaneNode, right: PaneNode) -> PaneNode {
+        PaneNode::VerticalSplit {
+            left: Box::new(left),
+            right: Box::new(right),
+            ratio: 0.5,
+        }
+    }
+
+    /// Generalises the "last line behind the modeline" fix from "one pane"
+    /// to ARBITRARY split trees and ARBITRARY viewport sizes — the
+    /// `per_leaf_v_chrome_px` (built from `default_ui_row_px`, not the
+    /// content-row estimate) must apply correctly at every leaf regardless
+    /// of split depth, and `collect_pane_geometries` must never silently
+    /// drop a leaf or double/under-count a split's share.
+    ///
+    /// `collect_pane_geometries` is a pure recursive function of `(tree,
+    /// available px, chrome px, row/col px)` — it has no notion of "the
+    /// user resized" or "the user split N times"; every call re-derives
+    /// geometry from scratch off whatever the CURRENT tree and CURRENT
+    /// viewport pixels are. So this test doesn't assume any particular
+    /// window size or split shape reflects real usage — it sweeps a
+    /// deliberately wide matrix (1-way through 4-way splits, both split
+    /// orientations, viewport sizes from small to large) and asserts the
+    /// per-leaf INVARIANT holds identically at every point, rather than
+    /// spot-checking one shape and generalising by assumption.
+    #[test]
+    fn per_leaf_chrome_applies_correctly_across_arbitrary_splits_and_sizes() {
+        let trees: Vec<(&str, PaneNode)> = vec![
+            ("1-way", leaf(0)),
+            ("2-way h", hsplit(leaf(0), leaf(1))),
+            ("2-way v", vsplit(leaf(0), leaf(1))),
+            ("3-way", hsplit(leaf(0), vsplit(leaf(1), leaf(2)))),
+            (
+                "4-way",
+                hsplit(vsplit(leaf(0), leaf(1)), vsplit(leaf(2), leaf(3))),
+            ),
+        ];
+
+        // Viewport sizes standing in for "the user resized the GPUI
+        // window" — including sizes small enough that some leaves clamp
+        // to the `.max(1.0)` floor.
+        let viewport_sizes: &[(f32, f32)] = &[
+            (1200.0, 800.0),
+            (800.0, 600.0),
+            (400.0, 300.0),
+            (200.0, 120.0),
+            (100.0, 60.0),
+        ];
+
+        let rem = 16.0_f32;
+        let font_size_px = rem * 0.875;
+        let row_px = font_size_px * 1.3; // EditorElement's own content row height
+        let col_px = font_size_px * 0.6; // monospace glyph advance approximation
+        // Mirrors window.rs's real per_leaf_v_chrome_px composition, using
+        // the FIXED default_ui_row_px (not the content-row estimate) —
+        // this is the exact value under test.
+        let pane_padding_v_px = rem * 0.75 * 2.0;
+        let pane_status_padding_px = rem * 0.25 * 2.0;
+        let default_row_px = default_ui_row_px(gpui::px(rem));
+        let per_leaf_v_chrome_px = pane_padding_v_px + pane_status_padding_px + default_row_px;
+        let per_leaf_h_chrome_px = rem * 0.75 * 2.0;
+
+        for (tree_name, tree) in &trees {
+            let expected_leaf_count = match tree_name {
+                &"1-way" => 1,
+                &"2-way h" | &"2-way v" => 2,
+                &"3-way" => 3,
+                &"4-way" => 4,
+                _ => unreachable!(),
+            };
+            for &(avail_w, avail_h) in viewport_sizes {
+                let mut out = Vec::new();
+                collect_pane_geometries(
+                    tree,
+                    avail_w,
+                    avail_h,
+                    per_leaf_v_chrome_px,
+                    per_leaf_h_chrome_px,
+                    row_px,
+                    col_px,
+                    &mut out,
+                );
+
+                assert_eq!(
+                    out.len(),
+                    expected_leaf_count,
+                    "{tree_name} at ({avail_w}x{avail_h}): every leaf must get a \
+                     geometry entry — none dropped, none duplicated"
+                );
+
+                // Every leaf gets at least 1 row/col (the `.max(1.0)`
+                // floor) even when its allocated split share is smaller
+                // than one row/col of chrome + content — never zero,
+                // never negative (usize can't go negative, but a
+                // mis-derived huge value would also be wrong).
+                for (idx, rows, cols) in &out {
+                    assert!(
+                        *rows >= 1 && *cols >= 1,
+                        "{tree_name} leaf {idx} at ({avail_w}x{avail_h}): rows={rows} \
+                         cols={cols} must both be >= 1"
+                    );
+                    // Upper bound sanity: a leaf can never claim more rows
+                    // than the WHOLE viewport could hold at this row_px,
+                    // regardless of split depth — proves chrome is being
+                    // subtracted somewhere in the chain, not lost.
+                    let max_possible_rows = (avail_h / row_px).ceil() as u32 + 1;
+                    assert!(
+                        *rows <= max_possible_rows,
+                        "{tree_name} leaf {idx} at ({avail_w}x{avail_h}): rows={rows} \
+                         exceeds what the whole viewport could hold ({max_possible_rows}) \
+                         — chrome subtraction is being lost across the split recursion"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pins the specific regression this whole fix addresses, but at EVERY
+    /// leaf of a 4-way split rather than just a single pane: using the
+    /// (wrong) content-row estimate for `per_leaf_v_chrome_px` instead of
+    /// `default_ui_row_px` under-reserves chrome enough that some
+    /// split configurations compute one MORE row than the correct chrome
+    /// value would — the off-by-one that clips the last line under the
+    /// modeline. This must hold for every leaf, not just an unsplit pane.
+    #[test]
+    fn wrong_chrome_estimate_would_overcount_rows_at_every_split_leaf() {
+        let rem = 16.0_f32;
+        let font_size_px = rem * 0.875;
+        let row_px = font_size_px * 1.3;
+        let col_px = font_size_px * 0.6;
+        let pane_padding_v_px = rem * 0.75 * 2.0;
+        let pane_status_padding_px = rem * 0.25 * 2.0;
+
+        let correct_chrome =
+            pane_padding_v_px + pane_status_padding_px + default_ui_row_px(gpui::px(rem));
+        // The bug: reusing the content-row estimate instead of the real
+        // (larger, golden-ratio) default UI row height.
+        let wrong_chrome = pane_padding_v_px + pane_status_padding_px + row_px;
+        assert!(
+            wrong_chrome < correct_chrome,
+            "sanity: the bug under-reserves chrome relative to the fix"
+        );
+
+        let tree = hsplit(vsplit(leaf(0), leaf(1)), vsplit(leaf(2), leaf(3)));
+        let avail_w = 1000.0_f32;
+
+        // The correct-vs-wrong chrome delta (~4.8px here) is smaller than
+        // one row (~18.2px), so whether it crosses an integer-row boundary
+        // depends on the fractional remainder of `usable_h / row_px` at
+        // the exact height — it won't trigger at every height. Rather than
+        // assume any ONE particular window size happens to expose it
+        // (exactly the kind of external-factor assumption to avoid), sweep
+        // a dense, deterministic range of viewport heights and require
+        // that the invariant (`wrong_rows >= correct_rows` everywhere) holds
+        // at EVERY size tried, while confirming the regression is exercised
+        // by AT LEAST ONE size in the swept range.
+        let mut saw_overcount = false;
+        for avail_h_int in (100..=1000).step_by(2) {
+            let avail_h = avail_h_int as f32;
+            let mut correct_out = Vec::new();
+            collect_pane_geometries(
+                &tree, avail_w, avail_h, correct_chrome, 0.0, row_px, col_px, &mut correct_out,
+            );
+            let mut wrong_out = Vec::new();
+            collect_pane_geometries(
+                &tree, avail_w, avail_h, wrong_chrome, 0.0, row_px, col_px, &mut wrong_out,
+            );
+            correct_out.sort_by_key(|(idx, _, _)| *idx);
+            wrong_out.sort_by_key(|(idx, _, _)| *idx);
+
+            for ((idx, correct_rows, _), (_, wrong_rows, _)) in
+                correct_out.iter().zip(&wrong_out)
+            {
+                assert!(
+                    wrong_rows >= correct_rows,
+                    "leaf {idx} at avail_h={avail_h}: the under-reserving estimate must \
+                     never compute FEWER rows than the fix (it only ever over-counts or \
+                     matches) — got wrong={wrong_rows} correct={correct_rows}"
+                );
+                if wrong_rows > correct_rows {
+                    saw_overcount = true;
+                }
+            }
+        }
+        assert!(
+            saw_overcount,
+            "expected at least one viewport height in the swept range where the wrong \
+             estimate over-counts rows by at least one — otherwise this test doesn't \
+             exercise the regression"
         );
     }
 }

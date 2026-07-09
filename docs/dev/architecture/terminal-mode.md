@@ -139,13 +139,24 @@ operates on it. The summary below is the user-visible behaviour;
 see the companion doc for the lifecycle, coord adapter, and
 slice plan.
 
-### 5.1 Normal-in-terminal (default on entry)
+### 5.1 Normal-in-terminal
 
 - Mode-line: `-- TERMINAL --`
 - Vim grammar applies to a **synthetic Document built from the
   scrollback view** (NOT the PTY). See
   [`terminal-as-document.md`](terminal-as-document.md) §3 for
   the build-on-entry / drop-on-exit mechanism.
+- **A freshly spawned terminal starts in Terminal-Insert, not
+  here** (2026-07-03; vim `:terminal` / tmux / kitty convention —
+  a new terminal is focused for input). This is load-bearing, not
+  cosmetic: the synthetic scrollback rope is *frozen at Normal
+  entry*, so entering Normal at spawn — when the child has not yet
+  rendered — would freeze an **empty** scrollback and leave `k`/`gg`
+  unable to reach the history the child then streams, until the
+  first insert→normal round-trip rebuilt the rope. Deferring the
+  first Normal entry to a deliberate `<C-\><C-n>` guarantees the
+  rope is built over real output. See the T-scrollback-fix note in
+  `do_terminal_spawn`.
 - Keystrokes flow through the standard Normal-mode keymap; the
   full grammar applies because the active text *is* a
   rope-backed Document:
@@ -183,6 +194,7 @@ slice plan.
 
 | From | Key | To |
 |---|---|---|
+| _(spawn)_ | `:terminal` / `:claude` | Terminal-Insert |
 | Normal-in-terminal | `i` / `a` / `I` / `A` | Terminal-Insert |
 | Terminal-Insert | `<C-\><C-n>` | Normal-in-terminal |
 | Terminal-Insert | `<Esc>` (if `terminal.esc_exits`) | Normal-in-terminal |
@@ -281,6 +293,7 @@ pub struct Cell {
     pub fg: TerminalColor,
     pub bg: TerminalColor,
     pub attrs: CellAttrs,
+    pub wide_spacer: bool,  // alacritty WIDE_CHAR_SPACER / LEADING_WIDE_CHAR_SPACER
 }
 
 pub enum TerminalColor {
@@ -306,6 +319,15 @@ The render hot path:
 1. Renderer reads `terminal_entry.state.load()` → `Arc<TerminalSnapshot>`.
 2. Translates each `Cell` to renderer-native styling.
 3. Paints into the pane area as a fixed-pitch grid.
+
+**Width contract (load-bearing).** A width-2 glyph occupies two grid cells: the
+`WIDE_CHAR` cell holds the glyph, the next cell is a `wide_spacer` placeholder.
+Renderers MUST **skip** `wide_spacer` cells — the wide glyph supplies its own
+second display column through the renderer's shaping. Emitting the spacer as a
+character makes one grid pair span three display columns, desyncing the
+renderer's column model (and, in the TUI, ratatui's width-based cell diff → the
+auto-scroll ghosting bug). See
+[`../audit/terminal-wide-char-ghosting.md`](../audit/terminal-wide-char-ghosting.md).
 
 `Cell`'s `TerminalColor` variants follow Lattice's existing
 host `Color` enum — TUI adapter degrades `Rgb` to nearest

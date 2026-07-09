@@ -192,6 +192,25 @@ pub fn register_visual_bindings(
         );
     }
 
+    // `r<X>` -- replace every selected char with X (vim's Visual `r`).
+    // A two-key wildcard: `[r]` alone returns Partial, so `dispatch_visual`
+    // absorbs it into `partial_chord`; `[r, CharLiteral]` then folds the
+    // captured char into the operator's `Args::Char` via
+    // `action_from_bound_with_capture`. `Range::Selection` resolves to the
+    // active region at dispatch time; the `replace-char` operator overwrites
+    // every non-newline char in it and the host auto-exits Visual after the
+    // operator, exactly as `d` / `c` / `y` do. Unlike the Normal-mode `r`
+    // binding there is no target motion, so the captured char routes
+    // straight to the operator's args.
+    handle.bind(
+        layer,
+        mode,
+        &[literal(KeyChord::char('r')), ChordPattern::CharLiteral],
+        CommandInvocation::of(builtins.replace_char.0)
+            .with_range(lattice_grammar::Range::Selection),
+        source(),
+    );
+
     // Text objects: `i<obj>` (inner) / `a<obj>` (around) set the
     // selection to the object's span -- `viw`, `vaf`, `vaC`, `vi{`,
     // ... Rows come from the SHARED

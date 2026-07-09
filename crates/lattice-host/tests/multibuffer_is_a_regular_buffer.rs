@@ -694,6 +694,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         scroll: 0,
         viewport_width: 0,
         wrap: false,
+        wrap_reserved_cols: 0,
         foldenable: false,
         last_edit: None,
         excerpt_syntax: excerpt_syntax_arc,

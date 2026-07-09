@@ -26,9 +26,55 @@ use super::{App, BufferKind};
 
 impl App {
     pub fn new(document: Document) -> Self {
+        // DB.5 (design.md §9.1): capture the opened-file path BEFORE
+        // `document` moves into `Editor::boot` (which consumes it) — this
+        // is the only point where the renderer still owns the `Document`.
+        let opened_file = document.path().map(|p| p.to_path_buf());
         // Phase 5.7.B.1: the renderer-neutral construction body
         // moved to `lattice_host::editor::Editor::boot`.
         let mut editor = lattice_host::editor::Editor::boot(document);
+        // CB.2 (docs/dev/architecture/clipboard.md): override the
+        // FakeClipboard CB.0 registers by default with the TUI's real
+        // backend (native arboard when available, OSC52 write-only
+        // fallback otherwise). Must run before anything else can have
+        // cloned `editor.services` -- `Editor::boot` hands back a fresh
+        // Arc (built via `BootContext`'s owned, non-Arc `ServiceRegistry`
+        // during boot, wrapped only at the very end), so `Arc::get_mut`
+        // is guaranteed to succeed here.
+        if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
+            let clipboard: lattice_core::ClipboardHandle =
+                std::sync::Arc::new(crate::clipboard::TuiClipboard::detect());
+            services.register(clipboard);
+        } else {
+            debug_assert!(
+                false,
+                "editor.services should be uniquely owned immediately after Editor::boot"
+            );
+        }
+        // DB.5 (test isolation): unit tests construct `App::new` with a
+        // pathless `Document::from_text`, which looks exactly like a
+        // real no-file launch — so the startup trigger below would
+        // auto-open `*dashboard*` and every render test would see the
+        // dashboard buffer instead of its own text. Disable the auto-open
+        // BEFORE the `Startup` publish: the trigger's async task reads
+        // `dashboard.enabled` only AFTER it receives `Startup`, and its
+        // `recv()` cannot complete before `publish_typed` sends — so
+        // setting it here is race-free (any later `set` would race the
+        // background task). Production launch (`main`) never takes this
+        // branch, so the real no-file→dashboard behavior is untouched.
+        #[cfg(test)]
+        {
+            let _ = editor
+                .config
+                .parse_and_set_command("dashboard.enabled=false");
+        }
+        // DB.5: publish `Startup` once `editor` exists (right after `boot`
+        // returns), so `lattice_dashboard::install`'s subscription (wired
+        // during `boot`, Phase-B) can decide whether to auto-open
+        // `*dashboard*`. One publish per boot, TUI + GPUI both wire this at
+        // their own post-boot seam; the subscription itself lives once in
+        // `lattice-dashboard`.
+        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
         // Slice 3c.atomic.A: renderer-side clone of the editor's
         // RenderState cell, captured before Editor moves to the
         // actor thread.
@@ -222,6 +268,49 @@ impl App {
         let signals = self.mutate_editor_with(move |e| e.do_tutor(Some(lesson)));
         for s in signals {
             self.handle_renderer_signal(s);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CB.2 regression guard: `App::new`'s `Arc::get_mut(&mut
+    /// editor.services)` override must succeed. If a future boot change
+    /// clones `editor.services` before this line runs, `Arc::get_mut`
+    /// returns `None` and the `debug_assert!` in `App::new` fires --
+    /// which would turn into a panic on EVERY `App::new`-constructed test
+    /// across the whole TUI suite (App::new is the universal test
+    /// fixture), not just this one. This test pins the invariant
+    /// explicitly rather than relying on that incidental discovery.
+    ///
+    /// Behavioral assertion is gated to the default (no `system-clipboard`)
+    /// build: without that feature, `TuiClipboard::detect()` always
+    /// resolves to the OSC52 fallback regardless of the host machine's
+    /// display, so the "write then read returns None" spot-check
+    /// (distinguishing it from the CB.0 default `FakeClipboard`, which
+    /// always roundtrips) is environment-independent. With the feature on,
+    /// a real display would make `Native(ArboardClipboard)` roundtrip too
+    /// -- a legitimate difference, not a regression -- so that combination
+    /// only gets the panic-free assertion below.
+    #[test]
+    fn new_registers_tui_clipboard_without_panicking() {
+        let app = App::new(Document::from_text("hello\n"));
+        let clipboard = app
+            .editor
+            .services
+            .get::<lattice_core::ClipboardHandle>()
+            .expect("App::new must leave a ClipboardHandle registered");
+        #[cfg(not(feature = "system-clipboard"))]
+        {
+            clipboard.write("cb2-boot-probe".to_string());
+            assert_eq!(
+                clipboard.read(),
+                None,
+                "without system-clipboard, TuiClipboard is always the OSC52 \
+                 fallback, which never round-trips a write through read"
+            );
         }
     }
 }

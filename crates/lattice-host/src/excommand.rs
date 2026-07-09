@@ -436,12 +436,15 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("tabonly", "ex:tabonly"),
     ("tabm", "ex:tabmove"),
     ("tabmove", "ex:tabmove"),
+    // `:ls` keeps vim/emacs's static text listing (`list-buffers`,
+    // `<C-x><C-b>`). `:buffers` and `:b` open the fuzzy buffer picker —
+    // consistent with `:files` opening the file picker; the picker is the
+    // interesting, actionable surface.
     ("ls", "ex:buffers"),
-    ("buffers", "ex:buffers"),
+    ("buffers", "ex:buffer-picker"),
     ("bd", "ex:bdelete"),
     ("bdelete", "ex:bdelete"),
     ("b", "ex:buffer-picker"),
-    ("buffer-picker", "ex:buffer-picker"),
     // Picker entry points (Phase 4.x picker work). `:picker
     // <source>` is the canonical surface; the per-source
     // aliases (`:files`, `:recent`) ship for vim muscle
@@ -988,6 +991,18 @@ mod tests {
         let inv = parse("wq!", &r).unwrap();
         assert!(inv.bang);
         assert_eq!(invocation_name(&inv, &r), "ex:write-quit");
+    }
+
+    #[test]
+    fn buffers_and_b_open_the_picker_ls_keeps_the_text_list() {
+        // `:buffers` and `:b` both open the fuzzy buffer picker (consistent
+        // with `:files`); `:ls` keeps the static text listing.
+        let r = fixture();
+        let buffers = parse("buffers", &r).unwrap();
+        let b = parse("b", &r).unwrap();
+        assert_eq!(invocation_name(&buffers, &r), "ex:buffer-picker");
+        assert_eq!(buffers.command, b.command, ":buffers and :b are the same command");
+        assert_eq!(invocation_name(&parse("ls", &r).unwrap(), &r), "ex:buffers");
     }
 
     #[test]

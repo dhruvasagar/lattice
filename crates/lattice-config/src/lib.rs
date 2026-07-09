@@ -74,6 +74,8 @@ pub mod group;
 pub mod loader;
 mod modeline_zone;
 mod signcolumn;
+mod decorations;
+mod window_options;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
 // construction. Direct construction of `Option<T>` is the
@@ -121,7 +123,7 @@ pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
-    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, ClipboardEnabled, CursorLine,
     DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
@@ -135,7 +137,7 @@ pub use erased::ErasedOption;
 pub use group::{
     Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
     Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
-    Terminal, ends_with_mode_suffix,
+    Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,
@@ -150,6 +152,12 @@ pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
 // columns (diagnostics severity + diff sign) so help / synthetic
 // buffers render gutterless without the renderer knowing it's help.
 pub use signcolumn::SignColumn;
+// W.1: the `decorations` option value type — controls OS window chrome
+// (titlebar + controls) on the GPUI peer (full vs. borderless).
+pub use decorations::Decorations;
+// W.2: the `ui.window.*` decl types — GPUI peer window chrome +
+// maximize-on-launch. Value type (`Decorations`) re-exported above.
+pub use window_options::{StartMaximized, WindowDecorationsOption};
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated
 // `build_spec()` methods can name them, but they are no longer

@@ -42,7 +42,13 @@ pub mod boot_context;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
+// CB.4: native `arboard` clipboard backend shared by both renderer peers.
+// Only compiled with the `system-clipboard` feature (pulls X11/Wayland
+// libs); host's default build stays headless-friendly.
+#[cfg(feature = "system-clipboard")]
+pub mod clipboard;
 pub mod cursor_shape;
+pub mod dashboard;
 pub mod diagnostics_query;
 pub mod dispatch;
 pub mod editor;
@@ -147,6 +153,7 @@ pub mod oil;
 pub mod pane;
 pub mod pane_render;
 pub mod popup;
+pub mod preview;
 // Phase 5.8.AF.5 / Slice 3b: per-buffer cache primitive for the
 // LSP feature drains migrating off the renderer thread. See
 // `per_buffer_cache` module docs.

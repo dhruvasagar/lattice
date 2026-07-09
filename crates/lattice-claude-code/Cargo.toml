@@ -23,6 +23,7 @@ lattice-lsp = { path = "../lattice-lsp" }
 # `openDiff` tool produces and awaits. A network-peer → diff-subsystem edge, the
 # same shape as the ide→lsp edge above the read tools already use.
 lattice-diff = { path = "../lattice-diff" }
+lattice-agent = { path = "../lattice-agent" }
 tokio = { workspace = true, features = [
 	"sync",
 	"rt",

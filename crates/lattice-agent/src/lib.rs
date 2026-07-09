@@ -13,4 +13,7 @@
 
 pub mod error;
 
+pub mod commands;
+
+pub use commands::{parse_no_args, parse_rest_as_text};
 pub use error::{AgentError, Result};

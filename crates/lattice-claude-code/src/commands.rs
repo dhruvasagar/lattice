@@ -22,24 +22,12 @@
 //! mode-ownership-compliant route — it keeps the handler body in the
 //! crate without a new host `Effect` variant. See design §2.
 
-use lattice_grammar::args::Args;
+use lattice_agent::parse_no_args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::{EchoLevel, Effect};
-use lattice_grammar::error::{CommandError, GrammarResult};
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 
 use crate::server::ClaudeCodeServerHandle;
-
-/// Reject any trailing characters; these commands take no arguments.
-fn parse_no_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
-    if rest.trim().is_empty() {
-        Ok(Args::None)
-    } else {
-        Err(CommandError::BadArgs(
-            "trailing characters after command".into(),
-        ))
-    }
-}
 
 /// Register `:claude-code-start` / `:claude-code-stop` against `registry`,
 /// wiring each to `server`. Called once from editor boot.
@@ -207,6 +195,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::server::{self, ServerConfig};
+    use lattice_grammar::args::Args;
     use lattice_grammar::registry::ExCommandContext;
     use lattice_grammar::{CancellationToken, Count, Register};
     use lattice_runtime::EventBus;

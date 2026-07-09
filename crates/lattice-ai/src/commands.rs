@@ -13,30 +13,14 @@
 //! resolves it (0 known sessions echo a hint, 1 opens directly, >1 raises a
 //! picker) -- exactly how `:lsp-server-log` is wired.
 
+use lattice_agent::{parse_no_args, parse_rest_as_text};
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::{EchoLevel, Effect};
-use lattice_grammar::error::{CommandError, GrammarResult};
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 
 use crate::handle::AiClientHandle;
 use crate::providers::ProviderConfig;
-
-/// Reject any trailing characters; these commands take no arguments.
-fn parse_no_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
-    if rest.trim().is_empty() {
-        Ok(Args::None)
-    } else {
-        Err(CommandError::BadArgs(
-            "trailing characters after command".into(),
-        ))
-    }
-}
-
-/// Take the rest of the line verbatim (trimmed) as a single string arg.
-fn parse_rest_as_text(rest: &str, _bang: bool) -> GrammarResult<Args> {
-    Ok(Args::String(rest.trim().to_string()))
-}
 
 /// Register `:opencode` / `:ai-prompt` / `:ai-stop` against `registry`,
 /// wiring each to `handle`. Called once from editor boot.

@@ -14,6 +14,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
+lattice-agent = { path = "../lattice-agent" }
 # `ai_log.rs`'s `register_event!(AiLogPushed, ...)` expands to a
 # `#[linkme::distributed_slice(...)]` static -- same mechanism
 # `lattice-lsp` / `lattice-config` use for their registries.

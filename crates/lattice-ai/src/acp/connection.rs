@@ -39,7 +39,8 @@ use std::sync::Arc;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, TextContent,
+    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
+    TextContent,
 };
 use agent_client_protocol::{ByteStreams, Client};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -74,6 +75,14 @@ enum DriverCommand {
         text: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// AU‑3: interrupt the active turn without ending the session. Sent by
+    /// [`Connection::cancel`]; the driver forwards an ACP `session/cancel`
+    /// notification. Handled concurrently with an in-flight `Prompt` (which
+    /// the driver runs via `cx.spawn`), so it can actually interrupt.
+    Cancel {
+        session_id: SessionId,
+        reply: oneshot::Sender<Result<()>>,
+    },
 }
 
 /// A handle to a live ACP connection driven by the `agent-client-protocol` crate.
@@ -83,13 +92,15 @@ enum DriverCommand {
 ///
 /// ## Single-flight, single-session limitation
 ///
-/// The driver's command loop (spawned by [`Connection::spawn`]) processes one
-/// `DriverCommand` end-to-end at a time: it awaits the reply to `initialize` / `new_session`
-/// / `prompt` before pulling the next command off the channel. Notifications are
-/// connection-wide, not scoped to a session (see the module-level docs). A future
-/// multi-session `Connection` needs to (a) filter delivered notifications by
-/// `SessionNotification::session_id` and (b) revisit this single-flight loop so one
-/// session's in-flight request doesn't block another session's commands.
+/// The driver's command loop (spawned by [`Connection::spawn`]) awaits the reply to
+/// `initialize` / `new_session` before pulling the next command off the channel. `prompt`
+/// is the exception: the loop runs the prompt turn on a `cx.spawn`ed task (AU‑3) so a
+/// concurrent `Cancel` (`session/cancel`) can actually interrupt it — a `block_task().await`
+/// inline would pin the loop for the whole turn and starve the very cancel meant to stop it.
+/// Notifications are connection-wide, not scoped to a session (see the module-level docs). A
+/// future multi-session `Connection` needs to (a) filter delivered notifications by
+/// `SessionNotification::session_id` and (b) generalise the per-command spawning so one
+/// session's in-flight request never blocks another session's commands.
 pub struct Connection {
     commands: mpsc::Sender<DriverCommand>,
 }
@@ -165,14 +176,43 @@ impl Connection {
                                 text,
                                 reply,
                             } => {
+                                // AU‑3: run the prompt turn on a spawned task rather than
+                                // `block_task().await`-ing it inline. `block_task` blocks the
+                                // command loop until the whole turn completes; a mid-turn
+                                // `Cancel` would then sit unprocessed in the channel until the
+                                // very turn it means to interrupt finishes — no interrupt at
+                                // all. Spawning frees the loop to deliver `Cancel` concurrently
+                                // (the crate's documented "block_task only inside cx.spawn"
+                                // pattern). The prompt reply still resolves the caller's
+                                // oneshot; the supervisor already awaits it on its own task.
+                                let spawn_result = cx.spawn({
+                                    let cx = cx.clone();
+                                    async move {
+                                        let outcome = cx
+                                            .send_request(PromptRequest::new(
+                                                session_id.0,
+                                                vec![ContentBlock::Text(TextContent::new(text))],
+                                            ))
+                                            .block_task()
+                                            .await
+                                            .map(|_response| ())
+                                            .map_err(map_acp_error);
+                                        let _ = reply.send(outcome);
+                                        Ok(())
+                                    }
+                                });
+                                if let Err(err) = spawn_result {
+                                    tracing::debug!(%err, "ACP prompt spawn failed");
+                                }
+                            }
+                            DriverCommand::Cancel { session_id, reply } => {
+                                // `session/cancel` is a fire-and-forget notification (no
+                                // reply); the agent stops the active turn and emits a
+                                // `Cancelled` stop reason on the normal update stream. The
+                                // reply oneshot only reports whether the notification was
+                                // handed to the transport.
                                 let outcome = cx
-                                    .send_request(PromptRequest::new(
-                                        session_id.0,
-                                        vec![ContentBlock::Text(TextContent::new(text))],
-                                    ))
-                                    .block_task()
-                                    .await
-                                    .map(|_response| ())
+                                    .send_notification(CancelNotification::new(session_id.0))
                                     .map_err(map_acp_error);
                                 let _ = reply.send(outcome);
                             }
@@ -212,6 +252,19 @@ impl Connection {
             reply,
         })
         .await
+    }
+
+    /// AU‑3: interrupt the active turn on `session` without ending it.
+    ///
+    /// Forwards an ACP `session/cancel` notification; the agent stops its
+    /// current turn and reports a `Cancelled` stop reason on the update
+    /// stream. The session stays open and usable for the next prompt.
+    /// `Ok(())` means the notification reached the transport, not that the
+    /// agent has finished cancelling.
+    pub async fn cancel(&self, session: &SessionId) -> Result<()> {
+        let session_id = session.clone();
+        self.call(|reply| DriverCommand::Cancel { session_id, reply })
+            .await
     }
 
     /// Send `make_command(reply)` to the driver task and await its reply.
@@ -384,5 +437,33 @@ mod tests {
             .prompt(&session, "hi")
             .await
             .expect("prompt should succeed");
+    }
+
+    /// AU‑3: `cancel` forwards `session/cancel` and leaves the session open —
+    /// a subsequent prompt still round-trips. Exercises the driver's
+    /// concurrent-prompt restructure: the `Cancel` command is serviced
+    /// without the loop being pinned on a prior turn.
+    #[tokio::test]
+    async fn cancel_leaves_the_session_usable() {
+        let (connection, _notif_rx) = spawn_connection_with_mock_peer();
+        connection
+            .initialize()
+            .await
+            .expect("initialize should succeed");
+        let session = connection
+            .new_session("/tmp")
+            .await
+            .expect("new_session should succeed");
+
+        connection
+            .cancel(&session)
+            .await
+            .expect("cancel should reach the transport");
+
+        // The session was interrupted, not ended: the next prompt still works.
+        connection
+            .prompt(&session, "again")
+            .await
+            .expect("prompt after cancel should succeed");
     }
 }

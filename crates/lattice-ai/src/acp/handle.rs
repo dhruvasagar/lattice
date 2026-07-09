@@ -31,6 +31,9 @@ pub struct AiState {
 pub(crate) enum AiCmd {
     Start(ProviderConfig),
     Prompt(String),
+    /// AU‑3: interrupt the active turn without ending the session. The
+    /// supervisor forwards an ACP `session/cancel`; the session stays open.
+    Interrupt,
     Stop,
 }
 
@@ -59,6 +62,14 @@ impl AiClientHandle {
     /// to the subsystem-wide `AiLogger` ring instead of sending it.
     pub fn prompt(&self, text: String) {
         let _ = self.cmd_tx.send(AiCmd::Prompt(text));
+    }
+
+    /// AU‑3: interrupt the active turn without ending the session.
+    /// Non-blocking; the supervisor forwards an ACP `session/cancel`. If no
+    /// session is open it's a no-op. Distinct from [`AiClientHandle::stop`],
+    /// which tears the session (and provider child) down.
+    pub fn interrupt(&self) {
+        let _ = self.cmd_tx.send(AiCmd::Interrupt);
     }
 
     /// Ask the supervisor to stop the active session. Non-blocking.

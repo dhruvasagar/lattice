@@ -218,6 +218,33 @@ async fn supervisor_loop(
                     );
                 }
             }
+            SupervisorEvent::Cmd(AiCmd::Interrupt) => {
+                // AU‑3: interrupt the active turn without ending the session.
+                // Forward `session/cancel` on a spawned task so the supervisor
+                // loop keeps servicing commands; the session and provider child
+                // stay alive for the next prompt.
+                if let (Some(c), Some(s)) = (conn.clone(), sess.clone()) {
+                    let key = active_key.clone();
+                    let logger = logger.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = c.cancel(&s).await {
+                            logger.log(
+                                key.as_ref(),
+                                AiLogLevel::Warn,
+                                AiLogSource::Lifecycle,
+                                format!("interrupt failed: {e}"),
+                            );
+                        }
+                    });
+                } else {
+                    logger.log(
+                        None,
+                        AiLogLevel::Warn,
+                        AiLogSource::Lifecycle,
+                        "interrupt dropped: no active session",
+                    );
+                }
+            }
             SupervisorEvent::Cmd(AiCmd::Stop) => {
                 logger.log(
                     active_key.as_ref(),
